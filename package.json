@@ -1,0 +1,51 @@
+{
+  "name": "emberprobe",
+  "displayName": "EmberProbe - MCU Flash & Debug",
+  "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, and an Agent Skill.",
+  "version": "0.0.2",
+  "publisher": "emberprobe-labs",
+  "license": "MIT",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other", "Debuggers"],
+  "keywords": ["MCU", "OpenOCD", "flash", "debug", "ELF", "SVD", "Cortex-M", "embedded", "agent"],
+  "icon": "media/icon.png",
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onView:mcu-vscode.mainView",
+    "onCommand:mcu-vscode.folderDebug",
+    "onCommand:mcu-vscode.folderDownload"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "mcu-vscode-container", "title": "EmberProbe", "icon": "media/activity-icon.svg" }]
+    },
+    "views": {
+      "mcu-vscode-container": [{ "type": "webview", "id": "mcu-vscode.mainView", "name": "Flash & Debug" }]
+    },
+    "commands": [
+      { "command": "mcu-vscode.folderDebug", "title": "EmberProbe: 启动调试" },
+      { "command": "mcu-vscode.folderDownload", "title": "EmberProbe: 下载程序" }
+    ],
+    "menus": {
+      "explorer/context": [
+        { "command": "mcu-vscode.folderDebug", "group": "mcu-vscode@1" },
+        { "command": "mcu-vscode.folderDownload", "group": "mcu-vscode@2" }
+      ]
+    },
+    "configuration": {
+      "title": "EmberProbe 配置",
+      "properties": {
+        "emberprobe.openocdPath": {
+          "type": "string",
+          "default": "openocd",
+          "description": "OpenOCD 可执行文件路径；不在 PATH 时请填写 openocd.exe 的绝对路径"
+        }
+      }
+    }
+  },
+  "files": ["src/**/*.js", "media/**/*", "skills/**/*", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE.md"],
+  "scripts": {
+    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/autoDetect.js && node --check src/openocdRunner.js && node test/openocd-parser.test.js",
+    "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"
+  }
+}

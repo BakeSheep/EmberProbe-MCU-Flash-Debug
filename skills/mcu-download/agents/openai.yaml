@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Download"
+  short_description: "Detect and flash MCU firmware safely"
+  default_prompt: "Use $mcu-download to detect the current MCU project and download its latest firmware."
