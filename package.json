@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, and an Agent Skill.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
