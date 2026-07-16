@@ -62,7 +62,7 @@ async function detectDebugger() {
     if (/j-?link|segger/.test(devices)) return 'jlink.cfg';
     if (/cmsis[- ]dap|daplink|picoprobe/.test(devices)) return 'cmsis-dap.cfg';
     if (/xds110/.test(devices)) return 'xds110.cfg';
-    if (/nulink/.test(devices)) return 'nulink.cfg';
+    if (/nu-?link/.test(devices)) return 'nulink.cfg'; // 兼容 "Nu-Link" 连字符写法
     return '';
 }
 

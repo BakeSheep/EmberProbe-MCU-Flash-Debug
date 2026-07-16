@@ -40,7 +40,7 @@ const MCU_CORE_LIST = [
     'c100.cfg', 'cc2538.cfg', 'cs351x.cfg', 'davinci.cfg', 'dragonite.cfg', 'dsp56321.cfg',
     'dsp568013.cfg', 'dsp568037.cfg', 'efm32.cfg', 'em357.cfg', 'em358.cfg', 'eos_s3.cfg',
     'epc9301.cfg', 'esi32xx.cfg', 'esp32.cfg', 'esp32s2.cfg', 'esp32s3.cfg', 'esp_common.cfg',
-    'exynos5250.cfg', 'faux.cfg', 'feroceon.cfg', 'fm3.cfg', 'fm4.cfg', 'fm4_mb9bf.cfg',
+    'exynos5250.cfg', 'feroceon.cfg', 'fm3.cfg', 'fm4.cfg', 'fm4_mb9bf.cfg',
     'fm4_s6e2cc.cfg', 'gd32e23x.cfg', 'gd32vf103.cfg', 'gp326xxxa.cfg', 'hi3798.cfg', 'hi6220.cfg',
     'hilscher_netx10.cfg', 'hilscher_netx50.cfg', 'hilscher_netx500.cfg', 'icepick.cfg', 'imx.cfg',
     'imx21.cfg', 'imx25.cfg', 'imx27.cfg', 'imx28.cfg', 'imx31.cfg', 'imx35.cfg', 'imx51.cfg',
@@ -68,7 +68,7 @@ const MCU_CORE_LIST = [
     'stm32mp13x.cfg', 'stm32mp15x.cfg', 'stm32u5x.cfg', 'stm32w108xx.cfg', 'stm32wbx.cfg', 'stm32wlx.cfg',
     'stm32x5x_common.cfg', 'stm32xl.cfg', 'stm8l.cfg', 'stm8l152.cfg', 'stm8s.cfg', 'stm8s003.cfg',
     'stm8s103.cfg', 'stm8s105.cfg', 'str710.cfg', 'str730.cfg', 'str750.cfg', 'str912.cfg',
-    'swm050.cfg', 'test_reset_syntax_error.cfg', 'test_syntax_error.cfg', 'ti-ar7.cfg', 'ti-cjtag.cfg',
+    'swm050.cfg', 'ti-ar7.cfg', 'ti-cjtag.cfg',
     'ti_calypso.cfg', 'ti_cc13x0.cfg', 'ti_cc13x2.cfg', 'ti_cc26x0.cfg', 'ti_cc26x2.cfg', 'ti_cc3220sf.cfg',
     'ti_cc32xx.cfg', 'ti_dm355.cfg', 'ti_dm365.cfg', 'ti_dm6446.cfg', 'ti_k3.cfg', 'ti_msp432.cfg',
     'ti_rm4x.cfg', 'ti_tms570.cfg', 'ti_tms570ls20xxx.cfg', 'ti_tms570ls3137.cfg', 'tmpa900.cfg',
@@ -84,8 +84,6 @@ const CACHE_KEYS = {
     mcuCore: 'mcu.mcuCore',
     svdPath: 'mcu.svdPath'
 };
-// 终端名称
-const TERMINAL_NAME = 'OpenOCD 终端';
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     if (!rawPath)
@@ -103,6 +101,8 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
+        this._downloadRunning = false;
+        this._recentProgress = [];
         this.registerCommandHandlers();
     }
     // 注册命令处理函数（主进程执行）
@@ -113,7 +113,7 @@ class MainViewProvider {
         this.commandHandlers['mcu-vscode.selectElf'] = async () => {
             try {
                 console.log('主进程执行选择 ELF 文件命令');
-                const elfFiles = await vscode.workspace.findFiles('**/*.elf', '**/node_modules/**', 100);
+                const elfFiles = await vscode.workspace.findFiles('**/*.elf', '{**/node_modules/**,**/.git/**}', 100);
                 if (elfFiles.length === 0) {
                     vscode.window.showWarningMessage('未找到任何 .elf 文件！');
                     return;
@@ -128,18 +128,19 @@ class MainViewProvider {
                 });
                 quickPick.placeholder = '搜索 ELF 文件...';
                 quickPick.canSelectMany = false;
-                quickPick.onDidChangeSelection(selection => {
+                quickPick.onDidChangeSelection(async selection => {
                     if (selection[0]) {
                         const elfPath = selection[0].description;
                         if (elfPath) {
                             const finalPath = cleanWindowsPath(elfPath); // 二次清洗，双重保障
-                            this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
+                            await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
                             vscode.window.showInformationMessage(`已选择 ELF 文件：${path.basename(finalPath)}`);
                             this.updateView();
                         }
                         quickPick.dispose();
                     }
                 });
+                quickPick.onDidHide(() => quickPick.dispose());
                 quickPick.show();
             }
             catch (err) {
@@ -155,15 +156,16 @@ class MainViewProvider {
             quickPick.items = DEBUGGER_LIST.map(cfg => ({ label: cfg }));
             quickPick.placeholder = '搜索调试器配置文件...';
             quickPick.canSelectMany = false;
-            quickPick.onDidChangeSelection(selection => {
+            quickPick.onDidChangeSelection(async selection => {
                 if (selection[0]) {
                     const debuggerCfg = selection[0].label;
-                    this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
+                    await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
                     vscode.window.showInformationMessage(`已选择调试器：${debuggerCfg}`);
                     this.updateView();
                     quickPick.dispose();
                 }
             });
+            quickPick.onDidHide(() => quickPick.dispose());
             quickPick.show();
         };
         // 3. 选择 MCU 核心（无修改）
@@ -173,22 +175,23 @@ class MainViewProvider {
             quickPick.items = MCU_CORE_LIST.map(cfg => ({ label: cfg }));
             quickPick.placeholder = '搜索 MCU 核心配置文件...';
             quickPick.canSelectMany = false;
-            quickPick.onDidChangeSelection(selection => {
+            quickPick.onDidChangeSelection(async selection => {
                 if (selection[0]) {
                     const mcuCore = selection[0].label;
-                    this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
+                    await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
                     vscode.window.showInformationMessage(`已选择 MCU 核心：${mcuCore}`);
                     this.updateView();
                     quickPick.dispose();
                 }
             });
+            quickPick.onDidHide(() => quickPick.dispose());
             quickPick.show();
         };
         // 4. 选择 SVD 文件（核心修改3：使用fsPath+路径清洗）
         this.commandHandlers['mcu-vscode.selectSvd'] = async () => {
             try {
                 console.log('主进程执行选择 SVD 文件命令');
-                const svdFiles = await vscode.workspace.findFiles('**/*.svd', '**/node_modules/**', 100);
+                const svdFiles = await vscode.workspace.findFiles('**/*.svd', '{**/node_modules/**,**/.git/**}', 100);
                 if (svdFiles.length === 0) {
                     vscode.window.showWarningMessage('未找到任何 .svd 文件！');
                     return;
@@ -203,18 +206,19 @@ class MainViewProvider {
                 });
                 quickPick.placeholder = '搜索 SVD 文件...';
                 quickPick.canSelectMany = false;
-                quickPick.onDidChangeSelection(selection => {
+                quickPick.onDidChangeSelection(async selection => {
                     if (selection[0]) {
                         const svdPath = selection[0].description;
                         if (svdPath) {
                             const finalPath = cleanWindowsPath(svdPath); // 二次清洗
-                            this._context.workspaceState.update(CACHE_KEYS.svdPath, finalPath);
+                            await this._context.workspaceState.update(CACHE_KEYS.svdPath, finalPath);
                             vscode.window.showInformationMessage(`已选择 SVD 文件：${path.basename(finalPath)}`);
                             this.updateView();
                         }
                         quickPick.dispose();
                     }
                 });
+                quickPick.onDidHide(() => quickPick.dispose());
                 quickPick.show();
             }
             catch (err) {
@@ -235,12 +239,20 @@ class MainViewProvider {
                     vscode.window.showErrorMessage('请先完整配置 ELF 文件、调试器和 MCU 核心！');
                     return;
                 }
+                if (!vscode.extensions.getExtension('marus25.cortex-debug')) {
+                    vscode.window.showErrorMessage('未检测到 Cortex-Debug 扩展，请先从扩展市场安装（marus25.cortex-debug）后再启动调试。');
+                    return;
+                }
                 // 修复类型错误：处理 undefined 情况，用空字符串兜底
                 elfPath = cleanWindowsPath(elfPath);
                 svdPath = cleanWindowsPath(svdPath || ''); // 关键修复：解决 svdPath 可能为 undefined 的问题
                 const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                if (!workspaceFolder)
+                if (!workspaceFolder) {
+                    vscode.window.showErrorMessage('请先打开一个工作空间！');
                     return;
+                }
+                // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
+                const openocdPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
                 const debugConfig = {
                     type: 'cortex-debug',
                     name: 'MCU 调试（OpenOCD）',
@@ -248,13 +260,16 @@ class MainViewProvider {
                     cwd: workspaceFolder.uri.fsPath,
                     executable: elfPath,
                     servertype: 'openocd',
+                    serverpath: openocdPath,
                     configFiles: [
                         `interface/${debuggerCfg}`,
                         `target/${mcuCore}`
                     ],
                     svdFile: svdPath || undefined
                 };
-                await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+                const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+                if (!started)
+                    vscode.window.showErrorMessage('调试会话启动失败，请检查 Cortex-Debug 与 OpenOCD 配置。');
             }
             catch (err) {
                 const errorMsg = err.message;
@@ -264,6 +279,12 @@ class MainViewProvider {
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers['mcu-vscode.download'] = async () => {
+            if (this._downloadRunning) {
+                vscode.window.showWarningMessage('下载正在进行中，请等待当前任务完成');
+                return;
+            }
+            this._downloadRunning = true;
+            this._recentProgress = [];
             try {
                 console.log('主进程执行下载程序命令');
                 let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
@@ -277,14 +298,21 @@ class MainViewProvider {
                 const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
                 const executable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
                 await openocdRunner.runOpenOcd(vscode, { executable, elf: cleanElfPath, probe: debuggerCfg, target: mcuCore, cwd: workspaceFolder?.uri.fsPath }, event => {
-                    this._webviewView?.webview.postMessage({ type: 'openocdProgress', ...event });
+                    // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
+                    const message = { type: 'openocdProgress', ...event };
+                    this._recentProgress.push(message);
+                    if (this._recentProgress.length > 6) this._recentProgress.shift();
+                    this._webviewView?.webview.postMessage(message);
                 });
                 vscode.window.showInformationMessage('固件下载并校验成功');
             }
             catch (err) {
                 const errorMsg = err.message;
-                console.error('下载启动失败：', errorMsg);
-                vscode.window.showErrorMessage(`下载启动失败：${errorMsg}`);
+                console.error('固件下载失败：', errorMsg);
+                vscode.window.showErrorMessage(`固件下载失败：${errorMsg}`);
+            }
+            finally {
+                this._downloadRunning = false;
             }
         };
     }
@@ -293,10 +321,11 @@ class MainViewProvider {
         this._webviewView = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(path.join(this._context.extensionPath, 'resources'))]
+            localResourceRoots: [vscode.Uri.file(this._context.extensionPath)]
         };
-        // 监听Webview消息，主进程执行命令
-        webviewView.webview.onDidReceiveMessage(async (message) => {
+        // 监听Webview消息，主进程执行命令（先释放上一次视图的监听器，避免累积）
+        this._messageListener?.dispose();
+        this._messageListener = webviewView.webview.onDidReceiveMessage(async (message) => {
             switch (message.type) {
                 case 'executeCommand': {
                     const cmd = message.cmd;
@@ -329,135 +358,20 @@ class MainViewProvider {
                 case 'initCheck': {
                     // Webview初始化检查，直接返回成功（无需依赖commands接口）
                     webviewView.webview.postMessage({ type: 'initSuccess' });
+                    // 回放最近的下载进度，避免视图重建后日志丢失
+                    for (const progressMessage of this._recentProgress) webviewView.webview.postMessage(progressMessage);
                     break;
                 }
             }
-        }, undefined, this._context.subscriptions);
+        });
         // 设置初始内容
         webviewView.webview.html = this.getModernWebviewContent();
-        setTimeout(() => this.runAutoDetect(false), 0);
-    }
-    // 构建Webview内容（无修改）
-    getWebviewContent() {
-        const elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath) || '未选择';
-        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger) || '未选择';
-        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '未选择';
-        const svdPath = this._context.workspaceState.get(CACHE_KEYS.svdPath) || '未选择';
-        return `
-      <!DOCTYPE html>
-      <html lang="zh-CN">
-      <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="Content-Security-Policy" 
-              content="default-src 'none'; 
-                       script-src 'unsafe-inline' vscode-resource:; 
-                       style-src vscode-resource: 'unsafe-inline';"/>
-        <title>MCU 下载与调试</title>
-        <style>
-          body { padding: 16px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto; }
-          .section { margin-bottom: 24px; }
-          .title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #2563eb; }
-          .info { margin: 8px 0; padding: 8px; background: #f3f4f6; border-radius: 4px; }
-          .highlight { color: #dc2626; font-weight: 500; }
-          .btn { padding: 8px 16px; margin-right: 8px; border: none; border-radius: 4px; 
-                background: #2563eb; color: white; cursor: pointer; }
-          .btn:hover { background: #1d4ed8; }
-          .btn:disabled { background: #94a3b8; cursor: not-allowed; }
-          .init-status { margin: 16px 0; padding: 8px; color: #64748b; }
-        </style>
-      </head>
-      <body>
-        <div class="init-status" id="init-status">初始化中... 建立通信连接</div>
-
-        <!-- 按钮默认禁用 -->
-        <div class="section">
-          <div class="title">1. ELF 文件选择</div>
-          <div class="info">当前选择：<span class="highlight">${path.basename(elfPath)}</span></div>
-          <button id="btn-select-elf" class="btn" disabled onclick="executeCommand('mcu-vscode.selectElf')">选择 ELF 文件</button>
-        </div>
-
-        <div class="section">
-          <div class="title">2. 调试器选择</div>
-          <div class="info">当前选择：<span class="highlight">${debuggerCfg}</span></div>
-          <button id="btn-select-debugger" class="btn" disabled onclick="executeCommand('mcu-vscode.selectDebugger')">选择调试器</button>
-        </div>
-
-        <div class="section">
-          <div class="title">3. MCU 核心选择</div>
-          <div class="info">当前选择：<span class="highlight">${mcuCore}</span></div>
-          <button id="btn-select-mcu" class="btn" disabled onclick="executeCommand('mcu-vscode.selectMcuCore')">选择 MCU 核心</button>
-        </div>
-
-        <div class="section">
-          <div class="title">4. SVD 文件选择</div>
-          <div class="info">当前选择：<span class="highlight">${path.basename(svdPath)}</span></div>
-          <button id="btn-select-svd" class="btn" disabled onclick="executeCommand('mcu-vscode.selectSvd')">选择 SVD 文件</button>
-        </div>
-
-        <div class="section">
-          <button id="btn-debug" class="btn" disabled onclick="executeCommand('mcu-vscode.debug')">启动调试</button>
-          <button id="btn-download" class="btn" disabled onclick="executeCommand('mcu-vscode.download')">下载程序</button>
-        </div>
-
-        <script>
-          // Webview仅通过postMessage发送命令请求
-          const vscode = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null;
-
-          // 命令执行函数：仅发送消息
-          function executeCommand(cmd) {
-            if (!vscode) {
-              alert('通信未建立，无法执行命令');
-              return;
-            }
-            console.log('Webview发送命令：', cmd);
-            document.getElementById('init-status').textContent = \`执行命令：\${cmd}\`;
-            vscode.postMessage({
-              type: 'executeCommand',
-              cmd: cmd
-            });
-          }
-
-          // 监听主进程消息反馈
-          window.addEventListener('message', (event) => {
-            const message = event.data;
-            switch (message.type) {
-              case 'initSuccess':
-                // 通信建立成功，启用按钮
-                document.getElementById('init-status').textContent = '初始化成功！可正常使用';
-                document.getElementById('init-status').style.color = '#10b981';
-                enableAllButtons();
-                break;
-              case 'commandSuccess':
-                document.getElementById('init-status').textContent = \`命令 \${message.cmd} 执行成功\`;
-                document.getElementById('init-status').style.color = '#10b981';
-                break;
-              case 'commandError':
-                document.getElementById('init-status').textContent = \`命令 \${message.cmd} 失败：\${message.error}\`;
-                document.getElementById('init-status').style.color = '#ef4444';
-                break;
-            }
-          });
-
-          // 启用所有按钮
-          function enableAllButtons() {
-            const buttons = document.querySelectorAll('.btn');
-            buttons.forEach(btn => btn.disabled = false);
-          }
-
-          // 初始化：向主进程发送检查请求（无需依赖commands）
-          document.addEventListener('DOMContentLoaded', () => {
-            if (vscode) {
-              console.log('Webview发送初始化检查');
-              vscode.postMessage({ type: 'initCheck' });
-            } else {
-              document.getElementById('init-status').textContent = '初始化失败：无法获取VS Code API';
-              document.getElementById('init-status').style.color = '#ef4444';
-            }
-          });
-        </script>
-      </body>
-      </html>
-    `;
+        // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
+        const configured = this._context.workspaceState.get(CACHE_KEYS.elfPath)
+            && this._context.workspaceState.get(CACHE_KEYS.debugger)
+            && this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        if (!configured)
+            setTimeout(() => this.runAutoDetect(false), 0);
     }
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
@@ -494,14 +408,7 @@ class MainViewProvider {
 }
 function activate(context) {
     console.log('MCU_VSCODE 下载与调试器已激活！');
-    vscode.window.showInformationMessage('MCU 调试工具已就绪，点击左侧图标使用～');
-    // 获取工作空间
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-        vscode.window.showErrorMessage('请先打开一个工作空间！');
-        return;
-    }
-    // 实例化Webview视图提供器
+    // 实例化Webview视图提供器（无论是否已打开工作区都注册，由各命令自行检查工作区状态）
     const mainViewProvider = new MainViewProvider(context);
     // 注册WebviewViewProvider
     const viewDisposable = vscode.window.registerWebviewViewProvider('mcu-vscode.mainView', mainViewProvider);

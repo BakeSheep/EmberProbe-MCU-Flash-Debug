@@ -18,6 +18,11 @@ function parseLine(line) {
 }
 
 function runOpenOcd(vscode, options, onProgress) {
+    // 安全校验：配置名不允许路径分隔符与遍历，与 download.ps1 的白名单策略保持一致
+    const isSafeCfg = name => /^[^\\/]+\.cfg$/.test(name) && !name.includes('..');
+    if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
+        return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
+    }
     return new Promise((resolve, reject) => {
         const writeEmitter = new vscode.EventEmitter();
         let child;
@@ -26,31 +31,45 @@ function runOpenOcd(vscode, options, onProgress) {
             pty: { onDidWrite: writeEmitter.event, open() {}, close() { if (child && !child.killed) child.kill(); } }
         });
         terminal.show(true);
-        const args = ['-f', `interface/${options.probe}`, '-f', `target/${options.target}`, '-c', `program ${options.elf.replace(/\\/g, '/')} verify reset exit`];
-        writeEmitter.fire(`\x1b[1;36mEmberProbe OpenOCD\x1b[0m\r\n${options.executable} ${args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}\r\n\r\n`);
+        const elfPath = options.elf.replace(/\\/g, '/');
+        // 关键修复：ELF 路径含空格时必须加引号，否则 OpenOCD 的 TCL 解析会把路径拆成多个参数
+        const programCmd = `program "${elfPath}" verify reset exit`;
+        const args = ['-f', `interface/${options.probe}`, '-f', `target/${options.target}`, '-c', programCmd];
+        const quoteArg = a => (a.includes(' ') ? (a.includes('"') ? `'${a}'` : `"${a}"`) : a);
+        writeEmitter.fire(`\x1b[1;36mEmberProbe OpenOCD\x1b[0m\r\n${options.executable} ${args.map(quoteArg).join(' ')}\r\n\r\n`);
         onProgress({ stage: 'start', level: 'info', message: '正在启动 OpenOCD' });
         try { child = spawn(options.executable, args, { cwd: options.cwd, windowsHide: true, shell: false }); }
-        catch (error) { reject(error); return; }
+        catch (error) { terminal.dispose(); reject(error); return; }
         let pending = '';
         let lastError = '';
-        const consume = (chunk, isError) => {
-            const text = chunk.toString();
-            writeEmitter.fire((isError ? '\x1b[31m' : '') + text.replace(/\n/g, '\r\n') + (isError ? '\x1b[0m' : ''));
-            pending += text;
-            const lines = pending.split(/\r?\n/);
-            pending = lines.pop() || '';
-            for (const line of lines) {
-                const event = parseLine(line);
-                if (event) { if (event.level === 'error') lastError = event.message; onProgress(event); }
+        let spawnFailed = false;
+        let doneEmitted = false;
+        // OpenOCD 默认把所有日志输出到 stderr，不能按流标红，需逐行解析后按级别着色
+        const flushLine = (line) => {
+            const text = line.replace(/\r/g, '');
+            const event = parseLine(text);
+            const isError = event?.level === 'error';
+            writeEmitter.fire((isError ? '\x1b[31m' : '') + text + (isError ? '\x1b[0m' : '') + '\r\n');
+            if (event) {
+                if (event.level === 'error') lastError = event.message;
+                if (event.stage === 'done') doneEmitted = true;
+                onProgress(event);
             }
         };
-        child.stdout.on('data', chunk => consume(chunk, false));
-        child.stderr.on('data', chunk => consume(chunk, true));
-        child.on('error', error => { onProgress({ stage: 'error', level: 'error', message: error.code === 'ENOENT' ? `找不到 OpenOCD：${options.executable}` : error.message }); reject(error); });
+        const consume = (chunk) => {
+            pending += chunk.toString();
+            const lines = pending.split(/\r?\n/);
+            pending = lines.pop() || '';
+            for (const line of lines) flushLine(line);
+        };
+        child.stdout.on('data', consume);
+        child.stderr.on('data', consume);
+        child.on('error', error => { spawnFailed = true; onProgress({ stage: 'error', level: 'error', message: error.code === 'ENOENT' ? `找不到 OpenOCD：${options.executable}` : error.message }); reject(error); });
         child.on('close', code => {
-            if (pending) { const event = parseLine(pending); if (event) { if (event.level === 'error') lastError = event.message; onProgress(event); } }
+            if (pending) { flushLine(pending); pending = ''; }
+            if (spawnFailed) return; // spawn 失败已由 error 事件处理，避免重复报错与“退出代码 null”
             writeEmitter.fire(`\r\n${code === 0 ? '\x1b[32m下载成功' : '\x1b[31m下载失败'}（退出代码 ${code}）\x1b[0m\r\n`);
-            if (code === 0) { onProgress({ stage: 'done', level: 'success', message: '下载成功' }); resolve({ code }); }
+            if (code === 0) { if (!doneEmitted) onProgress({ stage: 'done', level: 'success', message: '下载成功' }); resolve({ code }); }
             else reject(new Error(lastError || `OpenOCD 退出代码 ${code}`));
         });
     });

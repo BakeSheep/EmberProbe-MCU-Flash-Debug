@@ -3,7 +3,15 @@
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, and an Agent Skill.",
   "version": "0.0.2",
-  "publisher": "emberprobe-labs",
+  "publisher": "BakeSheep",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BakeSheep/EmberProbe---MCU-Flash---Debug.git"
+  },
+  "homepage": "https://github.com/BakeSheep/EmberProbe---MCU-Flash---Debug#readme",
+  "bugs": {
+    "url": "https://github.com/BakeSheep/EmberProbe---MCU-Flash---Debug/issues"
+  },
   "license": "MIT",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Other", "Debuggers"],
@@ -28,8 +36,8 @@
     ],
     "menus": {
       "explorer/context": [
-        { "command": "mcu-vscode.folderDebug", "group": "mcu-vscode@1" },
-        { "command": "mcu-vscode.folderDownload", "group": "mcu-vscode@2" }
+        { "command": "mcu-vscode.folderDebug", "group": "mcu-vscode@1", "when": "explorerResourceIsFolder" },
+        { "command": "mcu-vscode.folderDownload", "group": "mcu-vscode@2", "when": "explorerResourceIsFolder" }
       ]
     },
     "configuration": {
