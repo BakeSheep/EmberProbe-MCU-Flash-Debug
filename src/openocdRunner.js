@@ -1,6 +1,24 @@
 "use strict";
 const { spawn } = require("child_process");
 
+// 配置名白名单校验：不允许路径分隔符与遍历，与 download.ps1 策略一致（供 liveWatch 复用）
+function isSafeCfg(name) {
+    return /^[^\\/]+\.cfg$/.test(name) && !name.includes('..');
+}
+
+// Tcl 的双引号字符串仍会展开 $变量 和 [命令]，因此路径必须逐字符转义。
+function quoteTclWord(value) {
+    const escaped = String(value)
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\$/g, '\\$')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]')
+        .replace(/\r/g, '\\r')
+        .replace(/\n/g, '\\n');
+    return `"${escaped}"`;
+}
+
 function parseLine(line) {
     const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
     if (!clean) return null;
@@ -68,7 +86,6 @@ function acquireTerminal(vscode) {
 }
 function runOpenOcd(vscode, options, onProgress) {
     // 安全校验：配置名不允许路径分隔符与遍历，与 download.ps1 的白名单策略保持一致
-    const isSafeCfg = name => /^[^\\/]+\.cfg$/.test(name) && !name.includes('..');
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }
@@ -77,7 +94,7 @@ function runOpenOcd(vscode, options, onProgress) {
         terminal.show(true);
         const elfPath = options.elf.replace(/\\/g, '/');
         // 关键修复：ELF 路径含空格时必须加引号，否则 OpenOCD 的 TCL 解析会把路径拆成多个参数
-        const programCmd = `program "${elfPath}" verify reset exit`;
+        const programCmd = `program ${quoteTclWord(elfPath)} verify reset exit`;
         const args = ['-f', `interface/${options.probe}`, '-f', `target/${options.target}`, '-c', programCmd];
         // 终端不再镜像 OpenOCD 原始输出，只展示解析后的关键事件与最终结论
         const print = (text, color) => writeEmitter.fire((color || '') + text + '\x1b[0m\r\n');
@@ -174,4 +191,4 @@ function runOpenOcd(vscode, options, onProgress) {
         });
     });
 }
-module.exports = { runOpenOcd, parseLine };
+module.exports = { runOpenOcd, parseLine, isSafeCfg, quoteTclWord };
