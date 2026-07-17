@@ -147,6 +147,7 @@ class MainViewProvider {
                 const errorMsg = err.message;
                 console.error('选择 ELF 文件失败：', errorMsg);
                 vscode.window.showErrorMessage(`选择 ELF 文件失败：${errorMsg}`);
+                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
         // 2. 选择调试器（无修改）
@@ -225,6 +226,7 @@ class MainViewProvider {
                 const errorMsg = err.message;
                 console.error('选择 SVD 文件失败：', errorMsg);
                 vscode.window.showErrorMessage(`选择 SVD 文件失败：${errorMsg}`);
+                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
         // 5. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
@@ -275,6 +277,7 @@ class MainViewProvider {
                 const errorMsg = err.message;
                 console.error('调试启动失败：', errorMsg);
                 vscode.window.showErrorMessage(`调试启动失败：${errorMsg}`);
+                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
@@ -310,6 +313,7 @@ class MainViewProvider {
                 const errorMsg = err.message;
                 console.error('固件下载失败：', errorMsg);
                 vscode.window.showErrorMessage(`固件下载失败：${errorMsg}`);
+                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
             finally {
                 this._downloadRunning = false;
