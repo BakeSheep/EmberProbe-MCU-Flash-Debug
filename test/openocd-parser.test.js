@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { parseLine } = require("../src/openocdRunner");
+const { parseLine, quoteTclWord } = require("../src/openocdRunner");
 
 const cases = [
   ["Info : CMSIS-DAP: SWD supported", "probe"],
@@ -45,5 +45,11 @@ assert.strictEqual(parseLine("Info : Target voltage: 3.239000")?.level, "info");
 assert.strictEqual(parseLine("Info : Target voltage: 0.000000")?.level, "error");
 // 配置脚本缺失应归类为错误
 assert.strictEqual(parseLine("Error: Can't find interface/stlink.cfg")?.stage, "error");
+
+// Tcl 双引号内的变量与命令替换必须被禁用，同时保留空格路径。
+assert.strictEqual(
+  quoteTclWord('C:/work/$board/[danger]/app "debug".elf'),
+  '"C:/work/\\$board/\\[danger\\]/app \\"debug\\".elf"'
+);
 
 console.log("OpenOCD parser tests passed");

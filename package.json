@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, and an Agent Skill.",
-  "version": "0.0.4",
+  "version": "0.1.1",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -21,7 +21,8 @@
   "activationEvents": [
     "onView:mcu-vscode.mainView",
     "onCommand:mcu-vscode.folderDebug",
-    "onCommand:mcu-vscode.folderDownload"
+    "onCommand:mcu-vscode.folderDownload",
+    "onCommand:mcu-vscode.openLiveWatch"
   ],
   "contributes": {
     "viewsContainers": {
@@ -32,7 +33,8 @@
     },
     "commands": [
       { "command": "mcu-vscode.folderDebug", "title": "EmberProbe: 启动调试" },
-      { "command": "mcu-vscode.folderDownload", "title": "EmberProbe: 下载程序" }
+      { "command": "mcu-vscode.folderDownload", "title": "EmberProbe: 下载程序" },
+      { "command": "mcu-vscode.openLiveWatch", "title": "EmberProbe: 实时变量查看" }
     ],
     "menus": {
       "explorer/context": [
@@ -47,13 +49,28 @@
           "type": "string",
           "default": "openocd",
           "description": "OpenOCD 可执行文件路径；不在 PATH 时请填写 openocd.exe 的绝对路径"
+        },
+        "emberprobe.tclPort": {
+          "type": "number",
+          "default": 6666,
+          "description": "实时变量查看使用的 OpenOCD Tcl-RPC 端口"
+        },
+        "emberprobe.sampleIntervalMs": {
+          "type": "number",
+          "default": 100,
+          "description": "实时变量采样间隔（毫秒），最小 20ms"
+        },
+        "emberprobe.maxSamples": {
+          "type": "number",
+          "default": 2000,
+          "description": "实时曲线每个通道保留的最大采样点数"
         }
       }
     }
   },
   "files": ["src/**/*.js", "media/**/*", "skills/**/*", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE.md"],
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/autoDetect.js && node --check src/openocdRunner.js && node test/openocd-parser.test.js",
+    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/autoDetect.js && node --check src/openocdRunner.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node test/openocd-parser.test.js && node test/elf-symbols.test.js && node test/webview.test.js",
     "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"
   }
 }
