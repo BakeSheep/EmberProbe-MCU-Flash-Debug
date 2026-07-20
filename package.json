@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, and an Agent Skill.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -129,7 +129,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/autoDetect.js && node --check src/openocdRunner.js && node --check src/openocdChecker.js && node --check src/openocdInstaller.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node test/openocd-parser.test.js && node test/elf-symbols.test.js && node test/webview.test.js && node test/openocd-checker.test.js && node test/openocd-installer.test.js",
+    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/autoDetect.js && node --check src/openocdRunner.js && node --check src/openocdChecker.js && node --check src/openocdInstaller.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/chipInfo.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node test/openocd-parser.test.js && node test/elf-symbols.test.js && node test/webview.test.js && node test/openocd-checker.test.js && node test/openocd-installer.test.js && node test/chip-info.test.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"

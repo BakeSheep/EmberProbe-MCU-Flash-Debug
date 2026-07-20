@@ -33,6 +33,15 @@ assert.ok(sidebar.includes('class="tree-divider">手动配置'), "manual MCU con
 assert.ok(!sidebar.includes('>推荐</span>'), "auto detection should not show a recommendation badge");
 assert.ok(!sidebar.includes('<summary>关键操作</summary>'), "redundant key-actions section should be removed");
 assert.ok(sidebar.includes('sym.isComposite'), "sidebar should guard aggregate variables");
+assert.ok(sidebar.includes('<summary>芯片信息</summary>'), "sidebar should include a chip info section");
+assert.ok(sidebar.includes('id="chipRead"'), "chip info section should offer a read button");
+assert.ok(sidebar.includes('id="chipBody"'), "chip info section should render results into a body container");
+assert.ok(sidebar.includes("type:'readChipInfo'"), "chip info read should post a dedicated message");
+assert.ok(sidebar.includes("m.type==='chipInfo'"), "sidebar should render chip info payloads");
+assert.ok(sidebar.includes("m.type==='chipInfoStatus'"), "sidebar should reflect chip info status");
+assert.ok(sidebar.includes("type:'copyText'"), "UID row should copy via the extension clipboard bridge");
+assert.ok(sidebar.includes('详细信息'), "chip info should provide a collapsible details area");
+assert.ok(sidebar.includes('调试连接') && sidebar.includes('运行信息'), "details should group debug-connection and run-info");
 
 const panel = liveWatchView.getLiveWatchContent({ maxSamples: -10, intervalMs: 1 });
 validateScripts("liveWatchView", panel);
@@ -58,6 +67,10 @@ assert.ok(extensionSource.includes("type: 'openocdStatus'"), "extension should p
 assert.ok(!checkerSource.includes('showWarningMessage'), "missing OpenOCD must not use notification popups");
 assert.ok(!checkerSource.includes('ProgressLocation.Notification'), "OpenOCD installation progress should stay in the sidebar");
 assert.ok(extensionSource.includes("sym.isComposite ="), "ELF enrichment should classify structures and arrays");
+assert.ok(extensionSource.includes("readChipInfoAction"), "extension should implement a chip info read action");
+assert.ok(extensionSource.includes("type: 'chipInfo'"), "extension should publish chip info to the sidebar");
+assert.ok(extensionSource.includes("this._chipInfoRunning"), "chip info reads should guard against concurrent probe usage");
+assert.ok(extensionSource.includes("clipboard.writeText"), "extension should copy chip UID via the VS Code clipboard API");
 assert.ok(extensionSource.includes("_scalarWatchList"), "persisted aggregate watches should be filtered before sampling");
 assert.ok(panel.includes('"maxSamples":100'), "maxSamples should be clamped");
 assert.ok(panel.includes('"intervalMs":20'), "interval should be clamped");
