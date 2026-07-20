@@ -32,13 +32,18 @@ function probeOpenOcd(executable) {
     if (!target) {
         return Promise.resolve({ found: false, path: '', version: '', error: '未配置 OpenOCD 路径' });
     }
-    return new Promise((resolve) => {
+    // Windows 上裸命令名（无路径分隔符、无扩展名）先通过 where.exe 解析完整路径，
+    // 避免 spawn shell:false 对 PATH 搜索不健壮的问题。
+    const needsResolve = process.platform === 'win32'
+        && !target.includes('\\') && !target.includes('/')
+        && !/\.\w+$/.test(target);
+    const doProbe = (resolved) => new Promise((resolve) => {
         let child;
         try {
             // windowsHide 避免一闪而过的控制台窗口；shell:false 直接调用，避免 PATH 注入
-            child = spawn(target, ['--version'], { windowsHide: true, shell: false });
+            child = spawn(resolved, ['--version'], { windowsHide: true, shell: false });
         } catch (error) {
-            resolve({ found: false, path: target, version: '', error: error.code === 'ENOENT' ? '找不到该可执行文件' : error.message });
+            resolve({ found: false, path: resolved, requested: target, version: '', error: error.code === 'ENOENT' ? '找不到该可执行文件' : error.message });
             return;
         }
         let stdout = '';
@@ -52,13 +57,13 @@ function probeOpenOcd(executable) {
         };
         const timer = setTimeout(() => {
             try { child.kill(); } catch (e) { /* ignore */ }
-            done({ found: false, path: target, version: '', error: '探测超时' });
+            done({ found: false, path: resolved, requested: target, version: '', error: '探测超时' });
         }, 5000);
         child.stdout.on('data', (d) => { stdout += d.toString(); });
         child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (error) => {
             const msg = error.code === 'ENOENT' ? '找不到该可执行文件（请确认路径或将其加入 PATH）' : error.message;
-            done({ found: false, path: target, version: '', error: msg });
+            done({ found: false, path: resolved, requested: target, version: '', error: msg });
         });
         child.on('close', (code) => {
             const out = `${stdout}\n${stderr}`;
@@ -66,11 +71,32 @@ function probeOpenOcd(executable) {
             // 多数版本 --version 退出码为 0；个别老版本/特殊构建退出码非 0 但仍会打印标识，
             // 只要输出含 "open on-chip debugger" 即视为可运行，避免误判。
             if (version || /open on-chip debugger/i.test(out)) {
-                done({ found: true, path: target, version, error: '' });
+                done({ found: true, path: resolved, requested: target, version, error: '' });
             } else {
-                done({ found: false, path: target, version: '', error: code ? `退出码 ${code}，且输出无法识别为 OpenOCD` : '所选文件不是有效的 OpenOCD' });
+                done({ found: false, path: resolved, requested: target, version: '', error: code ? `退出码 ${code}，且输出无法识别为 OpenOCD` : '所选文件不是有效的 OpenOCD' });
             }
         });
+    });
+    if (!needsResolve) return doProbe(target);
+    // Windows 裸命令名：先用 where.exe 解析完整路径，失败则回退到原始名称
+    return new Promise((resolve) => {
+        let out = '';
+        let settled = false;
+        const finish = (resolved) => { if (!settled) { settled = true; resolve(resolved); } };
+        const t = setTimeout(() => finish(doProbe(target)), 3000);
+        try {
+            const w = spawn('where.exe', [target], { windowsHide: true, shell: false });
+            w.stdout.on('data', (d) => { out += d.toString(); });
+            w.on('error', () => { clearTimeout(t); finish(doProbe(target)); });
+            w.on('close', () => {
+                clearTimeout(t);
+                const first = out.split(/\r?\n/).map(l => l.trim()).find(l => l);
+                finish(doProbe(first || target));
+            });
+        } catch (e) {
+            clearTimeout(t);
+            finish(doProbe(target));
+        }
     });
 }
 
@@ -173,7 +199,8 @@ async function installBundledAndConfigure(vscode, context, report) {
 // 探测并通过侧边栏回调报告状态；不显示右下角通知。
 // 返回当前可执行路径（命中缓存或刚配置成功均可），未就绪返回 null。
 async function resolveOpenOcdStatus(executable, context, probedResult, report) {
-    const result = probedResult && probedResult.path === String(executable || '').trim()
+    const target = String(executable || '').trim();
+    const result = probedResult && (probedResult.requested || probedResult.path) === target
         ? probedResult
         : await probeOpenOcd(executable);
     setCache(result);

@@ -121,6 +121,7 @@ class MainViewProvider {
         this._symbolCache = null;
         this._chipInfo = null;
         this._chipInfoRunning = false;
+        this._liveStarting = false;
         this._openOcdStatus = { state: 'checking', message: '正在检测 OpenOCD…', canInstall: false };
         this._openOcdOperation = 0;
         this.registerCommandHandlers();
@@ -179,8 +180,8 @@ class MainViewProvider {
         const report = this._openOcdReporter(operation);
         const target = executable && String(executable).trim();
         const cached = openocdChecker.getCachedResult();
-        // 缓存命中且路径一致直接放行，避免每次动作都重新探测
-        if (cached && cached.found && cached.path === target) {
+        // 缓存命中且原始配置值一致直接放行，避免每次动作都重新探测
+        if (cached && cached.found && (cached.requested || cached.path) === target) {
             report({ state: 'ready', message: cached.version ? `OpenOCD v${cached.version} 已就绪` : 'OpenOCD 已就绪', result: cached });
             return cached.path;
         }
@@ -387,10 +388,10 @@ class MainViewProvider {
                 vscode.window.showWarningMessage('正在读取芯片信息，请稍后再下载');
                 return false;
             }
+            this._downloadRunning = true;
             const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
             const executable = await this._resolveOpenOcdPath(configuredExecutable);
-            if (!executable) return false;
-            this._downloadRunning = true;
+            if (!executable) { this._downloadRunning = false; return false; }
             this._recentProgress = [];
             try {
                 console.log('主进程执行下载程序命令');
@@ -562,6 +563,7 @@ class MainViewProvider {
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
         if (this._downloadRunning) throw new Error('下载进行中，无法同时启动实时查看');
         if (this._chipInfoRunning) throw new Error('正在读取芯片信息，请稍后再启动实时查看');
+        if (this._liveStarting) throw new Error('实时查看正在启动中，请稍候');
         if (vscode.debug.activeDebugSession) throw new Error('检测到正在进行的调试会话，探针已被占用；请先停止调试再启动实时查看');
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
@@ -577,8 +579,10 @@ class MainViewProvider {
         }
         const cfg = vscode.workspace.getConfiguration('emberprobe');
         const configuredExecutable = cfg.get('openocdPath', 'openocd');
-        const executable = await this._resolveOpenOcdPath(configuredExecutable);
-        if (!executable) throw new Error('OpenOCD 未就绪：请在命令面板执行 “EmberProbe: 检查 OpenOCD 环境” 完成安装或路径配置');
+        this._liveStarting = true;
+        let executable;
+        try { executable = await this._resolveOpenOcdPath(configuredExecutable); } catch (e) { this._liveStarting = false; throw e; }
+        if (!executable) { this._liveStarting = false; throw new Error('OpenOCD 未就绪：请在命令面板执行 “EmberProbe: 检查 OpenOCD 环境” 完成安装或路径配置'); }
         const { cwd } = this._commandContext();
         const session = new liveWatch.LiveWatchSession(vscode, {
             executable, probe: debuggerCfg, target: mcuCore, cwd,
@@ -621,8 +625,10 @@ class MainViewProvider {
         this._liveWatchRunning = true;
         try {
             await session.start();
+            this._liveStarting = false;
             this._postConsumerStatuses('采样中');
         } catch (error) {
+            this._liveStarting = false;
             if (this._liveSession === session) {
                 try { session.stop(); } catch (e) { /* ignore */ }
                 this._liveSession = null;
@@ -661,10 +667,10 @@ class MainViewProvider {
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) { this._postChipInfo({ state: 'error', message: '请先选择调试器与 MCU 目标' }); return; }
+        this._chipInfoRunning = true;
         const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
         const executable = await this._resolveOpenOcdPath(configuredExecutable);
-        if (!executable) { this._postChipInfo({ state: 'error', message: 'OpenOCD 未就绪：请先在侧边栏完成安装或路径配置' }); return; }
-        this._chipInfoRunning = true;
+        if (!executable) { this._chipInfoRunning = false; this._postChipInfo({ state: 'error', message: 'OpenOCD 未就绪：请先在侧边栏完成安装或路径配置' }); return; }
         this._postChipInfo({ state: 'reading', message: '正在读取芯片信息…' });
         let diag = null;
         try {
