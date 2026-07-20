@@ -72,7 +72,7 @@ npm run check
 npm run package
 ```
 
-`npm run package` 会先通过 esbuild 将运行时依赖打入 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.1.2`。
+`npm run package` 会先通过 esbuild 将运行时依赖打入 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.2.0`。
 
 ## 项目结构
 
