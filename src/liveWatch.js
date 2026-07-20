@@ -3,7 +3,6 @@
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
 const { spawn } = require("child_process");
-const { decodeValue, typeByteLength } = require("./elfSymbols");
 const { isSafeCfg } = require("./openocdRunner");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
@@ -46,6 +45,7 @@ class LiveWatchSession {
         this._lastReadError = '';
         this._notifiedError = '';
         this.connectionFailed = false;
+        this._startReject = null; // start() 进行中时捕获的 reject，用于单通道上报连接期失败
     }
 
     setWatch(list) { this.watch = Array.isArray(list) ? list.slice() : []; }
@@ -82,7 +82,9 @@ class LiveWatchSession {
             for (const line of text.split(/\r?\n/)) {
                 const clean = line.trim();
                 if (!clean) continue;
-                if (/error|failed|unable|libusb|in use|denied/i.test(clean)) {
+                // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
+                const isInfo = /\bInfo\s*:/i.test(clean);
+                if (/\bError\s*:/i.test(clean) || (!isInfo && /failed|unable to|no device found|libusb|in use|denied|timed out/i.test(clean))) {
                     this._error(clean.replace(/^.*?Error\s*:\s*/i, '') || clean);
                 }
             }
@@ -99,10 +101,24 @@ class LiveWatchSession {
             if (!expected) this._abortConnection(new Error(`OpenOCD 服务已退出（代码 ${code}）：可能探针被占用、配置错误或端口 ${port} 被占用`));
         });
 
-        this.socket = await this._connectWithRetry(port, 6000);
-        this._setupSocket();
-        this._status('已连接 OpenOCD，开始采样');
-        this.timer = setInterval(() => { this._sampleTick(); }, interval);
+        // start() 进行期间若子进程退出，_abortConnection 通过 _startReject 拒绝此 Promise，
+        // 由调用方一次性上报；避免 onDisconnect 与 start() 抛出重复通知。
+        try {
+            await new Promise((resolve, reject) => {
+                this._startReject = reject;
+                if (this.stopped) { reject(new Error('OpenOCD 服务在连接过程中已退出')); return; }
+                this._connectWithRetry(port, 6000).then(sock => {
+                    this.socket = sock;
+                    if (this.stopped) { reject(new Error('OpenOCD 服务在连接过程中已退出')); return; }
+                    this._setupSocket();
+                    this._status('已连接 OpenOCD，开始采样');
+                    this.timer = setInterval(() => { this._sampleTick(); }, interval);
+                    resolve();
+                }, reject);
+            });
+        } finally {
+            this._startReject = null;
+        }
     }
 
     _connectWithRetry(port, timeoutMs) {
@@ -158,8 +174,15 @@ class LiveWatchSession {
         if (this.socket && !this.socket.destroyed) { try { this.socket.destroy(); } catch (e) { /* ignore */ } }
         this.socket = null;
         if (this.child && !this.child.killed) { try { this.child.kill(); } catch (e) { /* ignore */ } }
-        if (this.handlers.onDisconnect) this.handlers.onDisconnect(err.message);
-        else this._error(err.message);
+        // start() 仍在进行中时，以拒绝其 Promise 作为唯一通知通道，避免 onDisconnect 重复上报
+        if (this._startReject) {
+            const reject = this._startReject; this._startReject = null;
+            reject(err);
+        } else if (this.handlers.onDisconnect) {
+            this.handlers.onDisconnect(err.message);
+        } else {
+            this._error(err.message);
+        }
     }
 
     // 串行发送单条 Tcl 命令并等待响应（带超时）
@@ -204,10 +227,9 @@ class LiveWatchSession {
         let ok = 0;
         try {
             for (const v of this.watch) {
-                const len = typeByteLength(v.type);
-                const bytes = await this._readMemoryBytes(v.address, len);
-                if (bytes) { samples.push({ name: v.name, value: decodeValue(bytes, v.type), t }); ok++; }
-                else samples.push({ name: v.name, value: null, t });
+                const bytes = await this._readMemoryBytes(v.address, v.size);
+                if (bytes) { samples.push({ name: v.name, bytes, t }); ok++; }
+                else samples.push({ name: v.name, bytes: null, t });
             }
             if (this.handlers.onSample) this.handlers.onSample(samples, t);
             if (ok === 0 && this._lastReadError && this._lastReadError !== this._notifiedError) {

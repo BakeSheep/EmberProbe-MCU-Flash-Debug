@@ -40,7 +40,11 @@ function parseLine(line) {
     if (/verified\s+OK/i.test(clean)) return { stage: 'verify', level: 'success', message: '固件校验通过' };
     if ((match = clean.match(/verified\s+(\d+)\s+bytes.*?in\s+([\d.]+)s(?:\s*\(([^)]+)\))?/i))) return { stage: 'verify', level: 'success', message: `已校验 ${match[1]} bytes（${match[2]}s${match[3] ? `，${match[3]}` : ''}）`, bytes: Number(match[1]), seconds: Number(match[2]), speed: match[3] || '' };
     // 注意：失败时 OpenOCD 也会打印 "shutdown command invoked"，不能据此判定完成，统一以退出代码为准
-    if (/error\s*:|failed|unable to|no device found|libusb_open|timed out|can't find|cannot find/i.test(clean)) return { stage: 'error', level: 'error', message: clean.replace(/^.*?Error\s*:\s*/i, '') || clean };
+    // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍保留常见失败模式识别。
+    const isInfo = /\bInfo\s*:/i.test(clean);
+    if (/\bError\s*:/i.test(clean) || (!isInfo && /failed|unable to|no device found|libusb_open|timed out|can't find|cannot find/i.test(clean))) {
+        return { stage: 'error', level: 'error', message: clean.replace(/^.*?Error\s*:\s*/i, '') || clean };
+    }
     return null;
 }
 

@@ -16,6 +16,10 @@ const sidebar = modernView.getModernWebviewContent({ elf: "app.elf", debugger: "
 validateScripts("modernView", sidebar);
 assert.ok(sidebar.includes('id="liveValues"'));
 assert.ok(sidebar.includes('id="liveToggle"'));
+assert.ok(sidebar.includes('id="openocdCard"'), "sidebar should contain an OpenOCD status card");
+assert.ok(sidebar.includes('id="openocdInstall"'), "OpenOCD card should offer bundled installation");
+assert.ok(sidebar.includes("type:'openocdAction',action:'select'"), "OpenOCD path selection should be handled inside the sidebar");
+assert.ok(sidebar.includes("m.type==='openocdStatus'"), "sidebar should render OpenOCD status messages");
 assert.ok(sidebar.includes('id="availableVars"'));
 assert.ok(sidebar.includes('type:\'saveSidebarWatch\''), "sidebar should persist an independent watch list");
 assert.ok(sidebar.includes('class="variable-browser"'), "ELF variable browser should be collapsible");
@@ -49,6 +53,10 @@ assert.ok(panel.includes("z.className='size'"), "import dialog should align size
 assert.ok(panel.includes('if(sym.isComposite)'), "graph importer should reject aggregate variables");
 
 const extensionSource = fs.readFileSync(require.resolve("../src/extension"), "utf8");
+const checkerSource = fs.readFileSync(require.resolve("../src/openocdChecker"), "utf8");
+assert.ok(extensionSource.includes("type: 'openocdStatus'"), "extension should publish OpenOCD state to the sidebar");
+assert.ok(!checkerSource.includes('showWarningMessage'), "missing OpenOCD must not use notification popups");
+assert.ok(!checkerSource.includes('ProgressLocation.Notification'), "OpenOCD installation progress should stay in the sidebar");
 assert.ok(extensionSource.includes("sym.isComposite ="), "ELF enrichment should classify structures and arrays");
 assert.ok(extensionSource.includes("_scalarWatchList"), "persisted aggregate watches should be filtered before sampling");
 assert.ok(panel.includes('"maxSamples":100'), "maxSamples should be clamped");
@@ -65,5 +73,14 @@ assert.strictEqual(session.stopped, true);
 assert.strictEqual(session.queue.length, 0);
 assert.strictEqual(rejected, 2);
 assert.strictEqual(disconnects, 1);
+
+// start() 进行中触发 abort：应拒绝 start Promise 而非调用 onDisconnect，避免重复通知
+let startErr = null;
+const session2 = new LiveWatchSession(null, {}, { onDisconnect: () => { disconnects++; } });
+session2._startReject = (err) => { startErr = err; };
+session2._abortConnection(new Error("child exited during connect"));
+assert.ok(startErr && startErr.message === "child exited during connect", "start promise should be rejected with the abort reason");
+assert.strictEqual(session2._startReject, null, "_startReject should be cleared after deferral");
+assert.strictEqual(disconnects, 1, "onDisconnect must not fire while start is in flight");
 
 console.log("Webview & live session tests passed");

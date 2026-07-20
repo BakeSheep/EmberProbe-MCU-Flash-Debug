@@ -45,6 +45,10 @@ assert.strictEqual(parseLine("Info : Target voltage: 3.239000")?.level, "info");
 assert.strictEqual(parseLine("Info : Target voltage: 0.000000")?.level, "error");
 // 配置脚本缺失应归类为错误
 assert.strictEqual(parseLine("Error: Can't find interface/stlink.cfg")?.stage, "error");
+// 正常 Info 提示（含 "unable to"/"failed" 等关键词）不应被误判为错误
+assert.strictEqual(parseLine("Info : Unable to match requested speed 5000 kHz, using 1800 kHz"), null);
+assert.strictEqual(parseLine("Info : clock speed 1800 kHz")?.stage, "adapter");
+assert.strictEqual(parseLine("libusb_open() failed with LIBUSB_ERROR_ACCESS")?.stage, "error");
 
 // Tcl 双引号内的变量与命令替换必须被禁用，同时保留空格路径。
 assert.strictEqual(

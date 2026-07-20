@@ -8,6 +8,7 @@ const modernView = require("./modernView");
 const autoDetect = require("./autoDetect");
 const skillInstaller = require("./skillInstaller");
 const openocdRunner = require("./openocdRunner");
+const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
 const liveWatchView = require("./liveWatchView");
 const elfSymbols = require("./elfSymbols");
@@ -113,9 +114,12 @@ class MainViewProvider {
         this._liveWatchRunning = false;
         this._liveSession = null;
         this._livePanel = null;
-        this._latestSamples = new Map();
+        this._latestGraphSamples = new Map();
+        this._latestSidebarSamples = new Map();
         this._liveConsumers = new Set();
         this._symbolCache = null;
+        this._openOcdStatus = { state: 'checking', message: '正在检测 OpenOCD…', canInstall: false };
+        this._openOcdOperation = 0;
         this.registerCommandHandlers();
     }
     _commandContext(resource) {
@@ -130,6 +134,60 @@ class MainViewProvider {
         }
         const folder = vscode.workspace.workspaceFolders?.[0];
         return { folder, cwd: folder?.uri.fsPath };
+    }
+    _postOpenOcdStatus(status) {
+        this._openOcdStatus = { ...this._openOcdStatus, ...status };
+        this._webviewView?.webview.postMessage({ type: 'openocdStatus', ...this._openOcdStatus });
+    }
+    _openOcdReporter(operation) {
+        return status => {
+            if (operation === this._openOcdOperation) this._postOpenOcdStatus(status);
+        };
+    }
+    async refreshOpenOcdStatus(showChecking = true) {
+        const operation = ++this._openOcdOperation;
+        const report = this._openOcdReporter(operation);
+        const target = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+        if (showChecking) report({ state: 'checking', message: '正在检测 OpenOCD…' });
+        const result = await openocdChecker.probeOpenOcd(target);
+        if (operation !== this._openOcdOperation) return null;
+        openocdChecker.setCache(result);
+        return openocdChecker.resolveOpenOcdStatus(target, this._context, result, report);
+    }
+    async _handleOpenOcdAction(action) {
+        if (action !== 'install' && action !== 'select') return this.refreshOpenOcdStatus(true);
+        const operation = ++this._openOcdOperation;
+        const report = this._openOcdReporter(operation);
+        if (action === 'install') {
+            const resolved = await openocdChecker.installBundledAndConfigure(vscode, this._context, report);
+            if (!resolved && this._openOcdStatus.state === 'installing') await this.refreshOpenOcdStatus(false);
+            return resolved;
+        }
+        if (action === 'select') {
+            const resolved = await openocdChecker.pickOpenOcdPath(vscode, report);
+            if (!resolved) await this.refreshOpenOcdStatus(false);
+            return resolved;
+        }
+        return null;
+    }
+    // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。
+    async _resolveOpenOcdPath(executable) {
+        const operation = ++this._openOcdOperation;
+        const report = this._openOcdReporter(operation);
+        const target = executable && String(executable).trim();
+        const cached = openocdChecker.getCachedResult();
+        // 缓存命中且路径一致直接放行，避免每次动作都重新探测
+        if (cached && cached.found && cached.path === target) {
+            report({ state: 'ready', message: cached.version ? `OpenOCD v${cached.version} 已就绪` : 'OpenOCD 已就绪', result: cached });
+            return cached.path;
+        }
+        // 探测一次并回写缓存，使同一路径后续命中快路径
+        const result = await openocdChecker.probeOpenOcd(target);
+        openocdChecker.setCache(result);
+        if (operation !== this._openOcdOperation) return null;
+        const resolved = await openocdChecker.resolveOpenOcdStatus(target, this._context, result, report);
+        if (!resolved) vscode.commands.executeCommand('workbench.view.extension.mcu-vscode-container');
+        return resolved;
     }
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
@@ -281,7 +339,9 @@ class MainViewProvider {
                     return false;
                 }
                 // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
-                const openocdPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+                const configuredOpenOcdPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+                const openocdPath = await this._resolveOpenOcdPath(configuredOpenOcdPath);
+                if (!openocdPath) return false;
                 const debugConfig = {
                     type: 'cortex-debug',
                     name: 'MCU 调试（OpenOCD）',
@@ -320,6 +380,9 @@ class MainViewProvider {
                 vscode.window.showWarningMessage('实时变量查看正在运行，请先停止后再下载（探针同一时刻只能被一个 OpenOCD 占用）');
                 return false;
             }
+            const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+            const executable = await this._resolveOpenOcdPath(configuredExecutable);
+            if (!executable) return false;
             this._downloadRunning = true;
             this._recentProgress = [];
             try {
@@ -333,7 +396,6 @@ class MainViewProvider {
                 }
                 const cleanElfPath = cleanWindowsPath(elfPath);
                 const { cwd } = this._commandContext(resource);
-                const executable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
                 await openocdRunner.runOpenOcd(vscode, { executable, elf: cleanElfPath, probe: debuggerCfg, target: mcuCore, cwd }, event => {
                     // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
                     const message = { type: 'openocdProgress', ...event };
@@ -385,7 +447,7 @@ class MainViewProvider {
                     case 'saveWatch':
                         await this._context.workspaceState.update(CACHE_KEYS.watchList, message.items || []);
                         if (this._liveSession) {
-                            const active = this._activeWatchList();
+                            const active = this._activeReadPlan();
                             if (active.length) this._liveSession.setWatch(active);
                             else this.stopLiveWatch();
                         }
@@ -453,7 +515,7 @@ class MainViewProvider {
     _syncGraphTarget(post) {
         post({ type: 'watchList', items: this._scalarWatchList(CACHE_KEYS.watchList) });
         post({ type: 'liveStatus', running: this._liveWatchRunning, message: this._liveWatchRunning ? '采样中' : '已停止' });
-        if (this._latestSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestSamples.values()) });
+        if (this._latestGraphSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestGraphSamples.values()) });
     }
     _syncSidebarTarget(post) {
         post({ type: 'sidebarWatchList', items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList) });
@@ -464,15 +526,31 @@ class MainViewProvider {
             post({ type: 'availableVariables', symbols: [], error: error.message });
         }
         post({ type: 'liveStatus', running: this._liveWatchRunning, message: this._liveWatchRunning ? '采样中' : '已停止' });
-        if (this._latestSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestSamples.values()) });
+        if (this._latestSidebarSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()) });
     }
-    _activeWatchList() {
-        const lists = [];
-        lists.push(this._scalarWatchList(CACHE_KEYS.watchList));
-        lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
-        const unique = new Map();
-        for (const list of lists) for (const item of list) if (item?.name && !unique.has(item.name)) unique.set(item.name, item);
-        return Array.from(unique.values());
+    // 图表与侧栏各自维护观察列表；同一变量在两侧可能选择不同观察类型。
+    // 读取计划按变量名去重，宽度取两侧的最大值，一次读取覆盖所有消费者。
+    _activeReadPlan() {
+        const byName = new Map();
+        const add = (item) => {
+            if (!item?.name) return;
+            const len = elfSymbols.typeByteLength(item.type);
+            const prev = byName.get(item.name);
+            if (!prev) byName.set(item.name, { name: item.name, address: item.address, size: len });
+            else if (len > prev.size) prev.size = len;
+        };
+        this._scalarWatchList(CACHE_KEYS.watchList).forEach(add);
+        this._scalarWatchList(CACHE_KEYS.sidebarWatchList).forEach(add);
+        return Array.from(byName.values());
+    }
+    // 各消费者对每个变量的观察类型，用于把同一份原始字节按各自类型解码后分别推送。
+    _consumerTypes() {
+        const build = (key) => {
+            const m = new Map();
+            for (const item of this._scalarWatchList(key)) if (item?.name) m.set(item.name, item.type);
+            return m;
+        };
+        return { graph: build(CACHE_KEYS.watchList), sidebar: build(CACHE_KEYS.sidebarWatchList) };
     }
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
         if (this._downloadRunning) throw new Error('下载进行中，无法同时启动实时查看');
@@ -480,25 +558,45 @@ class MainViewProvider {
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) throw new Error('请先选择调试器与 MCU 目标');
-        const activeItems = this._activeWatchList();
+        const activeItems = this._activeReadPlan();
         if (!activeItems.length) throw new Error('请先添加要观察的变量');
         this._liveConsumers.add('graph');
         this._liveConsumers.add('sidebar');
         if (this._liveWatchRunning && this._liveSession) {
-            this._liveSession.setWatch(this._activeWatchList());
+            this._liveSession.setWatch(this._activeReadPlan());
             this._postConsumerStatuses('采样中');
             return;
         }
         const cfg = vscode.workspace.getConfiguration('emberprobe');
-        const executable = cfg.get('openocdPath', 'openocd');
+        const configuredExecutable = cfg.get('openocdPath', 'openocd');
+        const executable = await this._resolveOpenOcdPath(configuredExecutable);
+        if (!executable) throw new Error('OpenOCD 未就绪：请在命令面板执行 “EmberProbe: 检查 OpenOCD 环境” 完成安装或路径配置');
         const { cwd } = this._commandContext();
         const session = new liveWatch.LiveWatchSession(vscode, {
             executable, probe: debuggerCfg, target: mcuCore, cwd,
             port: cfg.get('tclPort', 6666), intervalMs: intervalMs || cfg.get('sampleIntervalMs', 100)
         }, {
             onSample: (samples, t) => {
-                for (const sample of samples) this._latestSamples.set(sample.name, sample);
-                this._postLive({ type: 'liveSample', samples, t });
+                // 同一变量的原始字节按各面板自选的观察类型分别解码，避免图表/侧栏选不同 type 时数值与标签不一致
+                const types = this._consumerTypes();
+                const graphSamples = [];
+                const sidebarSamples = [];
+                for (const s of samples) {
+                    const gType = types.graph.get(s.name);
+                    const sType = types.sidebar.get(s.name);
+                    if (gType) {
+                        const v = s.bytes ? elfSymbols.decodeValue(s.bytes, gType) : null;
+                        graphSamples.push({ name: s.name, value: v, t });
+                        this._latestGraphSamples.set(s.name, { name: s.name, value: v, t });
+                    }
+                    if (sType) {
+                        const v = s.bytes ? elfSymbols.decodeValue(s.bytes, sType) : null;
+                        sidebarSamples.push({ name: s.name, value: v, t });
+                        this._latestSidebarSamples.set(s.name, { name: s.name, value: v, t });
+                    }
+                }
+                if (graphSamples.length) this._livePanel?.webview.postMessage({ type: 'liveSample', samples: graphSamples, t });
+                if (sidebarSamples.length) this._webviewView?.webview.postMessage({ type: 'liveSample', samples: sidebarSamples, t });
             },
             onStatus: (msg) => this._postConsumerStatuses(msg),
             onError: (msg) => this._postLive({ type: 'liveError', message: msg }),
@@ -510,7 +608,7 @@ class MainViewProvider {
                 this._postConsumerStatuses(msg, true);
             }
         });
-        session.setWatch(this._activeWatchList());
+        session.setWatch(this._activeReadPlan());
         this._liveSession = session;
         this._liveWatchRunning = true;
         try {
@@ -579,13 +677,23 @@ class MainViewProvider {
                     // 回放最近的下载进度，避免视图重建后日志丢失
                     for (const progressMessage of this._recentProgress) webviewView.webview.postMessage(progressMessage);
                     this._syncSidebarTarget((message) => webviewView.webview.postMessage(message));
+                    webviewView.webview.postMessage({ type: 'openocdStatus', ...this._openOcdStatus });
+                    this.refreshOpenOcdStatus(false);
+                    break;
+                }
+                case 'openocdAction': {
+                    try {
+                        await this._handleOpenOcdAction(message.action);
+                    } catch (error) {
+                        this._postOpenOcdStatus({ state: 'error', message: error.message || String(error) });
+                    }
                     break;
                 }
                 case 'saveSidebarWatch': {
                     const items = Array.isArray(message.items) ? message.items : [];
                     await this._context.workspaceState.update(CACHE_KEYS.sidebarWatchList, items);
                     if (this._liveSession) {
-                        const active = this._activeWatchList();
+                        const active = this._activeReadPlan();
                         if (active.length) this._liveSession.setWatch(active);
                         else this.stopLiveWatch();
                     }
@@ -661,8 +769,22 @@ function activate(context) {
         mainViewProvider['commandHandlers']['mcu-vscode.download'](resource));
     const openLiveWatchCmd = vscode.commands.registerCommand('mcu-vscode.openLiveWatch', () =>
         mainViewProvider['commandHandlers']['mcu-vscode.openLiveWatch']());
+    // 手动检查 OpenOCD 环境：打开 EmberProbe 侧边栏并在状态卡内展示结果。
+    const checkOpenOcdCmd = vscode.commands.registerCommand('mcu-vscode.checkOpenOcd', async () => {
+        await vscode.commands.executeCommand('workbench.view.extension.mcu-vscode-container');
+        await mainViewProvider.refreshOpenOcdStatus(true);
+    });
     // 订阅命令
-    context.subscriptions.push(viewDisposable, folderDebugCmd, folderDownloadCmd, openLiveWatchCmd);
+    context.subscriptions.push(viewDisposable, folderDebugCmd, folderDownloadCmd, openLiveWatchCmd, checkOpenOcdCmd);
+    // 激活后静默预探测一次填充缓存，避免首次动作才探测造成延迟（不弹通知）
+    mainViewProvider.refreshOpenOcdStatus(false);
+    // 用户改动 emberprobe.openocdPath 后清空缓存并重新探测，使新路径立即生效
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('emberprobe.openocdPath')) {
+            openocdChecker.resetCache();
+            mainViewProvider.refreshOpenOcdStatus(true);
+        }
+    }));
     // 停用时兜底停止实时采样会话（关闭 OpenOCD 服务与 socket）
     context.subscriptions.push({ dispose: () => mainViewProvider.stopLiveWatch() });
 }
