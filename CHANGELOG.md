@@ -6,6 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-20
+
+### Fixed
+
+- 修复 Windows 上 OpenOCD 探测缓存永不命中的问题（where.exe 解析后的绝对路径与配置原始值比较不等）。
+- 修复探针互斥守卫的 TOCTOU 竞态：标志位在首个 await 之后才置位，并发操作可绕过守卫导致探针争抢。
+- Windows 上裸命令名通过 where.exe 解析完整路径，修复 PATH 中 OpenOCD 探测失败。
+
 ## [0.2.0] - 2026-07-20
 
 ### Added
