@@ -76,6 +76,12 @@ assert.strictEqual(decodeValue([0x78, 0x56, 0x34, 0x12], "u32"), 0x12345678);
 assert.strictEqual(decodeValue([0x01], "u32"), null, "字节不足应返回 null");
 assert.strictEqual(typeByteLength("f32"), 4);
 
+// 同一段原始字节按不同观察类型解码：图表与侧栏对同名变量选不同 type 时各自得到正确值
+const shared = [0x34, 0x12, 0x00, 0x00];
+assert.strictEqual(decodeValue(shared, "u16"), 0x1234);      // 低 2 字节
+assert.strictEqual(decodeValue(shared, "u32"), 0x00001234);
+assert.strictEqual(decodeValue(shared, "i8"), 0x34);        // 最低字节，正数
+
 // parseMemoryValues：十进制、0x 前缀、含地址标签
 assert.deepStrictEqual(parseMemoryValues("10 255 32 0"), [10, 255, 32, 0]);
 assert.deepStrictEqual(parseMemoryValues("0x0a 0xff 0x20 0x00"), [10, 255, 32, 0]);

@@ -1,13 +1,17 @@
 # Change Log
 
-All notable changes to the "vscode-plugin-demo" extension will be documented in this file.
+All notable changes to the EmberProbe extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-20
+
 ### Added
 
+- 新增 OpenOCD 侧边栏状态卡，集中展示检测、安装、验证和错误状态，并提供一键安装、选择路径与重新检测操作。
+- Windows x64 版本内置 OpenOCD 离线预置包，安装前验证可执行文件，失败时保留原安装。
 - 新增侧栏独立实时数值列表：展示当前 ELF 的全部全局/静态变量，点击后加入数字查看，不与图表变量列表互相影响。
 - 新增 `mcu-live-watch` Agent Skill，可通过 OpenOCD Tcl-RPC 读取当前实时变量值。
 
@@ -17,6 +21,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - ELF 变量浏览区支持折叠及从底部分界线拖拽调整高度；变量类型与地址使用对齐列展示。
 - 自动检测配置收纳到 MCU 配置区并与手动配置做视觉区分，移除冗余的“推荐”标记与“关键操作”区。
 - 图表导入窗口将变量类型、地址和大小拆分为对齐列，并使用跟随 VS Code 明暗主题的遮罩。
+- 扩展运行时代码改为单文件 bundle，确保 npm 依赖完整进入 VSIX；最低 VS Code 版本调整为 1.85。
 
 ### Fixed
 
@@ -24,6 +29,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 修复浅色主题下采样间隔输入框出现白色原生微调按钮的问题。
 - 修复侧栏与图表的开始/停止采样状态不同步，以及部分 ELF 全局变量无法出现在列表中的问题。
 - 结构体和数组现在会被识别为不支持直接采样的复合类型，避免按标量错误读取。
+- 修复首次安装或选择 OpenOCD 后当前操作仍使用旧路径，以及工作区配置遮蔽全局配置的问题。
+- OpenOCD 缺失提示和安装进度改在侧边栏展示，不再从右下角弹出通知。
 
 ## [0.1.1] - 2026-07-17
 

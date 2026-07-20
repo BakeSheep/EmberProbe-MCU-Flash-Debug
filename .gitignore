@@ -6,3 +6,5 @@ dist/
 Thumbs.db
 .vscode-test/
 coverage/
+.zcode/
+xpack-openocd-*.zip
