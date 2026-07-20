@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- 新增侧栏「芯片信息」区：通过 OpenOCD 非侵入读取芯片信息，按优先级分层展示——顶部状态（未连接/正在读取/读取完成/读取失败）、芯片系列与内核摘要卡、以及适配器时钟/内核修订/目标状态/调试探针的 2×2 核心网格；次要内容收入默认折叠的「详细信息」，分为芯片信息（Device ID/Revision ID/Flash 容量/字节序/UID 可复制）、调试连接（调试器/传输协议/适配器时钟/目标电压/Target）与运行信息（目标状态/PC/SP/LR，仅在芯片已暂停时读取寄存器，绝不主动暂停运行中的程序）。
+
 ## [0.1.2] - 2026-07-20
 
 ### Added

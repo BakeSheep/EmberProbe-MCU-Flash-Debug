@@ -13,6 +13,7 @@ const liveWatch = require("./liveWatch");
 const liveWatchView = require("./liveWatchView");
 const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
+const chipInfo = require("./chipInfo");
 const fs = require("fs");
 // 调试器配置列表
 const DEBUGGER_LIST = [
@@ -118,6 +119,8 @@ class MainViewProvider {
         this._latestSidebarSamples = new Map();
         this._liveConsumers = new Set();
         this._symbolCache = null;
+        this._chipInfo = null;
+        this._chipInfoRunning = false;
         this._openOcdStatus = { state: 'checking', message: '正在检测 OpenOCD…', canInstall: false };
         this._openOcdOperation = 0;
         this.registerCommandHandlers();
@@ -380,6 +383,10 @@ class MainViewProvider {
                 vscode.window.showWarningMessage('实时变量查看正在运行，请先停止后再下载（探针同一时刻只能被一个 OpenOCD 占用）');
                 return false;
             }
+            if (this._chipInfoRunning) {
+                vscode.window.showWarningMessage('正在读取芯片信息，请稍后再下载');
+                return false;
+            }
             const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
             const executable = await this._resolveOpenOcdPath(configuredExecutable);
             if (!executable) return false;
@@ -554,6 +561,7 @@ class MainViewProvider {
     }
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
         if (this._downloadRunning) throw new Error('下载进行中，无法同时启动实时查看');
+        if (this._chipInfoRunning) throw new Error('正在读取芯片信息，请稍后再启动实时查看');
         if (vscode.debug.activeDebugSession) throw new Error('检测到正在进行的调试会话，探针已被占用；请先停止调试再启动实时查看');
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
@@ -631,6 +639,73 @@ class MainViewProvider {
         this._liveWatchRunning = false;
         this._postConsumerStatuses('已停止');
     }
+    // 推送芯片信息状态与（可选的）结果到侧边栏
+    _postChipInfo(status, info) {
+        const post = (m) => this._webviewView?.webview.postMessage(m);
+        if (info) post({ type: 'chipInfo', info });
+        if (status) post({ type: 'chipInfoStatus', ...status });
+    }
+    // 同步侧边栏：视图重建后回放已缓存的芯片信息与当前状态
+    _syncChipInfo(post) {
+        if (this._chipInfo) post({ type: 'chipInfo', info: this._chipInfo });
+        const state = this._chipInfoRunning ? 'reading' : (this._chipInfo ? 'ready' : 'idle');
+        const message = this._chipInfoRunning ? '正在读取芯片信息…' : (this._chipInfo ? '读取完成' : '尚未读取');
+        post({ type: 'chipInfoStatus', state, message });
+    }
+    // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
+    async readChipInfoAction() {
+        if (this._chipInfoRunning) return;
+        if (this._downloadRunning) { this._postChipInfo({ state: 'error', message: '下载进行中，请稍后再读取芯片信息' }); return; }
+        if (this._liveWatchRunning) { this._postChipInfo({ state: 'error', message: '实时变量查看运行中，请先停止后再读取' }); return; }
+        if (vscode.debug.activeDebugSession) { this._postChipInfo({ state: 'error', message: '检测到调试会话，探针已被占用；请先停止调试' }); return; }
+        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        if (!debuggerCfg || !mcuCore) { this._postChipInfo({ state: 'error', message: '请先选择调试器与 MCU 目标' }); return; }
+        const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+        const executable = await this._resolveOpenOcdPath(configuredExecutable);
+        if (!executable) { this._postChipInfo({ state: 'error', message: 'OpenOCD 未就绪：请先在侧边栏完成安装或路径配置' }); return; }
+        this._chipInfoRunning = true;
+        this._postChipInfo({ state: 'reading', message: '正在读取芯片信息…' });
+        let diag = null;
+        try {
+            const { cwd } = this._commandContext();
+            const info = await chipInfo.readChipInfo(vscode, { executable, probe: debuggerCfg, target: mcuCore, cwd }, (ev) => {
+                if (ev && ev.stage === 'raw') diag = ev;
+            });
+            this._chipInfo = info;
+            this._postChipInfo({ state: 'ready', message: '读取完成' }, info);
+            this._writeChipDiagnostics(diag, info);
+        } catch (error) {
+            this._postChipInfo({ state: 'error', message: error.message || String(error) });
+            this._writeChipDiagnostics(diag, null);
+        } finally {
+            this._chipInfoRunning = false;
+        }
+    }
+    // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
+    _writeChipDiagnostics(diag, info) {
+        if (!diag) return;
+        if (!this._chipOutput) {
+            this._chipOutput = vscode.window.createOutputChannel('EmberProbe 芯片信息');
+            this._context.subscriptions.push(this._chipOutput);
+        }
+        const ch = this._chipOutput;
+        ch.clear();
+        ch.appendLine('=== EmberProbe 芯片信息读取诊断 ===');
+        ch.appendLine('时间：' + new Date().toLocaleString());
+        if (info) {
+            const kv = [['内核', info.core], ['内核修订', info.coreRevision], ['Device ID', info.deviceId], ['Revision ID', info.revId], ['Flash', info.flashSize], ['UID', info.uid], ['目标状态', info.targetState]];
+            ch.appendLine('解析结果：' + (kv.filter(x => x[1]).map(x => x[0] + '=' + x[1]).join('，') || '（无）'));
+        }
+        ch.appendLine('');
+        ch.appendLine('执行的 OpenOCD 命令：');
+        (diag.commands || []).forEach(c => ch.appendLine('  -c ' + c));
+        ch.appendLine('');
+        ch.appendLine('OpenOCD 原始输出：');
+        (diag.lines || []).forEach(l => ch.appendLine('  ' + l));
+        // Device ID 或 UID 缺失时自动展示，便于复制反馈
+        if (!info || !info.deviceId || !info.uid) ch.show(true);
+    }
     // 实现接口要求的resolveWebviewView方法（无修改）
     resolveWebviewView(webviewView) {
         this._webviewView = webviewView;
@@ -677,6 +752,7 @@ class MainViewProvider {
                     // 回放最近的下载进度，避免视图重建后日志丢失
                     for (const progressMessage of this._recentProgress) webviewView.webview.postMessage(progressMessage);
                     this._syncSidebarTarget((message) => webviewView.webview.postMessage(message));
+                    this._syncChipInfo((message) => webviewView.webview.postMessage(message));
                     webviewView.webview.postMessage({ type: 'openocdStatus', ...this._openOcdStatus });
                     this.refreshOpenOcdStatus(false);
                     break;
@@ -709,6 +785,18 @@ class MainViewProvider {
                         }
                     } catch (error) {
                         webviewView.webview.postMessage({ type: 'liveStatus', running: false, message: error.message, error: true });
+                    }
+                    break;
+                }
+                case 'readChipInfo': {
+                    await this.readChipInfoAction();
+                    break;
+                }
+                case 'copyText': {
+                    const value = message.text ? String(message.text) : '';
+                    if (value) {
+                        try { await vscode.env.clipboard.writeText(value); vscode.window.showInformationMessage('已复制到剪贴板'); }
+                        catch (e) { /* ignore clipboard errors */ }
                     }
                     break;
                 }
