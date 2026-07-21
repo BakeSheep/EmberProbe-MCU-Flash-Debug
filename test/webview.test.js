@@ -5,6 +5,7 @@ const fs = require("fs");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const { LiveWatchSession } = require("../src/liveWatch");
+const i18n = require("../src/i18n");
 
 function validateScripts(name, html) {
   const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), match => match[1]);
@@ -111,5 +112,12 @@ session2._abortConnection(new Error("child exited during connect"));
 assert.ok(startErr && startErr.message === "child exited during connect", "start promise should be rejected with the abort reason");
 assert.strictEqual(session2._startReject, null, "_startReject should be cleared after deferral");
 assert.strictEqual(disconnects, 1, "onDisconnect must not fire while start is in flight");
+
+// 语言自动匹配：按 VS Code 显示语言选择默认界面语言（zh-* → 中文，其余 → 英文）
+assert.strictEqual(i18n.matchVscodeLang("zh-cn"), "zh", "Chinese VS Code locale should map to zh");
+assert.strictEqual(i18n.matchVscodeLang("zh-tw"), "zh", "Traditional Chinese locale should map to zh");
+assert.strictEqual(i18n.matchVscodeLang("en"), "en", "English locale should map to en");
+assert.strictEqual(i18n.matchVscodeLang("ja"), "en", "non-Chinese locales should fall back to en");
+assert.strictEqual(i18n.matchVscodeLang(undefined), "en", "missing locale should fall back to en");
 
 console.log("Webview & live session tests passed");

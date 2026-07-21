@@ -111,7 +111,9 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
-        this._lang = i18n.normalizeLang(context.globalState.get('emberprobe.lang'));
+        // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
+        const savedLang = context.globalState.get('emberprobe.lang');
+        this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
         this._downloadRunning = false;
         this._recentProgress = [];
         this._liveWatchRunning = false;

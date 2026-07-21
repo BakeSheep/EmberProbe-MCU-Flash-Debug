@@ -540,4 +540,10 @@ function t(lang, key, params) {
     return interpolate(raw, params);
 }
 
-module.exports = { STRINGS, t, interpolate, DEFAULT_LANG, SUPPORTED_LANGS, normalizeLang };
+// 将 VS Code 显示语言（如 en / zh-cn / zh-tw / ja）映射到受支持的语言：
+// 以 zh 开头的（zh-cn / zh-tw 等）归为简体中文，其余归为英文（当前仅支持 zh / en）。
+function matchVscodeLang(lang) {
+    return String(lang || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+module.exports = { STRINGS, t, interpolate, DEFAULT_LANG, SUPPORTED_LANGS, normalizeLang, matchVscodeLang };
