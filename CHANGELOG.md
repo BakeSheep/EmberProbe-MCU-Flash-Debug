@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
+### Added
+
+- 界面双语支持（简体中文 / English）：侧边栏右上角新增语言切换按钮，可在中英文之间即时来回切换，无需重载；实时变量图表面板同样内置切换按钮，并与侧栏语言保持同步，语言选择持久化保存。
+- 新增统一多语言词典模块（`src/i18n.js`），主进程与 Webview 共用同一份中英文案，覆盖侧栏 UI、芯片信息、OpenOCD 环境状态卡、下载进度日志、实时采样状态、命令错误与原生通知等。主进程向 Webview 发送结构化的 key + 参数，由 Webview 按当前语言即时渲染。
+
+### Note
+
+- `EmberProbe OpenOCD` 伪终端的日志汇总，以及极少数底层运行时错误细节仍保留中文；常见状态与失败原因均已双语化。
+
 ## [0.2.1] - 2026-07-20
 
 ### Fixed

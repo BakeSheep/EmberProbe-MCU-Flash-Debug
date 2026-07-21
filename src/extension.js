@@ -15,6 +15,7 @@ const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const fs = require("fs");
+const i18n = require("./i18n");
 // 调试器配置列表
 const DEBUGGER_LIST = [
     'altera-usb-blaster.cfg', 'altera-usb-blaster2.cfg', 'arm-jtag-ew.cfg', 'ast2600-gpiod.cfg',
@@ -110,6 +111,7 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
+        this._lang = i18n.normalizeLang(context.globalState.get('emberprobe.lang'));
         this._downloadRunning = false;
         this._recentProgress = [];
         this._liveWatchRunning = false;
@@ -122,9 +124,18 @@ class MainViewProvider {
         this._chipInfo = null;
         this._chipInfoRunning = false;
         this._liveStarting = false;
-        this._openOcdStatus = { state: 'checking', message: '正在检测 OpenOCD…', canInstall: false };
+        this._openOcdStatus = { state: 'checking', key: 'oc.checking', canInstall: false };
         this._openOcdOperation = 0;
         this.registerCommandHandlers();
+    }
+    // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
+    _t(key, params) {
+        return i18n.t(this._lang, key, params);
+    }
+    _setLang(lang) {
+        this._lang = i18n.normalizeLang(lang);
+        this._context.globalState.update('emberprobe.lang', this._lang);
+        return this._lang;
     }
     _commandContext(resource) {
         if (resource?.fsPath) {
@@ -152,7 +163,7 @@ class MainViewProvider {
         const operation = ++this._openOcdOperation;
         const report = this._openOcdReporter(operation);
         const target = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
-        if (showChecking) report({ state: 'checking', message: '正在检测 OpenOCD…' });
+        if (showChecking) report({ state: 'checking', key: 'oc.checking' });
         const result = await openocdChecker.probeOpenOcd(target);
         if (operation !== this._openOcdOperation) return null;
         openocdChecker.setCache(result);
@@ -163,12 +174,12 @@ class MainViewProvider {
         const operation = ++this._openOcdOperation;
         const report = this._openOcdReporter(operation);
         if (action === 'install') {
-            const resolved = await openocdChecker.installBundledAndConfigure(vscode, this._context, report);
+            const resolved = await openocdChecker.installBundledAndConfigure(vscode, this._context, report, this._lang);
             if (!resolved && this._openOcdStatus.state === 'installing') await this.refreshOpenOcdStatus(false);
             return resolved;
         }
         if (action === 'select') {
-            const resolved = await openocdChecker.pickOpenOcdPath(vscode, report);
+            const resolved = await openocdChecker.pickOpenOcdPath(vscode, report, this._lang);
             if (!resolved) await this.refreshOpenOcdStatus(false);
             return resolved;
         }
@@ -182,7 +193,7 @@ class MainViewProvider {
         const cached = openocdChecker.getCachedResult();
         // 缓存命中且原始配置值一致直接放行，避免每次动作都重新探测
         if (cached && cached.found && (cached.requested || cached.path) === target) {
-            report({ state: 'ready', message: cached.version ? `OpenOCD v${cached.version} 已就绪` : 'OpenOCD 已就绪', result: cached });
+            report({ state: 'ready', key: cached.version ? 'oc.readyVer' : 'oc.ready', params: { version: cached.version }, result: cached });
             return cached.path;
         }
         // 探测一次并回写缓存，使同一路径后续命中快路径
@@ -196,7 +207,7 @@ class MainViewProvider {
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
         this.commandHandlers['mcu-vscode.autoDetect'] = async () => this.runAutoDetect(true);
-        this.commandHandlers['mcu-vscode.installAgentSkill'] = async () => skillInstaller.installSkill(vscode, this._context);
+        this.commandHandlers['mcu-vscode.installAgentSkill'] = async () => skillInstaller.installSkill(vscode, this._context, this._lang);
         this.commandHandlers['mcu-vscode.openLiveWatch'] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers['mcu-vscode.selectElf'] = async () => {
@@ -204,7 +215,7 @@ class MainViewProvider {
                 console.log('主进程执行选择 ELF 文件命令');
                 const elfFiles = await vscode.workspace.findFiles('**/*.elf', '{**/node_modules/**,**/.git/**}', 100);
                 if (elfFiles.length === 0) {
-                    vscode.window.showWarningMessage('未找到任何 .elf 文件！');
+                    vscode.window.showWarningMessage(this._t('msg.noElfFound'));
                     return;
                 }
                 const quickPick = vscode.window.createQuickPick();
@@ -215,7 +226,7 @@ class MainViewProvider {
                         description: cleanPath
                     };
                 });
-                quickPick.placeholder = '搜索 ELF 文件...';
+                quickPick.placeholder = this._t('msg.searchElf');
                 quickPick.canSelectMany = false;
                 quickPick.onDidChangeSelection(async selection => {
                     if (selection[0]) {
@@ -223,7 +234,7 @@ class MainViewProvider {
                         if (elfPath) {
                             const finalPath = cleanWindowsPath(elfPath); // 二次清洗，双重保障
                             await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
-                            vscode.window.showInformationMessage(`已选择 ELF 文件：${path.basename(finalPath)}`);
+                            vscode.window.showInformationMessage(this._t('msg.elfSelected', { name: path.basename(finalPath) }));
                             this.updateView();
                         }
                         quickPick.dispose();
@@ -235,7 +246,7 @@ class MainViewProvider {
             catch (err) {
                 const errorMsg = err.message;
                 console.error('选择 ELF 文件失败：', errorMsg);
-                vscode.window.showErrorMessage(`选择 ELF 文件失败：${errorMsg}`);
+                vscode.window.showErrorMessage(this._t('msg.selectElfFailed', { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
@@ -244,13 +255,13 @@ class MainViewProvider {
             console.log('主进程执行选择调试器命令');
             const quickPick = vscode.window.createQuickPick();
             quickPick.items = DEBUGGER_LIST.map(cfg => ({ label: cfg }));
-            quickPick.placeholder = '搜索调试器配置文件...';
+            quickPick.placeholder = this._t('msg.searchDebugger');
             quickPick.canSelectMany = false;
             quickPick.onDidChangeSelection(async selection => {
                 if (selection[0]) {
                     const debuggerCfg = selection[0].label;
                     await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
-                    vscode.window.showInformationMessage(`已选择调试器：${debuggerCfg}`);
+                    vscode.window.showInformationMessage(this._t('msg.debuggerSelected', { name: debuggerCfg }));
                     this.updateView();
                     quickPick.dispose();
                 }
@@ -263,13 +274,13 @@ class MainViewProvider {
             console.log('主进程执行选择 MCU 核心命令');
             const quickPick = vscode.window.createQuickPick();
             quickPick.items = MCU_CORE_LIST.map(cfg => ({ label: cfg }));
-            quickPick.placeholder = '搜索 MCU 核心配置文件...';
+            quickPick.placeholder = this._t('msg.searchMcu');
             quickPick.canSelectMany = false;
             quickPick.onDidChangeSelection(async selection => {
                 if (selection[0]) {
                     const mcuCore = selection[0].label;
                     await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
-                    vscode.window.showInformationMessage(`已选择 MCU 核心：${mcuCore}`);
+                    vscode.window.showInformationMessage(this._t('msg.mcuSelected', { name: mcuCore }));
                     this.updateView();
                     quickPick.dispose();
                 }
@@ -283,7 +294,7 @@ class MainViewProvider {
                 console.log('主进程执行选择 SVD 文件命令');
                 const svdFiles = await vscode.workspace.findFiles('**/*.svd', '{**/node_modules/**,**/.git/**}', 100);
                 if (svdFiles.length === 0) {
-                    vscode.window.showWarningMessage('未找到任何 .svd 文件！');
+                    vscode.window.showWarningMessage(this._t('msg.noSvdFound'));
                     return;
                 }
                 const quickPick = vscode.window.createQuickPick();
@@ -294,7 +305,7 @@ class MainViewProvider {
                         description: cleanPath
                     };
                 });
-                quickPick.placeholder = '搜索 SVD 文件...';
+                quickPick.placeholder = this._t('msg.searchSvd');
                 quickPick.canSelectMany = false;
                 quickPick.onDidChangeSelection(async selection => {
                     if (selection[0]) {
@@ -302,7 +313,7 @@ class MainViewProvider {
                         if (svdPath) {
                             const finalPath = cleanWindowsPath(svdPath); // 二次清洗
                             await this._context.workspaceState.update(CACHE_KEYS.svdPath, finalPath);
-                            vscode.window.showInformationMessage(`已选择 SVD 文件：${path.basename(finalPath)}`);
+                            vscode.window.showInformationMessage(this._t('msg.svdSelected', { name: path.basename(finalPath) }));
                             this.updateView();
                         }
                         quickPick.dispose();
@@ -314,7 +325,7 @@ class MainViewProvider {
             catch (err) {
                 const errorMsg = err.message;
                 console.error('选择 SVD 文件失败：', errorMsg);
-                vscode.window.showErrorMessage(`选择 SVD 文件失败：${errorMsg}`);
+                vscode.window.showErrorMessage(this._t('msg.selectSvdFailed', { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
@@ -327,11 +338,11 @@ class MainViewProvider {
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 let svdPath = this._context.workspaceState.get(CACHE_KEYS.svdPath);
                 if (!elfPath || !debuggerCfg || !mcuCore) {
-                    vscode.window.showErrorMessage('请先完整配置 ELF 文件、调试器和 MCU 核心！');
+                    vscode.window.showErrorMessage(this._t('msg.configIncomplete'));
                     return false;
                 }
                 if (!vscode.extensions.getExtension('marus25.cortex-debug')) {
-                    vscode.window.showErrorMessage('未检测到 Cortex-Debug 扩展，请先从扩展市场安装（marus25.cortex-debug）后再启动调试。');
+                    vscode.window.showErrorMessage(this._t('msg.needCortexDebug'));
                     return false;
                 }
                 // 修复类型错误：处理 undefined 情况，用空字符串兜底
@@ -339,7 +350,7 @@ class MainViewProvider {
                 svdPath = cleanWindowsPath(svdPath || ''); // 关键修复：解决 svdPath 可能为 undefined 的问题
                 const { folder: workspaceFolder, cwd } = this._commandContext(resource);
                 if (!workspaceFolder) {
-                    vscode.window.showErrorMessage('请先打开一个工作空间！');
+                    vscode.window.showErrorMessage(this._t('msg.openWorkspaceForDebug'));
                     return false;
                 }
                 // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
@@ -348,7 +359,7 @@ class MainViewProvider {
                 if (!openocdPath) return false;
                 const debugConfig = {
                     type: 'cortex-debug',
-                    name: 'MCU 调试（OpenOCD）',
+                    name: this._t('msg.debugConfigName'),
                     request: 'launch',
                     cwd,
                     executable: elfPath,
@@ -362,7 +373,7 @@ class MainViewProvider {
                 };
                 const started = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
                 if (!started) {
-                    vscode.window.showErrorMessage('调试会话启动失败，请检查 Cortex-Debug 与 OpenOCD 配置。');
+                    vscode.window.showErrorMessage(this._t('msg.debugStartFailed'));
                     return false;
                 }
                 return true;
@@ -370,22 +381,22 @@ class MainViewProvider {
             catch (err) {
                 const errorMsg = err.message;
                 console.error('调试启动失败：', errorMsg);
-                vscode.window.showErrorMessage(`调试启动失败：${errorMsg}`);
+                vscode.window.showErrorMessage(this._t('msg.debugFailed', { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers['mcu-vscode.download'] = async (resource) => {
             if (this._downloadRunning) {
-                vscode.window.showWarningMessage('下载正在进行中，请等待当前任务完成');
+                vscode.window.showWarningMessage(this._t('msg.downloadBusy'));
                 return false;
             }
             if (this._liveWatchRunning) {
-                vscode.window.showWarningMessage('实时变量查看正在运行，请先停止后再下载（探针同一时刻只能被一个 OpenOCD 占用）');
+                vscode.window.showWarningMessage(this._t('msg.liveBusyForDownload'));
                 return false;
             }
             if (this._chipInfoRunning) {
-                vscode.window.showWarningMessage('正在读取芯片信息，请稍后再下载');
+                vscode.window.showWarningMessage(this._t('msg.chipBusyForDownload'));
                 return false;
             }
             this._downloadRunning = true;
@@ -399,7 +410,7 @@ class MainViewProvider {
                 const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!elfPath || !debuggerCfg || !mcuCore) {
-                    vscode.window.showErrorMessage('请先完整配置 ELF 文件、调试器和 MCU 核心！');
+                    vscode.window.showErrorMessage(this._t('msg.configIncomplete'));
                     return false;
                 }
                 const cleanElfPath = cleanWindowsPath(elfPath);
@@ -411,13 +422,13 @@ class MainViewProvider {
                     if (this._recentProgress.length > 6) this._recentProgress.shift();
                     this._webviewView?.webview.postMessage(message);
                 });
-                vscode.window.showInformationMessage('固件下载并校验成功');
+                vscode.window.showInformationMessage(this._t('msg.downloadSuccess'));
                 return true;
             }
             catch (err) {
                 const errorMsg = err.message;
                 console.error('固件下载失败：', errorMsg);
-                vscode.window.showErrorMessage(`固件下载失败：${errorMsg}`);
+                vscode.window.showErrorMessage(this._t('msg.downloadFailed', { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
             finally {
@@ -429,10 +440,10 @@ class MainViewProvider {
     openLiveWatchPanel() {
         if (this._livePanel) { this._livePanel.reveal(); return; }
         const cfg = vscode.workspace.getConfiguration('emberprobe');
-        const panel = vscode.window.createWebviewPanel('emberprobe.liveWatch', 'EmberProbe 实时变量', vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
+        const panel = vscode.window.createWebviewPanel('emberprobe.liveWatch', this._t('lw.title'), vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
         this._livePanel = panel;
         const post = (m) => panel.webview.postMessage(m);
-        panel.webview.html = liveWatchView.getLiveWatchContent({ maxSamples: cfg.get('maxSamples', 2000), intervalMs: cfg.get('sampleIntervalMs', 100) });
+        panel.webview.html = liveWatchView.getLiveWatchContent({ maxSamples: cfg.get('maxSamples', 2000), intervalMs: cfg.get('sampleIntervalMs', 100) }, this._lang);
         panel.onDidDispose(() => { this._livePanel = null; });
         panel.webview.onDidReceiveMessage(async (message) => {
             try {
@@ -449,7 +460,7 @@ class MainViewProvider {
                         const { symbols } = this.readElfSymbols();
                         const found = symbols.find(s => s.name === message.name);
                         if (found) post({ type: 'addResolved', symbol: found });
-                        else post({ type: 'liveError', message: `ELF 中未找到变量：${message.name}` });
+                        else post({ type: 'liveError', key: 'live.varNotFound', params: { name: message.name } });
                         break;
                     }
                     case 'saveWatch':
@@ -467,16 +478,21 @@ class MainViewProvider {
                     case 'stop':
                         this.stopLiveWatch();
                         break;
+                    case 'setLang': {
+                        this._setLang(message.lang);
+                        this._webviewView?.webview.postMessage({ type: 'setLang', lang: this._lang });
+                        break;
+                    }
                 }
             } catch (error) {
-                post({ type: 'liveError', message: error.message });
+                post({ type: 'liveError', key: error.i18nKey, params: error.i18nParams, message: error.message });
             }
         });
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     readElfSymbols() {
         let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        if (!elfPath) throw new Error('请先在侧栏选择 ELF 固件');
+        if (!elfPath) throw Object.assign(new Error(this._t('live.elfFirst')), { i18nKey: 'live.elfFirst' });
         elfPath = cleanWindowsPath(elfPath);
         let buffer;
         let mtimeMs = 0;
@@ -485,7 +501,7 @@ class MainViewProvider {
             if (this._symbolCache?.elfPath === elfPath && this._symbolCache.mtimeMs === mtimeMs) return this._symbolCache.result;
             buffer = fs.readFileSync(elfPath);
         }
-        catch (e) { throw new Error(`无法读取 ELF：${elfPath}`); }
+        catch (e) { throw Object.assign(new Error(this._t('live.elfReadFail', { path: elfPath })), { i18nKey: 'live.elfReadFail', i18nParams: { path: elfPath } }); }
         const result = elfSymbols.parseElfSymbols(buffer);
         let typeMap = null;
         try { typeMap = dwarf.parseDwarfVariableTypes(buffer); } catch (e) { typeMap = null; }
@@ -494,10 +510,10 @@ class MainViewProvider {
             sym.typeName = info && info.typeName ? info.typeName : '';
             sym.isComposite = /^(struct|union)\b/.test(sym.typeName) || /\[\]$/.test(sym.typeName) || (!info?.watchType && sym.size > 4);
             sym.watchType = sym.isComposite ? '' : (info && info.watchType ? info.watchType : elfSymbols.defaultType(sym.size));
-            if (sym.isComposite) sym.unsupportedReason = '结构体与数组暂不支持成员/元素展开，请观察具体标量成员或元素';
+            if (sym.isComposite) sym.unsupportedReason = '';
         }
         if (!typeMap || typeMap.size === 0) {
-            result.warnings.push('未读取到 DWARF 类型信息，类型按大小推测（如需精确类型，请用带 -g 的 Debug 构建）');
+            result.warnings.push(this._t('warn.noDwarf'));
         }
         this._symbolCache = { elfPath, mtimeMs, result };
         return result;
@@ -507,9 +523,11 @@ class MainViewProvider {
         this._livePanel?.webview.postMessage(message);
         this._webviewView?.webview.postMessage(message);
     }
-    _postConsumerStatuses(message, error = false) {
-        this._livePanel?.webview.postMessage({ type: 'liveStatus', running: this._liveWatchRunning, message, error });
-        this._webviewView?.webview.postMessage({ type: 'liveStatus', running: this._liveWatchRunning, message, error });
+    _postConsumerStatuses(payload, error = false) {
+        const p = typeof payload === 'string' ? { message: payload } : (payload || {});
+        const message = { type: 'liveStatus', running: this._liveWatchRunning, ...p, error };
+        this._livePanel?.webview.postMessage(message);
+        this._webviewView?.webview.postMessage(message);
     }
     _scalarWatchList(key) {
         const items = this._context.workspaceState.get(key) || [];
@@ -522,7 +540,7 @@ class MainViewProvider {
     }
     _syncGraphTarget(post) {
         post({ type: 'watchList', items: this._scalarWatchList(CACHE_KEYS.watchList) });
-        post({ type: 'liveStatus', running: this._liveWatchRunning, message: this._liveWatchRunning ? '采样中' : '已停止' });
+        post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
         if (this._latestGraphSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestGraphSamples.values()) });
     }
     _syncSidebarTarget(post) {
@@ -531,9 +549,9 @@ class MainViewProvider {
             const result = this.readElfSymbols();
             post({ type: 'availableVariables', symbols: result.symbols, warnings: result.warnings });
         } catch (error) {
-            post({ type: 'availableVariables', symbols: [], error: error.message });
+            post({ type: 'availableVariables', symbols: [], errorKey: error.i18nKey, params: error.i18nParams, error: error.message });
         }
-        post({ type: 'liveStatus', running: this._liveWatchRunning, message: this._liveWatchRunning ? '采样中' : '已停止' });
+        post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
         if (this._latestSidebarSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()) });
     }
     // 图表与侧栏各自维护观察列表；同一变量在两侧可能选择不同观察类型。
@@ -561,20 +579,20 @@ class MainViewProvider {
         return { graph: build(CACHE_KEYS.watchList), sidebar: build(CACHE_KEYS.sidebarWatchList) };
     }
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
-        if (this._downloadRunning) throw new Error('下载进行中，无法同时启动实时查看');
-        if (this._chipInfoRunning) throw new Error('正在读取芯片信息，请稍后再启动实时查看');
-        if (this._liveStarting) throw new Error('实时查看正在启动中，请稍候');
-        if (vscode.debug.activeDebugSession) throw new Error('检测到正在进行的调试会话，探针已被占用；请先停止调试再启动实时查看');
+        if (this._downloadRunning) throw Object.assign(new Error(this._t('live.downloadRunning')), { i18nKey: 'live.downloadRunning' });
+        if (this._chipInfoRunning) throw Object.assign(new Error(this._t('live.chipReading')), { i18nKey: 'live.chipReading' });
+        if (this._liveStarting) throw Object.assign(new Error(this._t('live.starting')), { i18nKey: 'live.starting' });
+        if (vscode.debug.activeDebugSession) throw Object.assign(new Error(this._t('live.debugActive')), { i18nKey: 'live.debugActive' });
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore) throw new Error('请先选择调试器与 MCU 目标');
+        if (!debuggerCfg || !mcuCore) throw Object.assign(new Error(this._t('live.needConfig')), { i18nKey: 'live.needConfig' });
         const activeItems = this._activeReadPlan();
-        if (!activeItems.length) throw new Error('请先添加要观察的变量');
+        if (!activeItems.length) throw Object.assign(new Error(this._t('live.needVar')), { i18nKey: 'live.needVar' });
         this._liveConsumers.add('graph');
         this._liveConsumers.add('sidebar');
         if (this._liveWatchRunning && this._liveSession) {
             this._liveSession.setWatch(this._activeReadPlan());
-            this._postConsumerStatuses('采样中');
+            this._postConsumerStatuses({ key: 'sb.sampling' });
             return;
         }
         const cfg = vscode.workspace.getConfiguration('emberprobe');
@@ -582,7 +600,7 @@ class MainViewProvider {
         this._liveStarting = true;
         let executable;
         try { executable = await this._resolveOpenOcdPath(configuredExecutable); } catch (e) { this._liveStarting = false; throw e; }
-        if (!executable) { this._liveStarting = false; throw new Error('OpenOCD 未就绪：请在命令面板执行 “EmberProbe: 检查 OpenOCD 环境” 完成安装或路径配置'); }
+        if (!executable) { this._liveStarting = false; throw Object.assign(new Error(this._t('live.notReady')), { i18nKey: 'live.notReady' }); }
         const { cwd } = this._commandContext();
         const session = new liveWatch.LiveWatchSession(vscode, {
             executable, probe: debuggerCfg, target: mcuCore, cwd,
@@ -612,12 +630,12 @@ class MainViewProvider {
             },
             onStatus: (msg) => this._postConsumerStatuses(msg),
             onError: (msg) => this._postLive({ type: 'liveError', message: msg }),
-            onDisconnect: (msg) => {
+            onDisconnect: (err) => {
                 if (this._liveSession !== session) return;
                 this._liveSession = null;
                 this._liveWatchRunning = false;
                 this._liveConsumers.clear();
-                this._postConsumerStatuses(msg, true);
+                this._postConsumerStatuses({ key: err && err.i18nKey, params: err && err.i18nParams, message: (err && err.message) || String(err) }, true);
             }
         });
         session.setWatch(this._activeReadPlan());
@@ -626,7 +644,7 @@ class MainViewProvider {
         try {
             await session.start();
             this._liveStarting = false;
-            this._postConsumerStatuses('采样中');
+            this._postConsumerStatuses({ key: 'sb.sampling' });
         } catch (error) {
             this._liveStarting = false;
             if (this._liveSession === session) {
@@ -635,7 +653,7 @@ class MainViewProvider {
                 this._liveWatchRunning = false;
             }
             this._liveConsumers.clear();
-            this._postConsumerStatuses(error.message, true);
+            this._postConsumerStatuses({ key: error.i18nKey, params: error.i18nParams, message: error.message }, true);
             throw error;
         }
     }
@@ -643,7 +661,7 @@ class MainViewProvider {
         this._liveConsumers.clear();
         if (this._liveSession) { try { this._liveSession.stop(); } catch (e) { /* ignore */ } this._liveSession = null; }
         this._liveWatchRunning = false;
-        this._postConsumerStatuses('已停止');
+        this._postConsumerStatuses({ key: 'sb.stopped' });
     }
     // 推送芯片信息状态与（可选的）结果到侧边栏
     _postChipInfo(status, info) {
@@ -655,23 +673,23 @@ class MainViewProvider {
     _syncChipInfo(post) {
         if (this._chipInfo) post({ type: 'chipInfo', info: this._chipInfo });
         const state = this._chipInfoRunning ? 'reading' : (this._chipInfo ? 'ready' : 'idle');
-        const message = this._chipInfoRunning ? '正在读取芯片信息…' : (this._chipInfo ? '读取完成' : '尚未读取');
-        post({ type: 'chipInfoStatus', state, message });
+        const key = this._chipInfoRunning ? 'chip.reading' : (this._chipInfo ? 'chip.done' : 'chip.notRead');
+        post({ type: 'chipInfoStatus', state, key });
     }
     // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
     async readChipInfoAction() {
         if (this._chipInfoRunning) return;
-        if (this._downloadRunning) { this._postChipInfo({ state: 'error', message: '下载进行中，请稍后再读取芯片信息' }); return; }
-        if (this._liveWatchRunning) { this._postChipInfo({ state: 'error', message: '实时变量查看运行中，请先停止后再读取' }); return; }
-        if (vscode.debug.activeDebugSession) { this._postChipInfo({ state: 'error', message: '检测到调试会话，探针已被占用；请先停止调试' }); return; }
+        if (this._downloadRunning) { this._postChipInfo({ state: 'error', key: 'chip.busyDownload' }); return; }
+        if (this._liveWatchRunning) { this._postChipInfo({ state: 'error', key: 'chip.busyLive' }); return; }
+        if (vscode.debug.activeDebugSession) { this._postChipInfo({ state: 'error', key: 'chip.busyDebug' }); return; }
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore) { this._postChipInfo({ state: 'error', message: '请先选择调试器与 MCU 目标' }); return; }
+        if (!debuggerCfg || !mcuCore) { this._postChipInfo({ state: 'error', key: 'chip.needConfig' }); return; }
         this._chipInfoRunning = true;
         const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
         const executable = await this._resolveOpenOcdPath(configuredExecutable);
-        if (!executable) { this._chipInfoRunning = false; this._postChipInfo({ state: 'error', message: 'OpenOCD 未就绪：请先在侧边栏完成安装或路径配置' }); return; }
-        this._postChipInfo({ state: 'reading', message: '正在读取芯片信息…' });
+        if (!executable) { this._chipInfoRunning = false; this._postChipInfo({ state: 'error', key: 'chip.notReady' }); return; }
+        this._postChipInfo({ state: 'reading', key: 'chip.reading' });
         let diag = null;
         try {
             const { cwd } = this._commandContext();
@@ -679,10 +697,10 @@ class MainViewProvider {
                 if (ev && ev.stage === 'raw') diag = ev;
             });
             this._chipInfo = info;
-            this._postChipInfo({ state: 'ready', message: '读取完成' }, info);
+            this._postChipInfo({ state: 'ready', key: 'chip.done' }, info);
             this._writeChipDiagnostics(diag, info);
         } catch (error) {
-            this._postChipInfo({ state: 'error', message: error.message || String(error) });
+            this._postChipInfo({ state: 'error', key: error.i18nKey, params: error.i18nParams, message: error.message || String(error) });
             this._writeChipDiagnostics(diag, null);
         } finally {
             this._chipInfoRunning = false;
@@ -692,22 +710,22 @@ class MainViewProvider {
     _writeChipDiagnostics(diag, info) {
         if (!diag) return;
         if (!this._chipOutput) {
-            this._chipOutput = vscode.window.createOutputChannel('EmberProbe 芯片信息');
+            this._chipOutput = vscode.window.createOutputChannel(this._t('diag.channelName'));
             this._context.subscriptions.push(this._chipOutput);
         }
         const ch = this._chipOutput;
         ch.clear();
-        ch.appendLine('=== EmberProbe 芯片信息读取诊断 ===');
-        ch.appendLine('时间：' + new Date().toLocaleString());
+        ch.appendLine(this._t('diag.title'));
+        ch.appendLine(this._t('diag.time', { time: new Date().toLocaleString() }));
         if (info) {
-            const kv = [['内核', info.core], ['内核修订', info.coreRevision], ['Device ID', info.deviceId], ['Revision ID', info.revId], ['Flash', info.flashSize], ['UID', info.uid], ['目标状态', info.targetState]];
-            ch.appendLine('解析结果：' + (kv.filter(x => x[1]).map(x => x[0] + '=' + x[1]).join('，') || '（无）'));
+            const kv = [[this._t('diag.kvCore'), info.core], [this._t('diag.kvCoreRev'), info.coreRevision], ['Device ID', info.deviceId], ['Revision ID', info.revId], [this._t('diag.kvFlash'), info.flashSize], ['UID', info.uid], [this._t('diag.kvState'), info.targetState]];
+            ch.appendLine(this._t('diag.parsed', { content: kv.filter(x => x[1]).map(x => x[0] + '=' + x[1]).join('，') || this._t('diag.none') }));
         }
         ch.appendLine('');
-        ch.appendLine('执行的 OpenOCD 命令：');
+        ch.appendLine(this._t('diag.commands'));
         (diag.commands || []).forEach(c => ch.appendLine('  -c ' + c));
         ch.appendLine('');
-        ch.appendLine('OpenOCD 原始输出：');
+        ch.appendLine(this._t('diag.rawOutput'));
         (diag.lines || []).forEach(l => ch.appendLine('  ' + l));
         // Device ID 或 UID 缺失时自动展示，便于复制反馈
         if (!info || !info.deviceId || !info.uid) ch.show(true);
@@ -737,16 +755,18 @@ class MainViewProvider {
                             });
                         }
                         else {
-                            throw new Error(`命令 ${cmd} 未注册`);
+                            throw Object.assign(new Error(this._t('msg.commandNotRegistered', { cmd })), { i18nKey: 'msg.commandNotRegistered', i18nParams: { cmd } });
                         }
                     }
                     catch (error) {
-                        const errorMsg = error.message || '未知错误';
+                        const errorMsg = error.message || this._t('msg.unknownError');
                         console.error('命令执行失败：', errorMsg);
                         // 向Webview发送失败消息
                         webviewView.webview.postMessage({
                             type: 'commandError',
                             cmd: cmd,
+                            key: error.i18nKey,
+                            params: error.i18nParams,
                             error: errorMsg
                         });
                     }
@@ -767,7 +787,7 @@ class MainViewProvider {
                     try {
                         await this._handleOpenOcdAction(message.action);
                     } catch (error) {
-                        this._postOpenOcdStatus({ state: 'error', message: error.message || String(error) });
+                        this._postOpenOcdStatus({ state: 'error', key: error.i18nKey, params: error.i18nParams, message: error.message || String(error) });
                     }
                     break;
                 }
@@ -790,7 +810,7 @@ class MainViewProvider {
                             await this.startLiveWatch(items, message.intervalMs, 'sidebar');
                         }
                     } catch (error) {
-                        webviewView.webview.postMessage({ type: 'liveStatus', running: false, message: error.message, error: true });
+                        webviewView.webview.postMessage({ type: 'liveStatus', running: false, key: error.i18nKey, params: error.i18nParams, message: error.message, error: true });
                     }
                     break;
                 }
@@ -801,9 +821,14 @@ class MainViewProvider {
                 case 'copyText': {
                     const value = message.text ? String(message.text) : '';
                     if (value) {
-                        try { await vscode.env.clipboard.writeText(value); vscode.window.showInformationMessage('已复制到剪贴板'); }
+                        try { await vscode.env.clipboard.writeText(value); vscode.window.showInformationMessage(this._t('common.copied')); }
                         catch (e) { /* ignore clipboard errors */ }
                     }
+                    break;
+                }
+                case 'setLang': {
+                    this._setLang(message.lang);
+                    this._livePanel?.webview.postMessage({ type: 'setLang', lang: this._lang });
                     break;
                 }
             }
@@ -827,9 +852,9 @@ class MainViewProvider {
         if (result.debugger && (force || !currentDebugger)) await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
         if (result.mcu && (force || !currentMcu)) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
         this.updateView();
-        const found = [result.elf && `ELF: ${path.basename(result.elf)}`, result.mcu && `MCU: ${result.mcu}`, result.debugger && `调试器: ${result.debugger}`].filter(Boolean);
+        const found = [result.elf && this._t('msg.foundElf', { name: path.basename(result.elf) }), result.mcu && this._t('msg.foundMcu', { name: result.mcu }), result.debugger && this._t('msg.foundDebugger', { name: result.debugger })].filter(Boolean);
         if (force) {
-            const message = found.length ? `自动检测完成 — ${found.join('，')}` : '未能自动识别配置，请手动选择';
+            const message = found.length ? this._t('msg.autoDoneWith', { found: found.join(', ') }) : this._t('msg.autoNone');
             found.length ? vscode.window.showInformationMessage(message) : vscode.window.showWarningMessage(message);
         }
         return result;
@@ -838,11 +863,11 @@ class MainViewProvider {
         const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const svd = this._context.workspaceState.get(CACHE_KEYS.svdPath);
         return modernView.getModernWebviewContent({
-            elf: elf ? path.basename(elf) : '尚未选择',
-            debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || '尚未选择',
-            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '尚未选择',
-            svd: svd ? path.basename(svd) : '尚未选择'
-        });
+            elf: elf ? path.basename(elf) : '',
+            debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || '',
+            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '',
+            svd: svd ? path.basename(svd) : ''
+        }, this._lang);
     }
     updateView() {
         if (this._webviewView) {

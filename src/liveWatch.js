@@ -67,15 +67,17 @@ class LiveWatchSession {
             '-c', 'telnet_port disabled',
             '-c', 'init' // 仅初始化，不 halt/不 reset，保持非侵入
         ];
-        this._status('正在启动 OpenOCD 服务…');
+        this._status({ key: 'lw.connecting' });
         try {
             this.child = spawn(this.options.executable, args, { cwd: this.options.cwd, windowsHide: true, shell: false });
         } catch (error) {
-            throw new Error(error.code === 'ENOENT' ? `找不到 OpenOCD：${this.options.executable}` : error.message);
+            throw error.code === 'ENOENT' ? Object.assign(new Error(`找不到 OpenOCD：${this.options.executable}`), { i18nKey: 'run.notFound', i18nParams: { path: this.options.executable } }) : new Error(error.message);
         }
         this.child.on('error', (error) => {
-            const message = error.code === 'ENOENT' ? `找不到 OpenOCD：${this.options.executable}` : error.message;
-            this._abortConnection(new Error(message));
+            const enoent = error.code === 'ENOENT';
+            const e = new Error(enoent ? `找不到 OpenOCD：${this.options.executable}` : error.message);
+            if (enoent) { e.i18nKey = 'run.notFound'; e.i18nParams = { path: this.options.executable }; }
+            this._abortConnection(e);
         });
         const onLog = (chunk) => {
             const text = chunk.toString();
@@ -98,7 +100,7 @@ class LiveWatchSession {
             if (this.socket && !this.socket.destroyed) { try { this.socket.destroy(); } catch (e) { /* ignore */ } }
             this.socket = null;
             this.stopped = true;
-            if (!expected) this._abortConnection(new Error(`OpenOCD 服务已退出（代码 ${code}）：可能探针被占用、配置错误或端口 ${port} 被占用`));
+            if (!expected) this._abortConnection(Object.assign(new Error(`OpenOCD 服务已退出（代码 ${code}）：可能探针被占用、配置错误或端口 ${port} 被占用`), { i18nKey: 'live.serviceExited', i18nParams: { code, port } }));
         });
 
         // start() 进行期间若子进程退出，_abortConnection 通过 _startReject 拒绝此 Promise，
@@ -111,7 +113,7 @@ class LiveWatchSession {
                     this.socket = sock;
                     if (this.stopped) { reject(new Error('OpenOCD 服务在连接过程中已退出')); return; }
                     this._setupSocket();
-                    this._status('已连接 OpenOCD，开始采样');
+                    this._status({ key: 'lw.connected' });
                     this.timer = setInterval(() => { this._sampleTick(); }, interval);
                     resolve();
                 }, reject);
@@ -179,7 +181,7 @@ class LiveWatchSession {
             const reject = this._startReject; this._startReject = null;
             reject(err);
         } else if (this.handlers.onDisconnect) {
-            this.handlers.onDisconnect(err.message);
+            this.handlers.onDisconnect(err);
         } else {
             this._error(err.message);
         }

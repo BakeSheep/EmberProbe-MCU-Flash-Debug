@@ -222,7 +222,7 @@ function readChipInfo(vscode, options, onProgress) {
         try {
             child = spawn(options.executable, args, { cwd: options.cwd, windowsHide: true, shell: false });
         } catch (error) {
-            reject(new Error(error.code === 'ENOENT' ? `找不到 OpenOCD：${options.executable}` : error.message));
+            reject(error.code === 'ENOENT' ? Object.assign(new Error(`找不到 OpenOCD：${options.executable}`), { i18nKey: 'run.notFound', i18nParams: { path: options.executable } }) : new Error(error.message));
             return;
         }
         report({ stage: 'start', message: '正在读取芯片信息…' });
@@ -258,7 +258,7 @@ function readChipInfo(vscode, options, onProgress) {
         const timer = setTimeout(() => {
             if (settled) return;
             try { child.kill(); } catch (e) { /* ignore */ }
-            finish(new Error('读取芯片信息超时（15s）：请检查接线、供电与探针占用情况'));
+            finish(Object.assign(new Error('读取芯片信息超时（15s）：请检查接线、供电与探针占用情况'), { i18nKey: 'chip.timeout' }));
         }, 15000);
 
         const handleLine = (raw) => {
@@ -395,7 +395,7 @@ function readChipInfo(vscode, options, onProgress) {
         child.stderr.on('data', consume);
         child.on('error', (error) => {
             spawnFailed = true;
-            finish(new Error(error.code === 'ENOENT' ? `找不到 OpenOCD：${options.executable}` : error.message));
+            finish(error.code === 'ENOENT' ? Object.assign(new Error(`找不到 OpenOCD：${options.executable}`), { i18nKey: 'run.notFound', i18nParams: { path: options.executable } }) : new Error(error.message));
         });
         child.on('close', (code) => {
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
@@ -432,10 +432,12 @@ function readChipInfo(vscode, options, onProgress) {
                 finish(null);
                 return;
             }
-            const reason = errors.length
-                ? errors.slice(-3).join('；')
-                : (rawTail.slice(-3).join('；') || (code === 0 ? '未获取到芯片信息' : `OpenOCD 退出码 ${code}`));
-            finish(new Error(reason));
+            let reasonErr;
+            if (errors.length) reasonErr = new Error(errors.slice(-3).join('；'));
+            else if (rawTail.length) reasonErr = new Error(rawTail.slice(-3).join('；'));
+            else if (code === 0) reasonErr = Object.assign(new Error('未获取到芯片信息'), { i18nKey: 'chip.noInfo' });
+            else reasonErr = Object.assign(new Error(`OpenOCD 退出码 ${code}`), { i18nKey: 'chip.exitCode', i18nParams: { code } });
+            finish(reasonErr);
         });
     });
 }

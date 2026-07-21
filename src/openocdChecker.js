@@ -8,6 +8,7 @@
 
 const { spawn } = require("child_process");
 const installer = require("./openocdInstaller");
+const i18n = require("./i18n");
 
 const OPENOCD_GETTING_STARTED_URL = "https://openocd.org/pages/getting-openocd/";
 
@@ -30,7 +31,7 @@ function parseVersion(text) {
 function probeOpenOcd(executable) {
     const target = executable && String(executable).trim();
     if (!target) {
-        return Promise.resolve({ found: false, path: '', version: '', error: '未配置 OpenOCD 路径' });
+        return Promise.resolve({ found: false, path: '', version: '', error: '未配置 OpenOCD 路径', errorKey: 'oc.errNoPath' });
     }
     // Windows 上裸命令名（无路径分隔符、无扩展名）先通过 where.exe 解析完整路径，
     // 避免 spawn shell:false 对 PATH 搜索不健壮的问题。
@@ -43,7 +44,7 @@ function probeOpenOcd(executable) {
             // windowsHide 避免一闪而过的控制台窗口；shell:false 直接调用，避免 PATH 注入
             child = spawn(resolved, ['--version'], { windowsHide: true, shell: false });
         } catch (error) {
-            resolve({ found: false, path: resolved, requested: target, version: '', error: error.code === 'ENOENT' ? '找不到该可执行文件' : error.message });
+            resolve({ found: false, path: resolved, requested: target, version: '', error: error.code === 'ENOENT' ? '找不到该可执行文件' : error.message, errorKey: error.code === 'ENOENT' ? 'oc.errNotFound' : undefined });
             return;
         }
         let stdout = '';
@@ -57,13 +58,14 @@ function probeOpenOcd(executable) {
         };
         const timer = setTimeout(() => {
             try { child.kill(); } catch (e) { /* ignore */ }
-            done({ found: false, path: resolved, requested: target, version: '', error: '探测超时' });
+            done({ found: false, path: resolved, requested: target, version: '', error: '探测超时', errorKey: 'oc.errTimeout' });
         }, 5000);
         child.stdout.on('data', (d) => { stdout += d.toString(); });
         child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (error) => {
-            const msg = error.code === 'ENOENT' ? '找不到该可执行文件（请确认路径或将其加入 PATH）' : error.message;
-            done({ found: false, path: resolved, requested: target, version: '', error: msg });
+            const isEnoent = error.code === 'ENOENT';
+            const msg = isEnoent ? '找不到该可执行文件（请确认路径或将其加入 PATH）' : error.message;
+            done({ found: false, path: resolved, requested: target, version: '', error: msg, errorKey: isEnoent ? 'oc.errNotFoundPath' : undefined });
         });
         child.on('close', (code) => {
             const out = `${stdout}\n${stderr}`;
@@ -73,7 +75,7 @@ function probeOpenOcd(executable) {
             if (version || /open on-chip debugger/i.test(out)) {
                 done({ found: true, path: resolved, requested: target, version, error: '' });
             } else {
-                done({ found: false, path: resolved, requested: target, version: '', error: code ? `退出码 ${code}，且输出无法识别为 OpenOCD` : '所选文件不是有效的 OpenOCD' });
+                done({ found: false, path: resolved, requested: target, version: '', error: code ? `退出码 ${code}，且输出无法识别为 OpenOCD` : '所选文件不是有效的 OpenOCD', errorKey: code ? 'oc.errExit' : 'oc.errNotOpenocd', errorParams: code ? { code } : undefined });
             }
         });
     });
@@ -129,52 +131,54 @@ async function persistOpenOcdPath(vscode, fsPath, previousPath) {
 }
 
 // 通过文件选择器让用户选中 openocd(.exe)，立即验证并写入扩展配置；返回最终路径或 null。
-async function pickOpenOcdPath(vscode, report) {
+async function pickOpenOcdPath(vscode, report, lang) {
     const isWin = process.platform === 'win32';
     const previousPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+    const exeLabel = i18n.t(lang, 'oc.pickExe');
+    const allLabel = i18n.t(lang, 'oc.allFiles');
     const uris = await vscode.window.showOpenDialog({
         canSelectMany: false,
-        openLabel: '选择 OpenOCD',
-        filters: isWin ? { 'OpenOCD 可执行文件': ['exe'], '所有文件': ['*'] } : { '所有文件': ['*'] }
+        openLabel: i18n.t(lang, 'oc.pickLabel'),
+        filters: isWin ? { [exeLabel]: ['exe'], [allLabel]: ['*'] } : { [allLabel]: ['*'] }
     });
     if (!uris || !uris.length) return null;
     const fsPath = uris[0].fsPath;
-    reportStatus(report, { state: 'checking', message: '正在验证所选 OpenOCD…' });
+    reportStatus(report, { state: 'checking', key: 'oc.validatingSelected' });
     const result = await probeOpenOcd(fsPath);
     if (result.found) {
         await persistOpenOcdPath(vscode, fsPath, previousPath);
         // 配置变更监听会 resetCache；这里同步更新缓存，使本次后续动作立即可用
         _cachedResult = result;
-        reportStatus(report, { state: 'ready', message: result.version ? `OpenOCD v${result.version} 已就绪` : 'OpenOCD 已就绪', result });
+        reportStatus(report, { state: 'ready', key: result.version ? 'oc.readyVer' : 'oc.ready', params: { version: result.version }, result });
         return fsPath;
     }
-    reportStatus(report, { state: 'error', message: `所选文件不可用：${result.error || '请重新选择'}`, result });
+    reportStatus(report, { state: 'error', key: 'oc.selectedUnusable', params: { error: result.errorKey ? i18n.t(lang, result.errorKey, result.errorParams) : (result.error || i18n.t(lang, 'oc.reselect')) }, result });
     return null;
 }
 
 // 一键安装：从插件预置包解压到全局存储目录，通过 report 将状态发送给侧边栏。
 // 返回安装并配置后的最终路径，失败返回 null。
-async function installBundledAndConfigure(vscode, context, report) {
+async function installBundledAndConfigure(vscode, context, report, lang) {
     const previousPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
     const archive = installer.getBundledArchive(context);
     if (!archive) {
         // 当前平台无预置包，回退到打开官方下载页
         await vscode.env.openExternal(vscode.Uri.parse(OPENOCD_GETTING_STARTED_URL));
-        reportStatus(report, { state: 'missing', canInstall: false, message: `当前平台（${process.platform}-${process.arch}）暂无预置包；已打开下载页，安装后请选择 OpenOCD 路径` });
+        reportStatus(report, { state: 'missing', canInstall: false, key: 'oc.noBundle', params: { platform: process.platform + '-' + process.arch } });
         return null;
     }
     try {
         let stagedProbe = null;
-        reportStatus(report, { state: 'installing', message: '正在准备安装 OpenOCD…' });
+        reportStatus(report, { state: 'installing', key: 'oc.preparing' });
         const result = await installer.installBundledOpenOcd(vscode, context, (p) => {
-            if (p.message) reportStatus(report, { state: 'installing', message: p.message });
+            if (p.message || p.key) reportStatus(report, { state: 'installing', key: p.key, params: p.params, message: p.message });
         }, async (candidate) => {
-            reportStatus(report, { state: 'checking', message: '正在验证 OpenOCD…' });
+            reportStatus(report, { state: 'checking', key: 'oc.verifying' });
             stagedProbe = await probeOpenOcd(candidate);
             return { ok: stagedProbe.found, version: stagedProbe.version, error: stagedProbe.error };
         });
         if (!result.ok) {
-            reportStatus(report, { state: 'error', message: `OpenOCD 安装失败：${result.error || '未知错误'}` });
+            reportStatus(report, { state: 'error', key: 'oc.installFailed', params: { error: result.error || i18n.t(lang, 'oc.unknownError') } });
             return null;
         }
         // 暂存目录中的可执行文件已经在替换旧安装前验证；缓存路径需改成最终目录。
@@ -184,14 +188,14 @@ async function installBundledAndConfigure(vscode, context, report) {
         if (verify.found) {
             await persistOpenOcdPath(vscode, result.path, previousPath);
             setCache(verify);
-            reportStatus(report, { state: 'ready', message: verify.version ? `OpenOCD v${verify.version} 已安装并就绪` : 'OpenOCD 已安装并就绪', result: verify });
+            reportStatus(report, { state: 'ready', key: verify.version ? 'oc.installedReadyVer' : 'oc.installedReady', params: { version: verify.version }, result: verify });
             return result.path;
         }
         setCache(verify);
-        reportStatus(report, { state: 'error', message: `OpenOCD 验证未通过：${verify.error || '请手动确认'}；原配置未更改`, result: verify });
+        reportStatus(report, { state: 'error', key: 'oc.verifyFailed', params: { error: verify.error || i18n.t(lang, 'oc.confirmManually') }, result: verify });
         return null;
     } catch (error) {
-        reportStatus(report, { state: 'error', message: `OpenOCD 安装失败：${error.message || error}` });
+        reportStatus(report, { state: 'error', key: 'oc.installFailed', params: { error: error.message || String(error) } });
         return null;
     }
 }
@@ -205,10 +209,10 @@ async function resolveOpenOcdStatus(executable, context, probedResult, report) {
         : await probeOpenOcd(executable);
     setCache(result);
     if (result.found) {
-        reportStatus(report, { state: 'ready', message: result.version ? `OpenOCD v${result.version} 已就绪` : 'OpenOCD 已就绪', result });
+        reportStatus(report, { state: 'ready', key: result.version ? 'oc.readyVer' : 'oc.ready', params: { version: result.version }, result });
         return result.path;
     }
-    reportStatus(report, { state: 'missing', canInstall: Boolean(installer.getBundledArchive(context)), message: result.error || '未检测到 OpenOCD', result });
+    reportStatus(report, { state: 'missing', canInstall: Boolean(installer.getBundledArchive(context)), key: result.errorKey || 'oc.missing', params: result.errorParams, message: result.error || '未检测到 OpenOCD', result });
     return null;
 }
 
