@@ -37,6 +37,7 @@ EmberProbe ships a fully bilingual interface (English / 简体中文).
 
 - **Toggle button**: use the language button in the **top-right corner of the EmberProbe sidebar** to switch back and forth between English and Chinese. It is a simple toggle (not a dropdown) that shows `EN` when Chinese is active and `中` when English is active.
 - **Instant switch**: the sidebar re-renders immediately without reloading. The standalone live-variable chart panel has its own toggle button and stays in sync with the sidebar; your choice is persisted across sessions.
+- **Auto-detect**: on first use, EmberProbe follows your VS Code display language — Chinese for `zh-*` locales, English otherwise. Your manual toggle overrides this and is remembered.
 - **Coverage**: sidebar UI, chip info, the OpenOCD environment status card, download progress log, live sampling status, command errors, and VS Code notifications are all translated.
 - **Note**: the `EmberProbe OpenOCD` pseudo-terminal log summary and a few low-level runtime error details remain in Chinese; common statuses and failure reasons are bilingual.
 
