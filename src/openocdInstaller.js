@@ -91,7 +91,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary) {
         // 先统计条目数以计算百分比，避免进度跳跃
         await tar.t({ file: archive, onentry: () => { total++; } });
         if (total === 0) total = 1;
-        if (progress) progress({ message: "正在解压 OpenOCD…" });
+        if (progress) progress({ message: "正在解压 OpenOCD…", key: 'oc.extracting' });
         await tar.x({
             file: archive,
             cwd: staging,
@@ -101,7 +101,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary) {
                 processed++;
                 if (progress && processed % 10 === 0) {
                     const pct = Math.min(99, Math.round(processed / total * 100));
-                    progress({ message: `正在解压 OpenOCD… ${pct}%`, increment: undefined });
+                    progress({ message: `正在解压 OpenOCD… ${pct}%`, key: 'oc.extractingPct', params: { pct }, increment: undefined });
                 }
             }
         });

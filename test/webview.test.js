@@ -33,7 +33,7 @@ assert.ok(sidebar.includes('class="tree-divider">手动配置'), "manual MCU con
 assert.ok(!sidebar.includes('>推荐</span>'), "auto detection should not show a recommendation badge");
 assert.ok(!sidebar.includes('<summary>关键操作</summary>'), "redundant key-actions section should be removed");
 assert.ok(sidebar.includes('sym.isComposite'), "sidebar should guard aggregate variables");
-assert.ok(sidebar.includes('<summary>芯片信息</summary>'), "sidebar should include a chip info section");
+assert.ok(sidebar.includes('>芯片信息</summary>'), "sidebar should include a chip info section");
 assert.ok(sidebar.includes('id="chipRead"'), "chip info section should offer a read button");
 assert.ok(sidebar.includes('id="chipBody"'), "chip info section should render results into a body container");
 assert.ok(sidebar.includes("type:'readChipInfo'"), "chip info read should post a dedicated message");
@@ -42,6 +42,17 @@ assert.ok(sidebar.includes("m.type==='chipInfoStatus'"), "sidebar should reflect
 assert.ok(sidebar.includes("type:'copyText'"), "UID row should copy via the extension clipboard bridge");
 assert.ok(sidebar.includes('详细信息'), "chip info should provide a collapsible details area");
 assert.ok(sidebar.includes('调试连接') && sidebar.includes('运行信息'), "details should group debug-connection and run-info");
+
+// 双语支持与语言切换（中文 / English）
+assert.ok(sidebar.includes('id="langToggle"'), "sidebar should expose a top-right language toggle button");
+assert.ok(sidebar.includes('window.__I18N__='), "sidebar should inject the shared i18n dictionary");
+assert.ok(sidebar.includes("m.type==='setLang'"), "sidebar should react to language switch messages");
+assert.ok(sidebar.includes('lang="zh-CN"'), "default sidebar should render in Chinese");
+const sidebarEn = modernView.getModernWebviewContent({ elf: "app.elf", debugger: "stlink.cfg", mcu: "stm32f4x.cfg", svd: "" }, "en");
+validateScripts("modernView-en", sidebarEn);
+assert.ok(sidebarEn.includes('lang="en"'), "English sidebar should set the html lang attribute");
+assert.ok(sidebarEn.includes('>Chip Info</summary>'), "English sidebar should translate section headers");
+assert.ok(sidebarEn.includes('>Download</button>'), "English sidebar should translate primary actions");
 
 const panel = liveWatchView.getLiveWatchContent({ maxSamples: -10, intervalMs: 1 });
 validateScripts("liveWatchView", panel);
@@ -60,6 +71,11 @@ assert.ok(panel.includes('.overlay{background:color-mix(in srgb,var(--vscode-edi
 assert.ok(panel.includes("impHead.className='imp-head'"), "import dialog should render an aligned metadata header");
 assert.ok(panel.includes("z.className='size'"), "import dialog should align size in its own column");
 assert.ok(panel.includes('if(sym.isComposite)'), "graph importer should reject aggregate variables");
+assert.ok(panel.includes('id="langToggle"'), "live panel should expose a language toggle button");
+const panelEn = liveWatchView.getLiveWatchContent({ maxSamples: 2000, intervalMs: 100 }, "en");
+validateScripts("liveWatchView-en", panelEn);
+assert.ok(panelEn.includes('lang="en"'), "English live panel should set the html lang attribute");
+assert.ok(panelEn.includes('>Import Variables</button>'), "English live panel should translate toolbar buttons");
 
 const extensionSource = fs.readFileSync(require.resolve("../src/extension"), "utf8");
 const checkerSource = fs.readFileSync(require.resolve("../src/openocdChecker"), "utf8");
