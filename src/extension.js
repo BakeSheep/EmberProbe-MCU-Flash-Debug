@@ -122,6 +122,7 @@ class MainViewProvider {
         this._latestGraphSamples = new Map();
         this._latestSidebarSamples = new Map();
         this._liveConsumers = new Set();
+        this._consumerTypesCache = null;
         this._symbolCache = null;
         this._chipInfo = null;
         this._chipInfoRunning = false;
@@ -393,9 +394,10 @@ class MainViewProvider {
                 vscode.window.showWarningMessage(this._t('msg.downloadBusy'));
                 return false;
             }
+            // 下载前自动停止实时采样以释放探针；短暂等待确保 OpenOCD 进程退出、USB 句柄释放
             if (this._liveWatchRunning) {
-                vscode.window.showWarningMessage(this._t('msg.liveBusyForDownload'));
-                return false;
+                this.stopLiveWatch();
+                await new Promise(resolve => setTimeout(resolve, 250));
             }
             if (this._chipInfoRunning) {
                 vscode.window.showWarningMessage(this._t('msg.chipBusyForDownload'));
@@ -446,7 +448,13 @@ class MainViewProvider {
         this._livePanel = panel;
         const post = (m) => panel.webview.postMessage(m);
         panel.webview.html = liveWatchView.getLiveWatchContent({ maxSamples: cfg.get('maxSamples', 2000), intervalMs: cfg.get('sampleIntervalMs', 100) }, this._lang);
-        panel.onDidDispose(() => { this._livePanel = null; });
+        panel.onDidDispose(() => {
+            this._livePanel = null;
+            // 图表面板关闭时，若侧边栏不可见，停止采样以释放探针；侧边栏仍可见则保持运行由其接管
+            if (this._liveWatchRunning && !(this._webviewView && this._webviewView.visible)) {
+                this.stopLiveWatch();
+            }
+        });
         panel.webview.onDidReceiveMessage(async (message) => {
             try {
                 switch (message.type) {
@@ -467,6 +475,8 @@ class MainViewProvider {
                     }
                     case 'saveWatch':
                         await this._context.workspaceState.update(CACHE_KEYS.watchList, message.items || []);
+                        this._invalidateConsumerTypes();
+                        this._pruneSampleMap(this._latestGraphSamples, CACHE_KEYS.watchList);
                         if (this._liveSession) {
                             const active = this._activeReadPlan();
                             if (active.length) this._liveSession.setWatch(active);
@@ -479,6 +489,9 @@ class MainViewProvider {
                         break;
                     case 'stop':
                         this.stopLiveWatch();
+                        break;
+                    case 'setInterval':
+                        if (this._liveSession) this._liveSession.setIntervalMs(message.intervalMs);
                         break;
                     case 'setLang': {
                         this._setLang(message.lang);
@@ -498,9 +511,12 @@ class MainViewProvider {
         elfPath = cleanWindowsPath(elfPath);
         let buffer;
         let mtimeMs = 0;
+        let fileSize = 0;
         try {
-            mtimeMs = fs.statSync(elfPath).mtimeMs;
-            if (this._symbolCache?.elfPath === elfPath && this._symbolCache.mtimeMs === mtimeMs) return this._symbolCache.result;
+            const stat = fs.statSync(elfPath);
+            mtimeMs = stat.mtimeMs;
+            fileSize = stat.size;
+            if (this._symbolCache?.elfPath === elfPath && this._symbolCache.mtimeMs === mtimeMs && this._symbolCache.fileSize === fileSize) return this._symbolCache.result;
             buffer = fs.readFileSync(elfPath);
         }
         catch (e) { throw Object.assign(new Error(this._t('live.elfReadFail', { path: elfPath })), { i18nKey: 'live.elfReadFail', i18nParams: { path: elfPath } }); }
@@ -517,7 +533,7 @@ class MainViewProvider {
         if (!typeMap || typeMap.size === 0) {
             result.warnings.push(this._t('warn.noDwarf'));
         }
-        this._symbolCache = { elfPath, mtimeMs, result };
+        this._symbolCache = { elfPath, mtimeMs, fileSize, result };
         return result;
     }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
@@ -543,7 +559,10 @@ class MainViewProvider {
     _syncGraphTarget(post) {
         post({ type: 'watchList', items: this._scalarWatchList(CACHE_KEYS.watchList) });
         post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
-        if (this._latestGraphSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestGraphSamples.values()) });
+        if (this._latestGraphSamples.size) {
+            const now = Date.now();
+            post({ type: 'liveSample', samples: Array.from(this._latestGraphSamples.values()).map(s => ({ ...s, t: now })) });
+        }
     }
     _syncSidebarTarget(post) {
         post({ type: 'sidebarWatchList', items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList) });
@@ -554,7 +573,10 @@ class MainViewProvider {
             post({ type: 'availableVariables', symbols: [], errorKey: error.i18nKey, params: error.i18nParams, error: error.message });
         }
         post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
-        if (this._latestSidebarSamples.size) post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()) });
+        if (this._latestSidebarSamples.size) {
+            const now = Date.now();
+            post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()).map(s => ({ ...s, t: now })) });
+        }
     }
     // 图表与侧栏各自维护观察列表；同一变量在两侧可能选择不同观察类型。
     // 读取计划按变量名去重，宽度取两侧的最大值，一次读取覆盖所有消费者。
@@ -579,6 +601,15 @@ class MainViewProvider {
             return m;
         };
         return { graph: build(CACHE_KEYS.watchList), sidebar: build(CACHE_KEYS.sidebarWatchList) };
+    }
+    _getCachedConsumerTypes() {
+        if (!this._consumerTypesCache) this._consumerTypesCache = this._consumerTypes();
+        return this._consumerTypesCache;
+    }
+    _invalidateConsumerTypes() { this._consumerTypesCache = null; }
+    _pruneSampleMap(map, key) {
+        const names = new Set((this._context.workspaceState.get(key) || []).map(i => i && i.name));
+        for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
         if (this._downloadRunning) throw Object.assign(new Error(this._t('live.downloadRunning')), { i18nKey: 'live.downloadRunning' });
@@ -610,7 +641,7 @@ class MainViewProvider {
         }, {
             onSample: (samples, t) => {
                 // 同一变量的原始字节按各面板自选的观察类型分别解码，避免图表/侧栏选不同 type 时数值与标签不一致
-                const types = this._consumerTypes();
+                const types = this._getCachedConsumerTypes();
                 const graphSamples = [];
                 const sidebarSamples = [];
                 for (const s of samples) {
@@ -664,6 +695,10 @@ class MainViewProvider {
         if (this._liveSession) { try { this._liveSession.stop(); } catch (e) { /* ignore */ } this._liveSession = null; }
         this._liveWatchRunning = false;
         this._postConsumerStatuses({ key: 'sb.stopped' });
+    }
+    // 仅在采样进行中时停止；用于调试会话起止等外部事件触发的自动清理
+    stopLiveWatchIfRunning() {
+        if (this._liveWatchRunning) this.stopLiveWatch();
     }
     // 推送芯片信息状态与（可选的）结果到侧边栏
     _postChipInfo(status, info) {
@@ -793,9 +828,22 @@ class MainViewProvider {
                     }
                     break;
                 }
+                case 'refreshVariables': {
+                    // 重建 ELF 后手动刷新：清空符号缓存并重新解析、回送变量列表
+                    this._symbolCache = null;
+                    try {
+                        const result = this.readElfSymbols();
+                        webviewView.webview.postMessage({ type: 'availableVariables', symbols: result.symbols, warnings: result.warnings });
+                    } catch (error) {
+                        webviewView.webview.postMessage({ type: 'availableVariables', symbols: [], errorKey: error.i18nKey, params: error.i18nParams, error: error.message });
+                    }
+                    break;
+                }
                 case 'saveSidebarWatch': {
                     const items = Array.isArray(message.items) ? message.items : [];
                     await this._context.workspaceState.update(CACHE_KEYS.sidebarWatchList, items);
+                    this._invalidateConsumerTypes();
+                    this._pruneSampleMap(this._latestSidebarSamples, CACHE_KEYS.sidebarWatchList);
                     if (this._liveSession) {
                         const active = this._activeReadPlan();
                         if (active.length) this._liveSession.setWatch(active);
@@ -908,6 +956,13 @@ function activate(context) {
     }));
     // 停用时兜底停止实时采样会话（关闭 OpenOCD 服务与 socket）
     context.subscriptions.push({ dispose: () => mainViewProvider.stopLiveWatch() });
+    // 调试会话起止时自动停止实时采样：启动前释放探针避免冲突；断开后清理可能被扰动的会话
+    context.subscriptions.push(vscode.debug.onDidStartDebugSession(session => {
+        if (session && session.type === 'cortex-debug') mainViewProvider.stopLiveWatchIfRunning();
+    }));
+    context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(session => {
+        if (session && session.type === 'cortex-debug') mainViewProvider.stopLiveWatchIfRunning();
+    }));
 }
 function deactivate() {
     console.log('MCU_VSCODE 下载与调试器已停用！');
