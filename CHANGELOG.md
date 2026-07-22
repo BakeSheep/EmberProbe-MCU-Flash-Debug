@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-22
+
+### Added
+
+- 侧边栏「ELF 全部变量」栏目新增刷新按钮：重建 elf 后手动刷新即可看到新增变量，无需重载窗口。符号缓存键加入文件大小，配合 mtime 双重判定，避免仅改内容而 mtime 未变时的脏命中。
+- ELF 全部变量数徽标紧贴刷新按钮显示，与标题分离不再拥挤。
+
+### Fixed
+
+- 下载前自动停止实时采样并短暂等待 OpenOCD 进程退出、USB 句柄释放；调试会话（cortex-debug）启动或断开时同样自动停止读取，避免探针争抢。
+- 修复图表面板「当前数值」栏宽过窄时地址与实时数值重叠的问题：移除地址可见显示，仅保留为悬停提示。
+
 ## [0.3.0] - 2026-07-21
 
 ### Added

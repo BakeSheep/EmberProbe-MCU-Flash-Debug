@@ -50,6 +50,16 @@ class LiveWatchSession {
 
     setWatch(list) { this.watch = Array.isArray(list) ? list.slice() : []; }
 
+    // 运行中动态调整采样间隔：重建定时器
+    setIntervalMs(ms) {
+        const interval = Math.max(20, Math.min(10000, Number(ms) || 100));
+        this.options.intervalMs = interval;
+        if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        if (!this.stopped && this.socket && !this.socket.destroyed) {
+            this.timer = setInterval(() => { this._sampleTick(); }, interval);
+        }
+    }
+
     _status(msg) { if (this.handlers.onStatus) this.handlers.onStatus(msg); }
     _error(msg) { if (this.handlers.onError) this.handlers.onError(msg); }
 
@@ -151,6 +161,11 @@ class LiveWatchSession {
                 const q = this.queue.shift();
                 if (q) q.resolve(resp);
             }
+            // 失控流兜底：若缓冲累积超过 1MB 仍未出现分帧符，说明响应流异常，丢弃并重置连接，避免无限增长
+            if (this.pending.length > 1048576) {
+                this.pending = '';
+                this._abortConnection(new Error('OpenOCD 响应流异常：未收到分帧符'));
+            }
         });
         this.socket.on('error', (e) => this._abortConnection(e));
         this.socket.on('close', () => {
@@ -228,10 +243,24 @@ class LiveWatchSession {
         const samples = [];
         let ok = 0;
         try {
-            for (const v of this.watch) {
-                const bytes = await this._readMemoryBytes(v.address, v.size);
-                if (bytes) { samples.push({ name: v.name, bytes, t }); ok++; }
-                else samples.push({ name: v.name, bytes: null, t });
+            // 按地址排序后将地址连续的变量合并为一次读取，减少 Tcl 往返，提升有效采样率
+            const sorted = this.watch.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
+            const groups = [];
+            for (const v of sorted) {
+                const last = groups[groups.length - 1];
+                if (last && v.address === last.end) { last.vars.push(v); last.end += v.size; }
+                else { groups.push({ start: v.address, end: v.address + v.size, vars: [v] }); }
+            }
+            for (const g of groups) {
+                const bytes = await this._readMemoryBytes(g.start, g.end - g.start);
+                if (bytes) {
+                    for (const v of g.vars) {
+                        const off = v.address - g.start;
+                        samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t }); ok++;
+                    }
+                } else {
+                    for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
+                }
             }
             if (this.handlers.onSample) this.handlers.onSample(samples, t);
             if (ok === 0 && this._lastReadError && this._lastReadError !== this._notifiedError) {
