@@ -3,7 +3,8 @@
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
 const { spawn } = require("child_process");
-const { isSafeCfg } = require("./openocdRunner");
+const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
+const { clampInteger } = require("./validation");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 
@@ -18,7 +19,7 @@ function parseMemoryValues(text) {
         if (/^0x[0-9a-fA-F]+$/i.test(tok)) n = parseInt(tok, 16);
         else if (/^-?[0-9]+$/.test(tok)) n = parseInt(tok, 10);
         else continue;
-        if (!Number.isNaN(n)) out.push(n);
+        if (Number.isInteger(n) && n >= 0 && n <= 255) out.push(n);
     }
     return out;
 }
@@ -34,6 +35,7 @@ class LiveWatchSession {
         this.handlers = handlers || {};
         this.child = null;
         this.socket = null;
+        this.connectingSocket = null;
         this.timer = null;
         this.busy = false;
         this.stopped = false;
@@ -45,14 +47,16 @@ class LiveWatchSession {
         this._lastReadError = '';
         this._notifiedError = '';
         this.connectionFailed = false;
+        this.connectionError = null;
         this._startReject = null; // start() 进行中时捕获的 reject，用于单通道上报连接期失败
+        this._openOcdLogTail = [];
     }
 
     setWatch(list) { this.watch = Array.isArray(list) ? list.slice() : []; }
 
     // 运行中动态调整采样间隔：重建定时器
     setIntervalMs(ms) {
-        const interval = Math.max(20, Math.min(10000, Number(ms) || 100));
+        const interval = clampInteger(ms, 100, 20, 10000);
         this.options.intervalMs = interval;
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
         if (!this.stopped && this.socket && !this.socket.destroyed) {
@@ -67,8 +71,8 @@ class LiveWatchSession {
         if (!isSafeCfg(this.options.probe) || !isSafeCfg(this.options.target)) {
             throw new Error(`非法的 OpenOCD 配置名：${this.options.probe} / ${this.options.target}`);
         }
-        const port = this.options.port || 6666;
-        const interval = Math.max(20, this.options.intervalMs || 100);
+        const port = clampInteger(this.options.port, 6666, 1, 65535);
+        const interval = clampInteger(this.options.intervalMs, 100, 20, 10000);
         const args = [
             '-f', `interface/${this.options.probe}`,
             '-f', `target/${this.options.target}`,
@@ -94,6 +98,8 @@ class LiveWatchSession {
             for (const line of text.split(/\r?\n/)) {
                 const clean = line.trim();
                 if (!clean) continue;
+                this._openOcdLogTail.push(clean.slice(0, 500));
+                if (this._openOcdLogTail.length > 20) this._openOcdLogTail.shift();
                 // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (/\bError\s*:/i.test(clean) || (!isInfo && /failed|unable to|no device found|libusb|in use|denied|timed out/i.test(clean))) {
@@ -110,7 +116,13 @@ class LiveWatchSession {
             if (this.socket && !this.socket.destroyed) { try { this.socket.destroy(); } catch (e) { /* ignore */ } }
             this.socket = null;
             this.stopped = true;
-            if (!expected) this._abortConnection(Object.assign(new Error(`OpenOCD 服务已退出（代码 ${code}）：可能探针被占用、配置错误或端口 ${port} 被占用`), { i18nKey: 'live.serviceExited', i18nParams: { code, port } }));
+            if (!expected) {
+                const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, { exitCode: code, port });
+                this._abortConnection(Object.assign(new Error(diagnostic.message), diagnostic, {
+                    i18nKey: 'live.serviceExited',
+                    i18nParams: { code, port }
+                }));
+            }
         });
 
         // start() 进行期间若子进程退出，_abortConnection 通过 _startReject 拒绝此 Promise，
@@ -118,10 +130,14 @@ class LiveWatchSession {
         try {
             await new Promise((resolve, reject) => {
                 this._startReject = reject;
-                if (this.stopped) { reject(new Error('OpenOCD 服务在连接过程中已退出')); return; }
+                if (this.stopped) { reject(this.connectionError || new Error('OpenOCD 服务在连接过程中已退出')); return; }
                 this._connectWithRetry(port, 6000).then(sock => {
+                    if (this.stopped) {
+                        try { sock.destroy(); } catch (e) { /* ignore */ }
+                        reject(this.connectionError || new Error('OpenOCD 服务在连接过程中已退出'));
+                        return;
+                    }
                     this.socket = sock;
-                    if (this.stopped) { reject(new Error('OpenOCD 服务在连接过程中已退出')); return; }
                     this._setupSocket();
                     this._status({ key: 'lw.connected' });
                     this.timer = setInterval(() => { this._sampleTick(); }, interval);
@@ -137,14 +153,32 @@ class LiveWatchSession {
         return new Promise((resolve, reject) => {
             const deadline = Date.now() + timeoutMs;
             const attempt = () => {
-                if (this.stopped) return reject(new Error('已停止'));
+                if (this.stopped) return reject(this.connectionError || new Error('已停止'));
                 const sock = net.connect({ host: '127.0.0.1', port });
-                sock.once('connect', () => resolve(sock));
-                sock.once('error', () => {
+                this.connectingSocket = sock;
+                const onConnect = () => {
+                    sock.removeListener('error', onInitialError);
+                    if (this.connectingSocket === sock) this.connectingSocket = null;
+                    if (this.stopped) {
+                        try { sock.destroy(); } catch (e) { /* ignore */ }
+                        reject(this.connectionError || new Error('已停止'));
+                        return;
+                    }
+                    resolve(sock);
+                };
+                const onInitialError = () => {
+                    sock.removeListener('connect', onConnect);
+                    if (this.connectingSocket === sock) this.connectingSocket = null;
                     try { sock.destroy(); } catch (e) { /* ignore */ }
-                    if (Date.now() > deadline) reject(new Error(`无法连接 OpenOCD Tcl 端口 ${port}`));
+                    if (this.stopped) reject(this.connectionError || new Error('已停止'));
+                    else if (Date.now() > deadline) {
+                        const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, { port });
+                        reject(Object.assign(new Error(diagnostic.message), diagnostic));
+                    }
                     else setTimeout(attempt, 200);
-                });
+                };
+                sock.once('connect', onConnect);
+                sock.once('error', onInitialError);
             };
             attempt();
         });
@@ -185,11 +219,14 @@ class LiveWatchSession {
         const err = error instanceof Error ? error : new Error(String(error || '连接已断开'));
         if (this.connectionFailed) return;
         this.connectionFailed = true;
+        this.connectionError = err;
         this.stopped = true;
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
         this._rejectQueue(err);
         if (this.socket && !this.socket.destroyed) { try { this.socket.destroy(); } catch (e) { /* ignore */ } }
         this.socket = null;
+        if (this.connectingSocket && !this.connectingSocket.destroyed) { try { this.connectingSocket.destroy(); } catch (e) { /* ignore */ } }
+        this.connectingSocket = null;
         if (this.child && !this.child.killed) { try { this.child.kill(); } catch (e) { /* ignore */ } }
         // start() 仍在进行中时，以拒绝其 Promise 作为唯一通知通道，避免 onDisconnect 重复上报
         if (this._startReject) {
@@ -236,32 +273,54 @@ class LiveWatchSession {
         return vals.slice(0, count);
     }
 
+    async _readItems(items, t) {
+        const samples = [];
+        let ok = 0;
+        // 按地址排序后将地址连续的变量合并为一次读取，减少 Tcl 往返。
+        const sorted = items.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
+        const groups = [];
+        for (const v of sorted) {
+            const last = groups[groups.length - 1];
+            if (last && v.address === last.end) { last.vars.push(v); last.end += v.size; }
+            else { groups.push({ start: v.address, end: v.address + v.size, vars: [v] }); }
+        }
+        for (const g of groups) {
+            const bytes = await this._readMemoryBytes(g.start, g.end - g.start);
+            if (bytes) {
+                for (const v of g.vars) {
+                    const off = v.address - g.start;
+                    samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t }); ok++;
+                }
+            } else {
+                for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
+            }
+        }
+        return { samples, ok };
+    }
+
+    // 在现有 Tcl 连接上读取一组变量一次，不改变 UI 的观察列表或采样定时器。
+    async readOnce(items, timeoutMs = 2500) {
+        if (!Array.isArray(items) || !items.length) return [];
+        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error('OpenOCD Tcl 服务未连接');
+        const deadline = Date.now() + timeoutMs;
+        while (this.busy) {
+            if (Date.now() >= deadline) throw new Error('等待实时采样连接空闲超时');
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        this.busy = true;
+        try {
+            return (await this._readItems(items, Date.now())).samples;
+        } finally {
+            this.busy = false;
+        }
+    }
+
     async _sampleTick() {
         if (this.busy || this.stopped || !this.socket || this.socket.destroyed || !this.watch.length) return;
         this.busy = true;
         const t = Date.now();
-        const samples = [];
-        let ok = 0;
         try {
-            // 按地址排序后将地址连续的变量合并为一次读取，减少 Tcl 往返，提升有效采样率
-            const sorted = this.watch.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
-            const groups = [];
-            for (const v of sorted) {
-                const last = groups[groups.length - 1];
-                if (last && v.address === last.end) { last.vars.push(v); last.end += v.size; }
-                else { groups.push({ start: v.address, end: v.address + v.size, vars: [v] }); }
-            }
-            for (const g of groups) {
-                const bytes = await this._readMemoryBytes(g.start, g.end - g.start);
-                if (bytes) {
-                    for (const v of g.vars) {
-                        const off = v.address - g.start;
-                        samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t }); ok++;
-                    }
-                } else {
-                    for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
-                }
-            }
+            const { samples, ok } = await this._readItems(this.watch, t);
             if (this.handlers.onSample) this.handlers.onSample(samples, t);
             if (ok === 0 && this._lastReadError && this._lastReadError !== this._notifiedError) {
                 this._notifiedError = this._lastReadError;
@@ -284,6 +343,10 @@ class LiveWatchSession {
             try { this.socket.destroy(); } catch (e) { /* ignore */ }
         }
         this.socket = null;
+        if (this.connectingSocket && !this.connectingSocket.destroyed) {
+            try { this.connectingSocket.destroy(); } catch (e) { /* ignore */ }
+        }
+        this.connectingSocket = null;
         if (this.child && !this.child.killed) { try { this.child.kill(); } catch (e) { /* ignore */ } }
         this.child = null;
     }

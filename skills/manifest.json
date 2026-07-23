@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "mcu-download",
+      "version": "1.1.0",
+      "required": ["SKILL.md", "scripts/download.ps1", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-live-watch",
+      "version": "1.4.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/read-live.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-chip-info",
+      "version": "1.1.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/read-chip.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-config",
+      "version": "1.1.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/config.js", "agents/openai.yaml"]
+    }
+  ]
+}

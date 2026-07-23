@@ -1,4 +1,4 @@
 interface:
   display_name: "MCU Live Watch"
   short_description: "Read live MCU variables through EmberProbe"
-  default_prompt: "Use $mcu-live-watch to read selected live variables from the connected MCU."
+  default_prompt: "Use $mcu-live-watch to autonomously read or trend selected MCU variables. Never require pre-started sampling; on failure, reason from the structured stderr diagnostic."

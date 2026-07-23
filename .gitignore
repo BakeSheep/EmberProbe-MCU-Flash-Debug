@@ -7,4 +7,5 @@ Thumbs.db
 .vscode-test/
 coverage/
 .zcode/
+.emberprobe/
 xpack-openocd-*.zip

@@ -16,7 +16,7 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - 基于所选 ELF、探针、目标与可选的 SVD 启动 Cortex-Debug 调试会话。
 - 实时变量观测：在目标运行时非侵入式读取 Cortex-M 内存；侧边栏提供独立数值列表，图表面板提供可折叠、可拖拽的当前值列与实时曲线。
 - **中英双语界面**，支持即时切换 - 详见[语言](#语言)。
-- 可选安装 `mcu-download` 与 `mcu-live-watch` Agent Skills 到当前工作区，分别用于下载固件和读取实时变量。
+- 可选安装四个 Agent Skills：固件下载、实时变量与趋势分析、选择性读取芯片信息，以及修改 EmberProbe 配置并同步侧边栏。
 
 ## 环境要求
 
@@ -77,6 +77,17 @@ OpenOCD 也会在下载、调试或实时观测前自动检查；当其缺失时
 
 > 此功能受 [MCUViewer](https://github.com/klonyyy/MCUViewer)（GPLv3）启发而独立实现；未使用其任何代码，与该项目无任何关联。
 
+## Agent Skills
+
+侧边栏安装入口会显示未安装、部分安装、可更新、本地修改或完整安装状态。安装到当前工作区的 Skills 包括：
+
+- `mcu-download`：检测并下载最新 ELF，预检和执行结果包含 ELF SHA-256 指纹。
+- `mcu-live-watch`：只给变量名即可单次读取或分析趋势，类型由 ELF/DWARF 自动推断；已有采样时复用连接，否则临时启动探针并在完成后关闭。临时趋势采样的启动、进度与关闭会同步到侧边栏和图表，用户也可随时停止。安装该 Skill 的工作区会自动激活 Agent Bridge，无需先打开侧边栏。也可添加变量到侧边栏、图表或两者。
+- `mcu-chip-info`：按 `identity`、`debug`、`runtime` 分组或指定字段读取芯片信息。
+- `mcu-config`：读取或修改 ELF、调试器、MCU、SVD、OpenOCD 和采样参数，修改后立即同步侧边栏。
+
+扩展通过只监听本机的 Agent Bridge 处理配置和界面联动，并继续统一管理探针互斥。ELF 每次读取都会重新计算内容指纹和解析符号；采样期间 ELF 改变时会中止，避免继续使用旧变量地址。
+
 ## 开发与构建
 
 ```powershell
@@ -85,7 +96,9 @@ npm run check
 npm run package
 ```
 
-`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.3.0`。
+Skill 调用失败时会返回结构化诊断，包括稳定错误码、失败分类、可能原因、建议动作与 OpenOCD 日志摘要，Agent 可据此区分探针未连接、MCU 未连接、目标未供电、配置错误或资源占用。
+
+`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.4.3`。
 
 ## 项目结构
 

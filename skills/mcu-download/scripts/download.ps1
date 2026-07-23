@@ -7,6 +7,11 @@ param(
     [switch]$Execute
 )
 $ErrorActionPreference = 'Stop'
+function ConvertTo-TclQuotedWord([string]$Value) {
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$').Replace('[', '\[').Replace(']', '\]')
+    $escaped = $escaped.Replace("`r", '\r').Replace("`n", '\n')
+    return '"' + $escaped + '"'
+}
 $root = (Resolve-Path -LiteralPath $Workspace).Path
 if (-not $Elf) {
     $candidate = Get-ChildItem -LiteralPath $root -Filter *.elf -File -Recurse -ErrorAction SilentlyContinue |
@@ -30,20 +35,27 @@ if (-not $Target) {
     foreach ($key in $rules.Keys) { if ($joined.Contains($key)) { $Target = $rules[$key]; break } }
 }
 if (-not $Probe) {
-    $devices = if ($IsLinux) { (& lsusb 2>$null) -join "`n" } elseif ($IsMacOS) { (& system_profiler SPUSBDataType 2>$null) -join "`n" } else { (Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FriendlyName) -join "`n" }
+    $devices = if ($IsLinux) { (& lsusb 2>$null) -join "`n" } elseif ($IsMacOS) { (& system_profiler SPUSBDataType 2>$null) -join "`n" } else {
+        $pnp = try { (Get-PnpDevice -PresentOnly -ErrorAction Stop | Select-Object -ExpandProperty FriendlyName) -join "`n" } catch { '' }
+        if ($pnp) { $pnp } else { (& pnputil.exe /enum-devices /connected 2>$null) -join "`n" }
+    }
     if ($devices -match '(?i)ST-?LINK') { $Probe='stlink.cfg' }
     elseif ($devices -match '(?i)J-?LINK|SEGGER') { $Probe='jlink.cfg' }
-    elseif ($devices -match '(?i)CMSIS[- ]DAP|DAPLink|Picoprobe') { $Probe='cmsis-dap.cfg' }
+    elseif ($devices -match '(?i)CMSIS[- _]?DAP|CMSISDAP|DAPLink|Pico\s?probe|MCU[- ]?Link') { $Probe='cmsis-dap.cfg' }
     elseif ($devices -match '(?i)XDS110') { $Probe='xds110.cfg' }
     elseif ($devices -match '(?i)Nu-?Link') { $Probe='nulink.cfg' }
 }
-$result = [ordered]@{ workspace=$root; elf=$Elf; target=$Target; probe=$Probe; openocd=$OpenOcd; ready=[bool]($Elf -and $Target -and $Probe) }
+$elfInfo = if ($Elf -and (Test-Path -LiteralPath $Elf -PathType Leaf)) { Get-Item -LiteralPath $Elf } else { $null }
+$elfSha256 = if ($elfInfo) { (Get-FileHash -LiteralPath $Elf -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
+$result = [ordered]@{ workspace=$root; elf=$Elf; elfSha256=$elfSha256; elfMtimeUtc=if($elfInfo){$elfInfo.LastWriteTimeUtc.ToString('o')}else{''}; target=$Target; probe=$Probe; openocd=$OpenOcd; ready=[bool]($Elf -and $Target -and $Probe) }
 $result | ConvertTo-Json -Compress
 if (-not $result.ready) { Write-Error 'Detection incomplete. Provide or select ELF, target, and probe.' }
 if (-not (Test-Path -LiteralPath $Elf -PathType Leaf)) { Write-Error "ELF not found: $Elf" }
 if ($Target -notmatch '^[^\\/]+\.cfg$' -or $Target -match '\.\.' -or $Probe -notmatch '^[^\\/]+\.cfg$' -or $Probe -match '\.\.') { Write-Error 'Unsafe OpenOCD configuration name.' }
 if ($Execute) {
-    $program = 'program "{0}" verify reset exit' -f $Elf.Replace('\','/')
+    $currentHash = (Get-FileHash -LiteralPath $Elf -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($currentHash -ne $elfSha256) { Write-Error 'ELF changed during download preflight. Retry so addresses and firmware stay consistent.' }
+    $program = 'program {0} verify reset exit' -f (ConvertTo-TclQuotedWord $Elf.Replace('\','/'))
     & $OpenOcd '-f' "interface/$Probe" '-f' "target/$Target" '-c' $program
     exit $LASTEXITCODE
 }

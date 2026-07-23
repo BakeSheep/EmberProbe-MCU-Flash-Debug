@@ -54,6 +54,8 @@ const idBare = splitIdcode("0x450");
 assert.strictEqual(idBare.deviceId, "0x450");
 assert.strictEqual(idBare.revId, "");
 assert.strictEqual(splitIdcode(""), null);
+assert.strictEqual(splitIdcode("not-a-device-id"), null);
+assert.strictEqual(splitIdcode("0x450 trailing"), null);
 
 // parseRegLine：寄存器行（r13/r14/r15 归一化为 sp/lr/pc，值转大写）
 assert.deepStrictEqual(parseRegLine("pc (/32): 0x080034ac"), { name: "pc", value: "0x080034AC" });

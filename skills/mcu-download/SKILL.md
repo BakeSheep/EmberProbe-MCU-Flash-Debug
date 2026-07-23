@@ -15,6 +15,6 @@ Use the bundled `scripts/download.ps1` from this skill directory. Do not constru
 
 2. Report the detected ELF, target, probe, and OpenOCD executable. If detection is incomplete, stop and ask the user to connect/select the missing item. Never guess a target configuration.
 3. When the user explicitly asked to download or flash, rerun the same command with `-Execute`.
-4. Report OpenOCD's exit code and concise result. On failure, include the actionable tail of its output.
+4. Report the ELF SHA-256 fingerprint, OpenOCD's exit code, and concise result. On failure, include the actionable tail of its output.
 
-The script selects the newest ELF by modification time, identifies the MCU from `.ioc`, CMake, and linker files, and detects the attached debug probe. Override a detected value only when the user supplies it explicitly with `-Elf`, `-Target`, `-Probe`, or `-OpenOcd`.
+The script selects the newest ELF by modification time, identifies the MCU from `.ioc`, CMake, and linker files, and detects the attached debug probe. On Windows it falls back to `pnputil` when `Get-PnpDevice` is unavailable. Override a detected value only when the user supplies it explicitly with `-Elf`, `-Target`, `-Probe`, or `-OpenOcd`.
