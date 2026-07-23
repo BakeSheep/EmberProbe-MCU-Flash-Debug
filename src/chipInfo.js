@@ -53,7 +53,7 @@ const DEV_ID_FAMILY = {
     0x410: 'STM32F1x', 0x412: 'STM32F1x', 0x414: 'STM32F1x', 0x430: 'STM32F1x',
     0x411: 'STM32F2x', 0x413: 'STM32F4x', 0x419: 'STM32F4x', 0x421: 'STM32F4x',
     0x423: 'STM32F4x', 0x431: 'STM32F4x', 0x433: 'STM32F4x', 0x434: 'STM32F4x',
-    0x441: 'STM32F4x', 0x446: 'STM32F4x', 0x448: 'STM32F4x', 0x463: 'STM32F4x',
+    0x441: 'STM32F4x', 0x448: 'STM32F4x', 0x463: 'STM32F4x',
     0x422: 'STM32F3x', 0x432: 'STM32F3x', 0x438: 'STM32F3x', 0x439: 'STM32F3x',
     0x444: 'STM32F3x', 0x446: 'STM32F3x',
     0x449: 'STM32F7x', 0x451: 'STM32F7x', 0x452: 'STM32F7x',
@@ -120,8 +120,10 @@ function parseKv(line) {
 // STM32 DBGMCU_IDCODE 拆分：低 12 位 DEV_ID、高 16 位 REV_ID
 function splitIdcode(idcode) {
     if (idcode === null || idcode === undefined || idcode === '') return null;
-    const u = (typeof idcode === 'string' ? parseInt(idcode, 16) : Number(idcode)) >>> 0;
-    if (!Number.isFinite(u)) return null;
+    if (typeof idcode === 'string' && !/^(?:0x)?[0-9a-f]+$/i.test(idcode.trim())) return null;
+    const parsed = typeof idcode === 'string' ? Number.parseInt(idcode, 16) : Number(idcode);
+    if (!Number.isFinite(parsed)) return null;
+    const u = parsed >>> 0;
     const dev = u & 0xfff;
     const rev = (u >>> 16) & 0xffff;
     return {

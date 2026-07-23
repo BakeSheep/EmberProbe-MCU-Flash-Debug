@@ -46,28 +46,45 @@ async function detectMcu(vscode) {
 }
 
 async function usbInventory() {
-    try {
-        if (process.platform === 'win32') {
+    if (process.platform === 'win32') {
+        try {
             const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-PnpDevice -PresentOnly | Select-Object -ExpandProperty FriendlyName'], { timeout: 6000, windowsHide: true });
-            return stdout;
+            if (stdout && stdout.trim()) return stdout;
+        } catch { /* Get-PnpDevice may be unavailable or access-denied for non-admin VS Code. */ }
+        try {
+            // pnputil is available on supported Windows releases and can enumerate connected
+            // devices without importing the PnpDevice PowerShell module. Include every class:
+            // CMSIS-DAP v2 commonly appears as HID/WinUSB rather than the USB device class.
+            const { stdout } = await execFileAsync('pnputil.exe', ['/enum-devices', '/connected'], { timeout: 6000, windowsHide: true });
+            return stdout || '';
+        } catch {
+            return '';
         }
+    }
+    try {
         const command = process.platform === 'darwin' ? ['system_profiler', ['SPUSBDataType']] : ['lsusb', []];
         return (await execFileAsync(command[0], command[1], { timeout: 6000 })).stdout;
     } catch { return ''; }
 }
 
-async function detectDebugger() {
-    const devices = (await usbInventory()).toLowerCase();
-    if (/st-?link|stm32 stlink/.test(devices)) return 'stlink.cfg';
-    if (/j-?link|segger/.test(devices)) return 'jlink.cfg';
-    if (/cmsis[- ]dap|daplink|picoprobe/.test(devices)) return 'cmsis-dap.cfg';
-    if (/xds110/.test(devices)) return 'xds110.cfg';
-    if (/nu-?link/.test(devices)) return 'nulink.cfg'; // 兼容 "Nu-Link" 连字符写法
+function debuggerFromInventory(inventory) {
+    const devices = String(inventory || '').toLowerCase();
+    if (/st[- ]?link|stm32\s+stlink/.test(devices)) return 'stlink.cfg';
+    if (/j[- ]?link|segger/.test(devices)) return 'jlink.cfg';
+    // Accept the spellings emitted by common firmware and Windows descriptors:
+    // CMSIS-DAP, CMSIS DAP, CMSIS_DAP, CMSISDAP, DAPLink and MCU-Link.
+    if (/cmsis(?:[- _]?dap)|daplink|pico\s?probe|mcu[- ]?link/.test(devices)) return 'cmsis-dap.cfg';
+    if (/xds[- ]?110/.test(devices)) return 'xds110.cfg';
+    if (/nu[- ]?link/.test(devices)) return 'nulink.cfg';
     return '';
+}
+
+async function detectDebugger() {
+    return debuggerFromInventory(await usbInventory());
 }
 
 async function detectWorkspace(vscode) {
     const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
     return { elf, mcu, debugger: debuggerConfig };
 }
-module.exports = { detectWorkspace, targetFromText };
+module.exports = { detectWorkspace, targetFromText, debuggerFromInventory, usbInventory };

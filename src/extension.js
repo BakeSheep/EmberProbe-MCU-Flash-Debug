@@ -14,7 +14,10 @@ const liveWatchView = require("./liveWatchView");
 const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
+const validation = require("./validation");
+const { AgentBridge } = require("./agentBridge");
 const fs = require("fs");
+const crypto = require("crypto");
 const i18n = require("./i18n");
 // 调试器配置列表
 const DEBUGGER_LIST = [
@@ -96,14 +99,7 @@ const CACHE_KEYS = {
 };
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
-    if (!rawPath)
-        return '';
-    // 移除开头的 '/'（如 "/c:/" → "c:/"）
-    if (rawPath.startsWith('/') && rawPath[1] === ':') {
-        rawPath = rawPath.slice(1);
-    }
-    // 统一将 '\' 转换为 '/'（OpenOCD 兼容正斜杠）
-    return rawPath.replace(/\\/g, '/');
+    return validation.cleanWindowsPath(rawPath);
 }
 // 实现WebviewViewProvider接口的类
 class MainViewProvider {
@@ -127,8 +123,16 @@ class MainViewProvider {
         this._chipInfo = null;
         this._chipInfoRunning = false;
         this._liveStarting = false;
+        this._debugStarting = false;
         this._openOcdStatus = { state: 'checking', key: 'oc.checking', canInstall: false };
         this._openOcdOperation = 0;
+        this._agentBridge = null;
+        this._agentReadRunning = false;
+        this._agentReadSession = null;
+        this._agentReadCancelled = false;
+        this._agentReadDelayTimer = null;
+        this._agentReadDelayResolve = null;
+        this._agentSamplingStatus = null;
         this.registerCommandHandlers();
     }
     // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
@@ -210,7 +214,11 @@ class MainViewProvider {
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
         this.commandHandlers['mcu-vscode.autoDetect'] = async () => this.runAutoDetect(true);
-        this.commandHandlers['mcu-vscode.installAgentSkill'] = async () => skillInstaller.installSkill(vscode, this._context, this._lang);
+        this.commandHandlers['mcu-vscode.installAgentSkill'] = async () => {
+            const status = await skillInstaller.installSkill(vscode, this._context, this._lang);
+            this._postSkillStatus(status);
+            return status;
+        };
         this.commandHandlers['mcu-vscode.openLiveWatch'] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers['mcu-vscode.selectElf'] = async () => {
@@ -335,6 +343,15 @@ class MainViewProvider {
         // 5. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
         this.commandHandlers['mcu-vscode.debug'] = async (resource) => {
             try {
+                if (this._agentReadRunning) {
+                    vscode.window.showWarningMessage(this._t('msg.agentReadBusy'));
+                    return false;
+                }
+                if (this._debugStarting) {
+                    vscode.window.showWarningMessage(this._t('msg.debugBusy'));
+                    return false;
+                }
+                this._debugStarting = true;
                 console.log('主进程执行启动调试命令');
                 let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
@@ -387,11 +404,18 @@ class MainViewProvider {
                 vscode.window.showErrorMessage(this._t('msg.debugFailed', { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
+            finally {
+                this._debugStarting = false;
+            }
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers['mcu-vscode.download'] = async (resource) => {
             if (this._downloadRunning) {
                 vscode.window.showWarningMessage(this._t('msg.downloadBusy'));
+                return false;
+            }
+            if (this._agentReadRunning) {
+                vscode.window.showWarningMessage(this._t('msg.agentReadBusy'));
                 return false;
             }
             // 下载前自动停止实时采样以释放探针；短暂等待确保 OpenOCD 进程退出、USB 句柄释放
@@ -439,6 +463,268 @@ class MainViewProvider {
                 this._downloadRunning = false;
             }
         };
+    }
+    _configurationSnapshot() {
+        const cfg = vscode.workspace.getConfiguration('emberprobe');
+        return {
+            elf: this._context.workspaceState.get(CACHE_KEYS.elfPath) || '',
+            debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || '',
+            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '',
+            svd: this._context.workspaceState.get(CACHE_KEYS.svdPath) || '',
+            openocdPath: cfg.get('openocdPath', 'openocd'),
+            sampleIntervalMs: cfg.get('sampleIntervalMs', 100),
+            tclPort: cfg.get('tclPort', 6666),
+            maxSamples: cfg.get('maxSamples', 2000)
+        };
+    }
+    _workspacePath(value, extension) {
+        if (value === '') return '';
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace) throw Object.assign(new Error(this._t('msg.openWorkspaceFirst')), { code: 'NO_WORKSPACE' });
+        const resolved = path.resolve(workspace, String(value));
+        if (!fs.existsSync(resolved)) throw Object.assign(new Error(`File does not exist: ${resolved}`), { code: 'FILE_NOT_FOUND' });
+        const workspaceReal = fs.realpathSync(workspace);
+        const resolvedReal = fs.realpathSync(resolved);
+        const relative = path.relative(workspaceReal, resolvedReal);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) throw Object.assign(new Error('Path must be inside the current workspace'), { code: 'PATH_OUTSIDE_WORKSPACE' });
+        if (extension && path.extname(resolvedReal).toLowerCase() !== extension) throw Object.assign(new Error(`Expected a ${extension} file`), { code: 'INVALID_FILE_TYPE' });
+        return cleanWindowsPath(resolvedReal);
+    }
+    async _setAgentConfiguration(values) {
+        const allowed = new Set(['elf', 'debugger', 'mcu', 'svd', 'openocdPath', 'sampleIntervalMs', 'tclPort', 'maxSamples']);
+        for (const key of Object.keys(values || {})) if (!allowed.has(key)) throw Object.assign(new Error(`Unsupported configuration key: ${key}`), { code: 'UNSUPPORTED_CONFIG' });
+        if (Object.hasOwn(values, 'elf')) await this._context.workspaceState.update(CACHE_KEYS.elfPath, this._workspacePath(values.elf, '.elf'));
+        if (Object.hasOwn(values, 'svd')) await this._context.workspaceState.update(CACHE_KEYS.svdPath, this._workspacePath(values.svd, values.svd === '' ? '' : '.svd'));
+        if (Object.hasOwn(values, 'debugger')) {
+            if (!openocdRunner.isSafeCfg(values.debugger)) throw Object.assign(new Error('Invalid debugger configuration name'), { code: 'INVALID_DEBUGGER' });
+            await this._context.workspaceState.update(CACHE_KEYS.debugger, values.debugger);
+        }
+        if (Object.hasOwn(values, 'mcu')) {
+            if (!openocdRunner.isSafeCfg(values.mcu)) throw Object.assign(new Error('Invalid MCU target configuration name'), { code: 'INVALID_MCU' });
+            await this._context.workspaceState.update(CACHE_KEYS.mcuCore, values.mcu);
+        }
+        const cfg = vscode.workspace.getConfiguration('emberprobe');
+        const numbers = {
+            sampleIntervalMs: [20, 10000],
+            tclPort: [1, 65535],
+            maxSamples: [100, 100000]
+        };
+        for (const [key, range] of Object.entries(numbers)) {
+            if (!Object.hasOwn(values, key)) continue;
+            const number = Number(values[key]);
+            if (!Number.isInteger(number) || number < range[0] || number > range[1]) throw Object.assign(new Error(`${key} must be an integer from ${range[0]} to ${range[1]}`), { code: 'INVALID_CONFIG_VALUE' });
+            await cfg.update(key, number, vscode.ConfigurationTarget.Workspace);
+        }
+        if (Object.hasOwn(values, 'openocdPath')) {
+            const executable = String(values.openocdPath || '').trim();
+            if (!executable || /[\r\n]/.test(executable)) throw Object.assign(new Error('Invalid OpenOCD path'), { code: 'INVALID_OPENOCD_PATH' });
+            await cfg.update('openocdPath', executable, vscode.ConfigurationTarget.Workspace);
+        }
+        this._symbolCache = null;
+        this._invalidateConsumerTypes();
+        this.updateView();
+        this._syncGraphTarget(message => this._livePanel?.webview.postMessage(message));
+        return this._configurationSnapshot();
+    }
+    async _addAgentWatch(params) {
+        const names = Array.isArray(params.variables) ? params.variables.map(String) : [];
+        if (!names.length) throw Object.assign(new Error('No variables supplied'), { code: 'NO_VARIABLES' });
+        const destination = params.destination || 'sidebar';
+        if (!['sidebar', 'chart', 'both'].includes(destination)) throw Object.assign(new Error('destination must be sidebar, chart, or both'), { code: 'INVALID_DESTINATION' });
+        this._symbolCache = null;
+        const symbols = this.readElfSymbols().symbols;
+        const byName = new Map(symbols.map(symbol => [symbol.name, symbol]));
+        const resolved = names.map(name => {
+            const symbol = byName.get(name);
+            if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${name}`), { code: 'VARIABLE_NOT_FOUND' });
+            if (symbol.isComposite || !symbol.watchType) throw Object.assign(new Error(`Variable is not a supported scalar: ${name}`), { code: 'UNSUPPORTED_VARIABLE' });
+            return { name, address: symbol.address, size: symbol.size, type: params.types?.[name] || symbol.watchType };
+        });
+        const results = {};
+        const addTo = async (key, target) => {
+            const current = this._scalarWatchList(key);
+            const existing = new Set(current.map(item => item.name));
+            const added = resolved.filter(item => !existing.has(item.name));
+            await this._context.workspaceState.update(key, current.concat(added));
+            results[target] = { added: added.map(item => item.name), alreadyPresent: resolved.filter(item => existing.has(item.name)).map(item => item.name) };
+        };
+        if (destination === 'sidebar' || destination === 'both') await addTo(CACHE_KEYS.sidebarWatchList, 'sidebar');
+        if (destination === 'chart' || destination === 'both') await addTo(CACHE_KEYS.watchList, 'chart');
+        this._invalidateConsumerTypes();
+        this._syncSidebarTarget(message => this._webviewView?.webview.postMessage(message));
+        this._syncGraphTarget(message => this._livePanel?.webview.postMessage(message));
+        if (this._liveSession) this._liveSession.setWatch(this._activeReadPlan());
+        return results;
+    }
+    _agentVariablePlan(params) {
+        const raw = Array.isArray(params.variables) ? params.variables : [];
+        const requests = raw.map(item => typeof item === 'string' ? { name: item } : {
+            name: item?.name,
+            type: item?.type
+        });
+        if (!requests.length) throw Object.assign(new Error('No variables supplied'), { code: 'NO_VARIABLES' });
+        this._symbolCache = null;
+        const elfResult = this.readElfSymbols();
+        const plan = elfSymbols.resolveVariableRequests(elfResult.symbols, requests);
+        return { elfResult, plan };
+    }
+    _decodeAgentSample(plan, samples) {
+        const byName = new Map(samples.map(sample => [sample.name, sample]));
+        const timestamp = samples.reduce((latest, sample) => Math.max(latest, sample.t || 0), 0) || Date.now();
+        const values = {};
+        for (const item of plan) {
+            const sample = byName.get(item.name);
+            values[item.name] = {
+                requestedName: item.requestedName,
+                value: sample?.bytes ? elfSymbols.decodeValue(sample.bytes, item.type) : null,
+                type: item.type,
+                address: `0x${item.address.toString(16).toUpperCase()}`
+            };
+        }
+        return { timestamp, values };
+    }
+    _postAgentSampling(running, key, params) {
+        this._agentSamplingStatus = running ? { running, key, params, agentOwned: true } : null;
+        this._postLive({ type: 'liveStatus', running, key, params, agentOwned: running });
+    }
+    _waitAgentInterval(intervalMs) {
+        return new Promise(resolve => {
+            const finish = () => {
+                if (this._agentReadDelayTimer) clearTimeout(this._agentReadDelayTimer);
+                this._agentReadDelayTimer = null;
+                this._agentReadDelayResolve = null;
+                resolve();
+            };
+            this._agentReadDelayResolve = finish;
+            this._agentReadDelayTimer = setTimeout(finish, intervalMs);
+        });
+    }
+    async _runAgentSamples(params, count, intervalMs, syncStatus) {
+        const { elfResult, plan } = this._agentVariablePlan(params);
+
+        // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
+        const liveDeadline = Date.now() + 7000;
+        while (this._liveStarting && Date.now() < liveDeadline) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
+
+        let session = this._liveWatchRunning ? this._liveSession : null;
+        let temporary = false;
+        let source = 'active-sampling';
+        if (!session) {
+            if (this._agentReadRunning) throw Object.assign(new Error('Another Agent variable read is in progress'), { code: 'AGENT_READ_BUSY' });
+            if (this._downloadRunning || this._chipInfoRunning || this._debugStarting || vscode.debug.activeDebugSession) {
+                throw Object.assign(new Error('The debug probe is busy with another operation'), { code: 'PROBE_BUSY' });
+            }
+            this._agentReadRunning = true;
+            this._agentReadCancelled = false;
+            try {
+                const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+                const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+                if (!debuggerCfg || !mcuCore) {
+                    throw Object.assign(new Error(this._t('live.needConfig')), { code: 'CONFIG_INCOMPLETE', i18nKey: 'live.needConfig' });
+                }
+                const cfg = vscode.workspace.getConfiguration('emberprobe');
+                const executable = await this._resolveOpenOcdPath(cfg.get('openocdPath', 'openocd'));
+                if (!executable) {
+                    throw Object.assign(new Error(this._t('live.notReady')), { code: 'OPENOCD_NOT_READY', i18nKey: 'live.notReady' });
+                }
+                if (!this._agentReadRunning) throw Object.assign(new Error('Agent variable read was cancelled'), { code: 'AGENT_READ_CANCELLED' });
+                const { cwd } = this._commandContext();
+                session = new liveWatch.LiveWatchSession(vscode, {
+                    executable,
+                    probe: debuggerCfg,
+                    target: mcuCore,
+                    cwd,
+                    port: validation.clampInteger(cfg.get('tclPort', 6666), 6666, 1, 65535),
+                    intervalMs: 10000
+                }, {});
+                this._agentReadSession = session;
+                temporary = true;
+                source = 'temporary-probe';
+            } catch (error) {
+                this._agentReadRunning = false;
+                throw error;
+            }
+        }
+
+        let completed = false;
+        try {
+            if (temporary) {
+                if (syncStatus) this._postAgentSampling(true, 'live.agentStarting', { total: count });
+                await session.start();
+            }
+            if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: 0, total: count });
+            const result = [];
+            for (let index = 0; index < count; index++) {
+                if (temporary && !this._agentReadRunning) throw Object.assign(new Error('Agent sampling was cancelled by the user'), { code: 'AGENT_READ_CANCELLED' });
+                result.push(this._decodeAgentSample(plan, await session.readOnce(plan)));
+                if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: index + 1, total: count });
+                if (index + 1 < count) await this._waitAgentInterval(intervalMs);
+            }
+            completed = true;
+            return { source, elf: elfResult.elf, samples: result };
+        } finally {
+            if (temporary) {
+                try { session.stop(); } catch { /* ignore */ }
+                if (this._agentReadSession === session) this._agentReadSession = null;
+                this._agentReadRunning = false;
+                if (this._agentReadDelayResolve) this._agentReadDelayResolve();
+                if (syncStatus) {
+                    const key = this._agentReadCancelled ? 'live.agentStopped' : (completed ? 'live.agentDone' : 'live.agentFailed');
+                    this._postAgentSampling(false, key, { total: count });
+                }
+                this._agentReadCancelled = false;
+            }
+        }
+    }
+    async _readAgentVariables(params) {
+        const result = await this._runAgentSamples(params, 1, 0, false);
+        return { source: result.source, elf: result.elf, ...result.samples[0] };
+    }
+    async _sampleAgentVariables(params) {
+        const count = validation.clampInteger(params.count, 10, 2, 1000);
+        const intervalMs = validation.clampInteger(params.intervalMs, 200, 20, 60000);
+        return this._runAgentSamples(params, count, intervalMs, true);
+    }
+    async _handleAgentCall(method, params) {
+        if (method === 'capabilities') return { protocol: 1, methods: ['config.get', 'config.set', 'watch.add', 'variables.read', 'variables.sample', 'chip.read'] };
+        if (method === 'config.get') return this._configurationSnapshot();
+        if (method === 'config.set') return this._setAgentConfiguration(params.values || {});
+        if (method === 'watch.add') return this._addAgentWatch(params);
+        if (method === 'variables.read') return this._readAgentVariables(params);
+        if (method === 'variables.sample') return this._sampleAgentVariables(params);
+        if (method === 'chip.read') {
+            const info = await this.readChipInfoAction(true);
+            const groups = {
+                identity: ['core', 'coreRevision', 'cpuid', 'chip', 'series', 'deviceId', 'revId', 'flashSize', 'uid', 'endian'],
+                debug: ['probeName', 'probeVersion', 'probe', 'transport', 'clock', 'voltage', 'targetName'],
+                runtime: ['targetState', 'haltReason', 'pc', 'sp', 'lr']
+            };
+            const requested = new Set((params.fields || []).map(String));
+            for (const section of params.sections || ['identity']) for (const field of groups[section] || []) requested.add(field);
+            return Object.fromEntries(Array.from(requested).filter(field => Object.hasOwn(info, field)).map(field => [field, info[field]]));
+        }
+        throw Object.assign(new Error(`Unsupported Agent Bridge method: ${method}`), { code: 'METHOD_NOT_FOUND' });
+    }
+    async startAgentBridge() {
+        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspace || this._agentBridge) return;
+        this._agentBridge = new AgentBridge(workspace, (method, params) => this._handleAgentCall(method, params));
+        await this._agentBridge.start();
+    }
+    async stopAgentBridge() {
+        const bridge = this._agentBridge;
+        this._agentBridge = null;
+        if (bridge) await bridge.stop();
+    }
+    _postSkillStatus(status) {
+        this._webviewView?.webview.postMessage({ type: 'skillStatus', ...status });
+    }
+    async refreshSkillStatus() {
+        const status = await skillInstaller.inspectSkills(vscode, this._context);
+        this._postSkillStatus(status);
+        return status;
     }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
     openLiveWatchPanel() {
@@ -488,7 +774,8 @@ class MainViewProvider {
                         await this.startLiveWatch(message.items || [], message.intervalMs, 'graph');
                         break;
                     case 'stop':
-                        this.stopLiveWatch();
+                        if (this._agentReadRunning) this.stopAgentReadIfRunning();
+                        else this.stopLiveWatch();
                         break;
                     case 'setInterval':
                         if (this._liveSession) this._liveSession.setIntervalMs(message.intervalMs);
@@ -507,20 +794,26 @@ class MainViewProvider {
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     readElfSymbols() {
         let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        if (!elfPath) throw Object.assign(new Error(this._t('live.elfFirst')), { i18nKey: 'live.elfFirst' });
+        if (!elfPath) throw Object.assign(new Error(this._t('live.elfFirst')), { code: 'ELF_NOT_CONFIGURED', i18nKey: 'live.elfFirst' });
         elfPath = cleanWindowsPath(elfPath);
         let buffer;
         let mtimeMs = 0;
         let fileSize = 0;
         try {
-            const stat = fs.statSync(elfPath);
-            mtimeMs = stat.mtimeMs;
-            fileSize = stat.size;
-            if (this._symbolCache?.elfPath === elfPath && this._symbolCache.mtimeMs === mtimeMs && this._symbolCache.fileSize === fileSize) return this._symbolCache.result;
+            const before = fs.statSync(elfPath);
+            mtimeMs = before.mtimeMs;
+            fileSize = before.size;
             buffer = fs.readFileSync(elfPath);
+            const after = fs.statSync(elfPath);
+            if (after.mtimeMs !== before.mtimeMs || after.size !== before.size) {
+                throw new Error('ELF changed while it was being read; retry after the build finishes');
+            }
         }
-        catch (e) { throw Object.assign(new Error(this._t('live.elfReadFail', { path: elfPath })), { i18nKey: 'live.elfReadFail', i18nParams: { path: elfPath } }); }
+        catch (e) { throw Object.assign(new Error(this._t('live.elfReadFail', { path: elfPath })), { code: 'ELF_READ_FAILED', i18nKey: 'live.elfReadFail', i18nParams: { path: elfPath }, details: { elfPath, cause: e.message } }); }
+        const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+        if (this._symbolCache?.elfPath === elfPath && this._symbolCache.sha256 === sha256) return this._symbolCache.result;
         const result = elfSymbols.parseElfSymbols(buffer);
+        result.elf = { path: elfPath, mtimeMs, size: fileSize, sha256 };
         let typeMap = null;
         try { typeMap = dwarf.parseDwarfVariableTypes(buffer); } catch (e) { typeMap = null; }
         for (const sym of result.symbols) {
@@ -533,7 +826,7 @@ class MainViewProvider {
         if (!typeMap || typeMap.size === 0) {
             result.warnings.push(this._t('warn.noDwarf'));
         }
-        this._symbolCache = { elfPath, mtimeMs, fileSize, result };
+        this._symbolCache = { elfPath, mtimeMs, fileSize, sha256, result };
         return result;
     }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
@@ -550,15 +843,17 @@ class MainViewProvider {
     _scalarWatchList(key) {
         const items = this._context.workspaceState.get(key) || [];
         try {
-            const byName = new Map(this.readElfSymbols().symbols.map(symbol => [symbol.name, symbol]));
-            const filtered = items.filter(item => !byName.get(item.name)?.isComposite);
-            if (filtered.length !== items.length) this._context.workspaceState.update(key, filtered);
-            return filtered;
-        } catch (e) { return items; }
+            const normalized = validation.normalizeWatchList(items, this.readElfSymbols().symbols);
+            if (JSON.stringify(normalized) !== JSON.stringify(items)) this._context.workspaceState.update(key, normalized);
+            return normalized;
+        } catch (e) { return []; }
     }
     _syncGraphTarget(post) {
         post({ type: 'watchList', items: this._scalarWatchList(CACHE_KEYS.watchList) });
-        post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
+        post({ type: 'liveStatus', ...(this._agentSamplingStatus || {
+            running: this._liveWatchRunning,
+            key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped'
+        }) });
         if (this._latestGraphSamples.size) {
             const now = Date.now();
             post({ type: 'liveSample', samples: Array.from(this._latestGraphSamples.values()).map(s => ({ ...s, t: now })) });
@@ -572,7 +867,10 @@ class MainViewProvider {
         } catch (error) {
             post({ type: 'availableVariables', symbols: [], errorKey: error.i18nKey, params: error.i18nParams, error: error.message });
         }
-        post({ type: 'liveStatus', running: this._liveWatchRunning, key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped' });
+        post({ type: 'liveStatus', ...(this._agentSamplingStatus || {
+            running: this._liveWatchRunning,
+            key: this._liveWatchRunning ? 'sb.sampling' : 'sb.stopped'
+        }) });
         if (this._latestSidebarSamples.size) {
             const now = Date.now();
             post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()).map(s => ({ ...s, t: now })) });
@@ -614,8 +912,9 @@ class MainViewProvider {
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
         if (this._downloadRunning) throw Object.assign(new Error(this._t('live.downloadRunning')), { i18nKey: 'live.downloadRunning' });
         if (this._chipInfoRunning) throw Object.assign(new Error(this._t('live.chipReading')), { i18nKey: 'live.chipReading' });
+        if (this._agentReadRunning) throw Object.assign(new Error(this._t('live.agentReading')), { i18nKey: 'live.agentReading' });
         if (this._liveStarting) throw Object.assign(new Error(this._t('live.starting')), { i18nKey: 'live.starting' });
-        if (vscode.debug.activeDebugSession) throw Object.assign(new Error(this._t('live.debugActive')), { i18nKey: 'live.debugActive' });
+        if (this._debugStarting || vscode.debug.activeDebugSession) throw Object.assign(new Error(this._t('live.debugActive')), { i18nKey: 'live.debugActive' });
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) throw Object.assign(new Error(this._t('live.needConfig')), { i18nKey: 'live.needConfig' });
@@ -637,7 +936,8 @@ class MainViewProvider {
         const { cwd } = this._commandContext();
         const session = new liveWatch.LiveWatchSession(vscode, {
             executable, probe: debuggerCfg, target: mcuCore, cwd,
-            port: cfg.get('tclPort', 6666), intervalMs: intervalMs || cfg.get('sampleIntervalMs', 100)
+            port: validation.clampInteger(cfg.get('tclPort', 6666), 6666, 1, 65535),
+            intervalMs: validation.clampInteger(intervalMs || cfg.get('sampleIntervalMs', 100), 100, 20, 10000)
         }, {
             onSample: (samples, t) => {
                 // 同一变量的原始字节按各面板自选的观察类型分别解码，避免图表/侧栏选不同 type 时数值与标签不一致
@@ -700,6 +1000,17 @@ class MainViewProvider {
     stopLiveWatchIfRunning() {
         if (this._liveWatchRunning) this.stopLiveWatch();
     }
+    stopAgentReadIfRunning() {
+        if (!this._agentReadRunning && !this._agentReadSession) return;
+        this._agentReadCancelled = true;
+        this._agentReadRunning = false;
+        if (this._agentReadDelayResolve) this._agentReadDelayResolve();
+        if (this._agentReadSession) {
+            try { this._agentReadSession.stop(); } catch { /* ignore */ }
+            this._agentReadSession = null;
+        }
+        this._postAgentSampling(false, 'live.agentStopped');
+    }
     // 推送芯片信息状态与（可选的）结果到侧边栏
     _postChipInfo(status, info) {
         const post = (m) => this._webviewView?.webview.postMessage(m);
@@ -714,18 +1025,38 @@ class MainViewProvider {
         post({ type: 'chipInfoStatus', state, key });
     }
     // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
-    async readChipInfoAction() {
-        if (this._chipInfoRunning) return;
-        if (this._downloadRunning) { this._postChipInfo({ state: 'error', key: 'chip.busyDownload' }); return; }
-        if (this._liveWatchRunning) { this._postChipInfo({ state: 'error', key: 'chip.busyLive' }); return; }
-        if (vscode.debug.activeDebugSession) { this._postChipInfo({ state: 'error', key: 'chip.busyDebug' }); return; }
+    async readChipInfoAction(forAgent = false) {
+        const rejectBusy = (key, code) => {
+            const error = Object.assign(new Error(this._t(key)), { i18nKey: key, code });
+            this._postChipInfo({ state: 'error', key });
+            if (forAgent) throw error;
+            return null;
+        };
+        if (this._chipInfoRunning) return rejectBusy('chip.reading', 'CHIP_READ_RUNNING');
+        if (this._downloadRunning) return rejectBusy('chip.busyDownload', 'PROBE_BUSY');
+        if (this._liveWatchRunning) return rejectBusy('chip.busyLive', 'PROBE_BUSY');
+        if (this._agentReadRunning) return rejectBusy('chip.busyAgent', 'PROBE_BUSY');
+        if (this._debugStarting || vscode.debug.activeDebugSession) return rejectBusy('chip.busyDebug', 'PROBE_BUSY');
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore) { this._postChipInfo({ state: 'error', key: 'chip.needConfig' }); return; }
+        if (!debuggerCfg || !mcuCore) return rejectBusy('chip.needConfig', 'CONFIG_INCOMPLETE');
         this._chipInfoRunning = true;
         const configuredExecutable = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
-        const executable = await this._resolveOpenOcdPath(configuredExecutable);
-        if (!executable) { this._chipInfoRunning = false; this._postChipInfo({ state: 'error', key: 'chip.notReady' }); return; }
+        let executable;
+        try { executable = await this._resolveOpenOcdPath(configuredExecutable); }
+        catch (error) {
+            this._chipInfoRunning = false;
+            if (forAgent) throw error;
+            this._postChipInfo({ state: 'error', key: error.i18nKey, params: error.i18nParams, message: error.message || String(error) });
+            return null;
+        }
+        if (!executable) {
+            this._chipInfoRunning = false;
+            const error = Object.assign(new Error(this._t('chip.notReady')), { i18nKey: 'chip.notReady', code: 'OPENOCD_NOT_READY' });
+            this._postChipInfo({ state: 'error', key: 'chip.notReady' });
+            if (forAgent) throw error;
+            return null;
+        }
         this._postChipInfo({ state: 'reading', key: 'chip.reading' });
         let diag = null;
         try {
@@ -736,9 +1067,12 @@ class MainViewProvider {
             this._chipInfo = info;
             this._postChipInfo({ state: 'ready', key: 'chip.done' }, info);
             this._writeChipDiagnostics(diag, info);
+            return info;
         } catch (error) {
             this._postChipInfo({ state: 'error', key: error.i18nKey, params: error.i18nParams, message: error.message || String(error) });
             this._writeChipDiagnostics(diag, null);
+            if (forAgent) throw error;
+            return null;
         } finally {
             this._chipInfoRunning = false;
         }
@@ -818,6 +1152,7 @@ class MainViewProvider {
                     this._syncChipInfo((message) => webviewView.webview.postMessage(message));
                     webviewView.webview.postMessage({ type: 'openocdStatus', ...this._openOcdStatus });
                     this.refreshOpenOcdStatus(false);
+                    this.refreshSkillStatus().catch(error => console.error('Agent Skills 状态检查失败：', error.message));
                     break;
                 }
                 case 'openocdAction': {
@@ -854,7 +1189,8 @@ class MainViewProvider {
                 }
                 case 'liveToggle': {
                     try {
-                        if (this._liveWatchRunning) this.stopLiveWatch();
+                        if (this._agentReadRunning) this.stopAgentReadIfRunning();
+                        else if (this._liveWatchRunning) this.stopLiveWatch();
                         else {
                             const items = this._context.workspaceState.get(CACHE_KEYS.sidebarWatchList) || [];
                             await this.startLiveWatch(items, message.intervalMs, 'sidebar');
@@ -890,7 +1226,13 @@ class MainViewProvider {
             && this._context.workspaceState.get(CACHE_KEYS.debugger)
             && this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!configured)
-            setTimeout(() => this.runAutoDetect(false), 0);
+            setTimeout(() => this.runAutoDetect(false).catch(error => {
+                console.error('自动检测失败：', error.message);
+                this._webviewView?.webview.postMessage({
+                    type: 'commandError', cmd: 'mcu-vscode.autoDetect',
+                    key: error.i18nKey, params: error.i18nParams, error: error.message
+                });
+            }), 0);
     }
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
@@ -929,6 +1271,7 @@ function activate(context) {
     console.log('MCU_VSCODE 下载与调试器已激活！');
     // 实例化Webview视图提供器（无论是否已打开工作区都注册，由各命令自行检查工作区状态）
     const mainViewProvider = new MainViewProvider(context);
+    mainViewProvider.startAgentBridge().catch(error => console.error('Agent Bridge 启动失败：', error.message));
     // 注册WebviewViewProvider
     const viewDisposable = vscode.window.registerWebviewViewProvider('mcu-vscode.mainView', mainViewProvider);
     // 订阅命令（兼容右键菜单）
@@ -954,11 +1297,23 @@ function activate(context) {
             mainViewProvider.refreshOpenOcdStatus(true);
         }
     }));
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+        await mainViewProvider.stopAgentBridge().catch(() => {});
+        await mainViewProvider.startAgentBridge().catch(error => console.error('Agent Bridge 重启失败：', error.message));
+        mainViewProvider.refreshSkillStatus().catch(() => {});
+    }));
     // 停用时兜底停止实时采样会话（关闭 OpenOCD 服务与 socket）
-    context.subscriptions.push({ dispose: () => mainViewProvider.stopLiveWatch() });
+    context.subscriptions.push({ dispose: () => {
+        mainViewProvider.stopLiveWatch();
+        mainViewProvider.stopAgentReadIfRunning();
+        mainViewProvider.stopAgentBridge().catch(() => {});
+    } });
     // 调试会话起止时自动停止实时采样：启动前释放探针避免冲突；断开后清理可能被扰动的会话
     context.subscriptions.push(vscode.debug.onDidStartDebugSession(session => {
-        if (session && session.type === 'cortex-debug') mainViewProvider.stopLiveWatchIfRunning();
+        if (session && session.type === 'cortex-debug') {
+            mainViewProvider.stopLiveWatchIfRunning();
+            mainViewProvider.stopAgentReadIfRunning();
+        }
     }));
     context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(session => {
         if (session && session.type === 'cortex-debug') mainViewProvider.stopLiveWatchIfRunning();

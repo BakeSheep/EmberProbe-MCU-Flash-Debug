@@ -6,6 +6,52 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-23
+
+### Added
+
+- Agent Bridge 错误响应新增结构化诊断字段：错误码、分类、失败阶段、可能原因、可重试性、建议动作和 OpenOCD 日志摘要。
+- 实时变量与趋势采样可区分探针未找到、目标 MCU 未连接、目标未供电、USB 权限、Tcl 端口冲突、通信超时和 OpenOCD 配置错误。
+- `mcu-live-watch`、`mcu-chip-info` 与 `mcu-config` 失败时统一向 stderr 输出机器可读的 `diagnostic` JSON。
+
+### Changed
+
+- `mcu-live-watch` 明确要求 Agent 依据诊断结果推理，禁止把任意读取失败表述为“active Tcl service 未启动”或要求用户手动开启采样。
+
+## [0.4.2] - 2026-07-23
+
+### Changed
+
+- Agent 趋势读取现在可在用户未开启采样时自主启动临时采样，完成后自动关闭并释放探针。
+- Agent 临时采样的启动、进度、完成与取消状态会同步到侧边栏和图表；用户可从任一界面提前停止。
+- 趋势 Skill 直接通过最新 ELF/DWARF 推断变量类型，并只输出紧凑的趋势汇总，避免源码搜索与冗余逐点输出。
+- 用户已开启采样时仍复用现有会话，不会在趋势读取结束后关闭用户的采样。
+
+## [0.4.1] - 2026-07-23
+
+### Changed
+
+- Agent 单次读取全局变量现在只需提供变量名；扩展从最新 ELF/DWARF 自动推断类型，并支持唯一的大小写无关名称匹配。
+- 已开启实时采样时复用现有 Tcl 连接；未开启时自动临时启动调试探针，读取一次后立即关闭，不再要求用户手动开始采样。
+- `mcu-live-watch` 指令明确禁止在正常单次读取前搜索源码声明，从而减少 Agent 工具调用与 token 消耗。
+- 工作区安装 `mcu-live-watch` 后会自动激活 EmberProbe Agent Bridge，无需先打开侧边栏。
+
+## [0.4.0] - 2026-07-23
+
+### Added
+
+- Agent Skills 安装状态现在可区分未安装、部分安装、可更新、本地修改和完整安装，并逐项校验四个 Skill 的必需文件。
+- 新增 `mcu-chip-info`，支持按字段或 identity/debug/runtime 分组读取芯片信息。
+- 新增 `mcu-config`，允许 Agent 在白名单范围内修改 EmberProbe 配置并立即同步侧边栏。
+- `mcu-live-watch` 新增侧边栏/图表变量添加、ELF SHA-256 指纹和上升/下降/稳定/波动趋势分析。
+- 新增仅监听本机、按工作区令牌鉴权的 Agent Bridge。
+
+### Fixed
+
+- 修复 Windows 下 `Get-PnpDevice` 权限失败后自动检测直接返回空结果的问题；现在降级使用 `pnputil`。
+- 扩充 CMSIS-DAP、DAPLink、MCU-Link、Picoprobe、ST-Link、J-Link、XDS110 和 Nu-Link 的名称匹配与回归测试。
+- ELF 符号缓存改用内容指纹；ELF 重建后重新解析变量地址，采样期间文件变化会立即停止。
+
 ## [0.3.1] - 2026-07-22
 
 ### Added

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Chip Information"
+  short_description: "Selectively read attached MCU information"
+  default_prompt: "Read only the connected MCU information needed for the user's question."

@@ -18,6 +18,8 @@ validateScripts("modernView", sidebar);
 assert.ok(sidebar.includes('id="liveValues"'));
 assert.ok(sidebar.includes('id="liveToggle"'));
 assert.ok(sidebar.includes('id="openocdCard"'), "sidebar should contain an OpenOCD status card");
+assert.ok(sidebar.includes('id="skillStatus"'), "sidebar should show Agent Skills installation status");
+assert.ok(sidebar.includes("m.type==='skillStatus'"), "sidebar should react to partial or complete Skill status");
 assert.ok(sidebar.includes('id="openocdInstall"'), "OpenOCD card should offer bundled installation");
 assert.ok(sidebar.includes("type:'openocdAction',action:'select'"), "OpenOCD path selection should be handled inside the sidebar");
 assert.ok(sidebar.includes("m.type==='openocdStatus'"), "sidebar should render OpenOCD status messages");
@@ -89,6 +91,15 @@ assert.ok(extensionSource.includes("type: 'chipInfo'"), "extension should publis
 assert.ok(extensionSource.includes("this._chipInfoRunning"), "chip info reads should guard against concurrent probe usage");
 assert.ok(extensionSource.includes("clipboard.writeText"), "extension should copy chip UID via the VS Code clipboard API");
 assert.ok(extensionSource.includes("_scalarWatchList"), "persisted aggregate watches should be filtered before sampling");
+assert.ok(extensionSource.includes("new AgentBridge"), "extension should expose the authenticated local Agent Bridge");
+assert.ok(extensionSource.includes("method === 'config.set'"), "Agent Bridge should support synchronized configuration changes");
+assert.ok(extensionSource.includes("method === 'watch.add'"), "Agent Bridge should add variables to the sidebar or chart");
+assert.ok(extensionSource.includes("method === 'variables.read'"), "Agent Bridge should support one-shot variable reads");
+assert.ok(extensionSource.includes("method === 'variables.sample'"), "Agent Bridge should support autonomous trend sampling");
+assert.ok(extensionSource.includes("source = 'temporary-probe'"), "one-shot reads should start a temporary probe when sampling is off");
+assert.ok(extensionSource.includes("this._postAgentSampling(true, 'live.agentStarting'"), "temporary Agent sampling should be visible and cancellable while the probe starts");
+assert.ok(extensionSource.includes("if (this._agentReadRunning) this.stopAgentReadIfRunning()"), "sidebar and chart stop actions should cancel Agent-owned sampling");
+assert.ok(extensionSource.includes("this._agentReadDelayResolve"), "Agent sampling interval should be cancellable without waiting for the full delay");
 assert.ok(panel.includes('"maxSamples":100'), "maxSamples should be clamped");
 assert.ok(panel.includes('"intervalMs":20'), "interval should be clamped");
 
@@ -112,6 +123,16 @@ session2._abortConnection(new Error("child exited during connect"));
 assert.ok(startErr && startErr.message === "child exited during connect", "start promise should be rejected with the abort reason");
 assert.strictEqual(session2._startReject, null, "_startReject should be cleared after deferral");
 assert.strictEqual(disconnects, 1, "onDisconnect must not fire while start is in flight");
+
+let connectingSocketDestroyed = 0;
+const session3 = new LiveWatchSession(null, {}, {});
+session3.connectingSocket = {
+  destroyed: false,
+  destroy() { this.destroyed = true; connectingSocketDestroyed++; }
+};
+session3.stop();
+assert.strictEqual(connectingSocketDestroyed, 1, "stopping during startup must close the in-flight socket");
+assert.strictEqual(session3.connectingSocket, null);
 
 // 语言自动匹配：按 VS Code 显示语言选择默认界面语言（zh-* → 中文，其余 → 英文）
 assert.strictEqual(i18n.matchVscodeLang("zh-cn"), "zh", "Chinese VS Code locale should map to zh");

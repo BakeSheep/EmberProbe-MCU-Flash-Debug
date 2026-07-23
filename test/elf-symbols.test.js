@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { parseElfSymbols, decodeValue, typeByteLength } = require("../src/elfSymbols");
+const { parseElfSymbols, decodeValue, typeByteLength, resolveVariableRequests } = require("../src/elfSymbols");
 const { parseMemoryValues } = require("../src/liveWatch");
 const { encodingToWatchType, readULEB, readSLEB, parseDwarfVariableTypes } = require("../src/dwarf");
 const liveSkill = require("../skills/mcu-live-watch/scripts/read-live");
@@ -75,6 +75,15 @@ assert.strictEqual(decodeValue([0xff, 0xff, 0xff, 0xff], "i32"), -1);
 assert.strictEqual(decodeValue([0x78, 0x56, 0x34, 0x12], "u32"), 0x12345678);
 assert.strictEqual(decodeValue([0x01], "u32"), null, "字节不足应返回 null");
 assert.strictEqual(typeByteLength("f32"), 4);
+const resolvedRequests = resolveVariableRequests([
+    { name: "Tick", address: 0x20000000, size: 4, watchType: "u32", isComposite: false },
+    { name: "sinx", address: 0x20000004, size: 4, watchType: "f32", isComposite: false }
+], [{ name: "tick" }, { name: "sinx" }]);
+assert.deepStrictEqual(resolvedRequests.map(item => [item.requestedName, item.name, item.type]), [
+    ["tick", "Tick", "u32"],
+    ["sinx", "sinx", "f32"]
+]);
+assert.throws(() => resolveVariableRequests([], [{ name: "missing" }]), /not found/);
 
 // 同一段原始字节按不同观察类型解码：图表与侧栏对同名变量选不同 type 时各自得到正确值
 const shared = [0x34, 0x12, 0x00, 0x00];
@@ -87,6 +96,15 @@ assert.deepStrictEqual(parseMemoryValues("10 255 32 0"), [10, 255, 32, 0]);
 assert.deepStrictEqual(parseMemoryValues("0x0a 0xff 0x20 0x00"), [10, 255, 32, 0]);
 assert.deepStrictEqual(parseMemoryValues("0x20000000: 0x78 0x56"), [0x78, 0x56]);
 assert.deepStrictEqual(parseMemoryValues(""), []);
+assert.deepStrictEqual(parseMemoryValues("-1 256 0xff 12"), [255, 12], "memory bytes must stay in the u8 range");
+assert.deepStrictEqual(liveSkill.memoryValues("-1 256 0xff 12"), [255, 12]);
+assert.throws(() => liveSkill.args(["--port", "--list"]), /Missing value/);
+assert.throws(() => liveSkill.boundedInteger("Infinity", 1, 1, 10, "--count"), /must be an integer/);
+
+const malformedElf = buildElf();
+malformedElf.writeUInt32LE(malformedElf.length - 4, 32);
+assert.throws(() => parseElfSymbols(malformedElf), /节头表越界/);
+assert.throws(() => liveSkill.parseSymbolsBuffer(malformedElf), /section table is out of bounds/);
 
 // DWARF：基础类型编码 → 观察类型
 assert.strictEqual(encodingToWatchType(0x04, 4), "f32"); // float

@@ -16,7 +16,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Starts a Cortex-Debug session from the selected ELF, probe, target, and optional SVD.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and the chart panel provides a collapsible, draggable current-value column plus real-time curves.
 - **Bilingual UI (English / 简体中文)** with an instant language toggle - see [Language](#language).
-- Optionally installs the `mcu-download` and `mcu-live-watch` Agent Skills into the current workspace, for downloading firmware and reading live variables respectively.
+- Optionally installs four Agent Skills for firmware download, live values and trend analysis, selective chip information, and configuration changes synchronized to the sidebar.
 
 ## Requirements
 
@@ -77,6 +77,17 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 
 > This feature is an independent implementation inspired by [MCUViewer](https://github.com/klonyyy/MCUViewer) (GPLv3); it uses none of its code and has no affiliation with that project.
 
+## Agent Skills
+
+The sidebar installer reports not installed, partial, update available, locally modified, or fully installed states. It installs:
+
+- `mcu-download`: detects and downloads the newest ELF, reporting an ELF SHA-256 fingerprint during preflight and execution.
+- `mcu-live-watch`: reads once or analyzes trends using names alone with ELF/DWARF type inference. It reuses active sampling or opens and closes a temporary probe session. Temporary trend startup, progress, and shutdown are mirrored to the sidebar and chart, where the user can also stop it. An installed Skill auto-activates the Agent Bridge, so opening the sidebar first is unnecessary. It can also add variables to the sidebar, chart, or both.
+- `mcu-chip-info`: reads selected fields or the `identity`, `debug`, and `runtime` groups.
+- `mcu-config`: reads or changes ELF, debugger, MCU, SVD, OpenOCD, and sampling settings, then synchronizes the sidebar immediately.
+
+A loopback-only Agent Bridge handles configuration and UI synchronization while the extension retains probe mutual exclusion. Every variable invocation fingerprints and reparses the ELF; sampling aborts if the ELF changes so stale addresses are never reused.
+
 ## Development & Build
 
 ```powershell
@@ -85,7 +96,9 @@ npm run check
 npm run package
 ```
 
-`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.3.0`.
+Failed Skill calls return structured diagnostics with stable error codes, failure categories, likely causes, suggested actions, and an OpenOCD log tail. This lets the Agent distinguish a missing probe, disconnected MCU, unpowered target, invalid configuration, or resource conflict.
+
+`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.4.3`.
 
 ## Project Structure
 

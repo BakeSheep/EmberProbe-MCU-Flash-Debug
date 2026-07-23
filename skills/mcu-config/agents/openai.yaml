@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Configuration"
+  short_description: "Read and update EmberProbe configuration"
+  default_prompt: "Read or update the current EmberProbe workspace configuration and report the synchronized values."

@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { parseLine, quoteTclWord } = require("../src/openocdRunner");
+const { parseLine, quoteTclWord, diagnoseOpenOcdFailure } = require("../src/openocdRunner");
 
 const cases = [
   ["Info : CMSIS-DAP: SWD supported", "probe"],
@@ -55,5 +55,21 @@ assert.strictEqual(
   quoteTclWord('C:/work/$board/[danger]/app "debug".elf'),
   '"C:/work/\\$board/\\[danger\\]/app \\"debug\\".elf"'
 );
+
+const noProbe = diagnoseOpenOcdFailure(["Error: unable to find a matching CMSIS-DAP device"], { exitCode: 1 });
+assert.strictEqual(noProbe.code, "PROBE_NOT_FOUND");
+assert.strictEqual(noProbe.category, "probe_connection");
+assert.deepStrictEqual(noProbe.details.openocdTail, ["Error: unable to find a matching CMSIS-DAP device"]);
+
+const noTarget = diagnoseOpenOcdFailure(["Error: Error connecting DP: cannot read IDR"], { exitCode: 1 });
+assert.strictEqual(noTarget.code, "TARGET_NOT_CONNECTED");
+assert.ok(noTarget.suggestedActions.some(action => action.includes("SWDIO")));
+
+const noPower = diagnoseOpenOcdFailure(["Error: target voltage 0.000 V is too low"]);
+assert.strictEqual(noPower.code, "TARGET_UNPOWERED");
+
+const portBusy = diagnoseOpenOcdFailure(["Error: couldn't bind tcl socket: Address already in use"], { port: 6666 });
+assert.strictEqual(portBusy.code, "TCL_PORT_IN_USE");
+assert.strictEqual(portBusy.details.port, 6666);
 
 console.log("OpenOCD parser tests passed");

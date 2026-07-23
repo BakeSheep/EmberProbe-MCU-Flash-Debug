@@ -21,6 +21,43 @@ function defaultType(size) {
     return 'u32';
 }
 
+function resolveVariableRequests(symbols, requests) {
+    const list = Array.isArray(symbols) ? symbols : [];
+    const exact = new Map(list.map(symbol => [symbol.name, symbol]));
+    const folded = new Map();
+    for (const symbol of list) {
+        const key = String(symbol.name || '').toLowerCase();
+        if (!folded.has(key)) folded.set(key, []);
+        folded.get(key).push(symbol);
+    }
+    const seen = new Set();
+    return (Array.isArray(requests) ? requests : []).map(request => {
+        const requestedName = String(request?.name || '').trim();
+        if (!requestedName) throw Object.assign(new Error('Variable name is required'), { code: 'INVALID_VARIABLE_NAME' });
+        let symbol = exact.get(requestedName);
+        if (!symbol) {
+            const matches = folded.get(requestedName.toLowerCase()) || [];
+            if (matches.length === 1) symbol = matches[0];
+            else if (matches.length > 1) throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), { code: 'AMBIGUOUS_VARIABLE' });
+        }
+        if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${requestedName}`), { code: 'VARIABLE_NOT_FOUND' });
+        if (seen.has(symbol.name)) throw Object.assign(new Error(`Variable requested more than once: ${symbol.name}`), { code: 'DUPLICATE_VARIABLE' });
+        seen.add(symbol.name);
+        const type = request.type || symbol.watchType || defaultType(symbol.size);
+        if (!SUPPORTED_TYPES.includes(type)) throw Object.assign(new Error(`Unsupported type for ${symbol.name}: ${type}`), { code: 'UNSUPPORTED_VARIABLE_TYPE' });
+        const width = typeByteLength(type);
+        if (symbol.isComposite || width > Number(symbol.size)) throw Object.assign(new Error(`Variable is not a supported scalar: ${symbol.name}`), { code: 'UNSUPPORTED_VARIABLE' });
+        return {
+            requestedName,
+            name: symbol.name,
+            address: Number(symbol.address) >>> 0,
+            size: width,
+            symbolSize: Number(symbol.size) || width,
+            type
+        };
+    });
+}
+
 // 将原始小端字节按类型解码为数值；bytes 可为 Buffer / Uint8Array / number[]
 function decodeValue(bytes, type) {
     const need = typeByteLength(type);
@@ -58,6 +95,9 @@ function parseElfSymbols(buffer) {
     const eShentsize = buf.readUInt16LE(46) || 40;
     const eShnum = buf.readUInt16LE(48);
     if (!eShoff || !eShnum) throw new Error('缺少节头表，可能已被 strip（请用 Debug 构建）');
+    if (eShentsize < 40 || eShoff + eShnum * eShentsize > buf.length) {
+        throw new Error('ELF 节头表越界或条目大小无效');
+    }
 
     // 读取全部节头（仅取解析符号所需字段）
     const sections = [];
@@ -79,12 +119,19 @@ function parseElfSymbols(buffer) {
     if (!symtab) throw new Error('未找到符号表（.symtab）：请使用 Debug 构建且不要 strip');
     const strtab = sections[symtab.link];
     if (!strtab) throw new Error('符号字符串表（.strtab）缺失');
+    const sectionInBounds = section =>
+        section.offset <= buf.length && section.size <= buf.length - section.offset;
+    if (!sectionInBounds(symtab) || !sectionInBounds(strtab)) {
+        throw new Error('ELF 符号表或字符串表越界');
+    }
 
     const readCStr = (base, rel) => {
         const p = base + rel;
-        if (p < 0 || p >= buf.length) return '';
+        const limit = base + strtab.size;
+        if (rel < 0 || p < base || p >= limit) return '';
         let end = p;
-        while (end < buf.length && buf[end] !== 0) end++;
+        while (end < limit && buf[end] !== 0) end++;
+        if (end === limit) return '';
         return buf.toString('utf8', p, end);
     };
 
@@ -92,6 +139,7 @@ function parseElfSymbols(buffer) {
     const SHN_UNDEF = 0;
     const SHN_ABS = 0xfff1;
     const entsize = symtab.entsize || 16;
+    if (entsize < 16) throw new Error('ELF 符号表条目大小无效');
     const count = Math.floor(symtab.size / entsize);
     const seen = new Map();
     for (let i = 0; i < count; i++) {
@@ -114,4 +162,4 @@ function parseElfSymbols(buffer) {
     return { symbols, warnings };
 }
 
-module.exports = { parseElfSymbols, decodeValue, defaultType, typeByteLength, SUPPORTED_TYPES };
+module.exports = { parseElfSymbols, decodeValue, defaultType, typeByteLength, resolveVariableRequests, SUPPORTED_TYPES };
