@@ -534,12 +534,36 @@ class MainViewProvider {
         this._symbolCache = null;
         const symbols = this.readElfSymbols().symbols;
         const byName = new Map(symbols.map(symbol => [symbol.name, symbol]));
-        const resolved = names.map(name => {
-            const symbol = byName.get(name);
-            if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${name}`), { code: 'VARIABLE_NOT_FOUND' });
-            if (symbol.isComposite || !symbol.watchType) throw Object.assign(new Error(`Variable is not a supported scalar: ${name}`), { code: 'UNSUPPORTED_VARIABLE' });
-            return { name, address: symbol.address, size: symbol.size, type: params.types?.[name] || symbol.watchType };
-        });
+        const resolved = [];
+        const resolvedNames = new Set();
+        const appendResolved = item => {
+            if (!resolvedNames.has(item.name)) {
+                resolvedNames.add(item.name);
+                resolved.push(item);
+            }
+        };
+        for (const rawName of names) {
+            // 支持路径语法：sensor.x, buf[0], buf[1:5]
+            const parsed = elfSymbols.parseMemberPath(rawName);
+            const baseName = parsed ? parsed.base : rawName;
+            const symbol = byName.get(baseName);
+            if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${rawName}`), { code: 'VARIABLE_NOT_FOUND' });
+            if (symbol.isComposite) {
+                if (!symbol.compositeLayout) throw Object.assign(new Error(`Composite variable has no DWARF layout: ${rawName}`), { code: 'UNSUPPORTED_VARIABLE' });
+                if (parsed && parsed.segments.length) {
+                    const leaves = elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed);
+                    if (!leaves.length) throw Object.assign(new Error(`Invalid composite member path: ${rawName}`), { code: 'INVALID_VARIABLE_PATH' });
+                    for (const leaf of leaves) {
+                        appendResolved({ name: leaf.path, address: leaf.address, size: leaf.size, type: leaf.type });
+                    }
+                } else {
+                    appendResolved({ name: baseName, address: symbol.address, size: symbol.size, type: '', isComposite: true, compositeLayout: symbol.compositeLayout });
+                }
+            } else {
+                if (!symbol.watchType) throw Object.assign(new Error(`Variable is not a supported scalar: ${rawName}`), { code: 'UNSUPPORTED_VARIABLE' });
+                appendResolved({ name: baseName, address: symbol.address, size: symbol.size, type: params.types?.[baseName] || symbol.watchType });
+            }
+        }
         const results = {};
         const addTo = async (key, target) => {
             const current = this._scalarWatchList(key);
@@ -565,10 +589,38 @@ class MainViewProvider {
         if (!requests.length) throw Object.assign(new Error('No variables supplied'), { code: 'NO_VARIABLES' });
         this._symbolCache = null;
         const elfResult = this.readElfSymbols();
-        const plan = elfSymbols.resolveVariableRequests(elfResult.symbols, requests);
-        return { elfResult, plan };
+        const byName = new Map(elfResult.symbols.map(s => [s.name, s]));
+        const scalarRequests = [];
+        const compositePlan = [];
+        for (const req of requests) {
+            const parsed = elfSymbols.parseMemberPath(req.name);
+            const baseName = parsed ? parsed.base : req.name;
+            const symbol = byName.get(baseName);
+            if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${req.name}`), { code: 'VARIABLE_NOT_FOUND' });
+            if (symbol.isComposite && symbol.compositeLayout) {
+                if (parsed && parsed.segments.length
+                    && !elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed).length) {
+                    throw Object.assign(new Error(`Invalid composite member path: ${req.name}`), { code: 'INVALID_VARIABLE_PATH' });
+                }
+                const totalSize = Number(symbol.size) || 0;
+                compositePlan.push({
+                    requestedName: req.name,
+                    name: baseName,
+                    address: Number(symbol.address) >>> 0,
+                    size: totalSize,
+                    type: '',
+                    isComposite: true,
+                    compositeLayout: symbol.compositeLayout,
+                    pathSpec: parsed
+                });
+            } else {
+                scalarRequests.push(req);
+            }
+        }
+        const plan = scalarRequests.length ? elfSymbols.resolveVariableRequests(elfResult.symbols, scalarRequests) : [];
+        return { elfResult, plan, compositePlan };
     }
-    _decodeAgentSample(plan, samples) {
+    _decodeAgentSample(plan, samples, compositePlan) {
         const byName = new Map(samples.map(sample => [sample.name, sample]));
         const timestamp = samples.reduce((latest, sample) => Math.max(latest, sample.t || 0), 0) || Date.now();
         const values = {};
@@ -580,6 +632,31 @@ class MainViewProvider {
                 type: item.type,
                 address: `0x${item.address.toString(16).toUpperCase()}`
             };
+        }
+        if (compositePlan) {
+            for (const comp of compositePlan) {
+                const sample = byName.get(comp.name);
+                const fullTree = sample?.bytes ? elfSymbols.decodeComposite(sample.bytes, comp.compositeLayout) : null;
+                const node = fullTree ? elfSymbols.navigateCompositeTree(fullTree, comp.pathSpec) : null;
+                const baseAddr = comp.address >>> 0;
+                const addrHex = off => `0x${((baseAddr + (off || 0)) >>> 0).toString(16).toUpperCase()}`;
+                if (elfSymbols.isScalarLeafNode(node)) {
+                    // 路径定位到单个标量成员/元素：以标量形式返回，便于趋势分析与阅读
+                    values[comp.requestedName] = {
+                        requestedName: comp.requestedName,
+                        value: node.value,
+                        type: node.type,
+                        address: addrHex(node.offset)
+                    };
+                } else {
+                    values[comp.requestedName] = {
+                        requestedName: comp.requestedName,
+                        tree: node,
+                        type: 'composite',
+                        address: addrHex(node && node.offset)
+                    };
+                }
+            }
         }
         return { timestamp, values };
     }
@@ -600,7 +677,13 @@ class MainViewProvider {
         });
     }
     async _runAgentSamples(params, count, intervalMs, syncStatus) {
-        const { elfResult, plan } = this._agentVariablePlan(params);
+        const { elfResult, plan, compositePlan } = this._agentVariablePlan(params);
+        // 合并标量与复合变量的实际读取项：复合变量按基址整体读一次（同名去重），
+        // 解码时再按各路径导航；避免同一结构体多次重复读取。
+        const readItems = [];
+        const seenRead = new Set();
+        for (const item of plan) { if (!seenRead.has(item.name)) { seenRead.add(item.name); readItems.push({ name: item.name, address: item.address, size: item.size }); } }
+        for (const comp of compositePlan) { if (!seenRead.has(comp.name)) { seenRead.add(comp.name); readItems.push({ name: comp.name, address: comp.address, size: comp.size }); } }
 
         // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
         const liveDeadline = Date.now() + 7000;
@@ -658,7 +741,7 @@ class MainViewProvider {
             const result = [];
             for (let index = 0; index < count; index++) {
                 if (temporary && !this._agentReadRunning) throw Object.assign(new Error('Agent sampling was cancelled by the user'), { code: 'AGENT_READ_CANCELLED' });
-                result.push(this._decodeAgentSample(plan, await session.readOnce(plan)));
+                result.push(this._decodeAgentSample(plan, await session.readOnce(readItems), compositePlan));
                 if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: index + 1, total: count });
                 if (index + 1 < count) await this._waitAgentInterval(intervalMs);
             }
@@ -815,13 +898,21 @@ class MainViewProvider {
         const result = elfSymbols.parseElfSymbols(buffer);
         result.elf = { path: elfPath, mtimeMs, size: fileSize, sha256 };
         let typeMap = null;
+        let compositeLayouts = null;
         try { typeMap = dwarf.parseDwarfVariableTypes(buffer); } catch (e) { typeMap = null; }
+        try { compositeLayouts = dwarf.parseCompositeLayout(buffer); } catch (e) { compositeLayouts = null; }
         for (const sym of result.symbols) {
             const info = typeMap && typeMap.get(sym.name);
             sym.typeName = info && info.typeName ? info.typeName : '';
-            sym.isComposite = /^(struct|union)\b/.test(sym.typeName) || /\[\]$/.test(sym.typeName) || (!info?.watchType && sym.size > 4);
+            const layout = compositeLayouts && compositeLayouts.get(sym.name);
+            // 有 DWARF 布局的复合类型标记为可展开；无布局但类型名匹配的大变量仍标记但不可展开
+            const hasLayout = !!layout;
+            sym.isComposite = hasLayout || /^(struct|union)\b/.test(sym.typeName) || /\[\]$/.test(sym.typeName) || (!info?.watchType && sym.size > 4);
             sym.watchType = sym.isComposite ? '' : (info && info.watchType ? info.watchType : elfSymbols.defaultType(sym.size));
-            if (sym.isComposite) sym.unsupportedReason = '';
+            if (sym.isComposite) {
+                sym.compositeLayout = layout || null;
+                sym.unsupportedReason = hasLayout ? '' : (this._t('lw.compositeNoLayout'));
+            }
         }
         if (!typeMap || typeMap.size === 0) {
             result.warnings.push(this._t('warn.noDwarf'));
@@ -873,19 +964,38 @@ class MainViewProvider {
         }) });
         if (this._latestSidebarSamples.size) {
             const now = Date.now();
-            post({ type: 'liveSample', samples: Array.from(this._latestSidebarSamples.values()).map(s => ({ ...s, t: now })) });
+            const scalarSamples = [];
+            const compositeSamples = [];
+            for (const s of this._latestSidebarSamples.values()) {
+                if (s.tree) compositeSamples.push({ ...s, t: now });
+                else scalarSamples.push({ ...s, t: now });
+            }
+            if (scalarSamples.length) post({ type: 'liveSample', samples: scalarSamples });
+            if (compositeSamples.length) post({ type: 'liveCompositeSample', samples: compositeSamples });
         }
     }
     // 图表与侧栏各自维护观察列表；同一变量在两侧可能选择不同观察类型。
     // 读取计划按变量名去重，宽度取两侧的最大值，一次读取覆盖所有消费者。
+    // 复合变量（结构体/数组）展开为叶子成员读取项，按变量整体地址范围合并读取。
     _activeReadPlan() {
         const byName = new Map();
         const add = (item) => {
             if (!item?.name) return;
-            const len = elfSymbols.typeByteLength(item.type);
-            const prev = byName.get(item.name);
-            if (!prev) byName.set(item.name, { name: item.name, address: item.address, size: len });
-            else if (len > prev.size) prev.size = len;
+            if (item.isComposite && item.compositeLayout) {
+                // 复合变量：展开为叶子成员，整体读取
+                const sym = { name: item.name, address: item.address, size: item.size };
+                const leaves = elfSymbols.expandCompositeLeaves(sym, item.compositeLayout, null);
+                if (leaves.length) {
+                    // 用变量基址+总大小作为整体读取范围
+                    const totalSize = item.size || leaves.reduce((max, l) => Math.max(max, (l.address - ((item.address >>> 0))) + l.size), 0);
+                    byName.set(item.name, { name: item.name, address: item.address, size: totalSize, isComposite: true });
+                }
+            } else {
+                const len = elfSymbols.typeByteLength(item.type);
+                const prev = byName.get(item.name);
+                if (!prev) byName.set(item.name, { name: item.name, address: item.address, size: len });
+                else if (len > prev.size) prev.size = len;
+            }
         };
         this._scalarWatchList(CACHE_KEYS.watchList).forEach(add);
         this._scalarWatchList(CACHE_KEYS.sidebarWatchList).forEach(add);
@@ -944,7 +1054,27 @@ class MainViewProvider {
                 const types = this._getCachedConsumerTypes();
                 const graphSamples = [];
                 const sidebarSamples = [];
+                const compositeSamples = [];
+                // 构建复合变量查找：name → { layout, address }
+                const compositeMap = new Map();
+                for (const key of [CACHE_KEYS.watchList, CACHE_KEYS.sidebarWatchList]) {
+                    for (const item of this._scalarWatchList(key)) {
+                        if (item.isComposite && item.compositeLayout && !compositeMap.has(item.name)) {
+                            compositeMap.set(item.name, { layout: item.compositeLayout, address: item.address });
+                        }
+                    }
+                }
                 for (const s of samples) {
+                    const compInfo = compositeMap.get(s.name);
+                    if (compInfo && s.bytes) {
+                        // 复合变量：按布局解码为树形值
+                        const tree = elfSymbols.decodeComposite(s.bytes, compInfo.layout);
+                        if (tree) {
+                            compositeSamples.push({ name: s.name, tree, t });
+                            this._latestSidebarSamples.set(s.name, { name: s.name, tree, t });
+                        }
+                        continue;
+                    }
                     const gType = types.graph.get(s.name);
                     const sType = types.sidebar.get(s.name);
                     if (gType) {
@@ -960,6 +1090,10 @@ class MainViewProvider {
                 }
                 if (graphSamples.length) this._livePanel?.webview.postMessage({ type: 'liveSample', samples: graphSamples, t });
                 if (sidebarSamples.length) this._webviewView?.webview.postMessage({ type: 'liveSample', samples: sidebarSamples, t });
+                if (compositeSamples.length) {
+                    this._livePanel?.webview.postMessage({ type: 'liveCompositeSample', samples: compositeSamples, t });
+                    this._webviewView?.webview.postMessage({ type: 'liveCompositeSample', samples: compositeSamples, t });
+                }
             },
             onStatus: (msg) => this._postConsumerStatuses(msg),
             onError: (msg) => this._postLive({ type: 'liveError', message: msg }),

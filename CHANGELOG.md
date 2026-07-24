@@ -6,6 +6,19 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-24
+
+### Fixed
+
+- Agent `watch.add` 现在会正确添加结构体成员、数组元素或数组范围，而不是退化为整个复合变量。
+- 拒绝负数、越界或格式错误的数组路径，避免读取变量范围之外的目标内存。
+
+## [0.4.4] - 2026-07-24
+
+### Changed
+
+- Repackaged the extension for Marketplace validation after the 0.4.3 Repository Signing service returned a transient retry error; no runtime behavior changed.
+
 ## [0.4.3] - 2026-07-23
 
 ### Added

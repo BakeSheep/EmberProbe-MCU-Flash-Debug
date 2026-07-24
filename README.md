@@ -98,7 +98,7 @@ npm run package
 
 Skill 调用失败时会返回结构化诊断，包括稳定错误码、失败分类、可能原因、建议动作与 OpenOCD 日志摘要，Agent 可据此区分探针未连接、MCU 未连接、目标未供电、配置错误或资源占用。
 
-`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.4.3`。
+`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.4.5`。
 
 ## 项目结构
 

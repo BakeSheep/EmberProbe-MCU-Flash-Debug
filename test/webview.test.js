@@ -62,7 +62,7 @@ validateScripts("liveWatchView", panel);
 assert.ok(panel.includes('id="timeWindow"'));
 assert.ok(panel.includes('id="freeze"'));
 assert.ok(panel.includes('html,body{width:100%;height:100%;overflow:hidden}'), "panel should fit its webview without page scrolling");
-assert.ok(panel.includes('card.append(rm,sw,main,val,sel)'), "remove button should be the first control in each variable card");
+assert.ok(panel.includes('card.append(rm,sw,main,sel)'), "remove button should be the first control in each variable card");
 assert.ok(panel.includes("rm.textContent='-'"), "graph remove control should use a minus sign");
 assert.ok(panel.includes('id="sideSplitter"'), "current-value column should expose a vertical splitter");
 assert.ok(panel.includes('id="sideToggle"'), "current-value column should be collapsible");
@@ -133,6 +133,15 @@ session3.connectingSocket = {
 session3.stop();
 assert.strictEqual(connectingSocketDestroyed, 1, "stopping during startup must close the in-flight socket");
 assert.strictEqual(session3.connectingSocket, null);
+
+// 采样中拔出调试器：USB 读写失败等致命日志应被识别为断开（以便自动停止采样）
+const probeGone = new LiveWatchSession(null, {}, {});
+assert.ok(probeGone._isFatalProbeLog("Error: error writing data: WriteFile: (0x0000048F)"), "USB WriteFile failure must be treated as a debugger disconnect");
+assert.ok(probeGone._isFatalProbeLog("libusb_bulk_write LIBUSB_ERROR_NO_DEVICE"), "libusb no-device must be treated as a disconnect");
+assert.ok(!probeGone._isFatalProbeLog("Info : clock speed 4000 kHz"), "benign info logs must not trigger auto-stop");
+assert.ok(!probeGone._isFatalProbeLog("Error: timed out while waiting for target halted"), "non-link errors must not trigger auto-stop");
+const liveWatchSource = fs.readFileSync(require.resolve("../src/liveWatch"), "utf8");
+assert.ok(liveWatchSource.includes("i18nKey: 'live.probeDisconnected'"), "unplugging the debugger during sampling should abort with a disconnect status");
 
 // 语言自动匹配：按 VS Code 显示语言选择默认界面语言（zh-* → 中文，其余 → 英文）
 assert.strictEqual(i18n.matchVscodeLang("zh-cn"), "zh", "Chinese VS Code locale should map to zh");
