@@ -66,6 +66,8 @@ class LiveWatchSession {
 
     _status(msg) { if (this.handlers.onStatus) this.handlers.onStatus(msg); }
     _error(msg) { if (this.handlers.onError) this.handlers.onError(msg); }
+    // 采样中拔出调试器的致命日志特征（USB 读写失败 / 设备丢失），用于自动停止采样
+    _isFatalProbeLog(line) { return /WriteFile|ReadFile|LIBUSB_ERROR_(?:NO_DEVICE|IO|PIPE)|error (?:writing|reading) data|target communication error/i.test(String(line || '')); }
 
     async start() {
         if (!isSafeCfg(this.options.probe) || !isSafeCfg(this.options.target)) {
@@ -100,6 +102,14 @@ class LiveWatchSession {
                 if (!clean) continue;
                 this._openOcdLogTail.push(clean.slice(0, 500));
                 if (this._openOcdLogTail.length > 20) this._openOcdLogTail.shift();
+                // 采样中拔出调试器：USB 读写失败等致命信号 → 自动停止采样，避免错误反复刷屏
+                if (this._isFatalProbeLog(clean)) {
+                    if (!this.stopped && !this.connectionFailed) {
+                        this._abortConnection(Object.assign(new Error('Debugger disconnected; live sampling stopped'), { i18nKey: 'live.probeDisconnected' }));
+                    }
+                    return;
+                }
+                if (this.connectionFailed) continue;
                 // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (/\bError\s*:/i.test(clean) || (!isInfo && /failed|unable to|no device found|libusb|in use|denied|timed out/i.test(clean))) {
@@ -327,7 +337,7 @@ class LiveWatchSession {
                 this._error('读取内存失败：' + this._lastReadError + '（运行中读取失败时可尝试降低采样率或确认目标状态）');
             }
         } catch (e) {
-            this._error(e.message);
+            if (!this.connectionFailed) this._error(e.message);
         } finally {
             this.busy = false;
         }

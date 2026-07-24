@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, live variables, and Agent Skills.",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -132,7 +132,7 @@
   ],
   "scripts": {
     "test": "npm run check",
-    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/i18n.js && node --check src/autoDetect.js && node --check src/agentBridge.js && node --check src/skillInstaller.js && node --check src/openocdRunner.js && node --check src/openocdChecker.js && node --check src/openocdInstaller.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/chipInfo.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node --check src/validation.js && node --check skills/_emberprobe/agent-client.js && node --check skills/mcu-config/scripts/config.js && node --check skills/mcu-chip-info/scripts/read-chip.js && node --check skills/mcu-live-watch/scripts/read-live.js && node test/auto-detect.test.js && node test/agent-skills.test.js && node test/skill-installer.test.js && node test/openocd-parser.test.js && node test/elf-symbols.test.js && node test/validation.test.js && node test/webview.test.js && node test/openocd-checker.test.js && node test/openocd-installer.test.js && node test/chip-info.test.js",
+    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/i18n.js && node --check src/autoDetect.js && node --check src/agentBridge.js && node --check src/skillInstaller.js && node --check src/openocdRunner.js && node --check src/openocdChecker.js && node --check src/openocdInstaller.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/chipInfo.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node --check src/validation.js && node --check skills/_emberprobe/agent-client.js && node --check skills/mcu-config/scripts/config.js && node --check skills/mcu-chip-info/scripts/read-chip.js && node --check skills/mcu-live-watch/scripts/read-live.js && node test/auto-detect.test.js && node test/agent-skills.test.js && node test/skill-installer.test.js && node test/openocd-parser.test.js && node test/elf-symbols.test.js && node test/validation.test.js && node test/composite-decode.test.js && node test/dwarf-composite.test.js && node test/webview.test.js && node test/openocd-checker.test.js && node test/openocd-installer.test.js && node test/chip-info.test.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"

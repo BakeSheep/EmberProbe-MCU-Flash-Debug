@@ -35,9 +35,16 @@ function boundedInteger(value, fallback, min, max, name) {
 
 function variableSpecs(value) {
   const specs = String(value || "").split(",").filter(Boolean).map(raw => {
-    const split = raw.lastIndexOf(":");
-    const name = (split > 0 ? raw.slice(0, split) : raw).trim();
-    const type = split > 0 ? raw.slice(split + 1).trim() : "";
+    const trimmed = raw.trim();
+    // 路径语法（结构体成员 sensor.x / 数组元素 buf[0] / 范围 buf[1:5] / 全部 buf[*]）
+    // 类型由扩展侧按 DWARF 布局推断，整体作为变量名传递，不再按 ':' 拆分类型。
+    if (trimmed.includes("[") || trimmed.includes(".")) {
+      if (!trimmed) throw new Error("Variable name is required");
+      return { name: trimmed };
+    }
+    const split = trimmed.lastIndexOf(":");
+    const name = (split > 0 ? trimmed.slice(0, split) : trimmed).trim();
+    const type = split > 0 ? trimmed.slice(split + 1).trim() : "";
     if (!name) throw new Error("Variable name is required");
     if (type && !TYPES.has(type)) throw new Error(`Unsupported variable type: ${type}`);
     return type ? { name, type } : { name };

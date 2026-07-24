@@ -162,4 +162,306 @@ function parseElfSymbols(buffer) {
     return { symbols, warnings };
 }
 
-module.exports = { parseElfSymbols, decodeValue, defaultType, typeByteLength, resolveVariableRequests, SUPPORTED_TYPES };
+// —— 复合类型路径解析与解码 ——
+
+// 解析成员路径：sensor.x → { base:'sensor', segments:[{kind:'member',name:'x'}] }
+// buf[0] → { base:'buf', segments:[{kind:'index',index:0}] }
+// buf[1:5] → { base:'buf', segments:[{kind:'range',start:1,end:5}] }
+// buf[*] → { base:'buf', segments:[{kind:'all'}] }
+// buf[0].x → { base:'buf', segments:[{kind:'index',index:0},{kind:'member',name:'x'}] }
+function parseMemberPath(pathStr) {
+    const str = String(pathStr || '').trim();
+    if (!str) return null;
+    // 匹配 baseName 后跟 .member 或 [index/range/*]
+    const m = str.match(/^([a-zA-Z_]\w*)/);
+    if (!m) return null;
+    const base = m[1];
+    const rest = str.slice(base.length);
+    const segments = [];
+    let pos = 0;
+    while (pos < rest.length) {
+        if (rest[pos] === '.') {
+            pos++;
+            const nameMatch = rest.slice(pos).match(/^([a-zA-Z_]\w*)/);
+            if (!nameMatch) return null;
+            segments.push({ kind: 'member', name: nameMatch[1] });
+            pos += nameMatch[1].length;
+        } else if (rest[pos] === '[') {
+            pos++;
+            const end = rest.indexOf(']', pos);
+            if (end < 0) return null;
+            const inner = rest.slice(pos, end).trim();
+            if (inner === '*') {
+                segments.push({ kind: 'all' });
+            } else if (inner.includes(':')) {
+                const parts = inner.split(':');
+                if (parts.length !== 2 || !/^\d*$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+                const start = parts[0] === '' ? 0 : Number(parts[0]);
+                const endIdx = Number(parts[1]);
+                if (!Number.isSafeInteger(start) || !Number.isSafeInteger(endIdx) || endIdx <= start) return null;
+                segments.push({ kind: 'range', start, end: endIdx });
+            } else {
+                if (!/^\d+$/.test(inner)) return null;
+                const idx = Number(inner);
+                if (!Number.isSafeInteger(idx)) return null;
+                segments.push({ kind: 'index', index: idx });
+            }
+            pos = end + 1;
+        } else {
+            return null; // 非法字符
+        }
+    }
+    return { base, segments };
+}
+
+// 将复合变量的叶子成员展开为扁平读取项列表
+// symbol: { name, address, size }
+// layout: CompositeLayout（来自 dwarf.parseCompositeLayout）
+// pathSpec: parseMemberPath 的结果（可选，无则展开全部叶子）
+// 返回 [{ name, path, address, size, type, typeName }]
+function expandCompositeLeaves(symbol, layout, pathSpec) {
+    if (!layout || !symbol) return [];
+    const baseAddr = Number(symbol.address) >>> 0;
+    const leaves = [];
+
+    function walk(currentLayout, currentOffset, currentPath, depth) {
+        if (depth > 10 || !currentLayout) return;
+        if (currentLayout.kind === 'struct' || currentLayout.kind === 'union') {
+            for (const m of (currentLayout.members || [])) {
+                const memberPath = currentPath + '.' + (m.name || '?');
+                const memberOffset = currentOffset + (m.offset || 0);
+                if (m.compositeLayout) {
+                    walk(m.compositeLayout, memberOffset, memberPath, depth + 1);
+                } else if (m.watchType) {
+                    leaves.push({
+                        name: symbol.name,
+                        path: memberPath,
+                        address: (baseAddr + memberOffset) >>> 0,
+                        size: m.byteSize || typeByteLength(m.watchType),
+                        type: m.watchType,
+                        typeName: m.typeName || ''
+                    });
+                }
+            }
+        } else if (currentLayout.kind === 'array') {
+            const elemType = currentLayout.elementType || {};
+            const dims = currentLayout.dimensions || [];
+            const total = currentLayout.totalElements || 0;
+            const elemSize = elemType.byteSize || 0;
+            // 确定要展开的元素范围
+            let rangeStart = 0, rangeEnd = total;
+            if (pathSpec && pathSpec.segments.length > 0) {
+                const seg = pathSpec.segments[0];
+                const remainingSegments = pathSpec.segments.slice(1);
+                if (seg.kind === 'index') {
+                    if (seg.index < 0 || seg.index >= total) return;
+                    rangeStart = seg.index;
+                    rangeEnd = seg.index + 1;
+                } else if (seg.kind === 'range') {
+                    if (seg.start < 0 || seg.end <= seg.start || seg.end > total) return;
+                    rangeStart = seg.start;
+                    rangeEnd = seg.end;
+                } else if (seg.kind === 'all') {
+                    // 全部
+                }
+                // 如果有剩余路径段，说明是嵌套访问（如 buf[0].x）
+                if (remainingSegments.length > 0 && elemType.kind === 'struct') {
+                    // 对范围内的每个元素递归展开
+                    const subPath = { base: symbol.name, segments: remainingSegments };
+                    for (let i = rangeStart; i < rangeEnd; i++) {
+                        const elemOffset = currentOffset + i * elemSize;
+                        const elemPath = currentPath + '[' + i + ']';
+                        if (elemType.kind === 'struct' || elemType.kind === 'union') {
+                            // 需要元素类型的 layout，但数组的 elementType 不含成员信息
+                            // 这种情况下 compositeLayout 的 elementType 是标量信息
+                            // 嵌套复合数组的处理依赖 compositeLayout 中的成员信息
+                        }
+                    }
+                    return;
+                }
+            }
+            // 展开标量元素
+            if (elemType.compositeLayout) {
+                for (let i = rangeStart; i < rangeEnd; i++) {
+                    walk(elemType.compositeLayout, currentOffset + i * elemSize, currentPath + '[' + i + ']', depth + 1);
+                }
+            } else if (elemType.watchType) {
+                for (let i = rangeStart; i < rangeEnd; i++) {
+                    leaves.push({
+                        name: symbol.name,
+                        path: currentPath + '[' + i + ']',
+                        address: (baseAddr + currentOffset + i * elemSize) >>> 0,
+                        size: elemSize,
+                        type: elemType.watchType,
+                        typeName: elemType.typeName || ''
+                    });
+                }
+            }
+        }
+    }
+
+    // 如果有路径规格，先导航到目标层级
+    if (pathSpec && pathSpec.segments.length > 0) {
+        let currentLayout = layout;
+        let currentOffset = 0;
+        let currentPath = symbol.name;
+        for (const seg of pathSpec.segments) {
+            if (seg.kind === 'member' && (currentLayout.kind === 'struct' || currentLayout.kind === 'union')) {
+                const member = (currentLayout.members || []).find(m => m.name === seg.name);
+                if (!member) return []; // 成员不存在
+                currentOffset += member.offset || 0;
+                currentPath += '.' + member.name;
+                if (member.compositeLayout) {
+                    currentLayout = member.compositeLayout;
+                } else {
+                    // 到达标量叶子
+                    return [{
+                        name: symbol.name,
+                        path: currentPath,
+                        address: (baseAddr + currentOffset) >>> 0,
+                        size: member.byteSize || typeByteLength(member.watchType),
+                        type: member.watchType,
+                        typeName: member.typeName || ''
+                    }];
+                }
+            } else if ((seg.kind === 'index' || seg.kind === 'range' || seg.kind === 'all') && currentLayout.kind === 'array') {
+                const elemSize = currentLayout.elementType ? currentLayout.elementType.byteSize : 0;
+                if (seg.kind === 'index') {
+                    const total = Number(currentLayout.totalElements) || 0;
+                    if (seg.index < 0 || seg.index >= total) return [];
+                    currentOffset += seg.index * elemSize;
+                    currentPath += '[' + seg.index + ']';
+                    if (currentLayout.elementType && currentLayout.elementType.compositeLayout) {
+                        currentLayout = currentLayout.elementType.compositeLayout;
+                        continue;
+                    }
+                    if (currentLayout.elementType && currentLayout.elementType.kind !== 'struct' && currentLayout.elementType.kind !== 'union' && currentLayout.elementType.kind !== 'array') {
+                        return [{
+                            name: symbol.name,
+                            path: currentPath,
+                            address: (baseAddr + currentOffset) >>> 0,
+                            size: elemSize,
+                            type: currentLayout.elementType.watchType,
+                            typeName: currentLayout.elementType.typeName || ''
+                        }];
+                    }
+                    return [];
+                }
+                // range / all：展开为多个叶子
+                if (seg.kind === 'range') {
+                    const total = Number(currentLayout.totalElements) || 0;
+                    if (seg.start < 0 || seg.end <= seg.start || seg.end > total) return [];
+                }
+                break; // 跳出循环，交给 walk 处理
+            } else {
+                return []; // 路径不匹配
+            }
+        }
+        // 如果导航后到达复合类型，展开其全部叶子
+        walk(currentLayout, currentOffset, currentPath, 0);
+    } else {
+        walk(layout, 0, symbol.name, 0);
+    }
+    return leaves;
+}
+
+// 从原始字节按布局解码为树形值结构
+// bytes: Buffer / Uint8Array / number[]（变量的完整字节）
+// layout: CompositeLayout
+// 返回 { kind, typeName, members/elements, value? }
+function decodeComposite(bytes, layout) {
+    if (!bytes || !layout) return null;
+    const src = Uint8Array.from(bytes);
+
+    function decodeScalar(offset, type) {
+        const width = typeByteLength(type);
+        if (offset < 0 || offset + width > src.length) return null;
+        const view = new DataView(src.buffer, src.byteOffset + offset, width);
+        switch (type) {
+            case 'u8': return view.getUint8(0);
+            case 'i8': return view.getInt8(0);
+            case 'u16': return view.getUint16(0, true);
+            case 'i16': return view.getInt16(0, true);
+            case 'u32': return view.getUint32(0, true);
+            case 'i32': return view.getInt32(0, true);
+            case 'f32': return view.getFloat32(0, true);
+            default: return null;
+        }
+    }
+
+    // offset 为该节点相对变量基址的绝对字节偏移，供 UI/Agent 计算成员地址与定位路径。
+    function decodeLayout(offset, lyt) {
+        if (!lyt) return null;
+        if (lyt.kind === 'struct' || lyt.kind === 'union') {
+            const members = [];
+            for (const m of (lyt.members || [])) {
+                const mOff = offset + (m.offset || 0);
+                if (m.compositeLayout) {
+                    members.push({ name: m.name, ...decodeLayout(mOff, m.compositeLayout) });
+                } else if (m.watchType) {
+                    members.push({ name: m.name, offset: mOff, value: decodeScalar(mOff, m.watchType), type: m.watchType, typeName: m.typeName || '' });
+                }
+            }
+            return { kind: lyt.kind, typeName: lyt.typeName, byteSize: lyt.byteSize, offset, members };
+        }
+        if (lyt.kind === 'array') {
+            const elemType = lyt.elementType || {};
+            const elemSize = elemType.byteSize || 0;
+            const total = lyt.totalElements || 0;
+            const elements = [];
+            for (let i = 0; i < total; i++) {
+                const eOff = offset + i * elemSize;
+                if (elemType.compositeLayout) {
+                    const decoded = decodeLayout(eOff, elemType.compositeLayout);
+                    if (decoded) elements.push({ index: i, ...decoded });
+                } else if (elemType.watchType) {
+                    elements.push({ index: i, offset: eOff, value: decodeScalar(eOff, elemType.watchType), type: elemType.watchType });
+                }
+            }
+            return { kind: 'array', typeName: lyt.typeName, byteSize: lyt.byteSize, offset, elementType: elemType, dimensions: lyt.dimensions, elements };
+        }
+        return null;
+    }
+
+    return decodeLayout(0, layout);
+}
+
+// 在已解码的树形值中按路径规格（parseMemberPath 的结果）导航到目标节点。
+// 返回标量叶子节点（含 value/type/offset）或子树节点（struct/union/array）；找不到返回 null。
+// range 段返回一个合成的数组子树（仅含选中范围内的元素）。
+function navigateCompositeTree(tree, pathSpec) {
+    if (!tree) return null;
+    if (!pathSpec || !Array.isArray(pathSpec.segments) || !pathSpec.segments.length) return tree;
+    let node = tree;
+    for (const seg of pathSpec.segments) {
+        if (!node) return null;
+        if (seg.kind === 'member') {
+            if (!Array.isArray(node.members)) return null;
+            node = node.members.find(m => m.name === seg.name) || null;
+        } else if (seg.kind === 'index') {
+            if (!Array.isArray(node.elements)) return null;
+            node = node.elements.find(e => e.index === seg.index) || null;
+        } else if (seg.kind === 'range') {
+            if (!Array.isArray(node.elements)) return null;
+            const els = node.elements.filter(e => e.index >= seg.start && e.index < seg.end);
+            node = {
+                kind: 'array', typeName: node.typeName, elementType: node.elementType,
+                dimensions: node.dimensions, offset: els.length ? els[0].offset : node.offset, elements: els
+            };
+        } else if (seg.kind === 'all') {
+            // 停留在当前数组节点
+        } else {
+            return null;
+        }
+    }
+    return node;
+}
+
+// 判断一个树节点是否为标量叶子（含 value/type，无 members/elements 子结构）。
+function isScalarLeafNode(node) {
+    return !!node && Object.prototype.hasOwnProperty.call(node, 'value')
+        && !Object.prototype.hasOwnProperty.call(node, 'members')
+        && !Object.prototype.hasOwnProperty.call(node, 'elements');
+}
+
+module.exports = { parseElfSymbols, decodeValue, decodeComposite, navigateCompositeTree, isScalarLeafNode, defaultType, typeByteLength, resolveVariableRequests, parseMemberPath, expandCompositeLeaves, SUPPORTED_TYPES };
