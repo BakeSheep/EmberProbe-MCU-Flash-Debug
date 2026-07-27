@@ -14,7 +14,7 @@
     },
     {
       "name": "mcu-chip-info",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "runtime": true,
       "required": ["SKILL.md", "scripts/read-chip.js", "agents/openai.yaml"]
     },

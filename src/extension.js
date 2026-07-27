@@ -780,7 +780,7 @@ class MainViewProvider {
         if (method === 'chip.read') {
             const info = await this.readChipInfoAction(true);
             const groups = {
-                identity: ['core', 'coreRevision', 'cpuid', 'chip', 'series', 'deviceId', 'revId', 'flashSize', 'uid', 'endian'],
+                identity: ['core', 'coreRevision', 'cpuid', 'chip', 'series', 'designer', 'romDesigner', 'designerCode', 'romPart', 'authenticity', 'compatVendor', 'compatBrand', 'deviceId', 'revId', 'flashSize', 'uid', 'endian'],
                 debug: ['probeName', 'probeVersion', 'probe', 'transport', 'clock', 'voltage', 'targetName'],
                 runtime: ['targetState', 'haltReason', 'pc', 'sp', 'lr']
             };

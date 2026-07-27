@@ -41,12 +41,25 @@ const STM32_FLASHSIZE_BASE = {
 // CPUID 地址（所有 Cortex-M 通用）
 const CPUID_ADDR = 0xe000ed00;
 const CPUID_HEX = '0x' + CPUID_ADDR.toString(16);
+// CoreSight ROM Table（0xE00FF000）的外围/组件 ID 寄存器：PIDR 中的 JEP106 设计者代码是最可靠的厂商指纹，
+// 兼容芯片可以照抄 DBGMCU_IDCODE，但正规厂商不会伪造 ST 的 JEDEC 设计者代码
+const ROM_PIDR4_ADDR = 0xe00fffd0; // PIDR4-7（PIDR4[3:0] = JEP106 延续码）
+const ROM_PIDR0_ADDR = 0xe00fffe0; // PIDR0-3（器件号 + JEP106 识别码）
+const ROM_CIDR_ADDR = 0xe00ffff0;  // CIDR0-3（前导码 0xB105xx0D，用于确认 PIDR 可信）
 // 经典 DBGMCU_IDCODE 地址（F1/F2/F3/F4/F7/L1/L4/G4/WB/WL 等大多数 STM32 通用）
 const CLASSIC_IDCODE_ADDR = 0xe0042000;
 // 常见 Flash 容量寄存器回退地址（F1=0x1FFFF7E0，F2/F4=0x1FFF7A22）
 const FALLBACK_FLASHSIZE_ADDRS = [0x1ffff7e0, 0x1fff7a22];
 // 常见 UID 回退地址（F1/F3=0x1FFFF7E8，F2/F4/L4=0x1FFF7A10）
 const FALLBACK_UID_ADDRS = [0x1ffff7e8, 0x1fff7a10];
+// 全家族候选地址集：目标配置可能选错（如 H750 误选 stm32f1x），故每次扫描全部已知地址，
+// 再按读到的 DEV_ID 锁定真实家族后选取对应地址的值（单条 mdw 很快，失败由 catch 吞掉）
+const ALL_IDCODE_ADDRS = Array.from(new Set([CLASSIC_IDCODE_ADDR, ...Object.values(STM32_IDCODE_BASE)]));
+const ALL_FLASHSIZE_ADDRS = Array.from(new Set([...FALLBACK_FLASHSIZE_ADDRS, ...Object.values(STM32_FLASHSIZE_BASE)]));
+const ALL_UID_ADDRS = Array.from(new Set([...FALLBACK_UID_ADDRS, ...Object.values(STM32_UID_BASE)]));
+const IDCODE_ADDR_SET = new Set(ALL_IDCODE_ADDRS);
+const FLASHSIZE_ADDR_SET = new Set(ALL_FLASHSIZE_ADDRS);
+const UID_ADDR_SET = new Set(ALL_UID_ADDRS);
 
 // STM32 DEV_ID → 芯片家族映射（用于在目标配置与实际芯片不符时修正系列名）
 const DEV_ID_FAMILY = {
@@ -66,6 +79,87 @@ const DEV_ID_FAMILY = {
     0x420: 'STM32F0x', 0x426: 'STM32F0x', 0x428: 'STM32F0x',
     0x495: 'STM32WBx'
 };
+
+// JEP106 设计者代码 → 厂商名（键为 "延续码:识别码"，摘自 JEDEC JEP106 正式列表，收录 Cortex-M MCU 常见厂商）
+const JEP106_DESIGNERS = {
+    '0:0x0e': 'Freescale (NXP)', '0:0x15': 'NXP', '0:0x17': 'Texas Instruments',
+    '0:0x1f': 'Atmel (Microchip)', '0:0x20': 'STMicroelectronics', '0:0x29': 'Microchip',
+    '0:0x34': 'Cypress (Infineon)', '0:0x41': 'Infineon', '0:0x65': 'Analog Devices',
+    '2:0x21': 'Silicon Labs', '2:0x44': 'Nordic Semiconductor',
+    '4:0x23': 'Renesas', '4:0x3b': 'Arm', '4:0x71': 'Toshiba',
+    '6:0x48': 'GigaDevice', '7:0x21': 'Fudan Microelectronics', '7:0x36': 'HiSilicon',
+    '7:0x51': 'GigaDevice (Beijing)', '8:0x1b': 'Ambiq Micro', '8:0x2d': 'Nuvoton',
+    '8:0x79': 'Realtek', '9:0x05': 'Puya Semiconductor', '9:0x13': 'Raspberry Pi',
+    '9:0x3b': 'Artery Technology', '9:0x4f': 'Puya Semiconductor (Shenzhen)',
+    '11:0x23': 'Apex Microelectronics (Geehy)', '11:0x2d': 'Goodix', '11:0x68': 'Hangshun Chip Technology',
+    '12:0x12': 'Espressif'
+};
+// ST 的 JEP106 键：M0/M3/M4 等经典内核上 ST 会定制 0xE00FF000 的 ROM 表（设计者 ST、器件号=DEV_ID）
+const ST_JEP106_KEY = '0:0x20';
+// Arm 的 JEP106 键：M7/M23/M33 等新内核上 0xE00FF000 是 Arm 内核自带 ROM 表（器件号 0x4Cx），
+// 原厂 ST 芯片也会读到 Arm，因此 Arm 不能作为“非原厂”的证据，只能视为无法判定
+const ARM_JEP106_KEY = '4:0x3b';
+// 已知 STM32 兼容芯片厂商 → 产品线品牌（识别为兼容芯片时给出直观提示）
+const COMPAT_BRANDS = {
+    '11:0x23': 'Geehy APM32', '6:0x48': 'GigaDevice GD32', '7:0x51': 'GigaDevice GD32',
+    '9:0x3b': 'Artery AT32', '11:0x68': 'HK32', '9:0x05': 'Puya PY32', '9:0x4f': 'Puya PY32',
+    '7:0x21': 'Fudan FM33'
+};
+
+// 解析 CoreSight ROM 表的 PIDR/CIDR：得到 JEP106 设计者（厂商指纹）与器件号。
+// pidr03/pidr47/cidr 均为 4 个 32 位字；CIDR 前导码不合法或未使用 JEDEC 编码时返回 null
+function decodeRomPidr(pidr03, pidr47, cidr) {
+    if (!Array.isArray(pidr03) || pidr03.length < 4 || !Array.isArray(pidr47) || pidr47.length < 1) return null;
+    if (!Array.isArray(cidr) || cidr.length < 4) return null;
+    // CIDR 前导码固定为 0x0D / 0xX0 / 0x05 / 0xB1（CIDR1 高 4 位为组件类型）
+    if ((cidr[0] & 0xff) !== 0x0d || (cidr[1] & 0x0f) !== 0x00 || (cidr[2] & 0xff) !== 0x05 || (cidr[3] & 0xff) !== 0xb1) return null;
+    const p0 = pidr03[0] & 0xff, p1 = pidr03[1] & 0xff, p2 = pidr03[2] & 0xff, p4 = pidr47[0] & 0xff;
+    if (!(p2 & 0x08)) return null; // 未使用 JEDEC 分配的设计者代码
+    const id = ((p2 & 0x07) << 4) | ((p1 >>> 4) & 0x0f); // JEP106 识别码（7 位，不含奇偶位）
+    const cont = p4 & 0x0f;                              // JEP106 延续码个数（bank）
+    const key = cont + ':0x' + id.toString(16).padStart(2, '0');
+    const part = ((p1 & 0x0f) << 8) | p0;                // ST 芯片此值等于 DEV_ID，可作交叉校验
+    return {
+        key,
+        designer: JEP106_DESIGNERS[key] || '',
+        code: 'JEP106 bank ' + cont + ', 0x' + id.toString(16).toUpperCase().padStart(2, '0'),
+        part: '0x' + part.toString(16).toUpperCase()
+    };
+}
+
+// 依据芯片系列与 ROM 表设计者给出原厂/兼容判定：仅对宣称 STM32 的芯片有意义。
+// 设计者为 ST → 原厂；为 Arm（内核自带 ROM 表，M7/M33 等原厂芯片也如此）→ 不判定；
+// 为其它硬件厂商→ 兼容芯片（正规厂商会在自定义 ROM 表中写入自己的 JEDEC 代码）
+function assessAuthenticity(series, designerKey) {
+    const none = { authenticity: '', compatVendor: '', compatBrand: '' };
+    if (!designerKey || !/^stm32/i.test(String(series || ''))) return none;
+    if (designerKey === ST_JEP106_KEY) return { authenticity: 'genuine', compatVendor: '', compatBrand: '' };
+    if (designerKey === ARM_JEP106_KEY) return none; // 内核 ROM 表不携带芯片厂商信息，无法判定
+    return { authenticity: 'compatible', compatVendor: JEP106_DESIGNERS[designerKey] || '', compatBrand: COMPAT_BRANDS[designerKey] || '' };
+}
+
+// 推导芯片设计厂商：仅当 ROM 表携带已知的非 Arm 硬件厂商码时才采信。
+// Arm 内核 ROM 表、未知码或读取失败均无法证明芯片厂商，必须保持未知。
+function deriveVendor(series, rom) {
+    if (rom && rom.designer && rom.key !== ARM_JEP106_KEY) return rom.designer;
+    return '';
+}
+
+// 从全家族 IDCODE 读取结果中选择可信值：优先取 DEV_ID 在已知家族表中的读数（目标配置选错时也能命中）；
+// 未收录的 DEV_ID 只能从目标家族的 preferredAddr 接受，避免把其它家族地址上的普通数据当成 IDCODE。
+function chooseIdcode(idcMap, preferredAddr) {
+    const addrs = Object.keys(idcMap || {}).map(Number).sort((x, y) => x - y);
+    for (const a of addrs) {
+        const w = idcMap[a] >>> 0, dev = w & 0xfff;
+        if (dev !== 0 && dev !== 0xfff && DEV_ID_FAMILY[dev]) return w;
+    }
+    const preferred = Number(preferredAddr) >>> 0;
+    if (preferredAddr && Object.hasOwn(idcMap || {}, preferred)) {
+        const w = idcMap[preferred] >>> 0, dev = w & 0xfff;
+        if (dev !== 0 && dev !== 0xfff) return w;
+    }
+    return null;
+}
 
 // 解析 SCB CPUID：得到内核、修订（rNpM）与厂商
 function decodeCpuid(word) {
@@ -188,20 +282,11 @@ function readChipInfo(vscode, options, onProgress) {
         // 每条读取命令用 catch 包裹，保证单条失败不影响其余命令，最终 shutdown 干净退出。
         // 身份信息（Device ID/Flash/UID）在运行态下（尤其 H7）读取不可靠：若芯片在运行，
         // 则在本块内短暂 halt→读取→resume；原本已暂停则直接读。运行信息(PC/SP/LR)仍仅在“原本已暂停”时读取。
+        // 身份寄存器按全家族候选地址扫描（目标配置可能选错），收尾时按真实家族选值
         const idReads = ['catch { flash probe 0 }'];
-        if (idcodeBase) idReads.push('catch { echo [mdw 0x' + idcodeBase.toString(16) + '] }');
-        // 回退：若目标配置地址与经典地址不同，额外读取经典 IDCODE 地址（覆盖 F1/F4 等大多数经典型号）
-        if (!idcodeBase || (idcodeBase >>> 0) !== CLASSIC_IDCODE_ADDR) idReads.push('catch { echo [mdw 0x' + CLASSIC_IDCODE_ADDR.toString(16) + '] }');
-        if (flashSizeBase) idReads.push('catch { echo [mdw 0x' + flashSizeBase.toString(16) + '] }');
-        // 回退：若目标配置的 Flash 容量地址不在常见列表中，额外读取常见地址
-        for (const fb of FALLBACK_FLASHSIZE_ADDRS) {
-            if (!flashSizeBase || (flashSizeBase >>> 0) !== fb) idReads.push('catch { echo [mdw 0x' + fb.toString(16) + '] }');
-        }
-        if (uidBase) idReads.push('catch { echo [mdw 0x' + uidBase.toString(16) + ' 3] }');
-        // 回退：若目标配置的 UID 地址不在常见列表中，额外读取常见 UID 地址
-        for (const ub of FALLBACK_UID_ADDRS) {
-            if (!uidBase || (uidBase >>> 0) !== ub) idReads.push('catch { echo [mdw 0x' + ub.toString(16) + ' 3] }');
-        }
+        for (const a of ALL_IDCODE_ADDRS) idReads.push('catch { echo [mdw 0x' + a.toString(16) + '] }');
+        for (const a of ALL_FLASHSIZE_ADDRS) idReads.push('catch { echo [mdw 0x' + a.toString(16) + '] }');
+        for (const a of ALL_UID_ADDRS) idReads.push('catch { echo [mdw 0x' + a.toString(16) + ' 3] }');
         // 一个 -c 内完成：记录原状态 → 若非 halted 则 halt → 读取 → 若曾 halt 则 resume（确保不把用户程序留在暂停态）
         const identityCmd = 'catch { set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; '
             + idReads.join('; ') + '; if {$h} { catch { resume } } }';
@@ -213,6 +298,10 @@ function readChipInfo(vscode, options, onProgress) {
             'catch { echo "EP_KV endian [[target current] cget -endian]" }',
             'catch { echo "EP_KV transport [transport select]" }',
             `catch { echo [mdw ${CPUID_HEX}] }`,
+            // 厂商指纹：ROM 表 PIDR/CIDR 属调试地址空间，运行态可直接读取，无需 halt
+            `catch { echo [mdw 0x${ROM_PIDR4_ADDR.toString(16)} 4] }`,
+            `catch { echo [mdw 0x${ROM_PIDR0_ADDR.toString(16)} 4] }`,
+            `catch { echo [mdw 0x${ROM_CIDR_ADDR.toString(16)} 4] }`,
             identityCmd,
             'catch { if {[[target current] curstate] eq "halted"} { catch {reg pc}; catch {reg sp}; catch {reg lr} } }',
             'shutdown'
@@ -233,6 +322,8 @@ function readChipInfo(vscode, options, onProgress) {
             core: '', coreRevision: '', cpuid: '', implementer: '',
             // 芯片系列
             chip: '', series: seriesFromTarget(options.target),
+            // 厂商指纹（ROM 表 JEP106）与原厂/兼容判定；designer=指纹确认的芯片厂商，romDesigner=CoreSight ROM 表原始设计者
+            designer: '', romDesigner: '', designerCode: '', romPart: '', authenticity: '', compatVendor: '', compatBrand: '',
             // 芯片信息
             idcode: '', deviceId: '', revId: '', flashSize: '', flashBase: '', flashDriver: '', endian: '', uid: '',
             // 调试连接
@@ -243,6 +334,9 @@ function readChipInfo(vscode, options, onProgress) {
         const errors = [];
         const rawTail = [];
         const rawAll = [];
+        // 全家族扫描的原始读数（地址 → 值），收尾时按真实家族选值
+        const idcReads = {}, flsReads = {}, uidReads = {};
+        let idcodeLog = ''; // OpenOCD flash 驱动自报的 device id（仅作最后回退）
         let transportLog = '';
         let pending = '';
         let settled = false;
@@ -300,37 +394,14 @@ function readChipInfo(vscode, options, onProgress) {
                     }
                     return;
                 }
-                if (idcodeBase && a === (idcodeBase >>> 0)) {
-                    const w = dump.words[0] >>> 0;
-                    if (!info.idcode && (w & 0xfff) !== 0 && (w & 0xfff) !== 0xfff) info.idcode = '0x' + w.toString(16).toUpperCase();
-                    return;
-                }
-                // 经典 IDCODE 地址回退（目标配置地址无效时仍能识别芯片）
-                if (a === CLASSIC_IDCODE_ADDR && (!idcodeBase || (idcodeBase >>> 0) !== CLASSIC_IDCODE_ADDR)) {
-                    const w = dump.words[0] >>> 0;
-                    if (!info._idcodeClassic && (w & 0xfff) !== 0 && (w & 0xfff) !== 0xfff) info._idcodeClassic = '0x' + w.toString(16).toUpperCase();
-                    return;
-                }
-                if (flashSizeBase && a === (flashSizeBase >>> 0)) {
-                    const kb = dump.words[0] & 0xffff;
-                    if (kb > 0 && kb < 0xffff) info.flashSize = kb + ' KiB'; // 寄存器权威，覆盖 flash probe 的回退值
-                    return;
-                }
-                // Flash 容量回退地址
-                if (FALLBACK_FLASHSIZE_ADDRS.includes(a) && (!flashSizeBase || (flashSizeBase >>> 0) !== a)) {
-                    const kb = dump.words[0] & 0xffff;
-                    if (kb > 0 && kb < 0xffff && !info._flashSizeFallback) info._flashSizeFallback = kb + ' KiB';
-                    return;
-                }
-                if (uidBase && a === (uidBase >>> 0) && dump.words.length >= 3) {
-                    if (!info.uid) info.uid = formatUid(dump.words.slice(0, 3));
-                    return;
-                }
-                // UID 回退地址
-                if (FALLBACK_UID_ADDRS.includes(a) && (!uidBase || (uidBase >>> 0) !== a) && dump.words.length >= 3) {
-                    if (!info._uidFallback) info._uidFallback = formatUid(dump.words.slice(0, 3));
-                    return;
-                }
+                // ROM 表 PIDR/CIDR（厂商指纹）：收集三组字，统一在 close 时解码
+                if (a === (ROM_PIDR4_ADDR >>> 0) && dump.words.length >= 4) { if (!info._pidr47) info._pidr47 = dump.words.slice(0, 4); return; }
+                if (a === (ROM_PIDR0_ADDR >>> 0) && dump.words.length >= 4) { if (!info._pidr03) info._pidr03 = dump.words.slice(0, 4); return; }
+                if (a === (ROM_CIDR_ADDR >>> 0) && dump.words.length >= 4) { if (!info._cidr) info._cidr = dump.words.slice(0, 4); return; }
+                // 身份寄存器全家族扫描：只收集原始读数，不在此处判断取舍（目标配置可能选错）
+                if (IDCODE_ADDR_SET.has(a)) { if (idcReads[a] == null) idcReads[a] = dump.words[0] >>> 0; return; }
+                if (FLASHSIZE_ADDR_SET.has(a)) { if (flsReads[a] == null) flsReads[a] = dump.words[0] & 0xffff; return; }
+                if (UID_ADDR_SET.has(a) && dump.words.length >= 3) { if (uidReads[a] == null) uidReads[a] = dump.words.slice(0, 3); return; }
             }
             let m;
             // 5) 内核识别行：Info : [xxx] Cortex-M4 r0p1 processor detected（比 CPUID 更直观且更早出现）
@@ -382,7 +453,7 @@ function readChipInfo(vscode, options, onProgress) {
             if (event.stage === 'probe') { if (!info.probe) info.probe = event.message; }
             else if (event.stage === 'adapter') { if (event.clock && !info.clock) info.clock = event.clock; }
             else if (event.stage === 'voltage') { if (typeof event.volts === 'number') info.voltage = event.volts.toFixed(2) + ' V'; }
-            else if (event.stage === 'chip') { if (event.chip) info.chip = event.chip; if (event.deviceId && !info.idcode) info.idcode = event.deviceId; }
+            else if (event.stage === 'chip') { if (event.chip) info.chip = event.chip; if (event.deviceId && !idcodeLog) idcodeLog = event.deviceId; }
             else if (event.stage === 'flash') { if (event.flashSize && !info.flashSize) info.flashSize = normalizeFlashSize(event.flashSize); }
             else if (event.stage === 'error') { if (!errors.includes(event.message)) errors.push(event.message); }
         };
@@ -402,18 +473,20 @@ function readChipInfo(vscode, options, onProgress) {
         child.on('close', (code) => {
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
             if (pending) { handleLine(pending); pending = ''; }
-            // 传输协议与 Device/Revision ID 的最终归并
             if (!info.transport && transportLog) info.transport = transportLog;
-            // 若目标配置地址未读到有效 IDCODE，使用经典地址回退值
-            if (!info.idcode && info._idcodeClassic) info.idcode = info._idcodeClassic;
+            // IDCODE：先取任意候选地址上已知的 DEV_ID（目标选错也能命中），再采信 OpenOCD 自报值；
+            // 两者都没有时，未收录 DEV_ID 仅允许从目标家族的 IDCODE 地址回退。
+            const knownIdcode = chooseIdcode(idcReads);
+            if (knownIdcode != null) info.idcode = '0x' + (knownIdcode >>> 0).toString(16).toUpperCase();
+            else if (idcodeLog && idcodeBase) info.idcode = idcodeLog;
+            else {
+                const targetIdcode = chooseIdcode(idcReads, idcodeBase);
+                if (targetIdcode != null) info.idcode = '0x' + (targetIdcode >>> 0).toString(16).toUpperCase();
+            }
             if (info.idcode) {
                 const split = splitIdcode(info.idcode);
                 if (split) { info.deviceId = split.deviceId; info.revId = split.revId; }
             }
-            // Flash 容量回退
-            if (!info.flashSize && info._flashSizeFallback) info.flashSize = info._flashSizeFallback;
-            // UID 回退
-            if (!info.uid && info._uidFallback) info.uid = info._uidFallback;
             // 由 DEV_ID 推断实际芯片家族，修正目标配置名推导的系列（用户选错 target 时仍能正确显示）
             if (info.deviceId) {
                 const devNum = parseInt(info.deviceId, 16);
@@ -423,13 +496,44 @@ function readChipInfo(vscode, options, onProgress) {
             // 硬件实测的 flash 驱动名优先于目标配置名修正系列（避免用户选错 target 时显示错误系列）
             const hwSeries = seriesFromFlashDriver(info.flashDriver);
             if (hwSeries && hwSeries !== info.series && !DEV_ID_FAMILY[parseInt(info.deviceId || '0', 16)]) info.series = hwSeries;
+            // Flash 容量：优先取“修正后家族”地址的寄存器值（权威，覆盖日志推导值），次取目标配置地址；
+            // 均未命中时仅对 STM32 系列接受任意候选地址的有效值（避免非 STM32 芯片展示杂值）
+            {
+                const seriesKey = String(info.series || '').toLowerCase();
+                const famFlashBase = lookupStmBase(STM32_FLASHSIZE_BASE, seriesKey);
+                let kb = null;
+                if (famFlashBase && flsReads[famFlashBase >>> 0] != null) kb = flsReads[famFlashBase >>> 0];
+                else if (flashSizeBase && flsReads[flashSizeBase >>> 0] != null) kb = flsReads[flashSizeBase >>> 0];
+                if (kb != null && kb > 0 && kb < 0xffff) info.flashSize = kb + ' KiB';
+                else if (!info.flashSize && /^stm32/i.test(seriesKey)) {
+                    for (const a of ALL_FLASHSIZE_ADDRS) { const v = flsReads[a]; if (v != null && v > 0 && v < 0xffff) { info.flashSize = v + ' KiB'; break; } }
+                }
+                // UID：同样按修正后家族 → 目标配置 → STM32 任意候选的顺序选值
+                const famUidBase = lookupStmBase(STM32_UID_BASE, seriesKey);
+                let uidWords = (famUidBase && uidReads[famUidBase >>> 0]) || (uidBase && uidReads[uidBase >>> 0]) || null;
+                if (!uidWords && /^stm32/i.test(seriesKey)) {
+                    for (const a of ALL_UID_ADDRS) { if (uidReads[a]) { uidWords = uidReads[a]; break; } }
+                }
+                if (uidWords) info.uid = formatUid(uidWords);
+            }
+            // 厂商指纹：解码 ROM 表 PIDR 得到 CoreSight 设计者，对 STM32 系列做原厂/兼容判定，
+            // 并推导芯片设计厂商（Arm 内核 ROM 表或读取失败时保持未知）
+            const rom = decodeRomPidr(info._pidr03, info._pidr47, info._cidr);
+            if (rom) {
+                info.romDesigner = rom.designer;
+                info.designerCode = rom.code;
+                info.romPart = rom.part;
+                const verdict = assessAuthenticity(info.series, rom.key);
+                info.authenticity = verdict.authenticity;
+                info.compatVendor = verdict.compatVendor;
+                info.compatBrand = verdict.compatBrand;
+            }
+            info.designer = deriveVendor(info.series, rom);
+            delete info._pidr03; delete info._pidr47; delete info._cidr;
             // 拿到芯片层关键信息即视为成功；仅有适配器层字段（探针名/时钟/目标名）但存在错误时仍报错
             const gotChip = info.core || info.chip || info.idcode || info.flashSize || info.uid;
             const gotAny = gotChip || info.targetName || info.clock || info.probeName;
             if (gotChip || (gotAny && !errors.length)) {
-                delete info._idcodeClassic;
-                delete info._flashSizeFallback;
-                delete info._uidFallback;
                 report({ stage: 'done', message: '读取完成' });
                 finish(null);
                 return;
@@ -452,7 +556,10 @@ function normalizeFlashSize(text) {
 module.exports = {
     readChipInfo, decodeCpuid, parseMdwWord, parseMdwDump, parseRegLine, parseKv,
     splitIdcode, normalizeTransport, seriesFromTarget, seriesFromFlashDriver, uidBaseForTarget, idcodeBaseForTarget,
-    flashSizeBaseForTarget, formatUid, normalizeFlashSize, CORTEX_M_PARTS, IMPLEMENTERS,
+    flashSizeBaseForTarget, formatUid, normalizeFlashSize, decodeRomPidr, assessAuthenticity, deriveVendor, chooseIdcode,
+    CORTEX_M_PARTS, IMPLEMENTERS,
     CPUID_ADDR, CLASSIC_IDCODE_ADDR, FALLBACK_FLASHSIZE_ADDRS, FALLBACK_UID_ADDRS, DEV_ID_FAMILY,
+    ALL_IDCODE_ADDRS, ALL_FLASHSIZE_ADDRS, ALL_UID_ADDRS,
+    ROM_PIDR4_ADDR, ROM_PIDR0_ADDR, ROM_CIDR_ADDR, JEP106_DESIGNERS, ST_JEP106_KEY, ARM_JEP106_KEY, COMPAT_BRANDS,
     STM32_UID_BASE, STM32_IDCODE_BASE, STM32_FLASHSIZE_BASE
 };
