@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { decodeCpuid, parseMdwWord, parseMdwDump, parseRegLine, parseKv, splitIdcode, normalizeTransport, seriesFromTarget, seriesFromFlashDriver, uidBaseForTarget, idcodeBaseForTarget, flashSizeBaseForTarget, formatUid, normalizeFlashSize } = require("../src/chipInfo");
+const { decodeCpuid, parseMdwWord, parseMdwDump, parseRegLine, parseKv, splitIdcode, normalizeTransport, seriesFromTarget, seriesFromFlashDriver, uidBaseForTarget, idcodeBaseForTarget, flashSizeBaseForTarget, formatUid, normalizeFlashSize, decodeRomPidr, assessAuthenticity, deriveVendor, chooseIdcode, ALL_IDCODE_ADDRS } = require("../src/chipInfo");
 
 // SCB CPUID 0x410FC241 → Cortex-M4 r0p1（ARM）
 const m4 = decodeCpuid(0x410FC241);
@@ -93,5 +93,61 @@ assert.strictEqual(flashSizeBaseForTarget("nrf52.cfg"), 0);
 
 // normalizeFlashSize：kbytes → KiB
 assert.strictEqual(normalizeFlashSize("1024 kbytes"), "1024 KiB");
+
+// decodeRomPidr：CoreSight ROM 表厂商指纹解码
+const CIDR_OK = [0x0d, 0x10, 0x05, 0xb1];
+// 真 STM32F407：设计者 ST（bank 0, 0x20），器件号 = DEV_ID 0x413（OpenOCD 显示为 Peripheral ID 0x00000A0413）
+const stRom = decodeRomPidr([0x13, 0x04, 0x0a, 0x00], [0x00, 0, 0, 0], CIDR_OK);
+assert.strictEqual(stRom.key, "0:0x20");
+assert.strictEqual(stRom.designer, "STMicroelectronics");
+assert.strictEqual(stRom.part, "0x413");
+// Arm 默认 ROM 表（GD32/CH32 等兼容片常见）：设计者 Arm（bank 4, 0x3B），Cortex-M3 ROM 器件号 0x4C3
+const armRom = decodeRomPidr([0xc3, 0xb4, 0x0b, 0x00], [0x04, 0, 0, 0], CIDR_OK);
+assert.strictEqual(armRom.key, "4:0x3b");
+assert.strictEqual(armRom.designer, "Arm");
+assert.strictEqual(armRom.part, "0x4C3");
+// Geehy（珠海极海，Apex 旗下）：bank 11, 0x23
+const geehyRom = decodeRomPidr([0x13, 0x34, 0x0a, 0x00], [0x0b, 0, 0, 0], CIDR_OK);
+assert.strictEqual(geehyRom.key, "11:0x23");
+assert.strictEqual(geehyRom.designer, "Apex Microelectronics (Geehy)");
+// CIDR 前导码非法（总线错误/杂值）→ null；未用 JEDEC 编码（PIDR2 bit3=0）→ null
+assert.strictEqual(decodeRomPidr([0x13, 0x04, 0x0a, 0x00], [0x00, 0, 0, 0], [0, 0, 0, 0]), null);
+assert.strictEqual(decodeRomPidr([0x13, 0x04, 0x02, 0x00], [0x00, 0, 0, 0], CIDR_OK), null);
+assert.strictEqual(decodeRomPidr(null, null, CIDR_OK), null);
+
+// assessAuthenticity：仅对宣称 STM32 的芯片做原厂/兼容判定
+assert.strictEqual(assessAuthenticity("STM32F4x", "0:0x20").authenticity, "genuine");
+const apm = assessAuthenticity("STM32F4x", "11:0x23");
+assert.strictEqual(apm.authenticity, "compatible");
+assert.strictEqual(apm.compatBrand, "Geehy APM32");
+assert.strictEqual(apm.compatVendor, "Apex Microelectronics (Geehy)");
+const gd = assessAuthenticity("STM32F1x", "7:0x51");
+assert.strictEqual(gd.compatBrand, "GigaDevice GD32");
+// Arm 内核自带 ROM 表（M7/M33 等原厂 ST 芯片也会读到）：不能判为兼容芯片
+assert.strictEqual(assessAuthenticity("STM32H7x", "4:0x3b").authenticity, "");
+assert.strictEqual(assessAuthenticity("STM32F4x", "4:0x3b").authenticity, "");
+// 非 STM32 系列（如 nRF52 由 Arm 设计 ROM 表）不参与判定
+assert.strictEqual(assessAuthenticity("NRF52", "4:0x3b").authenticity, "");
+assert.strictEqual(assessAuthenticity("STM32F4x", "").authenticity, "");
+
+// deriveVendor：仅采信 ROM 表中已知的非 Arm 硬件厂商码；无法确认时保持未知
+assert.strictEqual(deriveVendor("STM32F4x", { key: "0:0x20", designer: "STMicroelectronics" }), "STMicroelectronics");
+assert.strictEqual(deriveVendor("STM32F4x", { key: "11:0x23", designer: "Apex Microelectronics (Geehy)" }), "Apex Microelectronics (Geehy)");
+assert.strictEqual(deriveVendor("STM32H7x", { key: "4:0x3b", designer: "Arm" }), "");
+assert.strictEqual(deriveVendor("STM32H7x", null), "");
+assert.strictEqual(deriveVendor("NRF52", { key: "2:0x44", designer: "Nordic Semiconductor" }), "Nordic Semiconductor");
+assert.strictEqual(deriveVendor("NRF52", null), "");
+
+// chooseIdcode：优先取 DEV_ID 已知的读数（H750 误选 f1x 目标时，经典地址读到杂值、H7 地址读到 0x450）
+assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001, 0x5c001000: 0x10036450 }), 0x10036450);
+// 无已知 DEV_ID 时：只接受目标家族地址上的读数，其它候选地址的杂值不能回退
+assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }, 0xe0042000), 0x00002001);
+assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }, 0x5c001000), null);
+assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }), null);
+// 全 0/全 F 的 DEV_ID 视为无效
+assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00000000, 0x40015800: 0x0000ffff }, 0xe0042000), null);
+assert.strictEqual(chooseIdcode({}, 0xe0042000), null);
+// 候选地址集应覆盖经典/F0系/H7 三类 DBGMCU 地址
+assert.ok(ALL_IDCODE_ADDRS.includes(0xe0042000) && ALL_IDCODE_ADDRS.includes(0x40015800) && ALL_IDCODE_ADDRS.includes(0x5c001000));
 
 console.log("Chip info tests passed");

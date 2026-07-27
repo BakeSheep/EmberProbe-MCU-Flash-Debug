@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-27
+
+### Added
+
+- 芯片信息新增 CoreSight ROM Table JEP106 厂商指纹，可识别已知的 STM32 兼容芯片厂商与品牌。
+- 身份信息读取会扫描已知 STM32 家族寄存器，在 target 配置选错时仍可根据 DEV_ID 修正芯片系列。
+
+### Fixed
+
+- ROM 指纹无法确认厂商时保持未知，不再仅根据 STM32 target 误报为 STMicroelectronics。
+- 未收录的 DEV_ID 仅从目标家族寄存器回退，避免将其他候选地址的数据误识别为芯片 ID。
+
 ## [0.4.5] - 2026-07-24
 
 ### Fixed
