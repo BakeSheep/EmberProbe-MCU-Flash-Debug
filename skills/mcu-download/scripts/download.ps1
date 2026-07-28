@@ -25,11 +25,12 @@ if (-not $Target) {
         Select-Object -First 80 | ForEach-Object { $_.Name; Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue }
     $joined = ($text -join "`n").ToLowerInvariant()
     $rules = [ordered]@{
+        'apm32f0'='geehy/apm32f0x.cfg'; 'apm32f1'='geehy/apm32f1x.cfg'; 'apm32f4'='geehy/apm32f4x.cfg';
         'stm32f0'='stm32f0x.cfg'; 'stm32f1'='stm32f1x.cfg'; 'stm32f2'='stm32f2x.cfg'; 'stm32f3'='stm32f3x.cfg';
         'stm32f4'='stm32f4x.cfg'; 'stm32f7'='stm32f7x.cfg'; 'stm32g0'='stm32g0x.cfg'; 'stm32g4'='stm32g4x.cfg';
         'stm32h7'='stm32h7x.cfg'; 'stm32l0'='stm32l0.cfg'; 'stm32l1'='stm32l1.cfg'; 'stm32l4'='stm32l4x.cfg';
         'stm32l5'='stm32l5x.cfg'; 'stm32u5'='stm32u5x.cfg'; 'stm32wb'='stm32wbx.cfg'; 'stm32wl'='stm32wlx.cfg';
-        'gd32vf103'='gd32vf103.cfg'; 'gd32e23'='gd32e23x.cfg'; 'nrf51'='nrf51.cfg'; 'nrf52'='nrf52.cfg'; 'rp2040'='rp2040.cfg';
+        'gd32vf103'='gd32vf103.cfg'; 'gd32e23'='gd32e23x.cfg'; 'nrf51'='nordic/nrf51.cfg'; 'nrf52'='nordic/nrf52.cfg'; 'rp2040'='rp2040.cfg';
         'esp32s3'='esp32s3.cfg'; 'esp32s2'='esp32s2.cfg'; 'esp32'='esp32.cfg'
     }
     foreach ($key in $rules.Keys) { if ($joined.Contains($key)) { $Target = $rules[$key]; break } }
@@ -51,7 +52,15 @@ $result = [ordered]@{ workspace=$root; elf=$Elf; elfSha256=$elfSha256; elfMtimeU
 $result | ConvertTo-Json -Compress
 if (-not $result.ready) { Write-Error 'Detection incomplete. Provide or select ELF, target, and probe.' }
 if (-not (Test-Path -LiteralPath $Elf -PathType Leaf)) { Write-Error "ELF not found: $Elf" }
-if ($Target -notmatch '^[^\\/]+\.cfg$' -or $Target -match '\.\.' -or $Probe -notmatch '^[^\\/]+\.cfg$' -or $Probe -match '\.\.') { Write-Error 'Unsafe OpenOCD configuration name.' }
+function Test-SafeCfgPath([string]$Value) {
+    if (-not $Value -or $Value -notmatch '\.cfg$' -or $Value.Contains('\') -or $Value.StartsWith('/')) { return $false }
+    if ($Value.IndexOf([char]0) -ge 0 -or $Value.IndexOf([char]10) -ge 0 -or $Value.IndexOf([char]13) -ge 0 -or $Value.Contains(':')) { return $false }
+    foreach ($part in $Value.Split('/')) {
+        if (-not $part -or $part -eq '.' -or $part -eq '..') { return $false }
+    }
+    return $true
+}
+if (-not (Test-SafeCfgPath $Target) -or -not (Test-SafeCfgPath $Probe)) { Write-Error 'Unsafe OpenOCD configuration path.' }
 if ($Execute) {
     $currentHash = (Get-FileHash -LiteralPath $Elf -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($currentHash -ne $elfSha256) { Write-Error 'ELF changed during download preflight. Retry so addresses and firmware stay consistent.' }

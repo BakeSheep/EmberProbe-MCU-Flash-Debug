@@ -18,13 +18,15 @@ async function newestElf(vscode) {
 function targetFromText(text) {
     const value = text.toLowerCase();
     const rules = [
+        [/apm32f0/, 'geehy/apm32f0x.cfg'], [/apm32f1/, 'geehy/apm32f1x.cfg'],
+        [/apm32f4/, 'geehy/apm32f4x.cfg'],
         [/stm32f0/, 'stm32f0x.cfg'], [/stm32f1/, 'stm32f1x.cfg'], [/stm32f2/, 'stm32f2x.cfg'],
         [/stm32f3/, 'stm32f3x.cfg'], [/stm32f4/, 'stm32f4x.cfg'], [/stm32f7/, 'stm32f7x.cfg'],
         [/stm32g0/, 'stm32g0x.cfg'], [/stm32g4/, 'stm32g4x.cfg'], [/stm32h7/, 'stm32h7x.cfg'],
         [/stm32l0/, 'stm32l0.cfg'], [/stm32l1/, 'stm32l1.cfg'], [/stm32l4/, 'stm32l4x.cfg'],
         [/stm32l5/, 'stm32l5x.cfg'], [/stm32u5/, 'stm32u5x.cfg'], [/stm32wb/, 'stm32wbx.cfg'],
         [/stm32wl/, 'stm32wlx.cfg'], [/gd32vf103/, 'gd32vf103.cfg'], [/gd32e23/, 'gd32e23x.cfg'],
-        [/nrf51/, 'nrf51.cfg'], [/nrf52/, 'nrf52.cfg'], [/rp2040/, 'rp2040.cfg'],
+        [/nrf51/, 'nordic/nrf51.cfg'], [/nrf52/, 'nordic/nrf52.cfg'], [/rp2040/, 'rp2040.cfg'],
         [/esp32s3/, 'esp32s3.cfg'], [/esp32s2/, 'esp32s2.cfg'], [/esp32/, 'esp32.cfg']
     ];
     return rules.find(([pattern]) => pattern.test(value))?.[1] || '';

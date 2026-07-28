@@ -1,6 +1,9 @@
 "use strict";
 const assert = require("assert");
-const { parseLine, quoteTclWord, diagnoseOpenOcdFailure } = require("../src/openocdRunner");
+const { parseLine, quoteTclWord, diagnoseOpenOcdFailure, isSafeCfg } = require("../src/openocdRunner");
+
+assert.strictEqual(isSafeCfg("geehy/apm32f4x.cfg"), true);
+assert.strictEqual(isSafeCfg("../apm32f4x.cfg"), false);
 
 const cases = [
   ["Info : CMSIS-DAP: SWD supported", "probe"],

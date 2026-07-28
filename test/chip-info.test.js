@@ -71,6 +71,7 @@ assert.strictEqual(normalizeTransport(""), "");
 
 // seriesFromTarget / uidBaseForTarget：由目标配置名推断系列与 UID 基址
 assert.strictEqual(seriesFromTarget("stm32h7x.cfg"), "STM32H7x");
+assert.strictEqual(seriesFromTarget("geehy/apm32f4x.cfg"), "APM32F4X");
 assert.strictEqual(seriesFromTarget("stm32f4x_dual.cfg"), "STM32F4x");
 assert.strictEqual(uidBaseForTarget("stm32h7x.cfg"), 0x1ff1e800);
 assert.strictEqual(uidBaseForTarget("stm32f4x.cfg"), 0x1fff7a10);

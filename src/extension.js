@@ -15,6 +15,7 @@ const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const validation = require("./validation");
+const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -64,7 +65,7 @@ const MCU_CORE_LIST = [
     'lpc4350.cfg', 'lpc4357.cfg', 'lpc4370.cfg', 'lpc84x.cfg', 'lpc8nxx.cfg', 'lpc8xx.cfg',
     'ls1012a.cfg', 'ls1028a.cfg', 'ls1046a.cfg', 'ls1088a.cfg', 'lsch3_common.cfg', 'max32620.cfg',
     'max32625.cfg', 'max3263x.cfg', 'mc13224v.cfg', 'mdr32f9q2i.cfg', 'nds32v2.cfg', 'nds32v3.cfg',
-    'nds32v3m.cfg', 'nds32v5.cfg', 'ngultra.cfg', 'nhs31xx.cfg', 'npcx.cfg', 'nrf51.cfg', 'nrf52.cfg',
+    'nds32v3m.cfg', 'nds32v5.cfg', 'ngultra.cfg', 'nhs31xx.cfg', 'npcx.cfg', 'nordic/nrf51.cfg', 'nordic/nrf52.cfg',
     'nuc910.cfg', 'numicro.cfg', 'omap2420.cfg', 'omap3530.cfg', 'omap4430.cfg', 'omap4460.cfg',
     'omap5912.cfg', 'omapl138.cfg', 'or1k.cfg', 'pic32mx.cfg', 'psoc4.cfg', 'psoc5lp.cfg', 'psoc6.cfg',
     'pxa255.cfg', 'pxa270.cfg', 'pxa3xx.cfg', 'qualcomm_qca4531.cfg', 'quark_d20xx.cfg', 'quark_x10xx.cfg',
@@ -281,10 +282,16 @@ class MainViewProvider {
             quickPick.show();
         };
         // 3. 选择 MCU 核心（无修改）
-        this.commandHandlers['mcu-vscode.selectMcuCore'] = () => {
+        this.commandHandlers['mcu-vscode.selectMcuCore'] = async () => {
             console.log('主进程执行选择 MCU 核心命令');
+            const configured = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
+            const executable = await this._resolveOpenOcdPath(configured);
+            // 展示当前 OpenOCD 实际包含的 target，包括 geehy/* 等厂商子目录。
+            // OpenOCD 尚未就绪时仍允许先完成手动配置，继续使用内置列表。
+            const discovered = executable ? openocdScripts.discoverTargetConfigs(executable) : [];
+            const targets = discovered.length ? discovered : MCU_CORE_LIST;
             const quickPick = vscode.window.createQuickPick();
-            quickPick.items = MCU_CORE_LIST.map(cfg => ({ label: cfg }));
+            quickPick.items = targets.map(cfg => ({ label: cfg }));
             quickPick.placeholder = this._t('msg.searchMcu');
             quickPick.canSelectMany = false;
             quickPick.onDidChangeSelection(async selection => {

@@ -4,6 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const installer = require("../src/openocdInstaller");
+const { discoverTargetConfigs } = require("../src/openocdScripts");
+const { probeOpenOcd } = require("../src/openocdChecker");
 const { platformKey, getBundledArchive, installDir, locateOpenOcdBinary, installBundledOpenOcd, OPENOCD_BIN } = installer;
 
 // 用 async IIFE 包裹，避免与 require 一起触发模块格式歧义
@@ -45,11 +47,17 @@ const { platformKey, getBundledArchive, installDir, locateOpenOcdBinary, install
         assert.ok(result.path, "安装成功应返回可执行文件路径");
         assert.ok(result.path.endsWith(OPENOCD_BIN), `路径应以 ${OPENOCD_BIN} 结尾，实际：${result.path}`);
         assert.ok(fs.existsSync(result.path), "解压出的可执行文件应真实存在");
+        const probe = await probeOpenOcd(result.path);
+        assert.ok(probe.found, `预置 OpenOCD 应可执行，实际：${probe.error || JSON.stringify(probe)}`);
         assert.ok(progressCalls.length > 0, "解压过程应上报进度");
         // locateOpenOcdBinary 独立验证
         const destRoot = installDir(mockContext);
         const located = locateOpenOcdBinary(destRoot);
         assert.ok(located, "locateOpenOcdBinary 应能在解压目录内定位到可执行文件");
+        const targets = discoverTargetConfigs(located);
+        assert.ok(targets.includes("geehy/apm32f0x.cfg"), "预置包应包含 APM32F0 target");
+        assert.ok(targets.includes("geehy/apm32f1x.cfg"), "预置包应包含 APM32F1 target");
+        assert.ok(targets.includes("geehy/apm32f4x.cfg"), "预置包应包含 APM32F4 target");
 
         // 新包损坏时安装应失败，但已经可用的旧目录必须原样保留。
         const marker = path.join(destRoot, "existing-install.marker");

@@ -236,7 +236,7 @@ function normalizeTransport(s) {
 
 // 由目标配置名推断芯片系列（兜底：用户选择的目标本身即代表系列）
 function seriesFromTarget(target) {
-    const n = String(target || '').replace(/\.cfg$/i, '').split('_')[0];
+    const n = String(target || '').split(/[\\/]/).pop().replace(/\.cfg$/i, '').split('_')[0];
     if (!n) return '';
     if (/^stm32/i.test(n)) return n.replace(/^stm32([a-z])/i, (m, p1) => 'STM32' + p1.toUpperCase());
     return n.toUpperCase();
@@ -252,7 +252,7 @@ function seriesFromFlashDriver(driver) {
 
 // 通用：由目标配置名（前缀匹配）查表得到寄存器基址；未命中返回 0
 function lookupStmBase(map, target) {
-    const name = String(target || '').replace(/\.cfg$/i, '').toLowerCase();
+    const name = String(target || '').split(/[\\/]/).pop().replace(/\.cfg$/i, '').toLowerCase();
     for (const key of Object.keys(map)) {
         if (name.startsWith(key)) return map[key];
     }

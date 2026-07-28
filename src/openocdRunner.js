@@ -1,9 +1,10 @@
 "use strict";
 const { spawn } = require("child_process");
+const { isSafeCfgPath } = require("./openocdScripts");
 
-// 配置名白名单校验：不允许路径分隔符与遍历，与 download.ps1 策略一致（供 liveWatch 复用）
+// 配置路径白名单校验：允许 geehy/apm32f4x.cfg 等 scripts 内安全相对路径。
 function isSafeCfg(name) {
-    return /^[^\\/]+\.cfg$/.test(name) && !name.includes('..');
+    return isSafeCfgPath(name);
 }
 
 // Tcl 的双引号字符串仍会展开 $变量 和 [命令]，因此路径必须逐字符转义。
@@ -147,7 +148,7 @@ function acquireTerminal(vscode) {
     return { terminal: sharedTerminal, writeEmitter, created: true };
 }
 function runOpenOcd(vscode, options, onProgress) {
-    // 安全校验：配置名不允许路径分隔符与遍历，与 download.ps1 的白名单策略保持一致
+    // 安全校验：配置只能是 OpenOCD scripts 目录内的安全相对路径
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }

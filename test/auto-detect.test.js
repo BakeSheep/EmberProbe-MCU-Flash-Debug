@@ -14,5 +14,7 @@ assert.strictEqual(debuggerFromInventory("Nuvoton Nu-Link"), "nulink.cfg");
 assert.strictEqual(debuggerFromInventory("USB Composite Device"), "");
 
 assert.strictEqual(targetFromText("Project for STM32F407"), "stm32f4x.cfg");
+assert.strictEqual(targetFromText("Project for APM32F407"), "geehy/apm32f4x.cfg");
+assert.strictEqual(targetFromText("Firmware for NRF52840"), "nordic/nrf52.cfg");
 
 console.log("Auto-detect tests passed");
