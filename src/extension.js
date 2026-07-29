@@ -98,7 +98,8 @@ const CACHE_KEYS = {
     mcuCore: 'mcu.mcuCore',
     svdPath: 'mcu.svdPath',
     watchList: 'mcu.watchList',
-    sidebarWatchList: 'mcu.sidebarWatchList'
+    sidebarWatchList: 'mcu.sidebarWatchList',
+    sidebarWriteList: 'mcu.sidebarWriteList'
 };
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
@@ -136,6 +137,7 @@ class MainViewProvider {
         this._agentReadDelayTimer = null;
         this._agentReadDelayResolve = null;
         this._agentSamplingStatus = null;
+        this._uiWritePromise = Promise.resolve();
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
         this.registerCommandHandlers();
     }
@@ -792,10 +794,10 @@ class MainViewProvider {
     }
     // 解析写入请求：只允许标量符号与复合类型的单个标量叶子路径，且目标地址必须落在
     // ELF 的可写段（SHF_ALLOC|SHF_WRITE，即 .data/.bss）内，防止误写 Flash/外设寄存器。
-    _agentWritePlan(values) {
+    _agentWritePlan(values, options = {}) {
         const requests = (Array.isArray(values) ? values : []).map(item => ({ name: String(item?.name || '').trim(), value: item?.value }));
         if (!requests.length) throw Object.assign(new Error('No variables supplied'), { code: 'NO_VARIABLES' });
-        this._symbolCache = null;
+        if (options.refreshSymbols !== false) this._symbolCache = null;
         const elfResult = this.readElfSymbols();
         const byName = new Map(elfResult.symbols.map(s => [s.name, s]));
         const SHF_WRITE = 1, SHF_ALLOC = 2;
@@ -840,6 +842,33 @@ class MainViewProvider {
         }
         return { elfResult, items };
     }
+    // 会话内写入执行核心：写前读取 → 写入 → 回读校验，Agent 与侧边栏 UI 写入共用。
+    async _executeWritePlan(session, source, plan) {
+        const { elfResult, items } = plan;
+        const readItems = items.map(i => ({ name: i.name, address: i.address, size: i.size }));
+        const before = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
+        await session.writeOnce(items.map(i => ({ address: i.address, bytes: i.bytes })));
+        const after = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
+        const results = items.map(i => {
+            const prev = before.get(i.name);
+            const post = after.get(i.name);
+            const verified = !!post?.bytes && post.bytes.length >= i.bytes.length && i.bytes.every((b, k) => post.bytes[k] === b);
+            return {
+                name: i.requestedName,
+                resolvedName: i.name,
+                address: `0x${i.address.toString(16).toUpperCase()}`,
+                type: i.type,
+                previous: prev?.bytes ? elfSymbols.decodeValue(prev.bytes, i.type) : null,
+                written: i.value,
+                readBack: post?.bytes ? elfSymbols.decodeValue(post.bytes, i.type) : null,
+                verified
+            };
+        });
+        if (results.some(r => !r.verified)) {
+            throw Object.assign(new Error('Write verification failed: the value read back does not match (the firmware may be overwriting this variable)'), { code: 'WRITE_VERIFY_FAILED', retryable: true, details: { results } });
+        }
+        return { source, elf: elfResult.elf, results };
+    }
     // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
@@ -849,38 +878,23 @@ class MainViewProvider {
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
-        const { elfResult, items } = plan;
-        const result = await this._withAgentProbe(async ({ session, source }) => {
-            const readItems = items.map(i => ({ name: i.name, address: i.address, size: i.size }));
-            const before = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
-            await session.writeOnce(items.map(i => ({ address: i.address, bytes: i.bytes })));
-            const after = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
-            const results = items.map(i => {
-                const prev = before.get(i.name);
-                const post = after.get(i.name);
-                const verified = !!post?.bytes && post.bytes.length >= i.bytes.length && i.bytes.every((b, k) => post.bytes[k] === b);
-                return {
-                    name: i.requestedName,
-                    resolvedName: i.name,
-                    address: `0x${i.address.toString(16).toUpperCase()}`,
-                    type: i.type,
-                    previous: prev?.bytes ? elfSymbols.decodeValue(prev.bytes, i.type) : null,
-                    written: i.value,
-                    readBack: post?.bytes ? elfSymbols.decodeValue(post.bytes, i.type) : null,
-                    verified
-                };
-            });
-            if (results.some(r => !r.verified)) {
-                throw Object.assign(new Error('Write verification failed: the value read back does not match (the firmware may be overwriting this variable)'), { code: 'WRITE_VERIFY_FAILED', retryable: true, details: { results } });
-            }
-            return { source, elf: elfResult.elf, results };
-        });
+        const result = await this._withAgentProbe(({ session, source }) => this._executeWritePlan(session, source, plan));
         let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted() };
         if (authorization.remember) {
             try { permission = { mode: 'workspace', ...(await this._writeAuthorization.trustWorkspace()), remembered: true }; }
             catch (error) { permission = { mode: 'once', trusted: false, remembered: false, warning: error.message }; }
         }
         return { ...result, permission };
+    }
+    // 侧边栏写入列表：用户在 UI 中直接操作，不经过 WriteAuthorization 确认；
+    // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
+    // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
+    async _writeUiVariable(name, value) {
+        if (!this._liveWatchRunning || !this._liveSession) {
+            throw Object.assign(new Error(this._t('sb.writeNeedSampling')), { i18nKey: 'sb.writeNeedSampling' });
+        }
+        const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
+        return this._executeWritePlan(this._liveSession, 'active-sampling', plan);
     }
     async _agentWritePermission(params) {
         const action = String(params?.action || 'status');
@@ -1172,6 +1186,7 @@ class MainViewProvider {
     }
     _syncSidebarTarget(post) {
         post({ type: 'sidebarWatchList', items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList) });
+        post({ type: 'sidebarWriteList', items: this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [] });
         try {
             const result = this.readElfSymbols();
             post({ type: 'availableVariables', symbols: result.symbols, warnings: result.warnings });
@@ -1219,6 +1234,11 @@ class MainViewProvider {
         };
         this._scalarWatchList(CACHE_KEYS.watchList).forEach(add);
         this._scalarWatchList(CACHE_KEYS.sidebarWatchList).forEach(add);
+        // 写入列表变量也纳入采样读取，使写入卡片能实时同步当前值；不回写存储，避免丢失 min/max 等 UI 字段
+        try {
+            const writeItems = this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
+            validation.normalizeWatchList(writeItems, this.readElfSymbols().symbols).forEach(add);
+        } catch (e) { /* ELF 不可用时忽略写入列表 */ }
         return Array.from(byName.values());
     }
     // 各消费者对每个变量的观察类型，用于把同一份原始字节按各自类型解码后分别推送。
@@ -1228,15 +1248,23 @@ class MainViewProvider {
             for (const item of this._scalarWatchList(key)) if (item?.name) m.set(item.name, item.type);
             return m;
         };
-        return { graph: build(CACHE_KEYS.watchList), sidebar: build(CACHE_KEYS.sidebarWatchList) };
+        const sidebar = build(CACHE_KEYS.sidebarWatchList);
+        // 写入列表变量按自身观察类型解码后推送到侧栏；同名变量以查看列表类型优先
+        for (const item of this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
+            if (item?.name && item.type && !sidebar.has(item.name)) sidebar.set(item.name, item.type);
+        }
+        return { graph: build(CACHE_KEYS.watchList), sidebar };
     }
     _getCachedConsumerTypes() {
         if (!this._consumerTypesCache) this._consumerTypesCache = this._consumerTypes();
         return this._consumerTypesCache;
     }
     _invalidateConsumerTypes() { this._consumerTypesCache = null; }
-    _pruneSampleMap(map, key) {
-        const names = new Set((this._context.workspaceState.get(key) || []).map(i => i && i.name));
+    _pruneSampleMap(map, keys) {
+        const names = new Set();
+        for (const key of (Array.isArray(keys) ? keys : [keys])) {
+            for (const i of (this._context.workspaceState.get(key) || [])) if (i && i.name) names.add(i.name);
+        }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
     async startLiveWatch(items, intervalMs, consumer = 'graph') {
@@ -1532,13 +1560,43 @@ class MainViewProvider {
                     const items = Array.isArray(message.items) ? message.items : [];
                     await this._context.workspaceState.update(CACHE_KEYS.sidebarWatchList, items);
                     this._invalidateConsumerTypes();
-                    this._pruneSampleMap(this._latestSidebarSamples, CACHE_KEYS.sidebarWatchList);
+                    this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
                     if (this._liveSession) {
                         const active = this._activeReadPlan();
                         if (active.length) this._liveSession.setWatch(active);
                         else this.stopLiveWatch();
                     }
                     webviewView.webview.postMessage({ type: 'sidebarWatchList', items });
+                    break;
+                }
+                case 'saveSidebarWrite': {
+                    const items = Array.isArray(message.items) ? message.items : [];
+                    await this._context.workspaceState.update(CACHE_KEYS.sidebarWriteList, items);
+                    this._invalidateConsumerTypes();
+                    this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
+                    // 写入列表变化同步采样读取计划，使新增变量立即开始实时同步
+                    if (this._liveSession) {
+                        const active = this._activeReadPlan();
+                        if (active.length) this._liveSession.setWatch(active);
+                        else this.stopLiveWatch();
+                    }
+                    webviewView.webview.postMessage({ type: 'sidebarWriteList', items });
+                    break;
+                }
+                case 'writeVariable': {
+                    const name = String(message.name || '').trim();
+                    const seq = message.seq;
+                    // 串行化：同一时刻只有一次写入在途，后续请求排队；失败只回发 writeResult，不弹全局错误
+                    this._uiWritePromise = this._uiWritePromise.catch(() => {}).then(async () => {
+                        try {
+                            const result = await this._writeUiVariable(name, message.value);
+                            const r = result.results && result.results[0];
+                            webviewView.webview.postMessage({ type: 'writeResult', ok: true, name, value: r ? r.readBack : message.value, seq });
+                        } catch (error) {
+                            webviewView.webview.postMessage({ type: 'writeResult', ok: false, name, seq, key: error.i18nKey, params: error.i18nParams, message: error.message || String(error) });
+                        }
+                    });
+                    await this._uiWritePromise;
                     break;
                 }
                 case 'liveToggle': {

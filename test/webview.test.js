@@ -19,6 +19,8 @@ assert.ok(sidebar.includes('id="liveValues"'));
 assert.ok(sidebar.includes('id="liveToggle"'));
 assert.ok(sidebar.includes('id="openocdCard"'), "sidebar should contain an OpenOCD status card");
 assert.ok(sidebar.includes('id="skillStatus"'), "sidebar should show Agent Skills installation status");
+assert.ok(sidebar.includes('skill-row') && sidebar.includes('skill-status-count'), "Agent Skills should use a dedicated aligned status card");
+assert.ok(sidebar.includes('-webkit-line-clamp:2'), "Agent Skills descriptions should wrap instead of being truncated");
 assert.ok(sidebar.includes("m.type==='skillStatus'"), "sidebar should react to partial or complete Skill status");
 assert.ok(sidebar.includes('id="openocdInstall"'), "OpenOCD card should offer bundled installation");
 assert.ok(sidebar.includes("type:'openocdAction',action:'select'"), "OpenOCD path selection should be handled inside the sidebar");
@@ -46,6 +48,36 @@ assert.ok(sidebar.includes("type:'copyText'"), "UID row should copy via the exte
 assert.ok(sidebar.includes('详细信息'), "chip info should provide a collapsible details area");
 assert.ok(sidebar.includes('调试连接') && sidebar.includes('运行信息'), "details should group debug-connection and run-info");
 
+// 写入列表（变量写入前端化）
+assert.ok(sidebar.includes('id="writeValues"'), "sidebar should render a write list container");
+assert.ok(sidebar.includes('>写入列表</span>'), "write list section should sit alongside the watch list");
+assert.ok(sidebar.includes('id="watchFold"') && sidebar.includes('id="writeFold"'), "watch and write lists should expose fold toggles left of their titles");
+assert.ok(sidebar.includes("type:'saveSidebarWrite'"), "sidebar should persist an independent write list");
+assert.ok(sidebar.includes("type:'writeVariable'"), "write list value changes should post write requests");
+assert.ok(sidebar.includes("m.type==='writeResult'"), "sidebar should give feedback on write results");
+assert.ok(sidebar.includes("m.type==='sidebarWriteList'"), "sidebar should restore the persisted write list");
+assert.ok(sidebar.includes('av-write'), "ELF variable rows should offer an add-to-write-list button before the name");
+assert.ok(sidebar.includes('write-slider') && sidebar.includes('step-btn'), "write cards should include a slider and +/- stepper controls");
+assert.ok(sidebar.includes('bound-input'), "slider endpoints should be editable inline without steppers");
+assert.ok(sidebar.includes('id="writeFeedback"'), "failed writes should surface an error reason");
+assert.ok(sidebar.includes('write-dot') && sidebar.includes('writeDotFlash'), "write result should flash a dot next to the variable name");
+assert.ok(!sidebar.includes('write-ok'), "write success should no longer flash a green border on the card");
+assert.ok(!sidebar.includes('value-address'), "watch cards should no longer show variable addresses");
+assert.ok(sidebar.includes('av-watch'), "ELF rows should offer a bordered add-to-watch button");
+assert.ok(sidebar.includes('hasDwarfWriteType'), "non-writable variables should be detected and grayed out");
+assert.ok(sidebar.includes("wrap.append(arrow,mkWatchBtn"), "composite rows should align their watch button with scalar rows without a disabled write button");
+assert.ok(sidebar.includes('.av-arrow{flex:none;width:17px') && sidebar.includes('.av-name-wrap{display:flex;align-items:center;gap:3px'), "composite arrow controls should reserve the same column and gap as scalar write buttons");
+assert.ok(sidebar.includes('.list-fold svg'), "fold toggles should render as eye icons");
+assert.ok(!sidebar.includes('av-spacer'), "ELF row buttons should start flush left without a spacer");
+assert.ok(sidebar.includes('writeNeedSampling'), "writing should be gated on live sampling being active");
+assert.ok(sidebar.includes('syncWriteValues'), "write cards should sync live values while sampling");
+assert.ok(sidebar.includes('cancelPendingWrite') && sidebar.includes('clearTimeout(writeTimers[name])'), "removing a write card should cancel its pending debounce timer");
+assert.ok(sidebar.includes('latestWriteSeq') && sidebar.includes('m.seq!==latestWriteSeq[m.name]'), "stale write results should not overwrite the latest card state");
+assert.ok(sidebar.includes('Math.floor(Math.log10(v))-1'), "integer steppers should scale with the current decimal digit count");
+assert.ok(sidebar.includes('::-webkit-slider-thumb'), "slider should use custom dark-gray styling instead of the native white control");
+assert.ok(sidebar.includes('>实时读写</summary>'), "live section should be renamed to read/write");
+assert.ok(sidebar.includes('white-space:nowrap;cursor:pointer}.mini.primary'), "mini buttons should never wrap to two lines");
+
 // 双语支持与语言切换（中文 / English）
 assert.ok(sidebar.includes('id="langToggle"'), "sidebar should expose a top-right language toggle button");
 assert.ok(sidebar.includes('window.__I18N__='), "sidebar should inject the shared i18n dictionary");
@@ -56,6 +88,8 @@ validateScripts("modernView-en", sidebarEn);
 assert.ok(sidebarEn.includes('lang="en"'), "English sidebar should set the html lang attribute");
 assert.ok(sidebarEn.includes('>Chip Info</summary>'), "English sidebar should translate section headers");
 assert.ok(sidebarEn.includes('>Download</button>'), "English sidebar should translate primary actions");
+assert.ok(sidebarEn.includes('>Write List</span>'), "English sidebar should translate the write list section");
+assert.ok(sidebarEn.includes('>Live Read/Write</summary>'), "English sidebar should translate the renamed live section");
 
 const panel = liveWatchView.getLiveWatchContent({ maxSamples: -10, intervalMs: 1 });
 validateScripts("liveWatchView", panel);
