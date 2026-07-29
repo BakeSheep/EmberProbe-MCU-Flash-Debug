@@ -6,6 +6,19 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-29
+
+### Changed
+
+- MCU 变量写入改为聊天栏两阶段授权：首次展示精确写入计划，用户可选择仅本次允许或信任当前工作区。
+- 工作区写入授权在首次成功写入后持久化，后续不再提醒，并可通过 `mcu-var-write --reset-permission` 撤销。
+- 一次性确认 ID 与 ELF 指纹、变量地址、类型和值绑定，过期、复用或内容变化时拒绝写入。
+
+### Fixed
+
+- 下载与 Flash 校验 Skill 自动复用 EmberProbe 保存的 OpenOCD、探针、目标和 ELF 配置。
+- 修复 Flash 校验 Tcl 命令的 PowerShell 字符串格式化异常。
+
 ## [0.4.6] - 2026-07-27
 
 ### Added

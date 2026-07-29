@@ -43,7 +43,7 @@ const { inspectSkill, installSkill, inspectSkills } = require("../src/skillInsta
     try {
         const installed = await installSkill(vscode, context, "en");
         assert.strictEqual(installed.state, "installed");
-        assert.strictEqual(installed.installed, 4);
+        assert.strictEqual(installed.installed, 8);
         fs.unlinkSync(path.join(workspace, ".agents", "skills", "mcu-chip-info", "scripts", "read-chip.js"));
         const partial = await inspectSkills(vscode, context);
         assert.strictEqual(partial.state, "partial");

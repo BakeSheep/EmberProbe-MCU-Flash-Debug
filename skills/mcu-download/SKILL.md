@@ -17,4 +17,4 @@ Use the bundled `scripts/download.ps1` from this skill directory. Do not constru
 3. When the user explicitly asked to download or flash, rerun the same command with `-Execute`.
 4. Report the ELF SHA-256 fingerprint, OpenOCD's exit code, and concise result. On failure, include the actionable tail of its output.
 
-The script selects the newest ELF by modification time, identifies the MCU from `.ioc`, CMake, and linker files, and detects the attached debug probe. On Windows it falls back to `pnputil` when `Get-PnpDevice` is unavailable. Override a detected value only when the user supplies it explicitly with `-Elf`, `-Target`, `-Probe`, or `-OpenOcd`.
+The script first reuses EmberProbe's configured ELF, MCU target, probe, and OpenOCD executable through the Agent Bridge. Missing values fall back to workspace/USB auto-detection: newest ELF by modification time, MCU hints from `.ioc`, CMake, and linker files, and the attached debug probe. On Windows it falls back to `pnputil` when `Get-PnpDevice` is unavailable. Explicit `-Elf`, `-Target`, `-Probe`, or `-OpenOcd` values always take precedence.

@@ -58,6 +58,35 @@ function resolveVariableRequests(symbols, requests) {
     });
 }
 
+// 将数值按类型编码为小端字节数组（与 decodeValue 对称），越界/非法值抛错
+function encodeValue(value, type) {
+    if (!SUPPORTED_TYPES.includes(type)) throw Object.assign(new Error(`Unsupported type: ${type}`), { code: 'UNSUPPORTED_VARIABLE_TYPE' });
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw Object.assign(new Error(`Value is not a finite number: ${value}`), { code: 'INVALID_WRITE_VALUE' });
+    const ranges = {
+        u8: [0, 0xff], i8: [-128, 127],
+        u16: [0, 0xffff], i16: [-32768, 32767],
+        u32: [0, 0xffffffff], i32: [-2147483648, 2147483647]
+    };
+    if (type !== 'f32') {
+        if (!Number.isInteger(number)) throw Object.assign(new Error(`${type} requires an integer value: ${value}`), { code: 'INVALID_WRITE_VALUE' });
+        const [min, max] = ranges[type];
+        if (number < min || number > max) throw Object.assign(new Error(`Value out of range for ${type}: ${value}`), { code: 'INVALID_WRITE_VALUE' });
+    }
+    const width = typeByteLength(type);
+    const view = new DataView(new ArrayBuffer(width));
+    switch (type) {
+        case 'u8': view.setUint8(0, number); break;
+        case 'i8': view.setInt8(0, number); break;
+        case 'u16': view.setUint16(0, number, true); break;
+        case 'i16': view.setInt16(0, number, true); break;
+        case 'u32': view.setUint32(0, number, true); break;
+        case 'i32': view.setInt32(0, number, true); break;
+        case 'f32': view.setFloat32(0, number, true); break;
+    }
+    return Array.from(new Uint8Array(view.buffer));
+}
+
 // 将原始小端字节按类型解码为数值；bytes 可为 Buffer / Uint8Array / number[]
 function decodeValue(bytes, type) {
     const need = typeByteLength(type);
@@ -136,12 +165,14 @@ function parseElfSymbols(buffer) {
     };
 
     const STT_OBJECT = 1;
+    const STT_FUNC = 2;
     const SHN_UNDEF = 0;
     const SHN_ABS = 0xfff1;
     const entsize = symtab.entsize || 16;
     if (entsize < 16) throw new Error('ELF 符号表条目大小无效');
     const count = Math.floor(symtab.size / entsize);
     const seen = new Map();
+    const seenFuncs = new Map();
     for (let i = 0; i < count; i++) {
         const off = symtab.offset + i * entsize;
         if (off + 16 > buf.length) break;
@@ -150,8 +181,19 @@ function parseElfSymbols(buffer) {
         const stSize = buf.readUInt32LE(off + 8);
         const stInfo = buf[off + 12];
         const stShndx = buf.readUInt16LE(off + 14);
-        if ((stInfo & 0xf) !== STT_OBJECT) continue; // 仅数据对象（变量）
+        const stType = stInfo & 0xf;
         if (stShndx === SHN_UNDEF || stShndx === SHN_ABS) continue;
+        if (stType === STT_FUNC) {
+            // 函数符号单独收集（故障分析的 PC/LR 符号化与体积排名用），清除 Thumb bit
+            const name = readCStr(strtab.offset, stName);
+            const address = (stValue & ~1) >>> 0;
+            // 不同编译单元可以有同名 static 函数；仅去除名称和地址都相同的重复条目。
+            const key = `${name}\0${address}`;
+            if (!name || seenFuncs.has(key)) continue;
+            seenFuncs.set(key, { name, address, size: stSize >>> 0 });
+            continue;
+        }
+        if (stType !== STT_OBJECT) continue; // 仅数据对象（变量）与函数
         const name = readCStr(strtab.offset, stName);
         if (!name || seen.has(name)) continue; // 同名取首个
         seen.set(name, { name, address: stValue >>> 0, size: stSize >>> 0 });
@@ -159,7 +201,99 @@ function parseElfSymbols(buffer) {
     const symbols = Array.from(seen.values())
         .filter(s => s.address !== 0)
         .sort((a, b) => a.name.localeCompare(b.name));
-    return { symbols, warnings };
+    const functions = Array.from(seenFuncs.values())
+        .filter(s => s.address !== 0)
+        .sort((a, b) => a.address - b.address);
+    return { symbols, functions, warnings };
+}
+
+// 解析 ELF32 节头（含节名/加载地址/标志）与程序头，供可写段校验与 Flash/RAM 占用分析。
+// 返回 { sections: [{name,type,addr,offset,size,flags}], programHeaders: [{vaddr,paddr,filesz,memsz,flags}] }
+function parseElfSections(buffer) {
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    if (buf.length < 52) throw new Error('文件过小，不是有效的 ELF');
+    if (!(buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46)) {
+        throw new Error('不是有效的 ELF 文件（魔数不匹配）');
+    }
+    if (buf[4] !== 1) throw new Error('仅支持 32 位 ELF（Cortex-M）');
+    if (buf[5] !== 1) throw new Error('仅支持小端 ELF（Cortex-M）');
+
+    const eShoff = buf.readUInt32LE(32);
+    const eShentsize = buf.readUInt16LE(46) || 40;
+    const eShnum = buf.readUInt16LE(48);
+    const eShstrndx = buf.readUInt16LE(50);
+    if (!eShoff || !eShnum) throw new Error('缺少节头表，可能已被 strip（请用 Debug 构建）');
+    if (eShentsize < 40 || eShoff + eShnum * eShentsize > buf.length) {
+        throw new Error('ELF 节头表越界或条目大小无效');
+    }
+    const raw = [];
+    for (let i = 0; i < eShnum; i++) {
+        const off = eShoff + i * eShentsize;
+        if (off + 40 > buf.length) break;
+        raw.push({
+            nameOffset: buf.readUInt32LE(off + 0),
+            type: buf.readUInt32LE(off + 4),
+            flags: buf.readUInt32LE(off + 8),
+            addr: buf.readUInt32LE(off + 12) >>> 0,
+            offset: buf.readUInt32LE(off + 16),
+            size: buf.readUInt32LE(off + 20)
+        });
+    }
+    // 节名字符串表（shstrtab）
+    const shstr = raw[eShstrndx];
+    const readName = (rel) => {
+        if (!shstr || rel < 0) return '';
+        const p = shstr.offset + rel;
+        const limit = shstr.offset + shstr.size;
+        if (p >= limit || limit > buf.length) return '';
+        let end = p;
+        while (end < limit && buf[end] !== 0) end++;
+        return buf.toString('utf8', p, end);
+    };
+    const sections = raw.map(s => ({
+        name: readName(s.nameOffset),
+        type: s.type,
+        addr: s.addr,
+        offset: s.offset,
+        size: s.size,
+        flags: s.flags
+    }));
+
+    const ePhoff = buf.readUInt32LE(28);
+    const ePhentsize = buf.readUInt16LE(42) || 32;
+    const ePhnum = buf.readUInt16LE(44);
+    const programHeaders = [];
+    if (ePhoff && ePhnum && ePhentsize >= 32 && ePhoff + ePhnum * ePhentsize <= buf.length) {
+        for (let i = 0; i < ePhnum; i++) {
+            const off = ePhoff + i * ePhentsize;
+            programHeaders.push({
+                type: buf.readUInt32LE(off + 0),
+                offset: buf.readUInt32LE(off + 4),
+                vaddr: buf.readUInt32LE(off + 8) >>> 0,
+                paddr: buf.readUInt32LE(off + 12) >>> 0,
+                filesz: buf.readUInt32LE(off + 16),
+                memsz: buf.readUInt32LE(off + 20),
+                flags: buf.readUInt32LE(off + 24)
+            });
+        }
+    }
+    return { sections, programHeaders };
+}
+
+// 在按地址升序的函数符号中定位地址所属函数，返回 { name, offset } 或 null
+function nearestFunction(functions, address) {
+    const addr = (Number(address) & ~1) >>> 0;
+    if (!Array.isArray(functions) || !functions.length || !Number.isFinite(addr)) return null;
+    let best = null;
+    for (const fn of functions) {
+        if (fn.address > addr) break; // 已按地址升序
+        best = fn;
+    }
+    if (!best) return null;
+    const offset = addr - best.address;
+    // 有大小时要求落在函数范围内；无大小（汇编符号）时限制偏移不超 64KB 避免跨区域误报
+    if (best.size > 0 ? offset >= best.size : offset > 0x10000) return null;
+    return { name: best.name, offset };
 }
 
 // —— 复合类型路径解析与解码 ——
@@ -464,4 +598,4 @@ function isScalarLeafNode(node) {
         && !Object.prototype.hasOwnProperty.call(node, 'elements');
 }
 
-module.exports = { parseElfSymbols, decodeValue, decodeComposite, navigateCompositeTree, isScalarLeafNode, defaultType, typeByteLength, resolveVariableRequests, parseMemberPath, expandCompositeLeaves, SUPPORTED_TYPES };
+module.exports = { parseElfSymbols, parseElfSections, nearestFunction, decodeValue, encodeValue, decodeComposite, navigateCompositeTree, isScalarLeafNode, defaultType, typeByteLength, resolveVariableRequests, parseMemberPath, expandCompositeLeaves, SUPPORTED_TYPES };

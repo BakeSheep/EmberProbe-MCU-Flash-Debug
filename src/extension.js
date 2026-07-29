@@ -14,9 +14,11 @@ const liveWatchView = require("./liveWatchView");
 const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
+const faultInfo = require("./faultInfo");
 const validation = require("./validation");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
+const { WriteAuthorization } = require("./writeAuthorization");
 const fs = require("fs");
 const crypto = require("crypto");
 const i18n = require("./i18n");
@@ -134,6 +136,7 @@ class MainViewProvider {
         this._agentReadDelayTimer = null;
         this._agentReadDelayResolve = null;
         this._agentSamplingStatus = null;
+        this._writeAuthorization = new WriteAuthorization(context.workspaceState);
         this.registerCommandHandlers();
     }
     // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
@@ -692,6 +695,23 @@ class MainViewProvider {
         for (const item of plan) { if (!seenRead.has(item.name)) { seenRead.add(item.name); readItems.push({ name: item.name, address: item.address, size: item.size }); } }
         for (const comp of compositePlan) { if (!seenRead.has(comp.name)) { seenRead.add(comp.name); readItems.push({ name: comp.name, address: comp.address, size: comp.size }); } }
 
+        return this._withAgentProbe(async ({ session, source, temporary }) => {
+            if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: 0, total: count });
+            const result = [];
+            for (let index = 0; index < count; index++) {
+                if (temporary && !this._agentReadRunning) throw Object.assign(new Error('Agent sampling was cancelled by the user'), { code: 'AGENT_READ_CANCELLED' });
+                result.push(this._decodeAgentSample(plan, await session.readOnce(readItems), compositePlan));
+                if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: index + 1, total: count });
+                if (index + 1 < count) await this._waitAgentInterval(intervalMs);
+            }
+            return { source, elf: elfResult.elf, samples: result };
+        }, { syncStatus, total: count });
+    }
+    // 获取 Agent 探针会话：复用活动采样连接或创建临时会话，handler({session, source, temporary}) 完成实际读写，
+    // finally 中临时会话必释放。互斥与状态同步语义与原 _runAgentSamples 一致。
+    async _withAgentProbe(handler, options = {}) {
+        const syncStatus = !!options.syncStatus;
+        const total = options.total || 0;
         // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
         const liveDeadline = Date.now() + 7000;
         while (this._liveStarting && Date.now() < liveDeadline) {
@@ -741,19 +761,12 @@ class MainViewProvider {
         let completed = false;
         try {
             if (temporary) {
-                if (syncStatus) this._postAgentSampling(true, 'live.agentStarting', { total: count });
+                if (syncStatus) this._postAgentSampling(true, 'live.agentStarting', { total });
                 await session.start();
             }
-            if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: 0, total: count });
-            const result = [];
-            for (let index = 0; index < count; index++) {
-                if (temporary && !this._agentReadRunning) throw Object.assign(new Error('Agent sampling was cancelled by the user'), { code: 'AGENT_READ_CANCELLED' });
-                result.push(this._decodeAgentSample(plan, await session.readOnce(readItems), compositePlan));
-                if (temporary && syncStatus) this._postAgentSampling(true, 'live.agentSampling', { current: index + 1, total: count });
-                if (index + 1 < count) await this._waitAgentInterval(intervalMs);
-            }
+            const result = await handler({ session, source, temporary });
             completed = true;
-            return { source, elf: elfResult.elf, samples: result };
+            return result;
         } finally {
             if (temporary) {
                 try { session.stop(); } catch { /* ignore */ }
@@ -762,7 +775,7 @@ class MainViewProvider {
                 if (this._agentReadDelayResolve) this._agentReadDelayResolve();
                 if (syncStatus) {
                     const key = this._agentReadCancelled ? 'live.agentStopped' : (completed ? 'live.agentDone' : 'live.agentFailed');
-                    this._postAgentSampling(false, key, { total: count });
+                    this._postAgentSampling(false, key, { total });
                 }
                 this._agentReadCancelled = false;
             }
@@ -777,13 +790,211 @@ class MainViewProvider {
         const intervalMs = validation.clampInteger(params.intervalMs, 200, 20, 60000);
         return this._runAgentSamples(params, count, intervalMs, true);
     }
+    // 解析写入请求：只允许标量符号与复合类型的单个标量叶子路径，且目标地址必须落在
+    // ELF 的可写段（SHF_ALLOC|SHF_WRITE，即 .data/.bss）内，防止误写 Flash/外设寄存器。
+    _agentWritePlan(values) {
+        const requests = (Array.isArray(values) ? values : []).map(item => ({ name: String(item?.name || '').trim(), value: item?.value }));
+        if (!requests.length) throw Object.assign(new Error('No variables supplied'), { code: 'NO_VARIABLES' });
+        this._symbolCache = null;
+        const elfResult = this.readElfSymbols();
+        const byName = new Map(elfResult.symbols.map(s => [s.name, s]));
+        const SHF_WRITE = 1, SHF_ALLOC = 2;
+        let writable = [];
+        try {
+            const parsed = elfSymbols.parseElfSections(fs.readFileSync(elfResult.elf.path));
+            writable = parsed.sections.filter(s => (s.flags & (SHF_WRITE | SHF_ALLOC)) === (SHF_WRITE | SHF_ALLOC) && s.size > 0);
+        } catch (e) { writable = []; }
+        const inWritable = (address, size) => writable.some(s => address >= s.addr && address + size <= s.addr + s.size);
+        const items = [];
+        const seen = new Set();
+        for (const req of requests) {
+            if (!req.name) throw Object.assign(new Error('Variable name is required'), { code: 'INVALID_VARIABLE_NAME' });
+            const parsed = elfSymbols.parseMemberPath(req.name);
+            const baseName = parsed ? parsed.base : req.name;
+            const symbol = byName.get(baseName);
+            let target;
+            if (symbol && symbol.isComposite) {
+                if (!symbol.compositeLayout) throw Object.assign(new Error(`Composite variable has no DWARF layout: ${req.name}`), { code: 'UNSUPPORTED_VARIABLE' });
+                if (!parsed || !parsed.segments.length) throw Object.assign(new Error(`Writing a whole composite variable is not supported: ${req.name}`), { code: 'UNSUPPORTED_VARIABLE' });
+                const leaves = elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed);
+                if (leaves.length !== 1) throw Object.assign(new Error(`Write target must resolve to exactly one scalar member: ${req.name}`), { code: leaves.length ? 'UNSUPPORTED_VARIABLE' : 'INVALID_VARIABLE_PATH' });
+                target = { name: leaves[0].path, address: leaves[0].address >>> 0, type: leaves[0].type, size: leaves[0].size };
+            } else {
+                const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: req.name }]);
+                const resolvedSymbol = byName.get(plan.name);
+                if (!resolvedSymbol?.hasDwarfWriteType) {
+                    throw Object.assign(new Error(`Variable type is not available from DWARF; refusing to guess a write encoding: ${req.name}`), {
+                        code: 'WRITE_TYPE_UNKNOWN',
+                        details: { name: plan.name, guessedType: plan.type }
+                    });
+                }
+                target = { name: plan.name, address: plan.address, type: plan.type, size: plan.size };
+            }
+            if (seen.has(target.name)) throw Object.assign(new Error(`Variable requested more than once: ${target.name}`), { code: 'DUPLICATE_VARIABLE' });
+            seen.add(target.name);
+            const bytes = elfSymbols.encodeValue(req.value, target.type);
+            if (!inWritable(target.address, target.size)) {
+                throw Object.assign(new Error(`Target address is outside writable RAM sections (.data/.bss): ${req.name}`), { code: 'WRITE_NOT_ALLOWED', details: { name: target.name, address: `0x${target.address.toString(16).toUpperCase()}` } });
+            }
+            items.push({ requestedName: req.name, name: target.name, address: target.address, type: target.type, size: target.size, bytes, value: elfSymbols.decodeValue(bytes, target.type) });
+        }
+        return { elfResult, items };
+    }
+    // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
+    // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
+    async _writeAgentVariables(params) {
+        const plan = this._agentWritePlan(params.values);
+        const authorization = this._writeAuthorization.authorize(plan, {
+            confirmationId: params.confirmationId,
+            remember: params.remember
+        });
+        if (!authorization.authorized) return authorization.response;
+        const { elfResult, items } = plan;
+        const result = await this._withAgentProbe(async ({ session, source }) => {
+            const readItems = items.map(i => ({ name: i.name, address: i.address, size: i.size }));
+            const before = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
+            await session.writeOnce(items.map(i => ({ address: i.address, bytes: i.bytes })));
+            const after = new Map((await session.readOnce(readItems)).map(s => [s.name, s]));
+            const results = items.map(i => {
+                const prev = before.get(i.name);
+                const post = after.get(i.name);
+                const verified = !!post?.bytes && post.bytes.length >= i.bytes.length && i.bytes.every((b, k) => post.bytes[k] === b);
+                return {
+                    name: i.requestedName,
+                    resolvedName: i.name,
+                    address: `0x${i.address.toString(16).toUpperCase()}`,
+                    type: i.type,
+                    previous: prev?.bytes ? elfSymbols.decodeValue(prev.bytes, i.type) : null,
+                    written: i.value,
+                    readBack: post?.bytes ? elfSymbols.decodeValue(post.bytes, i.type) : null,
+                    verified
+                };
+            });
+            if (results.some(r => !r.verified)) {
+                throw Object.assign(new Error('Write verification failed: the value read back does not match (the firmware may be overwriting this variable)'), { code: 'WRITE_VERIFY_FAILED', retryable: true, details: { results } });
+            }
+            return { source, elf: elfResult.elf, results };
+        });
+        let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted() };
+        if (authorization.remember) {
+            try { permission = { mode: 'workspace', ...(await this._writeAuthorization.trustWorkspace()), remembered: true }; }
+            catch (error) { permission = { mode: 'once', trusted: false, remembered: false, warning: error.message }; }
+        }
+        return { ...result, permission };
+    }
+    async _agentWritePermission(params) {
+        const action = String(params?.action || 'status');
+        if (action === 'status') return this._writeAuthorization.status();
+        if (action === 'reset') return this._writeAuthorization.reset();
+        throw Object.assign(new Error(`Unsupported write permission action: ${action}`), { code: 'INVALID_PERMISSION_ACTION' });
+    }
+    // 读取并解码 Cortex-M 故障寄存器；与 chip.read 共用 _chipInfoRunning 互斥（一次性 OpenOCD 进程同一时刻只能有一个）
+    async _readAgentFault() {
+        const busy = (key, code) => { throw Object.assign(new Error(this._t(key)), { i18nKey: key, code }); };
+        if (this._chipInfoRunning) busy('chip.reading', 'CHIP_READ_RUNNING');
+        if (this._downloadRunning) busy('chip.busyDownload', 'PROBE_BUSY');
+        if (this._liveWatchRunning) busy('chip.busyLive', 'PROBE_BUSY');
+        if (this._agentReadRunning) busy('chip.busyAgent', 'PROBE_BUSY');
+        if (this._debugStarting || vscode.debug.activeDebugSession) busy('chip.busyDebug', 'PROBE_BUSY');
+        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        if (!debuggerCfg || !mcuCore) busy('chip.needConfig', 'CONFIG_INCOMPLETE');
+        this._chipInfoRunning = true;
+        try {
+            const executable = await this._resolveOpenOcdPath(vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd'));
+            if (!executable) busy('chip.notReady', 'OPENOCD_NOT_READY');
+            const { cwd } = this._commandContext();
+            const raw = await faultInfo.readFaultInfo({ executable, probe: debuggerCfg, target: mcuCore, cwd });
+            const decoded = faultInfo.decodeFaultRegisters(raw.values);
+            // PC/LR 符号化：ELF 未配置或无函数符号时跳过，不影响寄存器结果
+            let pcSymbol = '', lrSymbol = '', symbolication = 'ok';
+            try {
+                const functions = this.readElfSymbols().functions || [];
+                const symbolize = (hex) => {
+                    const fn = elfSymbols.nearestFunction(functions, parseInt(hex, 16));
+                    return fn ? `${fn.name}+0x${fn.offset.toString(16).toUpperCase()}` : '';
+                };
+                if (raw.pc) pcSymbol = symbolize(raw.pc);
+                if (raw.lr) lrSymbol = symbolize(raw.lr);
+            } catch (e) { symbolication = 'unavailable'; }
+            return {
+                targetState: raw.targetState,
+                registers: raw.registers,
+                faultDetected: decoded.faultDetected,
+                faults: decoded.faults,
+                exception: decoded.exception,
+                pc: raw.pc, sp: raw.sp, lr: raw.lr, xpsr: raw.xpsr,
+                pcSymbol, lrSymbol, symbolication
+            };
+        } finally {
+            this._chipInfoRunning = false;
+        }
+    }
+    // 纯静态分析当前 ELF 的 Flash/RAM 占用与最大符号，不占探针
+    _analyzeElf(params) {
+        const elfResult = this.readElfSymbols();
+        let buffer;
+        try { buffer = fs.readFileSync(elfResult.elf.path); }
+        catch (e) { throw Object.assign(new Error(`Cannot read ELF: ${elfResult.elf.path}`), { code: 'ELF_READ_FAILED', details: { cause: e.message } }); }
+        const { sections, programHeaders } = elfSymbols.parseElfSections(buffer);
+        const SHF_WRITE = 1, SHF_ALLOC = 2, SHT_NOBITS = 8, PT_LOAD = 1;
+        const hex = v => `0x${(v >>> 0).toString(16).toUpperCase()}`;
+        // 用 PT_LOAD 段把 VMA 映射到 LMA（.data 在 Flash 中的装载副本）
+        const lmaFor = (s) => {
+            for (const ph of programHeaders) {
+                if (ph.type !== PT_LOAD) continue;
+                if (s.addr >= ph.vaddr && s.addr + s.size <= ph.vaddr + Math.max(ph.filesz, ph.memsz)) {
+                    return (ph.paddr + (s.addr - ph.vaddr)) >>> 0;
+                }
+            }
+            return s.addr;
+        };
+        const flashSections = [], ramSections = [];
+        let flashTotal = 0, ramTotal = 0;
+        for (const s of sections) {
+            if (!(s.flags & SHF_ALLOC) || !s.size) continue;
+            if (s.type !== SHT_NOBITS) {
+                // 有文件内容的装载节占 Flash（按 LMA）：.isr_vector/.text/.rodata/.data 等
+                flashSections.push({ name: s.name, address: hex(lmaFor(s)), size: s.size });
+                flashTotal += s.size;
+            }
+            if (s.flags & SHF_WRITE) {
+                // 运行期占 RAM 的可写节（按 VMA）：.data/.bss/.noinit 等
+                ramSections.push({ name: s.name, address: hex(s.addr), size: s.size });
+                ramTotal += s.size;
+            }
+        }
+        const sectionOf = (address) => {
+            const hit = sections.find(s => (s.flags & SHF_ALLOC) && s.size && address >= s.addr && address < s.addr + s.size);
+            return hit ? hit.name : '';
+        };
+        const top = validation.clampInteger(params.top, 20, 1, 100);
+        const topSymbols = [
+            ...(elfResult.functions || []).map(f => ({ name: f.name, kind: 'function', size: f.size, address: f.address })),
+            ...elfResult.symbols.map(s => ({ name: s.name, kind: 'object', size: s.size, address: s.address }))
+        ].filter(s => s.size > 0)
+            .sort((a, b) => b.size - a.size)
+            .slice(0, top)
+            .map(s => ({ name: s.name, kind: s.kind, section: sectionOf(s.address), size: s.size, address: hex(s.address) }));
+        return {
+            elf: elfResult.elf,
+            flash: { total: flashTotal, sections: flashSections },
+            ram: { total: ramTotal, sections: ramSections },
+            topSymbols,
+            warnings: elfResult.warnings || []
+        };
+    }
     async _handleAgentCall(method, params) {
-        if (method === 'capabilities') return { protocol: 1, methods: ['config.get', 'config.set', 'watch.add', 'variables.read', 'variables.sample', 'chip.read'] };
+        if (method === 'capabilities') return { protocol: 1, methods: ['config.get', 'config.set', 'watch.add', 'variables.read', 'variables.sample', 'variables.write', 'variables.write.permission', 'chip.read', 'fault.read', 'elf.analyze'] };
         if (method === 'config.get') return this._configurationSnapshot();
         if (method === 'config.set') return this._setAgentConfiguration(params.values || {});
         if (method === 'watch.add') return this._addAgentWatch(params);
         if (method === 'variables.read') return this._readAgentVariables(params);
         if (method === 'variables.sample') return this._sampleAgentVariables(params);
+        if (method === 'variables.write') return this._writeAgentVariables(params);
+        if (method === 'variables.write.permission') return this._agentWritePermission(params);
+        if (method === 'fault.read') return this._readAgentFault();
+        if (method === 'elf.analyze') return this._analyzeElf(params || {});
         if (method === 'chip.read') {
             const info = await this.readChipInfoAction(true);
             const groups = {
@@ -916,6 +1127,8 @@ class MainViewProvider {
             const hasLayout = !!layout;
             sym.isComposite = hasLayout || /^(struct|union)\b/.test(sym.typeName) || /\[\]$/.test(sym.typeName) || (!info?.watchType && sym.size > 4);
             sym.watchType = sym.isComposite ? '' : (info && info.watchType ? info.watchType : elfSymbols.defaultType(sym.size));
+            // 读取可以按大小猜测类型；高危写入只能使用 DWARF 明确给出的标量编码。
+            sym.hasDwarfWriteType = !sym.isComposite && !!info?.watchType;
             if (sym.isComposite) {
                 sym.compositeLayout = layout || null;
                 sym.unsupportedReason = hasLayout ? '' : (this._t('lw.compositeNoLayout'));

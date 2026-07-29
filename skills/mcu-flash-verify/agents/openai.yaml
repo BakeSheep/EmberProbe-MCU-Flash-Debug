@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Flash Verify"
+  short_description: "Verify on-chip firmware against the local ELF"
+  default_prompt: "Detect the ELF, target, and probe, then verify the flash contents and report whether they match."

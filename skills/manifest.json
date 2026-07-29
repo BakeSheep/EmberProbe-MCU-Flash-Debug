@@ -3,7 +3,7 @@
   "skills": [
     {
       "name": "mcu-download",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "required": ["SKILL.md", "scripts/download.ps1", "agents/openai.yaml"]
     },
     {
@@ -23,6 +23,29 @@
       "version": "1.1.0",
       "runtime": true,
       "required": ["SKILL.md", "scripts/config.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-var-write",
+      "version": "1.1.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/write-var.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-fault-analyzer",
+      "version": "1.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/analyze-fault.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-elf-analyze",
+      "version": "1.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/analyze-elf.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-flash-verify",
+      "version": "1.1.0",
+      "required": ["SKILL.md", "scripts/verify.ps1", "agents/openai.yaml"]
     }
   ]
 }

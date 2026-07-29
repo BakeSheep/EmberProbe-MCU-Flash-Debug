@@ -29,7 +29,7 @@ const STRINGS = {
         // 侧边栏
         'sb.connecting': '正在连接',
         'sb.installSkillTitle': '安装 Agent Skills',
-        'sb.installSkillDesc': '下载、变量、芯片信息与配置同步',
+        'sb.installSkillDesc': '下载、变量读写、芯片/故障诊断、ELF 分析与固件校验',
         'skill.checking': '检测中',
         'skill.installed': '已安装 {installed}/{total}',
         'skill.partial': '部分安装 {installed}/{total}',
@@ -332,7 +332,7 @@ const STRINGS = {
         // Sidebar
         'sb.connecting': 'Connecting',
         'sb.installSkillTitle': 'Install Agent Skills',
-        'sb.installSkillDesc': 'Download, variables, chip info and config sync',
+        'sb.installSkillDesc': 'Download, variable read/write, chip/fault diagnosis, ELF analysis and flash verify',
         'skill.checking': 'Checking',
         'skill.installed': 'Installed {installed}/{total}',
         'skill.partial': 'Partial {installed}/{total}',

@@ -27,6 +27,12 @@ const execFileAsync = promisify(execFile);
     assert.strictEqual(targetDiagnostic.type, "diagnostic");
     assert.strictEqual(targetDiagnostic.error.category, "target_connection");
     assert.strictEqual(targetDiagnostic.operation, "variables.trend");
+    const unknownTypeDiagnostic = diagnosticForError(Object.assign(new Error("missing DWARF type"), { code: "WRITE_TYPE_UNKNOWN" }));
+    assert.strictEqual(unknownTypeDiagnostic.error.category, "write_safety");
+    assert.strictEqual(unknownTypeDiagnostic.error.retryable, false);
+    const changedElfDiagnostic = diagnosticForError(Object.assign(new Error("ELF changed"), { code: "ELF_CHANGED_DURING_WRITE_CONFIRMATION" }));
+    assert.strictEqual(changedElfDiagnostic.error.category, "write_safety");
+    assert.strictEqual(changedElfDiagnostic.error.retryable, false);
 
     const rising = liveSkill.summarize([
         { timestamp: 0, value: 1 },
@@ -56,6 +62,34 @@ const execFileAsync = promisify(execFile);
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-bridge-"));
     const bridge = new AgentBridge(root, async (method, params) => {
+        if (method === "variables.write") {
+            if (!params.confirmationId) return {
+                confirmationRequired: true,
+                confirmationId: "test-confirmation",
+                choices: ["once", "workspace"],
+                items: [{ name: "kp", address: "0x20000000", type: "f32", value: 0.5 }]
+            };
+            if (params.confirmationId !== "test-confirmation") throw Object.assign(new Error("Invalid confirmation"), { code: "WRITE_CONFIRMATION_INVALID" });
+            return {
+                source: "temporary-probe",
+                elf: { path: "firmware.elf", sha256: "test" },
+                results: [{ name: "kp", resolvedName: "kp", address: "0x20000000", type: "f32", previous: 0.2, written: 0.5, readBack: 0.5, verified: true }],
+                permission: { mode: params.remember ? "workspace" : "once", trusted: !!params.remember }
+            };
+        }
+        if (method === "variables.write.permission") return { trusted: false, scope: "workspace" };
+        if (method === "fault.read") {
+            return {
+                targetState: "halted",
+                faultDetected: true,
+                faults: [{ register: "CFSR", flag: "PRECISERR", group: "bus", faultAddress: "0x60000000" }],
+                exception: { number: 3, name: "HardFault" },
+                pc: "0x08000012", pcSymbol: "uart_send+0x12", symbolication: "ok"
+            };
+        }
+        if (method === "elf.analyze") {
+            return { flash: { total: 0x110 }, ram: { total: 0x30 }, topSymbols: [], requestedTop: params.top ?? null };
+        }
         if (method !== "variables.sample") return { method, params };
         if (params.variables?.[0]?.name === "disconnected") {
             throw Object.assign(new Error("调试器已启动，但无法与目标 MCU 建立 SWD/JTAG 连接。"), {
@@ -122,6 +156,53 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(failedTrend.error.code, "TARGET_NOT_CONNECTED");
         assert.strictEqual(failedTrend.error.details.openocdTail[0], "Error: cannot read IDR");
         assert.ok(fs.existsSync(path.join(root, ".emberprobe", "agent-bridge.json")));
+
+        // —— mcu-var-write：先返回聊天确认，再凭一次性 ID 写入并记住工作区授权 ——
+        const writeRequest = await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-var-write/scripts/write-var.js"),
+            "--workspace", root,
+            "--set", "kp=0.5"
+        ]);
+        const confirmation = JSON.parse(writeRequest.stdout);
+        assert.strictEqual(confirmation.confirmationRequired, true);
+        assert.strictEqual(confirmation.confirmationId, "test-confirmation");
+        const writeOk = await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-var-write/scripts/write-var.js"),
+            "--workspace", root,
+            "--set", "kp=0.5",
+            "--confirm", confirmation.confirmationId,
+            "--remember"
+        ]);
+        const writePayload = JSON.parse(writeOk.stdout);
+        assert.strictEqual(writePayload.results[0].verified, true);
+        assert.strictEqual(writePayload.results[0].written, 0.5);
+        assert.strictEqual(writePayload.permission.mode, "workspace");
+        const reset = await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-var-write/scripts/write-var.js"),
+            "--workspace", root,
+            "--reset-permission"
+        ]);
+        assert.deepStrictEqual(JSON.parse(reset.stdout), { trusted: false, scope: "workspace" });
+
+        // —— mcu-fault-analyzer ——
+        const faultOut = await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-fault-analyzer/scripts/analyze-fault.js"),
+            "--workspace", root
+        ]);
+        const faultPayload = JSON.parse(faultOut.stdout);
+        assert.strictEqual(faultPayload.faultDetected, true);
+        assert.strictEqual(faultPayload.faults[0].flag, "PRECISERR");
+        assert.strictEqual(faultPayload.pcSymbol, "uart_send+0x12");
+
+        // —— mcu-elf-analyze（含 --top 透传） ——
+        const elfOut = await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-elf-analyze/scripts/analyze-elf.js"),
+            "--workspace", root,
+            "--top", "5"
+        ]);
+        const elfPayload = JSON.parse(elfOut.stdout);
+        assert.strictEqual(elfPayload.flash.total, 0x110);
+        assert.strictEqual(elfPayload.requestedTop, 5);
     } finally {
         await bridge.stop();
         fs.rmSync(root, { recursive: true, force: true });

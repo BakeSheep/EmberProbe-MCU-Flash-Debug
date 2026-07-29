@@ -42,7 +42,15 @@ const DIAGNOSTICS = {
     VARIABLE_NOT_FOUND: ['variable_resolution', '当前最新 ELF 中没有该变量。', ['确认变量名，必要时使用 --list 检查 ELF 符号。'], false],
     AMBIGUOUS_VARIABLE: ['variable_resolution', '变量名的大小写无关匹配不唯一。', ['使用 --list 查看候选项并提供精确名称。'], false],
     AGENT_READ_CANCELLED: ['cancelled', 'Agent 采样已被用户或其他操作取消。', ['仅在仍需要数据时重新发起读取。'], true],
-    OPENOCD_START_FAILED: ['openocd', 'OpenOCD 未能建立采样连接。', ['根据 details.openocdTail 判断探针、目标供电、接线或配置问题。'], true]
+    OPENOCD_START_FAILED: ['openocd', 'OpenOCD 未能建立采样连接。', ['根据 details.openocdTail 判断探针、目标供电、接线或配置问题。'], true],
+    WRITE_CONFIRMATION_INVALID: ['user_decision', '变量写入确认已过期、已使用，或写入内容发生变化。', ['重新请求写入摘要，并在聊天中获得用户明确授权后使用新的 confirmationId。'], false],
+    WRITE_NOT_ALLOWED: ['write_safety', '目标地址不在 ELF 的可写 RAM 段（.data/.bss）内，EmberProbe 拒绝写入。', ['确认变量是 RAM 中的全局变量，而非 const/Flash 数据或外设寄存器。'], false],
+    WRITE_TYPE_UNKNOWN: ['write_safety', 'ELF 中缺少可验证的 DWARF 标量类型，EmberProbe 拒绝猜测写入编码。', ['使用包含 DWARF 调试信息的 Debug ELF 重新构建并选择固件。'], false],
+    ELF_CHANGED_DURING_WRITE_CONFIRMATION: ['write_safety', '请求确认后 ELF 已变化，旧变量地址不再可信。', ['检查新的 ELF 和写入目标后，重新提交写入请求并再次确认。'], false],
+    INVALID_WRITE_VALUE: ['write_safety', '写入值超出目标类型范围或非法。', ['按变量类型（u8/i8/u16/i16/u32/i32/f32）提供范围内的数值。'], false],
+    WRITE_VERIFY_FAILED: ['write_safety', '写入后回读不一致，固件可能在每个循环中重写该变量。', ['向用户说明变量被固件持续覆写的可能，不要盲目重试。'], true],
+    UNSUPPORTED_VARIABLE: ['variable_resolution', '变量不是受支持的标量（或尝试写入整个复合类型）。', ['写入时请指定单个标量叶子路径，如 sensor.x 或 buf[0]。'], false],
+    FAULT_READ_FAILED: ['target_connection', '未能读取到故障寄存器。', ['检查探针连接与目标供电，确认 MCU target 配置与实际芯片一致。'], true]
 };
 
 function diagnosticForError(error, context = {}) {

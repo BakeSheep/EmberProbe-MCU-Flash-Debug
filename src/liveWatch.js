@@ -44,6 +44,8 @@ class LiveWatchSession {
         this.watch = [];          // [{name,address,size,type}]
         this.readCmd = 'ocd_read_memory'; // 主用命令，不可用时回退 read_memory
         this.altTried = false;
+        this.writeCmd = 'ocd_write_memory'; // 写入主用命令，不可用时回退 write_memory
+        this.writeAltTried = false;
         this._lastReadError = '';
         this._notifiedError = '';
         this.connectionFailed = false;
@@ -320,6 +322,47 @@ class LiveWatchSession {
         this.busy = true;
         try {
             return (await this._readItems(items, Date.now())).samples;
+        } finally {
+            this.busy = false;
+        }
+    }
+
+    // 写入内存字节（width=8）；主用 ocd_write_memory，不可用时回退 write_memory。
+    // 写命令成功时返回空响应，含错误文本（invalid command / 地址错误）时视为失败。
+    async _writeMemoryBytes(addr, bytes) {
+        const hex = '0x' + (addr >>> 0).toString(16);
+        const data = bytes.map(b => '0x' + (b & 0xff).toString(16)).join(' ');
+        const build = (cmd) => `${cmd} ${hex} 8 {${data}}`;
+        const failed = (resp) => /invalid|error|fail|couldn't|wrong # args/i.test(String(resp || '').replace(/\x1a/g, ''));
+        let resp = await this._sendCommand(build(this.writeCmd));
+        if (failed(resp) && !this.writeAltTried) {
+            this.writeAltTried = true; // 首次失败时切换命令名并锁定
+            this.writeCmd = this.writeCmd === 'ocd_write_memory' ? 'write_memory' : 'ocd_write_memory';
+            resp = await this._sendCommand(build(this.writeCmd));
+        }
+        if (failed(resp)) {
+            throw new Error('写入内存失败：' + String(resp || '').replace(/\x1a/g, '').trim().slice(0, 200));
+        }
+        return true;
+    }
+
+    // 在现有 Tcl 连接上写入一组变量一次（items: [{address, bytes}]），语义同 readOnce。
+    async writeOnce(items, timeoutMs = 2500) {
+        if (!Array.isArray(items) || !items.length) return 0;
+        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error('OpenOCD Tcl 服务未连接');
+        const deadline = Date.now() + timeoutMs;
+        while (this.busy) {
+            if (Date.now() >= deadline) throw new Error('等待实时采样连接空闲超时');
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        this.busy = true;
+        try {
+            let written = 0;
+            for (const item of items) {
+                await this._writeMemoryBytes(item.address, item.bytes);
+                written++;
+            }
+            return written;
         } finally {
             this.busy = false;
         }

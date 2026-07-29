@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU ELF Analyze"
+  short_description: "Static Flash/RAM footprint report of the firmware ELF"
+  default_prompt: "Analyze the configured ELF and report Flash/RAM usage and the largest symbols."

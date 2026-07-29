@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Fault Analyzer"
+  short_description: "Decode Cortex-M fault registers and symbolize the crash location"
+  default_prompt: "Read the fault registers and explain the root cause with the decoded flags and symbolized PC/LR."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU Variable Write"
+  short_description: "Write live MCU variables after explicit chat confirmation"
+  default_prompt: "Request the write plan first. If confirmationRequired is true, show the exact changes in chat and ask whether to allow once, trust future writes in this workspace, or deny. Continue only after the user's explicit answer."

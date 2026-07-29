@@ -88,8 +88,21 @@ function Test-SafeCfgPath([string]$Value) {
 if (-not (Test-SafeCfgPath $Target) -or -not (Test-SafeCfgPath $Probe)) { Write-Error 'Unsafe OpenOCD configuration path.' }
 if ($Execute) {
     $currentHash = Get-FileSha256 $Elf
-    if ($currentHash -ne $elfSha256) { Write-Error 'ELF changed during download preflight. Retry so addresses and firmware stay consistent.' }
-    $program = 'program {0} verify reset exit' -f (ConvertTo-TclQuotedWord $Elf.Replace('\','/'))
-    & $OpenOcd '-f' "interface/$Probe" '-f' "target/$Target" '-c' $program
-    exit $LASTEXITCODE
+    if ($currentHash -ne $elfSha256) { Write-Error 'ELF changed during verify preflight. Retry so the comparison stays consistent.' }
+    $elfWord = ConvertTo-TclQuotedWord $Elf.Replace('\','/')
+    # 单条 Tcl 块：记录原状态 → 非 halted 则 halt → verify_image → 按原状态 resume → shutdown，
+    # EP_VERIFY 标记行用于机器判定结果（verify_image 的比对失败通过 catch 捕获）
+    $verify = 'set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; ' +
+        'set rc [catch { verify_image ' + $elfWord + ' } msg]; ' +
+        'if {$rc} { echo "EP_VERIFY FAIL $msg" } else { echo "EP_VERIFY OK" }; ' +
+        'if {$h} { catch { resume } }; shutdown'
+    $output = & $OpenOcd '-f' "interface/$Probe" '-f' "target/$Target" '-c' 'init' '-c' $verify 2>&1 | ForEach-Object { "$_" }
+    $output | ForEach-Object { Write-Host $_ }
+    $okLine = $output | Where-Object { $_ -match 'EP_VERIFY OK' } | Select-Object -First 1
+    $failLine = $output | Where-Object { $_ -match 'EP_VERIFY FAIL' } | Select-Object -First 1
+    $verified = [bool]$okLine -and -not $failLine
+    $detail = if ($failLine) { ($failLine -replace '^.*EP_VERIFY FAIL\s*', '').Trim() } else { '' }
+    [ordered]@{ verified=$verified; elf=$Elf; elfSha256=$elfSha256; detail=$detail } | ConvertTo-Json -Compress
+    if (-not $okLine -and -not $failLine) { Write-Error 'OpenOCD did not reach the verification step. Check probe connection and target power.' }
+    exit $(if ($verified) { 0 } else { 1 })
 }
