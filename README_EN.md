@@ -16,7 +16,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Starts a Cortex-Debug session from the selected ELF, probe, target, and optional SVD.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and the chart panel provides a collapsible, draggable current-value column plus real-time curves.
 - **Bilingual UI (English / 简体中文)** with an instant language toggle - see [Language](#language).
-- Optionally installs four Agent Skills for firmware download, live values and trend analysis, selective chip information, and configuration changes synchronized to the sidebar.
+- Optionally installs eight Agent Skills covering firmware download and verification, live variable reads and writes, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
 
@@ -70,7 +70,8 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 
 - How it works: runs OpenOCD in service mode and, via Tcl-RPC, **reads RAM non-intrusively while the target runs**; variable addresses come from the symbol table of the selected ELF.
 - Usage: first select the ELF, debugger, and MCU target in the sidebar; the sidebar value list and the chart's variable list are independent. The chart panel can import variables from the ELF or add them by name, and lets you resize/collapse the current-value column and choose the watch type (u8/i8/u16/i16/u32/i32/f32).
-- Type support: scalars prefer DWARF type info; structs and arrays are clearly marked as composite types in the variable list and cannot be added to sampling (members are not expanded yet); 64-bit scalars are not supported yet either.
+- Type support: scalars prefer DWARF type info; structs, unions, and arrays can be expanded to select scalar leaves, and arrays can be imported by element or range in the chart; 64-bit scalars are not supported yet.
+- Live writes: the sidebar can add scalars with reliable DWARF types in ELF writable sections to a write list. Writes are enabled only while sampling is active and are verified by reading the value back.
 - Limits: supports only Cortex-M and global/static variables at fixed addresses; sampling bandwidth is limited (~10–50 Hz), so use SWO trace for high-frequency signals (planned).
 - Mutually exclusive with flashing: the probe can only be used by one OpenOCD at a time, so do not run it alongside a download/debug session.
 - Related settings: `emberprobe.tclPort`, `emberprobe.sampleIntervalMs`, `emberprobe.maxSamples`.
@@ -85,6 +86,10 @@ The sidebar installer reports not installed, partial, update available, locally 
 - `mcu-live-watch`: reads once or analyzes trends using names alone with ELF/DWARF type inference. It reuses active sampling or opens and closes a temporary probe session. Temporary trend startup, progress, and shutdown are mirrored to the sidebar and chart, where the user can also stop it. An installed Skill auto-activates the Agent Bridge, so opening the sidebar first is unnecessary. It can also add variables to the sidebar, chart, or both.
 - `mcu-chip-info`: reads selected fields or the `identity`, `debug`, and `runtime` groups.
 - `mcu-config`: reads or changes ELF, debugger, MCU, SVD, OpenOCD, and sampling settings, then synchronizes the sidebar immediately.
+- `mcu-var-write`: safely writes scalars or composite leaves by name with two-stage confirmation, ELF fingerprint binding, and read-back verification.
+- `mcu-fault-analyzer`: reads and decodes Cortex-M fault registers and symbolizes PC/LR with the current ELF.
+- `mcu-elf-analyze`: analyzes Flash/RAM usage, section layout, and large symbols offline without occupying the probe.
+- `mcu-flash-verify`: reads target Flash and compares it with the loadable contents of the current ELF.
 
 A loopback-only Agent Bridge handles configuration and UI synchronization while the extension retains probe mutual exclusion. Every variable invocation fingerprints and reparses the ELF; sampling aborts if the ELF changes so stale addresses are never reused.
 
@@ -98,7 +103,7 @@ npm run package
 
 Failed Skill calls return structured diagnostics with stable error codes, failure categories, likely causes, suggested actions, and an OpenOCD log tail. This lets the Agent distinguish a missing probe, disconnected MCU, unpowered target, invalid configuration, or resource conflict.
 
-`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.4.5`.
+`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.4.9`.
 
 ## Project Structure
 
@@ -107,9 +112,11 @@ src/       Extension implementation
 resources/ Windows x64 OpenOCD bundle and its bundled licenses
 media/     Marketplace and Activity Bar icons
 skills/    Bundled Agent Skills
-test/      Lightweight parser tests
+test/      Unit tests and OpenOCD Tcl-RPC integration tests
 esbuild.js Single-file VSIX bundle build config
 ```
+
+See [ROADMAP.md](ROADMAP.md) for planned releases and current progress.
 
 ## License & Attribution
 

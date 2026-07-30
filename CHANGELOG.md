@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-30
+
+### Added
+
+- 侧边栏新增实时变量写入列表，可通过数值输入、步进按钮和范围滑块修改变量。
+- 写入沿用 DWARF 类型、ELF 可写段校验，并在每次写入后回读确认结果。
+
+### Changed
+
+- 结构体、联合体和数组可在侧边栏及图表中展开并选择标量叶子成员。
+- 写入请求串行执行，过期响应不会覆盖较新的界面状态。
+
 ## [0.4.8] - 2026-07-29
 
 ### Changed

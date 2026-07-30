@@ -16,7 +16,7 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - 基于所选 ELF、探针、目标与可选的 SVD 启动 Cortex-Debug 调试会话。
 - 实时变量观测：在目标运行时非侵入式读取 Cortex-M 内存；侧边栏提供独立数值列表，图表面板提供可折叠、可拖拽的当前值列与实时曲线。
 - **中英双语界面**，支持即时切换 - 详见[语言](#语言)。
-- 可选安装四个 Agent Skills：固件下载、实时变量与趋势分析、选择性读取芯片信息，以及修改 EmberProbe 配置并同步侧边栏。
+- 可选安装八个 Agent Skills，覆盖固件下载与校验、实时变量读写、芯片和故障信息读取、ELF 分析，以及配置同步。
 
 ## 环境要求
 
@@ -70,7 +70,8 @@ OpenOCD 也会在下载、调试或实时观测前自动检查；当其缺失时
 
 - 工作原理：以服务模式运行 OpenOCD，并通过 Tcl-RPC **在目标运行时非侵入式读取 RAM**；变量地址来自所选 ELF 的符号表。
 - 用法：先在侧边栏选择 ELF、调试器与 MCU 目标；侧边栏数值列表与图表的变量列表相互独立。图表面板可从 ELF 导入变量或按名称添加，并可调整/折叠当前值列、选择观测类型（u8/i8/u16/i16/u32/i32/f32）。
-- 类型支持：标量优先使用 DWARF 类型信息；结构体和数组在变量列表中明确标记为复合类型，无法加入采样（暂不展开成员）；64 位标量暂不支持。
+- 类型支持：标量优先使用 DWARF 类型信息；结构体、联合体和数组可展开并选择标量叶子成员，图表也可按数组元素或范围导入；64 位标量暂不支持。
+- 实时写入：侧边栏可把具有可靠 DWARF 类型且位于 ELF 可写段的标量加入写入列表；写入只在采样会话运行时启用，并在每次写入后回读校验。
 - 限制：仅支持 Cortex-M 及固定地址的全局/静态变量；采样带宽有限（约 10–50 Hz），高频信号请使用 SWO trace（规划中）。
 - 与烧录互斥：探针同一时间只能被一个 OpenOCD 使用，因此不要与下载/调试会话同时运行。
 - 相关设置：`emberprobe.tclPort`、`emberprobe.sampleIntervalMs`、`emberprobe.maxSamples`。
@@ -85,6 +86,10 @@ OpenOCD 也会在下载、调试或实时观测前自动检查；当其缺失时
 - `mcu-live-watch`：只给变量名即可单次读取或分析趋势，类型由 ELF/DWARF 自动推断；已有采样时复用连接，否则临时启动探针并在完成后关闭。临时趋势采样的启动、进度与关闭会同步到侧边栏和图表，用户也可随时停止。安装该 Skill 的工作区会自动激活 Agent Bridge，无需先打开侧边栏。也可添加变量到侧边栏、图表或两者。
 - `mcu-chip-info`：按 `identity`、`debug`、`runtime` 分组或指定字段读取芯片信息。
 - `mcu-config`：读取或修改 ELF、调试器、MCU、SVD、OpenOCD 和采样参数，修改后立即同步侧边栏。
+- `mcu-var-write`：按变量名安全写入标量或复合变量叶子成员，使用两阶段确认、ELF 指纹绑定和写后回读校验。
+- `mcu-fault-analyzer`：读取并解码 Cortex-M 故障寄存器，并使用当前 ELF 对 PC/LR 进行符号化。
+- `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、段布局和大符号，不占用调试探针。
+- `mcu-flash-verify`：读取目标 Flash 并与当前 ELF 的可加载内容进行校验。
 
 扩展通过只监听本机的 Agent Bridge 处理配置和界面联动，并继续统一管理探针互斥。ELF 每次读取都会重新计算内容指纹和解析符号；采样期间 ELF 改变时会中止，避免继续使用旧变量地址。
 
@@ -98,7 +103,7 @@ npm run package
 
 Skill 调用失败时会返回结构化诊断，包括稳定错误码、失败分类、可能原因、建议动作与 OpenOCD 日志摘要，Agent 可据此区分探针未连接、MCU 未连接、目标未供电、配置错误或资源占用。
 
-`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.4.5`。
+`npm run package` 先通过 esbuild 将运行时依赖打包进 `dist/extension.js`，再生成 `dist/emberprobe.vsix`。当前扩展版本为 `0.4.9`。
 
 ## 项目结构
 
@@ -107,9 +112,11 @@ src/       扩展实现
 resources/ Windows x64 OpenOCD 包及其自带的许可证
 media/     商城与活动栏图标
 skills/    自带的 Agent Skills
-test/      轻量解析器测试
+test/      单元测试与 OpenOCD Tcl-RPC 集成测试
 esbuild.js 单文件 VSIX 打包构建配置
 ```
+
+后续版本方向与当前进度见 [ROADMAP.md](ROADMAP.md)。
 
 ## 许可证与归属
 

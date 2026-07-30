@@ -19,6 +19,7 @@ const validation = require("./validation");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
+const { ProbeCoordinator } = require("./probeCoordinator");
 const fs = require("fs");
 const crypto = require("crypto");
 const i18n = require("./i18n");
@@ -114,9 +115,8 @@ class MainViewProvider {
         // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
         const savedLang = context.globalState.get('emberprobe.lang');
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
-        this._downloadRunning = false;
+        this._probeCoordinator = new ProbeCoordinator();
         this._recentProgress = [];
-        this._liveWatchRunning = false;
         this._liveSession = null;
         this._livePanel = null;
         this._latestGraphSamples = new Map();
@@ -125,13 +125,9 @@ class MainViewProvider {
         this._consumerTypesCache = null;
         this._symbolCache = null;
         this._chipInfo = null;
-        this._chipInfoRunning = false;
-        this._liveStarting = false;
-        this._debugStarting = false;
         this._openOcdStatus = { state: 'checking', key: 'oc.checking', canInstall: false };
         this._openOcdOperation = 0;
         this._agentBridge = null;
-        this._agentReadRunning = false;
         this._agentReadSession = null;
         this._agentReadCancelled = false;
         this._agentReadDelayTimer = null;
@@ -141,6 +137,18 @@ class MainViewProvider {
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
         this.registerCommandHandlers();
     }
+    get _downloadRunning() { return this._probeCoordinator.isActive('download'); }
+    set _downloadRunning(active) { this._probeCoordinator.setActive('download', active); }
+    get _liveWatchRunning() { return this._probeCoordinator.isActive('liveWatch'); }
+    set _liveWatchRunning(active) { this._probeCoordinator.setActive('liveWatch', active); }
+    get _liveStarting() { return this._probeCoordinator.isActive('liveStart'); }
+    set _liveStarting(active) { this._probeCoordinator.setActive('liveStart', active); }
+    get _chipInfoRunning() { return this._probeCoordinator.isActive('chipInfo'); }
+    set _chipInfoRunning(active) { this._probeCoordinator.setActive('chipInfo', active); }
+    get _agentReadRunning() { return this._probeCoordinator.isActive('agentRead'); }
+    set _agentReadRunning(active) { this._probeCoordinator.setActive('agentRead', active); }
+    get _debugStarting() { return this._probeCoordinator.isActive('debugStart'); }
+    set _debugStarting(active) { this._probeCoordinator.setActive('debugStart', active); }
     // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
     _t(key, params) {
         return i18n.t(this._lang, key, params);
