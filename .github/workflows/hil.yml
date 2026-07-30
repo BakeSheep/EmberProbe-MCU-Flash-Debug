@@ -1,0 +1,51 @@
+name: Hardware in the loop
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 18 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emberprobe-hil
+  cancel-in-progress: false
+
+jobs:
+  flash-verify:
+    if: vars.HIL_ENABLED == 'true'
+    name: HIL ${{ matrix.board }}
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - stm32f1
+          - stm32f4
+          - nrf52
+          - rp2040
+    runs-on:
+      - self-hosted
+      - emberprobe-hil
+      - ${{ matrix.board }}
+    environment: hil-${{ matrix.board }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Flash, verify, and reset
+        env:
+          EMBERPROBE_HIL_CONFIRM: "YES"
+          EMBERPROBE_HIL_BOARD: ${{ matrix.board }}
+          EMBERPROBE_HIL_OPENOCD: ${{ vars.EMBERPROBE_HIL_OPENOCD }}
+          EMBERPROBE_HIL_PROBE: ${{ vars.EMBERPROBE_HIL_PROBE }}
+          EMBERPROBE_HIL_TARGET: ${{ vars.EMBERPROBE_HIL_TARGET }}
+          EMBERPROBE_HIL_ELF: ${{ vars.EMBERPROBE_HIL_ELF }}
+        run: node test/hil/run-hil.js

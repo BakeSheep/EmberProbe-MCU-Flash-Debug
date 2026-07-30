@@ -133,7 +133,16 @@
   ],
   "scripts": {
     "test": "npm run check",
-    "check": "node --check src/extension.js && node --check src/modernView.js && node --check src/i18n.js && node --check src/autoDetect.js && node --check src/agentBridge.js && node --check src/skillInstaller.js && node --check src/openocdRunner.js && node --check src/openocdScripts.js && node --check src/openocdChecker.js && node --check src/openocdInstaller.js && node --check src/elfSymbols.js && node --check src/dwarf.js && node --check src/chipInfo.js && node --check src/faultInfo.js && node --check src/liveWatch.js && node --check src/liveWatchView.js && node --check src/validation.js && node --check src/writeAuthorization.js && node --check src/probeCoordinator.js && node --check skills/_emberprobe/agent-client.js && node --check skills/mcu-config/scripts/config.js && node --check skills/mcu-chip-info/scripts/read-chip.js && node --check skills/mcu-live-watch/scripts/read-live.js && node --check skills/mcu-var-write/scripts/write-var.js && node --check skills/mcu-fault-analyzer/scripts/analyze-fault.js && node --check skills/mcu-elf-analyze/scripts/analyze-elf.js && node test/release-consistency.test.js && node test/probe-coordinator.test.js && node test/auto-detect.test.js && node test/agent-skills.test.js && node test/skill-installer.test.js && node test/openocd-parser.test.js && node test/openocd-scripts.test.js && node test/elf-symbols.test.js && node test/validation.test.js && node test/composite-decode.test.js && node test/dwarf-composite.test.js && node test/webview.test.js && node test/live-watch-integration.test.js && node test/openocd-checker.test.js && node test/openocd-installer.test.js && node test/chip-info.test.js && node test/elf-analyze.test.js && node test/var-write.test.js && node test/fault-info.test.js && node test/write-authorization.test.js && node test/powershell-skills.test.js",
+    "check": "node scripts/run-tests.js",
+    "lint": "eslint src scripts test",
+    "format": "prettier --write \"src/services/**/*.js\" \"src/probeCoordinator.js\" \"src/webviewAssets.js\" \"scripts/**/*.js\" \"test/services.test.js\" \"test/probe-coordinator.test.js\" \"test/release-script.test.js\" \"test/webview-assets.test.js\" \"test/hil/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
+    "format:check": "prettier --check \"src/services/**/*.js\" \"src/probeCoordinator.js\" \"src/webviewAssets.js\" \"scripts/**/*.js\" \"test/services.test.js\" \"test/probe-coordinator.test.js\" \"test/release-script.test.js\" \"test/webview-assets.test.js\" \"test/hil/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
+    "typecheck": "tsc -p jsconfig.quality.json",
+    "coverage": "c8 node scripts/run-tests.js --quality",
+    "quality": "npm run lint && npm run format:check && npm run typecheck && npm run coverage",
+    "test:e2e": "npm run bundle && node test/e2e/runTest.js",
+    "test:hil": "node test/hil/run-hil.js",
+    "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"
@@ -142,6 +151,12 @@
     "tar": "^7.5.20"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "@types/node": "^26.1.2",
+    "@vscode/test-electron": "^3.1.0",
+    "c8": "^12.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.8.0",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2"
   }
 }

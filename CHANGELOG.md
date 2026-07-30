@@ -10,6 +10,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 修复 macOS CI 中 `/var` 与 `/private/var` 指向同一临时目录却被测试判为不同路径的问题。
 
+### Added
+
+- 新增 `release:prepare` 发布准备脚本，同步 package、lock、README 和 Changelog 版本。
+- 新增 VS Code Extension Host 冒烟测试，以及 STM32F1/F4、nRF52、RP2040 的 self-hosted HIL 工作流。
+- 新增 ESLint、Prettier、checkJs 与 c8 覆盖率门禁。
+
+### Changed
+
+- 探针操作改由 `ProbeCoordinator` 独占租约协调，并支持实时采样启动到运行态的原子转换。
+- 从主控制器拆出配置、烧录、故障和 Agent Bridge 服务。
+- 侧边栏与实时图表的内联 CSS/JavaScript 在渲染时转换为内容寻址资源，CSP 不再允许 `unsafe-inline`。
+
 ## [0.4.9] - 2026-07-30
 
 ### Added

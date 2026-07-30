@@ -98,8 +98,12 @@ A loopback-only Agent Bridge handles configuration and UI synchronization while 
 ```powershell
 npm install
 npm run check
+npm run quality
+npm run test:e2e
 npm run package
 ```
+
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a release; it synchronizes version metadata, both READMEs, and the Changelog. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup.
 
 Failed Skill calls return structured diagnostics with stable error codes, failure categories, likely causes, suggested actions, and an OpenOCD log tail. This lets the Agent distinguish a missing probe, disconnected MCU, unpowered target, invalid configuration, or resource conflict.
 

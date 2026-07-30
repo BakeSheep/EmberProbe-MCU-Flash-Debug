@@ -20,6 +20,11 @@ const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
+const { ConfigurationStore } = require("./services/configurationStore");
+const { FlashService } = require("./services/flashService");
+const { FaultService } = require("./services/faultService");
+const { AgentService } = require("./services/agentService");
+const { externalizeWebviewHtml } = require("./webviewAssets");
 const fs = require("fs");
 const crypto = require("crypto");
 const i18n = require("./i18n");
@@ -112,6 +117,7 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
+        this._webviewAssetRoot = path.join(context.globalStorageUri.fsPath, "webview-assets");
         // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
         const savedLang = context.globalState.get('emberprobe.lang');
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
@@ -127,7 +133,6 @@ class MainViewProvider {
         this._chipInfo = null;
         this._openOcdStatus = { state: 'checking', key: 'oc.checking', canInstall: false };
         this._openOcdOperation = 0;
-        this._agentBridge = null;
         this._agentReadSession = null;
         this._agentReadCancelled = false;
         this._agentReadDelayTimer = null;
@@ -135,6 +140,37 @@ class MainViewProvider {
         this._agentSamplingStatus = null;
         this._uiWritePromise = Promise.resolve();
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
+        this._configurationStore = new ConfigurationStore({
+            vscode,
+            context,
+            cacheKeys: CACHE_KEYS,
+            cleanPath: cleanWindowsPath,
+            isSafeCfg: openocdRunner.isSafeCfg,
+            onChanged: () => {
+                this._symbolCache = null;
+                this._invalidateConsumerTypes();
+                this.updateView();
+                this._syncGraphTarget(message => this._livePanel?.webview.postMessage(message));
+            }
+        });
+        this._flashService = new FlashService(openocdRunner);
+        this._faultService = new FaultService(faultInfo, elfSymbols);
+        this._agentService = new AgentService({
+            Bridge: AgentBridge,
+            workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+            handlers: {
+                'config.get': () => this._configurationSnapshot(),
+                'config.set': params => this._setAgentConfiguration(params.values || {}),
+                'watch.add': params => this._addAgentWatch(params),
+                'variables.read': params => this._readAgentVariables(params),
+                'variables.sample': params => this._sampleAgentVariables(params),
+                'variables.write': params => this._writeAgentVariables(params),
+                'variables.write.permission': params => this._agentWritePermission(params),
+                'chip.read': () => this.readChipInfoAction(true),
+                'fault.read': () => this._readAgentFault(),
+                'elf.analyze': params => this._analyzeElf(params || {})
+            }
+        });
         this.registerCommandHandlers();
     }
     get _downloadRunning() { return this._probeCoordinator.isActive('download'); }
@@ -463,7 +499,7 @@ class MainViewProvider {
                 }
                 const cleanElfPath = cleanWindowsPath(elfPath);
                 const { cwd } = this._commandContext(resource);
-                await openocdRunner.runOpenOcd(vscode, { executable, elf: cleanElfPath, probe: debuggerCfg, target: mcuCore, cwd }, event => {
+                await this._flashService.download(vscode, { executable, elf: cleanElfPath, probe: debuggerCfg, target: mcuCore, cwd }, event => {
                     // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
                     const message = { type: 'openocdProgress', ...event };
                     this._recentProgress.push(message);
@@ -485,66 +521,13 @@ class MainViewProvider {
         };
     }
     _configurationSnapshot() {
-        const cfg = vscode.workspace.getConfiguration('emberprobe');
-        return {
-            elf: this._context.workspaceState.get(CACHE_KEYS.elfPath) || '',
-            debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || '',
-            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '',
-            svd: this._context.workspaceState.get(CACHE_KEYS.svdPath) || '',
-            openocdPath: cfg.get('openocdPath', 'openocd'),
-            sampleIntervalMs: cfg.get('sampleIntervalMs', 100),
-            tclPort: cfg.get('tclPort', 6666),
-            maxSamples: cfg.get('maxSamples', 2000)
-        };
+        return this._configurationStore.snapshot();
     }
     _workspacePath(value, extension) {
-        if (value === '') return '';
-        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspace) throw Object.assign(new Error(this._t('msg.openWorkspaceFirst')), { code: 'NO_WORKSPACE' });
-        const resolved = path.resolve(workspace, String(value));
-        if (!fs.existsSync(resolved)) throw Object.assign(new Error(`File does not exist: ${resolved}`), { code: 'FILE_NOT_FOUND' });
-        const workspaceReal = fs.realpathSync(workspace);
-        const resolvedReal = fs.realpathSync(resolved);
-        const relative = path.relative(workspaceReal, resolvedReal);
-        if (relative.startsWith('..') || path.isAbsolute(relative)) throw Object.assign(new Error('Path must be inside the current workspace'), { code: 'PATH_OUTSIDE_WORKSPACE' });
-        if (extension && path.extname(resolvedReal).toLowerCase() !== extension) throw Object.assign(new Error(`Expected a ${extension} file`), { code: 'INVALID_FILE_TYPE' });
-        return cleanWindowsPath(resolvedReal);
+        return this._configurationStore.workspacePath(value, extension);
     }
     async _setAgentConfiguration(values) {
-        const allowed = new Set(['elf', 'debugger', 'mcu', 'svd', 'openocdPath', 'sampleIntervalMs', 'tclPort', 'maxSamples']);
-        for (const key of Object.keys(values || {})) if (!allowed.has(key)) throw Object.assign(new Error(`Unsupported configuration key: ${key}`), { code: 'UNSUPPORTED_CONFIG' });
-        if (Object.hasOwn(values, 'elf')) await this._context.workspaceState.update(CACHE_KEYS.elfPath, this._workspacePath(values.elf, '.elf'));
-        if (Object.hasOwn(values, 'svd')) await this._context.workspaceState.update(CACHE_KEYS.svdPath, this._workspacePath(values.svd, values.svd === '' ? '' : '.svd'));
-        if (Object.hasOwn(values, 'debugger')) {
-            if (!openocdRunner.isSafeCfg(values.debugger)) throw Object.assign(new Error('Invalid debugger configuration name'), { code: 'INVALID_DEBUGGER' });
-            await this._context.workspaceState.update(CACHE_KEYS.debugger, values.debugger);
-        }
-        if (Object.hasOwn(values, 'mcu')) {
-            if (!openocdRunner.isSafeCfg(values.mcu)) throw Object.assign(new Error('Invalid MCU target configuration name'), { code: 'INVALID_MCU' });
-            await this._context.workspaceState.update(CACHE_KEYS.mcuCore, values.mcu);
-        }
-        const cfg = vscode.workspace.getConfiguration('emberprobe');
-        const numbers = {
-            sampleIntervalMs: [20, 10000],
-            tclPort: [1, 65535],
-            maxSamples: [100, 100000]
-        };
-        for (const [key, range] of Object.entries(numbers)) {
-            if (!Object.hasOwn(values, key)) continue;
-            const number = Number(values[key]);
-            if (!Number.isInteger(number) || number < range[0] || number > range[1]) throw Object.assign(new Error(`${key} must be an integer from ${range[0]} to ${range[1]}`), { code: 'INVALID_CONFIG_VALUE' });
-            await cfg.update(key, number, vscode.ConfigurationTarget.Workspace);
-        }
-        if (Object.hasOwn(values, 'openocdPath')) {
-            const executable = String(values.openocdPath || '').trim();
-            if (!executable || /[\r\n]/.test(executable)) throw Object.assign(new Error('Invalid OpenOCD path'), { code: 'INVALID_OPENOCD_PATH' });
-            await cfg.update('openocdPath', executable, vscode.ConfigurationTarget.Workspace);
-        }
-        this._symbolCache = null;
-        this._invalidateConsumerTypes();
-        this.updateView();
-        this._syncGraphTarget(message => this._livePanel?.webview.postMessage(message));
-        return this._configurationSnapshot();
+        return this._configurationStore.update(values);
     }
     async _addAgentWatch(params) {
         const names = Array.isArray(params.variables) ? params.variables.map(String) : [];
@@ -926,28 +909,10 @@ class MainViewProvider {
             const executable = await this._resolveOpenOcdPath(vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd'));
             if (!executable) busy('chip.notReady', 'OPENOCD_NOT_READY');
             const { cwd } = this._commandContext();
-            const raw = await faultInfo.readFaultInfo({ executable, probe: debuggerCfg, target: mcuCore, cwd });
-            const decoded = faultInfo.decodeFaultRegisters(raw.values);
-            // PC/LR 符号化：ELF 未配置或无函数符号时跳过，不影响寄存器结果
-            let pcSymbol = '', lrSymbol = '', symbolication = 'ok';
-            try {
-                const functions = this.readElfSymbols().functions || [];
-                const symbolize = (hex) => {
-                    const fn = elfSymbols.nearestFunction(functions, parseInt(hex, 16));
-                    return fn ? `${fn.name}+0x${fn.offset.toString(16).toUpperCase()}` : '';
-                };
-                if (raw.pc) pcSymbol = symbolize(raw.pc);
-                if (raw.lr) lrSymbol = symbolize(raw.lr);
-            } catch (e) { symbolication = 'unavailable'; }
-            return {
-                targetState: raw.targetState,
-                registers: raw.registers,
-                faultDetected: decoded.faultDetected,
-                faults: decoded.faults,
-                exception: decoded.exception,
-                pc: raw.pc, sp: raw.sp, lr: raw.lr, xpsr: raw.xpsr,
-                pcSymbol, lrSymbol, symbolication
-            };
+            return await this._faultService.read(
+                { executable, probe: debuggerCfg, target: mcuCore, cwd },
+                () => this.readElfSymbols().functions || []
+            );
         } finally {
             this._chipInfoRunning = false;
         }
@@ -1007,39 +972,13 @@ class MainViewProvider {
         };
     }
     async _handleAgentCall(method, params) {
-        if (method === 'capabilities') return { protocol: 1, methods: ['config.get', 'config.set', 'watch.add', 'variables.read', 'variables.sample', 'variables.write', 'variables.write.permission', 'chip.read', 'fault.read', 'elf.analyze'] };
-        if (method === 'config.get') return this._configurationSnapshot();
-        if (method === 'config.set') return this._setAgentConfiguration(params.values || {});
-        if (method === 'watch.add') return this._addAgentWatch(params);
-        if (method === 'variables.read') return this._readAgentVariables(params);
-        if (method === 'variables.sample') return this._sampleAgentVariables(params);
-        if (method === 'variables.write') return this._writeAgentVariables(params);
-        if (method === 'variables.write.permission') return this._agentWritePermission(params);
-        if (method === 'fault.read') return this._readAgentFault();
-        if (method === 'elf.analyze') return this._analyzeElf(params || {});
-        if (method === 'chip.read') {
-            const info = await this.readChipInfoAction(true);
-            const groups = {
-                identity: ['core', 'coreRevision', 'cpuid', 'chip', 'series', 'designer', 'romDesigner', 'designerCode', 'romPart', 'authenticity', 'compatVendor', 'compatBrand', 'deviceId', 'revId', 'flashSize', 'uid', 'endian'],
-                debug: ['probeName', 'probeVersion', 'probe', 'transport', 'clock', 'voltage', 'targetName'],
-                runtime: ['targetState', 'haltReason', 'pc', 'sp', 'lr']
-            };
-            const requested = new Set((params.fields || []).map(String));
-            for (const section of params.sections || ['identity']) for (const field of groups[section] || []) requested.add(field);
-            return Object.fromEntries(Array.from(requested).filter(field => Object.hasOwn(info, field)).map(field => [field, info[field]]));
-        }
-        throw Object.assign(new Error(`Unsupported Agent Bridge method: ${method}`), { code: 'METHOD_NOT_FOUND' });
+        return this._agentService.call(method, params);
     }
     async startAgentBridge() {
-        const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspace || this._agentBridge) return;
-        this._agentBridge = new AgentBridge(workspace, (method, params) => this._handleAgentCall(method, params));
-        await this._agentBridge.start();
+        return this._agentService.start();
     }
     async stopAgentBridge() {
-        const bridge = this._agentBridge;
-        this._agentBridge = null;
-        if (bridge) await bridge.stop();
+        return this._agentService.stop();
     }
     _postSkillStatus(status) {
         this._webviewView?.webview.postMessage({ type: 'skillStatus', ...status });
@@ -1053,10 +992,17 @@ class MainViewProvider {
     openLiveWatchPanel() {
         if (this._livePanel) { this._livePanel.reveal(); return; }
         const cfg = vscode.workspace.getConfiguration('emberprobe');
-        const panel = vscode.window.createWebviewPanel('emberprobe.liveWatch', this._t('lw.title'), vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
+        const panel = vscode.window.createWebviewPanel('emberprobe.liveWatch', this._t('lw.title'), vscode.ViewColumn.Active, {
+            enableScripts: true,
+            retainContextWhenHidden: true,
+            localResourceRoots: [this._context.globalStorageUri]
+        });
         this._livePanel = panel;
         const post = (m) => panel.webview.postMessage(m);
-        panel.webview.html = liveWatchView.getLiveWatchContent({ maxSamples: cfg.get('maxSamples', 2000), intervalMs: cfg.get('sampleIntervalMs', 100) }, this._lang);
+        panel.webview.html = this._externalizeWebview(panel.webview, liveWatchView.getLiveWatchContent({
+            maxSamples: cfg.get('maxSamples', 2000),
+            intervalMs: cfg.get('sampleIntervalMs', 100)
+        }, this._lang), 'live-watch');
         panel.onDidDispose(() => {
             this._livePanel = null;
             // 图表面板关闭时，若侧边栏不可见，停止采样以释放探针；侧边栏仍可见则保持运行由其接管
@@ -1496,7 +1442,7 @@ class MainViewProvider {
         this._webviewView = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(this._context.extensionPath)]
+            localResourceRoots: [vscode.Uri.file(this._context.extensionPath), this._context.globalStorageUri]
         };
         // 监听Webview消息，主进程执行命令（先释放上一次视图的监听器，避免累积）
         this._messageListener?.dispose();
@@ -1640,7 +1586,7 @@ class MainViewProvider {
             }
         });
         // 设置初始内容
-        webviewView.webview.html = this.getModernWebviewContent();
+        webviewView.webview.html = this._externalizeWebview(webviewView.webview, this.getModernWebviewContent(), 'sidebar');
         // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
         const configured = this._context.workspaceState.get(CACHE_KEYS.elfPath)
             && this._context.workspaceState.get(CACHE_KEYS.debugger)
@@ -1681,9 +1627,22 @@ class MainViewProvider {
             svd: svd ? path.basename(svd) : ''
         }, this._lang);
     }
+    _externalizeWebview(webview, html, scope) {
+        return externalizeWebviewHtml({
+            html,
+            webview,
+            vscode,
+            assetRoot: this._webviewAssetRoot,
+            scope
+        }).html;
+    }
     updateView() {
         if (this._webviewView) {
-            this._webviewView.webview.html = this.getModernWebviewContent();
+            this._webviewView.webview.html = this._externalizeWebview(
+                this._webviewView.webview,
+                this.getModernWebviewContent(),
+                'sidebar'
+            );
         }
     }
 }

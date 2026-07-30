@@ -20,6 +20,9 @@ assert.ok(changelog.includes(`## [${pkg.version}]`), `CHANGELOG must contain a $
 assert.ok(readmeZh.includes(`当前扩展版本为 \`${pkg.version}\``), "Chinese README must report the package version");
 assert.ok(readmeEn.includes(`current extension version is \`${pkg.version}\``), "English README must report the package version");
 assert.ok(pkg.files.includes("ROADMAP.md"), "published package must include ROADMAP.md");
+for (const script of ["release:prepare", "quality", "test:e2e", "test:hil"]) {
+    assert.ok(pkg.scripts[script], `package.json must expose the ${script} workflow`);
+}
 
 for (const skill of manifest.skills) {
     assert.ok(readmeZh.includes(`\`${skill.name}\``), `Chinese README must document ${skill.name}`);

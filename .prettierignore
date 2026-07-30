@@ -1,0 +1,9 @@
+src/extension.js
+src/modernView.js
+src/liveWatchView.js
+src/i18n.js
+dist/
+node_modules/
+.vscode-test/
+coverage/
+.claude/

@@ -35,5 +35,28 @@ jobs:
       - name: Run checks
         run: npm run check
 
+      - name: Run quality gates
+        run: npm run quality
+
       - name: Verify bundle
         run: npm run bundle
+
+  extension-host:
+    name: VS Code Extension Host
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Extension Host smoke tests
+        run: xvfb-run -a npm run test:e2e

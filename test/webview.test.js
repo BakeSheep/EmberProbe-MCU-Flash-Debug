@@ -116,6 +116,7 @@ assert.ok(panelEn.includes('>Import Variables</button>'), "English live panel sh
 
 const extensionSource = fs.readFileSync(require.resolve("../src/extension"), "utf8");
 const checkerSource = fs.readFileSync(require.resolve("../src/openocdChecker"), "utf8");
+const agentServiceSource = fs.readFileSync(require.resolve("../src/services/agentService"), "utf8");
 assert.ok(extensionSource.includes("type: 'openocdStatus'"), "extension should publish OpenOCD state to the sidebar");
 assert.ok(!checkerSource.includes('showWarningMessage'), "missing OpenOCD must not use notification popups");
 assert.ok(!checkerSource.includes('ProgressLocation.Notification'), "OpenOCD installation progress should stay in the sidebar");
@@ -125,11 +126,11 @@ assert.ok(extensionSource.includes("type: 'chipInfo'"), "extension should publis
 assert.ok(extensionSource.includes("this._chipInfoRunning"), "chip info reads should guard against concurrent probe usage");
 assert.ok(extensionSource.includes("clipboard.writeText"), "extension should copy chip UID via the VS Code clipboard API");
 assert.ok(extensionSource.includes("_scalarWatchList"), "persisted aggregate watches should be filtered before sampling");
-assert.ok(extensionSource.includes("new AgentBridge"), "extension should expose the authenticated local Agent Bridge");
-assert.ok(extensionSource.includes("method === 'config.set'"), "Agent Bridge should support synchronized configuration changes");
-assert.ok(extensionSource.includes("method === 'watch.add'"), "Agent Bridge should add variables to the sidebar or chart");
-assert.ok(extensionSource.includes("method === 'variables.read'"), "Agent Bridge should support one-shot variable reads");
-assert.ok(extensionSource.includes("method === 'variables.sample'"), "Agent Bridge should support autonomous trend sampling");
+assert.ok(extensionSource.includes("new AgentService") && agentServiceSource.includes("new this.Bridge"), "extension should expose the authenticated local Agent Bridge through AgentService");
+assert.ok(extensionSource.includes("'config.set':"), "Agent Bridge should support synchronized configuration changes");
+assert.ok(extensionSource.includes("'watch.add':"), "Agent Bridge should add variables to the sidebar or chart");
+assert.ok(extensionSource.includes("'variables.read':"), "Agent Bridge should support one-shot variable reads");
+assert.ok(extensionSource.includes("'variables.sample':"), "Agent Bridge should support autonomous trend sampling");
 assert.ok(extensionSource.includes("source = 'temporary-probe'"), "one-shot reads should start a temporary probe when sampling is off");
 assert.ok(extensionSource.includes("this._postAgentSampling(true, 'live.agentStarting'"), "temporary Agent sampling should be visible and cancellable while the probe starts");
 assert.ok(extensionSource.includes("if (this._agentReadRunning) this.stopAgentReadIfRunning()"), "sidebar and chart stop actions should cancel Agent-owned sampling");

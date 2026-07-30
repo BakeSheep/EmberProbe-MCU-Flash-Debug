@@ -98,8 +98,12 @@ OpenOCD 也会在下载、调试或实时观测前自动检查；当其缺失时
 ```powershell
 npm install
 npm run check
+npm run quality
+npm run test:e2e
 npm run package
 ```
+
+准备新版本时运行 `npm run release:prepare -- <version> --date YYYY-MM-DD`，脚本会同步版本元数据、README 和 Changelog。真机测试接入方式见 [test/hil/README.md](test/hil/README.md)。
 
 Skill 调用失败时会返回结构化诊断，包括稳定错误码、失败分类、可能原因、建议动作与 OpenOCD 日志摘要，Agent 可据此区分探针未连接、MCU 未连接、目标未供电、配置错误或资源占用。
 

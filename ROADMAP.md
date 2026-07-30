@@ -9,23 +9,23 @@ EmberProbe 的长期定位是：面向 Cortex-M 的烧录、在线观测、故�
 - [x] 建立版本、锁文件、Changelog、README 和 Skill 清单的一致性检查。
 - [x] 更新中英文文档，使其反映复合变量、变量写入和八个 Agent Skills 的当前能力。
 - [x] 增加跨平台 CI，在 Windows、Linux 和 macOS 上执行检查与打包构建。
-- [ ] 增加统一 release 脚本，自动升级版本并生成发布条目。
+- [x] 增加统一 release 脚本，自动升级版本并生成发布条目。
 
 ### P0：架构拆分
 
 - [x] 抽取 `ProbeCoordinator`，集中保存下载、实时采样、芯片读取、Agent 读取和调试启动状态。
-- [ ] 将探针冲突规则迁入 `ProbeCoordinator`，由租约而非分散布尔判断管理所有权。
-- [ ] 从 `MainViewProvider` 继续拆分 `FlashService`、`FaultService`、`AgentService` 和 `ConfigurationStore`。
-- [ ] 把侧边栏及图表的内联脚本、样式拆为独立资源，并采用 nonce CSP。
+- [x] 将探针冲突规则迁入 `ProbeCoordinator`，由租约而非分散布尔判断管理所有权。
+- [x] 从 `MainViewProvider` 拆分 `FlashService`、`FaultService`、`AgentService` 和 `ConfigurationStore`。
+- [x] 将侧边栏及图表的内联脚本、样式转换为内容寻址的外部资源，并采用 nonce CSP。
 
 ### P0：测试体系
 
 - [x] 保留现有解析器和业务单元测试。
 - [x] 增加 Fake OpenOCD Tcl-RPC 集成测试，覆盖读取、连续地址合并和写入。
 - [x] 增加发布一致性回归测试。
-- [ ] 增加 VS Code Extension Host 端到端测试。
-- [ ] 建立 STM32F1/F4、nRF52、RP2040 夜间真机回归矩阵。
-- [ ] 增加覆盖率、Lint、格式和类型检查门禁。
+- [x] 增加 VS Code Extension Host 端到端测试。
+- [x] 建立 STM32F1/F4、nRF52、RP2040 夜间真机回归矩阵工作流；实际执行需配置带开发板的 self-hosted runners。
+- [x] 增加覆盖率、Lint、格式和类型检查门禁。
 
 ## 0.6：在线观测
 
