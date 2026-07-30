@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 macOS CI 中 `/var` 与 `/private/var` 指向同一临时目录却被测试判为不同路径的问题。
+
 ## [0.4.9] - 2026-07-30
 
 ### Added

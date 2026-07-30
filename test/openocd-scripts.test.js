@@ -27,7 +27,12 @@ try {
     fs.writeFileSync(path.join(target, "stm32f4x.cfg"), "");
     fs.writeFileSync(path.join(target, "geehy", "apm32f4x.cfg"), "");
     fs.writeFileSync(path.join(target, "README"), "");
-    assert.strictEqual(findScriptsRoot(executable), path.join(temp, "openocd", "scripts"));
+    // macOS exposes /var as a symlink to /private/var. Compare canonical paths so
+    // the test checks the discovered directory rather than the OS spelling.
+    assert.strictEqual(
+        fs.realpathSync(findScriptsRoot(executable)),
+        fs.realpathSync(path.join(temp, "openocd", "scripts"))
+    );
     assert.deepStrictEqual(discoverTargetConfigs(executable), ["geehy/apm32f4x.cfg", "stm32f4x.cfg"]);
 } finally {
     fs.rmSync(temp, { recursive: true, force: true });
