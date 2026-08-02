@@ -107,7 +107,7 @@ Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a re
 
 Failed Skill calls return structured diagnostics with stable error codes, failure categories, likely causes, suggested actions, and an OpenOCD log tail. This lets the Agent distinguish a missing probe, disconnected MCU, unpowered target, invalid configuration, or resource conflict.
 
-`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.5.0`.
+`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.5.1`.
 
 ## Project Structure
 

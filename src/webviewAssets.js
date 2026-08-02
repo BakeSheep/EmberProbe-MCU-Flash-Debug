@@ -1,7 +1,6 @@
 "use strict";
 const crypto = require("crypto");
 const fs = require("fs");
-const path = require("path");
 
 function createNonce() {
     return crypto.randomBytes(18).toString("base64url");
@@ -19,30 +18,30 @@ function escapeAttribute(value) {
     );
 }
 
-function writeAsset(assetRoot, scope, kind, index, content) {
+function writeAsset(vscode, assetRootUri, scope, kind, index, content) {
     const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
     const extension = kind === "style" ? "css" : "js";
-    const file = path.join(assetRoot, `${scope}-${kind}-${index}-${hash}.${extension}`);
-    if (!fs.existsSync(file)) fs.writeFileSync(file, content);
-    return file;
+    const fileUri = vscode.Uri.joinPath(assetRootUri, `${scope}-${kind}-${index}-${hash}.${extension}`);
+    if (!fs.existsSync(fileUri.fsPath)) fs.writeFileSync(fileUri.fsPath, content);
+    return fileUri;
 }
 
 function externalizeWebviewHtml(options) {
-    const { webview, vscode, assetRoot, scope } = options;
+    const { webview, vscode, assetRootUri, scope } = options;
     let html = String(options.html || "");
-    fs.mkdirSync(assetRoot, { recursive: true });
+    fs.mkdirSync(assetRootUri.fsPath, { recursive: true });
     const nonce = createNonce();
     let styleCount = 0;
     let scriptCount = 0;
 
     html = html.replace(/<style(?:\s[^>]*)?>([\s\S]*?)<\/style>/gi, (_match, content) => {
-        const file = writeAsset(assetRoot, scope, "style", styleCount++, content);
-        const uri = webview.asWebviewUri(vscode.Uri.file(file)).toString();
+        const fileUri = writeAsset(vscode, assetRootUri, scope, "style", styleCount++, content);
+        const uri = webview.asWebviewUri(fileUri).toString();
         return `<link rel="stylesheet" href="${escapeAttribute(uri)}">`;
     });
     html = html.replace(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi, (_match, content) => {
-        const file = writeAsset(assetRoot, scope, "script", scriptCount++, content);
-        const uri = webview.asWebviewUri(vscode.Uri.file(file)).toString();
+        const fileUri = writeAsset(vscode, assetRootUri, scope, "script", scriptCount++, content);
+        const uri = webview.asWebviewUri(fileUri).toString();
         return `<script nonce="${nonce}" src="${escapeAttribute(uri)}"></script>`;
     });
 

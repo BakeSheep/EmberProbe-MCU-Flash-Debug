@@ -117,7 +117,7 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
-        this._webviewAssetRoot = path.join(context.globalStorageUri.fsPath, "webview-assets");
+        this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
         // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
         const savedLang = context.globalState.get('emberprobe.lang');
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
@@ -995,7 +995,7 @@ class MainViewProvider {
         const panel = vscode.window.createWebviewPanel('emberprobe.liveWatch', this._t('lw.title'), vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
-            localResourceRoots: [this._context.globalStorageUri]
+            localResourceRoots: [this._webviewAssetRootUri]
         });
         this._livePanel = panel;
         const post = (m) => panel.webview.postMessage(m);
@@ -1442,7 +1442,7 @@ class MainViewProvider {
         this._webviewView = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(this._context.extensionPath), this._context.globalStorageUri]
+            localResourceRoots: [this._context.extensionUri, this._webviewAssetRootUri]
         };
         // 监听Webview消息，主进程执行命令（先释放上一次视图的监听器，避免累积）
         this._messageListener?.dispose();
@@ -1632,7 +1632,7 @@ class MainViewProvider {
             html,
             webview,
             vscode,
-            assetRoot: this._webviewAssetRoot,
+            assetRootUri: this._webviewAssetRootUri,
             scope
         }).html;
     }

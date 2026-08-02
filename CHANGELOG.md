@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-02
+
+### Fixed
+
+- 修复 Windows 上 Webview 内容寻址 CSS/JavaScript 因资源 URI 与授权根不一致而返回 401，导致侧边栏退化为无样式 HTML 的问题。
+- Webview 资源现在直接从 `globalStorageUri` 派生，并使用同一个 URI 作为 `localResourceRoots`，同时新增路径一致性回归测试。
+
 ## [0.5.0] - 2026-08-02
 
 ### Fixed
