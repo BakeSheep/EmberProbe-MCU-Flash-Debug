@@ -10,6 +10,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Fixed
 
+- 修复 GitHub Release 发布 job 未提供仓库上下文，导致 `gh release` 无法创建草稿的问题。
 - 修复 Windows CI checkout 将文件转换为 CRLF，导致 Prettier 将全部受检文件误判为格式不符的问题。
 - 修复 macOS CI 中 `/var` 与 `/private/var` 指向同一临时目录却被测试判为不同路径的问题。
 

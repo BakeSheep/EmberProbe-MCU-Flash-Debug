@@ -18,6 +18,7 @@ assert.match(workflow, /npm run package/u);
 assert.match(workflow, /gh release create[\s\S]*--draft/u);
 assert.match(workflow, /gh release upload[\s\S]*--clobber/u);
 assert.match(workflow, /gh release edit[\s\S]*--draft=false/u);
+assert.match(workflow, /GH_REPO: \$\{\{ github\.repository \}\}/u);
 assert.doesNotMatch(workflow, /Marketplace|VSCE_PAT|environment: release/u);
 assert.doesNotMatch(workflow, /@vscode\/vsce@[^\s]+ publish/u);
 
