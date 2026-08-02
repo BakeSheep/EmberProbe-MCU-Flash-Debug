@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-02
+
 ### Fixed
 
 - 修复 Windows CI checkout 将文件转换为 CRLF，导致 Prettier 将全部受检文件误判为格式不符的问题。
@@ -14,6 +16,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Added
 
 - 新增 `release:prepare` 发布准备脚本，同步 package、lock、README 和 Changelog 版本。
+- 新增稳定版本标签触发的自动发布工作流，自动创建 GitHub Release、上传 VSIX，并支持草稿事务与安全重试。
 - 新增 VS Code Extension Host 冒烟测试，以及 STM32F1/F4、nRF52、RP2040 的 self-hosted HIL 工作流。
 - 新增 ESLint、Prettier、checkJs 与 c8 覆盖率门禁。
 

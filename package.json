@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, live variables, and Agent Skills.",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -145,7 +145,7 @@
     "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
-    "package": "npx --yes @vscode/vsce package --out dist/emberprobe.vsix"
+    "package": "npx --yes @vscode/vsce@3.9.1 package --out dist/emberprobe.vsix"
   },
   "dependencies": {
     "tar": "^7.5.20"

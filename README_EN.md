@@ -103,11 +103,11 @@ npm run test:e2e
 npm run package
 ```
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a release; it synchronizes version metadata, both READMEs, and the Changelog. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a release; it synchronizes version metadata, both READMEs, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup.
 
 Failed Skill calls return structured diagnostics with stable error codes, failure categories, likely causes, suggested actions, and an OpenOCD log tail. This lets the Agent distinguish a missing probe, disconnected MCU, unpowered target, invalid configuration, or resource conflict.
 
-`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.4.9`.
+`npm run package` first bundles the runtime dependencies into `dist/extension.js` via esbuild, then produces `dist/emberprobe.vsix`. The current extension version is `0.5.0`.
 
 ## Project Structure
 

@@ -29,6 +29,7 @@ const sourceFiles = [
     "src/services/faultService.js",
     "src/services/agentService.js",
     "scripts/release.js",
+    "scripts/validate-release.js",
     "scripts/run-tests.js",
     "test/hil/run-hil.js",
     "skills/_emberprobe/agent-client.js",
@@ -43,6 +44,8 @@ const sourceFiles = [
 const allTests = [
     "test/release-consistency.test.js",
     "test/release-script.test.js",
+    "test/validate-release.test.js",
+    "test/release-workflow.test.js",
     "test/probe-coordinator.test.js",
     "test/services.test.js",
     "test/webview-assets.test.js",
@@ -70,6 +73,7 @@ const allTests = [
 
 const qualityTests = [
     "test/release-script.test.js",
+    "test/validate-release.test.js",
     "test/probe-coordinator.test.js",
     "test/services.test.js",
     "test/webview-assets.test.js",

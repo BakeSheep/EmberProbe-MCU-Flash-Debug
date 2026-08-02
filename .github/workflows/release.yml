@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to publish or retry, for example v1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and package
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate tag and release metadata
+        run: node scripts/validate-release.js "$RELEASE_TAG"
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Run quality gates
+        run: npm run quality
+
+      - name: Run Extension Host smoke tests
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Upload verified VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: emberprobe-vsix
+          path: dist/emberprobe.vsix
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download verified VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: emberprobe-vsix
+          path: dist
+
+      - name: Stop when the GitHub Release is already public
+        id: github_release
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false; then
+            echo "already-public=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub Release $RELEASE_TAG is already public; nothing to retry."
+          else
+            echo "already-public=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update draft GitHub Release
+        if: steps.github_release.outputs.already-public != 'true'
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --draft --title "EmberProbe $RELEASE_TAG"
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "EmberProbe $RELEASE_TAG"
+          fi
+          gh release upload "$RELEASE_TAG" dist/emberprobe.vsix --clobber
+
+      - name: Publish GitHub Release
+        if: steps.github_release.outputs.already-public != 'true'
+        run: gh release edit "$RELEASE_TAG" --draft=false

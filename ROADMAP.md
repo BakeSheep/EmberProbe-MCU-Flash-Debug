@@ -10,6 +10,7 @@ EmberProbe 的长期定位是：面向 Cortex-M 的烧录、在线观测、故�
 - [x] 更新中英文文档，使其反映复合变量、变量写入和八个 Agent Skills 的当前能力。
 - [x] 增加跨平台 CI，在 Windows、Linux 和 macOS 上执行检查与打包构建。
 - [x] 增加统一 release 脚本，自动升级版本并生成发布条目。
+- [x] 推送稳定版本标签后，自动创建 GitHub Release 并上传 VSIX。
 
 ### P0：架构拆分
 
