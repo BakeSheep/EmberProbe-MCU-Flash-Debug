@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-05
+
+### Changed
+
+- 变量写入滑条支持连续调节，拖动期间以最高 10 Hz 节流写入，并在松开时立即提交最终值。
+- 输入框提交超出当前滑条范围的值时，自动平移左右端点，同时保持区间跨度和滑块相对位置不变。
+
+### Fixed
+
+- 写入成功或失败的圆点提示移至变量名前，避免提示状态与变量名称错位。
+
 ## [0.5.1] - 2026-08-02
 
 ### Fixed

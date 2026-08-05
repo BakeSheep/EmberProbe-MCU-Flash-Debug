@@ -6,6 +6,7 @@ const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const { LiveWatchSession } = require("../src/liveWatch");
 const i18n = require("../src/i18n");
+const { shiftSliderBounds } = modernView;
 
 function validateScripts(name, html) {
   const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), match => match[1]);
@@ -61,6 +62,7 @@ assert.ok(sidebar.includes('write-slider') && sidebar.includes('step-btn'), "wri
 assert.ok(sidebar.includes('bound-input'), "slider endpoints should be editable inline without steppers");
 assert.ok(sidebar.includes('id="writeFeedback"'), "failed writes should surface an error reason");
 assert.ok(sidebar.includes('write-dot') && sidebar.includes('writeDotFlash'), "write result should flash a dot next to the variable name");
+assert.ok(sidebar.includes("nmWrap.append(dot,nm)"), "write result dot should appear before the variable name");
 assert.ok(!sidebar.includes('write-ok'), "write success should no longer flash a green border on the card");
 assert.ok(!sidebar.includes('value-address'), "watch cards should no longer show variable addresses");
 assert.ok(sidebar.includes('av-watch'), "ELF rows should offer a bordered add-to-watch button");
@@ -71,7 +73,12 @@ assert.ok(sidebar.includes('.list-fold svg'), "fold toggles should render as eye
 assert.ok(!sidebar.includes('av-spacer'), "ELF row buttons should start flush left without a spacer");
 assert.ok(sidebar.includes('writeNeedSampling'), "writing should be gated on live sampling being active");
 assert.ok(sidebar.includes('syncWriteValues'), "write cards should sync live values while sampling");
-assert.ok(sidebar.includes('cancelPendingWrite') && sidebar.includes('clearTimeout(writeTimers[name])'), "removing a write card should cancel its pending debounce timer");
+assert.ok(sidebar.includes('cancelPendingWrite') && sidebar.includes('clearTimeout(writeTimers[name])'), "removing a write card should cancel its pending throttled write");
+assert.ok(sidebar.includes('const WRITE_INTERVAL_MS=100'), "slider writes should be throttled to at most 10 Hz while dragging");
+assert.ok(sidebar.includes("slider.addEventListener('change',()=>setValue(Number(slider.value),true))"), "slider release should immediately write the final value");
+assert.deepStrictEqual(shiftSliderBounds(0, 100, 30, 130), { min: 100, max: 200 }, "an upper overflow should shift the range while preserving the thumb ratio");
+assert.deepStrictEqual(shiftSliderBounds(0, 100, 70, -30), { min: -100, max: 0 }, "a lower overflow should shift the range while preserving the thumb ratio");
+assert.deepStrictEqual(shiftSliderBounds(0, 100, 30, 60), { min: 0, max: 100 }, "an in-range value should keep the current endpoints");
 assert.ok(sidebar.includes('latestWriteSeq') && sidebar.includes('m.seq!==latestWriteSeq[m.name]'), "stale write results should not overwrite the latest card state");
 assert.ok(sidebar.includes('Math.floor(Math.log10(v))-1'), "integer steppers should scale with the current decimal digit count");
 assert.ok(sidebar.includes('::-webkit-slider-thumb'), "slider should use custom dark-gray styling instead of the native white control");
