@@ -2,32 +2,6 @@
 
 EmberProbe 的长期定位是：面向 Cortex-M 的烧录、在线观测、故障诊断与 Agent 自动化工具链。
 
-## 当前阶段：0.5 基础产品化
-
-### P0：发布一致性与文档
-
-- [x] 建立版本、锁文件、Changelog、README 和 Skill 清单的一致性检查。
-- [x] 更新中英文文档，使其反映复合变量、变量写入和八个 Agent Skills 的当前能力。
-- [x] 增加跨平台 CI，在 Windows、Linux 和 macOS 上执行检查与打包构建。
-- [x] 增加统一 release 脚本，自动升级版本并生成发布条目。
-- [x] 推送稳定版本标签后，自动创建 GitHub Release 并上传 VSIX。
-
-### P0：架构拆分
-
-- [x] 抽取 `ProbeCoordinator`，集中保存下载、实时采样、芯片读取、Agent 读取和调试启动状态。
-- [x] 将探针冲突规则迁入 `ProbeCoordinator`，由租约而非分散布尔判断管理所有权。
-- [x] 从 `MainViewProvider` 拆分 `FlashService`、`FaultService`、`AgentService` 和 `ConfigurationStore`。
-- [x] 将侧边栏及图表的内联脚本、样式转换为内容寻址的外部资源，并采用 nonce CSP。
-
-### P0：测试体系
-
-- [x] 保留现有解析器和业务单元测试。
-- [x] 增加 Fake OpenOCD Tcl-RPC 集成测试，覆盖读取、连续地址合并和写入。
-- [x] 增加发布一致性回归测试。
-- [x] 增加 VS Code Extension Host 端到端测试。
-- [x] 建立 STM32F1/F4、nRF52、RP2040 夜间真机回归矩阵工作流；实际执行需配置带开发板的 self-hosted runners。
-- [x] 增加覆盖率、Lint、格式和类型检查门禁。
-
 ## 0.6：在线观测
 
 - 支持 `u64/i64/f64`、枚举、位域、指针和字符串。
@@ -49,6 +23,3 @@ EmberProbe 的长期定位是：面向 Cortex-M 的烧录、在线观测、故�
 - 发布 Cortex-M 能力矩阵，并对非 Cortex-M 目标进行明确功能门控。
 - 稳定 Agent API、错误码和配置迁移策略。
 
-## 多架构方向
-
-近期继续以 Cortex-M 深度能力为主。若正式支持 RISC-V 或 Xtensa，先引入 `ArchitectureBackend`，再分别实现架构相关的寄存器、故障和实时观测能力，避免只支持目标选择却无法使用核心功能。
