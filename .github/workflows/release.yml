@@ -43,6 +43,9 @@ jobs:
       - name: Validate tag and release metadata
         run: node scripts/validate-release.js "$RELEASE_TAG"
 
+      - name: Check release consistency
+        run: npm run check:release
+
       - name: Run checks
         run: npm run check
 

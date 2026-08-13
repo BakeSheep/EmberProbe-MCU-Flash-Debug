@@ -133,6 +133,7 @@
   "scripts": {
     "test": "npm run check",
     "check": "node scripts/run-tests.js",
+    "check:release": "node scripts/run-tests.js --release",
     "lint": "eslint src scripts test",
     "format": "prettier --write \"src/services/**/*.js\" \"src/probeCoordinator.js\" \"src/webviewAssets.js\" \"scripts/**/*.js\" \"test/services.test.js\" \"test/probe-coordinator.test.js\" \"test/release-script.test.js\" \"test/webview-assets.test.js\" \"test/hil/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
     "format:check": "prettier --check \"src/services/**/*.js\" \"src/probeCoordinator.js\" \"src/webviewAssets.js\" \"scripts/**/*.js\" \"test/services.test.js\" \"test/probe-coordinator.test.js\" \"test/release-script.test.js\" \"test/webview-assets.test.js\" \"test/hil/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",

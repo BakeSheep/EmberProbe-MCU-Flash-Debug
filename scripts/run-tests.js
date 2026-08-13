@@ -42,7 +42,6 @@ const sourceFiles = [
 ];
 
 const allTests = [
-    "test/release-consistency.test.js",
     "test/release-script.test.js",
     "test/validate-release.test.js",
     "test/release-workflow.test.js",
@@ -71,6 +70,9 @@ const allTests = [
     "test/powershell-skills.test.js"
 ];
 
+// 发布元数据一致性检查只在发布流程运行，日常提交不做版本/README 声明校验。
+const releaseTests = ["test/release-consistency.test.js"];
+
 const qualityTests = [
     "test/release-script.test.js",
     "test/validate-release.test.js",
@@ -87,7 +89,12 @@ function run(args) {
 }
 
 const qualityOnly = process.argv.includes("--quality");
+const releaseOnly = process.argv.includes("--release");
 if (!qualityOnly) {
     for (const file of sourceFiles) run(["--check", file]);
 }
-for (const file of qualityOnly ? qualityTests : allTests) run([file]);
+if (releaseOnly) {
+    for (const file of releaseTests) run([file]);
+} else {
+    for (const file of qualityOnly ? qualityTests : allTests) run([file]);
+}
