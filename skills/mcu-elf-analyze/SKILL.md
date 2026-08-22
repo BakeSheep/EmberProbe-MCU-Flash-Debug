@@ -7,7 +7,7 @@ description: Statically analyze the configured firmware ELF through EmberProbe -
 
 Use `scripts/analyze-elf.js` from this skill directory. This is a pure static analysis of the workspace's configured ELF — it never touches the probe or the target, so it works with no hardware attached and does not conflict with sampling or downloading.
 
-```powershell
+```bash
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace>
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace> --top 30
 ```

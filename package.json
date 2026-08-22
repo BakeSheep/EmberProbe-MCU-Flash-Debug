@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, live variables, and Agent Skills.",
-  "version": "0.5.3",
+  "version": "0.6.1",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -104,7 +104,7 @@
         "emberprobe.openocdPath": {
           "type": "string",
           "default": "openocd",
-          "description": "OpenOCD 可执行文件路径；不在 PATH 时请填写 openocd.exe 的绝对路径"
+          "description": "OpenOCD 可执行文件路径；不在 PATH 时请填写绝对路径（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
         },
         "emberprobe.tclPort": {
           "type": "number",

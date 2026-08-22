@@ -5,16 +5,16 @@ description: Detect and download embedded MCU firmware with OpenOCD. Use when th
 
 # MCU Download
 
-Use the bundled `scripts/download.ps1` from this skill directory. Do not construct an OpenOCD shell command manually.
+Use the bundled `scripts/download.js` from this skill directory. Do not construct an OpenOCD shell command manually.
 
-1. Run a preflight without `-Execute` from the workspace root:
+1. Run a preflight without `--execute` from the workspace root (Node.js 16+, any OS):
 
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File <skill-dir>/scripts/download.ps1 -Workspace <workspace>
+   ```bash
+   node <skill-dir>/scripts/download.js --workspace <workspace>
    ```
 
-2. Report the detected ELF, target, probe, and OpenOCD executable. If detection is incomplete, stop and ask the user to connect/select the missing item. Never guess a target configuration.
-3. When the user explicitly asked to download or flash, rerun the same command with `-Execute`.
+2. Report the detected ELF, target, probe, and OpenOCD executable. If detection is incomplete, stop and ask the user to connect/select the missing item. Never guess a target configuration. Notes in the JSON output explain when a USB enumeration tool is missing (for example `lsusb` on Linux).
+3. When the user explicitly asked to download or flash, rerun the same command with `--execute`.
 4. Report the ELF SHA-256 fingerprint, OpenOCD's exit code, and concise result. On failure, include the actionable tail of its output.
 
-The script first reuses EmberProbe's configured ELF, MCU target, probe, and OpenOCD executable through the Agent Bridge. Missing values fall back to workspace/USB auto-detection: newest ELF by modification time, MCU hints from `.ioc`, CMake, and linker files, and the attached debug probe. On Windows it falls back to `pnputil` when `Get-PnpDevice` is unavailable. Explicit `-Elf`, `-Target`, `-Probe`, or `-OpenOcd` values always take precedence.
+The script first reuses EmberProbe's configured ELF, MCU target, probe, and OpenOCD executable through the Agent Bridge. Missing values fall back to workspace/USB auto-detection: newest ELF by modification time, MCU hints from `.ioc`, CMake, and linker files, and the attached debug probe (Windows PnP / `pnputil`, macOS `system_profiler`, Linux `lsusb`). Explicit `--elf`, `--target`, `--probe`, or `--openocd` values always take precedence.

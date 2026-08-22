@@ -303,7 +303,8 @@ function readChipInfo(vscode, options, onProgress) {
             `catch { echo [mdw 0x${ROM_PIDR0_ADDR.toString(16)} 4] }`,
             `catch { echo [mdw 0x${ROM_CIDR_ADDR.toString(16)} 4] }`,
             identityCmd,
-            'catch { if {[[target current] curstate] eq "halted"} { catch {reg pc}; catch {reg sp}; catch {reg lr} } }',
+            // catch 会吞掉命令输出，寄存器行需 echo [...] 形式才能到达 stdout（仅 halted 时读取）
+            'catch { if {[[target current] curstate] eq "halted"} { catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] } } }',
             'shutdown'
         ];
         const args = ['-f', `interface/${options.probe}`, '-f', `target/${options.target}`];

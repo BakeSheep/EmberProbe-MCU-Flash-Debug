@@ -6,6 +6,32 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-22
+
+### Added
+
+- Agent Skills 升级提示：插件激活与侧边栏刷新时检查已安装 skills 与内置版本的差异（可更新/被修改/不完整），首次发现差异时通知用户并可一键进入管理界面重新安装（每会话最多提示一次）。
+
+### Changed
+
+- mcu-download 与 mcu-flash-verify 两个 Agent Skill 由 PowerShell 重写为 Node.js（v2.0.0）：原先在 Linux/macOS 上因缺少 `powershell`/`pwsh` 而完全不可用，现在三平台统一通过 `node scripts/download.js` / `node scripts/verify.js` 调用；共享逻辑抽取到 `skills/_emberprobe/flash-common.js`，EmberProbe 配置复用不再依赖跨脚本相对路径。
+- Linux/macOS 无预置 OpenOCD 包时，侧边栏改为直接给出包管理器安装指引（apt/dnf/pacman/brew）而非仅打开官网。
+- `PROBE_PERMISSION_DENIED` 诊断与 OpenOCD 错误提示补充 Linux udev 规则/用户组指引。
+- `emberprobe.openocdPath` 配置描述改为跨平台表述。
+
+### Fixed
+
+- mcu-live-watch 结构体成员/数组元素路径（`sensor.x`、`buf[0]`）在 DWARF 布局缺失时错误地报 `VARIABLE_NOT_FOUND`：现在明确报 `COMPOSITE_LAYOUT_MISSING` 并建议用 Debug 构建重新编译；基名解析补充大小写不敏感唯一匹配回退。
+- DWARF 解析遇到 GNU 扩展 form（split-dwarf 场景）时不再中止整个编译单元，避免同 CU 后续变量全部丢失复合布局。
+- mcu-chip-info `--fields` 不过滤：单独传 `--fields` 时脚本错误回落到 `identity` 组，导致扩展端把整组字段并回结果；现在此时传空 sections。
+- mcu-fault-analyzer 与 mcu-chip-info（runtime 段）的 PC/SP/LR/xPSR 恒为空：OpenOCD 的 `catch` 会吞掉命令输出，寄存器读取改为 `echo [reg …]` 形式后才能真正到达解析器。
+- PowerShell 版预检脚本中 `Join-Path '..\..\mcu-config\...'` 的反斜杠相对路径在 Linux 上失效导致配置复用静默退化为自动检测（随 Node.js 重写一并消除）。
+- ELF 自动发现改为扩展名大小写不敏感，Linux 上不再漏掉 `FIRMWARE.ELF`。
+- `lsusb`（usbutils）未安装时探针自动检测静默失败，现在会在预检 JSON 的 `notes` 中给出安装提示。
+- verify 的 `EP_VERIFY OK/FAIL` 结果标记改为行首锚定匹配，避免把回显参数或日志中携带的 Tcl 文本误判为校验失败。
+- skill 共享运行时（`_emberprobe`）变更检测覆盖目录下全部脚本，此前仅校验 `agent-client.js`。
+- 烧录/校验 skill 的测试改为跨平台执行（原先仅在 Windows 上运行且在 Linux CI 上静默跳过）；其余 skill 的 SKILL.md 中 `node` 命令不再标注为 PowerShell 代码块。
+
 ## [0.5.3] - 2026-08-22
 
 ### Added

@@ -172,6 +172,13 @@ function _parseDwarfInternal(buffer) {
             case 0x2a: { cur.p += 2; return 0; }
             case 0x2b: { cur.p += 3; return 0; }
             case 0x2c: { cur.p += 4; return 0; }
+            // GNU split-dwarf 扩展 form：按已知长度推进游标即可，值本身不可用
+            // （split-dwarf 的完整信息在 .dwo 文件中，本解析器不消费）。
+            // 若在此抛错会中止整个 CU，导致后续所有变量丢失 DWARF 布局。
+            case 0x1f01: return readULEB(buf, cur);          // GNU_addr_index
+            case 0x1f02: return readULEB(buf, cur);          // GNU_str_index
+            case 0x1f03: { cur.p += 4; return { ref: 0 }; }  // GNU_ref_alt
+            case 0x1f04: { cur.p += 4; return { str: '' }; } // GNU_strp_alt
             default: throw new Error('unknown DWARF form 0x' + form.toString(16));
         }
     };

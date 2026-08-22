@@ -94,9 +94,10 @@ function readFaultInfo(options) {
     }
     return new Promise((resolve, reject) => {
         const regReads = Object.values(FAULT_REGS).map(a => `catch { echo [mdw 0x${a.toString(16)}] }`);
-        // CPU 寄存器需 halt 才能读：记录原状态 → 非 halted 则 halt → 读取 → 若曾 halt 则 resume
+        // CPU 寄存器需 halt 才能读：记录原状态 → 非 halted 则 halt → 读取 → 若曾 halt 则 resume。
+        // catch 会吞掉命令输出，寄存器行必须与 mdw 相同的 echo [...] 形式才能到达 stdout
         const cpuRegCmd = 'catch { set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; '
-            + 'catch {reg pc}; catch {reg sp}; catch {reg lr}; catch {reg xPSR}; if {$h} { catch { resume } } }';
+            + 'catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] }; catch { echo [reg xPSR] }; if {$h} { catch { resume } } }';
         const cmds = [
             'init',
             'catch { poll }',

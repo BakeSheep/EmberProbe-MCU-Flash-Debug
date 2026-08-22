@@ -33,7 +33,7 @@ const DIAGNOSTICS = {
     TARGET_NOT_CONNECTED: ['target_connection', '调试器可用，但无法连接目标 MCU。', ['检查 MCU 供电及 SWDIO/SWCLK/GND/NRST 接线。', '确认 MCU target 配置与实际芯片一致。'], true],
     TARGET_UNPOWERED: ['target_connection', '目标板未供电或目标电压过低。', ['检查目标板电源以及探针 VCC/GND 连接。'], true],
     TCL_PORT_IN_USE: ['resource_conflict', 'OpenOCD Tcl 端口被其他进程占用。', ['关闭残留 OpenOCD/调试会话，或更换 EmberProbe tclPort。'], true],
-    PROBE_PERMISSION_DENIED: ['probe_connection', '操作系统拒绝访问调试探针。', ['检查 USB 驱动、权限以及是否有其他程序占用探针。'], true],
+    PROBE_PERMISSION_DENIED: ['probe_connection', '操作系统拒绝访问调试探针。', ['检查 USB 驱动、权限以及是否有其他程序占用探针。', 'Linux 上需安装 udev 规则（openocd/contrib/60-openocd.rules，执行 sudo cp 后 udevadm control --reload）或将用户加入 plugdev 等设备组，并重新插拔探针。'], true],
     OPENOCD_CONNECTION_TIMEOUT: ['connection_timeout', 'OpenOCD 与探针或 MCU 通信超时。', ['检查 USB、目标供电和调试接线，必要时降低 adapter speed。'], true],
     OPENOCD_CONFIG_INVALID: ['configuration', 'OpenOCD 找不到所选探针或目标配置脚本。', ['检查 EmberProbe 调试器、MCU target 与 openocdPath 配置。'], false],
     ELF_NOT_CONFIGURED: ['firmware', 'EmberProbe 尚未选择用于解析变量的 ELF。', ['在侧边栏选择最新构建的 ELF 后重试。'], false],
@@ -50,6 +50,8 @@ const DIAGNOSTICS = {
     INVALID_WRITE_VALUE: ['write_safety', '写入值超出目标类型范围或非法。', ['按变量类型（u8/i8/u16/i16/u32/i32/f32）提供范围内的数值。'], false],
     WRITE_VERIFY_FAILED: ['write_safety', '写入后回读不一致，固件可能在每个循环中重写该变量。', ['向用户说明变量被固件持续覆写的可能，不要盲目重试。'], true],
     UNSUPPORTED_VARIABLE: ['variable_resolution', '变量不是受支持的标量（或尝试写入整个复合类型）。', ['写入时请指定单个标量叶子路径，如 sensor.x 或 buf[0]。'], false],
+    COMPOSITE_LAYOUT_MISSING: ['variable_resolution', '变量是复合类型，但当前 ELF 缺少可用的 DWARF 布局信息，无法展开成员。', ['使用包含 DWARF 调试信息的 Debug 构建重新编译（-g 且不 strip），并在 EmberProbe 侧边栏重新选择 ELF 后重试。', '单个标量变量的读取不受影响。'], false],
+    INVALID_VARIABLE_PATH: ['variable_resolution', '变量成员路径无效：基名不是复合类型，或路径无法在布局中解析。', ['确认路径写法，如 sensor.x、buf[0]、buf[1:5]。', '使用 --list 检查 ELF 符号与展开能力。'], false],
     FAULT_READ_FAILED: ['target_connection', '未能读取到故障寄存器。', ['检查探针连接与目标供电，确认 MCU target 配置与实际芯片一致。'], true]
 };
 

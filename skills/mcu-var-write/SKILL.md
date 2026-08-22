@@ -22,7 +22,7 @@ Writing a live variable changes firmware behavior immediately. EmberProbe enforc
 
 ## Usage
 
-```powershell
+```bash
 node <skill-dir>/scripts/write-var.js --workspace <workspace> --set kp=0.5
 # After the user chooses "only this write":
 node <skill-dir>/scripts/write-var.js --workspace <workspace> --set kp=0.5 --confirm <confirmationId>

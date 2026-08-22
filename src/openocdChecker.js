@@ -162,7 +162,17 @@ async function installBundledAndConfigure(vscode, context, report, lang) {
     const previousPath = vscode.workspace.getConfiguration('emberprobe').get('openocdPath', 'openocd');
     const archive = installer.getBundledArchive(context);
     if (!archive) {
-        // 当前平台无预置包，回退到打开官方下载页
+        // 当前平台无预置包：Linux/macOS 优先给出包管理器指引（比官网下载页更直接），
+        // 其它平台保持打开官方下载页
+        if (process.platform === 'linux' || process.platform === 'darwin') {
+            reportStatus(report, {
+                state: 'missing',
+                canInstall: false,
+                key: process.platform === 'linux' ? 'oc.noBundleLinux' : 'oc.noBundleDarwin',
+                params: { platform: process.platform + '-' + process.arch }
+            });
+            return null;
+        }
         await vscode.env.openExternal(vscode.Uri.parse(OPENOCD_GETTING_STARTED_URL));
         reportStatus(report, { state: 'missing', canInstall: false, key: 'oc.noBundle', params: { platform: process.platform + '-' + process.arch } });
         return null;

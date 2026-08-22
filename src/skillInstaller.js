@@ -64,19 +64,26 @@ async function inspectSkill(sourceRoot, targetRoot, entry) {
 async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
     const skills = [];
     for (const entry of manifest.skills) skills.push(await inspectSkill(sourceRoot, targetRoot, entry));
-    const sourceRuntime = path.join(sourceRoot, "_emberprobe", "agent-client.js");
-    const targetRuntime = path.join(targetRoot, "_emberprobe", "agent-client.js");
-    const runtimeMissing = !await exists(targetRuntime);
-    const runtimeModified = !runtimeMissing && await digest(sourceRuntime) !== await digest(targetRuntime);
-    for (let index = 0; index < manifest.skills.length; index++) {
-        if (!manifest.skills[index].runtime || skills[index].state === "notInstalled") continue;
-        if (runtimeMissing) {
-            skills[index].state = "partial";
-            skills[index].missing.push("../_emberprobe/agent-client.js");
-        } else if (runtimeModified && skills[index].state === "installed") {
-            skills[index].state = "modified";
-        }
+// 共享运行时按 _emberprobe 下全部脚本逐一比对（agent-client、flash-common 等），
+// 任一缺失或内容更新都会反映到依赖运行时的 skill 状态上
+const runtimeStatus = { missing: [], modified: false };
+try {
+    const runtimeFiles = (await fs.readdir(path.join(sourceRoot, "_emberprobe"))).filter(name => name.endsWith(".js"));
+    for (const name of runtimeFiles) {
+        const targetFile = path.join(targetRoot, "_emberprobe", name);
+        if (!await exists(targetFile)) runtimeStatus.missing.push(`../_emberprobe/${name}`);
+        else if (await digest(path.join(sourceRoot, "_emberprobe", name)) !== await digest(targetFile)) runtimeStatus.modified = true;
     }
+} catch { /* 源 _emberprobe 目录缺失时按无运行时依赖处理 */ }
+for (let index = 0; index < manifest.skills.length; index++) {
+    if (!manifest.skills[index].runtime || skills[index].state === "notInstalled") continue;
+    if (runtimeStatus.missing.length) {
+        skills[index].state = "partial";
+        skills[index].missing.push(...runtimeStatus.missing);
+    } else if (runtimeStatus.modified && skills[index].state === "installed") {
+        skills[index].state = "modified";
+    }
+}
     const installed = skills.filter(item => item.state === "installed").length;
     let state = "installed";
     if (skills.every(item => item.state === "notInstalled")) state = "notInstalled";

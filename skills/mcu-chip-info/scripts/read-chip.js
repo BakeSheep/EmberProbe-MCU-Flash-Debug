@@ -15,7 +15,8 @@ function args(argv) {
 async function main() {
     const opt = args(process.argv.slice(2));
     const result = await call(opt.workspace || process.cwd(), "chip.read", {
-        sections: String(opt.section || "identity").split(",").filter(Boolean),
+        // --fields 单独出现时不能回落到 identity 组，否则扩展端会把整组字段并回结果
+        sections: String(opt.section || (opt.fields ? "" : "identity")).split(",").filter(Boolean),
         fields: String(opt.fields || "").split(",").filter(Boolean)
     });
     process.stdout.write(JSON.stringify(result) + "\n");

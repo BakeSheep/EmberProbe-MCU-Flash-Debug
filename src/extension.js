@@ -549,14 +549,30 @@ class MainViewProvider {
         this._symbolCache = null;
         const elfResult = this.readElfSymbols();
         const byName = new Map(elfResult.symbols.map(s => [s.name, s]));
+        const folded = new Map();
+        for (const s of elfResult.symbols) {
+            const key = String(s.name || '').toLowerCase();
+            if (!folded.has(key)) folded.set(key, []);
+            folded.get(key).push(s);
+        }
         const scalarRequests = [];
         const compositePlan = [];
         for (const req of requests) {
             const parsed = elfSymbols.parseMemberPath(req.name);
             const baseName = parsed ? parsed.base : req.name;
-            const symbol = byName.get(baseName);
+            let symbol = byName.get(baseName);
+            if (!symbol) {
+                // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
+                const matches = folded.get(String(baseName).toLowerCase()) || [];
+                if (matches.length === 1) symbol = matches[0];
+                else if (matches.length > 1) throw Object.assign(new Error(`Variable name is ambiguous: ${req.name}`), { code: 'AMBIGUOUS_VARIABLE' });
+            }
             if (!symbol) throw Object.assign(new Error(`Variable not found in current ELF: ${req.name}`), { code: 'VARIABLE_NOT_FOUND' });
-            if (symbol.isComposite && symbol.compositeLayout) {
+            if (symbol.isComposite) {
+                if (!symbol.compositeLayout) {
+                    // 缺布局时不能把完整路径丢进标量解析器，否则会得到误导性的 VARIABLE_NOT_FOUND
+                    throw Object.assign(new Error(`Composite variable has no DWARF layout: ${req.name}`), { code: 'COMPOSITE_LAYOUT_MISSING', details: { base: symbol.name, reason: symbol.unsupportedReason } });
+                }
                 if (parsed && parsed.segments.length
                     && !elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed).length) {
                     throw Object.assign(new Error(`Invalid composite member path: ${req.name}`), { code: 'INVALID_VARIABLE_PATH' });
@@ -564,7 +580,7 @@ class MainViewProvider {
                 const totalSize = Number(symbol.size) || 0;
                 compositePlan.push({
                     requestedName: req.name,
-                    name: baseName,
+                    name: symbol.name,
                     address: Number(symbol.address) >>> 0,
                     size: totalSize,
                     type: '',
@@ -572,6 +588,8 @@ class MainViewProvider {
                     compositeLayout: symbol.compositeLayout,
                     pathSpec: parsed
                 });
+            } else if (parsed && parsed.segments.length) {
+                throw Object.assign(new Error(`${req.name} is not a composite variable; member paths are not applicable`), { code: 'INVALID_VARIABLE_PATH' });
             } else {
                 scalarRequests.push(req);
             }
@@ -942,7 +960,20 @@ class MainViewProvider {
     async refreshSkillStatus() {
         const status = await skillInstaller.inspectSkills(vscode, this._context);
         this._postSkillStatus(status);
+        this._promptSkillUpgrade(status);
         return status;
+    }
+    // 已安装 Skills 与插件内置版本存在差异（可更新/被修改/不完整）时提示升级；
+    // 每个会话最多提示一次，避免侧边栏刷新与工作区切换反复打扰
+    _promptSkillUpgrade(status) {
+        if (this._skillUpgradePrompted) return;
+        if (!['outdated', 'modified', 'partial'].includes(status.state)) return;
+        this._skillUpgradePrompted = true;
+        const manage = this._t('msg.skillsManage');
+        vscode.window.showInformationMessage(this._t('msg.skillsDiffers'), manage)
+            .then(choice => {
+                if (choice === manage) vscode.commands.executeCommand('mcu-vscode.manageAgentSkills');
+            });
     }
     _scopeStateText(scope) {
         if (!scope) return this._t('skill.noWorkspace');
@@ -1696,6 +1727,9 @@ function activate(context) {
     context.subscriptions.push(viewDisposable, folderDebugCmd, folderDownloadCmd, openLiveWatchCmd, manageSkillsCmd, checkOpenOcdCmd);
     // 激活后静默预探测一次填充缓存，避免首次动作才探测造成延迟（不弹通知）
     mainViewProvider.refreshOpenOcdStatus(false);
+    // 激活后检查已安装 Agent Skills 与内置版本的差异，存在差异时提示可升级
+    // （不打开侧边栏的用户也能得到提示；每会话最多一次）
+    mainViewProvider.refreshSkillStatus().catch(() => {});
     // 用户改动 emberprobe.openocdPath 后清空缓存并重新探测，使新路径立即生效
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('emberprobe.openocdPath')) {

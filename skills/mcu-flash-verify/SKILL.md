@@ -5,21 +5,21 @@ description: Verify that the firmware currently in MCU flash matches a local ELF
 
 # MCU Flash Verify
 
-Run `scripts/verify.ps1` from this skill directory with PowerShell. It first reuses EmberProbe's configured ELF, OpenOCD target, probe, and executable; missing values fall back to auto-detection exactly like the mcu-download skill.
+Run `scripts/verify.js` from this skill directory with Node.js (16+, any OS). It first reuses EmberProbe's configured ELF, OpenOCD target, probe, and executable; missing values fall back to auto-detection exactly like the mcu-download skill.
 
 First run detection only and show the JSON result to confirm what will be compared:
 
-```powershell
-pwsh -File <skill-dir>/scripts/verify.ps1 -Workspace <workspace>
+```bash
+node <skill-dir>/scripts/verify.js --workspace <workspace>
 ```
 
 Then execute the verification:
 
-```powershell
-pwsh -File <skill-dir>/scripts/verify.ps1 -Workspace <workspace> -Execute
+```bash
+node <skill-dir>/scripts/verify.js --workspace <workspace> --execute
 ```
 
-Override detection with `-Elf`, `-Target`, `-Probe`, or `-OpenOcd` when needed.
+Override detection with `--elf`, `--target`, `--probe`, or `--openocd` when needed.
 
 ## Behavior
 

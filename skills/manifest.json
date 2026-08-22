@@ -3,8 +3,9 @@
   "skills": [
     {
       "name": "mcu-download",
-      "version": "1.2.0",
-      "required": ["SKILL.md", "scripts/download.ps1", "agents/openai.yaml"]
+      "version": "2.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/download.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-live-watch",
@@ -44,8 +45,9 @@
     },
     {
       "name": "mcu-flash-verify",
-      "version": "1.1.0",
-      "required": ["SKILL.md", "scripts/verify.ps1", "agents/openai.yaml"]
+      "version": "2.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/verify.js", "agents/openai.yaml"]
     }
   ]
 }

@@ -33,8 +33,11 @@ const sourceFiles = [
     "scripts/run-tests.js",
     "test/hil/run-hil.js",
     "skills/_emberprobe/agent-client.js",
+    "skills/_emberprobe/flash-common.js",
     "skills/mcu-config/scripts/config.js",
     "skills/mcu-chip-info/scripts/read-chip.js",
+    "skills/mcu-download/scripts/download.js",
+    "skills/mcu-flash-verify/scripts/verify.js",
     "skills/mcu-live-watch/scripts/read-live.js",
     "skills/mcu-var-write/scripts/write-var.js",
     "skills/mcu-fault-analyzer/scripts/analyze-fault.js",
@@ -68,7 +71,7 @@ const allTests = [
     "test/var-write.test.js",
     "test/fault-info.test.js",
     "test/write-authorization.test.js",
-    "test/powershell-skills.test.js"
+    "test/flash-skills.test.js"
 ];
 
 // 发布元数据一致性检查只在发布流程运行，日常提交不做版本/README 声明校验。

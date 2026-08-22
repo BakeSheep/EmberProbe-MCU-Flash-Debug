@@ -7,7 +7,7 @@ description: Selectively read attached MCU identity, debug-link, or runtime info
 
 Use `scripts/read-chip.js` from this skill directory. EmberProbe owns the probe and enforces mutual exclusion.
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-chip.js --workspace <workspace> --section identity
 node <skill-dir>/scripts/read-chip.js --workspace <workspace> --fields core,series,deviceId,flashSize
 node <skill-dir>/scripts/read-chip.js --workspace <workspace> --fields designer,authenticity,compatVendor,compatBrand

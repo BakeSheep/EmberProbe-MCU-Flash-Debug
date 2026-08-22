@@ -111,4 +111,47 @@ assert.strictEqual(types.get("sensorAlias").typeName, "SensorAlias");
 assert.strictEqual(types.get("sensorAlias").watchType, "", "结构体整体不可作为标量观察");
 assert.strictEqual(types.get("buf").typeName, "int[]");
 
+// —— 回归守护：CU 中出现 GNU 扩展 form（split-dwarf 场景的 GNU_addr_index 0x1f01）
+// 时解析不能中止整个 CU，否则该 CU 后续所有变量都会丢失复合布局 ——
+const di2 = [];
+di2.push(...u32(0), 4, 0, ...u32(0), 4);                       // header（unit_length 回填）
+di2.push(1, 0x2a);                                             // @11 compile_unit + GNU_addr_index 值(ULEB)
+di2.push(2, ...str("int"), 0x05, 4);                           // @13 base_type int
+di2.push(3, ...str("S"), 4);                                   // @20 structure_type S
+di2.push(4, ...str("v"), ...u32(13), 0);                       // @24 member v -> int@13
+di2.push(0);                                                   // @32 end struct children
+di2.push(5, ...str("s"), ...u32(20), 5, 0x03, ...u32(0x20000000)); // @33 variable s -> S@20
+di2.push(0);                                                   // @46 end CU
+const len2 = di2.length - 4;
+di2[0] = len2 & 0xff; di2[1] = (len2 >>> 8) & 0xff; di2[2] = (len2 >>> 16) & 0xff; di2[3] = (len2 >>> 24) & 0xff;
+const debugInfo2 = Buffer.from(di2);
+const abbrev2 = Buffer.from([
+    // compile_unit：GNU 扩展属性。at=0x2131 与 form=0x1f01 均超 255，
+    // 必须按 ULEB 字节序列写入（0xb1 0x42 / 0x81 0x3e），直接写数值会被截断
+    1, 0x11, 1, 0xb1, 0x42, 0x81, 0x3e, 0, 0,              // compile_unit：GNU 属性 + GNU_addr_index form
+    2, 0x24, 0, 0x03, 0x08, 0x3e, 0x0b, 0x0b, 0x0b, 0, 0,    // base_type
+    3, 0x13, 1, 0x03, 0x08, 0x0b, 0x0b, 0, 0,                // structure_type
+    4, 0x0d, 0, 0x03, 0x08, 0x49, 0x13, 0x38, 0x0b, 0, 0,    // member
+    5, 0x34, 0, 0x03, 0x08, 0x49, 0x13, 0x02, 0x18, 0, 0,    // variable
+    0
+]);
+const di2Off = 52;
+const ab2Off = di2Off + debugInfo2.length;
+const shstr2Off = ab2Off + abbrev2.length;
+const shoff2 = (shstr2Off + shstrtab.length + 3) & ~3;
+const buf2 = Buffer.alloc(shoff2 + 4 * 40);
+buf2[0] = 0x7f; buf2[1] = 0x45; buf2[2] = 0x4c; buf2[3] = 0x46; buf2[4] = 1; buf2[5] = 1; buf2[6] = 1;
+buf2.writeUInt16LE(2, 16); buf2.writeUInt16LE(0x28, 18); buf2.writeUInt32LE(1, 20);
+buf2.writeUInt32LE(shoff2, 32); buf2.writeUInt16LE(52, 40); buf2.writeUInt16LE(40, 46);
+buf2.writeUInt16LE(4, 48); buf2.writeUInt16LE(3, 50);
+debugInfo2.copy(buf2, di2Off); abbrev2.copy(buf2, ab2Off); shstrtab.copy(buf2, shstr2Off);
+const sh2 = i => shoff2 + i * 40;
+buf2.writeUInt32LE(nameOff[".debug_info"], sh2(1) + 0); buf2.writeUInt32LE(1, sh2(1) + 4); buf2.writeUInt32LE(di2Off, sh2(1) + 16); buf2.writeUInt32LE(debugInfo2.length, sh2(1) + 20);
+buf2.writeUInt32LE(nameOff[".debug_abbrev"], sh2(2) + 0); buf2.writeUInt32LE(1, sh2(2) + 4); buf2.writeUInt32LE(ab2Off, sh2(2) + 16); buf2.writeUInt32LE(abbrev2.length, sh2(2) + 20);
+buf2.writeUInt32LE(nameOff[".shstrtab"], sh2(3) + 0); buf2.writeUInt32LE(3, sh2(3) + 4); buf2.writeUInt32LE(shstr2Off, sh2(3) + 16); buf2.writeUInt32LE(shstrtab.length, sh2(3) + 20);
+const gnuVar = parseCompositeLayout(buf2).get("s");
+assert.ok(gnuVar, "GNU 扩展 form 出现在 CU 中时，后续变量的复合布局仍应被解析");
+assert.strictEqual(gnuVar.kind, "struct");
+assert.deepStrictEqual(gnuVar.members.map(m => [m.name, m.offset, m.watchType]), [["v", 0, "i32"]]);
+
 console.log("DWARF composite layout tests passed");

@@ -11,7 +11,7 @@ Use `scripts/read-live.js` from this skill directory.
 
 Pass the variable names directly:
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables Tick,sinx
 ```
 
@@ -21,7 +21,7 @@ If live sampling is already active, EmberProbe reuses that connection. Otherwise
 
 Only use `--list` if EmberProbe reports that a name is missing or ambiguous:
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --list
 ```
 
@@ -31,7 +31,7 @@ When firmware is built with DWARF debug info (Debug build, not stripped), EmberP
 expands structs, unions, and arrays. Read individual members or elements using path syntax
 in `--variables` (no type suffix; the type is inferred from DWARF):
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables sensor.x,sensor.y
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables buf[0],buf[1:5]
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables buf[*]
@@ -49,7 +49,7 @@ These paths require the extension bridge (the fast path above); they are not ava
 
 ## Add variables to EmberProbe
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables counter --add-to sidebar
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables temperature --add-to chart
 ```
@@ -60,7 +60,7 @@ node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables temper
 
 For a trend, use `--trend`; it defaults to 10 samples and reports rising, falling, stable, or volatile:
 
-```powershell
+```bash
 node <skill-dir>/scripts/read-live.js --workspace <workspace> --variables counter --trend --interval 200
 ```
 

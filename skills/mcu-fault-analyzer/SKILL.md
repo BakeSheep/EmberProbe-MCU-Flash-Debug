@@ -7,7 +7,7 @@ description: Read and decode Cortex-M fault status registers (CFSR/HFSR/DFSR/MMF
 
 Use `scripts/analyze-fault.js` from this skill directory.
 
-```powershell
+```bash
 node <skill-dir>/scripts/analyze-fault.js --workspace <workspace>
 ```
 

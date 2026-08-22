@@ -9,13 +9,13 @@ Use `scripts/config.js` from this skill directory. Never edit VS Code storage or
 
 1. Read the current configuration before changing it:
 
-   ```powershell
+   ```bash
    node <skill-dir>/scripts/config.js --workspace <workspace> --get
    ```
 
 2. Change only values explicitly requested by the user:
 
-   ```powershell
+   ```bash
    node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
    ```
 

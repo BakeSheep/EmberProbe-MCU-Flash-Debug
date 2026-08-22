@@ -58,7 +58,7 @@ function hintForErrors(errors) {
     if (/voltage|unpowered|not powered|电压|未供电/.test(text)) return '目标板可能未供电或供电异常：请检查目标板电源与探针 VCC/GND 连接';
     if (/scan chain|all ones|all zeroes|tap .*(disabled|invalid)/.test(text)) return 'JTAG/SWD 链路异常：请检查接线、上拉电阻与时钟设置';
     if (/unable to find|no device found|no .*found|open failed/.test(text)) return '未找到调试器：请检查 USB 连接与驱动，或确认探针型号选择是否正确';
-    if (/libusb|access denied|usb_open|permission denied/.test(text)) return 'USB 驱动/权限异常：Windows 上可用 Zadig 将探针驱动替换为 WinUSB';
+    if (/libusb|access denied|usb_open|permission denied/.test(text)) return 'USB 驱动/权限异常：Windows 上可用 Zadig 将探针驱动替换为 WinUSB；Linux 上需安装 udev 规则（openocd/contrib/60-openocd.rules）或将用户加入 plugdev 等设备组后重新插拔探针';
     if (/timed? ?out/.test(text)) return '通信超时：请检查接线是否牢固，或降低适配器时钟后重试';
     if (/protected|unlock|rdp|read out protection|option byte/.test(text)) return '芯片可能处于读保护（RDP）状态：请先解除保护或全片擦除';
     if (/flash write failed|failed erasing|failed to write|error writing|error erasing|write discontinued/.test(text)) return 'Flash 写入/擦除失败：请检查供电稳定性、是否写保护，或确认目标配置是否匹配';
@@ -108,7 +108,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
     if (/libusb.*(?:access|permission)|access denied|permission denied|usb_open.*access/.test(text)) {
         return make('PROBE_PERMISSION_DENIED', 'probe_connection',
             '操作系统拒绝访问调试探针。',
-            ['检查是否有其他调试程序占用探针。', '检查 USB 驱动与当前用户权限。']);
+            ['检查是否有其他调试程序占用探针。', '检查 USB 驱动与当前用户权限。', 'Linux 上需安装 udev 规则（openocd/contrib/60-openocd.rules，执行 sudo cp 后 udevadm control --reload）或将用户加入 plugdev 等设备组，并重新插拔探针。']);
     }
     if (/unable to find.*(?:cmsis|dap|st-?link|j-?link|probe)|no device found|no .*probe.*found|libusb_open.*(?:not found|no device)|open failed.*(?:probe|device)|unable to open.*(?:probe|device)/.test(text)) {
         return make('PROBE_NOT_FOUND', 'probe_connection',

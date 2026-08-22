@@ -66,7 +66,13 @@ const execFileAsync = promisify(execFile);
     assert.deepStrictEqual(session.watch, [], "one-shot reads must not modify the UI watch list");
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-bridge-"));
+    // 捕获 chip.read 实际收到的参数，验证 --fields 单独使用时不会回落到 identity 组
+    const chipReadParams = [];
     const bridge = new AgentBridge(root, async (method, params) => {
+        if (method === "chip.read") {
+            chipReadParams.push(params);
+            return { core: "M4", chip: "STM32F407", deviceId: "0x463", flashSize: "1024 KB" };
+        }
         if (method === "variables.write") {
             if (!params.confirmationId) return {
                 confirmationRequired: true,
@@ -130,6 +136,19 @@ const execFileAsync = promisify(execFile);
         const fastPayload = JSON.parse(fastPath.stdout);
         assert.strictEqual(fastPayload.method, "variables.read");
         assert.deepStrictEqual(fastPayload.params.variables, [{ name: "tick" }, { name: "sinx" }]);
+
+        // —— mcu-chip-info：--fields 单独使用时 sections 必须为空，否则扩展端会把 identity 整组字段并回结果 ——
+        await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-chip-info/scripts/read-chip.js"),
+            "--workspace", root,
+            "--fields", "deviceId"
+        ]);
+        assert.deepStrictEqual(chipReadParams.at(-1), { sections: [], fields: ["deviceId"] });
+        await execFileAsync(process.execPath, [
+            path.resolve(__dirname, "../skills/mcu-chip-info/scripts/read-chip.js"),
+            "--workspace", root
+        ]);
+        assert.deepStrictEqual(chipReadParams.at(-1), { sections: ["identity"], fields: [] });
         const trendPath = await execFileAsync(process.execPath, [
             path.resolve(__dirname, "../skills/mcu-live-watch/scripts/read-live.js"),
             "--workspace", root,
