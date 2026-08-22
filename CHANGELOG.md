@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-22
+
+### Added
+
+- Agent Skills 安装支持选择范围：当前项目或用户主目录（全局，所有项目可用），并可在确认后按范围整体卸载。
+- 实时变量图表面板新增"导出 CSV"：按采样时间戳对齐的 RFC 4180 宽表，带 UTF-8 BOM，经原生保存对话框写出。
+
+### Removed
+
+- 侧边栏移除"选择 SVD 文件"与"调试"按钮；调试仍可通过资源管理器右键菜单启动。
+
 ## [0.5.2] - 2026-08-05
 
 ### Changed

@@ -52,6 +52,7 @@ const allTests = [
     "test/auto-detect.test.js",
     "test/agent-skills.test.js",
     "test/skill-installer.test.js",
+    "test/csv-export.test.js",
     "test/openocd-parser.test.js",
     "test/openocd-scripts.test.js",
     "test/elf-symbols.test.js",

@@ -13,6 +13,11 @@ const { LiveWatchSession } = require("../src/liveWatch");
 const execFileAsync = promisify(execFile);
 
 (async () => {
+    const extensionManifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf8"));
+    assert.ok(
+        extensionManifest.activationEvents.includes("onStartupFinished"),
+        "global Agent Skills require the extension to start its bridge without a workspace-local activation file"
+    );
     assert.deepStrictEqual(configSkill.parseSet("debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg"), {
         debugger: "cmsis-dap.cfg", mcu: "stm32f4x.cfg"
     });

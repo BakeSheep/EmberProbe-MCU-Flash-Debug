@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, live variables, and Agent Skills.",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -34,11 +34,13 @@
   "icon": "media/icon.png",
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onStartupFinished",
     "workspaceContains:.agents/skills/mcu-live-watch/SKILL.md",
     "onView:mcu-vscode.mainView",
     "onCommand:mcu-vscode.folderDebug",
     "onCommand:mcu-vscode.folderDownload",
     "onCommand:mcu-vscode.openLiveWatch",
+    "onCommand:mcu-vscode.manageAgentSkills",
     "onCommand:mcu-vscode.checkOpenOcd"
   ],
   "contributes": {
@@ -76,6 +78,10 @@
       {
         "command": "mcu-vscode.checkOpenOcd",
         "title": "EmberProbe: 检查 OpenOCD 环境"
+      },
+      {
+        "command": "mcu-vscode.manageAgentSkills",
+        "title": "EmberProbe: 管理 Agent Skills"
       }
     ],
     "menus": {

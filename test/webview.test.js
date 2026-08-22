@@ -23,6 +23,8 @@ assert.ok(sidebar.includes('id="skillStatus"'), "sidebar should show Agent Skill
 assert.ok(sidebar.includes('skill-row') && sidebar.includes('skill-status-count'), "Agent Skills should use a dedicated aligned status card");
 assert.ok(sidebar.includes('-webkit-line-clamp:2'), "Agent Skills descriptions should wrap instead of being truncated");
 assert.ok(sidebar.includes("m.type==='skillStatus'"), "sidebar should react to partial or complete Skill status");
+assert.ok(sidebar.includes('data-command="mcu-vscode.manageAgentSkills"'), "skill card should open the management menu");
+assert.ok(sidebar.includes("status.scopes"), "skill card tooltip should break down per-scope status");
 assert.ok(sidebar.includes('id="openocdInstall"'), "OpenOCD card should offer bundled installation");
 assert.ok(sidebar.includes("type:'openocdAction',action:'select'"), "OpenOCD path selection should be handled inside the sidebar");
 assert.ok(sidebar.includes("m.type==='openocdStatus'"), "sidebar should render OpenOCD status messages");
@@ -102,6 +104,9 @@ const panel = liveWatchView.getLiveWatchContent({ maxSamples: -10, intervalMs: 1
 validateScripts("liveWatchView", panel);
 assert.ok(panel.includes('id="timeWindow"'));
 assert.ok(panel.includes('id="freeze"'));
+assert.ok(panel.includes('id="export"') && panel.includes("type:'exportCsv'"), "chart toolbar should offer CSV export through the extension");
+assert.ok(panel.includes('function buildCsv'), "panel should embed the shared CSV builder");
+assert.ok(panel.includes("lw.noDataToExport"), "exporting without data should hint instead of writing a file");
 assert.ok(panel.includes('html,body{width:100%;height:100%;overflow:hidden}'), "panel should fit its webview without page scrolling");
 assert.ok(panel.includes('card.append(rm,sw,main,sel)'), "remove button should be the first control in each variable card");
 assert.ok(panel.includes("rm.textContent='-'"), "graph remove control should use a minus sign");
@@ -125,6 +130,8 @@ const extensionSource = fs.readFileSync(require.resolve("../src/extension"), "ut
 const checkerSource = fs.readFileSync(require.resolve("../src/openocdChecker"), "utf8");
 const agentServiceSource = fs.readFileSync(require.resolve("../src/services/agentService"), "utf8");
 assert.ok(extensionSource.includes("type: 'openocdStatus'"), "extension should publish OpenOCD state to the sidebar");
+assert.ok(extensionSource.includes("manageAgentSkills"), "extension should register the Agent Skills management menu");
+assert.ok(extensionSource.includes("case 'exportCsv'") && extensionSource.includes("showSaveDialog"), "extension should save chart CSV via the native save dialog");
 assert.ok(!checkerSource.includes('showWarningMessage'), "missing OpenOCD must not use notification popups");
 assert.ok(!checkerSource.includes('ProgressLocation.Notification'), "OpenOCD installation progress should stay in the sidebar");
 assert.ok(extensionSource.includes("sym.isComposite ="), "ELF enrichment should classify structures and arrays");

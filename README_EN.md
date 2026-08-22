@@ -10,7 +10,6 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Infers the MCU target from `.ioc`, CMake, and linker files.
 - Detects the OpenOCD environment in the sidebar and shows its status; Windows x64 supports one-click offline installation, or you can point to an existing OpenOCD executable.
 - Chip info readout: non-intrusively reads the chip core, Device ID, Flash size, UID, debug link, and run state via OpenOCD.
-- Starts a Cortex-Debug session from the selected ELF, probe, target, and optional SVD.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and the chart panel provides a collapsible, draggable current-value column plus real-time curves.
 - Optionally installs eight Agent Skills covering firmware download and verification, live variable reads and writes, chip and fault inspection, ELF analysis, and configuration synchronization.
 
@@ -51,7 +50,7 @@ npm run test:e2e
 npm run package
 ```
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.6.0`.
 
 ## Project Structure
 

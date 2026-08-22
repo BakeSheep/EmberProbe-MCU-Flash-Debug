@@ -26,6 +26,7 @@ const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
 const { externalizeWebviewHtml } = require("./webviewAssets");
 const fs = require("fs");
+const os = require("os");
 const crypto = require("crypto");
 const i18n = require("./i18n");
 // 调试器配置列表
@@ -264,11 +265,7 @@ class MainViewProvider {
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
         this.commandHandlers['mcu-vscode.autoDetect'] = async () => this.runAutoDetect(true);
-        this.commandHandlers['mcu-vscode.installAgentSkill'] = async () => {
-            const status = await skillInstaller.installSkill(vscode, this._context, this._lang);
-            this._postSkillStatus(status);
-            return status;
-        };
+        this.commandHandlers['mcu-vscode.manageAgentSkills'] = async () => this.manageAgentSkills();
         this.commandHandlers['mcu-vscode.openLiveWatch'] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers['mcu-vscode.selectElf'] = async () => {
@@ -355,48 +352,7 @@ class MainViewProvider {
             quickPick.onDidHide(() => quickPick.dispose());
             quickPick.show();
         };
-        // 4. 选择 SVD 文件（核心修改3：使用fsPath+路径清洗）
-        this.commandHandlers['mcu-vscode.selectSvd'] = async () => {
-            try {
-                console.log('主进程执行选择 SVD 文件命令');
-                const svdFiles = await vscode.workspace.findFiles('**/*.svd', '{**/node_modules/**,**/.git/**}', 100);
-                if (svdFiles.length === 0) {
-                    vscode.window.showWarningMessage(this._t('msg.noSvdFound'));
-                    return;
-                }
-                const quickPick = vscode.window.createQuickPick();
-                quickPick.items = svdFiles.map(file => {
-                    const cleanPath = cleanWindowsPath(file.fsPath); // 替换file.path为file.fsPath，再清洗
-                    return {
-                        label: path.basename(cleanPath),
-                        description: cleanPath
-                    };
-                });
-                quickPick.placeholder = this._t('msg.searchSvd');
-                quickPick.canSelectMany = false;
-                quickPick.onDidChangeSelection(async selection => {
-                    if (selection[0]) {
-                        const svdPath = selection[0].description;
-                        if (svdPath) {
-                            const finalPath = cleanWindowsPath(svdPath); // 二次清洗
-                            await this._context.workspaceState.update(CACHE_KEYS.svdPath, finalPath);
-                            vscode.window.showInformationMessage(this._t('msg.svdSelected', { name: path.basename(finalPath) }));
-                            this.updateView();
-                        }
-                        quickPick.dispose();
-                    }
-                });
-                quickPick.onDidHide(() => quickPick.dispose());
-                quickPick.show();
-            }
-            catch (err) {
-                const errorMsg = err.message;
-                console.error('选择 SVD 文件失败：', errorMsg);
-                vscode.window.showErrorMessage(this._t('msg.selectSvdFailed', { error: errorMsg }));
-                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
-            }
-        };
-        // 5. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
+        // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
         this.commandHandlers['mcu-vscode.debug'] = async (resource) => {
             try {
                 if (this._agentReadRunning) {
@@ -988,6 +944,59 @@ class MainViewProvider {
         this._postSkillStatus(status);
         return status;
     }
+    _scopeStateText(scope) {
+        if (!scope) return this._t('skill.noWorkspace');
+        const hasCount = Number.isFinite(scope.installed) && Number.isFinite(scope.total) && scope.total > 0;
+        if (scope.state === 'installed' && hasCount) return this._t('skill.installed', { installed: scope.installed, total: scope.total });
+        if (scope.state === 'partial' && hasCount) return this._t('skill.partial', { installed: scope.installed, total: scope.total });
+        const key = { outdated: 'skill.outdated', modified: 'skill.modified', notInstalled: 'skill.notInstalled' }[scope.state];
+        return this._t(key || 'skill.notInstalled');
+    }
+    _scopeHasContent(scope) {
+        return !!scope && scope.state !== 'notInstalled';
+    }
+    // Agent Skills 管理入口:选择安装范围(当前项目/全局)或按范围卸载
+    async manageAgentSkills() {
+        const status = await skillInstaller.inspectSkills(vscode, this._context);
+        const hasWorkspace = !!vscode.workspace.workspaceFolders?.[0];
+        const items = [];
+        if (hasWorkspace) {
+            items.push({ id: 'install:workspace', label: `$(folder) ${this._t('skill.menuInstallWorkspace')}`, description: this._scopeStateText(status.scopes.workspace), detail: status.scopes.workspace.root });
+        }
+        items.push({ id: 'install:global', label: `$(home) ${this._t('skill.menuInstallGlobal')}`, description: this._scopeStateText(status.scopes.global), detail: status.scopes.global.root });
+        if (this._scopeHasContent(status.scopes.workspace) || this._scopeHasContent(status.scopes.global)) {
+            items.push({ id: 'uninstall', label: `$(trash) ${this._t('skill.menuUninstall')}` });
+        }
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: this._t('skill.menuPlaceholder') });
+        if (!pick) return false;
+        let result;
+        if (pick.id === 'uninstall') {
+            const scope = await this._pickUninstallScope(status, hasWorkspace);
+            if (!scope) return false;
+            result = await skillInstaller.uninstallSkill(vscode, this._context, this._lang, scope);
+        } else {
+            result = await skillInstaller.installSkill(vscode, this._context, this._lang, pick.id.split(':')[1]);
+        }
+        this._postSkillStatus(result);
+        return result;
+    }
+    async _pickUninstallScope(status, hasWorkspace) {
+        const items = [];
+        if (hasWorkspace && this._scopeHasContent(status.scopes.workspace)) {
+            items.push({ id: 'workspace', label: `$(trash) ${this._t('skill.menuUninstallWorkspace')}`, detail: status.scopes.workspace.root });
+        }
+        if (this._scopeHasContent(status.scopes.global)) {
+            items.push({ id: 'global', label: `$(trash) ${this._t('skill.menuUninstallGlobal')}`, detail: status.scopes.global.root });
+        }
+        if (!items.length) return null;
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: this._t('skill.uninstallPlaceholder') });
+        if (!pick) return null;
+        const root = pick.id === 'global' ? status.scopes.global.root : status.scopes.workspace.root;
+        const confirmButton = this._t('skill.uninstallConfirm');
+        const confirm = await vscode.window.showWarningMessage(this._t('skill.confirmUninstall', { path: root }), { modal: true }, confirmButton);
+        if (confirm !== confirmButton) return null;
+        return pick.id;
+    }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
     openLiveWatchPanel() {
         if (this._livePanel) { this._livePanel.reveal(); return; }
@@ -1049,6 +1058,24 @@ class MainViewProvider {
                     case 'setInterval':
                         if (this._liveSession) this._liveSession.setIntervalMs(message.intervalMs);
                         break;
+                    case 'exportCsv': {
+                        if (!message.csv) break;
+                        const stamp = new Date(), pad = (n) => String(n).padStart(2, '0');
+                        const name = `emberprobe-live-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.csv`;
+                        const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+                        const target = await vscode.window.showSaveDialog({
+                            defaultUri: folder ? vscode.Uri.joinPath(folder, name) : vscode.Uri.joinPath(vscode.Uri.file(os.homedir()), name),
+                            filters: { 'CSV': ['csv'] }
+                        });
+                        if (!target) break;
+                        try {
+                            await fs.promises.writeFile(target.fsPath, message.csv, 'utf8');
+                            vscode.window.showInformationMessage(this._t('msg.csvExported', { file: path.basename(target.fsPath) }));
+                        } catch (error) {
+                            vscode.window.showErrorMessage(this._t('msg.csvExportFailed', { msg: error.message }));
+                        }
+                        break;
+                    }
                     case 'setLang': {
                         this._setLang(message.lang);
                         this._webviewView?.webview.postMessage({ type: 'setLang', lang: this._lang });
@@ -1619,12 +1646,10 @@ class MainViewProvider {
     }
     getModernWebviewContent() {
         const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        const svd = this._context.workspaceState.get(CACHE_KEYS.svdPath);
         return modernView.getModernWebviewContent({
             elf: elf ? path.basename(elf) : '',
             debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || '',
-            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || '',
-            svd: svd ? path.basename(svd) : ''
+            mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ''
         }, this._lang);
     }
     _externalizeWebview(webview, html, scope) {
@@ -1660,13 +1685,15 @@ function activate(context) {
         mainViewProvider['commandHandlers']['mcu-vscode.download'](resource));
     const openLiveWatchCmd = vscode.commands.registerCommand('mcu-vscode.openLiveWatch', () =>
         mainViewProvider['commandHandlers']['mcu-vscode.openLiveWatch']());
+    const manageSkillsCmd = vscode.commands.registerCommand('mcu-vscode.manageAgentSkills', () =>
+        mainViewProvider['commandHandlers']['mcu-vscode.manageAgentSkills']());
     // 手动检查 OpenOCD 环境：打开 EmberProbe 侧边栏并在状态卡内展示结果。
     const checkOpenOcdCmd = vscode.commands.registerCommand('mcu-vscode.checkOpenOcd', async () => {
         await vscode.commands.executeCommand('workbench.view.extension.mcu-vscode-container');
         await mainViewProvider.refreshOpenOcdStatus(true);
     });
     // 订阅命令
-    context.subscriptions.push(viewDisposable, folderDebugCmd, folderDownloadCmd, openLiveWatchCmd, checkOpenOcdCmd);
+    context.subscriptions.push(viewDisposable, folderDebugCmd, folderDownloadCmd, openLiveWatchCmd, manageSkillsCmd, checkOpenOcdCmd);
     // 激活后静默预探测一次填充缓存，避免首次动作才探测造成延迟（不弹通知）
     mainViewProvider.refreshOpenOcdStatus(false);
     // 用户改动 emberprobe.openocdPath 后清空缓存并重新探测，使新路径立即生效
