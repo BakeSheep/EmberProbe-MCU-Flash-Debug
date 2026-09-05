@@ -84,12 +84,13 @@ assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 15 }).exception.name, "
             fake,
             [
                 "#!/bin/sh",
-                "if printf '%s' \"$*\" | grep -q 'echo \\[reg pc\\]'; then",
+                // Only shell builtins: ordinary tests deliberately isolate PATH.
+                'case "$*" in *"echo [reg pc]"*)',
                 '  echo "pc (/32): 0x080034AC"',
                 '  echo "sp (/32): 0x2000FF00"',
                 '  echo "lr (/32): 0x08003401"',
                 '  echo "xPSR (/32): 0x61000000"',
-                "fi",
+                ";; esac",
                 'echo "0xE000ED28: 00000082"',
                 "exit 0",
                 ""

@@ -109,7 +109,8 @@ function fakeVscode() {
 async function serviceScenario() {
     const state = fakeGlobalState();
     const vscodeFake = fakeVscode();
-    const service = new FeedbackPromptService({ vscode: vscodeFake, context: { globalState: state } });
+    let now = 1000000;
+    const service = new FeedbackPromptService({ vscode: vscodeFake, context: { globalState: state }, now: () => now });
 
     const first = service.resolve();
     assert.ok(first.kind === "issue" || first.kind === "feature", "first resolve should pick a feedback variant");
@@ -129,7 +130,7 @@ async function serviceScenario() {
     await service.markShown("star");
     const afterShown = state.map.get(STATE_KEY);
     assert.ok(
-        afterShown.starNextEligibleAt >= Date.now() + DEFAULT_STAR_INTERVAL_MS - 50,
+        afterShown.starNextEligibleAt === now + DEFAULT_STAR_INTERVAL_MS,
         "markShown should push the next star slot a full cycle ahead"
     );
     assert.strictEqual(await service.markShown("issue"), false, "markShown only applies to the star prompt");
@@ -146,14 +147,15 @@ async function serviceScenario() {
     await service.snooze("feature");
     const snoozedUntil = state.map.get(STATE_KEY).issueSnoozedUntil;
     assert.ok(
-        snoozedUntil >= Date.now() + DEFAULT_ISSUE_SNOOZE_MS - 50,
+        snoozedUntil === now + DEFAULT_ISSUE_SNOOZE_MS,
         "snooze should push the feedback slot past the default window"
     );
+    now += 123;
     await service.snooze("issue");
     assert.strictEqual(
         state.map.get(STATE_KEY).issueSnoozedUntil,
-        snoozedUntil,
-        "issue and feature variants must share one snooze timestamp"
+        now + DEFAULT_ISSUE_SNOOZE_MS,
+        "issue and feature variants must update the same snooze slot using the current time"
     );
     assert.strictEqual(service.resolve().kind, null, "a snoozed feedback slot must not resolve");
     assert.strictEqual(await service.snooze("bogus"), false, "snooze rejects unknown kinds");
@@ -169,8 +171,10 @@ async function serviceScenario() {
     assert.strictEqual(await service.open("bogus"), false, "open rejects unknown kinds");
     assert.strictEqual(vscodeFake.opened.length, 2, "rejected kinds must not open anything");
 
-    // 直接改写存储(模拟静默到期)→ 反馈位恢复显示
-    state.map.set(STATE_KEY, { ...state.map.get(STATE_KEY), issueSnoozedUntil: Date.now() - 1 });
+    // Advance the injected clock across the exact expiry boundary.
+    now = state.map.get(STATE_KEY).issueSnoozedUntil - 1;
+    assert.strictEqual(service.resolve().kind, null, "feedback remains hidden before expiry");
+    now += 1;
     const revived = service.resolve();
     assert.ok(
         revived.kind === "issue" || revived.kind === "feature",

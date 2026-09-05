@@ -89,3 +89,22 @@ Windows 沙箱曾阻止 esbuild/Node 20 读取祖先目录（EPERM），以上 N
 | 同一 SHA 连续三次完整 CI | 待执行，不启用自动重试 |
 | macOS 原失败具体断言及对应回归 | 待取得诊断日志，未标记解决 |
 | HIL / 真实探针 / Release 发布 | 本轮未执行 |
+
+## 首次远端运行失败整改（33958601821）
+
+上方“尚无远端运行”和“macOS 根因未确认”是首次本地交付时的状态；以下证据更新该状态。
+提交 `0ff794d` 的 [CI 运行](https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug/actions/runs/33958601821) 中，Extension Host 通过，三平台普通检查与 Quality 失败。
+GitHub CLI 的日志/附件下载仍返回 403/401，但 GitHub connector 成功读取了四个失败 job 的完整日志。
+
+| 失败任务 | 已确认根因 | 本次修复 |
+| --- | --- | --- |
+| Ubuntu、macOS、Quality | fault-info.test.js:106 的 PC 实际为空；假 OpenOCD shell 用 grep 判断 Tcl 命令，隔离 PATH 后 grep 不可用 | 使用 POSIX shell 内建 case 匹配，保留 echo [reg pc] 契约和空 PATH 隔离；真实 shell 正反例通过 |
+| Windows | feedback-prompt.test.js:153 假设两次 snooze 的真实时钟值相同，实际相差 1ms | 服务增加默认 Date.now 的可注入时钟；测试推进时间并检查同一字段更新、到期前隐藏、精确到期显示 |
+| macOS | agent-skills.test.js:367 比较 /private/var 与 /var 的字符串，忽略临时目录别名 | 使用 fs.realpathSync 比较实际输出文件，并增加 symlink/junction 工作区别名回归；目录越界测试保留 |
+
+同时取得旧 [33880416836 的 macOS 日志](https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug/actions/runs/33880416836/job/101047429322)，确认其失败也是同一个 CSV 输出路径断言。
+根因现已确认；修复提交的三平台 Actions 回归尚未运行，仍不能标记远端验收完成。
+上述问题属于测试环境依赖和非确定性断言；未关闭任务、跳过失败测试、降低覆盖率门槛或启用自动重试。
+
+本次修复验证：Windows Node 20.20.2 的 142 个检查文件全部通过，bundle 通过；Node 24 的 quality 全部门禁通过（56 个普通测试，行覆盖率 82.63%）。
+另用实际 POSIX shell 在空 PATH 下执行故障测试假程序，确认正确命令输出寄存器、缺少 echo 的命令不会输出寄存器。未将该验证等同于 Ubuntu/macOS 的完整运行。

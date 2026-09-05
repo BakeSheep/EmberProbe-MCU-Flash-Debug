@@ -38,6 +38,15 @@ const execFileAsync = promisify(execFile);
             () => liveSkill.workspaceOutputPath(outputRoot, "../outside.csv"),
             (error) => error.code === "PATH_OUTSIDE_WORKSPACE"
         );
+        const actualDirectory = path.join(outputRoot, "actual");
+        fs.mkdirSync(actualDirectory);
+        const aliasDirectory = path.join(outputRoot, "alias");
+        fs.symlinkSync(actualDirectory, aliasDirectory, process.platform === "win32" ? "junction" : "dir");
+        assert.strictEqual(
+            liveSkill.workspaceOutputPath(aliasDirectory, "watch.csv"),
+            path.join(fs.realpathSync(actualDirectory), "watch.csv"),
+            "workspace aliases must return the canonical output path"
+        );
     } finally {
         fs.rmSync(outputRoot, { recursive: true, force: true });
     }
@@ -364,7 +373,7 @@ const execFileAsync = promisify(execFile);
             "exports/watch.csv"
         ]);
         const csvWritePayload = JSON.parse(csvWrite.stdout);
-        assert.strictEqual(csvWritePayload.output, csvOutput);
+        assert.strictEqual(csvWritePayload.output, fs.realpathSync(csvOutput));
         assert.ok(
             !Object.prototype.hasOwnProperty.call(csvWritePayload, "csv"),
             "file exports should return metadata instead of duplicating CSV text"

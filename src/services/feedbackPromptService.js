@@ -60,7 +60,7 @@ function resolvePrompt(state, now, opts) {
 
 class FeedbackPromptService {
     /**
-     * @param {{vscode: {env: {openExternal: Function}, Uri: {parse: Function}}, context: {globalState: {get: Function, update: Function}}, starIntervalMs?: number, issueSnoozeMs?: number, random?: () => number}} options
+     * @param {{vscode: {env: {openExternal: Function}, Uri: {parse: Function}}, context: {globalState: {get: Function, update: Function}}, starIntervalMs?: number, issueSnoozeMs?: number, random?: () => number, now?: () => number}} options
      */
     constructor(options) {
         this.vscode = options.vscode;
@@ -70,6 +70,7 @@ class FeedbackPromptService {
         this.issueSnoozeMs =
             typeof options.issueSnoozeMs === "number" ? options.issueSnoozeMs : DEFAULT_ISSUE_SNOOZE_MS;
         this.random = typeof options.random === "function" ? options.random : Math.random;
+        this.now = options.now || Date.now;
     }
 
     /**
@@ -77,7 +78,7 @@ class FeedbackPromptService {
      * @returns {{kind: "star"|"issue"|"feature"|null}}
      */
     resolve() {
-        const now = Date.now();
+        const now = this.now();
         const stored = this.context.globalState.get(STATE_KEY);
         if (!stored || typeof stored !== "object") {
             this.context.globalState.update(STATE_KEY, normalizeState(stored, now, this.starIntervalMs));
@@ -92,7 +93,7 @@ class FeedbackPromptService {
      */
     async markShown(kind) {
         if (kind !== "star") return false;
-        const now = Date.now();
+        const now = this.now();
         const state = normalizeState(this.context.globalState.get(STATE_KEY), now, this.starIntervalMs);
         state.starNextEligibleAt = now + this.starIntervalMs;
         await this.context.globalState.update(STATE_KEY, state);
@@ -106,7 +107,7 @@ class FeedbackPromptService {
      */
     async snooze(kind) {
         if (kind !== "issue" && kind !== "feature") return false;
-        const now = Date.now();
+        const now = this.now();
         const state = normalizeState(this.context.globalState.get(STATE_KEY), now, this.starIntervalMs);
         state.issueSnoozedUntil = now + this.issueSnoozeMs;
         await this.context.globalState.update(STATE_KEY, state);
@@ -122,7 +123,7 @@ class FeedbackPromptService {
         if (!PROMPT_KINDS.includes(kind)) return false;
         const url = kind === "star" ? REPO_URL : ISSUES_URL;
         if (kind === "star") {
-            const now = Date.now();
+            const now = this.now();
             const state = normalizeState(this.context.globalState.get(STATE_KEY), now, this.starIntervalMs);
             state.starred = true;
             await this.context.globalState.update(STATE_KEY, state);
