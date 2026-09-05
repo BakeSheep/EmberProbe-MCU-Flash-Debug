@@ -7,6 +7,16 @@ description: Read or change EmberProbe workspace configuration and immediately s
 
 Use `scripts/config.js` from this skill directory. Never edit VS Code storage or EmberProbe files directly.
 
+## Before you run
+
+- **Applies to**: reading or changing EmberProbe workspace configuration (ELF, debugger, MCU target, SVD, sampling interval, Tcl port, sample history limit).
+- **Requires**: the EmberProbe Agent Bridge. No probe or hardware is needed.
+- **Preconditions**: read the current configuration before changing it; change only the fields the user explicitly requested; `openocdPath` is read-only through the Bridge.
+- **Side effects**: `--get` is read-only and never mutates configuration, bindings, or hardware; `--set` changes workspace configuration and immediately synchronizes the sidebar.
+- **Success evidence**: the normalized configuration returned by EmberProbe. A config read does not verify hardware, and a config write success does not prove a later debug or flash will start.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 1. Read the current configuration before changing it:
 
    ```bash

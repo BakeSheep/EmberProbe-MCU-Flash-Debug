@@ -9,6 +9,7 @@ const {
     installSkill,
     uninstallSkill,
     inspectSkills,
+    readManifest,
     isUnmodifiedLegacySkill,
     removeUnmodifiedLegacySkills
 } = require("../src/skillInstaller");
@@ -116,6 +117,47 @@ const {
         assert.ok(
             !fs.existsSync(staleExtra),
             "reinstall must replace EmberProbe-owned skill directories instead of merging extras"
+        );
+
+        // 任务1：共享参考文档(Markdown)也必须纳入完整性检查——缺失触发需修复、变更触发更新，
+        // 不能只检测 _emberprobe 下的 .js 运行时脚本。
+        assert.strictEqual((await inspectSkills(vscode, context)).scopes.workspace.state, "installed");
+        const sharedDoc = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-workflow.md");
+        assert.ok(fs.existsSync(sharedDoc), "shared agent-workflow.md must be installed with the runtime");
+        fs.rmSync(sharedDoc);
+        const missingDoc = await inspectSkills(vscode, context);
+        assert.strictEqual(
+            missingDoc.scopes.workspace.state,
+            "partial",
+            "missing shared Markdown must mark runtime skills as needing repair"
+        );
+        assert.ok(
+            missingDoc.skills
+                .find((item) => item.name === "mcu-flash")
+                .missing.includes("../_emberprobe/agent-workflow.md"),
+            "missing shared doc must be reported in the runtime skill's missing list"
+        );
+
+        await installSkill(vscode, context, "en", "workspace");
+        fs.writeFileSync(sharedDoc, "tampered by user");
+        const modifiedDoc = await inspectSkills(vscode, context);
+        assert.strictEqual(
+            modifiedDoc.skills.find((item) => item.name === "mcu-flash").state,
+            "modified",
+            "modified shared Markdown must mark runtime skills as modified"
+        );
+
+        // manifest.shared 必须与源 _emberprobe 目录实际文件完全一致，防止新增共享文件漏检
+        const manifest = await readManifest(context);
+        const sharedSourceDir = path.join(context.extensionPath, "skills", "_emberprobe");
+        const actualShared = fs
+            .readdirSync(sharedSourceDir)
+            .filter((name) => fs.statSync(path.join(sharedSourceDir, name)).isFile())
+            .sort();
+        assert.deepStrictEqual(
+            Array.isArray(manifest.shared) ? manifest.shared.slice().sort() : manifest.shared,
+            actualShared,
+            "manifest.shared must exactly match skills/_emberprobe contents"
         );
 
         // 项目范围卸载:只移除 manifest 内 skill 与共享运行时,保留用户自建 skill

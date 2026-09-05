@@ -7,6 +7,16 @@ description: Control the current workspace Cortex-Debug session and manage sourc
 
 Use `scripts/debug.js` from this skill directory. It uses VS Code's debugger APIs and never reads or edits `launch.json`.
 
+## Before you run
+
+- **Applies to**: controlling the workspace Cortex-Debug session (start/stop/pause/continue/step/restart) and managing source-line or function breakpoints.
+- **Requires**: the EmberProbe Agent Bridge and VS Code's debugger APIs; `--start` also needs a complete EmberProbe debug configuration (ELF, probe, target, OpenOCD, SVD).
+- **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; breakpoints can be created before a session starts.
+- **Side effects**: `--start` launches a session and halts the target; control actions change execution state; `--stop` ends the session; breakpoint mutations change VS Code breakpoints.
+- **Success evidence**: state-changing commands complete from the corresponding DAP state event. A `--status`/`--breakpoints` read does not prove `--start` works. On timeout, read status; never auto-resend.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 ```bash
 node <skill-dir>/scripts/debug.js --workspace <workspace> --status
 node <skill-dir>/scripts/debug.js --workspace <workspace> --start

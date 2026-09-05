@@ -57,9 +57,13 @@ const DIAGNOSTICS = {
     ],
     BRIDGE_TIMEOUT: [
         "extension",
-        "Agent Bridge 请求超时。",
-        ["检查侧边栏是否仍显示采样中。", "若采样仍在进行，可等待完成；否则停止后重试。"],
-        true
+        "Agent Bridge 请求在传输预算内没有返回；缺少服务端结果，具体原因未知。",
+        [
+            "超时只说明未在传输预算内收到响应；请求可能已生效、未生效或仍在进行，成败未知。",
+            "状态变更类请求先用对应查询方法核对实际状态，再决定下一步，不要自动重发。",
+            "只读请求在前置条件不变时最多重试一次。"
+        ],
+        false
     ],
     CONFIG_INCOMPLETE: [
         "configuration",
@@ -405,10 +409,62 @@ const DIAGNOSTICS = {
     ]
 };
 
+// Bridge 方法按副作用分类：只读方法在传输超时后可在相同前置条件下最多重试一次；
+// 其余方法(状态变更)超时后结果未知，必须查询实际状态、不得自动重发。未知方法按状态变更安全处理。
+const READ_ONLY_METHODS = new Set([
+    "config.get",
+    "chip.read",
+    "fault.read",
+    "elf.analyze",
+    "peripherals.list",
+    "peripherals.read",
+    "debug.status",
+    "debug.breakpoints.list",
+    "variables.read",
+    "variables.sample",
+    "variables.exportCsv"
+]);
+
+// 状态变更超时后用于核对实际结果的查询方法；未列出的方法给出通用查询提示。
+const STATUS_QUERY_FOR = {
+    "config.set": "config.get",
+    "debug.start": "debug.status",
+    "debug.control": "debug.status",
+    "debug.breakpoints.update": "debug.breakpoints.list",
+    "peripherals.write": "peripherals.read",
+    "variables.write": "variables.read"
+};
+
+function isReadOnlyMethod(method) {
+    return READ_ONLY_METHODS.has(method);
+}
+
 function diagnosticForError(error, context = {}) {
     let code = error?.code || "UNKNOWN_ERROR";
     if (code === "ECONNREFUSED" || code === "ECONNRESET") code = "BRIDGE_UNAVAILABLE";
     const preset = DIAGNOSTICS[code] || [];
+    const details = { ...(error?.details || {}) };
+    let retryable = error?.retryable ?? preset[3] ?? false;
+    let suggestedActions = error?.suggestedActions || preset[2] || ["保留本诊断并检查 EmberProbe/OpenOCD 日志。"];
+    // 传输超时缺少服务端结果：只读方法可在前置不变时重试一次；状态变更方法结果未知，
+    // 必须查询实际状态、不得自动重发，也不声称请求已取消。
+    if (code === "BRIDGE_TIMEOUT") {
+        const method = details.method || context.operation || "";
+        const readOnly = isReadOnlyMethod(method);
+        details.resultUnknown = !readOnly;
+        if (error?.retryable === undefined) retryable = readOnly;
+        if (!error?.suggestedActions)
+            suggestedActions = readOnly
+                ? [
+                      "超时只说明未在预算内收到响应，不代表请求失败；先区分事实与假设。",
+                      "这是只读查询：前置条件不变时最多重试一次，仍超时则保留诊断并检查 Bridge 与扩展状态。"
+                  ]
+                : [
+                      "超时只说明未在预算内收到响应；这是状态变更请求，成败未知，需核对实际状态后再判断。",
+                      `先用 ${STATUS_QUERY_FOR[method] || "对应查询方法"} 核对实际状态，再决定下一步；不要自动重发该请求。`,
+                      "确认未生效且前置条件允许后，才可重新发起。"
+                  ];
+    }
     return {
         ok: false,
         type: "diagnostic",
@@ -420,9 +476,9 @@ function diagnosticForError(error, context = {}) {
             message: error?.message || String(error),
             likelyCause:
                 error?.likelyCause || preset[1] || "当前错误未能自动归类，请结合 message 与 details 继续判断。",
-            retryable: error?.retryable ?? preset[3] ?? false,
-            suggestedActions: error?.suggestedActions || preset[2] || ["保留本诊断并检查 EmberProbe/OpenOCD 日志。"],
-            details: error?.details || {}
+            retryable,
+            suggestedActions,
+            details
         }
     };
 }
@@ -434,6 +490,9 @@ function writeDiagnostic(error, context) {
 function call(workspace, method, params, timeoutMs = 20000) {
     const info = descriptor(workspace);
     const body = Buffer.from(JSON.stringify({ method, params: params || {} }));
+    // 实际(钳制后)超时预算与起始时间随超时错误一并上报，供 agent 判断耗时与恢复动作。
+    const budget = Math.max(1000, Math.min(2147483647, Number(timeoutMs) || 20000));
+    const startedAt = Date.now();
     return new Promise((resolve, reject) => {
         const request = http.request(
             {
@@ -446,7 +505,7 @@ function call(workspace, method, params, timeoutMs = 20000) {
                     "Content-Type": "application/json",
                     "Content-Length": body.length
                 },
-                timeout: Math.max(1000, Math.min(2147483647, Number(timeoutMs) || 20000))
+                timeout: budget
             },
             (response) => {
                 const chunks = [];
@@ -466,11 +525,23 @@ function call(workspace, method, params, timeoutMs = 20000) {
             }
         );
         request.on("timeout", () =>
-            request.destroy(Object.assign(new Error("Agent Bridge request timed out"), { code: "BRIDGE_TIMEOUT" }))
+            request.destroy(
+                Object.assign(new Error("Agent Bridge request timed out"), {
+                    code: "BRIDGE_TIMEOUT",
+                    details: { method, timeoutMs: budget, elapsedMs: Date.now() - startedAt }
+                })
+            )
         );
-        request.on("error", reject);
+        request.on("error", (error) => {
+            // 连接层失败(ECONNREFUSED/ECONNRESET 等)保留原始传输错误码与方法上下文，
+            // 由 diagnosticForError 映射为 BRIDGE_UNAVAILABLE，与请求超时区分描述。
+            const err = /** @type {NodeJS.ErrnoException & { details?: Record<string, unknown> }} */ (error);
+            if (err && typeof err === "object" && !err.details)
+                err.details = { method, transportError: err.code || "transport" };
+            reject(err);
+        });
         request.end(body);
     });
 }
 
-module.exports = { call, descriptor, diagnosticForError, writeDiagnostic };
+module.exports = { call, descriptor, diagnosticForError, writeDiagnostic, isReadOnlyMethod };

@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
-const { call } = require("./agent-client");
+const { call, diagnosticForError } = require("./agent-client");
 const { MIN_OPENOCD_VERSION, parseVersion: parseOpenOcdVersion, checkCompatibility } = require("./openocd-policy");
 
 const TARGET_RULES = [
@@ -55,11 +55,13 @@ function parseArgs(argv) {
     return out;
 }
 
+// 读取 EmberProbe 配置。config.get 失败时不再吞掉异常：返回结构化 diagnostic，
+// 供预检记录降级原因并保留原始错误码与详情；调用方仍可继续用显式参数/自动检测降级。
 async function getEmberProbeConfig(workspace) {
     try {
-        return await call(workspace, "config.get", {});
-    } catch {
-        return null;
+        return { config: await call(workspace, "config.get", {}), diagnostic: null };
+    } catch (error) {
+        return { config: null, diagnostic: diagnosticForError(error, { operation: "config.get" }) };
     }
 }
 
@@ -446,21 +448,63 @@ function runOpenOcd(executable, args, options = {}) {
 // notes 携带检测工具缺失等提示，随 JSON 一并输出。
 async function preflight(options) {
     const root = fs.realpathSync(path.resolve(options.workspace));
-    const config = await getEmberProbeConfig(root);
+    const { config, diagnostic } = await getEmberProbeConfig(root);
+    // diagnostics 保留 config.get 失败的原始诊断（错误码/详情），不因降级而丢弃；
+    // sources 记录每个字段的最终来源，供 agent 区分显式参数、EmberProbe 配置与自动检测。
+    const diagnostics = diagnostic ? [diagnostic] : [];
+    const sources = { elf: "none", target: "none", probe: "none", openocd: "none" };
     const notes = [];
-    let elf = options.elf || (config && config.elf ? String(config.elf) : "");
-    let target = options.target || (config && config.mcu ? String(config.mcu) : "");
-    let probe = options.probe || (config && config.debugger ? String(config.debugger) : "");
-    let openocd = options.openocd || (config && config.openocdPath ? String(config.openocdPath) : "") || "openocd";
+    let elf = "";
+    if (options.elf) {
+        elf = String(options.elf);
+        sources.elf = "explicit";
+    } else if (config && config.elf) {
+        elf = String(config.elf);
+        sources.elf = "config";
+    }
+    let target = "";
+    if (options.target) {
+        target = String(options.target);
+        sources.target = "explicit";
+    } else if (config && config.mcu) {
+        target = String(config.mcu);
+        sources.target = "config";
+    }
+    let probe = "";
+    if (options.probe) {
+        probe = String(options.probe);
+        sources.probe = "explicit";
+    } else if (config && config.debugger) {
+        probe = String(config.debugger);
+        sources.probe = "config";
+    }
+    let openocd;
+    if (options.openocd) {
+        openocd = String(options.openocd);
+        sources.openocd = "explicit";
+    } else if (config && config.openocdPath) {
+        openocd = String(config.openocdPath);
+        sources.openocd = "config";
+    } else {
+        openocd = "openocd";
+        sources.openocd = "default";
+    }
     // Configuration values are workspace-relative by convention; canonicalize the
     // selected ELF before hashing/authorizing so the same bytes are flashed that the
     // user saw in preflight, regardless of the skill process' current directory.
     if (elf && !path.isAbsolute(elf)) elf = path.resolve(root, elf);
-    if (!elf) elf = findNewestElf(root);
-    if (!target) target = inferTarget(root);
+    if (!elf) {
+        elf = findNewestElf(root);
+        sources.elf = elf ? "auto" : "none";
+    }
+    if (!target) {
+        target = inferTarget(root);
+        sources.target = target ? "auto" : "none";
+    }
     if (!probe) {
         const detected = await detectProbe();
         probe = detected.probe;
+        sources.probe = probe ? "auto" : "none";
         notes.push(...detected.notes);
     }
     const openocdCheck = await probeOpenOcdCompatibility(openocd);
@@ -497,7 +541,9 @@ async function preflight(options) {
         openocdCompatible: openocdCheck.compatible,
         minimumOpenocdVersion: MIN_OPENOCD_VERSION,
         ready: Boolean(elf && target && probe),
-        notes
+        notes,
+        sources,
+        diagnostics
     };
 }
 

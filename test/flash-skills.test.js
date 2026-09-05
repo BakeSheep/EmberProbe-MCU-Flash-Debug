@@ -109,6 +109,14 @@ function lastJsonLine(stdout) {
         assert.strictEqual(downloadPreflight.ready, true);
         assert.ok(/^[0-9a-f]{64}$/.test(downloadPreflight.elfSha256));
         assert.strictEqual(downloadPreflight.flashAuthorization.confirmationRequired, true);
+        // 任务2：配置成功时来源标记为 config，且没有降级诊断
+        assert.deepStrictEqual(downloadPreflight.diagnostics, []);
+        assert.deepStrictEqual(downloadPreflight.sources, {
+            elf: "config",
+            target: "config",
+            probe: "config",
+            openocd: "config"
+        });
 
         const verifyPreflight = firstJsonLine((await run("mcu-flash/scripts/verify.js")).stdout);
         assert.strictEqual(verifyPreflight.target, "geehy/apm32f4x.cfg");
@@ -179,8 +187,63 @@ function lastJsonLine(stdout) {
             const bareJson = firstJsonLine(bare.stdout);
             assert.strictEqual(bareJson.elf, fs.realpathSync(upperElf));
             assert.strictEqual(bareJson.ready, true);
+            // 任务2：Bridge 不可用时降级为自动检测，来源与诊断完整，且不得误报硬件故障
+            assert.deepStrictEqual(bareJson.sources, {
+                elf: "auto",
+                target: "explicit",
+                probe: "explicit",
+                openocd: "default"
+            });
+            assert.strictEqual(bareJson.diagnostics.length, 1);
+            assert.strictEqual(bareJson.diagnostics[0].error.code, "BRIDGE_UNAVAILABLE");
+            assert.ok(
+                !/硬件未连接|hardware (?:not connected|disconnected)|probe (?:not connected|disconnected)|not attached/i.test(
+                    JSON.stringify(bareJson)
+                ),
+                "配置不可用不得被解释为硬件未连接"
+            );
         } finally {
             fs.rmSync(bareRoot, { recursive: true, force: true });
+        }
+
+        // 任务2：配置获取超时但显式参数完整时，预检仍可用，来源标记为 explicit，诊断保留原始超时
+        const cfgFailRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-cfgfail-"));
+        const cfgFailElf = path.join(cfgFailRoot, "fw.elf");
+        fs.writeFileSync(cfgFailElf, "firmware");
+        const cfgFailBridge = new AgentBridge(
+            cfgFailRoot,
+            async (method) => {
+                if (method === "config.get")
+                    throw Object.assign(new Error("config.get timed out"), {
+                        code: "BRIDGE_TIMEOUT",
+                        details: { method: "config.get", timeoutMs: 20000, elapsedMs: 20001 }
+                    });
+                throw Object.assign(new Error(`Unexpected method: ${method}`), { code: "METHOD_NOT_FOUND" });
+            },
+            path.join(cfgFailRoot, ".global-storage")
+        );
+        try {
+            await cfgFailBridge.start();
+            const cfgFailPreflight = await flashCommon.preflight({
+                workspace: cfgFailRoot,
+                elf: cfgFailElf,
+                target: "stm32f4x.cfg",
+                probe: "stlink.cfg",
+                openocd: path.join(cfgFailRoot, "missing-openocd")
+            });
+            assert.strictEqual(cfgFailPreflight.diagnostics.length, 1);
+            assert.strictEqual(cfgFailPreflight.diagnostics[0].error.code, "BRIDGE_TIMEOUT");
+            assert.strictEqual(cfgFailPreflight.diagnostics[0].operation, "config.get");
+            assert.deepStrictEqual(cfgFailPreflight.sources, {
+                elf: "explicit",
+                target: "explicit",
+                probe: "explicit",
+                openocd: "explicit"
+            });
+            assert.strictEqual(cfgFailPreflight.ready, true, "配置超时但显式参数完整时预检仍应可用");
+        } finally {
+            await cfgFailBridge.stop();
+            fs.rmSync(cfgFailRoot, { recursive: true, force: true });
         }
 
         console.log("Flash skill tests passed");

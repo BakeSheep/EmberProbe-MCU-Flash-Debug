@@ -7,6 +7,16 @@ description: Selectively read attached MCU identity, debug-link, or runtime info
 
 Use `scripts/read-chip.js` from this skill directory. EmberProbe owns the probe and enforces mutual exclusion.
 
+## Before you run
+
+- **Applies to**: reading attached MCU identity, debug-link, or runtime information (core, series, UID, Flash size, vendor fingerprint, debugger, transport, voltage, target state, CPU registers).
+- **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, and a powered target.
+- **Preconditions**: the probe is free (single owner); request only the fields needed to answer.
+- **Side effects**: read-only; briefly uses the probe with no persistent target change.
+- **Success evidence**: the requested `identity`/`debug`/`runtime` fields are returned. Do not replace a specific probe/target/configuration diagnosis with a generic “service not running”.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 ```bash
 node <skill-dir>/scripts/read-chip.js --workspace <workspace> --section identity
 node <skill-dir>/scripts/read-chip.js --workspace <workspace> --fields core,series,deviceId,flashSize

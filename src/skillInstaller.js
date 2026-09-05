@@ -125,21 +125,17 @@ async function inspectSkill(sourceRoot, targetRoot, entry) {
 async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
     const skills = [];
     for (const entry of manifest.skills) skills.push(await inspectSkill(sourceRoot, targetRoot, entry));
-    // 共享运行时按 _emberprobe 下全部脚本逐一比对（agent-client、flash-common 等），
-    // 任一缺失或内容更新都会反映到依赖运行时的 skill 状态上
+    // 共享运行时按 manifest.shared 显式清单逐一比对（agent-client、flash-common 等脚本，
+    // 以及 agent-workflow.md 等共享 Markdown）。任一缺失或内容更新都会反映到依赖运行时的
+    // skill 状态上。用显式清单而非扩展名过滤，确保新增的共享文档不会被漏检；drift 测试
+    // 保证清单与源 _emberprobe 目录一致。源目录缺失时各项 exists 为假，等同无运行时依赖。
     const runtimeStatus = { missing: [], modified: false };
-    try {
-        const runtimeFiles = (await fs.readdir(path.join(sourceRoot, "_emberprobe"))).filter((name) =>
-            name.endsWith(".js")
-        );
-        for (const name of runtimeFiles) {
-            const targetFile = path.join(targetRoot, "_emberprobe", name);
-            if (!(await exists(targetFile))) runtimeStatus.missing.push(`../_emberprobe/${name}`);
-            else if ((await digest(path.join(sourceRoot, "_emberprobe", name))) !== (await digest(targetFile)))
-                runtimeStatus.modified = true;
-        }
-    } catch {
-        /* 源 _emberprobe 目录缺失时按无运行时依赖处理 */
+    for (const name of Array.isArray(manifest.shared) ? manifest.shared : []) {
+        const sourceFile = path.join(sourceRoot, "_emberprobe", name);
+        const targetFile = path.join(targetRoot, "_emberprobe", name);
+        if (!(await exists(sourceFile))) continue;
+        if (!(await exists(targetFile))) runtimeStatus.missing.push(`../_emberprobe/${name}`);
+        else if ((await digest(sourceFile)) !== (await digest(targetFile))) runtimeStatus.modified = true;
     }
     for (let index = 0; index < manifest.skills.length; index++) {
         if (!manifest.skills[index].runtime || skills[index].state === "notInstalled") continue;

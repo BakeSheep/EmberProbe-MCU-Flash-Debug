@@ -7,6 +7,16 @@ description: Statically analyze the configured firmware ELF through EmberProbe -
 
 Use `scripts/analyze-elf.js` from this skill directory. This is a pure static analysis of the workspace's configured ELF — it never touches the probe or the target, so it works with no hardware attached and does not conflict with sampling or downloading.
 
+## Before you run
+
+- **Applies to**: static firmware footprint analysis — Flash and RAM per section plus the largest functions and variables.
+- **Requires**: the EmberProbe Agent Bridge (to read the selected ELF path). **No probe or hardware is needed** — “no hardware” here does not mean “no Bridge”; a Bridge failure is an extension/activation problem, not a wiring problem.
+- **Preconditions**: an ELF is selected (else `ELF_NOT_CONFIGURED`) and is readable, not mid-rebuild (else `ELF_READ_FAILED`).
+- **Side effects**: none — read-only, no hardware access.
+- **Success evidence**: the `flash`/`ram`/`topSymbols` JSON. Static RAM only (heap/stack are runtime properties). A footprint report says nothing about whether the firmware actually runs.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 ```bash
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace>
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace> --top 30
