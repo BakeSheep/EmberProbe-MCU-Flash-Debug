@@ -38,15 +38,15 @@ assert.throws(
 );
 running.release();
 
-coordinator.setActive("debugStart", true);
-coordinator.setActive("debugServer", true);
+const debugStart = coordinator.acquire("debugStart");
+const debugServer = debugStart.transition("debugServer");
 assert.strictEqual(coordinator.isActive("debugStart"), false);
 assert.strictEqual(coordinator.isActive("debugServer"), true);
 assert.throws(
     () => coordinator.acquire("download"),
     (error) => error.code === "PROBE_BUSY"
 );
-coordinator.setActive("debugServer", false);
+debugServer.release();
 
 assert.throws(
     () => coordinator.isActive("unknown"),

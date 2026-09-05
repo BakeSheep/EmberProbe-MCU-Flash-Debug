@@ -29,8 +29,10 @@ class FakeOpenOcdServer {
             let pending = "";
             socket.setEncoding("latin1");
             socket.on("close", () => this.sockets.delete(socket));
-            // 测试假件必须吞掉传输层错误（如拆连接时的 ECONNRESET），否则未处理 error 事件会崩溃整个测试进程。
-            socket.on("error", () => {});
+            // Closing a client may reset the transport; other errors must fail the test.
+            socket.on("error", (error) => {
+                if (!["ECONNRESET", "EPIPE"].includes(error.code)) throw error;
+            });
             socket.on("data", (chunk) => {
                 pending += chunk;
                 let boundary;

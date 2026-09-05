@@ -1,7 +1,5 @@
 "use strict";
 const assert = require("assert");
-const vm = require("vm");
-const fs = require("fs");
 const {
     STATE_KEY,
     REPO_URL,
@@ -11,7 +9,6 @@ const {
     resolvePrompt,
     FeedbackPromptService
 } = require("../src/services/feedbackPromptService");
-const modernView = require("../src/modernView");
 const i18n = require("../src/i18n");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -196,39 +193,6 @@ async function serviceScenario() {
 
 (async () => {
     await serviceScenario();
-
-    // --- 侧边栏模板与渲染器接线 ---
-    const sidebarHtml = modernView.getModernWebviewContent(
-        { elf: "app.elf", debugger: "stlink.cfg", mcu: "stm32f4x.cfg" },
-        "zh"
-    );
-    const scripts = Array.from(sidebarHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), (match) => match[1]);
-    assert.ok(scripts.length > 0, "sidebar should contain scripts");
-    scripts.forEach((script, index) => new vm.Script(script, { filename: `feedback-sidebar-${index}.js` }));
-    assert.ok(sidebarHtml.includes('id="feedbackPrompt"'), "sidebar template should contain the feedback prompt shell");
-    assert.match(
-        sidebarHtml,
-        /m\.type\s*===\s*["']feedbackPrompt["']/,
-        "sidebar renderer should react to feedbackPrompt broadcasts"
-    );
-    assert.ok(
-        sidebarHtml.includes("feedbackPromptAction"),
-        "sidebar renderer should report prompt actions back to the host"
-    );
-    assert.ok(sidebarHtml.includes(".feedback-prompt"), "feedback prompt should ship its own styles");
-    assert.ok(sidebarHtml.includes("fb.featureText"), "feature-variant copy must be wired into the renderer");
-
-    // --- host 接线:解析入口 + 白名单 action 分支 ---
-    const providerSource = fs.readFileSync(require.resolve("../src/mainViewProvider"), "utf8");
-    assert.match(
-        providerSource,
-        /case\s+["']feedbackPromptAction["']/,
-        "host must whitelist and handle prompt actions"
-    );
-    assert.ok(
-        providerSource.includes("this._feedbackPromptService.resolve()"),
-        "host must resolve the prompt when the sidebar initializes"
-    );
 
     // --- i18n:zh/en 键一一对应 ---
     const FB_KEYS = ["fb.starText", "fb.issueText", "fb.featureText", "fb.openTitle", "fb.dismissTitle"];

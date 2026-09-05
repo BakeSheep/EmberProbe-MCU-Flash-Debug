@@ -37,6 +37,9 @@ function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
 
 class DebugSessionBridge {
     constructor(options = {}) {
+        this.schedule = options.schedule || setTimeout;
+        this.cancel = options.cancel || clearTimeout;
+        this.now = options.now || Date.now;
         this.getReadPlan = options.getReadPlan || (() => []);
         this.getIntervalMs = options.getIntervalMs || (() => MIN_DAP_INTERVAL_MS);
         this.onSamples = options.onSamples || (() => {});
@@ -390,7 +393,7 @@ class DebugSessionBridge {
         for (const waiter of [...this.stateWaiters]) {
             if (!waiter.predicate(current)) continue;
             this.stateWaiters.delete(waiter);
-            clearTimeout(waiter.timer);
+            this.cancel(waiter.timer);
             waiter.signal?.removeEventListener("abort", waiter.onAbort);
             waiter.resolve(current);
         }
@@ -403,10 +406,10 @@ class DebugSessionBridge {
             const waiter = { predicate, resolve, reject, timer: null, signal, onAbort: null };
             waiter.onAbort = () => {
                 this.stateWaiters.delete(waiter);
-                clearTimeout(waiter.timer);
+                this.cancel(waiter.timer);
                 reject(Object.assign(new Error("Debug state wait was cancelled"), { code: "DEBUG_CONTROL_CANCELLED" }));
             };
-            waiter.timer = setTimeout(() => {
+            waiter.timer = this.schedule(() => {
                 this.stateWaiters.delete(waiter);
                 signal?.removeEventListener("abort", waiter.onAbort);
                 reject(
@@ -427,14 +430,14 @@ class DebugSessionBridge {
 
     _invalidate() {
         this.epoch += 1;
-        if (this.timer) clearTimeout(this.timer);
+        if (this.timer) this.cancel(this.timer);
         this.timer = null;
     }
 
     _schedule(delay) {
         if (!this.canRead || !this.snapshotPending || this.snapshotReady || this.polling || this.writing || this.timer)
             return;
-        this.timer = setTimeout(
+        this.timer = this.schedule(
             () => {
                 this.timer = null;
                 this._poll().catch((error) => this.onError(error));
@@ -462,7 +465,7 @@ class DebugSessionBridge {
             this.consecutiveErrors = 0;
             this.snapshotPending = false;
             this.snapshotReady = true;
-            this.onSamples(samples, Date.now());
+            this.onSamples(samples, this.now());
             this.onStatus(this.status());
         } catch (error) {
             if (epoch !== this.epoch) return;
@@ -684,9 +687,9 @@ class DebugSessionBridge {
         if (!this.canWrite || !session)
             throw new Error("Cortex-Debug target must be paused and support DAP writeMemory");
         this._invalidate();
-        const waitDeadline = Date.now() + 2000;
-        while (this.polling && this.canWrite && Date.now() < waitDeadline)
-            await new Promise((resolve) => setTimeout(resolve, 5));
+        const waitDeadline = this.now() + 2000;
+        while (this.polling && this.canWrite && this.now() < waitDeadline)
+            await new Promise((resolve) => this.schedule(resolve, 5));
         if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
         if (!this.canWrite || session !== this.activeSession)
             throw new Error("Target continued before the DAP write could start");
@@ -703,6 +706,8 @@ class DebugSessionBridge {
                 const alignedStart = Math.floor(address / 4) * 4;
                 const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
                 const alignedBytes = await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
+                if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
+                    throw new Error("Target state changed before the DAP write could start");
                 if (alignedBytes.length !== alignedEnd - alignedStart)
                     throw new Error(`DAP could not read adjacent bytes before writing ${item.name}`);
                 alignedBytes.set(item.bytes, address - alignedStart);
@@ -724,7 +729,7 @@ class DebugSessionBridge {
             if (epoch === this.epoch && this.paused) {
                 this.snapshotReady = true;
                 this.snapshotPending = false;
-                this.onSamples(after, Date.now());
+                this.onSamples(after, this.now());
                 this.onStatus(this.status());
             }
             return { before, after };
@@ -736,7 +741,7 @@ class DebugSessionBridge {
     dispose() {
         this._invalidate();
         for (const waiter of this.stateWaiters) {
-            clearTimeout(waiter.timer);
+            this.cancel(waiter.timer);
             waiter.signal?.removeEventListener("abort", waiter.onAbort);
             waiter.reject(
                 Object.assign(new Error("Debug session bridge was disposed"), { code: "DEBUG_SESSION_NOT_ACTIVE" })

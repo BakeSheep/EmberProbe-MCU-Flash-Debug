@@ -155,6 +155,51 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.deepStrictEqual(session.watch, [], "one-shot writes must not modify the UI watch list");
     assert.strictEqual(await session.writeOnce([]), 0);
 
+    // Concurrent transactions must finish verification and resume before the next writer enters.
+    const concurrent = new LiveWatchSession(null, {}, {});
+    concurrent.socket = { destroyed: false };
+    const operations = [];
+    let releaseWrite;
+    const writeGate = new Promise((resolve) => {
+        releaseWrite = resolve;
+    });
+    concurrent._sendCheckedCommand = async (command) => {
+        operations.push(command);
+        return command.includes("curstate") ? "running" : "";
+    };
+    concurrent._readItems = async () => ({ samples: [] });
+    concurrent._writeMemoryBytes = async (_address, bytes) => {
+        operations.push(`write:${bytes[0]}`);
+        if (bytes[0] === 1) await writeGate;
+    };
+    const firstWrite = concurrent.writeAndVerify([{ name: "x", address: 0x20000000, bytes: [1] }]);
+    const secondWrite = concurrent.writeAndVerify([{ name: "x", address: 0x20000000, bytes: [2] }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    const beforeRelease = operations.slice();
+    releaseWrite();
+    await Promise.all([firstWrite, secondWrite]);
+    assert.deepStrictEqual(beforeRelease, ["[target current] curstate", "halt", "write:1"]);
+    assert.deepStrictEqual(operations, [
+        "[target current] curstate",
+        "halt",
+        "write:1",
+        "resume",
+        "[target current] curstate",
+        "halt",
+        "write:2",
+        "resume"
+    ]);
+    assert.strictEqual(concurrent.busy, false);
+    concurrent._writeMemoryBytes = async () => {
+        throw new Error("write failed");
+    };
+    await assert.rejects(concurrent.writeAndVerify([{ name: "x", address: 0x20000000, bytes: [3] }]), /write failed/);
+    assert.strictEqual(concurrent.busy, false, "failed transactions must release the lock");
+    assert.strictEqual(operations.at(-1), "resume", "failed transactions must restore the running target");
+    concurrent.busy = true;
+    await assert.rejects(concurrent.writeAndVerify([{ name: "x", bytes: [1] }], 0), /超时/);
+    concurrent.busy = false;
+
     // —— variables/write.js 的 --set 解析 ——
     assert.deepStrictEqual(writeSkill.parseSet("kp=0.5,counter=2"), [
         { name: "kp", value: "0.5" },

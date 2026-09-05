@@ -3,7 +3,7 @@
 // 程序化构造最小 ELF32 + DWARF v4 调试段（.debug_info/.debug_abbrev），无需外部工具链。
 const assert = require("assert");
 const zlib = require("zlib");
-const { parseCompositeLayout, parseDwarfVariableTypes, _debugSectionData } = require("../src/dwarf");
+const { parseDwarf, parseCompositeLayout, parseDwarfVariableTypes, _debugSectionData } = require("../src/dwarf");
 const { decodeComposite, expandCompositeLeaves, parseMemberPath } = require("../src/elfSymbols");
 
 function str(s) {
@@ -778,4 +778,9 @@ assert.deepStrictEqual(
     "叶子地址必须按行 stride 展开"
 );
 
+// A damaged later CU must not discard the healthy first CU.
+const partial = parseDwarf(dwarfElf(Buffer.concat([debugInfo, Buffer.from([1, 0, 0, 0, 255])]), abbrev));
+assert.ok(partial.layouts.has("sensorAlias"));
+assert.ok(partial.diagnostics.some((item) => item.code === "DWARF_CU_INVALID" && item.offset >= debugInfo.length));
+assert.ok(parseDwarf(null).diagnostics.some((item) => item.code === "DWARF_PARSE_FAILED"));
 console.log("DWARF composite layout tests passed");

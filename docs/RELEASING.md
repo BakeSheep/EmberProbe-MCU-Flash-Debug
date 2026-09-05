@@ -17,7 +17,7 @@ npm run quality
 git add package.json package-lock.json README.md README_EN.md CHANGELOG.md
 git commit -m "chore: prepare v0.5.0"
 git tag -a v0.5.0 -m "EmberProbe v0.5.0"
-git push origin main
+git push origin master
 git push origin v0.5.0
 ```
 
@@ -25,8 +25,8 @@ git push origin v0.5.0
 
 工作流依次执行：
 
-1. 校验标签和发布元数据。
-2. 执行单元测试、质量门禁和 Extension Host 冒烟测试。
+1. 复用 CI：Windows、Ubuntu、macOS 的 Node 20 普通检查和 bundle，Ubuntu Node 24 的质量检查和固定 VS Code 1.136.1 Extension Host 冒烟测试。
+2. 三平台及独立质量、Extension Host 任务全部成功后，校验标签和发布元数据。
 3. 打包并保存 `dist/emberprobe.vsix`。
 4. 创建 GitHub Draft Release 并上传 VSIX。
 5. 附件上传成功后将 Draft Release 转为正式 Release。

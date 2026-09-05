@@ -1,139 +1,144 @@
 "use strict";
+const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
-
+const os = require("os");
+const { spawn, spawnSync } = require("child_process");
 const root = path.resolve(__dirname, "..");
-const sourceFiles = [
-    "src/extension.js",
-    "src/mainViewProvider.js",
-    "src/modernView.js",
-    "src/i18n.js",
-    "src/autoDetect.js",
-    "src/agentBridge.js",
-    "src/skillInstaller.js",
-    "src/openocdRunner.js",
-    "src/openocdScripts.js",
-    "src/openocdChecker.js",
-    "src/openocdInstaller.js",
-    "src/elfSymbols.js",
-    "src/elfFormat.js",
-    "src/dwarf.js",
-    "src/chipInfo.js",
-    "src/faultInfo.js",
-    "src/liveWatch.js",
-    "src/liveWatchView.js",
-    "src/validation.js",
-    "src/writeAuthorization.js",
-    "src/peripheralWriteAuthorization.js",
-    "src/flashAuthorization.js",
-    "src/probeCoordinator.js",
-    "src/webviewAssets.js",
-    "src/webviewTemplate.js",
-    "src/services/configurationStore.js",
-    "src/services/flashService.js",
-    "src/services/faultService.js",
-    "src/services/agentService.js",
-    "src/services/openocdExec.js",
-    "src/services/elfService.js",
-    "src/services/openocdStatusService.js",
-    "src/services/skillStatusService.js",
-    "src/services/feedbackPromptService.js",
-    "src/services/chipInfoService.js",
-    "src/services/liveWatchService.js",
-    "src/services/debugSessionBridge.js",
-    "src/services/cortexToolchainService.js",
-    "src/services/deviceIdentityService.js",
-    "src/services/svdLibraryService.js",
-    "src/services/officialSvdService.js",
-    "src/services/svdManager.js",
-    "src/services/svdPeripheralService.js",
-    "src/services/debugControlService.js",
-    "src/services/samplingArchive.js",
-    "src/services/agentOrchestrator.js",
-    "src/i18n/index.js",
-    "src/i18n/zh.js",
-    "src/i18n/en.js",
-    "src/webview/sidebar/renderer.js",
-    "src/webview/liveWatch/viewport.js",
-    "src/webview/liveWatch/renderer.js",
-    "scripts/release.js",
-    "scripts/validate-release.js",
-    "scripts/run-tests.js",
-    "test/hil/run-hil.js",
-    "skills/_emberprobe/agent-client.js",
-    "skills/_emberprobe/flash-common.js",
-    "skills/mcu-config/scripts/config.js",
-    "skills/mcu-chip-info/scripts/read-chip.js",
-    "skills/mcu-flash/scripts/program.js",
-    "skills/mcu-flash/scripts/verify.js",
-    "skills/mcu-variables/scripts/read.js",
-    "skills/mcu-variables/scripts/write.js",
-    "skills/mcu-fault-analyzer/scripts/analyze-fault.js",
-    "skills/mcu-elf-analyze/scripts/analyze-elf.js",
-    "skills/mcu-peripheral-debug/scripts/peripheral.js",
-    "skills/mcu-debug-control/scripts/debug.js"
-];
+const RELEASE_TESTS = new Set(["release-consistency.test.js"]);
 
-const allTests = [
-    "test/release-script.test.js",
-    "test/validate-release.test.js",
-    "test/release-workflow.test.js",
-    "test/probe-coordinator.test.js",
-    "test/services.test.js",
-    "test/webview-assets.test.js",
-    "test/hil-runner.test.js",
-    "test/auto-detect.test.js",
-    "test/agent-skills.test.js",
-    "test/skill-installer.test.js",
-    "test/csv-export.test.js",
-    "test/sampling-archive.test.js",
-    "test/feedback-prompt.test.js",
-    "test/chart-viewport.test.js",
-    "test/openocd-parser.test.js",
-    "test/openocd-exec.test.js",
-    "test/openocd-scripts.test.js",
-    "test/elf-symbols.test.js",
-    "test/validation.test.js",
-    "test/composite-decode.test.js",
-    "test/dwarf-composite.test.js",
-    "test/webview.test.js",
-    "test/live-watch-integration.test.js",
-    "test/debug-session-bridge.test.js",
-    "test/cortex-toolchain.test.js",
-    "test/cortex-debug-integration.test.js",
-    "test/svd-services.test.js",
-    "test/svd-manager.test.js",
-    "test/svd-peripheral.test.js",
-    "test/debug-control.test.js",
-    "test/new-skills.test.js",
-    "test/openocd-checker.test.js",
-    "test/openocd-installer.test.js",
-    "test/chip-info.test.js",
-    "test/elf-analyze.test.js",
-    "test/var-write.test.js",
-    "test/fault-info.test.js",
-    "test/write-authorization.test.js",
-    "test/flash-skills.test.js"
-];
-
-// 发布元数据一致性检查只在发布流程运行，日常提交不做版本/README 声明校验。
-const releaseTests = ["test/release-consistency.test.js"];
-
-const qualityTests = allTests;
-
-function run(args) {
-    const result = spawnSync(process.execPath, args, { cwd: root, stdio: "inherit" });
-    if (result.error) throw result.error;
-    if (result.status !== 0) process.exit(result.status || 1);
+function discover(directory, recursive = false) {
+    return fs
+        .readdirSync(directory, { withFileTypes: true })
+        .flatMap((entry) => {
+            const file = path.join(directory, entry.name);
+            return entry.isDirectory() ? (recursive ? discover(file, true) : []) : [file];
+        })
+        .filter((file) => file.endsWith(".js"))
+        .sort();
 }
 
-const qualityOnly = process.argv.includes("--quality");
-const releaseOnly = process.argv.includes("--release");
-if (!qualityOnly) {
-    for (const file of sourceFiles) run(["--check", file]);
+function terminateTree(child) {
+    if (!child.pid) return;
+    if (process.platform === "win32") {
+        const result = spawnSync(
+            path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+            ["/pid", String(child.pid), "/T", "/F"],
+            {
+                windowsHide: true,
+                timeout: 5000
+            }
+        );
+        if (result.status !== 0) child.kill("SIGKILL");
+    } else {
+        try {
+            process.kill(-child.pid, "SIGKILL");
+        } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+        }
+    }
 }
-if (releaseOnly) {
-    for (const file of releaseTests) run([file]);
-} else {
-    for (const file of qualityOnly ? qualityTests : allTests) run([file]);
+
+async function runFile(file, options = {}) {
+    const started = Date.now();
+    const relative = path.relative(root, file).replace(/\\/g, "/");
+    console.log("START " + relative);
+    const args = options.syntax ? ["--check", file] : [file];
+    const log = [];
+    let timedOut = false;
+    const env = { ...process.env };
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-test-env-"));
+    for (const key of Object.keys(env)) {
+        if (["path", "home", "userprofile", "openocd_scripts"].includes(key.toLowerCase())) delete env[key];
+    }
+    env.PATH = sandbox;
+    env.HOME = sandbox;
+    env.USERPROFILE = sandbox;
+    env.XDG_CONFIG_HOME = sandbox;
+    delete env.OPENOCD_SCRIPTS;
+    let result;
+    try {
+        result = await new Promise((resolve) => {
+            const child = spawn(process.execPath, args, {
+                cwd: root,
+                env,
+                windowsHide: true,
+                detached: process.platform !== "win32",
+                stdio: ["ignore", "pipe", "pipe"]
+            });
+            const capture = (stream, chunk) => {
+                log.push(chunk.toString());
+                stream.write(chunk);
+            };
+            child.stdout.on("data", (chunk) => capture(process.stdout, chunk));
+            child.stderr.on("data", (chunk) => capture(process.stderr, chunk));
+            child.on("error", (error) => log.push(error.stack || error.message));
+            const timer = setTimeout(() => {
+                timedOut = true;
+                log.push("Test exceeded its execution timeout");
+                terminateTree(child);
+            }, options.timeoutMs || 120000);
+            child.on("close", (code, signal) => {
+                clearTimeout(timer);
+                resolve({
+                    file: relative,
+                    code: timedOut ? 124 : (code ?? 1),
+                    signal,
+                    timedOut,
+                    durationMs: Date.now() - started
+                });
+            });
+        });
+    } finally {
+        fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+    if (options.reportDir)
+        fs.writeFileSync(path.join(options.reportDir, relative.replace(/[^a-zA-Z0-9.-]/g, "_") + ".log"), log.join(""));
+    console.log(
+        (result.code ? "FAIL " : "PASS ") + relative + " (" + result.durationMs + "ms, exit " + result.code + ")"
+    );
+    return result;
 }
+
+async function main(args = process.argv.slice(2)) {
+    const syntaxOnly = args.includes("--syntax");
+    const releaseOnly = args.includes("--release");
+    const testsOnly = args.includes("--tests") || args.includes("--quality") || releaseOnly;
+    const reportDir = path.join(root, "test-results", syntaxOnly ? "syntax" : releaseOnly ? "release" : "tests");
+    fs.mkdirSync(reportDir, { recursive: true });
+    const metadata = {
+        platform: process.platform,
+        arch: process.arch,
+        os: os.release(),
+        node: process.version,
+        npm: process.env.npm_config_user_agent || "direct node invocation",
+        sha:
+            process.env.GITHUB_SHA ||
+            spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout?.trim()
+    };
+    console.log(JSON.stringify(metadata));
+    const results = [];
+    if (!testsOnly) {
+        for (const file of ["src", "skills", "scripts"].flatMap((dir) => discover(path.join(root, dir), true)))
+            results.push(await runFile(file, { syntax: true, reportDir }));
+    }
+    if (!syntaxOnly) {
+        for (const file of discover(path.join(root, "test")).filter(
+            (file) => file.endsWith(".test.js") && RELEASE_TESTS.has(path.basename(file)) === releaseOnly
+        ))
+            results.push(await runFile(file, { reportDir }));
+    }
+    const failed = results.filter((result) => result.code !== 0);
+    fs.writeFileSync(
+        path.join(reportDir, "summary.json"),
+        JSON.stringify({ metadata, results, failed: failed.length }, null, 2)
+    );
+    console.log(results.length + " files checked; " + failed.length + " failed");
+    process.exitCode = failed.length ? 1 : 0;
+}
+
+if (require.main === module)
+    main().catch((error) => {
+        console.error(error);
+        process.exitCode = 1;
+    });
+module.exports = { discover, runFile, main };

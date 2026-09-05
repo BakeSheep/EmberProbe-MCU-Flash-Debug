@@ -863,7 +863,13 @@ class ManagedOpenOcdSession {
         }
         if (!Array.isArray(items) || !items.length) return { before: [], after: [] };
         if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
-        await this._waitUntilIdle(timeoutMs);
+        const deadline = Date.now() + timeoutMs;
+        while (this.busy) {
+            if (Date.now() >= deadline) throw new Error("等待实时采样连接空闲超时");
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        // Check and acquire without yielding, including when multiple writers arrive while idle.
+        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
         this.busy = true;
         let haltedByUs = false;
         let primaryError = null;

@@ -6,6 +6,8 @@ dist/
 Thumbs.db
 .vscode-test/
 coverage/
+.cache/
+test-results/
 .zcode/
 .agents/skills/_emberprobe/agent-bridge.json
 xpack-openocd-*.zip

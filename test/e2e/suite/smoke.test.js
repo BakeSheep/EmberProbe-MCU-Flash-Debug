@@ -4,6 +4,14 @@ const fs = require("fs");
 const path = require("path");
 const vscode = require("vscode");
 
+async function waitFor(ready, label) {
+    const deadline = Date.now() + 10000;
+    while (!ready()) {
+        assert.ok(Date.now() < deadline, `Timed out waiting for ${label}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+}
+
 async function run() {
     const extension = vscode.extensions.getExtension("BakeSheep.emberprobe");
     assert.ok(extension, "EmberProbe extension should be installed in the development host");
@@ -34,13 +42,13 @@ async function run() {
     console.log("✓ contributes bounded live-watch defaults");
 
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     assert.ok(
         !fs.existsSync(path.join(workspace, ".emberprobe")),
         "opening the EmberProbe view without workspace Skills must not create .emberprobe"
     );
     await vscode.commands.executeCommand("mcu-vscode.openLiveWatch");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitFor(() => extension.exports.viewState().graph, "graph renderer");
     assert.ok(
         !fs.existsSync(path.join(workspace, ".emberprobe")),
         "ordinary EmberProbe commands without workspace Skills must not create .emberprobe"

@@ -24,7 +24,7 @@ const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
 const { FaultService } = require("./services/faultService");
-const { AgentOrchestrator } = require("./services/agentOrchestrator");
+const { AgentService } = require("./services/agentService");
 const { ElfService } = require("./services/elfService");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
@@ -38,6 +38,8 @@ const {
     selectPausedDebugReadSession,
     filterRuntimeRamPlan
 } = require("./services/liveWatchService");
+const { WatchListStore } = require("./services/watchListStore");
+const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
@@ -49,361 +51,8 @@ const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const i18n = require("./i18n");
-const DEBUG_START_WATCHDOG_MS = 60000;
-const CORTEX_DEBUG_1121_WINDOWS_TIMEOUT_MS = 15000;
-// 调试器配置列表
-const DEBUGGER_LIST = [
-    "altera-usb-blaster.cfg",
-    "altera-usb-blaster2.cfg",
-    "arm-jtag-ew.cfg",
-    "ast2600-gpiod.cfg",
-    "at91rm9200.cfg",
-    "beaglebone-jtag-native.cfg",
-    "beaglebone-swd-native.cfg",
-    "buspirate.cfg",
-    "calao-usb-a9260.cfg",
-    "chameleon.cfg",
-    "cmsis-dap.cfg",
-    "dln-2-gpiod.cfg",
-    "dummy.cfg",
-    "esp_usb_bridge.cfg",
-    "estick.cfg",
-    "flashlink.cfg",
-    "ft232r.cfg",
-    "imx-native.cfg",
-    "jlink.cfg",
-    "jtag_dpi.cfg",
-    "jtag_hat_rpi2.cfg",
-    "jtag_vpi.cfg",
-    "kitprog.cfg",
-    "nds32-aice.cfg",
-    "nulink.cfg",
-    "opendous.cfg",
-    "openjtag.cfg",
-    "osbdm.cfg",
-    "parport.cfg",
-    "parport_dlc5.cfg",
-    "raspberrypi-native.cfg",
-    "raspberrypi2-native.cfg",
-    "rlink.cfg",
-    "rshim.cfg",
-    "stlink-dap.cfg",
-    "stlink-v1.cfg",
-    "stlink-v2-1.cfg",
-    "stlink-v2.cfg",
-    "stlink.cfg",
-    "sysfsgpio-raspberrypi.cfg",
-    "ti-icdi.cfg",
-    "ulink.cfg",
-    "usb-jtag.cfg",
-    "usbprog.cfg",
-    "vdebug.cfg",
-    "vsllink.cfg",
-    "xds110.cfg"
-];
-// MCU核心配置列表
-const MCU_CORE_LIST = [
-    "1986ве1т.cfg",
-    "adsp-sc58x.cfg",
-    "aduc702x.cfg",
-    "aducm360.cfg",
-    "allwinner_v3s.cfg",
-    "alphascale_asm9260t.cfg",
-    "altera_fpgasoc.cfg",
-    "altera_fpgasoc_arria10.cfg",
-    "am335x.cfg",
-    "am437x.cfg",
-    "amdm37x.cfg",
-    "ampere_emag.cfg",
-    "ampere_qs_mq.cfg",
-    "ar71xx.cfg",
-    "armada370.cfg",
-    "arm_corelink_sse200.cfg",
-    "at32ap7000.cfg",
-    "at91r40008.cfg",
-    "at91rm9200.cfg",
-    "at91sam3ax_4x.cfg",
-    "at91sam3ax_8x.cfg",
-    "at91sam3ax_xx.cfg",
-    "at91sam3nXX.cfg",
-    "at91sam3sXX.cfg",
-    "at91sam3u1c.cfg",
-    "at91sam3u1e.cfg",
-    "at91sam3u2c.cfg",
-    "at91sam3u2e.cfg",
-    "at91sam3u4c.cfg",
-    "at91sam3u4e.cfg",
-    "at91sam3uxx.cfg",
-    "at91sam3XXX.cfg",
-    "at91sam4c32x.cfg",
-    "at91sam4cXXX.cfg",
-    "at91sam4lXX.cfg",
-    "at91sam4sd32x.cfg",
-    "at91sam4sXX.cfg",
-    "at91sam4XXX.cfg",
-    "at91sam7a2.cfg",
-    "at91sam7se512.cfg",
-    "at91sam7sx.cfg",
-    "at91sam7x256.cfg",
-    "at91sam7x512.cfg",
-    "at91sam9.cfg",
-    "at91sam9260.cfg",
-    "at91sam9260_ext_RAM_ext_flash.cfg",
-    "at91sam9261.cfg",
-    "at91sam9263.cfg",
-    "at91sam9g10.cfg",
-    "at91sam9g20.cfg",
-    "at91sam9g45.cfg",
-    "at91sam9rl.cfg",
-    "at91sama5d2.cfg",
-    "at91samdXX.cfg",
-    "at91samg5x.cfg",
-    "atheros_ar2313.cfg",
-    "atheros_ar2315.cfg",
-    "atheros_ar9331.cfg",
-    "atheros_ar9344.cfg",
-    "atmega128.cfg",
-    "atmega128rfa1.cfg",
-    "atsame5x.cfg",
-    "atsaml1x.cfg",
-    "atsamv.cfg",
-    "avr32.cfg",
-    "bcm2711.cfg",
-    "bcm281xx.cfg",
-    "bcm2835.cfg",
-    "bcm2836.cfg",
-    "bcm2837.cfg",
-    "bcm4706.cfg",
-    "bcm4718.cfg",
-    "bcm47xx.cfg",
-    "bcm5352e.cfg",
-    "bcm6348.cfg",
-    "bluefield.cfg",
-    "bluenrg-x.cfg",
-    "c100.cfg",
-    "cc2538.cfg",
-    "cs351x.cfg",
-    "davinci.cfg",
-    "dragonite.cfg",
-    "dsp56321.cfg",
-    "dsp568013.cfg",
-    "dsp568037.cfg",
-    "efm32.cfg",
-    "em357.cfg",
-    "em358.cfg",
-    "eos_s3.cfg",
-    "epc9301.cfg",
-    "esi32xx.cfg",
-    "esp32.cfg",
-    "esp32s2.cfg",
-    "esp32s3.cfg",
-    "esp_common.cfg",
-    "exynos5250.cfg",
-    "feroceon.cfg",
-    "fm3.cfg",
-    "fm4.cfg",
-    "fm4_mb9bf.cfg",
-    "fm4_s6e2cc.cfg",
-    "gd32e23x.cfg",
-    "gd32vf103.cfg",
-    "gp326xxxa.cfg",
-    "hi3798.cfg",
-    "hi6220.cfg",
-    "hilscher_netx10.cfg",
-    "hilscher_netx50.cfg",
-    "hilscher_netx500.cfg",
-    "icepick.cfg",
-    "imx.cfg",
-    "imx21.cfg",
-    "imx25.cfg",
-    "imx27.cfg",
-    "imx28.cfg",
-    "imx31.cfg",
-    "imx35.cfg",
-    "imx51.cfg",
-    "imx53.cfg",
-    "imx6.cfg",
-    "imx6sx.cfg",
-    "imx6ul.cfg",
-    "imx7.cfg",
-    "imx7ulp.cfg",
-    "imx8m.cfg",
-    "imx8qm.cfg",
-    "is5114.cfg",
-    "ixp42x.cfg",
-    "k1921vk01t.cfg",
-    "k40.cfg",
-    "k60.cfg",
-    "ke0x.cfg",
-    "ke1xf.cfg",
-    "ke1xz.cfg",
-    "kl25.cfg",
-    "kl46.cfg",
-    "klx.cfg",
-    "ks869x.cfg",
-    "kx.cfg",
-    "lpc11xx.cfg",
-    "lpc12xx.cfg",
-    "lpc13xx.cfg",
-    "lpc17xx.cfg",
-    "lpc1850.cfg",
-    "lpc1xxx.cfg",
-    "lpc2103.cfg",
-    "lpc2124.cfg",
-    "lpc2129.cfg",
-    "lpc2148.cfg",
-    "lpc2294.cfg",
-    "lpc2378.cfg",
-    "lpc2460.cfg",
-    "lpc2478.cfg",
-    "lpc2900.cfg",
-    "lpc2xxx.cfg",
-    "lpc3131.cfg",
-    "lpc3250.cfg",
-    "lpc40xx.cfg",
-    "lpc4350.cfg",
-    "lpc4357.cfg",
-    "lpc4370.cfg",
-    "lpc84x.cfg",
-    "lpc8nxx.cfg",
-    "lpc8xx.cfg",
-    "ls1012a.cfg",
-    "ls1028a.cfg",
-    "ls1046a.cfg",
-    "ls1088a.cfg",
-    "lsch3_common.cfg",
-    "max32620.cfg",
-    "max32625.cfg",
-    "max3263x.cfg",
-    "mc13224v.cfg",
-    "mdr32f9q2i.cfg",
-    "nds32v2.cfg",
-    "nds32v3.cfg",
-    "nds32v3m.cfg",
-    "nds32v5.cfg",
-    "ngultra.cfg",
-    "nhs31xx.cfg",
-    "npcx.cfg",
-    "nordic/nrf51.cfg",
-    "nordic/nrf52.cfg",
-    "nuc910.cfg",
-    "numicro.cfg",
-    "omap2420.cfg",
-    "omap3530.cfg",
-    "omap4430.cfg",
-    "omap4460.cfg",
-    "omap5912.cfg",
-    "omapl138.cfg",
-    "or1k.cfg",
-    "pic32mx.cfg",
-    "psoc4.cfg",
-    "psoc5lp.cfg",
-    "psoc6.cfg",
-    "pxa255.cfg",
-    "pxa270.cfg",
-    "pxa3xx.cfg",
-    "qualcomm_qca4531.cfg",
-    "quark_d20xx.cfg",
-    "quark_x10xx.cfg",
-    "renesas_r7s72100.cfg",
-    "renesas_rcar_gen2.cfg",
-    "renesas_rcar_gen3.cfg",
-    "renesas_rcar_reset_common.cfg",
-    "renesas_rz_five.cfg",
-    "renesas_rz_g2.cfg",
-    "renesas_s7g2.cfg",
-    "rk3308.cfg",
-    "rk3399.cfg",
-    "rp2040-core0.cfg",
-    "rp2040.cfg",
-    "rsl10.cfg",
-    "samsung_s3c2410.cfg",
-    "samsung_s3c2440.cfg",
-    "samsung_s3c2450.cfg",
-    "samsung_s3c4510.cfg",
-    "samsung_s3c6410.cfg",
-    "sharp_lh79532.cfg",
-    "sim3x.cfg",
-    "smp8634.cfg",
-    "snps_em_sk_fpga.cfg",
-    "snps_hsdk.cfg",
-    "spear3xx.cfg",
-    "stellaris.cfg",
-    "stm32f0x.cfg",
-    "stm32f1x.cfg",
-    "stm32f2x.cfg",
-    "stm32f3x.cfg",
-    "stm32f4x.cfg",
-    "stm32f7x.cfg",
-    "stm32g0x.cfg",
-    "stm32g4x.cfg",
-    "stm32h7x.cfg",
-    "stm32h7x_dual_bank.cfg",
-    "stm32l0.cfg",
-    "stm32l0_dual_bank.cfg",
-    "stm32l1.cfg",
-    "stm32l1x_dual_bank.cfg",
-    "stm32l4x.cfg",
-    "stm32l5x.cfg",
-    "stm32mp13x.cfg",
-    "stm32mp15x.cfg",
-    "stm32u5x.cfg",
-    "stm32w108xx.cfg",
-    "stm32wbx.cfg",
-    "stm32wlx.cfg",
-    "stm32x5x_common.cfg",
-    "stm32xl.cfg",
-    "stm8l.cfg",
-    "stm8l152.cfg",
-    "stm8s.cfg",
-    "stm8s003.cfg",
-    "stm8s103.cfg",
-    "stm8s105.cfg",
-    "str710.cfg",
-    "str730.cfg",
-    "str750.cfg",
-    "str912.cfg",
-    "swm050.cfg",
-    "ti-ar7.cfg",
-    "ti-cjtag.cfg",
-    "ti_calypso.cfg",
-    "ti_cc13x0.cfg",
-    "ti_cc13x2.cfg",
-    "ti_cc26x0.cfg",
-    "ti_cc26x2.cfg",
-    "ti_cc3220sf.cfg",
-    "ti_cc32xx.cfg",
-    "ti_dm355.cfg",
-    "ti_dm365.cfg",
-    "ti_dm6446.cfg",
-    "ti_k3.cfg",
-    "ti_msp432.cfg",
-    "ti_rm4x.cfg",
-    "ti_tms570.cfg",
-    "ti_tms570ls20xxx.cfg",
-    "ti_tms570ls3137.cfg",
-    "tmpa900.cfg",
-    "tmpa910.cfg",
-    "tnetc4401.cfg",
-    "u8500.cfg",
-    "vd_aarch64.cfg",
-    "vd_cortex_m.cfg",
-    "vd_riscv.cfg",
-    "vd_xtensa_jtag.cfg",
-    "vybrid_vf6xx.cfg",
-    "xilinx_zynqmp.cfg",
-    "xmc1xxx.cfg",
-    "xmc4xxx.cfg",
-    "xmos_xs1-xau8a-10_arm.cfg",
-    "xtensa-core-esp32.cfg",
-    "xtensa-core-esp32s2.cfg",
-    "xtensa-core-esp32s3.cfg",
-    "xtensa-core-nxp_rt600.cfg",
-    "xtensa.cfg",
-    "zynq_7000.cfg",
-    "к1879xб1я.cfg"
-];
-// 缓存键名
+const { DebugLifecycle, debugStartupPolicy } = require("./services/debugLifecycle");
+const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const CACHE_KEYS = {
     elfPath: "mcu.elfPath",
     debugger: "mcu.debugger",
@@ -443,19 +92,30 @@ class MainViewProvider {
         this._liveWatchService = new LiveWatchService(elfSymbols);
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this._samplingIntent = false;
+        this._samplingCoordinator = new SamplingCoordinator();
         this._debugCommandPending = false;
-        this._debugStartupTimer = null;
-        this._debugStartupPending = false;
-        this._debugStartupSession = null;
-        this._debugStartupTimeoutMs = 0;
-        this._debugStartupGateResolve = null;
+        this._debugLifecycle = new DebugLifecycle();
         this._terminatedDebugSessionIds = new Set();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
         this._liveIntervalMs = 100;
         this._liveConsumers = new Set();
         this._consumerTypesCache = null;
-        this._watchListCache = new Map();
+        this._watchLists = new WatchListStore({
+            state: context.workspaceState,
+            normalize: (items, symbols, key) => {
+                const normalized = validation.normalizeWatchList(items, symbols);
+                if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
+                const previous = new Map(items.map((item) => [item.name, item]));
+                return normalized.map((item) => {
+                    const { min, max, value } = previous.get(item.name) || {};
+                    return { ...item, min, max, value };
+                });
+            },
+            symbols: () => this.readElfSymbols().symbols,
+            onChanged: () => this._invalidateConsumerTypes(),
+            onError: (error) => console.error("Watch list unavailable:", error.message)
+        });
         this._agentReadSession = null;
         this._agentReadCancelled = false;
         this._agentReadDelayTimer = null;
@@ -497,10 +157,8 @@ class MainViewProvider {
             cacheKeys: CACHE_KEYS,
             cleanPath: cleanWindowsPath,
             isSafeCfg: openocdRunner.isSafeCfg,
-            onChanged: () => {
-                this._elfService.invalidate();
-                this._watchListCache.clear();
-                this._invalidateConsumerTypes();
+            onChanged: async () => {
+                await this._refreshElfBindings();
                 this.updateView();
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
@@ -565,7 +223,7 @@ class MainViewProvider {
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             startDebug: () => this.commandHandlers["mcu-vscode.debug"]()
         });
-        this._agentService = new AgentOrchestrator({
+        this._agentService = new AgentService({
             Bridge: AgentBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             // Bridge 描述文件（含 token）写入 globalStorage，工作区只留指针，避免令牌随 git/云同步泄露
@@ -599,44 +257,23 @@ class MainViewProvider {
     get _downloadRunning() {
         return this._probeCoordinator.isActive("download");
     }
-    set _downloadRunning(active) {
-        this._probeCoordinator.setActive("download", active);
-    }
     get _liveWatchRunning() {
         return this._probeCoordinator.isActive("liveWatch");
-    }
-    set _liveWatchRunning(active) {
-        this._probeCoordinator.setActive("liveWatch", active);
     }
     get _liveStarting() {
         return this._probeCoordinator.isActive("liveStart");
     }
-    set _liveStarting(active) {
-        this._probeCoordinator.setActive("liveStart", active);
-    }
     get _chipInfoRunning() {
         return this._probeCoordinator.isActive("chipInfo");
-    }
-    set _chipInfoRunning(active) {
-        this._probeCoordinator.setActive("chipInfo", active);
     }
     get _agentReadRunning() {
         return this._probeCoordinator.isActive("agentRead");
     }
-    set _agentReadRunning(active) {
-        this._probeCoordinator.setActive("agentRead", active);
-    }
     get _debugStarting() {
         return this._probeCoordinator.isActive("debugStart");
     }
-    set _debugStarting(active) {
-        this._probeCoordinator.setActive("debugStart", active);
-    }
     get _debugServerRunning() {
         return this._probeCoordinator.isActive("debugServer");
-    }
-    set _debugServerRunning(active) {
-        this._probeCoordinator.setActive("debugServer", active);
     }
     // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
     _t(key, params) {
@@ -705,9 +342,7 @@ class MainViewProvider {
                         if (elfPath) {
                             const finalPath = cleanWindowsPath(elfPath); // 二次清洗，双重保障
                             await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
-                            this._elfService.invalidate();
-                            this._watchListCache.clear();
-                            this._invalidateConsumerTypes();
+                            await this._refreshElfBindings();
                             vscode.window.showInformationMessage(
                                 this._t("msg.elfSelected", { name: path.basename(finalPath) })
                             );
@@ -824,14 +459,14 @@ class MainViewProvider {
                 const launch = openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
                 await this.prepareForCortexDebug(workspaceFolder);
                 probePrepared = true;
-                this._debugStarting = true;
+                this._debugStartLease = this._probeCoordinator.acquire("debugStart");
                 const managed = await this._startManagedDebugServer(
                     openocdPath,
                     debuggerCfg,
                     mcuCore,
                     vscode.workspace.getConfiguration("emberprobe")
                 );
-                this._debugServerRunning = true;
+                this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
                 const debugConfig = {
                     type: "cortex-debug",
@@ -862,7 +497,7 @@ class MainViewProvider {
                 if (!started) {
                     this._clearDebugStartupWatchdog();
                     vscode.window.showErrorMessage(this._t("msg.debugStartFailed"));
-                    if (this._debugStarting) this._debugStarting = false;
+                    if (this._debugStarting) this._debugStartLease?.release();
                     await this._stopManagedDebugServer();
                     await this.restoreSamplingAfterDebug();
                     return false;
@@ -874,13 +509,13 @@ class MainViewProvider {
                 console.error("调试启动失败：", errorMsg);
                 vscode.window.showErrorMessage(this._t("msg.debugFailed", { error: errorMsg }));
                 if (probePrepared) {
-                    if (this._debugStarting) this._debugStarting = false;
+                    if (this._debugStarting) this._debugStartLease?.release();
                     await this._stopManagedDebugServer();
                     await this.restoreSamplingAfterDebug();
                 }
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             } finally {
-                if (this._debugStarting) this._debugStarting = false;
+                if (this._debugStarting) this._debugStartLease?.release();
                 if (!startAccepted) this._clearDebugStartupWatchdog();
                 this._debugCommandPending = false;
             }
@@ -914,7 +549,7 @@ class MainViewProvider {
             // 先同步释放 liveWatch lease，再立即占用 download lease；真正的进程退出
             // Promise 在占用 lease 后等待，避免快速双击同时越过 _downloadRunning 检查。
             const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
-            this._downloadRunning = true;
+            this._downloadLease = this._probeCoordinator.acquire("download");
             this._recentProgress = [];
             try {
                 if (liveStopped) await liveStopped;
@@ -952,7 +587,7 @@ class MainViewProvider {
                 vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             } finally {
-                this._downloadRunning = false;
+                this._downloadLease?.release();
             }
         };
     }
@@ -1127,8 +762,7 @@ class MainViewProvider {
             const current = this._scalarWatchList(key);
             const existing = new Set(current.map((item) => item.name));
             const added = resolved.filter((item) => !existing.has(item.name));
-            await this._context.workspaceState.update(key, current.concat(added));
-            this._invalidateWatchList(key);
+            await this._saveWatchList(key, current.concat(added));
             results[target] = {
                 added: added.map((item) => item.name),
                 alreadyPresent: resolved.filter((item) => existing.has(item.name)).map((item) => item.name)
@@ -1138,10 +772,6 @@ class MainViewProvider {
         const chartKey = focusedPanel?.watchKey || CACHE_KEYS.watchList;
         if (destination === "sidebar" || destination === "both") await addTo(CACHE_KEYS.sidebarWatchList, "sidebar");
         if (destination === "chart" || destination === "both") await addTo(chartKey, "chart");
-        this._invalidateConsumerTypes();
-        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
-        for (const entry of this._livePanels.values()) if (entry.watchKey === chartKey) this._syncGraphTarget(entry);
-        if (this._liveSession) this._liveSession.setWatch(this._activeReadPlan());
         return results;
     }
     _agentVariablePlan(params) {
@@ -1466,6 +1096,7 @@ class MainViewProvider {
         if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
+        const lease = this._debugServerLease;
         this._managedDebugServer = null;
         this._managedDebugToken = "";
         this._managedDebugSessionId = "";
@@ -1478,27 +1109,13 @@ class MainViewProvider {
                 /* ignore */
             }
         }
-        if (this._debugServerRunning) this._debugServerRunning = false;
+        lease?.release();
     }
     _armDebugStartupWatchdog() {
-        this._clearDebugStartupWatchdog();
-        this._debugStartupPending = true;
         const version = vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
-        this._debugStartupTimeoutMs =
-            process.platform === "win32" && version === "1.12.1"
-                ? CORTEX_DEBUG_1121_WINDOWS_TIMEOUT_MS
-                : DEBUG_START_WATCHDOG_MS;
-        return new Promise((resolve) => {
-            this._debugStartupGateResolve = resolve;
-            this._debugStartupTimer = setTimeout(() => {
-                const gateResolve = this._debugStartupGateResolve;
-                const recovery = this._recoverDebugStartupTimeout();
-                gateResolve?.({ kind: "timeout" });
-                recovery.catch((error) =>
-                    console.error("Unable to recover from a Cortex-Debug startup timeout:", error)
-                );
-            }, this._debugStartupTimeoutMs);
-        });
+        return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
+            this._recoverDebugStartupTimeout()
+        );
     }
     _matchesManagedDebugSession(session) {
         return !!(
@@ -1508,27 +1125,17 @@ class MainViewProvider {
         );
     }
     _clearDebugStartupWatchdog(outcome) {
-        const gateResolve = this._debugStartupGateResolve;
-        if (this._debugStartupTimer) clearTimeout(this._debugStartupTimer);
-        this._debugStartupTimer = null;
-        this._debugStartupPending = false;
-        this._debugStartupSession = null;
-        this._debugStartupTimeoutMs = 0;
-        this._debugStartupGateResolve = null;
-        if (outcome) gateResolve?.(outcome);
+        this._debugLifecycle.clear(outcome);
     }
     _markDebugStartupReady(session) {
-        if (!this._debugStartupPending) return;
-        if (!this._debugStartupSession && !this._matchesManagedDebugSession(session)) return;
-        if (this._debugStartupSession && session && this._debugStartupSession.id !== session.id) return;
-        this._clearDebugStartupWatchdog({ kind: "ready" });
+        this._debugLifecycle.ready(session, this._matchesManagedDebugSession(session));
     }
     async _recoverDebugStartupTimeout() {
-        if (!this._debugStartupPending) return;
-        const session = this._debugStartupSession;
-        const timeoutMs = this._debugStartupTimeoutMs || DEBUG_START_WATCHDOG_MS;
+        if (!this._debugLifecycle.pending) return;
+        const session = this._debugLifecycle.session;
+        const timeoutMs = this._debugLifecycle.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
         this._clearDebugStartupWatchdog();
-        this._debugStarting = false;
+        this._debugStartLease?.release();
         this._debugCommandPending = false;
         this._postConsumerStatuses(
             {
@@ -1560,8 +1167,7 @@ class MainViewProvider {
             await this.restoreSamplingAfterDebug();
         }
         const version = vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
-        const key =
-            process.platform === "win32" && version === "1.12.1" ? "msg.debugStartTimeoutWin" : "msg.debugStartTimeout";
+        const key = debugStartupPolicy(process.platform, version).messageKey;
         vscode.window.showErrorMessage(this._t(key, { seconds: timeoutMs / 1000, version }));
     }
     async _quiesceManagedRuntimeRead() {
@@ -1609,7 +1215,11 @@ class MainViewProvider {
                     });
                     return;
                 }
-                const enabled = server.setSamplingEnabled(true);
+                const enabled = this._samplingCoordinator.setRuntimeEnabled(
+                    server,
+                    this._samplingIntent,
+                    this._debugBridge
+                );
                 this._postConsumerStatuses({
                     mode: enabled ? "debug-running-sampling" : "debug-running-degraded",
                     key: enabled ? "live.debugRuntimeSampling" : "live.debugTclDegraded",
@@ -1649,6 +1259,7 @@ class MainViewProvider {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
 
+        let operationLease = null;
         let session = this._liveWatchRunning ? this._liveSession : null;
         let temporary = false;
         let source = "active-sampling";
@@ -1700,7 +1311,8 @@ class MainViewProvider {
                     }
                 });
             }
-            this._agentReadRunning = true;
+            operationLease = this._probeCoordinator.acquire("agentRead");
+            this._agentReadLease = operationLease;
             this._agentReadCancelled = false;
             try {
                 const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
@@ -1719,7 +1331,7 @@ class MainViewProvider {
                         i18nKey: "live.notReady"
                     });
                 }
-                if (!this._agentReadRunning)
+                if (operationLease.released)
                     throw Object.assign(new Error("Agent variable read was cancelled"), {
                         code: "AGENT_READ_CANCELLED"
                     });
@@ -1736,11 +1348,15 @@ class MainViewProvider {
                     },
                     {}
                 );
+                if (operationLease.released)
+                    throw Object.assign(new Error("Agent variable read was cancelled"), {
+                        code: "AGENT_READ_CANCELLED"
+                    });
                 this._agentReadSession = session;
                 temporary = true;
                 source = "temporary-probe";
             } catch (error) {
-                this._agentReadRunning = false;
+                operationLease?.release();
                 throw error;
             }
         }
@@ -1750,6 +1366,10 @@ class MainViewProvider {
             if (temporary) {
                 if (syncStatus) this._postAgentSampling(true, "live.agentStarting", { total });
                 await session.start();
+                if (operationLease.released || this._agentReadSession !== session)
+                    throw Object.assign(new Error("Agent variable read was cancelled"), {
+                        code: "AGENT_READ_CANCELLED"
+                    });
             }
             const result = await handler({ session, source, temporary });
             completed = true;
@@ -1762,9 +1382,10 @@ class MainViewProvider {
                     /* ignore */
                 }
                 if (this._agentReadSession === session) this._agentReadSession = null;
-                this._agentReadRunning = false;
-                if (this._agentReadDelayResolve) this._agentReadDelayResolve();
-                if (syncStatus) {
+                operationLease?.release();
+                if (this._agentReadLease === operationLease && this._agentReadDelayResolve)
+                    this._agentReadDelayResolve();
+                if (syncStatus && this._agentReadLease === operationLease) {
                     const key = this._agentReadCancelled
                         ? "live.agentStopped"
                         : completed
@@ -1772,7 +1393,7 @@ class MainViewProvider {
                           : "live.agentFailed";
                     this._postAgentSampling(false, key, { total });
                 }
-                this._agentReadCancelled = false;
+                if (this._agentReadLease === operationLease) this._agentReadCancelled = false;
             }
         }
     }
@@ -1991,7 +1612,7 @@ class MainViewProvider {
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) busy("chip.needConfig", "CONFIG_INCOMPLETE");
-        this._chipInfoRunning = true;
+        this._chipInfoLease = this._probeCoordinator.acquire("chipInfo");
         try {
             const executable = await this._resolveOpenOcdPath(
                 vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd")
@@ -2003,7 +1624,7 @@ class MainViewProvider {
                 () => this.readElfSymbols().functions || []
             );
         } finally {
-            this._chipInfoRunning = false;
+            this._chipInfoLease?.release();
         }
     }
     // 纯静态分析当前 ELF 的 Flash/RAM 占用与最大符号，不占探针
@@ -2212,16 +1833,10 @@ class MainViewProvider {
                         break;
                     }
                     case "saveWatch":
-                        await this._context.workspaceState.update(watchKey, message.items || []);
-                        this._invalidateWatchList(watchKey);
-                        this._invalidateConsumerTypes();
-                        this._pruneSampleMap(entry.latestSamples, watchKey);
-                        await this._refreshSamplingPlan();
+                        await this._saveWatchList(watchKey, message.items || []);
                         break;
                     case "start":
-                        await this._context.workspaceState.update(watchKey, message.items || []);
-                        this._invalidateWatchList(watchKey);
-                        this._invalidateConsumerTypes();
+                        await this._saveWatchList(watchKey, message.items || []);
                         await this.startLiveWatch(message.items || [], message.intervalMs, "graph");
                         break;
                     case "stop":
@@ -2317,6 +1932,42 @@ class MainViewProvider {
         });
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
+    _invalidateElfState() {
+        this._elfService.invalidate();
+        this._watchLists.invalidate();
+        this._runtimeRamCache = null;
+        this._latestSidebarSamples.clear();
+        for (const entry of this._livePanels.values()) entry.latestSamples.clear();
+    }
+    async _refreshElfBindings() {
+        this._invalidateElfState();
+        try {
+            if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
+                const result = this.readElfSymbols();
+                await this._rebindWatchLists(result.symbols);
+            }
+        } finally {
+            await this._refreshSamplingPlan();
+        }
+        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
+        for (const entry of this._livePanels.values()) {
+            this._syncGraphTarget(entry);
+            entry.post({ type: "watchList", items: this._scalarWatchList(entry.watchKey), resetValues: true });
+        }
+        this._webviewView?.webview.postMessage({
+            type: "sidebarWatchList",
+            items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList),
+            resetValues: true
+        });
+    }
+    async _saveWatchList(key, items) {
+        await this._watchLists.save(key, items);
+        this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
+        for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
+        await this._refreshSamplingPlan();
+        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
+        for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
+    }
     readElfSymbols() {
         return this._elfService.read();
     }
@@ -2327,58 +1978,31 @@ class MainViewProvider {
     }
     _postConsumerStatuses(payload, error = false) {
         const p = typeof payload === "string" ? { message: payload } : payload || {};
-        const message = {
-            type: "liveStatus",
-            running: this._samplingIntent,
-            mode: this._liveWatchRunning
-                ? "standalone-sampling"
-                : this._samplingIntent
-                  ? "standalone-pending"
-                  : "stopped",
-            intentEnabled: this._samplingIntent,
-            canRead: this._liveWatchRunning,
-            canWrite: this._liveWatchRunning,
-            source: this._liveWatchRunning ? "openocd" : "none",
-            ...p,
-            error
-        };
+        const message = { type: "liveStatus", ...this._samplingStatus(), ...p, error };
+        if (this._samplingCoordinator.backpressured) {
+            message.canRead = false;
+            message.canWrite = false;
+            message.snapshotReady = false;
+        }
         for (const entry of this._livePanels.values()) entry.post(message);
         this._webviewView?.webview.postMessage(message);
     }
     _scalarWatchList(key) {
-        if (this._watchListCache.has(key)) return this._watchListCache.get(key);
-        const items = this._context.workspaceState.get(key) || [];
-        try {
-            const normalized = validation.normalizeWatchList(items, this.readElfSymbols().symbols);
-            if (JSON.stringify(normalized) !== JSON.stringify(items))
-                this._context.workspaceState.update(key, normalized);
-            this._watchListCache.set(key, normalized);
-            return normalized;
-        } catch (e) {
-            return [];
-        }
+        return this._watchLists.read(key);
     }
-    _invalidateWatchList(key) {
-        this._watchListCache.delete(key);
-    }
-    // ELF 地址可能在重建后发生变化；按变量名重新绑定所有查看列表，避免继续读取旧地址。
     async _rebindWatchLists(symbols) {
         const entries = Array.from(this._livePanels.values());
-        const keys = new Set([CACHE_KEYS.sidebarWatchList, ...entries.map((entry) => entry.watchKey)]);
-        const rebound = new Map();
-        this._watchListCache.clear();
-        for (const key of keys) {
-            const items = this._context.workspaceState.get(key) || [];
-            const normalized = validation.normalizeWatchList(items, symbols);
-            if (JSON.stringify(normalized) !== JSON.stringify(items))
-                await this._context.workspaceState.update(key, normalized);
-            this._watchListCache.set(key, normalized);
-            rebound.set(key, normalized);
-        }
-        // 旧地址对应的最新值不能继续显示在新 ELF 变量上。
+        const rebound = await this._watchLists.rebind(
+            [
+                CACHE_KEYS.sidebarWatchList,
+                CACHE_KEYS.sidebarWriteList,
+                CACHE_KEYS.watchList,
+                ...entries.map((entry) => entry.watchKey)
+            ],
+            symbols
+        );
         this._latestSidebarSamples.clear();
         for (const entry of entries) entry.latestSamples.clear();
-        this._invalidateConsumerTypes();
         return { entries, rebound };
     }
     _syncGraphTarget(entry) {
@@ -2387,24 +2011,7 @@ class MainViewProvider {
         post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
         post({
             type: "liveStatus",
-            ...(this._agentSamplingStatus || {
-                running: this._samplingIntent,
-                intentEnabled: this._samplingIntent,
-                canRead: this._liveWatchRunning || this._debugBridge.canRead,
-                canWrite: this._liveWatchRunning || this._debugBridge.canWrite,
-                snapshotReady: this._debugBridge.hasSession ? this._debugBridge.snapshotReady : this._liveWatchRunning,
-                mode: this._debugBridge.hasSession
-                    ? this._debugBridge.status().mode
-                    : this._liveWatchRunning
-                      ? "standalone-sampling"
-                      : "stopped",
-                source: this._debugBridge.hasSession ? "dap" : this._liveWatchRunning ? "openocd" : "none",
-                key: this._debugBridge.hasSession
-                    ? this._debugBridge.status().key
-                    : this._liveWatchRunning
-                      ? "sb.sampling"
-                      : "sb.stopped"
-            })
+            ...this._samplingStatus()
         });
         if (entry.latestSamples.size) {
             const now = Date.now();
@@ -2435,24 +2042,7 @@ class MainViewProvider {
         }
         post({
             type: "liveStatus",
-            ...(this._agentSamplingStatus || {
-                running: this._samplingIntent,
-                intentEnabled: this._samplingIntent,
-                canRead: this._liveWatchRunning || this._debugBridge.canRead,
-                canWrite: this._liveWatchRunning || this._debugBridge.canWrite,
-                snapshotReady: this._debugBridge.hasSession ? this._debugBridge.snapshotReady : this._liveWatchRunning,
-                mode: this._debugBridge.hasSession
-                    ? this._debugBridge.status().mode
-                    : this._liveWatchRunning
-                      ? "standalone-sampling"
-                      : "stopped",
-                source: this._debugBridge.hasSession ? "dap" : this._liveWatchRunning ? "openocd" : "none",
-                key: this._debugBridge.hasSession
-                    ? this._debugBridge.status().key
-                    : this._liveWatchRunning
-                      ? "sb.sampling"
-                      : "sb.stopped"
-            })
+            ...this._samplingStatus()
         });
         if (this._latestSidebarSamples.size) {
             const now = Date.now();
@@ -2564,21 +2154,41 @@ class MainViewProvider {
     }
 
     _setSamplingArchiveBackpressure(paused) {
-        if (this._liveSession) this._liveSession.setSamplingEnabled(!paused);
-        if (this._managedDebugServer) this._managedDebugServer.setSamplingEnabled(!paused && this._samplingIntent);
-        this._debugBridge.setIntent(!paused && this._samplingIntent);
+        this._samplingCoordinator.setBackpressure(paused);
+        if (this._liveSession)
+            this._liveSession.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
+        if (this._managedDebugServer)
+            this._samplingCoordinator.setRuntimeEnabled(
+                this._managedDebugServer,
+                this._samplingIntent,
+                this._debugBridge
+            );
+        this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
+        this._postConsumerStatuses(this._samplingStatus());
+    }
+
+    _samplingStatus() {
+        return this._samplingCoordinator.status({
+            intent: this._samplingIntent,
+            bridge: this._debugBridge,
+            standaloneRunning: this._liveWatchRunning,
+            managedServer: this._managedDebugServer,
+            agentStatus: this._agentSamplingStatus
+        });
     }
 
     async _refreshSamplingPlan() {
         const active = this._activeReadPlan();
         if (this._debugBridge.hasSession) {
             const planKey = active.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
-            this._debugBridge.setIntent(this._samplingIntent);
+            this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
             if (this._managedDebugServer && this._managedDebugSessionId && !this._debugBridge.paused) {
                 try {
                     const allowed = this._configureManagedRuntimeWatch();
-                    const enabled = this._managedDebugServer.setSamplingEnabled(
-                        this._samplingIntent && allowed.length > 0
+                    const enabled = this._samplingCoordinator.setRuntimeEnabled(
+                        this._managedDebugServer,
+                        this._samplingIntent && allowed.length > 0,
+                        this._debugBridge
                     );
                     this._postConsumerStatuses({
                         mode: enabled
@@ -2659,7 +2269,7 @@ class MainViewProvider {
         if (!debuggerCfg || !mcuCore)
             throw Object.assign(new Error(this._t("live.needConfig")), { i18nKey: "live.needConfig" });
         this._samplingIntent = true;
-        this._debugBridge.setIntent(true);
+        this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
         if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
         const activeItems = this._activeReadPlan();
         if (
@@ -2724,10 +2334,12 @@ class MainViewProvider {
         }
         const cfg = vscode.workspace.getConfiguration("emberprobe");
         const configuredExecutable = cfg.get("openocdPath", "openocd");
-        this._liveStarting = true;
+        const startingLease = this._probeCoordinator.acquire("liveStart");
+        this._liveStartLease = startingLease;
         let session = null;
         try {
             const executable = await this._resolveOpenOcdPath(configuredExecutable);
+            if (startingLease.released) return;
             if (!executable) throw Object.assign(new Error(this._t("live.notReady")), { i18nKey: "live.notReady" });
             const { cwd } = this._commandContext();
             session = new liveWatch.LiveWatchSession(
@@ -2742,14 +2354,18 @@ class MainViewProvider {
                 },
                 {
                     onSample: (samples, t) => {
-                        this._handleRawSamples(samples, t);
+                        if (this._liveSession === session) this._handleRawSamples(samples, t);
                     },
-                    onStatus: (msg) => this._postConsumerStatuses(msg),
-                    onError: (msg) => this._postLive({ type: "liveError", message: msg }),
+                    onStatus: (msg) => {
+                        if (this._liveSession === session) this._postConsumerStatuses(msg);
+                    },
+                    onError: (msg) => {
+                        if (this._liveSession === session) this._postLive({ type: "liveError", message: msg });
+                    },
                     onDisconnect: (err) => {
                         if (this._liveSession !== session) return;
                         this._liveSession = null;
-                        this._liveWatchRunning = false;
+                        this._liveWatchLease?.release();
                         this._liveConsumers.clear();
                         this._postConsumerStatuses(
                             {
@@ -2762,10 +2378,16 @@ class MainViewProvider {
                     }
                 }
             );
+            if (startingLease.released) return;
             session.setWatch(this._activeReadPlan());
             this._liveSession = session;
             await session.start();
-            this._liveWatchRunning = true;
+            if (this._liveSession !== session || startingLease.released) {
+                await session.stop();
+                return;
+            }
+            session.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
+            this._liveWatchLease = startingLease.transition("liveWatch");
             this._setLiveInterval(intervalMs || cfg.get("sampleIntervalMs", 100));
             this._postConsumerStatuses({ key: "sb.sampling" });
         } catch (error) {
@@ -2776,19 +2398,20 @@ class MainViewProvider {
                     /* ignore */
                 }
                 this._liveSession = null;
-                if (this._liveWatchRunning) this._liveWatchRunning = false;
+                if (this._liveWatchRunning) this._liveWatchLease?.release();
             }
             this._liveConsumers.clear();
             this._postConsumerStatuses({ key: error.i18nKey, params: error.i18nParams, message: error.message }, true);
             throw error;
         } finally {
-            if (this._liveStarting) this._liveStarting = false;
+            startingLease.release();
         }
     }
     stopLiveWatch(options = {}) {
         const preserveIntent = !!options.preserveIntent;
         let stopped = null;
         this._liveConsumers.clear();
+        this._liveStartLease?.release();
         if (this._liveSession) {
             try {
                 stopped = this._liveSession.stop();
@@ -2797,7 +2420,7 @@ class MainViewProvider {
             }
             this._liveSession = null;
         }
-        this._liveWatchRunning = false;
+        this._liveWatchLease?.release();
         if (!preserveIntent) {
             this._samplingIntent = false;
             this._debugBridge.setIntent(false);
@@ -2848,7 +2471,8 @@ class MainViewProvider {
     handleDebugSessionStart(session) {
         if (!session || session.type !== "cortex-debug") return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
-        if (this._debugStartupPending && this._matchesManagedDebugSession(session)) this._debugStartupSession = session;
+        if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
+            this._debugLifecycle.session = session;
         this._debugReadPlanKey = this._activeReadPlan()
             .map((item) => `${item.name}:${item.address}:${item.size}`)
             .join("|");
@@ -2863,7 +2487,7 @@ class MainViewProvider {
             this._managedDebugServer.setSamplingEnabled(false);
         }
         this._debugBridge.attach(session);
-        this._debugBridge.setIntent(this._samplingIntent);
+        this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {
         if (message?.type === "event" && message.event === "initialized") this._markDebugStartupReady(session);
@@ -2877,8 +2501,8 @@ class MainViewProvider {
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._terminatedDebugSessionIds.add(session.id);
         if (
-            this._debugStartupPending &&
-            (this._debugStartupSession?.id === session.id || this._matchesManagedDebugSession(session))
+            this._debugLifecycle.pending &&
+            (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session))
         ) {
             this._clearDebugStartupWatchdog({ kind: "terminated" });
         }
@@ -2892,8 +2516,8 @@ class MainViewProvider {
     handleDebugAdapterExit(session) {
         if (!session || session.type !== "cortex-debug") return;
         const managedStartup =
-            this._debugStartupPending &&
-            (this._debugStartupSession?.id === session.id || this._matchesManagedDebugSession(session));
+            this._debugLifecycle.pending &&
+            (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session));
         if (!managedStartup && !this._debugBridge.hasAnySession) return;
         return this.handleDebugSessionTerminate(session);
     }
@@ -2959,7 +2583,7 @@ class MainViewProvider {
     stopAgentReadIfRunning() {
         if (!this._agentReadRunning && !this._agentReadSession) return null;
         this._agentReadCancelled = true;
-        this._agentReadRunning = false;
+        this._agentReadLease?.release();
         if (this._agentReadDelayResolve) this._agentReadDelayResolve();
         let stopped = null;
         if (this._agentReadSession) {
@@ -3027,6 +2651,7 @@ class MainViewProvider {
     }
     // 实现接口要求的resolveWebviewView方法（无修改）
     resolveWebviewView(webviewView) {
+        this._sidebarReady = false;
         this._webviewView = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
@@ -3069,6 +2694,7 @@ class MainViewProvider {
                     break;
                 }
                 case "initCheck": {
+                    this._sidebarReady = true;
                     // Webview初始化检查，直接返回成功（无需依赖commands接口）
                     webviewView.webview.postMessage({ type: "initSuccess" });
                     // 回放最近的下载进度，避免视图重建后日志丢失
@@ -3106,75 +2732,21 @@ class MainViewProvider {
                     break;
                 }
                 case "refreshVariables": {
-                    // 重建 ELF 后手动刷新：重新解析并按变量名重绑定所有查看列表
-                    this._elfService.invalidate();
                     try {
-                        const result = this.readElfSymbols();
-                        const { entries, rebound } = await this._rebindWatchLists(result.symbols);
-                        webviewView.webview.postMessage({
-                            type: "sidebarWatchList",
-                            items: rebound.get(CACHE_KEYS.sidebarWatchList) || [],
-                            resetValues: true
-                        });
-                        for (const entry of entries) {
-                            if (entry.ready)
-                                entry.post({
-                                    type: "watchList",
-                                    items: rebound.get(entry.watchKey) || [],
-                                    resetValues: true
-                                });
-                        }
-                        webviewView.webview.postMessage({
-                            type: "availableVariables",
-                            symbols: result.symbols,
-                            warnings: result.warnings
-                        });
-                        try {
-                            await this._refreshSamplingPlan();
-                        } catch (error) {
-                            this._postLive({
-                                type: "liveError",
-                                key: error.i18nKey,
-                                params: error.i18nParams,
-                                message: error.message
-                            });
-                        }
+                        await this._refreshElfBindings();
                     } catch (error) {
-                        webviewView.webview.postMessage({
-                            type: "availableVariables",
-                            symbols: [],
-                            errorKey: error.i18nKey,
-                            params: error.i18nParams,
-                            error: error.message
-                        });
+                        this._postLive({ type: "liveError", key: error.i18nKey, message: error.message });
                     }
                     break;
                 }
                 case "saveSidebarWatch": {
                     const items = Array.isArray(message.items) ? message.items : [];
-                    await this._context.workspaceState.update(CACHE_KEYS.sidebarWatchList, items);
-                    this._invalidateWatchList(CACHE_KEYS.sidebarWatchList);
-                    this._invalidateConsumerTypes();
-                    this._pruneSampleMap(this._latestSidebarSamples, [
-                        CACHE_KEYS.sidebarWatchList,
-                        CACHE_KEYS.sidebarWriteList
-                    ]);
-                    await this._refreshSamplingPlan();
-                    webviewView.webview.postMessage({ type: "sidebarWatchList", items });
+                    await this._saveWatchList(CACHE_KEYS.sidebarWatchList, items);
                     break;
                 }
                 case "saveSidebarWrite": {
                     const items = Array.isArray(message.items) ? message.items : [];
-                    await this._context.workspaceState.update(CACHE_KEYS.sidebarWriteList, items);
-                    this._invalidateWatchList(CACHE_KEYS.sidebarWriteList);
-                    this._invalidateConsumerTypes();
-                    this._pruneSampleMap(this._latestSidebarSamples, [
-                        CACHE_KEYS.sidebarWatchList,
-                        CACHE_KEYS.sidebarWriteList
-                    ]);
-                    // 写入列表变化同步采样读取计划，使新增变量立即开始实时同步
-                    await this._refreshSamplingPlan();
-                    webviewView.webview.postMessage({ type: "sidebarWriteList", items });
+                    await this._saveWatchList(CACHE_KEYS.sidebarWriteList, items);
                     break;
                 }
                 case "writeVariable": {
@@ -3306,9 +2878,7 @@ class MainViewProvider {
         if (result.mcu && (force || !currentMcu))
             await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
         if (result.elf && (force || !currentElf)) {
-            this._elfService.invalidate();
-            this._watchListCache.clear();
-            this._invalidateConsumerTypes();
+            await this._refreshElfBindings();
         }
         this.updateView();
         const found = [

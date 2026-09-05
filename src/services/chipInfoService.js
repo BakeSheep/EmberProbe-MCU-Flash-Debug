@@ -20,10 +20,6 @@ class ChipInfoService {
         return this.coordinator.isActive("chipInfo");
     }
 
-    set running(active) {
-        this.coordinator.setActive("chipInfo", active);
-    }
-
     post(status, info) {
         if (info) this.onPost({ type: "chipInfo", info });
         if (status) this.onPost({ type: "chipInfoStatus", ...status });
@@ -55,13 +51,13 @@ class ChipInfoService {
         const target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
         if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", forAgent);
 
-        this.running = true;
+        const lease = this.coordinator.acquire("chipInfo");
         const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
         let executable;
         try {
             executable = await this.resolveExecutable(configured);
         } catch (error) {
-            this.running = false;
+            lease.release();
             if (forAgent) throw error;
             this.post({
                 state: "error",
@@ -72,7 +68,7 @@ class ChipInfoService {
             return null;
         }
         if (!executable) {
-            this.running = false;
+            lease.release();
             return this.rejectBusy("chip.notReady", "OPENOCD_NOT_READY", forAgent);
         }
 
@@ -98,7 +94,7 @@ class ChipInfoService {
             if (forAgent) throw error;
             return null;
         } finally {
-            this.running = false;
+            lease.release();
         }
     }
 }

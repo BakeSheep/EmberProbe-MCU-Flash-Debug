@@ -64,7 +64,7 @@ function runOpenOcdOnce(options) {
         }
 
         const openocdTail = [];
-        let pending = "";
+        const pending = { stdout: "", stderr: "" };
         let settled = false;
 
         const finish = (error, exitCode) => {
@@ -81,10 +81,10 @@ function runOpenOcdOnce(options) {
             if (openocdTail.length > tailLimit) openocdTail.shift();
             if (typeof options.onLine === "function") options.onLine(clean);
         };
-        const consume = (chunk) => {
-            pending += chunk.toString();
-            const lines = pending.split(/\r?\n/);
-            pending = lines.pop() || "";
+        const consume = (stream, chunk) => {
+            pending[stream] += chunk.toString();
+            const lines = pending[stream].split(/\r?\n/);
+            pending[stream] = lines.pop() || "";
             for (const line of lines) handleLine(line);
         };
         const timer = setTimeout(() => {
@@ -109,13 +109,13 @@ function runOpenOcdOnce(options) {
             finish(timeoutError);
         }, timeoutMs);
 
-        child.stdout.on("data", consume);
-        child.stderr.on("data", consume);
+        child.stdout.on("data", (chunk) => consume("stdout", chunk));
+        child.stderr.on("data", (chunk) => consume("stderr", chunk));
         child.on("error", (error) => finish(normalizeSpawnError(error, launch.executable)));
         child.on("close", (code) => {
-            if (pending) {
-                handleLine(pending);
-                pending = "";
+            for (const stream of ["stdout", "stderr"]) {
+                if (pending[stream]) handleLine(pending[stream]);
+                pending[stream] = "";
             }
             finish(null, code);
         });

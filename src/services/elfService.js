@@ -56,6 +56,8 @@ class ElfService {
         const result = this.elfSymbols.parseElfSymbols(buffer);
         result.elf = { path: elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256 };
         const parsed = this.dwarf.parseDwarf(buffer);
+        result.diagnostics = parsed?.diagnostics || [];
+        for (const diagnostic of result.diagnostics) result.warnings.push(`${diagnostic.code}: ${diagnostic.message}`);
         const typeMap = parsed?.types || null;
         const layouts = parsed?.layouts || null;
         for (const symbol of result.symbols) {

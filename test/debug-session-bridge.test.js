@@ -9,7 +9,9 @@ const {
     mergeReadPlan
 } = require("../src/services/debugSessionBridge");
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { FakeClock } = require("./helpers/fake-clock");
+const clock = new FakeClock();
+const delay = (ms) => clock.advance(ms);
 
 (async () => {
     const groups = mergeReadPlan([
@@ -47,6 +49,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
     };
     const bridge = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
         getReadPlan: () => readPlan,
         getIntervalMs: () => 1,
         onSamples: (value) => samples.push(value),
@@ -142,6 +147,42 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     assert.strictEqual(tx.after.length, 1);
     assert(requests.some((item) => item.command === "writeMemory"));
 
+    // A state change during the aligned read must prevent any subsequent writeMemory request.
+    for (const change of ["continued", "session-replaced", "epoch-changed"]) {
+        const guarded = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
+        const commands = [];
+        let readCount = 0;
+        const guardedSession = {
+            ...session,
+            async customRequest(command) {
+                commands.push(command);
+                if (command === "readMemory") {
+                    if (++readCount === 2) {
+                        if (change === "continued")
+                            guarded.handleMessage(guardedSession, { type: "event", event: "continued" });
+                        else if (change === "session-replaced")
+                            guarded.sessions.set(guardedSession.id, { ...guardedSession });
+                        else guarded.epoch++;
+                    }
+                    return { data: Buffer.from([1, 2, 3, 4]).toString("base64") };
+                }
+                return { bytesWritten: 4 };
+            }
+        };
+        guarded.sessions.set(guardedSession.id, guardedSession);
+        guarded.intentEnabled = true;
+        guarded.paused = true;
+        guarded.snapshotReady = true;
+        guarded.capabilities = { read: true, write: true };
+        await assert.rejects(
+            guarded.writeAndVerify([{ name: "byte", address: 0x20000001, bytes: [9] }]),
+            /Target state changed before the DAP write/
+        );
+        assert.deepStrictEqual(commands, ["readMemory", "readMemory"], change);
+        assert.strictEqual(guarded.writing, false);
+        guarded.dispose();
+    }
+
     bridge.setIntent(false);
     assert.strictEqual(bridge.canRead, false);
     assert(statuses.some((status) => status.mode === "debug-running-waiting"));
@@ -159,6 +200,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
     };
     const optIn = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
         getReadPlan: () => [{ name: "x", address: 0x20000000, size: 4 }],
         onSamples: (value) => optInSamples.push(value),
         onStatus() {}
@@ -196,7 +240,12 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     assert.strictEqual(optIn.status().snapshotReady, false);
     optIn.dispose();
 
-    const conflict = new DebugSessionBridge({ onStatus() {} });
+    const conflict = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
+        onStatus() {}
+    });
     const second = { ...session, id: "two" };
     conflict.attach(session);
     conflict.attach(second);
@@ -229,6 +278,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
     };
     const retryBridge = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
         getReadPlan: () => [{ name: "x", address: 0x20000000, size: 4 }],
         onSamples: (value) => retrySamples.push(value),
         onStatus() {},
@@ -261,6 +313,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
     };
     const quiesceBridge = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
         getReadPlan: () => [{ name: "x", address: 0x20000000, size: 4 }],
         onStatus() {},
         onError() {},

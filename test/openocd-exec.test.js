@@ -27,7 +27,7 @@ function resolver(executable = "openocd") {
 }
 
 (async () => {
-    // stdout/stderr 共享正则拆行；ANSI/CR 在进入业务回调前统一清理。
+    // stdout/stderr 独立拆行；交错的分块和结尾残行不能互相污染。
     const lines = [];
     let capturedArgs = null;
     const child = fakeChild();
@@ -44,15 +44,16 @@ function resolver(executable = "openocd") {
             capturedArgs = args;
             process.nextTick(() => {
                 child.stdout.write("\x1b[31mfirst\x1b[0m\r\npart");
+                child.stderr.write("diagnostic\nerror tail");
                 child.stdout.write("ial\n");
-                child.stderr.write("last without newline");
+                child.stdout.write("stdout tail");
                 child.emit("close", 0);
             });
             return child;
         }
     });
     const completed = await success;
-    assert.deepStrictEqual(lines, ["first", "partial", "last without newline"]);
+    assert.deepStrictEqual(lines, ["first", "diagnostic", "partial", "stdout tail", "error tail"]);
     assert.deepStrictEqual(completed.openocdTail, lines);
     assert.strictEqual(completed.exitCode, 0);
     assert.deepStrictEqual(capturedArgs, [

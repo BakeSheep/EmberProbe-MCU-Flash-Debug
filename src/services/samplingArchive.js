@@ -34,7 +34,7 @@ function processIsAlive(pid) {
     }
 }
 
-function cleanupStaleSamplingArchives(parentDir, currentPid = process.pid) {
+function cleanupStaleSamplingArchives(parentDir, currentPid = process.pid, isAlive = processIsAlive) {
     let names;
     try {
         names = fs.readdirSync(parentDir);
@@ -46,7 +46,7 @@ function cleanupStaleSamplingArchives(parentDir, currentPid = process.pid) {
         const match = /^sampling-history-(\d+)-[0-9a-f]+$/i.exec(name);
         if (!match) continue;
         const pid = Number(match[1]);
-        if (pid === currentPid || processIsAlive(pid)) continue;
+        if (pid === currentPid || isAlive(pid)) continue;
         try {
             fs.rmSync(path.join(parentDir, name), { recursive: true, force: true });
             removed++;

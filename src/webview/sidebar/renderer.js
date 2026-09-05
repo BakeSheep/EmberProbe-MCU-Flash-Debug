@@ -51,11 +51,7 @@ function shiftSliderBounds(min, max, current, next) {
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
-    var tb = I18N[LANG] || I18N.zh || {};
-    var s = tb[k] != null ? tb[k] : I18N.zh && I18N.zh[k] != null ? I18N.zh[k] : k;
-    return String(s).replace(/{([a-zA-Z0-9_]+)}/g, function (mm, n) {
-        return p && p[n] != null ? String(p[n]) : "";
-    });
+    return window.EmberProbeRuntime.translate(I18N, LANG, k, p);
 }
 function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
@@ -1053,11 +1049,14 @@ function liveStatus(m) {
     const wasRunning = liveRunning,
         wasWrite = liveCanWrite,
         wasFresh = liveSnapshotReady;
-    if (typeof m.intentEnabled === "boolean") liveRunning = m.intentEnabled;
-    else if (typeof m.running === "boolean") liveRunning = m.running;
-    if (typeof m.canRead === "boolean") liveCanRead = m.canRead;
-    if (typeof m.canWrite === "boolean") liveCanWrite = m.canWrite;
-    liveSnapshotReady = m.source === "dap" ? m.snapshotReady === true : m.source === "openocd" && m.canRead === true;
+    const next = window.EmberProbeRuntime.liveState(
+        { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
+        m
+    );
+    liveRunning = next.running;
+    liveCanRead = next.canRead;
+    liveCanWrite = next.canWrite;
+    liveSnapshotReady = next.fresh;
     const debugRunning = m.mode === "debug-running-waiting",
         debugReading = m.source === "dap" && liveRunning && !liveSnapshotReady;
     if (liveCard) liveCard.classList.toggle("debug-stale", !liveSnapshotReady);
@@ -1143,12 +1142,7 @@ function progress(m) {
     log.appendChild(line);
     while (log.children.length > 6) log.firstChild.remove();
 }
-function chipEsc(t) {
-    return String(t == null ? "" : t).replace(
-        /[&<>"']/g,
-        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
-    );
-}
+
 function chipStatus(m) {
     m = m || {};
     lastChip = m;
@@ -1202,143 +1196,17 @@ function svdStatus(m) {
         svdDownload.classList.toggle("cancel", cancellable);
     }
 }
-function chipStat(label, value) {
-    return value
-        ? '<div class="chip-stat"><span class="chip-k">' +
-              label +
-              '</span><span class="chip-v" title="' +
-              chipEsc(value) +
-              '">' +
-              chipEsc(value) +
-              "</span></div>"
-        : "";
-}
-function chipRow(k, v, opt) {
-    opt = opt || {};
-    if (!v && !opt.always) return "";
-    const cls = opt.muted ? " muted" : "";
-    const copy = opt.copy
-        ? '<button class="chip-copy" data-copy="' + chipEsc(opt.copy) + '">' + t("common.copy") + "</button>"
-        : "";
-    return (
-        '<div class="chip-row"><span class="k">' +
-        k +
-        '</span><span class="v' +
-        cls +
-        '" title="' +
-        chipEsc(v || "—") +
-        '">' +
-        chipEsc(v || "—") +
-        "</span>" +
-        copy +
-        "</div>"
-    );
-}
-function chipProbe(info) {
-    return [info.probeName || info.probe, info.transport].filter(Boolean).join(" · ");
-}
+
 function renderChip(info) {
     info = info || {};
     lastChipInfo = info;
     chipHasData = true;
-    const core = info.core || t("chip.unknownCore");
-    const compat =
-        info.authenticity === "compatible"
-            ? t("chip.authCompat", { vendor: info.compatBrand || info.compatVendor || t("chip.vendorUnmarked") })
-            : info.authenticity === "genuine"
-              ? t("chip.authGenuine")
-              : "";
-    const sub =
-        (info.chip || info.series || info.targetName || "—") +
-        (info.authenticity === "compatible" ? " · " + t("chip.compatTag") : "");
-    const stt = CHIP_STATE_TEXT[info.targetState] || info.targetState || "—";
-    const grid = [
-        chipStat(t("chip.adapterClock"), info.clock),
-        chipStat(t("chip.designer"), info.designer),
-        chipStat(t("chip.targetState"), stt),
-        chipStat(t("chip.debugProbe"), chipProbe(info))
-    ].join("");
-    const en = info.endian
-        ? info.endian === "little"
-            ? t("chip.endianLE")
-            : info.endian === "big"
-              ? t("chip.endianBE")
-              : info.endian
-        : "";
-    const jep = info.designerCode
-        ? (info.romDesigner ? info.romDesigner + " · " : "") + info.designerCode.replace(/^JEP106\s*/, "")
-        : "";
-    const g1 =
-        [
-            chipRow(t("chip.coreRev"), info.coreRevision),
-            chipRow(t("chip.deviceId"), info.deviceId),
-            chipRow(t("chip.revId"), info.revId),
-            chipRow(t("chip.designer"), info.designer),
-            chipRow("JEP106", jep),
-            chipRow(t("chip.authenticity"), compat),
-            chipRow(t("chip.romPart"), info.romPart),
-            chipRow(t("chip.flashSize"), info.flashSize),
-            chipRow(t("chip.endian"), en),
-            chipRow(t("chip.uid"), info.uid, { copy: info.uid })
-        ].join("") || chipRow(t("chip.info"), t("chip.openocdNoData"), { always: true, muted: true });
-    const dbg = [info.probeName, info.probeVersion].filter(Boolean).join(" ") || info.probe;
-    const g2 = [
-        chipRow(t("chip.debugger"), dbg),
-        chipRow(t("chip.transport"), info.transport),
-        chipRow(t("chip.adapterClock"), info.clock),
-        chipRow(t("chip.targetVoltage"), info.voltage || t("chip.voltageUnsupported"), {
-            always: true,
-            muted: !info.voltage
-        }),
-        chipRow(t("chip.target"), info.targetName)
-    ].join("");
-    let g3;
-    if (info.targetState === "halted") {
-        g3 = [
-            chipRow(t("chip.targetState"), stt, { always: true }),
-            chipRow(t("chip.haltReason"), info.haltReason),
-            chipRow("PC", info.pc),
-            chipRow("SP", info.sp),
-            chipRow("LR", info.lr)
-        ].join("");
-    } else {
-        g3 = [
-            chipRow(t("chip.targetState"), stt, { always: true }),
-            chipRow(t("chip.regInfo"), t("chip.regHint"), { always: true, muted: true })
-        ].join("");
-    }
-    const groups =
-        '<div class="chip-group"><div class="chip-group-title">' +
-        t("chip.groupChip") +
-        '</div><div class="chip-rows">' +
-        g1 +
-        '</div></div><div class="chip-group"><div class="chip-group-title">' +
-        t("chip.groupDebug") +
-        '</div><div class="chip-rows">' +
-        g2 +
-        '</div></div><div class="chip-group"><div class="chip-group-title">' +
-        t("chip.groupRun") +
-        '</div><div class="chip-rows">' +
-        g3 +
-        "</div></div>";
-    chipBody.innerHTML =
-        '<div class="chip-hero">' +
-        CHIP_ICON +
-        '<div class="chip-hero-copy"><div class="chip-hero-core">' +
-        chipEsc(core) +
-        '</div><div class="chip-hero-sub" title="' +
-        chipEsc(sub) +
-        '">' +
-        chipEsc(sub) +
-        '</div></div></div><div class="chip-stats">' +
-        grid +
-        '</div><details class="chip-more"' +
-        (chipMoreOpen ? " open" : "") +
-        ' id="chipMore"><summary>' +
-        t("chip.details") +
-        "</summary>" +
-        groups +
-        "</details>";
+    chipBody.innerHTML = window.EmberProbeChipView.render(info, {
+        t,
+        icon: CHIP_ICON,
+        states: CHIP_STATE_TEXT,
+        moreOpen: chipMoreOpen
+    });
     const more = document.getElementById("chipMore");
     if (more)
         more.addEventListener("toggle", () => {
@@ -1505,16 +1373,26 @@ function renderFeedbackPrompt(m) {
     feedbackPromptEl.append(txt, link, close);
     feedbackPromptEl.hidden = false;
 }
-window.addEventListener("message", (e) => {
-    const m = e.data;
-    if (!m) return;
-    if (m.type === "initSuccess") setStat("ready", "sb.ready");
-    else if (m.type === "skillStatus") renderSkillStatus(m);
-    else if (m.type === "openocdStatus") openocdStatus(m);
-    else if (m.type === "openocdProgress") progress(m);
-    else if (m.type === "commandSuccess") setStat("ready", "sb.commandDone");
-    else if (m.type === "commandError") setStat("error", m.key || "", m.params, m.error || t("sb.commandFailed"));
-    else if (m.type === "sidebarWatchList") {
+window.EmberProbeMessages.connect(window, {
+    initSuccess: function (m) {
+        setStat("ready", "sb.ready");
+    },
+    skillStatus: function (m) {
+        renderSkillStatus(m);
+    },
+    openocdStatus: function (m) {
+        openocdStatus(m);
+    },
+    openocdProgress: function (m) {
+        progress(m);
+    },
+    commandSuccess: function (m) {
+        setStat("ready", "sb.commandDone");
+    },
+    commandError: function (m) {
+        setStat("error", m.key || "", m.params, m.error || t("sb.commandFailed"));
+    },
+    sidebarWatchList: function (m) {
         sideWatch = (m.items || []).slice();
         if (m.resetValues) {
             sideWatch.forEach((item) => {
@@ -1524,24 +1402,41 @@ window.addEventListener("message", (e) => {
         }
         renderValues();
         renderAvailable();
-    } else if (m.type === "sidebarWriteList") {
+    },
+    sidebarWriteList: function (m) {
         writeList = (m.items || []).slice();
         renderWrites();
         renderAvailable();
-    } else if (m.type === "writeResult") onWriteResult(m);
-    else if (m.type === "availableVariables") {
+    },
+    writeResult: function (m) {
+        onWriteResult(m);
+    },
+    availableVariables: function (m) {
         available = (m.symbols || []).slice();
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
         renderAvailable();
-    } else if (m.type === "liveSample") updateValues(m.samples);
-    else if (m.type === "liveCompositeSample") sbOnComposite(m.samples || []);
-    else if (m.type === "liveStatus") liveStatus(m);
-    else if (m.type === "chipInfo") renderChip(m.info);
-    else if (m.type === "chipInfoStatus") chipStatus(m);
-    else if (m.type === "svdStatus") svdStatus(m);
-    else if (m.type === "liveError")
+    },
+    liveSample: function (m) {
+        updateValues(m.samples);
+    },
+    liveCompositeSample: function (m) {
+        sbOnComposite(m.samples || []);
+    },
+    liveStatus: function (m) {
+        liveStatus(m);
+    },
+    chipInfo: function (m) {
+        renderChip(m.info);
+    },
+    chipInfoStatus: function (m) {
+        chipStatus(m);
+    },
+    svdStatus: function (m) {
+        svdStatus(m);
+    },
+    liveError: function (m) {
         liveStatus({
             running: liveRunning,
             error: true,
@@ -1549,8 +1444,13 @@ window.addEventListener("message", (e) => {
             params: m.params,
             message: m.message || t("sb.commandFailed")
         });
-    else if (m.type === "feedbackPrompt") renderFeedbackPrompt(m);
-    else if (m.type === "setLang") setLang(m.lang, false);
+    },
+    feedbackPrompt: function (m) {
+        renderFeedbackPrompt(m);
+    },
+    setLang: function (m) {
+        setLang(m.lang, false);
+    }
 });
 updateLangToggle();
 if (langToggle) langToggle.onclick = () => setLang(LANG === "zh" ? "en" : "zh", true);

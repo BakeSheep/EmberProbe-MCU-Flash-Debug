@@ -70,6 +70,9 @@ function activate(context) {
 
     provider.refreshOpenOcdStatus(false);
     provider.refreshSkillStatus().catch(() => {});
+    if (process.env.EMBERPROBE_E2E === "1") {
+        return { viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
+    }
 }
 
 async function deactivate() {

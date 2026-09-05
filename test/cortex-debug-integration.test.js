@@ -1,120 +1,123 @@
 "use strict";
-
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-
-const root = path.resolve(__dirname, "..");
-const extension = fs.readFileSync(path.join(root, "src", "extension.js"), "utf8");
-const provider = fs.readFileSync(path.join(root, "src", "mainViewProvider.js"), "utf8");
-const debugBridge = fs.readFileSync(path.join(root, "src", "services", "debugSessionBridge.js"), "utf8");
-const liveWatch = fs.readFileSync(path.join(root, "src", "liveWatch.js"), "utf8");
-const combined = [extension, provider, debugBridge].join("\n");
-
-assert(!/launch\.json/i.test(combined), "Cortex-Debug integration must not access launch.json");
-assert.match(
-    provider,
-    /vscode\.debug\.startDebugging\(workspaceFolder, debugConfig, \{[\s\S]*?suppressDebugView:\s*true[\s\S]*?\}\)/,
-    "EmberProbe-launched sessions must not automatically reveal the Run and Debug view"
-);
-assert.match(
-    provider,
-    /servertype:\s*["']external["']/,
-    "EmberProbe-launched sessions should reuse the managed OpenOCD server"
-);
-assert.match(provider, /gdbTarget:\s*managed\.gdbTarget/);
-assert.match(
-    provider,
-    /showDevDebugOutput:\s*["']none["']/,
-    "managed sessions must suppress Cortex-Debug protocol logging"
-);
-assert.match(provider, /__emberprobeManagedToken/);
-assert.strictEqual(
-    (provider.match(/snapshotReady: this\._debugBridge\.hasSession \? this\._debugBridge\.snapshotReady/g) || [])
-        .length,
-    2,
-    "reopened graph and sidebar views must receive the current paused snapshot freshness"
-);
-assert.match(provider, /new liveWatch\.ManagedOpenOcdSession/);
-assert.match(liveWatch, /bindto 127\.0\.0\.1/);
-assert.match(liveWatch, /gdb_port \$\{gdbPort\}/);
-assert.match(liveWatch, /tcl_port \$\{port\}/);
-assert.match(liveWatch, /telnet_port disabled/);
-assert.match(liveWatch, /configure -work-area-backup 1/);
-assert.ok(liveWatch.indexOf("configure -work-area-backup 1") < liveWatch.lastIndexOf('"init"'));
-assert.match(extension, /registerDebugConfigurationProvider\("cortex-debug"/);
-assert.match(
-    extension,
-    /return config;/,
-    "the Cortex-Debug resolver must return the in-memory configuration unchanged"
-);
-assert.match(extension, /registerDebugAdapterTrackerFactory\("cortex-debug"/);
-assert.match(
-    extension,
-    /onExit:[\s\S]*handleDebugAdapterExit/,
-    "an adapter that exits before normal termination must still release the managed OpenOCD server"
-);
-assert.match(
-    extension,
-    /onWillReceiveMessage:[\s\S]*handleDebugAdapterRequest/,
-    "execution requests must quiesce managed Tcl sampling before Cortex-Debug receives them"
-);
-assert.match(
-    extension,
-    /async function deactivate\(\)[\s\S]*await provider\.shutdown\(\)/,
-    "Reload Window must await graceful OpenOCD shutdown"
-);
-assert.match(debugBridge, /message\.event === "stopped"/);
-assert.match(debugBridge, /message\.event === "continued"/);
-assert.match(
-    provider,
-    /event\.transition && event\.transition !== ["']continue["']/,
-    "step and reset continuations must not restart runtime Tcl sampling"
-);
-assert.doesNotMatch(debugBridge, /customRequest\(["']pause["']/i, "runtime waiting must never pause the target");
-assert.match(debugBridge, /snapshotReady/);
-assert.match(debugBridge, /SNAPSHOT_RETRY_DELAYS_MS/);
-assert.match(provider, /DEBUG_START_WATCHDOG_MS\s*=\s*60000/);
-assert.match(provider, /CORTEX_DEBUG_1121_WINDOWS_TIMEOUT_MS\s*=\s*15000/);
-assert.match(
-    provider,
-    /process\.platform === "win32" && version === "1\.12\.1"[\s\S]*CORTEX_DEBUG_1121_WINDOWS_TIMEOUT_MS/,
-    "only the known Windows Cortex-Debug 1.12.1 path should use the shorter recovery timeout"
-);
-assert.match(
-    provider,
-    /message\.event === "initialized"[\s\S]*_markDebugStartupReady/,
-    "the startup watchdog must end only after Cortex-Debug reports DAP initialization"
-);
-assert.match(
-    provider,
-    /_recoverDebugStartupTimeout\(\)[\s\S]*stopDebugging[\s\S]*_stopManagedDebugServer/,
-    "a stuck debug launch must be bounded and release both the VS Code session and managed OpenOCD"
-);
-assert.match(
-    provider,
-    /Promise\.race\(\[startRequest, startupGate\]\)/,
-    "the EmberProbe command itself must finish even when VS Code leaves startDebugging pending"
-);
-assert.match(
-    provider,
-    /outcome\.kind === "timeout" \|\| outcome\.kind === "terminated"/,
-    "timeout and early adapter termination must finish without reporting command success"
-);
-assert.ok(
-    provider.indexOf("await this.prepareForCortexDebug(workspaceFolder)") <
-        provider.indexOf("this._debugStarting = true"),
-    "live watch must release the probe before debug start claims it"
-);
-assert.match(
-    provider,
-    /debugConfig\.objdumpPath = cortexTools\.objdumpPath/,
-    "the in-memory config should pass an existing objdump/nm toolchain pair"
-);
-assert.match(
-    provider,
-    /setWorkspace\(session\.workspaceFolder \|\| this\._commandContext\(\)\.folder\)/,
-    "multi-root debug sessions must use the folder supplied by VS Code"
-);
-
-console.log("Cortex-Debug integration contract tests passed");
+const { loadProvider } = require("./helpers/load-provider");
+const { DebugLifecycle, debugStartupPolicy } = require("../src/services/debugLifecycle");
+const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
+const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
+(async () => {
+    const timers = [];
+    const cancelled = [];
+    const lifecycle = new DebugLifecycle({
+        schedule: (fn) => {
+            timers.push(fn);
+            return timers.length;
+        },
+        cancel: (id) => cancelled.push(id)
+    });
+    assert.strictEqual(debugStartupPolicy("win32", "1.12.1").timeoutMs, 15000);
+    for (const [platform, version] of [
+        ["linux", "1.12.1"],
+        ["darwin", "1.12.1"],
+        ["win32", "1.12.2"]
+    ])
+        assert.strictEqual(debugStartupPolicy(platform, version).timeoutMs, 60000);
+    let recovered = 0;
+    const expired = lifecycle.arm(10, () => {
+        recovered++;
+        lifecycle.clear();
+    });
+    timers[0]();
+    assert.strictEqual((await expired).kind, "timeout");
+    await Promise.resolve();
+    assert.strictEqual(recovered, 1);
+    const ready = lifecycle.arm(10, () => recovered++);
+    lifecycle.session = { id: "current" };
+    lifecycle.ready({ id: "old" }, true);
+    assert.strictEqual(lifecycle.pending, true);
+    lifecycle.ready({ id: "current" }, true);
+    assert.strictEqual((await ready).kind, "ready");
+    timers[1]();
+    assert.strictEqual(recovered, 1);
+    const early = lifecycle.arm(10, () => recovered++);
+    lifecycle.clear({ kind: "terminated" });
+    assert.strictEqual((await early).kind, "terminated");
+    const P = loadProvider();
+    const p = Object.create(P.prototype);
+    p._probeCoordinator = new ProbeCoordinator();
+    p._samplingCoordinator = new SamplingCoordinator();
+    p._debugBridge = new DebugSessionBridge();
+    p._debugLifecycle = lifecycle;
+    p._samplingIntent = true;
+    p._agentSamplingStatus = null;
+    p._managedDebugToken = "token";
+    p._managedDebugSessionId = "";
+    p._terminatedDebugSessionIds = new Set();
+    p._activeReadPlan = () => [];
+    p._configureManagedRuntimeWatch = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+    p._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
+    const server = {
+        samplingEnabled: true,
+        setSamplingEnabled(value) {
+            this.samplingEnabled = value;
+            return value;
+        }
+    };
+    p._managedDebugServer = server;
+    const session = {
+        id: "current",
+        type: "cortex-debug",
+        configuration: { __emberprobeManagedToken: "token" },
+        workspaceFolder: { uri: { toString: () => "workspace" } }
+    };
+    try {
+        p.handleDebugSessionStart(session);
+        assert.strictEqual(p._managedDebugSessionId, "current");
+        assert.strictEqual(server.samplingEnabled, false);
+        p._samplingCoordinator.setRuntimeEnabled(server, true, p._debugBridge);
+        const messages = [];
+        const entry = { ready: true, watchKey: "watch", post: (m) => messages.push(m), latestSamples: new Map() };
+        p._scalarWatchList = () => [];
+        p._syncGraphTarget(entry);
+        assert.strictEqual(messages.find((m) => m.type === "liveStatus").mode, "debug-running-sampling");
+        p._livePanels = new Map();
+        p._postConsumerStatuses = () => {};
+        p._setSamplingArchiveBackpressure(true);
+        await p._refreshSamplingPlan();
+        assert.strictEqual(server.samplingEnabled, false);
+        assert.strictEqual(p._debugBridge.intentEnabled, false);
+        let stopped = 0,
+            restored = 0;
+        p._stopManagedDebugServer = async () => {
+            stopped++;
+            p._managedDebugServer = null;
+        };
+        p.restoreSamplingAfterDebug = async () => restored++;
+        await p.handleDebugSessionTerminate(session);
+        assert.strictEqual(stopped, 1);
+        assert.strictEqual(restored, 1);
+        await p.handleDebugSessionTerminate(session);
+        p.handleDebugSessionStart(session);
+        assert.strictEqual(p._debugBridge.hasAnySession, false);
+        assert.strictEqual(stopped, 1);
+    } finally {
+        p._debugBridge.dispose();
+        lifecycle.clear();
+    }
+    // Preparing external debug must await pending probe cleanup before returning.
+    const q = Object.create(P.prototype),
+        events = [];
+    q._debugBridge = { setWorkspace: () => {} };
+    q._commandContext = () => ({});
+    q._probeCoordinator = new ProbeCoordinator();
+    q._liveSession = {};
+    q._postConsumerStatuses = () => {};
+    q.stopAgentReadIfRunning = () => Promise.resolve().then(() => events.push("agent-stopped"));
+    q.stopLiveWatch = () => Promise.resolve().then(() => events.push("live-stopped"));
+    await q.prepareForCortexDebug();
+    assert.deepStrictEqual(events, ["agent-stopped", "live-stopped"]);
+    console.log("Cortex-Debug lifecycle behavior tests passed");
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

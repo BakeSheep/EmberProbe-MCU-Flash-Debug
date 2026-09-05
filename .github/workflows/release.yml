@@ -19,7 +19,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gates:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
   build:
+    needs: gates
+    timeout-minutes: 15
     name: Validate and package
     runs-on: ubuntu-latest
     env:
@@ -27,12 +34,12 @@ jobs:
 
     steps:
       - name: Check out release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -46,15 +53,6 @@ jobs:
       - name: Check release consistency
         run: npm run check:release
 
-      - name: Run checks
-        run: npm run check
-
-      - name: Run quality gates
-        run: npm run quality
-
-      - name: Run Extension Host smoke tests
-        run: xvfb-run -a npm run test:e2e
-
       - name: Package VSIX
         run: npm run package
 
@@ -67,6 +65,7 @@ jobs:
           retention-days: 7
 
   publish:
+    timeout-minutes: 15
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
@@ -78,34 +77,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - name: Download verified VSIX
         uses: actions/download-artifact@v4
         with:
           name: emberprobe-vsix
           path: dist
 
-      - name: Stop when the GitHub Release is already public
-        id: github_release
-        shell: bash
-        run: |
-          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx false; then
-            echo "already-public=true" >> "$GITHUB_OUTPUT"
-            echo "GitHub Release $RELEASE_TAG is already public; nothing to retry."
-          else
-            echo "already-public=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create or update draft GitHub Release
-        if: steps.github_release.outputs.already-public != 'true'
-        shell: bash
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --draft --title "EmberProbe $RELEASE_TAG"
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes --title "EmberProbe $RELEASE_TAG"
-          fi
-          gh release upload "$RELEASE_TAG" dist/emberprobe.vsix --clobber
-
-      - name: Publish GitHub Release
-        if: steps.github_release.outputs.already-public != 'true'
-        run: gh release edit "$RELEASE_TAG" --draft=false
+      - name: Publish verified release
+        run: node scripts/publish-release.js

@@ -4,37 +4,7 @@
 
 const elfFormat = require("./elfFormat");
 
-const SUPPORTED_TYPES = ["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
-
-// 各标量类型的字节宽度
-function typeByteLength(type) {
-    switch (type) {
-        case "u8":
-        case "i8":
-            return 1;
-        case "u16":
-        case "i16":
-            return 2;
-        case "u32":
-        case "i32":
-        case "f32":
-            return 4;
-        case "u64":
-        case "i64":
-        case "f64":
-            return 8;
-        default:
-            return 4;
-    }
-}
-
-// 无 DWARF 时依符号大小猜测默认类型，用户可在 UI 覆盖
-function defaultType(size) {
-    if (size === 1) return "u8";
-    if (size === 2) return "u16";
-    if (size === 8) return "u64";
-    return "u32";
-}
+const { SUPPORTED_TYPES, typeByteLength, defaultType } = require("./webview/runtime");
 
 function resolveVariableRequests(symbols, requests) {
     const list = Array.isArray(symbols) ? symbols : [];

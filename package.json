@@ -175,14 +175,16 @@
     "format": "prettier --write \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
     "typecheck": "tsc -p jsconfig.quality.json",
-    "coverage": "c8 node scripts/run-tests.js --quality",
+    "coverage": "c8 node scripts/run-tests.js --quality && node scripts/check-coordinator-coverage.js",
     "quality": "npm run lint && npm run format:check && npm run typecheck && npm run coverage",
     "test:e2e": "npm run bundle && node test/e2e/runTest.js",
     "test:hil": "node test/hil/run-hil.js",
     "release:prepare": "node scripts/release.js",
     "bundle": "node esbuild.js",
     "vscode:prepublish": "npm run bundle",
-    "package": "npx --yes @vscode/vsce@3.9.1 package --out dist/emberprobe.vsix"
+    "package": "npx --yes @vscode/vsce@3.9.1 package --out dist/emberprobe.vsix",
+    "check:syntax": "node scripts/run-tests.js --syntax",
+    "test:unit": "node scripts/run-tests.js --tests"
   },
   "dependencies": {
     "fast-xml-parser": "^5.11.0",
@@ -197,8 +199,10 @@
     "c8": "^12.0.0",
     "esbuild": "^0.28.1",
     "eslint": "^10.8.0",
+    "jsdom": "26.1.0",
     "prettier": "^3.9.6",
     "typescript": "^7.0.2",
+    "yaml": "2.9.0",
     "yazl": "^3.3.1"
   }
 }

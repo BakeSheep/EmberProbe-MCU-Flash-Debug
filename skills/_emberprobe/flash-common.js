@@ -8,7 +8,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
 const { call } = require("./agent-client");
-const MIN_OPENOCD_VERSION = "0.12.0";
+const { MIN_OPENOCD_VERSION, parseVersion: parseOpenOcdVersion, checkCompatibility } = require("./openocd-policy");
 
 const TARGET_RULES = [
     ["apm32f0", "geehy/apm32f0x.cfg"],
@@ -233,43 +233,17 @@ function resolveExecutablePath(executable) {
     return configured;
 }
 
-function parseOpenOcdVersion(text) {
-    const value = String(text || "");
-    const match = value.match(/open on-chip debugger\s+v?(\d+\.\d+(?:\.\d+)?(?:[-+.\w]*)?)/i);
-    if (match) return match[1];
-    const fallback = value.match(/openocd[^\d]*v?(\d+\.\d+(?:\.\d+)?(?:[-+.\w]*)?)/i);
-    return fallback ? fallback[1] : "";
-}
-
 function checkOpenOcdVersion(version) {
-    const parse = (value) => {
-        const match = String(value || "").match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
-        return match ? [Number(match[1]), Number(match[2]), Number(match[3] || 0)] : null;
-    };
-    const actual = parse(version);
-    const minimum = parse(MIN_OPENOCD_VERSION);
-    if (!actual) return { compatible: false, reason: "unknown", minimumVersion: MIN_OPENOCD_VERSION };
-    let comparison = 0;
-    for (let index = 0; index < 3; index++) {
-        if (actual[index] !== minimum[index]) {
-            comparison = actual[index] < minimum[index] ? -1 : 1;
-            break;
-        }
-    }
-    const prerelease = comparison === 0 && /-(?:rc|alpha|beta|pre(?:view)?)[.\d-]*/i.test(String(version));
-    return {
-        compatible: comparison > 0 || (comparison === 0 && !prerelease),
-        reason: comparison < 0 || prerelease ? "too_old" : "",
-        minimumVersion: MIN_OPENOCD_VERSION
-    };
+    const { compatible, reason, minimumVersion } = checkCompatibility(version);
+    return { compatible, reason, minimumVersion };
 }
 
-function probeOpenOcdCompatibility(executable, timeoutMs = 5000) {
+function probeOpenOcdCompatibility(executable, timeoutMs = 5000, spawnProcess = spawn) {
     const binary = resolveExecutablePath(executable);
     return new Promise((resolve) => {
         let child;
         try {
-            child = spawn(binary, ["--version"], { windowsHide: true, shell: false });
+            child = spawnProcess(binary, ["--version"], { windowsHide: true, shell: false });
         } catch (error) {
             resolve({
                 found: false,
@@ -412,7 +386,11 @@ function runOpenOcd(executable, args, options = {}) {
     return new Promise((resolve, reject) => {
         let child;
         try {
-            child = spawn(executable, args, { cwd: options.cwd, windowsHide: true, shell: false });
+            child = (options.spawnProcess || spawn)(executable, args, {
+                cwd: options.cwd,
+                windowsHide: true,
+                shell: false
+            });
         } catch (error) {
             reject(error);
             return;

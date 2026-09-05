@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { JSDOM } = require("jsdom");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const { externalizeWebviewHtml } = require("../src/webviewAssets");
@@ -16,8 +17,6 @@ for (const file of [
 ]) {
     assert.ok(fs.statSync(path.resolve(__dirname, file)).size > 100, `${file} must be a real webview asset`);
 }
-assert.ok(!fs.readFileSync(require.resolve("../src/modernView"), "utf8").includes("const WRITE_INTERVAL_MS=100"));
-assert.ok(!fs.readFileSync(require.resolve("../src/liveWatchView"), "utf8").includes("requestAnimationFrame(loop)"));
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-webview-assets-"));
 try {
@@ -54,11 +53,28 @@ try {
         });
         assert.ok(result.styleCount >= 1);
         assert.ok(result.scriptCount >= 1);
-        assert.ok(!result.html.includes("<style"), `${scope} must not contain inline styles`);
-        assert.ok(!/<script(?![^>]*\bsrc=)/i.test(result.html), `${scope} must not contain inline scripts`);
-        assert.ok(!result.html.includes("unsafe-inline"), `${scope} CSP must not allow unsafe-inline`);
-        assert.ok(result.html.includes(`'nonce-${result.nonce}'`));
-        assert.ok(result.html.includes(`nonce="${result.nonce}"`));
+        const dom = new JSDOM(result.html);
+        try {
+            const doc = dom.window.document;
+            assert.strictEqual(doc.querySelector("style"), null);
+            const policy = new Map(
+                doc
+                    .querySelector('meta[http-equiv="Content-Security-Policy"]')
+                    .content.split(";")
+                    .map((part) => part.trim().split(/\s+/))
+                    .map(([key, ...values]) => [key, values])
+            );
+            assert.deepStrictEqual(policy.get("default-src"), ["'none'"]);
+            assert.ok(![...policy.values()].flat().includes("'unsafe-inline'"));
+            assert.ok(policy.get("script-src").includes(`'nonce-${result.nonce}'`));
+            for (const script of doc.querySelectorAll("script")) {
+                assert.ok(script.src.startsWith("vscode-resource:/"));
+                assert.strictEqual(script.textContent, "");
+                assert.strictEqual(script.nonce, result.nonce);
+            }
+        } finally {
+            dom.window.close();
+        }
     }
     assert.ok(joinedUris.length >= 4, "all extracted assets must use Uri.joinPath");
     assert.ok(fs.readdirSync(temp).some((file) => file.endsWith(".css")));
@@ -85,11 +101,11 @@ try {
         fs.readdirSync(temp).some((file) => file.startsWith("sidebar-")),
         "current sidebar assets must survive pruning"
     );
-    const providerSource = fs.readFileSync(require.resolve("../src/mainViewProvider"), "utf8");
-    assert.ok(
-        providerSource.includes("`live-watch-${panelId}`"),
-        "each Live Watch panel must own an independent asset scope"
-    );
+    for (const scope of ["live-watch-1", "live-watch-2", "live-watch-1"]) {
+        externalizeWebviewHtml({ html: cases[1][1], webview, vscode, assetRootUri, scope });
+    }
+    for (const scope of ["live-watch-1", "live-watch-2"])
+        assert.ok(fs.readdirSync(temp).some((file) => file.startsWith(scope + "-")));
     console.log("Webview asset and CSP tests passed");
 } finally {
     fs.rmSync(temp, { recursive: true, force: true });

@@ -13,7 +13,6 @@ const PROBE_OPERATIONS = Object.freeze([
 class ProbeCoordinator {
     constructor() {
         this._state = new Map(PROBE_OPERATIONS.map((name) => [name, null]));
-        this._legacyLeases = new Map();
     }
 
     _validate(name) {
@@ -72,32 +71,6 @@ class ProbeCoordinator {
         return true;
     }
 
-    // Transitional compatibility for callers not yet holding the lease object.
-    // MainViewProvider stores the resulting lease immediately and uses this only
-    // through its operation accessors.
-    setActive(name, active) {
-        this._validate(name);
-        const current = this._legacyLeases.get(name);
-        if (active === true) {
-            if (current && !current.released) return true;
-            if (name === "liveWatch" || name === "debugServer") {
-                const previousName = name === "liveWatch" ? "liveStart" : "debugStart";
-                const starting = this._legacyLeases.get(previousName);
-                if (starting && !starting.released) {
-                    const running = starting.transition(name);
-                    this._legacyLeases.delete(previousName);
-                    this._legacyLeases.set(name, running);
-                    return true;
-                }
-            }
-            this._legacyLeases.set(name, this.acquire(name));
-            return true;
-        }
-        if (current) current.release();
-        this._legacyLeases.delete(name);
-        return false;
-    }
-
     isActive(name) {
         this._validate(name);
         return this._state.get(name) !== null;
@@ -125,7 +98,6 @@ class ProbeCoordinator {
             if (lease) lease.released = true;
             this._state.set(name, null);
         }
-        this._legacyLeases.clear();
     }
 }
 

@@ -15,9 +15,20 @@ function loadWebviewAsset(area, name) {
     ];
     const file = candidates.find((candidate) => fs.existsSync(candidate));
     if (!file) throw new Error(`Missing webview asset: ${key}`);
-    const content = fs.readFileSync(file, "utf8");
+    const content = (name === "renderer.js" ? loadRendererPrelude(area) : "") + fs.readFileSync(file, "utf8");
     cache.set(key, content);
     return content;
 }
 
-module.exports = { loadWebviewAsset };
+function loadRendererPrelude(area) {
+    return (
+        [
+            loadWebviewAsset("", "runtime.js"),
+            loadWebviewAsset("", "messages.js"),
+            ...(area === "sidebar"
+                ? [loadWebviewAsset("sidebar", "chipView.js")]
+                : [loadWebviewAsset("liveWatch", "chart.js")])
+        ].join("\n") + "\n"
+    );
+}
+module.exports = { loadWebviewAsset, loadRendererPrelude };

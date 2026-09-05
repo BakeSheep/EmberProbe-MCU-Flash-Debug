@@ -96,7 +96,6 @@ function selectPausedDebugReadSession(debugBridge) {
 class LiveWatchService {
     constructor(elfSymbols) {
         this.elfSymbols = elfSymbols;
-        this.latestGraphSamples = new Map(); // 兼容旧调用；多面板缓存由 Provider 分别持有
         this.latestSidebarSamples = new Map();
     }
 
@@ -141,28 +140,6 @@ class LiveWatchService {
             latest.set(sample.name, decoded);
         }
         return { scalarSamples, compositeSamples };
-    }
-
-    // 保留旧形状，供已有服务边界测试与扩展内部过渡使用。
-    decodeSamples(samples, time, types, compositeMap) {
-        const graph = this.decodeConsumerSamples(samples, time, types.graph, new Map(), this.latestGraphSamples);
-        const sidebar = this.decodeConsumerSamples(
-            samples,
-            time,
-            types.sidebar,
-            compositeMap,
-            this.latestSidebarSamples
-        );
-        return {
-            graphSamples: graph.scalarSamples,
-            sidebarSamples: sidebar.scalarSamples,
-            compositeSamples: sidebar.compositeSamples
-        };
-    }
-
-    prune(map, names) {
-        const keep = new Set(names);
-        for (const name of map.keys()) if (!keep.has(name)) map.delete(name);
     }
 }
 

@@ -1,634 +1,100 @@
 "use strict";
 const assert = require("assert");
-const vm = require("vm");
-const fs = require("fs");
-const modernView = require("../src/modernView");
-const liveWatchView = require("../src/liveWatchView");
-const { LiveWatchSession } = require("../src/liveWatch");
-const i18n = require("../src/i18n");
-const { shiftSliderBounds } = modernView;
-
-function validateScripts(name, html) {
-    const scripts = Array.from(html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g), (match) => match[1]);
-    assert.ok(scripts.length > 0, `${name} should contain scripts`);
-    scripts.forEach((script, index) => new vm.Script(script, { filename: `${name}-${index}.js` }));
+const { render } = require("./helpers/render-webview");
+const { getModernWebviewContent, shiftSliderBounds } = require("../src/modernView");
+const { getLiveWatchContent } = require("../src/liveWatchView");
+for (const [input, expected] of [
+    [[0, 100, 30, 130], { min: 100, max: 200 }],
+    [[0, 100, 70, -30], { min: -100, max: 0 }],
+    [[0, 100, 30, 60], { min: 0, max: 100 }]
+])
+    assert.deepStrictEqual(shiftSliderBounds(...input), expected);
+const sidebar = render(
+    getModernWebviewContent({ elf: "<script>evil()</script>", debugger: "stlink.cfg", mcu: "stm32f4x.cfg" }, "en")
+);
+try {
+    sidebar.assertHealthy();
+    assert.ok(sidebar.messages.some((m) => m.type === "initCheck"));
+    for (const id of [
+        "liveValues",
+        "liveToggle",
+        "openocdCard",
+        "skillStatus",
+        "availableVars",
+        "chipRead",
+        "chipBody",
+        "writeValues",
+        "varResizeHandle",
+        "svdStatus"
+    ])
+        assert.ok(sidebar.document.getElementById(id), id);
+    assert.strictEqual(sidebar.window.evil, undefined);
+    const click = (id) => sidebar.document.getElementById(id).click();
+    click("openocdSelect");
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });
+    click("chipRead");
+    assert.strictEqual(sidebar.messages.at(-1).type, "readChipInfo");
+    sidebar.send({ type: "chipInfo", info: { core: "Cortex-M4", uid: "1234", targetState: "halted" } });
+    assert.ok(sidebar.document.getElementById("chipBody").textContent.includes("Cortex-M4"));
+    sidebar.document.querySelector(".chip-copy").click();
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "copyText", text: "1234" });
+    sidebar.send({ type: "openocdStatus", state: "incompatible", message: "unsupported" });
+    assert.ok(sidebar.document.getElementById("openocdCard").classList.contains("error"));
+    const card = sidebar.document.getElementById("liveValues").closest(".live-box");
+    for (const status of [
+        { source: "dap", snapshotReady: false, mode: "debug-running-waiting", canRead: false },
+        { source: "dap", snapshotReady: true, mode: "debug-paused-ready", canRead: true },
+        { source: "openocd", mode: "debug-running-sampling", canRead: true },
+        { source: "openocd", mode: "stopped", canRead: false }
+    ]) {
+        sidebar.send({ type: "liveStatus", intentEnabled: true, canWrite: false, ...status });
+        assert.strictEqual(card.classList.contains("debug-stale"), !status.canRead);
+    }
+    sidebar.send({ type: "sidebarWatchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
+    sidebar.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
+    assert.ok(sidebar.document.getElementById("liveValues").textContent.includes("7"));
+    sidebar.send({
+        type: "sidebarWatchList",
+        items: [{ name: "tick", type: "u32", address: 536870916 }],
+        resetValues: true
+    });
+    assert.ok(!sidebar.document.getElementById("liveValues").textContent.includes("7"));
+    for (const kind of ["issue", "feature", "star"]) {
+        sidebar.send({ type: "feedbackPrompt", kind });
+        assert.strictEqual(sidebar.document.getElementById("feedbackPrompt").hidden, false);
+        sidebar.document.querySelector(".fp-close").click();
+        assert.deepStrictEqual(sidebar.messages.at(-1), { type: "feedbackPromptAction", kind, action: "dismiss" });
+    }
+    click("langToggle");
+    assert.strictEqual(sidebar.messages.at(-1).type, "setLang");
+    sidebar.assertHealthy();
+} finally {
+    sidebar.close();
 }
-
-const sidebarHtml = modernView.getModernWebviewContent({
-    elf: "app.elf",
-    debugger: "stlink.cfg",
-    mcu: "stm32f4x.cfg",
-    svd: ""
-});
-validateScripts("modernView", sidebarHtml);
-const normalizeSource = (value) => String(value).replace(/\s+/g, "").replace(/"/g, "'");
-const sourceIncludes = (source, value) =>
-    String(source).includes(value) || normalizeSource(source).includes(normalizeSource(value));
-const sidebar = {
-    includes: (value) => sourceIncludes(sidebarHtml, value),
-    indexOf: (value) => {
-        const direct = sidebarHtml.indexOf(value);
-        return direct >= 0 ? direct : normalizeSource(sidebarHtml).indexOf(normalizeSource(value));
-    }
-};
-assert.ok(sidebar.includes('id="liveValues"'));
-assert.ok(sidebar.includes('id="liveToggle"'));
-assert.ok(
-    sidebar.includes("liveCard.classList.toggle('debug-stale'"),
-    "debug values should remain visually stale until a pause snapshot succeeds"
-);
-assert.ok(
-    sidebar.includes("debugRunning=m.mode==='debug-running-waiting'"),
-    "a running debug session should use the yellow live-state indicator even before sampling is enabled"
-);
-assert.ok(sidebar.includes(".live-box.debug-stale .value-number"), "stale debug read values should be gray");
-assert.ok(sidebar.includes(".live-box.debug-stale .write-input"), "stale debug write values should be gray");
-assert.ok(
-    sidebar.includes("m.source==='openocd'&&m.canRead===true"),
-    "stopped standalone values should remain gray until sampling can read again"
-);
-assert.ok(sidebar.includes('id="openocdCard"'), "sidebar should contain an OpenOCD status card");
-assert.ok(sidebar.includes('id="skillStatus"'), "sidebar should show Agent Skills installation status");
-assert.ok(
-    sidebar.includes("skill-row") && sidebar.includes("skill-status-count"),
-    "Agent Skills should use a dedicated aligned status card"
-);
-assert.ok(sidebar.includes("-webkit-line-clamp:2"), "Agent Skills descriptions should wrap instead of being truncated");
-assert.ok(sidebar.includes("m.type==='skillStatus'"), "sidebar should react to partial or complete Skill status");
-assert.ok(
-    sidebar.includes('data-command="mcu-vscode.manageAgentSkills"'),
-    "skill card should open the management menu"
-);
-assert.ok(sidebar.includes("status.scopes"), "skill card tooltip should break down per-scope status");
-assert.ok(sidebar.includes('id="openocdInstall"'), "OpenOCD card should offer bundled installation");
-assert.ok(
-    sidebar.includes("type:'openocdAction',action:'select'"),
-    "OpenOCD path selection should be handled inside the sidebar"
-);
-assert.ok(sidebar.includes("m.type==='openocdStatus'"), "sidebar should render OpenOCD status messages");
-assert.ok(
-    sidebar.includes("k==='incompatible'?'error':k"),
-    "incompatible OpenOCD should remain visible with error styling"
-);
-assert.ok(sidebar.includes('id="availableVars"'));
-assert.ok(sidebar.includes("type:'saveSidebarWatch'"), "sidebar should persist an independent watch list");
-assert.ok(sidebar.includes('class="variable-browser"'), "ELF variable browser should be collapsible");
-assert.ok(
-    sidebar.includes(".variable-browser:not([open])>summary:before{transform:rotate(0)}"),
-    "closed ELF browser should restore its right-pointing arrow"
-);
-assert.ok(sidebar.includes('id="varResizeHandle"'), "ELF variable browser should expose a full-width resize handle");
-assert.ok(sidebar.includes(".available{resize:none}"), "native corner-only resizing should be disabled");
-assert.ok(sidebar.includes('class="available-head"'), "variable metadata should use aligned columns");
-assert.ok(
-    sidebar.indexOf('id="varResizeHandle"') > sidebar.indexOf('id="availableVars"'),
-    "resize handle should sit below the ELF variable list"
-);
-assert.ok(
-    sidebar.includes('class="tree-row auto-row"'),
-    "auto detection should be visually distinct inside MCU configuration"
-);
-assert.ok(sidebar.includes('class="tree-divider">手动配置'), "manual MCU configuration should have a visual separator");
-assert.ok(
-    sidebar.includes('class="chip-more config-more"') && sidebar.includes(">其他配置</summary>"),
-    "SVD configuration should live in an MCU other-configuration card matching chip details"
-);
-assert.ok(
-    sidebar.includes('class="tree-row svd-config-row"') && sidebar.includes(">可选</span>"),
-    "SVD selection should reuse the manual configuration card style and be marked optional"
-);
-assert.ok(
-    sidebar.indexOf('id="svdStatus"') < sidebar.indexOf(">芯片信息</summary>"),
-    "SVD configuration should no longer be rendered inside chip information"
-);
-const downloadAction = sidebar.indexOf('data-command="mcu-vscode.download"');
-const debugAction = sidebar.indexOf('data-command="mcu-vscode.debug"');
-assert.ok(
-    downloadAction >= 0 && debugAction > downloadAction,
-    "one-click Cortex-Debug should sit to the right of Download"
-);
-assert.ok(
-    sidebar.includes("state:'cancelling',key:'svd.cancelling'") && sidebar.includes("type:'cancelSvdDownload'"),
-    "SVD cancellation should give immediate feedback and post a dedicated cancel message"
-);
-assert.ok(!sidebar.includes(">推荐</span>"), "auto detection should not show a recommendation badge");
-assert.ok(!sidebar.includes("<summary>关键操作</summary>"), "redundant key-actions section should be removed");
-assert.ok(sidebar.includes("sym.isComposite"), "sidebar should guard aggregate variables");
-assert.ok(sidebar.includes(">芯片信息</summary>"), "sidebar should include a chip info section");
-assert.ok(sidebar.includes('id="chipRead"'), "chip info section should offer a read button");
-assert.ok(sidebar.includes('id="chipBody"'), "chip info section should render results into a body container");
-assert.ok(sidebar.includes("type:'readChipInfo'"), "chip info read should post a dedicated message");
-assert.ok(sidebar.includes("m.type==='chipInfo'"), "sidebar should render chip info payloads");
-assert.ok(sidebar.includes("m.type==='chipInfoStatus'"), "sidebar should reflect chip info status");
-assert.ok(sidebar.includes("type:'copyText'"), "UID row should copy via the extension clipboard bridge");
-assert.ok(sidebar.includes("详细信息"), "chip info should provide a collapsible details area");
-assert.ok(
-    sidebar.includes("调试连接") && sidebar.includes("运行信息"),
-    "details should group debug-connection and run-info"
-);
-
-// 写入列表（变量写入前端化）
-assert.ok(sidebar.includes('id="writeValues"'), "sidebar should render a write list container");
-assert.ok(sidebar.includes(">写入列表</span>"), "write list section should sit alongside the watch list");
-assert.ok(
-    sidebar.includes('id="watchFold"') && sidebar.includes('id="writeFold"'),
-    "watch and write lists should expose fold toggles left of their titles"
-);
-assert.ok(sidebar.includes("type:'saveSidebarWrite'"), "sidebar should persist an independent write list");
-assert.ok(sidebar.includes("type:'writeVariable'"), "write list value changes should post write requests");
-assert.ok(sidebar.includes("m.type==='writeResult'"), "sidebar should give feedback on write results");
-assert.ok(sidebar.includes("m.type==='sidebarWriteList'"), "sidebar should restore the persisted write list");
-assert.ok(sidebar.includes("av-write"), "ELF variable rows should offer an add-to-write-list button before the name");
-assert.ok(
-    sidebar.includes("write-slider") && sidebar.includes("step-btn"),
-    "write cards should include a slider and +/- stepper controls"
-);
-assert.ok(sidebar.includes("bound-input"), "slider endpoints should be editable inline without steppers");
-assert.ok(sidebar.includes('id="writeFeedback"'), "failed writes should surface an error reason");
-assert.ok(
-    sidebar.includes("write-dot") && sidebar.includes("writeDotFlash"),
-    "write result should flash a dot next to the variable name"
-);
-assert.ok(sidebar.includes("nmWrap.append(dot,nm)"), "write result dot should appear before the variable name");
-assert.ok(!sidebar.includes("write-ok"), "write success should no longer flash a green border on the card");
-assert.ok(!sidebar.includes("value-address"), "watch cards should no longer show variable addresses");
-assert.ok(sidebar.includes("av-watch"), "ELF rows should offer a bordered add-to-watch button");
-assert.ok(sidebar.includes("hasDwarfWriteType"), "non-writable variables should be detected and grayed out");
-assert.ok(
-    sidebar.includes("wrap.append(arrow,mkWatchBtn"),
-    "composite rows should align their watch button with scalar rows without a disabled write button"
-);
-assert.ok(
-    sidebar.includes(".av-arrow{flex:none;width:17px") &&
-        sidebar.includes(".av-name-wrap{display:flex;align-items:center;gap:3px"),
-    "composite arrow controls should reserve the same column and gap as scalar write buttons"
-);
-assert.ok(sidebar.includes(".list-fold svg"), "fold toggles should render as eye icons");
-assert.ok(!sidebar.includes("av-spacer"), "ELF row buttons should start flush left without a spacer");
-assert.ok(sidebar.includes("writeNeedSampling"), "writing should be gated on live sampling being active");
-assert.ok(sidebar.includes("syncWriteValues"), "write cards should sync live values while sampling");
-assert.ok(
-    sidebar.includes("cancelPendingWrite") && sidebar.includes("clearTimeout(writeTimers[name])"),
-    "removing a write card should cancel its pending throttled write"
-);
-assert.ok(
-    sidebar.includes("const WRITE_INTERVAL_MS=100"),
-    "slider writes should be throttled to at most 10 Hz while dragging"
-);
-assert.ok(
-    sidebar.includes("slider.addEventListener('change',()=>setValue(Number(slider.value),true))"),
-    "slider release should immediately write the final value"
-);
-assert.deepStrictEqual(
-    shiftSliderBounds(0, 100, 30, 130),
-    { min: 100, max: 200 },
-    "an upper overflow should shift the range while preserving the thumb ratio"
-);
-assert.deepStrictEqual(
-    shiftSliderBounds(0, 100, 70, -30),
-    { min: -100, max: 0 },
-    "a lower overflow should shift the range while preserving the thumb ratio"
-);
-assert.deepStrictEqual(
-    shiftSliderBounds(0, 100, 30, 60),
-    { min: 0, max: 100 },
-    "an in-range value should keep the current endpoints"
-);
-assert.ok(
-    sidebar.includes("latestWriteSeq") && sidebar.includes("m.seq!==latestWriteSeq[m.name]"),
-    "stale write results should not overwrite the latest card state"
-);
-assert.ok(
-    sidebar.includes("Math.floor(Math.log10(v))-1"),
-    "integer steppers should scale with the current decimal digit count"
-);
-assert.ok(
-    sidebar.includes("::-webkit-slider-thumb"),
-    "slider should use custom dark-gray styling instead of the native white control"
-);
-assert.ok(sidebar.includes(">实时读写</summary>"), "live section should be renamed to read/write");
-assert.ok(sidebar.includes(">\u70e7\u5f55</button>"), "Chinese sidebar should label the primary action as flash");
-assert.ok(
-    sidebar.includes("white-space:nowrap;cursor:pointer}.mini.primary"),
-    "mini buttons should never wrap to two lines"
-);
-
-// 双语支持与语言切换（中文 / English）
-assert.ok(sidebar.includes('id="langToggle"'), "sidebar should expose a top-right language toggle button");
-assert.ok(sidebar.includes("window.__I18N__="), "sidebar should inject the shared i18n dictionary");
-assert.ok(sidebar.includes("m.type==='setLang'"), "sidebar should react to language switch messages");
-assert.ok(sidebar.includes('lang="zh-CN"'), "default sidebar should render in Chinese");
-const sidebarEn = modernView.getModernWebviewContent(
-    { elf: "app.elf", debugger: "stlink.cfg", mcu: "stm32f4x.cfg", svd: "" },
-    "en"
-);
-validateScripts("modernView-en", sidebarEn);
-assert.ok(sidebarEn.includes('lang="en"'), "English sidebar should set the html lang attribute");
-assert.ok(sidebarEn.includes(">Chip Info</summary>"), "English sidebar should translate section headers");
-assert.ok(sidebarEn.includes(">Flash</button>"), "English sidebar should label the primary action as flash");
-assert.ok(sidebarEn.includes(">Write List</span>"), "English sidebar should translate the write list section");
-assert.ok(
-    sidebarEn.includes(">Live Read/Write</summary>"),
-    "English sidebar should translate the renamed live section"
-);
-
-const panelHtml = liveWatchView.getLiveWatchContent({ maxSamples: -10, intervalMs: 1 });
-validateScripts("liveWatchView", panelHtml);
-const panel = {
-    includes: (value) => sourceIncludes(panelHtml, value),
-    indexOf: (value) => {
-        const direct = panelHtml.indexOf(value);
-        return direct >= 0 ? direct : normalizeSource(panelHtml).indexOf(normalizeSource(value));
-    }
-};
-assert.strictEqual(
-    i18n.t("zh", "lw.panelTitle", { n: 2 }),
-    "波形图 #2",
-    "chart panel tabs should use the concise waveform title"
-);
-assert.ok(panel.includes('id="timeWindow"'));
-assert.ok(
-    panel.includes('option value="custom"') && panel.includes('data-i18n="lw.windowCustom"'),
-    "manual chart zoom should expose a custom window state"
-);
-assert.ok(panel.includes('id="freeze"'));
-assert.ok(
-    panel.includes('id="chartTimeline"') &&
-        panel.includes('id="chartFromRange"') &&
-        panel.includes('id="chartToRange"'),
-    "the chart should expose an editable dual-handle timeline"
-);
-assert.ok(
-    panel.includes('id="chartRangeFill"') && panel.includes("VP.panClamped(startRange,delta"),
-    "the highlighted chart range should be draggable as a whole"
-);
-assert.ok(
-    panel.includes("function snapDraggedRangeEdges()") && panel.includes("chartState.follow=false;fill.classList.add"),
-    "a new timeline-range drag should pause right-edge following before evaluating either snap edge"
-);
-assert.ok(
-    panel.includes("snapDraggedRangeEdges();setWindowCustom()") &&
-        panel.includes("chartState.x.min-chartState.bounds.min<=tolerance"),
-    "dragging the highlighted chart range near the left edge should snap to the sampling start"
-);
-assert.ok(
-    panel.includes("startPinned:false") &&
-        panel.includes("else if(chartState.startPinned)chartState.x={min:next.min,max:next.max}"),
-    "simultaneously pinned timeline endpoints should expand instead of shifting the left edge"
-);
-assert.ok(
-    panel.includes("if(edge==='min'") &&
-        panel.includes("if(edge==='max'") &&
-        panel.includes("chartState.startPinned=chartState.x.min===chartState.bounds.min"),
-    "timeline endpoint handles should snap and retain their edge state independently"
-);
-assert.ok(
-    panel.includes("function beginTimelineEndpoint(edge)") &&
-        panel.includes("chartState.follow=!chartState.endpointDrag"),
-    "live following should remain paused throughout an endpoint-handle drag"
-);
-assert.ok(
-    panel.includes("samplingOrigin") &&
-        panel.includes("chartAxisStart').textContent=formatElapsed(chartState.bounds.min-origin)") &&
-        panel.includes("chartAxisEnd').textContent=formatElapsed(chartState.bounds.max-origin)"),
-    "rolling chart buffers should retain elapsed sampling-time labels instead of resetting the visible left edge to 00:00"
-);
-assert.ok(
-    panel.includes("canvas.addEventListener('wheel'") && panel.includes("region==='plot'||region==='x'"),
-    "wheel input should zoom the plot and X axis continuously"
-);
-assert.ok(
-    panel.includes("region==='plot'||region==='y'") && panel.includes("VP.zoomCentered(chartState.y"),
-    "Y zoom should remain centered"
-);
-assert.ok(
-    panel.includes("e.button!==2") && panel.includes("canvas.addEventListener('contextmenu'"),
-    "right-button dragging should adjust the waveform without opening a context menu"
-);
-assert.ok(
-    panel.includes("Math.min(4,(dy/g.ph)*4)") && panel.includes("VP.zoomCentered(chartState.drag.y"),
-    "right-button vertical dragging should scale continuously around the Y viewport center"
-);
-assert.ok(
-    panel.includes("function drawCrosshair(colors)") &&
-        panel.includes("yValue=chartState.y.max-ratio*VP.span(chartState.y)"),
-    "hovering should show the Y coordinate directly under the cursor"
-);
-assert.ok(panel.includes("if(!norm)drawAxisBadge(yText"), "normalized charts should hide the cursor Y-axis value");
-assert.ok(panel.includes("var padL=64"), "the chart should keep a compact Y-axis gutter");
-assert.ok(panel.includes(">波形图</span>"), "the live chart header should use the waveform title");
-assert.ok(
-    panel.includes("window.EmberChartViewport") && panel.includes("function zoomClamped"),
-    "the panel should embed the testable viewport math module"
-);
-assert.ok(
-    panel.includes('id="export"') && panel.includes("type:'exportCsv'"),
-    "chart toolbar should offer CSV export through the extension"
-);
-assert.ok(panel.includes("function buildCsv"), "panel should embed the shared CSV builder");
-assert.ok(
-    panel.includes("window.__BUILD_CSV__=function buildCsv") && panel.includes("var buildCsv=window.__BUILD_CSV__"),
-    "the webview should execute the shared CSV builder"
-);
-assert.ok(
-    panel.includes('id="exportOverlay"') && panel.includes('id="exportSeries"') && panel.includes('name="exportRange"'),
-    "CSV export should offer series and time-range selection"
-);
-assert.ok(
-    panel.includes('id="exportFromRange"') &&
-        panel.includes('id="exportToRange"') &&
-        panel.includes('id="exportRangeFill"'),
-    "custom CSV ranges should use a dual-handle timeline"
-);
-assert.ok(!panel.includes('type="datetime-local"'), "custom CSV ranges should no longer use datetime text fields");
-assert.ok(
-    panel.includes("type:'samplingArchiveInfo'") &&
-        panel.includes("exportOpenedAt=last") &&
-        panel.includes("exportAxisStart').textContent='00:00'"),
-    "the export timeline should use the complete archive bounds instead of the chart buffer"
-);
-assert.ok(
-    panel.includes('class="export-custom disabled"') && panel.includes("classList.toggle('disabled',!enabled)"),
-    "the export timeline should remain visible but disabled outside custom mode"
-);
-assert.ok(
-    panel.includes(".export-timeline:before") &&
-        panel.includes("repeating-linear-gradient(90deg") &&
-        panel.includes("height:26px"),
-    "the export timeline should use a long editing-track style with time ticks"
-);
-assert.ok(
-    panel.includes("width:10px;height:34px") && panel.includes("border-radius:2px"),
-    "timeline trim handles should be tall rectangular controls"
-);
-assert.ok(
-    panel.includes("m.type==='exportCsvResult'") &&
-        panel.includes("names:selected.map") &&
-        panel.includes("fromMs:opts.from,toMs:opts.to"),
-    "CSV export should send archive series and range selection to the extension host"
-);
-assert.ok(panel.includes("lw.noDataToExport"), "exporting without data should hint instead of writing a file");
-assert.ok(
-    panel.includes("html,body{width:100%;height:100%;overflow:hidden}"),
-    "panel should fit its webview without page scrolling"
-);
-assert.ok(
-    panel.includes("card.append(rm,sw,main,sel)"),
-    "remove button should be the first control in each variable card"
-);
-assert.ok(panel.includes("rm.textContent='-'"), "graph remove control should use a minus sign");
-assert.ok(panel.includes('id="sideSplitter"'), "current-value column should expose a vertical splitter");
-assert.ok(panel.includes('id="sideToggle"'), "current-value column should be collapsible");
-assert.ok(
-    panel.includes("document.body.classList.toggle('debug-stale'"),
-    "the live panel should track DAP snapshot freshness"
-);
-assert.ok(panel.includes("body.debug-stale .var-value"), "the live panel should gray stale debug values");
-assert.ok(panel.includes(".side-toggle:before"), "collapse control should use a compact pane-layout icon");
-assert.ok(
-    panel.includes(".layout.side-collapsed .side-toggle{color:var(--vscode-focusBorder)"),
-    "collapsed value pane should have a distinct toggle state"
-);
-assert.ok(
-    panel.indexOf('id="sideToggle"') < panel.indexOf('id="run"'),
-    "value-pane toggle should sit before the sampling button"
-);
-assert.ok(
-    panel.includes("input[type=number]::-webkit-inner-spin-button"),
-    "number inputs should suppress theme-inconsistent native spinners"
-);
-assert.ok(
-    panel.includes(".overlay{background:color-mix(in srgb,var(--vscode-editor-background)"),
-    "import overlay should follow the active editor theme"
-);
-assert.ok(panel.includes("impHead.className='imp-head'"), "import dialog should render an aligned metadata header");
-assert.ok(panel.includes("z.className='size'"), "import dialog should align size in its own column");
-assert.ok(panel.includes("if(sym.isComposite)"), "graph importer should reject aggregate variables");
-assert.ok(panel.includes('id="langToggle"'), "live panel should expose a language toggle button");
-const panelEn = liveWatchView.getLiveWatchContent({ maxSamples: 2000, intervalMs: 100 }, "en");
-validateScripts("liveWatchView-en", panelEn);
-assert.ok(panelEn.includes('lang="en"'), "English live panel should set the html lang attribute");
-assert.ok(panelEn.includes(">Import Variables</button>"), "English live panel should translate toolbar buttons");
-
-const extensionSource = fs.readFileSync(require.resolve("../src/extension"), "utf8");
-const providerText = fs.readFileSync(require.resolve("../src/mainViewProvider"), "utf8");
-const providerSource = new String(providerText);
-providerSource.includes = (value) => sourceIncludes(providerText, value);
-const checkerSource = fs.readFileSync(require.resolve("../src/openocdChecker"), "utf8");
-const agentServiceSource = fs.readFileSync(require.resolve("../src/services/agentService"), "utf8");
-const chipServiceSource = fs.readFileSync(require.resolve("../src/services/chipInfoService"), "utf8");
-const agentBridgeSource = fs.readFileSync(require.resolve("../src/agentBridge"), "utf8");
-assert.ok(!extensionSource.includes("withAgentBridge"), "ordinary public commands must not start the Agent Bridge");
-const resolveViewSource = providerSource.slice(providerSource.indexOf("resolveWebviewView(webviewView)"));
-const refreshVariablesSource = providerText.slice(
-    providerText.indexOf('case "refreshVariables"'),
-    providerText.indexOf('case "saveSidebarWatch"')
-);
-assert.ok(
-    !resolveViewSource.slice(0, resolveViewSource.indexOf("webviewView.webview.options")).includes("startAgentBridge"),
-    "opening the sidebar must not start the Agent Bridge"
-);
-assert.ok(
-    providerSource.includes("hasWorkspaceSkills(status)") && providerSource.includes("_syncAgentBridgeWithSkills"),
-    "workspace Skills state should exclusively control the Agent Bridge"
-);
-assert.ok(
-    agentBridgeSource.includes("fs.rmdir(path.dirname(this.pointerPath))"),
-    "stopping the bridge should remove its empty workspace directory"
-);
-assert.ok(providerSource.includes("type: 'openocdStatus'"), "provider should publish OpenOCD state to the sidebar");
-assert.ok(
-    refreshVariablesSource.includes("_rebindWatchLists") &&
-        refreshVariablesSource.includes("_refreshSamplingPlan") &&
-        refreshVariablesSource.includes('type: "sidebarWatchList"') &&
-        sidebar.includes("m.resetValues") &&
-        panel.includes("m.resetValues"),
-    "refreshing the ELF must rebind persisted watch lists and refresh the active sampling plan"
-);
-assert.ok(extensionSource.includes("manageAgentSkills"), "extension should register the Agent Skills management menu");
-assert.ok(
-    providerSource.includes("case 'exportCsv'") && providerSource.includes("showSaveDialog"),
-    "provider should save chart CSV via the native save dialog"
-);
-assert.ok(!checkerSource.includes("showWarningMessage"), "missing OpenOCD must not use notification popups");
-assert.ok(
-    !checkerSource.includes("ProgressLocation.Notification"),
-    "OpenOCD installation progress should stay in the sidebar"
-);
-assert.ok(providerSource.includes("readChipInfoAction"), "provider should implement a chip info read action");
-assert.ok(chipServiceSource.includes('type: "chipInfo"'), "chip service should publish chip info to the sidebar");
-assert.ok(chipServiceSource.includes("this.running"), "chip info reads should guard against concurrent probe usage");
-assert.ok(
-    providerSource.includes("clipboard.writeText"),
-    "provider should copy chip UID via the VS Code clipboard API"
-);
-assert.ok(
-    providerSource.includes("_scalarWatchList"),
-    "persisted aggregate watches should be filtered before sampling"
-);
-assert.ok(
-    providerSource.includes("new AgentOrchestrator") && agentServiceSource.includes("new this.Bridge"),
-    "provider should expose the authenticated local Agent Bridge through AgentOrchestrator"
-);
-assert.ok(providerSource.includes("'config.set':"), "Agent Bridge should support synchronized configuration changes");
-assert.ok(providerSource.includes("'watch.add':"), "Agent Bridge should add variables to the sidebar or chart");
-assert.ok(
-    providerSource.includes("'variables.exportCsv':") && providerSource.includes("case 'agentExportCsvResult'"),
-    "Agent Bridge should export the selected chart's real history buffer"
-);
-assert.ok(providerSource.includes("'variables.read':"), "Agent Bridge should support one-shot variable reads");
-assert.ok(providerSource.includes("'variables.sample':"), "Agent Bridge should support autonomous trend sampling");
-assert.ok(
-    providerSource.includes("'peripherals.list':") && providerSource.includes("'peripherals.write':"),
-    "Agent Bridge should expose SVD peripheral inspection and confirmed writes"
-);
-assert.ok(
-    providerSource.includes("'debug.control':") && providerSource.includes("'debug.breakpoints.update':"),
-    "Agent Bridge should expose Cortex-Debug execution and breakpoint control"
-);
-assert.ok(
-    providerSource.includes("source = 'temporary-probe'"),
-    "one-shot reads should start a temporary probe when sampling is off"
-);
-assert.ok(
-    providerSource.includes("source = 'debug-session'"),
-    "paused Cortex-Debug reads should reuse DAP instead of opening a competing probe"
-);
-assert.ok(
-    providerSource.includes("this._postAgentSampling(true, 'live.agentStarting'"),
-    "temporary Agent sampling should be visible and cancellable while the probe starts"
-);
-assert.ok(
-    providerSource.includes("if (this._agentReadRunning) this.stopAgentReadIfRunning()"),
-    "sidebar and chart stop actions should cancel Agent-owned sampling"
-);
-assert.ok(
-    providerSource.includes("this._agentReadDelayResolve"),
-    "Agent sampling interval should be cancellable without waiting for the full delay"
-);
-assert.ok(panel.includes('"maxSamples":100'), "maxSamples should be clamped");
-assert.ok(panel.includes('"intervalMs":20'), "interval should be clamped");
-const panelTwo = liveWatchView.getLiveWatchContent({ maxSamples: 2000, intervalMs: 100, panelId: 2 });
-assert.ok(
-    sourceIncludes(panelTwo, '"panelId":2') && sourceIncludes(panelTwo, "m.panelId=CFG.panelId"),
-    "panel identity should be injected into every upstream message"
-);
-assert.ok(
-    providerSource.includes("this._livePanels = new Map()") &&
-        providerSource.includes("nextLivePanelId(this._livePanels)"),
-    "provider should manage multiple stable live-panel slots"
-);
-assert.ok(
-    providerSource.includes("types.graphs.get(entry.watchKey)") && providerSource.includes("entry.latestSamples"),
-    "samples should be decoded and cached per panel"
-);
-assert.ok(
-    providerSource.includes("type: 'liveInterval'") && panel.includes("m.type==='liveInterval'"),
-    "sampling interval changes should be broadcast globally"
-);
-assert.ok(
-    panel.includes("m.type==='agentExportCsv'") && panel.includes("type:'agentExportCsvResult'"),
-    "the chart webview should serve Agent CSV requests from its own buffer"
-);
-assert.ok(
-    providerSource.includes("previousText:") &&
-        providerSource.includes("writtenText:") &&
-        providerSource.includes("readBackText:"),
-    "write results should expose exact decoded text for every stage"
-);
-
-// 连接失效必须一次性停止采样并拒绝整个 FIFO，避免迟到响应串到下一个请求。
-let disconnects = 0;
-let rejected = 0;
-const session = new LiveWatchSession(
-    null,
-    {},
-    {
-        onDisconnect: () => {
-            disconnects++;
-        }
-    }
-);
-session.queue.push(
-    {
-        reject: () => {
-            rejected++;
-        }
-    },
-    {
-        reject: () => {
-            rejected++;
-        }
-    }
-);
-session._abortConnection(new Error("timeout"));
-session._abortConnection(new Error("duplicate"));
-assert.strictEqual(session.stopped, true);
-assert.strictEqual(session.queue.length, 0);
-assert.strictEqual(rejected, 2);
-assert.strictEqual(disconnects, 1);
-
-// start() 进行中触发 abort：应拒绝 start Promise 而非调用 onDisconnect，避免重复通知
-let startErr = null;
-const session2 = new LiveWatchSession(
-    null,
-    {},
-    {
-        onDisconnect: () => {
-            disconnects++;
-        }
-    }
-);
-session2._startReject = (err) => {
-    startErr = err;
-};
-session2._abortConnection(new Error("child exited during connect"));
-assert.ok(
-    startErr && startErr.message === "child exited during connect",
-    "start promise should be rejected with the abort reason"
-);
-assert.strictEqual(session2._startReject, null, "_startReject should be cleared after deferral");
-assert.strictEqual(disconnects, 1, "onDisconnect must not fire while start is in flight");
-
-let connectingSocketDestroyed = 0;
-const session3 = new LiveWatchSession(null, {}, {});
-session3.connectingSocket = {
-    destroyed: false,
-    destroy() {
-        this.destroyed = true;
-        connectingSocketDestroyed++;
-    }
-};
-session3.stop();
-assert.strictEqual(connectingSocketDestroyed, 1, "stopping during startup must close the in-flight socket");
-assert.strictEqual(session3.connectingSocket, null);
-
-// 采样中拔出调试器：USB 读写失败等致命日志应被识别为断开（以便自动停止采样）
-const probeGone = new LiveWatchSession(null, {}, {});
-assert.ok(
-    probeGone._isFatalProbeLog("Error: error writing data: WriteFile: (0x0000048F)"),
-    "USB WriteFile failure must be treated as a debugger disconnect"
-);
-assert.ok(
-    probeGone._isFatalProbeLog("libusb_bulk_write LIBUSB_ERROR_NO_DEVICE"),
-    "libusb no-device must be treated as a disconnect"
-);
-assert.ok(!probeGone._isFatalProbeLog("Info : clock speed 4000 kHz"), "benign info logs must not trigger auto-stop");
-assert.ok(
-    !probeGone._isFatalProbeLog("Error: timed out while waiting for target halted"),
-    "non-link errors must not trigger auto-stop"
-);
-const liveWatchSource = fs.readFileSync(require.resolve("../src/liveWatch"), "utf8");
-assert.ok(
-    sourceIncludes(liveWatchSource, "i18nKey: 'live.probeDisconnected'"),
-    "unplugging the debugger during sampling should abort with a disconnect status"
-);
-
-// 语言自动匹配：按 VS Code 显示语言选择默认界面语言（zh-* → 中文，其余 → 英文）
-assert.strictEqual(i18n.matchVscodeLang("zh-cn"), "zh", "Chinese VS Code locale should map to zh");
-assert.strictEqual(i18n.matchVscodeLang("zh-tw"), "zh", "Traditional Chinese locale should map to zh");
-assert.strictEqual(i18n.matchVscodeLang("en"), "en", "English locale should map to en");
-assert.strictEqual(i18n.matchVscodeLang("ja"), "en", "non-Chinese locales should fall back to en");
-assert.strictEqual(i18n.matchVscodeLang(undefined), "en", "missing locale should fall back to en");
-
-console.log("Webview & live session tests passed");
+const graph = render(getLiveWatchContent({ maxSamples: -10, intervalMs: 1, panelId: 2 }, "en"));
+try {
+    graph.assertHealthy();
+    assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
+    assert.strictEqual(graph.window.__CFG__.maxSamples, 100);
+    assert.strictEqual(graph.window.__CFG__.intervalMs, 20);
+    graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
+    graph.send({ type: "liveStatus", source: "dap", snapshotReady: false, intentEnabled: true });
+    assert.ok(graph.document.body.classList.contains("debug-stale"));
+    graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
+    assert.ok(!graph.document.body.classList.contains("debug-stale"));
+    graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
+    graph.send({ type: "agentExportCsv", requestId: "export", names: ["tick"] });
+    const exported = graph.messages.at(-1);
+    assert.strictEqual(exported.ok, true);
+    assert.strictEqual(exported.rowCount, 1);
+    assert.ok(exported.csv.includes(",7"));
+    assert.strictEqual(exported.panelId, 2);
+    graph.send({ type: "agentExportCsv", requestId: "missing", names: ["absent"] });
+    assert.strictEqual(graph.messages.at(-1).code, "CSV_SERIES_NOT_FOUND");
+    graph.send({ type: "liveInterval", intervalMs: 250 });
+    assert.strictEqual(graph.document.getElementById("interval").value, "250");
+    graph.assertHealthy();
+} finally {
+    graph.close();
+}
+console.log("Webview DOM and message behavior tests passed");

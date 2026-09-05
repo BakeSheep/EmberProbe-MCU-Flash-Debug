@@ -28,6 +28,7 @@ function webviewBuild(area) {
         bundle: true,
         outdir: path.join(__dirname, "dist", "webview", area),
         platform: "browser",
+        banner: { js: require("./src/webviewTemplate").loadRendererPrelude(area) },
         format: "iife",
         target: "es2020",
         minify: false,

@@ -58,6 +58,19 @@ class AgentBridge {
     }
 
     async start() {
+        try {
+            return await this.startServer();
+        } catch (error) {
+            try {
+                await this.stop();
+            } catch (cleanupError) {
+                error.cleanupError = cleanupError;
+            }
+            throw error;
+        }
+    }
+
+    async startServer() {
         if (this.server) return this.descriptor();
         this.server = http.createServer((request, response) => this._receive(request, response));
         await new Promise((resolve, reject) => {
@@ -139,7 +152,11 @@ class AgentBridge {
     async stop() {
         const server = this.server;
         this.server = null;
-        if (server) await new Promise((resolve) => server.close(resolve));
+        if (server)
+            await new Promise((resolve) => {
+                server.close(resolve);
+                server.closeAllConnections();
+            });
         try {
             const current = JSON.parse(await fs.readFile(this.descriptorPath, "utf8"));
             if (current.token === this.token) {

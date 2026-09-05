@@ -43,7 +43,10 @@ async function main() {
         const active = path.join(temporaryRoot, `sampling-history-${process.pid}-abcdef`);
         fs.mkdirSync(stale);
         fs.mkdirSync(active);
-        assert.strictEqual(cleanupStaleSamplingArchives(temporaryRoot), 1);
+        assert.strictEqual(
+            cleanupStaleSamplingArchives(temporaryRoot, process.pid, () => false),
+            1
+        );
         assert.ok(!fs.existsSync(stale), "archives left by dead extension hosts should be removed");
         assert.ok(fs.existsSync(active), "the current extension host archive must be preserved");
 

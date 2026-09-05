@@ -32,6 +32,9 @@ class AgentService {
         this.onCall = options.onCall || null;
         this.handlers = { ...options.handlers };
         this.bridge = null;
+        this.lifecycleEpoch = 0;
+        this.startPromise = null;
+        this.stopPromise = null;
     }
 
     methods() {
@@ -69,21 +72,57 @@ class AgentService {
         );
     }
 
-    async start() {
+    start() {
+        if (this.stopPromise) return this.stopPromise.then(() => this.start());
+        if (this.startPromise) return this.startPromise;
         const workspace = this.workspaceProvider();
-        if (!workspace || this.bridge) return null;
-        this.bridge = new this.Bridge(
+        if (!workspace || this.bridge) return Promise.resolve(null);
+        const epoch = this.lifecycleEpoch;
+        const bridge = new this.Bridge(
             workspace,
             (method, params) => this.call(method, params),
             this.storageDirProvider?.()
         );
-        return await this.bridge.start();
+        this.startPromise = (async () => {
+            await Promise.resolve();
+            try {
+                const result = await bridge.start();
+                if (epoch !== this.lifecycleEpoch) {
+                    await bridge.stop();
+                    return null;
+                }
+                this.bridge = bridge;
+                return result;
+            } catch (error) {
+                try {
+                    await bridge.stop();
+                } catch (cleanupError) {
+                    error.cleanupError = cleanupError;
+                }
+                throw error;
+            } finally {
+                this.startPromise = null;
+            }
+        })();
+        return this.startPromise;
     }
 
-    async stop() {
+    stop() {
+        if (this.stopPromise) return this.stopPromise;
+        this.lifecycleEpoch++;
         const bridge = this.bridge;
         this.bridge = null;
-        if (bridge) await bridge.stop();
+        const starting = this.startPromise;
+        this.stopPromise = (async () => {
+            await Promise.resolve();
+            try {
+                if (starting) await starting.catch(() => {}); // start owns failure cleanup
+                if (bridge) await bridge.stop();
+            } finally {
+                this.stopPromise = null;
+            }
+        })();
+        return this.stopPromise;
     }
 }
 

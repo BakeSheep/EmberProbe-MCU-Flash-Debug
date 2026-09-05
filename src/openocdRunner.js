@@ -346,7 +346,7 @@ function runOpenOcd(vscode, options, onProgress) {
             reject(error);
             return;
         }
-        let pending = "";
+        const pending = { stdout: "", stderr: "" };
         let lastError = "";
         let spawnFailed = false;
         let timedOut = false;
@@ -401,14 +401,14 @@ function runOpenOcd(vscode, options, onProgress) {
             if (event.stage === "verify" && event.bytes) stats.verified = event;
             onProgress(event);
         };
-        const consume = (chunk) => {
-            pending += chunk.toString();
-            const lines = pending.split(/\r?\n/);
-            pending = lines.pop() || "";
+        const consume = (stream, chunk) => {
+            pending[stream] += chunk.toString();
+            const lines = pending[stream].split(/\r?\n/);
+            pending[stream] = lines.pop() || "";
             for (const line of lines) flushLine(line);
         };
-        child.stdout.on("data", consume);
-        child.stderr.on("data", consume);
+        child.stdout.on("data", (chunk) => consume("stdout", chunk));
+        child.stderr.on("data", (chunk) => consume("stderr", chunk));
         child.on("error", (error) => {
             clearTimeout(timeout);
             if (timedOut) return;
@@ -429,9 +429,9 @@ function runOpenOcd(vscode, options, onProgress) {
         child.on("close", (code) => {
             clearTimeout(timeout);
             if (sharedChild === child) sharedChild = null;
-            if (pending) {
-                flushLine(pending);
-                pending = "";
+            for (const stream of ["stdout", "stderr"]) {
+                if (pending[stream]) flushLine(pending[stream]);
+                pending[stream] = "";
             }
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
             if (timedOut) return;

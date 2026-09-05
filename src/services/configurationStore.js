@@ -71,7 +71,7 @@ class ConfigurationStore {
         const workspaceReal = fs.realpathSync(workspace);
         const resolvedReal = fs.realpathSync(resolved);
         const relative = path.relative(workspaceReal, resolvedReal);
-        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
             throw Object.assign(new Error("Path must be inside the current workspace"), {
                 code: "PATH_OUTSIDE_WORKSPACE"
             });
@@ -82,50 +82,86 @@ class ConfigurationStore {
         return this.cleanPath(resolvedReal);
     }
 
-    async update(values) {
-        for (const key of Object.keys(values || {})) {
-            if (!ALLOWED_KEYS.has(key)) {
-                throw Object.assign(new Error(`Unsupported configuration key: ${key}`), { code: "UNSUPPORTED_CONFIG" });
-            }
-        }
-        if (Object.hasOwn(values, "elf")) {
-            await this.context.workspaceState.update(this.cacheKeys.elfPath, this.workspacePath(values.elf, ".elf"));
-        }
-        if (Object.hasOwn(values, "svd")) {
-            await this.context.workspaceState.update(
-                this.cacheKeys.svdPath,
-                this.workspacePath(values.svd, values.svd === "" ? "" : ".svd")
-            );
-        }
-        if (Object.hasOwn(values, "debugger")) {
-            if (!this.isSafeCfg(values.debugger)) {
-                throw Object.assign(new Error("Invalid debugger configuration name"), { code: "INVALID_DEBUGGER" });
-            }
-            await this.context.workspaceState.update(this.cacheKeys.debugger, values.debugger);
-        }
-        if (Object.hasOwn(values, "mcu")) {
-            if (!this.isSafeCfg(values.mcu)) {
-                throw Object.assign(new Error("Invalid MCU target configuration name"), { code: "INVALID_MCU" });
-            }
-            await this.context.workspaceState.update(this.cacheKeys.mcuCore, values.mcu);
-        }
+    update(values) {
+        const pending = (this.updateQueue || Promise.resolve()).then(() => this.commit(values));
+        // A rejected transaction must not poison the queue for subsequent updates.
+        this.updateQueue = pending.catch(() => {});
+        return pending;
+    }
+
+    async commit(values) {
+        if (!values || typeof values !== "object" || Array.isArray(values))
+            throw Object.assign(new Error("Configuration values must be an object"), { code: "INVALID_CONFIG_VALUE" });
         const cfg = this.vscode.workspace.getConfiguration("emberprobe");
-        for (const [key, range] of Object.entries(NUMBER_RANGES)) {
-            if (!Object.hasOwn(values, key)) continue;
-            const number = Number(values[key]);
-            if (!Number.isInteger(number) || number < range[0] || number > range[1]) {
-                throw Object.assign(new Error(`${key} must be an integer from ${range[0]} to ${range[1]}`), {
-                    code: "INVALID_CONFIG_VALUE"
-                });
+        const operations = [];
+        const state = this.context.workspaceState;
+        const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger" };
+        const addState = (key, value) => {
+            const storageKey = this.cacheKeys[stateKeys[key]];
+            operations.push({
+                key,
+                value,
+                previous: state.get(storageKey),
+                write: (v) => state.update(storageKey, v)
+            });
+        };
+        const addSetting = (key, value) =>
+            operations.push({
+                key,
+                value,
+                previous: typeof cfg.inspect === "function" ? cfg.inspect(key)?.workspaceValue : cfg.get(key),
+                write: (v) => cfg.update(key, v, this.vscode.ConfigurationTarget.Workspace)
+            });
+        for (const [key, value] of Object.entries(values)) {
+            if (!ALLOWED_KEYS.has(key))
+                throw Object.assign(new Error("Unsupported configuration key: " + key), { code: "UNSUPPORTED_CONFIG" });
+            if (key === "elf" || key === "svd") addState(key, this.workspacePath(value, "." + key));
+            else if (key === "debugger" || key === "mcu") {
+                if (!this.isSafeCfg(value))
+                    throw Object.assign(new Error("Invalid " + key + " configuration name"), {
+                        code: key === "mcu" ? "INVALID_MCU" : "INVALID_DEBUGGER"
+                    });
+                addState(key, value);
+            } else if (NUMBER_RANGES[key]) {
+                const [min, max] = NUMBER_RANGES[key];
+                const number = Number(value);
+                if (!Number.isInteger(number) || number < min || number > max)
+                    throw Object.assign(new Error(key + " must be an integer from " + min + " to " + max), {
+                        code: "INVALID_CONFIG_VALUE"
+                    });
+                addSetting(key, number);
+            } else {
+                const executable = String(value || "").trim();
+                if (!executable || /[\r\n]/.test(executable))
+                    throw Object.assign(new Error("Invalid OpenOCD path"), { code: "INVALID_OPENOCD_PATH" });
+                addSetting(key, executable);
             }
-            await cfg.update(key, number, this.vscode.ConfigurationTarget.Workspace);
         }
-        if (Object.hasOwn(values, "openocdPath")) {
-            const executable = String(values.openocdPath || "").trim();
-            if (!executable || /[\r\n]/.test(executable)) {
-                throw Object.assign(new Error("Invalid OpenOCD path"), { code: "INVALID_OPENOCD_PATH" });
+        const applied = [];
+        try {
+            for (const operation of operations) {
+                applied.push(operation);
+                await operation.write(operation.value);
             }
-            await cfg.update("openocdPath", executable, this.vscode.ConfigurationTarget.Workspace);
+        } catch (cause) {
+            const rollbackErrors = [];
+            for (const operation of applied.reverse()) {
+                try {
+                    await operation.write(operation.previous);
+                } catch (error) {
+                    rollbackErrors.push({ key: operation.key, message: error.message });
+                }
+            }
+            try {
+                await this.onChanged();
+            } catch (error) {
+                rollbackErrors.push({ key: "notification", message: error.message });
+            }
+            throw Object.assign(new Error("Configuration update failed: " + cause.message), {
+                code: "CONFIG_UPDATE_FAILED",
+                cause,
+                details: { rollbackErrors, actual: this.snapshot() }
+            });
         }
         await this.onChanged();
         return this.snapshot();
