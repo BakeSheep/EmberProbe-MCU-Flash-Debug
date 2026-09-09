@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-09-09
+
 ### Fixed
 
 - 测试运行器统一使用独立且规范化的临时目录，避免 macOS 路径别名导致断言反复失败；补充跨平台目录别名与残留清理回归测试。
