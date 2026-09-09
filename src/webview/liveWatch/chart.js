@@ -3,6 +3,41 @@
     if (typeof module === "object" && module.exports) module.exports = factory();
     else root.EmberProbeChart = factory();
 })(globalThis, function () {
+    function exactInteger(point) {
+        if (point.valueText != null && /^-?\d+$/.test(point.valueText)) return BigInt(point.valueText);
+        return Number.isSafeInteger(point.v) ? BigInt(point.v) : null;
+    }
+
+    // Subtract in integer space before converting to canvas coordinates. Raw history stays exact for CSV.
+    function offsetSeries(series, norm, range) {
+        function originFor(items) {
+            for (const s of items) {
+                for (const p of s.arr) {
+                    if (range && (p.t < range.min || p.t > range.max)) continue;
+                    if (Number.isSafeInteger(p.v)) continue;
+                    const exact = exactInteger(p);
+                    if (exact !== null && !Number.isSafeInteger(Number(exact))) return exact;
+                }
+            }
+            return null;
+        }
+        const origin = norm ? null : originFor(series);
+        return {
+            origin,
+            series: series.map((s) => {
+                const base = norm ? originFor([s]) : origin;
+                if (base === null) return s;
+                return {
+                    ...s,
+                    arr: s.arr.map((p) => {
+                        const exact = exactInteger(p);
+                        return { ...p, v: exact === null ? p.v - Number(base) : Number(exact - base) };
+                    })
+                };
+            })
+        };
+    }
+
     function paintChart({
         canvas,
         ctx,
@@ -21,6 +56,20 @@
         t
     }) {
         const $ = (id) => elements[id];
+        const prepared = offsetSeries(series, norm, chartState.x);
+        series = prepared.series;
+        function axisText(value) {
+            if (prepared.origin === null) return fmtNum(value);
+            const whole = Math.floor(value);
+            const scale = 100000n;
+            const units =
+                (prepared.origin + BigInt(whole)) * scale + BigInt(Math.round((value - whole) * Number(scale)));
+            const absolute = units < 0n ? -units : units;
+            const fraction = String(absolute % scale)
+                .padStart(5, "0")
+                .replace(/0+$/, "");
+            return (units < 0n ? "-" : "") + String(absolute / scale) + (fraction ? "." + fraction : "");
+        }
         function drawAxisBadge(text, x, y, maxWidth, fill, stroke, align) {
             ctx.save();
             ctx.font = "10px " + (style.fontFamily || "sans-serif");
@@ -52,7 +101,7 @@
             var time = chartState.x.min + ((p.x - g.padL) / g.pw) * VP.span(chartState.x),
                 ratio = (p.y - g.padT) / g.ph,
                 yValue = chartState.y.max - ratio * VP.span(chartState.y),
-                yText = fmtNum(yValue);
+                yText = axisText(yValue);
             ctx.save();
             ctx.setLineDash([4, 3]);
             ctx.globalAlpha = 0.72;
@@ -94,7 +143,11 @@
                 $("range").textContent = "-";
                 return;
             }
-            var padL = 64,
+            ctx.font = "10px " + (style.fontFamily || "sans-serif");
+            var padL =
+                    prepared.origin === null
+                        ? 64
+                        : Math.max(64, ctx.measureText(String(prepared.origin) + ".00000").width + 20),
                 padR = 18,
                 padT = 18,
                 padB = 42,
@@ -105,6 +158,8 @@
                 vMax = -Infinity,
                 visibleKey =
                     (norm ? "n:" : "r:") +
+                    String(prepared.origin) +
+                    ":" +
                     series
                         .map(function (s) {
                             return s.item.name;
@@ -170,7 +225,7 @@
                     var val = chartState.y.max - (VP.span(chartState.y) * gy) / 5;
                     ctx.fillStyle = descColor;
                     ctx.textAlign = "right";
-                    ctx.fillText(fmtNum(val), padL - 7, y);
+                    ctx.fillText(axisText(val), padL - 7, y);
                 }
             }
             for (var gx = 0; gx <= 4; gx++) {
@@ -223,7 +278,7 @@
             $("points").textContent = t("lw.points", { n: total });
             $("range").textContent = norm
                 ? t("lw.normalized")
-                : fmtNum(chartState.y.min) + " ～ " + fmtNum(chartState.y.max);
+                : axisText(chartState.y.min) + " ～ " + axisText(chartState.y.max);
         }
 
         paint();

@@ -78,6 +78,7 @@ class SamplingArchive {
         this.firstTimestampMs = null;
         this.lastTimestampMs = null;
         this.variables = new Set();
+        this.scopes = new Map();
         this.handle = null;
         this.drainPromise = null;
         this.exportPromise = null;
@@ -97,20 +98,21 @@ class SamplingArchive {
         await fsp.mkdir(this.rootDir, { recursive: true, mode: 0o700 });
     }
 
-    status() {
+    status(scope = "") {
+        const history = this.scopes.get(scope);
         return {
             active: !this.closed && !this.failed && !this.limitReached,
-            rows: this.rows,
+            rows: history?.rows || 0,
             bytes: this.writtenBytes + this.queuedBytes,
-            variables: Array.from(this.variables),
-            firstTimestampMs: this.firstTimestampMs,
-            lastTimestampMs: this.lastTimestampMs,
+            variables: Array.from(history?.variables || []),
+            firstTimestampMs: history?.firstTimestampMs ?? null,
+            lastTimestampMs: history?.lastTimestampMs ?? null,
             error: this.failed?.message || null,
             limitReached: this.limitReached
         };
     }
 
-    append(samples, timestampMs) {
+    append(samples, timestampMs, scope = "") {
         if (this.closed || this.failed || this.limitReached) return false;
         const values = Object.create(null);
         for (const sample of Array.isArray(samples) ? samples : []) {
@@ -120,7 +122,7 @@ class SamplingArchive {
         }
         if (!Object.keys(values).length) return false;
         const timestamp = Number(timestampMs) || Date.now();
-        const line = Buffer.from(`${JSON.stringify({ t: timestamp, v: values })}\n`);
+        const line = Buffer.from(`${JSON.stringify({ t: timestamp, v: values, scope })}\n`);
         if (this.writtenBytes + this.queuedBytes + line.length > this.maxBytes) {
             this.limitReached = true;
             this.onError(codedError("SAMPLING_ARCHIVE_FULL", "Sampling history reached its configured size limit"));
@@ -129,6 +131,15 @@ class SamplingArchive {
         this.queue.push(line);
         this.queuedBytes += line.length;
         this.rows += 1;
+        let history = this.scopes.get(scope);
+        if (!history) {
+            history = { rows: 0, variables: new Set(), firstTimestampMs: timestamp, lastTimestampMs: timestamp };
+            this.scopes.set(scope, history);
+        }
+        history.rows++;
+        for (const name of Object.keys(values)) history.variables.add(name);
+        history.firstTimestampMs = Math.min(history.firstTimestampMs, timestamp);
+        history.lastTimestampMs = Math.max(history.lastTimestampMs, timestamp);
         this.firstTimestampMs = this.firstTimestampMs == null ? timestamp : Math.min(this.firstTimestampMs, timestamp);
         this.lastTimestampMs = this.lastTimestampMs == null ? timestamp : Math.max(this.lastTimestampMs, timestamp);
         if (this.queuedBytes >= BACKPRESSURE_BYTES) this._setBackpressure(true);
@@ -206,9 +217,10 @@ class SamplingArchive {
         if (!request.outputPath || path.extname(targetPath).toLowerCase() !== ".csv") {
             throw codedError("EXPORT_PATH_INVALID", "A CSV output path is required");
         }
-        const available = Array.from(this.variables);
+        const scope = request.scope || "";
+        const available = this.status(scope).variables;
         const requested = Array.isArray(request.names) && request.names.length ? request.names : available;
-        const names = [...new Set(requested.map(String))].filter((name) => this.variables.has(name));
+        const names = [...new Set(requested.map(String))].filter((name) => available.includes(name));
         if (!names.length) throw codedError("CSV_EXPORT_EMPTY", "No recorded variables were selected");
         const cutoff = await this.flush();
         if (!cutoff) throw codedError("CSV_EXPORT_EMPTY", "No sampled data is available");
@@ -238,6 +250,7 @@ class SamplingArchive {
                     continue;
                 }
                 if (!Number.isFinite(record.t) || record.t < fromMs || record.t > toMs) continue;
+                if ((record.scope || "") !== scope) continue;
                 const values = record.v && typeof record.v === "object" ? record.v : {};
                 batch += `${new Date(record.t).toISOString()},${names.map((name) => csvField(values[name])).join(",")}\r\n`;
                 rowCount += 1;

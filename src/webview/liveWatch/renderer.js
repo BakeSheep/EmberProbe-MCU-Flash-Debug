@@ -487,6 +487,7 @@ function renderCompositeCard(item, idx, box) {
     head.append(arrow, nm, ty, sz);
     var body = document.createElement("div");
     body.className = "comp-body";
+    appendNote(body, t("lw.plotMembersHint"));
     head.onclick = function () {
         expanded[item.name] = !expanded[item.name];
         card.classList.toggle("open", expanded[item.name]);
@@ -1578,12 +1579,27 @@ window.EmberProbeMessages.connect(window, {
         dirty = true;
     },
     variablesList: function (m) {
+        var checked = Array.from($("impList").querySelectorAll("input:checked")).map(function (cb) {
+            return cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
+        });
         allSymbols = m.symbols || [];
         impWarnings = m.warnings || [];
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();
-        } else renderAutocomplete();
+        } else {
+            if (!$("overlay").classList.contains("hidden")) {
+                $("impWarn").textContent = impWarnings.join("；");
+                renderImport();
+                $("impList")
+                    .querySelectorAll("input")
+                    .forEach(function (cb) {
+                        var name = cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
+                        cb.checked = checked.includes(name);
+                    });
+            }
+            renderAutocomplete();
+        }
     },
     addResolved: function (m) {
         addSymbol(m.symbol);

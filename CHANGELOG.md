@@ -8,6 +8,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 
+- 修复 ELF 更新后波形图导入列表未刷新的问题，保留仍有效的勾选；补充结构体成员绘图提示。
+- 波形 CSV 按面板独立归档并标注观察类型，避免侧栏或其他面板的类型覆盖导出值；64 位整数曲线使用精确差值计算，保留相邻大整数的变化。
 - Agent Skills 诊断新增请求上下文：`error.details` 携带方法名、实际超时预算与耗时；状态变更请求在传输超时时标记 `resultUnknown`，提示用对应查询方法核对实际状态，而非在客户端自动重发。
 - `mcu-flash` 预检新增每个字段（ELF、target、probe、OpenOCD）的来源标记 `sources`（explicit/config/auto/default/none），并在 Agent Bridge 配置获取失败时保留原始 `diagnostics`，不再静默吞掉异常。
 - 新增八个 Agent Skills 共享的操作与证据契约文档 `_emberprobe/agent-workflow.md`，覆盖失败处理、重试上限、跨 skill 调用与结果范围表达；每份 `SKILL.md` 在命令示例前说明适用任务、依赖、前置状态、副作用与成功证据。
