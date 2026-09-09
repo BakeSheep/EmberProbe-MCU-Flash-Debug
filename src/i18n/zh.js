@@ -250,6 +250,7 @@ module.exports = Object.freeze({
     "lw.removeFromChart": "从图表移除",
     "lw.clearFilter": "清除筛选",
     "lw.compositeExpandable": "可展开的复合类型（勾选后加入观察列表）",
+    "lw.plotMembersHint": "点击成员旁的颜色按钮即可加入绘图。结构体整体为数值视图。",
     "lw.totalVars": "共 {n} 个变量",
     "lw.showingFirst": "，仅显示前 {n} 个",
     "lw.compositeTitle": "复合类型暂不支持",

@@ -250,6 +250,7 @@ module.exports = Object.freeze({
     "lw.removeFromChart": "Remove from chart",
     "lw.clearFilter": "Clear filter",
     "lw.compositeExpandable": "Expandable composite (check to add to the watch list)",
+    "lw.plotMembersHint": "Click the color button beside a member to plot it. The whole structure is a value view.",
     "lw.totalVars": "{n} variables total",
     "lw.showingFirst": " (showing first {n})",
     "lw.compositeTitle": "Composite types are not supported yet",

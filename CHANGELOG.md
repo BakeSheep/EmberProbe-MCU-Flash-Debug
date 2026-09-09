@@ -6,9 +6,23 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- 测试运行器统一使用独立且规范化的临时目录，避免 macOS 路径别名导致断言反复失败；补充跨平台目录别名与残留清理回归测试。
+
+### Added
+
+- 修复 ELF 更新后波形图导入列表未刷新的问题，保留仍有效的勾选；补充结构体成员绘图提示。
+- 波形 CSV 按面板独立归档并标注观察类型，避免侧栏或其他面板的类型覆盖导出值；64 位整数曲线使用精确差值计算，保留相邻大整数的变化。
+- Agent Skills 诊断新增请求上下文：`error.details` 携带方法名、实际超时预算与耗时；状态变更请求在传输超时时标记 `resultUnknown`，提示用对应查询方法核对实际状态，而非在客户端自动重发。
+- `mcu-flash` 预检新增每个字段（ELF、target、probe、OpenOCD）的来源标记 `sources`（explicit/config/auto/default/none），并在 Agent Bridge 配置获取失败时保留原始 `diagnostics`，不再静默吞掉异常。
+- 新增八个 Agent Skills 共享的操作与证据契约文档 `_emberprobe/agent-workflow.md`，覆盖失败处理、重试上限、跨 skill 调用与结果范围表达；每份 `SKILL.md` 在命令示例前说明适用任务、依赖、前置状态、副作用与成功证据。
+
 ### Changed
 
 - 将 `mcu-download` 与 `mcu-flash-verify` 整合为 `mcu-flash`，将 `mcu-live-watch` 与 `mcu-var-write` 整合为 `mcu-variables`；读取、写入、编程与校验仍保持独立脚本和原有授权边界，安装器仅自动清理未修改的旧 Skill 目录。
+- Agent Bridge 超时不再默认暗示“采样占用”：连接失败、请求超时与服务错误分别描述，缺少服务端结果时明确原因未知；只读请求可在前置不变时最多重试一次，状态变更请求超时不自动重发。
+- 安装完整性检查改为按 `manifest.shared` 显式清单比对，共享 Markdown（如 `agent-workflow.md`）缺失或变更也会使相关 Skills 显示需修复或更新；已安装用户需通过现有安装流程更新 Skills。
 
 ## [0.7.4] - 2026-08-31
 

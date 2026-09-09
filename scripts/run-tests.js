@@ -46,14 +46,22 @@ async function runFile(file, options = {}) {
     const log = [];
     let timedOut = false;
     const env = { ...process.env };
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-test-env-"));
+    // macOS exposes /var through a symlink. Give every child a canonical, private
+    // temp root so new fixtures do not repeat platform-specific path assertions.
+    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-test-env-")));
+    const temp = path.join(sandbox, "tmp");
+    fs.mkdirSync(temp);
     for (const key of Object.keys(env)) {
-        if (["path", "home", "userprofile", "openocd_scripts"].includes(key.toLowerCase())) delete env[key];
+        if (["path", "home", "userprofile", "openocd_scripts", "tmp", "temp", "tmpdir"].includes(key.toLowerCase()))
+            delete env[key];
     }
     env.PATH = sandbox;
     env.HOME = sandbox;
     env.USERPROFILE = sandbox;
     env.XDG_CONFIG_HOME = sandbox;
+    env.TMPDIR = temp;
+    env.TMP = temp;
+    env.TEMP = temp;
     delete env.OPENOCD_SCRIPTS;
     let result;
     try {
@@ -89,7 +97,7 @@ async function runFile(file, options = {}) {
             });
         });
     } finally {
-        fs.rmSync(sandbox, { recursive: true, force: true });
+        fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
     if (options.reportDir)
         fs.writeFileSync(path.join(options.reportDir, relative.replace(/[^a-zA-Z0-9.-]/g, "_") + ".log"), log.join(""));

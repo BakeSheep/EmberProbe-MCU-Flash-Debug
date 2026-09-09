@@ -78,6 +78,42 @@ try {
     paint(options);
     assert.strictEqual(elements.range.textContent, "-");
     paint({ ...options, canvas: { clientWidth: 0, clientHeight: 0 } });
+
+    for (const base of [9007199254740992n, -9223372036854775808n, 18446744073709551614n]) {
+        const exact = [base, base + 1n];
+        const arr = exact.map((v, i) => ({ t: 100 + i * 100, v: Number(v), valueText: String(v) }));
+        state.x = { min: 100, max: 200 };
+        state.autoY = true;
+        calls.length = 0;
+        paint({ ...options, series: [{ item: { name: "wide" }, idx: 0, arr }] });
+        assert.equal(state.y.max - state.y.min, 3, "adjacent integers must remain one unit apart before padding");
+        assert.ok(elements.range.textContent.includes(String(base - 1n)), "axis retains the exact large baseline");
+        assert.ok(elements.range.textContent.includes(String(base + 2n)));
+        assert.deepStrictEqual(
+            arr.map((p) => p.valueText),
+            exact.map(String),
+            "drawing must not mutate CSV history"
+        );
+        const point = calls.find(([op]) => op === "arc");
+        assert.ok(point, "large integers still produce drawable coordinates");
+        paint({
+            ...options,
+            series: [
+                { item: { name: "wide" }, idx: 0, arr: [{ t: 0, v: Number(-base), valueText: String(-base) }, ...arr] }
+            ]
+        });
+        assert.equal(state.y.max - state.y.min, 3, "offscreen history must not erase visible one-unit changes");
+        state.autoY = true;
+        paint({
+            ...options,
+            padRange: (min, max) => ({ min: min - 0.08, max: max + 0.08 }),
+            series: [{ item: { name: "wide" }, idx: 0, arr }]
+        });
+        const expectedMin = base > 0n ? String(base - 1n) + ".92" : String(base) + ".08";
+        assert.ok(elements.range.textContent.startsWith(expectedMin), "fractional ticks retain the exact baseline");
+        paint({ ...options, norm: true, series: [{ item: { name: "wide" }, idx: 0, arr }] });
+        assert.equal(elements.range.textContent, "lw.normalized");
+    }
 } finally {
     dom.window.close();
 }

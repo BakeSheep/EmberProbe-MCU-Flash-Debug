@@ -7,6 +7,16 @@ description: Read and decode Cortex-M fault status registers (CFSR/HFSR/DFSR/MMF
 
 Use `scripts/analyze-fault.js` from this skill directory.
 
+## Before you run
+
+- **Applies to**: reading and decoding Cortex-M fault status registers (CFSR/HFSR/DFSR/MMFAR/BFAR) and symbolizing PC/LR against the ELF for a crashed, frozen, or HardFault-ed target.
+- **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, and a powered target.
+- **Preconditions**: the probe is free — otherwise `PROBE_BUSY` is returned; wait or let the user stop the current owner.
+- **Side effects**: reads the SCB fault registers non-intrusively, briefly halts the core to capture PC/SP/LR/xPSR, then restores the original run state.
+- **Success evidence**: `faultDetected` plus decoded faults and symbolized PC/LR. No fault flags means none is pending — not that the program runs correctly.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 ```bash
 node <skill-dir>/scripts/analyze-fault.js --workspace <workspace>
 ```

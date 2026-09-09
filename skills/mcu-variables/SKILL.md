@@ -5,6 +5,16 @@ description: Read, monitor, trend, export, or explicitly modify MCU variables re
 
 # MCU Variables
 
+## Before you run
+
+- **Applies to**: listing, reading, sampling, trending, or exporting variables, and — only on explicit request — modifying one.
+- **Requires**: the EmberProbe Agent Bridge; live reads/writes also need a connected, powered target. Listing ELF symbols and exporting CSV from an existing chart do not touch the probe.
+- **Preconditions**: an ELF is selected; live sampling needs the probe to be free; a write needs explicit user confirmation with a fresh `confirmationId`.
+- **Side effects**: reads are non-intrusive; `scripts/write.js` changes target RAM and verifies it by readback.
+- **Success evidence**: reads return resolved values (preserve exact 64-bit `valueText`); writes return the readback verification. A read or export success does not prove the firmware behaves correctly.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 Choose the narrowest operation that satisfies the request:
 
 - For listing, reading, sampling, trending, chart integration, or CSV export, read [references/reading.md](references/reading.md) and use `scripts/read.js`.

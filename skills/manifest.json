@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "shared": [
+    "agent-client.js",
+    "agent-workflow.md",
+    "flash-common.js",
+    "openocd-policy.js"
+  ],
   "legacySkills": [
     {
       "name": "mcu-download",
@@ -41,7 +47,7 @@
   "skills": [
     {
       "name": "mcu-flash",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "runtime": true,
       "required": [
         "SKILL.md",
@@ -54,7 +60,7 @@
     },
     {
       "name": "mcu-variables",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "runtime": true,
       "required": [
         "SKILL.md",
@@ -67,37 +73,37 @@
     },
     {
       "name": "mcu-chip-info",
-      "version": "1.2.1",
+      "version": "1.2.2",
       "runtime": true,
       "required": ["SKILL.md", "scripts/read-chip.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-config",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "runtime": true,
       "required": ["SKILL.md", "scripts/config.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-fault-analyzer",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "runtime": true,
       "required": ["SKILL.md", "scripts/analyze-fault.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-elf-analyze",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "runtime": true,
       "required": ["SKILL.md", "scripts/analyze-elf.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-peripheral-debug",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "runtime": true,
       "required": ["SKILL.md", "scripts/peripheral.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-debug-control",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "runtime": true,
       "required": ["SKILL.md", "scripts/debug.js", "agents/openai.yaml"]
     }

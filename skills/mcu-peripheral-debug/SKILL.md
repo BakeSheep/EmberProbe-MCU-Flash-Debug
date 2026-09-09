@@ -7,6 +7,16 @@ description: Inspect and safely modify MCU peripheral registers and bit fields f
 
 Use `scripts/peripheral.js` from this skill directory. Do not parse the SVD or construct raw DAP/OpenOCD commands yourself.
 
+## Before you run
+
+- **Applies to**: inspecting and safely modifying MCU peripheral registers and bit fields from the workspace SVD.
+- **Requires**: the EmberProbe Agent Bridge and an SVD bound to the workspace. `--read`/`--set` also need a unique paused Cortex-Debug session and connected hardware; `--list` only parses the SVD (no hardware).
+- **Preconditions**: `--list` needs a bound SVD (else `SVD_NOT_CONFIGURED`); `--read`/`--set` need the target already paused (never pause implicitly); `--set` needs explicit per-write confirmation.
+- **Side effects**: `--list`/`--read` are read-only (EmberProbe refuses reads with SVD-declared side effects); `--set` writes registers and verifies by readback.
+- **Success evidence**: `--list` returns matched peripherals; `--read` returns exact hex values plus decoded fields; `--set` returns a plan, then after confirmation the readback. A `--list` success does not prove hardware reads work, and a session-gate failure does not prove the register path is broken.
+
+For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
+
 List or search the configured SVD without touching hardware:
 
 ```bash

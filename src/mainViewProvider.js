@@ -1850,7 +1850,7 @@ class MainViewProvider {
                         post({
                             type: "samplingArchiveInfo",
                             openExport: message.openExport === true,
-                            ...this._samplingArchive.status()
+                            ...this._samplingArchive.status(watchKey)
                         });
                         break;
                     case "exportCsv": {
@@ -1870,6 +1870,7 @@ class MainViewProvider {
                         }
                         try {
                             const result = await this._samplingArchive.exportCsv({
+                                scope: watchKey,
                                 outputPath: target.fsPath,
                                 names: message.names,
                                 fromMs: message.fromMs,
@@ -2008,6 +2009,12 @@ class MainViewProvider {
     _syncGraphTarget(entry) {
         if (!entry || !entry.ready) return;
         const post = entry.post;
+        try {
+            const result = this.readElfSymbols();
+            post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
+        } catch (error) {
+            post({ type: "variablesList", symbols: [], warnings: [error.message] });
+        }
         post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
         post({
             type: "liveStatus",
@@ -2129,6 +2136,17 @@ class MainViewProvider {
             if (decoded.scalarSamples.length) entry.post({ type: "liveSample", samples: decoded.scalarSamples, t });
             if (decoded.compositeSamples.length)
                 entry.post({ type: "liveCompositeSample", samples: decoded.compositeSamples, t });
+            // Keep every panel's decoding and type changes separate in exported history.
+            const graphTypes = types.graphs.get(entry.watchKey);
+            this._samplingArchive.append(
+                decoded.scalarSamples.map((sample) => {
+                    const spec = graphTypes.get(sample.name);
+                    const type = typeof spec === "string" ? spec : spec.type;
+                    return { ...sample, name: `${sample.name} [${type}]` };
+                }),
+                t,
+                entry.watchKey
+            );
         }
         const sidebar = this._liveWatchService.decodeConsumerSamples(
             samples,
@@ -2145,12 +2163,7 @@ class MainViewProvider {
                 samples: sidebar.compositeSamples,
                 t
             });
-        const archiveTypes = new Map(types.sidebar);
-        for (const graphTypes of types.graphs.values()) {
-            for (const [name, type] of graphTypes) if (!archiveTypes.has(name)) archiveTypes.set(name, type);
-        }
-        const archived = this._liveWatchService.decodeConsumerSamples(samples, t, archiveTypes, null, new Map());
-        this._samplingArchive.append(archived.scalarSamples, t);
+        this._samplingArchive.append(sidebar.scalarSamples, t);
     }
 
     _setSamplingArchiveBackpressure(paused) {
