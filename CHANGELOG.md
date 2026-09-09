@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- 测试运行器统一使用独立且规范化的临时目录，避免 macOS 路径别名导致断言反复失败；补充跨平台目录别名与残留清理回归测试。
+
 ### Added
 
 - 修复 ELF 更新后波形图导入列表未刷新的问题，保留仍有效的勾选；补充结构体成员绘图提示。
