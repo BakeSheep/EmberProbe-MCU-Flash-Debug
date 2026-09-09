@@ -45,7 +45,7 @@ const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
-const { resolveCortexToolchainForWorkspace } = require("./services/cortexToolchainService");
+const { ensureDebugTools } = require("./services/cortexDebugPreflight");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
 const os = require("os");
@@ -446,6 +446,13 @@ class MainViewProvider {
                     vscode.window.showErrorMessage(this._t("msg.openWorkspaceForDebug"));
                     return false;
                 }
+                const cortexTools = await ensureDebugTools(
+                    vscode,
+                    workspaceFolder,
+                    this._context.workspaceState,
+                    (key) => this._t(key)
+                );
+                if (!cortexTools) return false;
                 // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
                 const configuredOpenOcdPath = vscode.workspace
                     .getConfiguration("emberprobe")
@@ -480,8 +487,7 @@ class MainViewProvider {
                     __emberprobeManagedToken: this._managedDebugToken
                 };
                 if (svdPath) debugConfig.svdFile = svdPath;
-                const cortexTools = resolveCortexToolchainForWorkspace(vscode, workspaceFolder);
-                if (cortexTools?.objdumpPath) debugConfig.objdumpPath = cortexTools.objdumpPath;
+                Object.assign(debugConfig, cortexTools);
                 const startupGate = this._armDebugStartupWatchdog();
                 const startRequest = Promise.resolve(
                     vscode.debug.startDebugging(workspaceFolder, debugConfig, { suppressDebugView: true })

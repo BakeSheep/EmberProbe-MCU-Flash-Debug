@@ -1,6 +1,12 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "msg.selectDebugToolchain": "Select toolchain directory",
+    "msg.debugToolchainMissing":
+        "A complete ARM debug toolchain (GDB, objdump, nm) was not found. Select an installed toolchain directory, or install Arm GNU Toolchain with GDB first.",
+    "msg.debugToolchainDirectory": "Select the ARM toolchain root or bin directory",
+    "msg.debugToolchainInvalid":
+        "The selected directory and its bin subdirectory are missing GDB, objdump, or nm. Check the toolchain installation and Cortex-Debug toolchain prefix setting.",
     "common.notSelected": "Not selected",
     "common.copy": "Copy",
     "common.type": "Type",

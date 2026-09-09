@@ -20,6 +20,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Changed
 
+- Cortex-Debug 启动前检查 GDB、objdump 和 nm，缺失时引导选择工具链根目录或 bin 目录并按工作区记忆；将解析出的路径直接传入调试配置，在工具链检查通过后才启动 OpenOCD。
+- Windows 工具链查找在进程 PATH 失效时补查系统当前保存的 PATH，支持安装工具链后未重启 VS Code 的情况。
+
 - 将 `mcu-download` 与 `mcu-flash-verify` 整合为 `mcu-flash`，将 `mcu-live-watch` 与 `mcu-var-write` 整合为 `mcu-variables`；读取、写入、编程与校验仍保持独立脚本和原有授权边界，安装器仅自动清理未修改的旧 Skill 目录。
 - Agent Bridge 超时不再默认暗示“采样占用”：连接失败、请求超时与服务错误分别描述，缺少服务端结果时明确原因未知；只读请求可在前置不变时最多重试一次，状态变更请求超时不自动重发。
 - 安装完整性检查改为按 `manifest.shared` 显式清单比对，共享 Markdown（如 `agent-workflow.md`）缺失或变更也会使相关 Skills 显示需修复或更新；已安装用户需通过现有安装流程更新 Skills。

@@ -1,6 +1,12 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "msg.selectDebugToolchain": "选择工具链目录",
+    "msg.debugToolchainMissing":
+        "未找到完整的 ARM 调试工具链（GDB、objdump、nm）。请选择已安装的工具链目录；若尚未安装，请先安装包含 GDB 的 Arm GNU Toolchain。",
+    "msg.debugToolchainDirectory": "选择 ARM 工具链根目录或 bin 目录",
+    "msg.debugToolchainInvalid":
+        "所选目录及其 bin 子目录中缺少所需的 GDB、objdump 或 nm。请检查工具链是否完整，以及 Cortex-Debug 的工具链前缀设置。",
     "common.notSelected": "未选择",
     "common.copy": "复制",
     "common.type": "类型",
