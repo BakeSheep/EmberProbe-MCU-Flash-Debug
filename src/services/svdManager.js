@@ -159,6 +159,11 @@ class SvdManager {
         return null;
     }
 
+    async peekBound(folder = this.workspaceForElf()) {
+        if (!folder) return null;
+        return this.library.resolveBound(folder.uri, null, { readOnly: true });
+    }
+
     async currentPath(folder = this.workspaceForElf()) {
         return (await this.resolveForFolder(folder))?.path || "";
     }

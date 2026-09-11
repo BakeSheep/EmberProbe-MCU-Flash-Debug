@@ -415,9 +415,17 @@ function runOpenOcd(executable, args, options = {}) {
             }
             finish(Object.assign(new Error(`OpenOCD timed out after ${timeoutMs}ms`), { code: "OPENOCD_TIMEOUT" }));
         }, timeoutMs);
+        let outputBytes = 0;
         const collect = (stream) => {
             let buffer = "";
             stream.on("data", (chunk) => {
+                if (settled) return;
+                outputBytes += chunk.length;
+                if (outputBytes > 4 * 1024 * 1024 || buffer.length + chunk.length > 65536) {
+                    child.kill("SIGKILL");
+                    finish(Object.assign(new Error("OpenOCD output limit exceeded"), { code: "OPENOCD_OUTPUT_LIMIT" }));
+                    return;
+                }
                 buffer += chunk.toString();
                 const parts = buffer.split(/\r?\n/);
                 buffer = parts.pop();

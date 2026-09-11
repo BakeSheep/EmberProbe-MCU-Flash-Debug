@@ -154,7 +154,7 @@ const delay = (ms) => clock.advance(ms);
         let readCount = 0;
         const guardedSession = {
             ...session,
-            async customRequest(command) {
+            async customRequest(command, args) {
                 commands.push(command);
                 if (command === "readMemory") {
                     if (++readCount === 2) {
@@ -164,7 +164,7 @@ const delay = (ms) => clock.advance(ms);
                             guarded.sessions.set(guardedSession.id, { ...guardedSession });
                         else guarded.epoch++;
                     }
-                    return { data: Buffer.from([1, 2, 3, 4]).toString("base64") };
+                    return { data: Buffer.alloc(args.count, 1).toString("base64") };
                 }
                 return { bytesWritten: 4 };
             }

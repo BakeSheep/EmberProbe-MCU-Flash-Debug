@@ -504,15 +504,25 @@ class DebugSessionBridge {
                 count
             })
         );
-        if (!result.data) throw new Error(`DAP readMemory returned no data for 0x${address.toString(16)}`);
+        if (
+            typeof result.data !== "string" ||
+            result.data.length !== Math.ceil(count / 3) * 4 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(result.data) ||
+            (result.unreadableBytes !== undefined && result.unreadableBytes !== 0)
+        )
+            throw new Error("DAP readMemory returned invalid or incomplete data");
         const data = Uint8Array.from(Buffer.from(result.data, "base64"));
-        if (!data.length) throw new Error(`DAP readMemory returned an empty block for 0x${address.toString(16)}`);
+        if (data.length !== count) throw new Error("DAP readMemory returned a partial block");
         return data;
     }
 
     async readPausedMemory(address, count) {
         const session = this.assertPausedAccess();
-        return this._readBlock(session, Number(address), Number(count));
+        const epoch = this.stopEpoch;
+        const data = await this._readBlock(session, Number(address), Number(count));
+        if (session !== this.activeSession || epoch !== this.stopEpoch || !this.paused || this.transitionKind)
+            throw Object.assign(new Error("Target changed during memory read"), { code: "DEBUG_STATE_CHANGED" });
+        return data;
     }
 
     async writePausedMemory(address, bytes) {

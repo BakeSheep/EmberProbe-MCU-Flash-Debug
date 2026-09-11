@@ -91,6 +91,10 @@ const {
         const installed = await installSkill(vscode, context, "en");
         assert.strictEqual(installed.state, "installed");
         assert.strictEqual(installed.installed, 8);
+        const pointer = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
+        fs.writeFileSync(pointer, JSON.stringify({ descriptorPath: "existing-bridge" }));
+        await installSkill(vscode, context, "en");
+        assert.deepStrictEqual(JSON.parse(fs.readFileSync(pointer, "utf8")), { descriptorPath: "existing-bridge" });
         assert.strictEqual(installed.scopes.workspace.state, "installed");
         assert.strictEqual(installed.scopes.global.state, "notInstalled");
         fs.unlinkSync(path.join(workspace, ".agents", "skills", "mcu-chip-info", "scripts", "read-chip.js"));

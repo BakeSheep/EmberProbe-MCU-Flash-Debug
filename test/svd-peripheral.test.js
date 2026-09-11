@@ -71,6 +71,10 @@ class FakeDebugBridge {
 }
 
 (async () => {
+    assert.throws(
+        () => parseSvd(Buffer.from(SVD.replace("<dim>2</dim>", "<dim>1</dim><dimIndex>0-100000000</dimIndex>"))),
+        (error) => error.code === "INVALID_SVD_DIMENSION"
+    );
     const model = parseSvd(Buffer.from(SVD), "/tmp/test.svd");
     assert.strictEqual(model.svd.device, "TEST32");
     assert.strictEqual(model.svd.endian, "little");
@@ -192,6 +196,40 @@ class FakeDebugBridge {
                 error.details.allowedEnumerations.length === 0
         );
 
+        const originalRead = debugBridge.readPausedMemory.bind(debugBridge);
+        debugBridge.readPausedMemory = async (address, count) => {
+            const data = await originalRead(address, count);
+            debugBridge.epoch++;
+            return data;
+        };
+        await assert.rejects(
+            service.read({ targets: ["GPIOA.MODER"] }),
+            (error) => error.code === "DEBUG_STATE_CHANGED"
+        );
+        await assert.rejects(
+            service.write({ writes: [{ target: "GPIOA.MODER.MODE0", value: "1" }] }),
+            (error) => error.code === "DEBUG_STATE_CHANGED"
+        );
+        debugBridge.readPausedMemory = async () => Uint8Array.from([1]);
+        await assert.rejects(service.read({ targets: ["GPIOA.MODER"] }), /Incomplete/);
+        debugBridge.readPausedMemory = originalRead;
+        const mixed = model.registersByPath.get("gpioa.moder");
+        mixed.fields[1].modifiedWriteValues = "oneToClear";
+        const { assertWritable } = require("../src/services/svdPeripheralService");
+        assert.throws(
+            () => assertWritable(mixed, mixed.fields[0]),
+            (error) => error.code === "PERIPHERAL_WRITE_SEMANTICS_UNSUPPORTED"
+        );
+        assert.throws(
+            () => assertWritable(mixed, null),
+            (error) => error.code === "PERIPHERAL_WRITE_SEMANTICS_UNSUPPORTED"
+        );
+        mixed.fields[1].modifiedWriteValues = "";
+        mixed.fields[1].access = "writeOnce";
+        assert.throws(
+            () => assertWritable(mixed, mixed.fields[0]),
+            (error) => error.code === "PERIPHERAL_WRITE_NOT_ALLOWED"
+        );
         debugBridge.paused = false;
         await assert.rejects(
             () => service.read({ targets: ["GPIOA.MODER"] }),

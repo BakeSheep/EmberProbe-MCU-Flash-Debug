@@ -163,77 +163,56 @@ function requestBuffer(urlValue, options = {}, redirects = 0) {
     });
 }
 
-function requestFile(urlValue, filePath, options = {}, redirects = 0) {
+async function requestFile(urlValue, filePath, options = {}, redirects = 0) {
     const maxBytes = options.maxBytes || MAX_PACK_BYTES;
     const url = ensureSafeUrl(urlValue, options.allowHttpLocalhost);
     if (redirects > (options.maxRedirects ?? 4))
-        return Promise.reject(Object.assign(new Error("Too many download redirects"), { code: "TOO_MANY_REDIRECTS" }));
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        let responseStream = null;
-        let outputStream = null;
-        const fail = (error) => {
-            if (!settled) {
-                settled = true;
-                reject(error);
-            }
-        };
-        const client = url.protocol === "https:" ? https : http;
-        const request = client.get(
-            url,
-            { headers: { "User-Agent": "EmberProbe-CMSIS-Pack/1", Accept: "application/octet-stream,*/*" } },
-            (response) => {
-                responseStream = response;
-                const status = response.statusCode || 0;
-                if (status >= 300 && status < 400 && response.headers.location) {
-                    response.resume();
-                    let redirected;
-                    try {
-                        redirected = new URL(response.headers.location, url).href;
-                        ensureSafeUrl(redirected, options.allowHttpLocalhost);
-                    } catch (error) {
-                        fail(error);
-                        return;
-                    }
-                    requestFile(redirected, filePath, options, redirects + 1).then(resolve, reject);
-                    settled = true;
-                    return;
-                }
-                if (status !== 200) {
-                    response.resume();
-                    fail(
-                        Object.assign(new Error(`Download failed with HTTP ${status}: ${url.href}`), {
-                            code: "HTTP_ERROR",
-                            status
-                        })
-                    );
-                    return;
-                }
-                const total = Number(response.headers["content-length"]) || 0;
-                if (total > maxBytes) {
-                    response.destroy();
-                    fail(Object.assign(new Error("Download exceeds the size limit"), { code: "DOWNLOAD_TOO_LARGE" }));
-                    return;
-                }
-                const output = fs.createWriteStream(filePath, { flags: "wx", mode: 0o600 });
-                outputStream = output;
-                const hash = crypto.createHash("sha256");
-                let received = 0;
-                output.on("error", fail);
-                response.on("data", (chunk) => {
+        throw Object.assign(new Error("Too many download redirects"), { code: "TOO_MANY_REDIRECTS" });
+    throwIfAborted(options.signal);
+    let request;
+    const cancel = () =>
+        request?.destroy(Object.assign(new Error("Download cancelled"), { code: "DOWNLOAD_CANCELLED" }));
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    try {
+        const response = await new Promise((resolve, reject) => {
+            request = (url.protocol === "https:" ? https : http).get(
+                url,
+                {
+                    headers: { "User-Agent": "EmberProbe-CMSIS-Pack/1", Accept: "application/octet-stream,*/*" }
+                },
+                resolve
+            );
+            request.on("error", reject);
+            request.setTimeout(options.timeoutMs || 120000, () =>
+                request.destroy(Object.assign(new Error("Download timed out"), { code: "DOWNLOAD_TIMEOUT" }))
+            );
+            if (options.signal?.aborted) cancel();
+        });
+        const status = response.statusCode || 0;
+        if (status >= 300 && status < 400 && response.headers.location) {
+            response.destroy();
+            return await requestFile(new URL(response.headers.location, url).href, filePath, options, redirects + 1);
+        }
+        if (status !== 200) {
+            response.destroy();
+            throw Object.assign(new Error("Download failed with HTTP " + status), { code: "HTTP_ERROR", status });
+        }
+        const total = Number(response.headers["content-length"]) || 0;
+        if (total > maxBytes) {
+            response.destroy();
+            throw Object.assign(new Error("Download exceeds the size limit"), { code: "DOWNLOAD_TOO_LARGE" });
+        }
+        let received = 0;
+        const hash = crypto.createHash("sha256");
+        const meter = new (require("stream").Transform)({
+            transform(chunk, _encoding, callback) {
+                try {
                     received += chunk.length;
-                    if (received > maxBytes) {
-                        response.destroy(
-                            Object.assign(new Error("Download exceeds the size limit"), { code: "DOWNLOAD_TOO_LARGE" })
-                        );
-                        output.destroy();
-                        return;
-                    }
+                    if (received > maxBytes)
+                        throw Object.assign(new Error("Download exceeds the size limit"), {
+                            code: "DOWNLOAD_TOO_LARGE"
+                        });
                     hash.update(chunk);
-                    if (!output.write(chunk)) {
-                        response.pause();
-                        output.once("drain", () => response.resume());
-                    }
                     options.onProgress?.({
                         phase: "downloading",
                         received,
@@ -241,39 +220,27 @@ function requestFile(urlValue, filePath, options = {}, redirects = 0) {
                         percent: total ? Math.min(100, Math.round((received * 100) / total)) : null,
                         url: url.href
                     });
-                });
-                response.on("error", fail);
-                response.on("end", () => output.end());
-                output.on("finish", () => {
-                    if (!settled) {
-                        settled = true;
-                        resolve({
-                            path: filePath,
-                            url: url.href,
-                            headers: response.headers,
-                            received,
-                            sha256: hash.digest("hex")
-                        });
-                    }
-                });
+                    callback(null, chunk);
+                } catch (error) {
+                    callback(error);
+                }
             }
+        });
+        // pipeline closes every participant before reporting network or filesystem failure.
+        await require("stream/promises").pipeline(
+            response,
+            meter,
+            fs.createWriteStream(filePath, { flags: "wx", mode: 0o600 })
         );
-        request.setTimeout(options.timeoutMs || 120000, () =>
-            request.destroy(Object.assign(new Error("Download timed out"), { code: "DOWNLOAD_TIMEOUT" }))
-        );
-        request.on("error", fail);
-        if (options.signal) {
-            const cancel = () => {
-                const error = Object.assign(new Error("Download cancelled"), { code: "DOWNLOAD_CANCELLED" });
-                responseStream?.destroy(error);
-                outputStream?.destroy(error);
-                request.destroy(error);
-                fail(error);
-            };
-            if (options.signal.aborted) cancel();
-            else options.signal.addEventListener("abort", cancel, { once: true });
-        }
-    });
+        throwIfAborted(options.signal);
+        return { path: filePath, url: url.href, headers: response.headers, received, sha256: hash.digest("hex") };
+    } catch (error) {
+        throwIfAborted(options.signal);
+        throw error;
+    } finally {
+        options.signal?.removeEventListener("abort", cancel);
+        request?.destroy();
+    }
 }
 
 function packageScore(item, identity) {

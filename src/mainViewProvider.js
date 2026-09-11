@@ -23,6 +23,7 @@ const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
+const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
 const { ElfService } = require("./services/elfService");
@@ -213,7 +214,7 @@ class MainViewProvider {
             onStatus: (status) => this._webviewView?.webview.postMessage({ type: "svdStatus", ...status })
         });
         this._svdPeripheralService = new SvdPeripheralService({
-            loadBoundSvd: () => this._svdManager.resolveForFolder(this._commandContext().folder),
+            loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
             debugBridge: this._debugBridge,
             authorization: this._peripheralWriteAuthorization
         });
@@ -222,6 +223,11 @@ class MainViewProvider {
             debugBridge: this._debugBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             startDebug: () => this.commandHandlers["mcu-vscode.debug"]()
+        });
+        this._agentFlashService = new AgentFlashService({
+            coordinator: this._probeCoordinator,
+            authorization: this._flashAuthorization,
+            isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
         });
         this._agentService = new AgentService({
             Bridge: AgentBridge,
@@ -233,6 +239,8 @@ class MainViewProvider {
                 "config.get": () => this._configurationSnapshot(),
                 "config.set": (params) => this._setAgentConfiguration(params.values || {}),
                 "flash.authorize": (params) => this._authorizeAgentFlash(params || {}),
+                "flash.execute": (params) => this._agentFlashService.execute(params || {}),
+                "flash.verify": (params) => this._agentFlashService.execute(params || {}, true),
                 "watch.add": (params) => this._addAgentWatch(params),
                 "variables.exportCsv": (params) => this._exportAgentCsv(params || {}),
                 "variables.read": (params) => this._readAgentVariables(params),
@@ -599,7 +607,7 @@ class MainViewProvider {
     }
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
-        snapshot.svd = await this._svdManager.currentPath();
+        snapshot.svd = (await this._svdManager.peekBound())?.path || "";
         return snapshot;
     }
     _authorizeAgentFlash(params) {
@@ -1460,6 +1468,10 @@ class MainViewProvider {
                         new Error(`Write target must resolve to exactly one scalar member: ${req.name}`),
                         { code: leaves.length ? "UNSUPPORTED_VARIABLE" : "INVALID_VARIABLE_PATH" }
                     );
+                if (Number.isInteger(leaves[0].bitSize))
+                    throw Object.assign(new Error(`Bitfield writes are not supported: ${req.name}`), {
+                        code: "UNSUPPORTED_VARIABLE"
+                    });
                 target = {
                     name: leaves[0].path,
                     address: leaves[0].address >>> 0,

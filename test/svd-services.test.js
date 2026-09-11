@@ -131,6 +131,13 @@ function zipBuffer(entries) {
     assert.strictEqual(await library.resolveBound({ toString: () => "file:///unbound" }), null);
     assert((await library.findCompatible({ device: "STM32F407VG", vendor: "STMicroelectronics" })).length === 1);
 
+    const cached = await library.resolveBound(folderA, null, { readOnly: true });
+    assert.strictEqual((await library.resolveBound(folderA, null, { readOnly: true })).svd, cached.svd);
+    await fs.promises.writeFile(first.path, "broken XML");
+    assert.strictEqual(await library.resolveBound(folderA, null, { readOnly: true }), null);
+    assert.strictEqual(library.bindings()[folderA.toString()], first.hash);
+    await fs.promises.writeFile(first.path, VALID_SVD);
+
     const hierarchy = parseXml(
         Buffer.from(
             `<package><vendor>Keil</vendor><devices><family Dfamily="STM32F4" Dvendor="STMicroelectronics"><debug svd="SVD/STM32F40x.svd" Pname="CM4"/><subFamily DsubFamily="STM32F407"><device Dname="STM32F407VG"/></subFamily></family></devices></package>`
@@ -229,6 +236,12 @@ function zipBuffer(entries) {
             res.end(pack);
             return;
         }
+        if (req.url === "/truncated") {
+            res.setHeader("Content-Length", "10000");
+            res.write("partial");
+            setImmediate(() => res.destroy());
+            return;
+        }
         if (req.url === "/slow") {
             res.setHeader("Content-Type", "application/octet-stream");
             const timer = setInterval(() => res.write(Buffer.alloc(1024)), 10);
@@ -296,6 +309,19 @@ function zipBuffer(entries) {
             }),
             (error) => error.code === "DOWNLOAD_TOO_LARGE"
         );
+
+        const truncatedPath = path.join(storage, "truncated.pack");
+        await assert.rejects(requestFile(baseUrl + "/truncated", truncatedPath, { allowHttpLocalhost: true }));
+        await fs.promises.rm(truncatedPath, { force: true });
+        await assert.rejects(requestFile(baseUrl + "/slow", storage, { allowHttpLocalhost: true }));
+        await assert.rejects(
+            requestFile(baseUrl + "/slow", path.join(storage, "overflow.pack"), {
+                allowHttpLocalhost: true,
+                maxBytes: 1025
+            }),
+            (error) => error.code === "DOWNLOAD_TOO_LARGE"
+        );
+        await fs.promises.rm(path.join(storage, "overflow.pack"));
 
         const packPath = path.join(storage, "test.pack");
         await fs.promises.writeFile(packPath, pack);

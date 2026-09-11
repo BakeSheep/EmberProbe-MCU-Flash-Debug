@@ -64,6 +64,13 @@ function lastJsonLine(stdout) {
     const fakeOpenOcd = makeFakeOpenOcd(root);
 
     const flashAuthorization = new FlashAuthorization();
+    const { AgentFlashService } = require("../src/services/agentFlashService");
+    const { ProbeCoordinator } = require("../src/probeCoordinator");
+    const executor = new AgentFlashService({
+        coordinator: new ProbeCoordinator(),
+        authorization: flashAuthorization,
+        isDebugActive: () => false
+    });
     const bridge = new AgentBridge(
         root,
         async (method, params) => {
@@ -75,6 +82,8 @@ function lastJsonLine(stdout) {
                     openocdPath: fakeOpenOcd
                 };
             }
+            if (method === "flash.execute") return executor.execute(params);
+            if (method === "flash.verify") return executor.execute(params, true);
             if (method === "flash.authorize") {
                 return flashAuthorization.authorize(
                     {

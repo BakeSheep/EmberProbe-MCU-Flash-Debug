@@ -222,10 +222,17 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
             }
         }
         await fs.mkdir(targetRoot, { recursive: true });
-        await fs.rm(path.join(targetRoot, "_emberprobe"), { recursive: true, force: true });
-        await fs.cp(path.join(stage, "_emberprobe"), path.join(targetRoot, "_emberprobe"), {
+        const runtimeRoot = path.join(targetRoot, "_emberprobe");
+        await fs.mkdir(runtimeRoot, { recursive: true });
+        // The bridge owns this live pointer; never delete or restore a stale copy during installation.
+        for (const name of await fs.readdir(runtimeRoot)) {
+            if (name !== "agent-bridge.json")
+                await fs.rm(path.join(runtimeRoot, name), { recursive: true, force: true });
+        }
+        await fs.cp(path.join(stage, "_emberprobe"), runtimeRoot, {
             recursive: true,
-            force: true
+            force: true,
+            filter: (source) => path.basename(source) !== "agent-bridge.json"
         });
         for (const entry of manifest.skills) {
             await fs.rm(path.join(targetRoot, entry.name), { recursive: true, force: true });

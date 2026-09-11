@@ -7,6 +7,11 @@ const { XMLParser, XMLValidator } = require("fast-xml-parser");
 const SUPPORTED_SIZES = new Set([8, 16, 32, 64]);
 const NORMAL_WRITE_ACCESS = "read-write";
 
+function consumeBudget(budget) {
+    if (--budget.remaining < 0)
+        throw Object.assign(new Error("SVD expansion budget exceeded"), { code: "SVD_BUDGET_EXCEEDED" });
+}
+
 function array(value) {
     if (value === undefined || value === null) return [];
     return Array.isArray(value) ? value : [value];
@@ -60,7 +65,7 @@ function resolveDerived(items, kind) {
     const resolving = new Set();
     const resolve = (item) => {
         if (cache.has(item)) return cache.get(item);
-        if (resolving.has(item))
+        if (resolving.size >= 128 || resolving.has(item))
             throw Object.assign(new Error(`Cyclic ${kind} derivedFrom chain`), { code: "INVALID_SVD_DERIVATION" });
         resolving.add(item);
         const reference = text(item?.["@_derivedFrom"]);
@@ -92,10 +97,8 @@ function dimIndexes(node, count) {
     if (range) {
         const start = Number(range[1]);
         const end = Number(range[2]);
-        const values = Array.from({ length: Math.abs(end - start) + 1 }, (_, index) =>
-            String(start + index * Math.sign(end - start || 1))
-        );
-        if (values.length === count) return values;
+        if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && Math.abs(end - start) + 1 === count)
+            return Array.from({ length: count }, (_, index) => String(start + index * Math.sign(end - start || 1)));
     }
     throw Object.assign(new Error(`Invalid SVD dimIndex: ${raw}`), { code: "INVALID_SVD_DIMENSION" });
 }
@@ -178,10 +181,11 @@ function enumerationValue(rawValue) {
     return { value, mask };
 }
 
-function normalizeFields(registerNode, register, defaults) {
+function normalizeFields(registerNode, register, defaults, budget) {
     const raw = resolveDerived(array(registerNode?.fields?.field), "field");
     return raw.flatMap((fieldNode) =>
         expandDim(fieldNode).map(({ node, index, offset }) => {
+            consumeBudget(budget);
             const bits = fieldBits(node);
             const name = expandedName(node, index);
             const properties = inherit(defaults, node);
@@ -205,7 +209,8 @@ function normalizeFields(registerNode, register, defaults) {
     );
 }
 
-function normalizeRegister(node, peripheral, prefix, baseOffset, defaults, index, dimOffset) {
+function normalizeRegister(node, peripheral, prefix, baseOffset, defaults, index, dimOffset, budget) {
+    consumeBudget(budget);
     const name = expandedName(node, index);
     const offset = integer(node?.addressOffset, "register addressOffset") + baseOffset + dimOffset;
     const properties = inherit(defaults, node);
@@ -215,7 +220,7 @@ function normalizeRegister(node, peripheral, prefix, baseOffset, defaults, index
         });
     const path = [peripheral.name, prefix, name].filter(Boolean).join(".");
     const address = peripheral.baseAddress + offset;
-    if (!Number.isSafeInteger(address) || address < 0)
+    if (!Number.isSafeInteger(address) || address < 0 || address + properties.size / 8 > 0x100000000)
         throw Object.assign(new Error(`Invalid SVD register address for ${path}`), { code: "INVALID_SVD_ADDRESS" });
     const register = {
         name,
@@ -232,17 +237,19 @@ function normalizeRegister(node, peripheral, prefix, baseOffset, defaults, index
         modifiedWriteValues: properties.modifiedWriteValues,
         fields: []
     };
-    register.fields = normalizeFields(node, register, properties);
+    register.fields = normalizeFields(node, register, properties, budget);
     return register;
 }
 
-function normalizeRegisterGroup(group, peripheral, prefix, baseOffset, defaults) {
+function normalizeRegisterGroup(group, peripheral, prefix, baseOffset, defaults, budget, depth = 0) {
+    if (depth > 32) throw Object.assign(new Error("SVD nesting budget exceeded"), { code: "SVD_BUDGET_EXCEEDED" });
+    consumeBudget(budget);
     const output = [];
     const registers = resolveDerived(array(group?.register), "register");
     for (const registerNode of registers) {
         for (const item of expandDim(registerNode))
             output.push(
-                normalizeRegister(item.node, peripheral, prefix, baseOffset, defaults, item.index, item.offset)
+                normalizeRegister(item.node, peripheral, prefix, baseOffset, defaults, item.index, item.offset, budget)
             );
     }
     const clusters = resolveDerived(array(group?.cluster), "cluster");
@@ -257,7 +264,9 @@ function normalizeRegisterGroup(group, peripheral, prefix, baseOffset, defaults)
                     peripheral,
                     [prefix, clusterName].filter(Boolean).join("."),
                     offset,
-                    clusterDefaults
+                    clusterDefaults,
+                    budget,
+                    depth + 1
                 )
             );
         }
@@ -272,6 +281,8 @@ function hex(value, bits) {
 
 function parseSvd(buffer, sourcePath = "") {
     if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
+    if (!buffer.length || buffer.length > 32 * 1024 * 1024)
+        throw Object.assign(new Error("SVD size limit exceeded"), { code: "INVALID_SVD_SIZE" });
     const xml = buffer.toString("utf8");
     if (/<!DOCTYPE|<!ENTITY/i.test(xml))
         throw Object.assign(new Error("SVD files with DTD or external entities are not allowed"), {
@@ -295,6 +306,7 @@ function parseSvd(buffer, sourcePath = "") {
         throw Object.assign(new Error(`Unsupported or ambiguous SVD endian: ${endian}`), {
             code: "UNSUPPORTED_SVD_ENDIAN"
         });
+    const budget = { remaining: 100000 };
     const defaults = inherit({ size: 32, access: "read-write" }, deviceNode);
     const peripheralNodes = resolveDerived(array(deviceNode?.peripherals?.peripheral), "peripheral");
     const peripherals = [];
@@ -318,7 +330,8 @@ function parseSvd(buffer, sourcePath = "") {
                 peripheral,
                 "",
                 0,
-                peripheralDefaults
+                peripheralDefaults,
+                budget
             );
             for (const register of peripheral.registers) {
                 if (registersByPath.has(register.path.toLowerCase()))
@@ -420,7 +433,11 @@ function assertReadable(register) {
 }
 
 function assertWritable(register, field) {
-    if (register.access !== NORMAL_WRITE_ACCESS || (field && field.access !== NORMAL_WRITE_ACCESS))
+    if (
+        register.access !== NORMAL_WRITE_ACCESS ||
+        (field && field.access !== NORMAL_WRITE_ACCESS) ||
+        register.fields.some((entry) => entry.access !== NORMAL_WRITE_ACCESS)
+    )
         throw Object.assign(
             new Error(`Peripheral target is not ordinary read-write: ${field?.path || register.path}`),
             {
@@ -428,7 +445,11 @@ function assertWritable(register, field) {
             }
         );
     assertReadable(register);
-    if (register.modifiedWriteValues || field?.modifiedWriteValues)
+    if (
+        register.modifiedWriteValues ||
+        field?.modifiedWriteValues ||
+        register.fields.some((entry) => entry.modifiedWriteValues)
+    )
         throw Object.assign(
             new Error(`Peripheral target has special write semantics: ${field?.path || register.path}`),
             {
@@ -498,13 +519,15 @@ class SvdPeripheralService {
         const bound = await this.loadBoundSvd();
         if (!bound?.path)
             throw Object.assign(new Error("No SVD is configured for this workspace"), { code: "SVD_NOT_CONFIGURED" });
-        const buffer = await fs.promises.readFile(bound.path).catch((error) => {
-            throw Object.assign(new Error(`Cannot read configured SVD: ${bound.path}`), {
-                code: "SVD_READ_FAILED",
-                details: { cause: error.message }
-            });
-        });
-        const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+        const buffer =
+            bound.buffer ||
+            (await fs.promises.readFile(bound.path).catch((error) => {
+                throw Object.assign(new Error(`Cannot read configured SVD: ${bound.path}`), {
+                    code: "SVD_READ_FAILED",
+                    details: { cause: error.message }
+                });
+            }));
+        const sha256 = bound.sha256 || crypto.createHash("sha256").update(buffer).digest("hex");
         if (!this.cache.has(sha256)) this.cache.set(sha256, parseSvd(buffer, bound.path));
         while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
         return this.cache.get(sha256);
@@ -556,9 +579,30 @@ class SvdPeripheralService {
         return { svd: model.svd, peripherals };
     }
 
-    async _readRegister(model, register) {
+    _guard(write = false) {
+        this.debugBridge.assertPausedAccess({ write });
+        const session = this.debugBridge.activeSession;
+        const before = this.debugBridge.agentStatus();
+        return () => {
+            this.debugBridge.assertPausedAccess({ write });
+            const current = this.debugBridge.agentStatus();
+            if (
+                session !== this.debugBridge.activeSession ||
+                before.epoch !== current.epoch ||
+                before.session?.id !== current.session?.id
+            )
+                throw Object.assign(new Error("Peripheral transaction target changed"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+        };
+    }
+
+    async _readRegister(model, register, guard = this._guard()) {
+        guard();
         assertReadable(register);
         const bytes = await this.debugBridge.readPausedMemory(register.address, register.bytes);
+        guard();
+        if (bytes.length !== register.bytes) throw new Error("Incomplete peripheral register read");
         const value = decodeInteger(bytes, model.svd.endian);
         return {
             path: register.path,
@@ -575,7 +619,7 @@ class SvdPeripheralService {
 
     async read(params = {}) {
         const model = await this.model();
-        this.debugBridge.assertPausedAccess();
+        const guard = this._guard();
         const resolvedTargets = [];
         const invalidTargets = [];
         for (const target of array(params.targets)) {
@@ -603,7 +647,7 @@ class SvdPeripheralService {
             throw Object.assign(new Error("No peripheral targets supplied"), { code: "NO_PERIPHERAL_TARGETS" });
         const registers = [];
         for (const register of unique.values()) {
-            const decoded = await this._readRegister(model, register);
+            const decoded = await this._readRegister(model, register, guard);
             delete decoded._value;
             delete decoded._bytes;
             registers.push(decoded);
@@ -611,7 +655,7 @@ class SvdPeripheralService {
         return { svd: model.svd, session: this.debugBridge.agentStatus(), registers };
     }
 
-    async _writePlan(model, writes) {
+    async _writePlan(model, writes, guard = this._guard(true)) {
         this.debugBridge.assertPausedAccess({ write: true });
         const grouped = new Map();
         const seenTargets = new Set();
@@ -633,7 +677,7 @@ class SvdPeripheralService {
             throw Object.assign(new Error("No peripheral writes supplied"), { code: "NO_PERIPHERAL_WRITES" });
         const items = [];
         for (const { register, changes } of grouped.values()) {
-            const snapshot = await this._readRegister(model, register);
+            const snapshot = await this._readRegister(model, register, guard);
             let written = snapshot._value;
             const requested = [];
             for (const change of changes) {
@@ -670,30 +714,48 @@ class SvdPeripheralService {
         return { svd: model.svd, session: this.debugBridge.agentStatus(), items };
     }
 
-    async write(params = {}) {
+    write(params = {}) {
+        const pending = (this.writeQueue || Promise.resolve()).then(() => this._write(params));
+        this.writeQueue = pending.catch(() => {});
+        return pending;
+    }
+
+    async _write(params) {
         const model = await this.model();
-        const plan = await this._writePlan(model, params.writes);
+        const guard = this._guard(true);
+        const plan = await this._writePlan(model, params.writes, guard);
+        guard();
         if (!params.confirmationId) return this.authorization.request(plan);
         this.authorization.authorize(plan, params.confirmationId);
         const results = [];
-        for (const item of plan.items) {
-            await this.debugBridge.writePausedMemory(item.addressNumber, item.bytes);
-            const register = model.registersByPath.get(item.register.toLowerCase());
-            const readBack = await this._readRegister(model, register);
-            if (readBack.value !== item.written)
-                throw Object.assign(new Error(`Peripheral write read-back mismatch for ${item.register}`), {
-                    code: "PERIPHERAL_WRITE_VERIFY_FAILED",
-                    details: { expected: item.written, readBack: readBack.value }
+        let attempted = null;
+        try {
+            for (const item of plan.items) {
+                guard();
+                attempted = item.register;
+                await this.debugBridge.writePausedMemory(item.addressNumber, item.bytes);
+                guard();
+                const register = model.registersByPath.get(item.register.toLowerCase());
+                const readBack = await this._readRegister(model, register, guard);
+                if (readBack.value !== item.written)
+                    throw Object.assign(new Error(`Peripheral write read-back mismatch for ${item.register}`), {
+                        code: "PERIPHERAL_WRITE_VERIFY_FAILED",
+                        details: { expected: item.written, readBack: readBack.value }
+                    });
+                results.push({
+                    target: item.target,
+                    register: item.register,
+                    address: item.address,
+                    previous: item.previous,
+                    written: item.written,
+                    readBack: readBack.value,
+                    verified: true
                 });
-            results.push({
-                target: item.target,
-                register: item.register,
-                address: item.address,
-                previous: item.previous,
-                written: item.written,
-                readBack: readBack.value,
-                verified: true
-            });
+            }
+        } catch (error) {
+            error.details = { ...error.details, completed: results, attempted, resultUnknown: attempted !== null };
+            error.retryable = false;
+            throw error;
         }
         return { svd: model.svd, session: this.debugBridge.agentStatus(), permission: { mode: "once" }, results };
     }

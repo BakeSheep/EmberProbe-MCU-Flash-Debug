@@ -88,6 +88,7 @@ function validateSvdBuffer(buffer, identity = null) {
 class SvdLibraryService {
     constructor(options) {
         this.context = options.context;
+        this.validationCache = new Map();
         this.root = path.join(options.context.globalStorageUri.fsPath, "svd-library");
     }
 
@@ -216,17 +217,25 @@ class SvdLibraryService {
         }
     }
 
-    async resolveBound(folderUri, identity = null) {
+    async resolveBound(folderUri, identity = null, options = {}) {
         const key = folderUri?.toString?.() || String(folderUri || "");
         const hash = this.bindings()[key];
         if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) return null;
         const file = path.join(this.root, hash, "device.svd");
         try {
             const buffer = await fs.promises.readFile(file);
-            const svd = validateSvdBuffer(buffer, identity);
-            return { hash, path: file, metadata: await this.metadata(hash), svd, source: "binding" };
+            const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+            const cacheKey = sha256 + JSON.stringify(identity);
+            let svd = this.validationCache.get(cacheKey);
+            if (!svd) {
+                svd = validateSvdBuffer(buffer, identity);
+                this.validationCache.set(cacheKey, svd);
+                while (this.validationCache.size > 4)
+                    this.validationCache.delete(this.validationCache.keys().next().value);
+            }
+            return { hash, path: file, metadata: await this.metadata(hash), svd, source: "binding", buffer, sha256 };
         } catch {
-            await this.bind(folderUri, "");
+            if (!options.readOnly) await this.bind(folderUri, "");
             return null;
         }
     }

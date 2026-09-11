@@ -124,6 +124,39 @@ function resolver(executable = "openocd") {
     );
     assert.strictEqual(timeoutChild.killed, true);
 
+    // Resource ownership must survive a timeout/output failure until the child closes.
+    for (const mode of ["timeout", "output"]) {
+        const ownedChild = fakeChild();
+        let settled = false;
+        const pending = runOpenOcdOnce({
+            executable: "openocd",
+            probe: "p.cfg",
+            target: "t.cfg",
+            timeoutMs: mode === "timeout" ? 10 : 1000,
+            waitForCloseOnTimeout: true,
+            buildCommands: () => [],
+            resolveLaunch: resolver(),
+            spawnImpl: () => ownedChild
+        }).then(
+            () => {
+                settled = true;
+            },
+            (error) => {
+                settled = true;
+                throw error;
+            }
+        );
+        if (mode === "output") ownedChild.stdout.write("x".repeat(65537));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.strictEqual(ownedChild.killed, true);
+        assert.strictEqual(settled, false);
+        const rejected = assert.rejects(
+            pending,
+            (error) => error.code === (mode === "timeout" ? "OPENOCD_TIMEOUT" : "OPENOCD_OUTPUT_LIMIT")
+        );
+        ownedChild.emit("close", null);
+        await rejected;
+    }
     console.log("OpenOCD one-shot executor tests passed");
 })().catch((error) => {
     console.error(error);

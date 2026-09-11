@@ -3,6 +3,7 @@
 // 说明：本模块为受 MCUViewer（GPLv3）的 Variable Viewer 概念启发的独立实现，未使用其任何代码。
 
 const elfFormat = require("./elfFormat");
+const { validateComposite } = require("./compositeValidation");
 
 const { SUPPORTED_TYPES, typeByteLength, defaultType } = require("./webview/runtime");
 
@@ -139,6 +140,7 @@ function encodeValue(value, type) {
             view.setInt32(0, number, true);
             break;
         case "f32":
+            if (!Number.isFinite(Math.fround(number))) invalid(`Value out of range for f32: ${value}`);
             view.setFloat32(0, number, true);
             break;
         case "f64":
@@ -382,6 +384,7 @@ function parseMemberPath(pathStr) {
 // 返回 [{ name, path, address, size, type, typeName }]
 function expandCompositeLeaves(symbol, layout, pathSpec) {
     if (!layout || !symbol) return [];
+    validateComposite(layout, Number(symbol.size ?? layout.byteSize), Number(symbol.address));
     const baseAddr = Number(symbol.address) >>> 0;
     const leaves = [];
 
@@ -475,6 +478,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                     currentLayout = member.compositeLayout;
                 } else {
                     // 到达标量叶子
+                    if (segmentIndex !== pathSpec.segments.length - 1) return [];
                     return [
                         {
                             name: symbol.name,
@@ -509,6 +513,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         currentLayout.elementType.kind !== "union" &&
                         currentLayout.elementType.kind !== "array"
                     ) {
+                        if (segmentIndex !== pathSpec.segments.length - 1) return [];
                         return [
                             {
                                 name: symbol.name,
@@ -547,6 +552,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
 // 返回 { kind, typeName, members/elements, value? }
 function decodeComposite(bytes, layout) {
     if (!bytes || !layout) return null;
+    validateComposite(layout, Number(layout.byteSize ?? bytes.length));
     const src = Uint8Array.from(bytes);
     const view = new DataView(src.buffer, src.byteOffset);
 

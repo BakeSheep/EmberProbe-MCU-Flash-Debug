@@ -66,6 +66,8 @@ function runOpenOcdOnce(options) {
         const openocdTail = [];
         const pending = { stdout: "", stderr: "" };
         let settled = false;
+        let terminalError = null;
+        let outputBytes = 0;
 
         const finish = (error, exitCode) => {
             if (settled) return;
@@ -82,6 +84,16 @@ function runOpenOcdOnce(options) {
             if (typeof options.onLine === "function") options.onLine(clean);
         };
         const consume = (stream, chunk) => {
+            if (terminalError) return;
+            outputBytes += chunk.length;
+            if (outputBytes > 4 * 1024 * 1024 || pending[stream].length + chunk.length > 65536) {
+                terminalError = Object.assign(new Error("OpenOCD output limit exceeded"), {
+                    code: "OPENOCD_OUTPUT_LIMIT"
+                });
+                child.kill("SIGKILL");
+                if (!options.waitForCloseOnTimeout) finish(terminalError);
+                return;
+            }
             pending[stream] += chunk.toString();
             const lines = pending[stream].split(/\r?\n/);
             pending[stream] = lines.pop() || "";
@@ -106,7 +118,8 @@ function runOpenOcdOnce(options) {
                 typeof options.buildTimeoutError === "function"
                     ? options.buildTimeoutError(timeoutMs)
                     : Object.assign(new Error(`OpenOCD 执行超时（${timeoutMs}ms）`), { code: "OPENOCD_TIMEOUT" });
-            finish(timeoutError);
+            terminalError = timeoutError;
+            if (!options.waitForCloseOnTimeout) finish(timeoutError);
         }, timeoutMs);
 
         child.stdout.on("data", (chunk) => consume("stdout", chunk));
@@ -117,7 +130,7 @@ function runOpenOcdOnce(options) {
                 if (pending[stream]) handleLine(pending[stream]);
                 pending[stream] = "";
             }
-            finish(null, code);
+            finish(terminalError, code);
         });
     });
 }

@@ -228,6 +228,8 @@ function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth) {
         }
     }
     const totalElements = dimensions.length ? dimensions.reduce((a, b) => a * b, 1) : 0;
+    if (!Number.isSafeInteger(totalElements) || totalElements > 65536)
+        throw Object.assign(new Error("DWARF array expansion budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
     const elemSize = elementType.byteSize || 0;
     const compositeLayout =
         typeDie && typeDie.typeRef !== undefined

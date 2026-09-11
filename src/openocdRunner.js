@@ -401,7 +401,17 @@ function runOpenOcd(vscode, options, onProgress) {
             if (event.stage === "verify" && event.bytes) stats.verified = event;
             onProgress(event);
         };
+        let outputBytes = 0;
         const consume = (stream, chunk) => {
+            if (timedOut || spawnFailed) return;
+            outputBytes += chunk.length;
+            if (outputBytes > 4 * 1024 * 1024 || pending[stream].length + chunk.length > 65536) {
+                timedOut = true;
+                clearTimeout(timeout);
+                child.kill("SIGKILL");
+                reject(Object.assign(new Error("OpenOCD output limit exceeded"), { code: "OPENOCD_OUTPUT_LIMIT" }));
+                return;
+            }
             pending[stream] += chunk.toString();
             const lines = pending[stream].split(/\r?\n/);
             pending[stream] = lines.pop() || "";

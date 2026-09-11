@@ -67,7 +67,6 @@ function _parseDwarfInternal(buffer) {
     };
 
     // 读取单个属性值并推进游标
-    const readFormValue = createFormReader({ buf, str, lineStr });
 
     const dies = new Map(); // 节内偏移 → DIE 记录
     const childrenMap = new Map(); // 父 DIE 偏移 → [子 DIE 偏移]
@@ -90,6 +89,8 @@ function _parseDwarfInternal(buffer) {
             break;
         }
         const cuEnd = Math.min(cuStart + 4 + unitLength, infoEnd);
+        const cuBuffer = buf.subarray(0, cuEnd);
+        const readFormValue = createFormReader({ buf: cuBuffer, str, lineStr });
         try {
             const version = buf.readUInt16LE(p);
             p += 2;
@@ -106,6 +107,7 @@ function _parseDwarfInternal(buffer) {
                 addrSize = buf[p];
                 p += 1;
             }
+            if (cuStart + 4 + unitLength > infoEnd || p > cuEnd) throw new Error("Truncated DWARF unit");
             let abbrev = abbrevCache.get(abbrevOff);
             if (!abbrev) {
                 abbrev = parseAbbrev(abbrevSec.data, abbrevOff);
@@ -122,7 +124,7 @@ function _parseDwarfInternal(buffer) {
                     if (guard++ >= MAX_DIES_PER_UNIT)
                         throw Object.assign(new Error("DWARF DIE budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
                     const dieOff = cur.p - infoStart;
-                    const code = readULEB(buf, cur);
+                    const code = readULEB(cuBuffer, cur);
                     if (code === 0) {
                         // 兄弟链结束标记：弹出当前父级
                         if (parentStack.length) parentStack.pop();
