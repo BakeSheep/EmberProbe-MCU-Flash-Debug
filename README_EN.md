@@ -12,7 +12,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
 - Cortex-Debug integration: starts breakpoint debugging.
-- Optionally installs eight Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, Cortex-Debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
+- Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, Cortex-Debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
 
@@ -34,10 +34,15 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 
 ## Agent Skills
 
+The sidebar switch installs EmberProbe Skills in the current workspace. Turning it off removes those skills and their shared runtime while preserving user-created skills. Global installation is no longer offered. The `.ioc` picker lists matching files in the current workspace.
+
 - `mcu-flash`: detects and programs the newest ELF or independently verifies on-chip Flash, reporting the ELF SHA-256 during preflight and execution.
 - `mcu-variables`: reads live values, analyzes trends, exports chart history CSV, or safely writes scalar and composite-leaf variables through two-stage confirmation.
 - `mcu-chip-info`: reads chip info by the `identity`, `debug`, and `runtime` groups, or by specific fields.
 - `mcu-config`: reads or changes ELF, debugger, MCU, SVD, OpenOCD, and sampling parameters.
+- `mcu-cubemx`: updates an existing `.ioc` on Windows and regenerates initialization code through CubeMX CLI after two-stage authorization, with baseline checks, user-code preservation, and recovery copies.
+
+CubeMX and `.ioc` paths appear under MCU Configuration → Other Configuration. Startup detects CubeMX and saves its path as a machine-wide user setting. The `.ioc` selection starts empty and is filled only by clicking Auto-detect Configuration or selecting a file manually. Use the standalone CubeMX version recorded in `.ioc`, its bundled Java, and installed firmware packages. Generation supports the project root and toolchain subdirectories, and rejects external paths, links, and generation hooks. Authorization can be granted once or for the current project for 24 hours; revoke it with the Skill's `--reset-permission`. Keep initialization settings in `.ioc` and application logic in separate sources or `USER CODE` regions. Validate with the project's existing build command after generation. Recovery copies remain in `.emberprobe-cubemx-*` directories; remove them after reviewing the result and keep them out of version control.
 - `mcu-fault-analyzer`: reads and decodes Cortex-M fault registers and symbolizes PC/LR with the current ELF.
 - `mcu-elf-analyze`: analyzes Flash/RAM usage, section layout, and large symbols offline without occupying the debug probe.
 - `mcu-peripheral-debug`: parses the workspace SVD, reads and decodes paused peripheral registers/fields, and performs safe writes after a fresh one-time confirmation for every request.

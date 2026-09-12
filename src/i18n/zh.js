@@ -1,6 +1,18 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "cubemx.baseline": "正在检查已有生成代码",
+    "cubemx.writing": "正在写回生成文件并保存恢复副本",
+    "cubemx.path": "CubeMX 路径",
+    "cubemx.ioc": ".ioc 路径",
+    "cubemx.windowsOnly": "CubeMX 生成仅支持 Windows",
+    "cubemx.invalid": "CubeMX 路径无效，请重新选择",
+    "cubemx.ready": "CubeMX 已就绪",
+    "cubemx.missing": "未找到 CubeMX，请选择安装路径",
+    "cubemx.select": "选择文件",
+    "cubemx.clear": "清空路径",
+    "cubemx.chooseIoc": "选择当前工作区的 .ioc 工程",
+    "cubemx.generating": "CubeMX：验证并生成初始化代码",
     "msg.selectDebugToolchain": "选择工具链目录",
     "msg.debugToolchainMissing":
         "未找到完整的 ARM 调试工具链（GDB、objdump、nm）。请选择已安装的工具链目录；若尚未安装，请先安装包含 GDB 的 Arm GNU Toolchain。",

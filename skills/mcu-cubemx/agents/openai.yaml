@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU CubeMX"
+  short_description: "Configure STM32 and regenerate initialization code"
+  default_prompt: "Use $mcu-cubemx to update my .ioc configuration and regenerate initialization code."

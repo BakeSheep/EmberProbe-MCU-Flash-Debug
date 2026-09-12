@@ -188,6 +188,7 @@ async function inspectSkills(vscode, context) {
 }
 
 async function installSkill(vscode, context, lang, scope = "workspace") {
+    if (scope !== "workspace") throw new Error("Agent Skills installation is workspace-only");
     const workspace = vscode.workspace.workspaceFolders?.[0];
     if (scope === "workspace" && !workspace)
         throw Object.assign(new Error(i18n.t(lang, "msg.openWorkspaceFirst")), { i18nKey: "msg.openWorkspaceFirst" });
@@ -246,9 +247,7 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
         await fs.rm(stage, { recursive: true, force: true });
     }
     const status = await inspectSkills(vscode, context);
-    vscode.window.showInformationMessage(
-        i18n.t(lang, scope === "global" ? "msg.skillsInstalledGlobal" : "msg.skillsInstalled")
-    );
+    vscode.window.showInformationMessage(i18n.t(lang, "msg.skillsInstalled"));
     return status;
 }
 

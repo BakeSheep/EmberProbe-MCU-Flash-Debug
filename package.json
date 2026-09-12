@@ -149,6 +149,12 @@
           "minimum": 64,
           "maximum": 102400,
           "description": "当前扩展会话的自动采样历史最大磁盘占用（MiB），退出时自动删除"
+        },
+        "emberprobe.cubemxPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "STM32CubeMX.exe path, shared by workspaces on this machine. Detected automatically on Windows."
         }
       }
     }

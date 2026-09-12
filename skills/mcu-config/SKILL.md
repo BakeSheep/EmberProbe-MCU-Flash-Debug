@@ -29,6 +29,6 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
    node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
    ```
 
-3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `sampleIntervalMs`, `tclPort`, and `maxSamples`. `openocdPath` is read-only through the Agent Bridge (changing it can point probe calls at an arbitrary executable); instruct the user to change it in VS Code settings or the EmberProbe sidebar instead.
+3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `sampleIntervalMs`, `tclPort`, and `maxSamples`. `iocPath` selects an existing workspace `.ioc`; it does not edit its contents. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
 4. Report the normalized configuration returned by EmberProbe. The extension validates paths, configuration names, numeric ranges, and synchronizes the sidebar immediately.
 5. On failure, parse the stderr JSON diagnostic and report its `error.code`, `likelyCause`, and `suggestedActions`. Do not guess a hardware or service cause for configuration-validation errors.

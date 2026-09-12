@@ -1,6 +1,18 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "cubemx.baseline": "Checking existing generated code",
+    "cubemx.writing": "Applying generated files and saving recovery copies",
+    "cubemx.path": "CubeMX path",
+    "cubemx.ioc": ".ioc path",
+    "cubemx.windowsOnly": "CubeMX generation supports Windows only",
+    "cubemx.invalid": "Invalid CubeMX path; select it again",
+    "cubemx.ready": "CubeMX is ready",
+    "cubemx.missing": "CubeMX not found; select its installation",
+    "cubemx.select": "Select file",
+    "cubemx.clear": "Clear path",
+    "cubemx.chooseIoc": "Select a workspace .ioc project",
+    "cubemx.generating": "CubeMX: validate and generate initialization code",
     "msg.selectDebugToolchain": "Select toolchain directory",
     "msg.debugToolchainMissing":
         "A complete ARM debug toolchain (GDB, objdump, nm) was not found. Select an installed toolchain directory, or install Arm GNU Toolchain with GDB first.",

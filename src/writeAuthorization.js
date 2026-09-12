@@ -1,5 +1,6 @@
 "use strict";
 const crypto = require("crypto");
+const { ConfirmationStore } = require("./confirmationStore");
 
 const DEFAULT_STORAGE_KEY = "agent.writeTrusted";
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
@@ -39,7 +40,8 @@ class WriteAuthorization {
         this.trustTtlMs = options.trustTtlMs || DEFAULT_TRUST_TTL_MS;
         this.now = options.now || (() => Date.now());
         this.createId = options.createId || (() => crypto.randomBytes(16).toString("hex"));
-        this.pending = new Map();
+        this.confirmations = new ConfirmationStore({ now: this.now, ttlMs: this.ttlMs, createId: this.createId });
+        this.pending = this.confirmations.pending;
     }
 
     isTrusted(plan = null) {
@@ -82,16 +84,14 @@ class WriteAuthorization {
 
     _request(plan) {
         this._prune();
-        const confirmationId = this.createId();
         const identity = writePlanIdentity(plan);
-        const expiresAt = this.now() + this.ttlMs;
-        this.pending.set(confirmationId, { identity, fingerprint: fingerprintWritePlan(plan), expiresAt });
+        const { confirmationId, expiresAt } = this.confirmations.request(identity);
         return {
             authorized: false,
             response: {
                 confirmationRequired: true,
                 confirmationId,
-                expiresAt: new Date(expiresAt).toISOString(),
+                expiresAt,
                 scope: "workspace",
                 question:
                     "Allow this MCU memory write? Choose once, or allow future writes for this ELF in this workspace for 24 hours. Changing the ELF requires confirmation again.",

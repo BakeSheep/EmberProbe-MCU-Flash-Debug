@@ -1083,55 +1083,17 @@ function renderSkillStatus(m) {
     lastSkill = m || lastSkill;
     const el = document.getElementById("skillStatus");
     if (!el) return;
-    const status = lastSkill || {},
-        state = status.state || "checking",
-        keys = {
-            outdated: "skill.outdated",
-            modified: "skill.modified",
-            notInstalled: "skill.notInstalled",
-            noWorkspace: "skill.noWorkspace",
-            checking: "skill.checking"
-        };
-    const hasCount = Number.isFinite(status.installed) && Number.isFinite(status.total) && status.total > 0;
-    const label =
-        state === "installed" && hasCount
-            ? t("skill.statusInstalled")
-            : state === "partial" && hasCount
-              ? t("skill.statusPartial")
-              : t(keys[state] || "skill.partial", status);
-    el.textContent = "";
-    const labelEl = document.createElement("span");
-    labelEl.className = "skill-status-label";
-    labelEl.textContent = label;
-    el.appendChild(labelEl);
-    if (hasCount) {
-        const countEl = document.createElement("strong");
-        countEl.className = "skill-status-count";
-        countEl.textContent = status.installed + "/" + status.total;
-        el.appendChild(countEl);
-    }
-    const scopeLine = (labelText, sc) => {
-        if (!sc) return labelText + ": " + t("skill.noWorkspace");
-        const cnt = Number.isFinite(sc.installed) && Number.isFinite(sc.total) && sc.total > 0;
-        const txt =
-            sc.state === "installed" && cnt
-                ? t("skill.installed", { installed: sc.installed, total: sc.total })
-                : sc.state === "partial" && cnt
-                  ? t("skill.partial", { installed: sc.installed, total: sc.total })
-                  : t(keys[sc.state] || "skill.notInstalled");
-        return labelText + ": " + txt;
-    };
-    const skillLines = status.skills ? status.skills.map((s) => s.name + ": " + s.state) : [];
-    el.title = status.scopes
-        ? [
-              scopeLine(t("skill.scopeWorkspace"), status.scopes.workspace),
-              scopeLine(t("skill.scopeGlobal"), status.scopes.global)
-          ]
-              .concat(skillLines)
-              .join("\\n")
-        : skillLines.join("\\n");
-    el.classList.toggle("accent", state === "installed");
+    const workspace = lastSkill?.scopes?.workspace;
+    el.setAttribute("aria-checked", String(!!workspace && workspace.state !== "notInstalled"));
+    el.disabled = !workspace || !!lastSkill.busy;
 }
+const skillToggle = document.getElementById("skillStatus");
+if (skillToggle)
+    skillToggle.onclick = () => {
+        if (skillToggle.disabled || !api) return;
+        skillToggle.disabled = true;
+        api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" });
+    };
 function progress(m) {
     setStat(m.level === "error" ? "error" : m.level === "success" ? "ready" : "", m.key || "", m.params, m.message);
     logEvents.push({ level: m.level, key: m.key, params: m.params, message: m.message });

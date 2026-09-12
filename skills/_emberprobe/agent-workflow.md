@@ -55,7 +55,7 @@ evidence that hardware is disconnected.
 - The debug probe has a **single owner**. Do not start a second OpenOCD-backed operation
   (flash, chip info, fault read, sampling) while another is running; `PROBE_BUSY` means wait or
   let the user stop the current owner — the skill never implicitly pauses or preempts.
-- Route by need: configuration via `mcu-config`; firmware footprint via `mcu-elf-analyze`
+- Route by need: configuration via `mcu-config`; STM32 `.ioc` changes and initialization generation via `mcu-cubemx`; firmware footprint via `mcu-elf-analyze`
   (static, no hardware, but still needs the Bridge to read the selected ELF); live identity via
   `mcu-chip-info`; crash diagnosis via `mcu-fault-analyzer`; variables via `mcu-variables`;
   registers via `mcu-peripheral-debug`; session control via `mcu-debug-control`; flashing via `mcu-flash`.

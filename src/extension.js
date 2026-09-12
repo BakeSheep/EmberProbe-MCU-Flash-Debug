@@ -28,6 +28,7 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
                 provider.refreshOpenOcdStatus(true);
@@ -69,6 +70,7 @@ function activate(context) {
     context.subscriptions.push(...subscriptions);
 
     provider.refreshOpenOcdStatus(false);
+    provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus().catch(() => {});
     if (process.env.EMBERPROBE_E2E === "1") {
         return { viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };

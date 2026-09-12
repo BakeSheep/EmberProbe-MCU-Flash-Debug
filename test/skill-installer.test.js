@@ -90,7 +90,7 @@ const {
     try {
         const installed = await installSkill(vscode, context, "en");
         assert.strictEqual(installed.state, "installed");
-        assert.strictEqual(installed.installed, 8);
+        assert.strictEqual(installed.installed, 9);
         const pointer = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
         fs.writeFileSync(pointer, JSON.stringify({ descriptorPath: "existing-bridge" }));
         await installSkill(vscode, context, "en");
@@ -102,8 +102,15 @@ const {
         assert.strictEqual(partial.state, "partial");
         assert.strictEqual(partial.skills.find((item) => item.name === "mcu-chip-info").state, "partial");
 
-        // 全局安装不要求工作区,与项目范围相互独立
-        const globalInstall = await installSkill(noWorkspaceVscode, context, "en", "global");
+        // Global installation is disabled; retain read/cleanup compatibility with legacy copies.
+        await assert.rejects(installSkill(noWorkspaceVscode, context, "en", "global"), /workspace-only/);
+        const legacyGlobal = path.join(home, ".agents", "skills");
+        fs.cpSync(path.join(workspace, ".agents", "skills"), legacyGlobal, { recursive: true });
+        fs.copyFileSync(
+            path.join(context.extensionPath, "skills/mcu-chip-info/scripts/read-chip.js"),
+            path.join(legacyGlobal, "mcu-chip-info/scripts/read-chip.js")
+        );
+        const globalInstall = await inspectSkills(noWorkspaceVscode, context);
         assert.strictEqual(globalInstall.state, "installed");
         assert.strictEqual(globalInstall.scopes.global.state, "installed");
         assert.strictEqual(globalInstall.scopes.workspace, null);

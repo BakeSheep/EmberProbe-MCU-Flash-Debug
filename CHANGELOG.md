@@ -6,13 +6,26 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- CubeMX 新增候选 `.ioc` 派生命令，支持指定键值变更并保留其他文本；权限查询与生成校验解耦，返回授权记录及当前适用性。
+
+- 新增 Windows `mcu-cubemx` Skill：检测 CubeMX、选择工作区 `.ioc`，经单次或 24 小时授权执行隔离代码生成，并检查原有代码与保留恢复副本。
+- MCU 配置的“其他配置”新增全局 CubeMX 路径和工作区 `.ioc` 路径。
+
 ### Fixed
+
+- 修复 `.ioc` 合法转义键名被拒绝的问题，支持 Properties 转义、续行与分隔符，语法诊断包含行号；允许工程内工具链子目录布局（`UnderRoot=false`），保留版本与外部路径检查。
+
+- CubeMX 检测读取官方 updater.ini 的安装路径与软件版本，并兼容 ST 官方 VS Code 扩展的用户级路径设置，支持非默认目录安装。
 
 - RAM 写入的工作区信任绑定 ELF SHA-256，固件变化和旧版授权均要求重新确认。
 - Agent Bridge 校验本地 Host 与端口、使用恒定时间令牌比较，超限请求返回完整 413 响应，并处理上传中断。
 - DWARF 缩写属性和复合布局展开增加预算限制，避免异常 ELF 导致内存与 CPU 消耗失控。
 
 ### Changed
+
+- Skills 安装改为当前工作区开关，移除全局安装入口与数量标签；其他配置统一图标对齐并使用不同图标，`.ioc` 改为工作区文件列表选择。
 
 - Webview 资产写入与清理改用异步 I/O，缓存相同内容，并防止异步刷新覆盖新视图或恢复已关闭面板。
 

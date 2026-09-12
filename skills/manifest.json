@@ -1,11 +1,6 @@
 {
   "schemaVersion": 1,
-  "shared": [
-    "agent-client.js",
-    "agent-workflow.md",
-    "flash-common.js",
-    "openocd-policy.js"
-  ],
+  "shared": ["agent-client.js", "agent-workflow.md", "flash-common.js", "openocd-policy.js"],
   "legacySkills": [
     {
       "name": "mcu-download",
@@ -106,6 +101,12 @@
       "version": "1.0.1",
       "runtime": true,
       "required": ["SKILL.md", "scripts/debug.js", "agents/openai.yaml"]
+    },
+    {
+      "name": "mcu-cubemx",
+      "version": "1.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/cubemx.js", "agents/openai.yaml"]
     }
   ]
 }

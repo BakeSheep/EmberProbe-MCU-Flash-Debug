@@ -18,6 +18,8 @@ const validation = require("./validation");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
+const { CubeMxService } = require("./services/cubemxService");
+const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
 const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
@@ -59,6 +61,7 @@ const CACHE_KEYS = {
     debugger: "mcu.debugger",
     mcuCore: "mcu.mcuCore",
     svdPath: "mcu.svdPath",
+    iocPath: "mcu.iocPath",
     watchList: "mcu.watchList",
     sidebarWatchList: "mcu.sidebarWatchList",
     sidebarWriteList: "mcu.sidebarWriteList"
@@ -165,6 +168,17 @@ class MainViewProvider {
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
         });
+        this._cubemxConfiguration = new CubeMxConfiguration({
+            vscode,
+            context,
+            changed: () => this.updateView(),
+            t: (key) => this._t(key)
+        });
+        this._cubemxService = new CubeMxService({
+            storage: context.workspaceState,
+            config: () => this._configurationStore.snapshot(),
+            roots: () => (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath)
+        });
         this._flashService = new FlashService(openocdRunner);
         this._faultService = new FaultService(faultInfo, elfSymbols);
         this._elfService = new ElfService({
@@ -239,6 +253,32 @@ class MainViewProvider {
             handlers: {
                 "config.get": () => this._configurationSnapshot(),
                 "config.set": (params) => this._setAgentConfiguration(params.values || {}),
+                "cubemx.detect": () => this._cubemxConfiguration.detect(),
+                "cubemx.inspect": () => this._cubemxService.inspect(),
+                "cubemx.prepare": (params) => this._cubemxService.prepare(params || {}),
+                "cubemx.candidate": (params) => this._cubemxService.generateCandidate(params || {}),
+                "cubemx.execute": (params) =>
+                    vscode.window.withProgress(
+                        {
+                            location: vscode.ProgressLocation.Notification,
+                            title: this._t("cubemx.generating"),
+                            cancellable: true
+                        },
+                        async (progress, token) => {
+                            const controller = new AbortController();
+                            const subscription = token.onCancellationRequested(() => controller.abort());
+                            progress.report({ message: this._t("cubemx.generating") });
+                            try {
+                                return await this._cubemxService.execute(params || {}, controller.signal, (stage) =>
+                                    progress.report({ message: this._t("cubemx." + stage) })
+                                );
+                            } finally {
+                                subscription.dispose();
+                            }
+                        }
+                    ),
+                "cubemx.permission": (params) => this._cubemxService.permission(params || {}),
+                "cubemx.cancel": () => this._cubemxService.cancel(),
                 "flash.authorize": (params) => this._authorizeAgentFlash(params || {}),
                 "flash.execute": (params) => this._agentFlashService.execute(params || {}),
                 "flash.verify": (params) => this._agentFlashService.execute(params || {}, true),
@@ -324,6 +364,8 @@ class MainViewProvider {
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
         this.commandHandlers["mcu-vscode.autoDetect"] = async () => this.runAutoDetect(true);
+        this.commandHandlers["mcu-vscode.selectCubeMx"] = () => this._cubemxConfiguration.select("cubemx");
+        this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.select("ioc");
         this.commandHandlers["mcu-vscode.manageAgentSkills"] = async () => this.manageAgentSkills();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
@@ -1773,14 +1815,11 @@ class MainViewProvider {
     _scopeHasContent(scope) {
         return this._skillStatusService.scopeHasContent(scope);
     }
-    // Agent Skills 管理入口:选择安装范围(当前项目/全局)或按范围卸载
+    // Agent Skills 工作区安装开关
     async manageAgentSkills() {
         const result = await this._skillStatusService.manage();
         if (result) await this._syncAgentBridgeWithSkills(result);
         return result;
-    }
-    async _pickUninstallScope(status, hasWorkspace) {
-        return this._skillStatusService.pickUninstallScope(status, hasWorkspace);
     }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
     openLiveWatchPanel() {
@@ -2592,6 +2631,7 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     shutdown() {
+        this._cubemxService.cancel();
         if (this._shutdownPromise) return this._shutdownPromise;
         this._shutdownPromise = (async () => {
             this._clearDebugStartupWatchdog();
@@ -2903,6 +2943,7 @@ class MainViewProvider {
     }
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
+        const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
         const result = await autoDetect.detectWorkspace(vscode);
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
@@ -2918,6 +2959,7 @@ class MainViewProvider {
         }
         this.updateView();
         const found = [
+            detectedIoc && ".ioc: " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
             result.mcu && this._t("msg.foundMcu", { name: result.mcu }),
             result.debugger && this._t("msg.foundDebugger", { name: result.debugger })
@@ -2935,6 +2977,9 @@ class MainViewProvider {
         return modernView.getModernWebviewContent(
             {
                 elf: elf ? path.basename(elf) : "",
+                cubemxPath: vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
+                iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",
+                cubemxStatus: this._cubemxConfiguration.status,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
                 mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },

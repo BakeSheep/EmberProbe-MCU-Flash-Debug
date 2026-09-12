@@ -7,6 +7,8 @@ const ALLOWED_KEYS = new Set([
     "debugger",
     "mcu",
     "svd",
+    "iocPath",
+    "cubemxPath",
     "openocdPath",
     "sampleIntervalMs",
     "tclPort",
@@ -21,7 +23,7 @@ const NUMBER_RANGES = Object.freeze({
 
 // Agent Bridge 禁止修改的配置键：openocdPath 可把探针调用引向任意可执行文件（token → 本地执行链），
 // 修改必须由用户在 VS Code 设置或侧边栏中完成；UI 路径不经过 store.update，不受此断言影响。
-const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath"]);
+const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath", "cubemxPath"]);
 
 function assertAgentSettable(values) {
     for (const key of Object.keys(values || {})) {
@@ -52,6 +54,8 @@ class ConfigurationStore {
             mcu: this.context.workspaceState.get(this.cacheKeys.mcuCore) || "",
             svd: this.context.workspaceState.get(this.cacheKeys.svdPath) || "",
             openocdPath: cfg.get("openocdPath", "openocd"),
+            cubemxPath: cfg.get("cubemxPath", ""),
+            iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
             sampleIntervalMs: cfg.get("sampleIntervalMs", 100),
             tclPort: cfg.get("tclPort", 6666),
             maxSamples: cfg.get("maxSamples", 2000)
@@ -95,7 +99,7 @@ class ConfigurationStore {
         const cfg = this.vscode.workspace.getConfiguration("emberprobe");
         const operations = [];
         const state = this.context.workspaceState;
-        const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger" };
+        const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger", iocPath: "iocPath" };
         const addState = (key, value) => {
             const storageKey = this.cacheKeys[stateKeys[key]];
             operations.push({
@@ -115,7 +119,10 @@ class ConfigurationStore {
         for (const [key, value] of Object.entries(values)) {
             if (!ALLOWED_KEYS.has(key))
                 throw Object.assign(new Error("Unsupported configuration key: " + key), { code: "UNSUPPORTED_CONFIG" });
-            if (key === "elf" || key === "svd") addState(key, this.workspacePath(value, "." + key));
+            if (key === "cubemxPath") assertAgentSettable({ cubemxPath: value });
+            else if (key === "iocPath")
+                addState(key, await require("./cubemxEnvironment").workspaceIoc(this.vscode, value));
+            else if (key === "elf" || key === "svd") addState(key, this.workspacePath(value, "." + key));
             else if (key === "debugger" || key === "mcu") {
                 if (!this.isSafeCfg(value))
                     throw Object.assign(new Error("Invalid " + key + " configuration name"), {

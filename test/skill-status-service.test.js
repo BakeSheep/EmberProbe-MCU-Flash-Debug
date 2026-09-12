@@ -29,11 +29,11 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(hasWorkspaceSkills({ scopes: { workspace: { state: "partial" } } }), true);
 
         const skillCalls = [];
-        const quickPicks = [{ id: "install:global" }, { id: "uninstall" }, { id: "global" }];
+        const quickPicks = [];
         const notices = [];
         const managedSkills = new SkillStatusService({
             vscode: {
-                workspace: { workspaceFolders: [] },
+                workspace: { workspaceFolders: [{ uri: { fsPath: temp } }] },
                 commands: { executeCommand: (command) => skillCalls.push(command) },
                 window: {
                     showQuickPick: async () => quickPicks.shift(),
@@ -52,10 +52,12 @@ const { createFixture } = require("./helpers/service-fixture");
                 inspectSkills: async () => skillStatus,
                 installSkill: async (_vscode, _context, _lang, scope) => {
                     skillCalls.push(`install:${scope}`);
+                    skillStatus.scopes.workspace = { state: "installed", root: temp };
                     return skillStatus;
                 },
                 uninstallSkill: async (_vscode, _context, _lang, scope) => {
                     skillCalls.push(`uninstall:${scope}`);
+                    skillStatus.scopes.workspace = { state: "notInstalled", root: temp };
                     return skillStatus;
                 }
             },
@@ -63,15 +65,16 @@ const { createFixture } = require("./helpers/service-fixture");
             t: (key) => key,
             onStatus: () => {}
         });
+        skillStatus.scopes.workspace ??= { state: "notInstalled", root: temp };
         assert.strictEqual(await managedSkills.manage(), skillStatus);
         assert.strictEqual(await managedSkills.manage(), skillStatus);
-        assert.ok(skillCalls.includes("install:global") && skillCalls.includes("uninstall:global"));
+        assert.ok(skillCalls.includes("install:workspace") && skillCalls.includes("uninstall:workspace"));
         managedSkills.lastStatus = { state: "modified" };
         managedSkills.warnIfModified();
         managedSkills.promptUpgrade({ state: "outdated" });
         await new Promise((resolve) => setImmediate(resolve));
-        assert.ok(notices.length >= 3);
-        assert.ok(skillCalls.includes("mcu-vscode.manageAgentSkills"));
+        assert.ok(notices.length >= 2);
+        assert.ok(!skillCalls.some((call) => call.includes(":global")));
     } finally {
         fixture.dispose();
     }

@@ -412,6 +412,7 @@ const DIAGNOSTICS = {
 // Bridge 方法按副作用分类：只读方法在传输超时后可在相同前置条件下最多重试一次；
 // 其余方法(状态变更)超时后结果未知，必须查询实际状态、不得自动重发。未知方法按状态变更安全处理。
 const READ_ONLY_METHODS = new Set([
+    "cubemx.inspect",
     "config.get",
     "chip.read",
     "fault.read",
@@ -427,6 +428,7 @@ const READ_ONLY_METHODS = new Set([
 
 // 状态变更超时后用于核对实际结果的查询方法；未列出的方法给出通用查询提示。
 const STATUS_QUERY_FOR = {
+    "cubemx.execute": "cubemx.inspect",
     "config.set": "config.get",
     "debug.start": "debug.status",
     "debug.control": "debug.status",

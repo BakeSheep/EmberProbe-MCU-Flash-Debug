@@ -12,7 +12,7 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - 实时变量观测：在目标运行时非侵入式读取 Cortex-M 内存；侧边栏提供独立数值列表，可同时打开多个拥有独立观察列表和历史缓冲的实时图表面板。
 - 实时变量写入：在目标运行时实时更改内存，提供滑条、输入框、鼠标滚轮多种值更改方式，更改后自动回读。
 - Cortex-Debug 联动：启动断点调试。
-- 可选安装八个 Agent Skills，覆盖固件编程与校验、实时变量读写、SVD 外设调试、Cortex-Debug 会话/断点控制、芯片和故障信息读取、ELF 分析，以及配置同步。
+- 可选安装九个 Agent Skills，覆盖固件编程与校验、实时变量读写、SVD 外设调试、Cortex-Debug 会话/断点控制、芯片和故障信息读取、ELF 分析，以及配置同步。
 
 ## 环境要求
 
@@ -33,6 +33,8 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 
 ## Agent Skills
 
+侧栏开关开启时在当前工作区安装 EmberProbe Skills，关闭时删除这些技能及共享运行时，保留用户自建技能。不再提供全局安装。`.ioc` 路径选择器直接列出当前工作区内的匹配文件。
+
 - `mcu-flash`：检测并编程最新 ELF，或独立校验片上 Flash；预检和执行结果包含 ELF SHA-256 指纹。
 - `mcu-variables`：单次读取、分析趋势、导出图表历史 CSV，或经两阶段确认安全写入标量及复合变量叶子。
 - `mcu-chip-info`：按 `identity`、`debug`、`runtime` 分组或指定字段读取芯片信息。
@@ -41,6 +43,9 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、段布局和大符号，不占用调试探针。
 - `mcu-peripheral-debug`：解析工作区 SVD，查询、读取和解码外设寄存器/位域，并通过每次一次性确认执行暂停态安全写入。
 - `mcu-debug-control`：启动、停止和控制 Cortex-Debug 会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
+- `mcu-cubemx`：在 Windows 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。
+
+CubeMX 路径位于“MCU 配置 → 其他配置”，插件启动时自动检测并保存为本机全局设置。`.ioc` 默认留空，点击“自动检测配置”后选择工作区工程，也可手动选择或清空。需要与 `.ioc` 版本一致的独立 CubeMX、配套 Java 和已安装固件包；支持在工程根目录或工程内工具链子目录生成，不支持外部路径、链接或生成钩子。授权可选择仅本次或记住当前工程 24 小时，通过 Skill 的 `--reset-permission` 撤销。初始化配置应修改 `.ioc`，业务逻辑放独立源文件或 `USER CODE` 区域；生成成功后仍需使用工程原有构建命令验证。恢复副本保存在工程中的 `.emberprobe-cubemx-*` 目录，确认结果后可自行删除，不应提交到版本库。
 
 ## 开发与构建
 
