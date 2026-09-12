@@ -106,45 +106,66 @@ class AgentBridge {
         };
     }
 
-    async _receive(request, response) {
+    _receive(request, response) {
         response.setHeader("Content-Type", "application/json; charset=utf-8");
-        if (request.method !== "POST" || request.url !== "/v1/call") {
-            response.statusCode = 404;
-            response.end(stringifyJson({ ok: false, error: { code: "NOT_FOUND", message: "Unknown endpoint" } }));
-            return;
-        }
-        if (request.headers.authorization !== `Bearer ${this.token}`) {
-            response.statusCode = 401;
-            response.end(
-                stringifyJson({ ok: false, error: { code: "UNAUTHORIZED", message: "Invalid Agent Bridge token" } })
-            );
-            return;
-        }
+        let receiving = true;
         let size = 0;
         const chunks = [];
+        const fail = (status, code, message) => {
+            receiving = false;
+            chunks.length = 0;
+            if (response.writableEnded || response.destroyed) return;
+            response.statusCode = status;
+            // Let Node flush the response before closing the socket. Destroying the
+            // request here can discard the 413 response and reset the client.
+            response.setHeader("Connection", "close");
+            response.end(stringifyJson({ ok: false, error: { code, message } }));
+            request.resume();
+        };
+        request.on("error", () => fail(400, "BAD_REQUEST", "Request stream failed"));
+        request.on("aborted", () => fail(400, "BAD_REQUEST", "Request was aborted"));
+        const port = request.socket.localPort;
+        const host = String(request.headers.host || "").toLowerCase();
+        if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
+            fail(403, "FORBIDDEN_HOST", "Forbidden host");
+            return;
+        }
+        if (request.method !== "POST" || request.url !== "/v1/call") {
+            fail(404, "NOT_FOUND", "Unknown endpoint");
+            return;
+        }
+        const expected = Buffer.from(`Bearer ${this.token}`, "utf8");
+        const supplied = Buffer.from(String(request.headers.authorization || ""), "utf8");
+        if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) {
+            fail(401, "UNAUTHORIZED", "Invalid Agent Bridge token");
+            return;
+        }
+        if (Number(request.headers["content-length"]) > MAX_BODY) {
+            fail(413, "REQUEST_TOO_LARGE", "Request is too large");
+            return;
+        }
         request.on("data", (chunk) => {
+            if (!receiving) return;
             size += chunk.length;
-            if (size > MAX_BODY) request.destroy();
+            if (size > MAX_BODY) fail(413, "REQUEST_TOO_LARGE", "Request is too large");
             else chunks.push(chunk);
         });
         request.on("end", async () => {
+            if (!receiving || request.aborted) return;
+            receiving = false;
             try {
-                if (size > MAX_BODY)
-                    throw Object.assign(new Error("Request is too large"), { code: "REQUEST_TOO_LARGE" });
-                const payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+                const body = Buffer.concat(chunks).toString("utf8");
+                chunks.length = 0;
+                const payload = JSON.parse(body || "{}");
                 if (!/^[a-z][a-zA-Z0-9.]*$/.test(payload.method || "")) {
                     throw Object.assign(new Error("Invalid method"), { code: "INVALID_METHOD" });
                 }
                 const result = await this.handler(payload.method, payload.params || {});
-                response.end(stringifyJson({ ok: true, result }));
+                if (!response.writableEnded && !response.destroyed) response.end(stringifyJson({ ok: true, result }));
             } catch (error) {
+                if (response.writableEnded || response.destroyed) return;
                 response.statusCode = Number(error.statusCode) || 400;
-                response.end(
-                    stringifyJson({
-                        ok: false,
-                        error: serializeError(error)
-                    })
-                );
+                response.end(stringifyJson({ ok: false, error: serializeError(error) }));
             }
         });
     }

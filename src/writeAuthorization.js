@@ -42,19 +42,32 @@ class WriteAuthorization {
         this.pending = new Map();
     }
 
-    isTrusted() {
-        const trustedAt = this.storage.get(this.storageKey, false);
-        // 旧版本曾直接存布尔 true；统一视为已过期，升级后强制重新确认一次
-        return typeof trustedAt === "number" && this.now() - trustedAt < this.trustTtlMs;
+    isTrusted(plan = null) {
+        const trust = this.storage.get(this.storageKey, null);
+        const sha256 = plan?.elfResult?.elf?.sha256;
+        const age = this.now() - trust?.trustedAt;
+        // Legacy timestamps/booleans and missing fingerprints fail closed.
+        return !!(
+            trust &&
+            typeof trust === "object" &&
+            Number.isFinite(trust.trustedAt) &&
+            age >= 0 &&
+            age < this.trustTtlMs &&
+            typeof sha256 === "string" &&
+            sha256 &&
+            trust.elfSha256 === sha256
+        );
     }
 
-    status() {
-        const trusted = this.isTrusted();
-        return trusted
+    status(plan = null) {
+        return this.isTrusted(plan)
             ? {
                   trusted: true,
                   scope: "workspace",
-                  trustedExpiresAt: new Date(this.storage.get(this.storageKey) + this.trustTtlMs).toISOString()
+                  elfSha256: this.storage.get(this.storageKey).elfSha256,
+                  trustedExpiresAt: new Date(
+                      this.storage.get(this.storageKey).trustedAt + this.trustTtlMs
+                  ).toISOString()
               }
             : { trusted: false, scope: "workspace" };
     }
@@ -81,7 +94,7 @@ class WriteAuthorization {
                 expiresAt: new Date(expiresAt).toISOString(),
                 scope: "workspace",
                 question:
-                    "Allow this MCU memory write? Choose once, or allow future writes in this workspace without asking again.",
+                    "Allow this MCU memory write? Choose once, or allow future writes for this ELF in this workspace for 24 hours. Changing the ELF requires confirmation again.",
                 choices: ["once", "workspace"],
                 elf: identity.elf,
                 items: (plan.items || []).map((item) => ({
@@ -95,7 +108,7 @@ class WriteAuthorization {
     }
 
     authorize(plan, options = {}) {
-        if (this.isTrusted()) return { authorized: true, mode: "workspace", remember: false };
+        if (this.isTrusted(plan)) return { authorized: true, mode: "workspace", remember: false };
         const confirmationId = String(options.confirmationId || "").trim();
         if (!confirmationId) {
             if (options.remember)
@@ -133,9 +146,16 @@ class WriteAuthorization {
         return { authorized: true, mode: options.remember ? "workspace" : "once", remember: !!options.remember };
     }
 
-    async trustWorkspace() {
-        await this.storage.update(this.storageKey, this.now());
-        return this.status();
+    async trustWorkspace(plan) {
+        const elfSha256 = plan?.elfResult?.elf?.sha256;
+        if (typeof elfSha256 !== "string" || !elfSha256) {
+            throw authorizationError(
+                "ELF fingerprint is required to remember write permission",
+                "WRITE_CONFIRMATION_INVALID"
+            );
+        }
+        await this.storage.update(this.storageKey, { trustedAt: this.now(), elfSha256 });
+        return this.status(plan);
     }
 
     async reset() {

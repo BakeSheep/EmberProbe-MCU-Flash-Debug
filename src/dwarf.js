@@ -43,11 +43,23 @@ function parseDwarf(buffer) {
                 layouts: new Map(),
                 diagnostics: [{ code: "DWARF_PARSE_FAILED", stage: "parse", message: "DWARF parsing failed" }]
             };
-        return {
-            types: buildVariableTypes(parsed),
-            layouts: buildCompositeLayouts(parsed),
-            diagnostics: parsed.diagnostics
-        };
+        const types = buildVariableTypes(parsed);
+        try {
+            return { types, layouts: buildCompositeLayouts(parsed), diagnostics: parsed.diagnostics };
+        } catch (error) {
+            return {
+                types,
+                layouts: new Map(),
+                diagnostics: [
+                    ...parsed.diagnostics,
+                    {
+                        code: error.code || "DWARF_PARSE_FAILED",
+                        stage: "layouts",
+                        message: error.message
+                    }
+                ]
+            };
+        }
     } catch (e) {
         return {
             types: new Map(),

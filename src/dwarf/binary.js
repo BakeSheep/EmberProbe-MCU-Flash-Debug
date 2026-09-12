@@ -2,6 +2,7 @@
 const elfFormat = require("../elfFormat");
 const zlib = require("zlib");
 const { decompress: decompressZstd } = require("fzstd");
+const MAX_ATTRS_PER_ABBREV = 1000;
 const MAX_DWARF_SECTION_BYTES = 128 * 1024 * 1024;
 const REQUIRED_DWARF_SECTIONS = new Set([
     ".debug_info",
@@ -134,6 +135,10 @@ function parseAbbrev(buf, start) {
             let implicit;
             if (form === 0x21) implicit = readSLEB(buf, cur); // DW_FORM_implicit_const
             if (at === 0 && form === 0) break;
+            if (attrs.length >= MAX_ATTRS_PER_ABBREV)
+                throw Object.assign(new Error("DWARF abbreviation attribute budget exceeded"), {
+                    code: "DWARF_BUDGET_EXCEEDED"
+                });
             attrs.push({ at, form, implicit });
         }
         map.set(code, { tag, hasChildren, attrs });

@@ -87,6 +87,7 @@ class MainViewProvider {
         this._runtimeDeniedKey = "";
         this._runtimeRamCache = null;
         this._livePanels = new Map();
+        this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
         this._pendingCsvExports = new Map();
         this._csvExportSeq = 0;
@@ -1575,12 +1576,12 @@ class MainViewProvider {
         const result = await this._withAgentProbe(({ session, source }) =>
             this._executeWritePlan(session, source, plan)
         );
-        let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted() };
+        let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
         if (authorization.remember) {
             try {
                 permission = {
                     mode: "workspace",
-                    ...(await this._writeAuthorization.trustWorkspace()),
+                    ...(await this._writeAuthorization.trustWorkspace(plan)),
                     remembered: true
                 };
             } catch (error) {
@@ -1611,7 +1612,13 @@ class MainViewProvider {
     }
     async _agentWritePermission(params) {
         const action = String(params?.action || "status");
-        if (action === "status") return this._writeAuthorization.status();
+        if (action === "status") {
+            try {
+                return this._writeAuthorization.status({ elfResult: this.readElfSymbols() });
+            } catch {
+                return this._writeAuthorization.status();
+            }
+        }
         if (action === "reset") return this._writeAuthorization.reset();
         throw Object.assign(new Error(`Unsupported write permission action: ${action}`), {
             code: "INVALID_PERMISSION_ACTION"
@@ -1802,7 +1809,7 @@ class MainViewProvider {
         };
         this._livePanels.set(panelId, entry);
         this._invalidateConsumerTypes();
-        panel.webview.html = this._externalizeWebview(
+        this._renderWebview(
             panel.webview,
             liveWatchView.getLiveWatchContent(
                 {
@@ -1818,6 +1825,7 @@ class MainViewProvider {
             if (event.webviewPanel.active) entry.focusOrder = ++this._livePanelFocusOrder;
         });
         panel.onDidDispose(() => {
+            this._webviewRenders?.delete(panel.webview);
             this._livePanels.delete(panelId);
             pruneWebviewAssets(this._webviewAssetRootUri.fsPath, `live-watch-${panelId}`, new Set());
             this._rejectPanelCsvExports(panelId);
@@ -2869,12 +2877,9 @@ class MainViewProvider {
                 }
             }
         });
+        webviewView.onDidDispose(() => this._webviewRenders?.delete(webviewView.webview));
         // 设置初始内容
-        webviewView.webview.html = this._externalizeWebview(
-            webviewView.webview,
-            this.getModernWebviewContent(),
-            "sidebar"
-        );
+        this._renderWebview(webviewView.webview, this.getModernWebviewContent(), "sidebar");
         // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
         const configured =
             this._context.workspaceState.get(CACHE_KEYS.elfPath) &&
@@ -2936,22 +2941,27 @@ class MainViewProvider {
             this._lang
         );
     }
-    _externalizeWebview(webview, html, scope) {
+    _renderWebview(webview, html, scope) {
+        const revision = {};
+        this._webviewRenders.set(webview, revision);
         return externalizeWebviewHtml({
             html,
             webview,
             vscode,
             assetRootUri: this._webviewAssetRootUri,
             scope
-        }).html;
+        })
+            .then((result) => {
+                if (this._webviewRenders.get(webview) === revision) webview.html = result.html;
+            })
+            .catch((error) => {
+                if (this._webviewRenders.get(webview) === revision)
+                    console.error("Unable to render EmberProbe webview:", error);
+            });
     }
     updateView() {
         if (this._webviewView) {
-            this._webviewView.webview.html = this._externalizeWebview(
-                this._webviewView.webview,
-                this.getModernWebviewContent(),
-                "sidebar"
-            );
+            return this._renderWebview(this._webviewView.webview, this.getModernWebviewContent(), "sidebar");
         }
     }
 }

@@ -68,8 +68,8 @@ function makePlan(overrides = {}) {
     const rememberedId = auth.authorize(plan).response.confirmationId;
     const remembered = auth.authorize(plan, { confirmationId: rememberedId, remember: true });
     assert.deepStrictEqual(remembered, { authorized: true, mode: "workspace", remember: true });
-    await auth.trustWorkspace();
-    const trustedStatus = auth.status();
+    await auth.trustWorkspace(plan);
+    const trustedStatus = auth.status(plan);
     assert.strictEqual(trustedStatus.trusted, true);
     assert.strictEqual(trustedStatus.scope, "workspace");
     assert.ok(trustedStatus.trustedExpiresAt, "trusted status must expose the expiry timestamp");
@@ -79,20 +79,33 @@ function makePlan(overrides = {}) {
         remember: false
     });
 
+    assert.strictEqual(auth.authorize(makePlan({ sha256: "changed" })).authorized, false);
+    assert.strictEqual(auth.status(makePlan({ sha256: "changed" })).trusted, false);
+    assert.strictEqual(auth.status().trusted, false, "status without current ELF must not claim trust");
+    assert.strictEqual(auth.isTrusted({ elfResult: { elf: {} } }), false);
+    await assert.rejects(() => auth.trustWorkspace({}), { code: "WRITE_CONFIRMATION_INVALID" });
+    const savedTrust = values.get("agent.writeTrusted");
+    assert.strictEqual(savedTrust.elfSha256, plan.elfResult.elf.sha256);
+    await storage.update("agent.writeTrusted", now);
+    assert.strictEqual(auth.authorize(plan).authorized, false, "legacy timestamp must require confirmation");
+    await storage.update("agent.writeTrusted", { ...savedTrust, trustedAt: now + 1 });
+    assert.strictEqual(auth.isTrusted(plan), false, "future timestamps must not extend trust");
+    await storage.update("agent.writeTrusted", savedTrust);
+
     // workspace 信任 24 小时后过期，需重新走两阶段确认
     now += 24 * 60 * 60 * 1000 + 1;
-    assert.strictEqual(auth.isTrusted(), false);
+    assert.strictEqual(auth.isTrusted(plan), false);
     assert.strictEqual(auth.authorize(plan).authorized, false);
 
     // 旧版本存储的布尔 true 一律视为未信任，升级后强制重新确认
-    await auth.trustWorkspace();
+    await auth.trustWorkspace(plan);
     now -= 24 * 60 * 60 * 1000;
     await storage.update("agent.writeTrusted", true);
-    assert.strictEqual(auth.isTrusted(), false);
+    assert.strictEqual(auth.isTrusted(plan), false);
     assert.strictEqual(auth.authorize(plan).authorized, false);
 
     await auth.reset();
-    assert.deepStrictEqual(auth.status(), { trusted: false, scope: "workspace" });
+    assert.deepStrictEqual(auth.status(plan), { trusted: false, scope: "workspace" });
     assert.strictEqual(auth.authorize(plan).authorized, false);
 
     assert.strictEqual(fingerprintWritePlan(plan), fingerprintWritePlan(makePlan()));

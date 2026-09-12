@@ -6,6 +6,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- RAM 写入的工作区信任绑定 ELF SHA-256，固件变化和旧版授权均要求重新确认。
+- Agent Bridge 校验本地 Host 与端口、使用恒定时间令牌比较，超限请求返回完整 413 响应，并处理上传中断。
+- DWARF 缩写属性和复合布局展开增加预算限制，避免异常 ELF 导致内存与 CPU 消耗失控。
+
+### Changed
+
+- Webview 资产写入与清理改用异步 I/O，缓存相同内容，并防止异步刷新覆盖新视图或恢复已关闭面板。
+
 ## [0.7.5] - 2026-09-09
 
 ### Fixed
