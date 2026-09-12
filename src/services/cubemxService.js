@@ -32,6 +32,7 @@ function computeParamsHash(params) {
         JSON.stringify({
             candidatePath: params.candidatePath || "",
             content: params.content || "",
+            ...(params.candidateHash ? { candidateHash: params.candidateHash } : {}),
             mode: params.mode || "",
             confirmationId: params.confirmationId || "",
             remember: !!params.remember
@@ -72,6 +73,7 @@ class CubeMxService {
         this.authorization = new CubeMxAuthorization(options.storage);
         this.jobs = new Map();
         this.activeExecutions = new Map();
+        this.recordFailures = new Map();
         this.store = new CubeMxOperationStore(options.storageDir || options.storage?.storageUri?.fsPath);
     }
 
@@ -155,6 +157,8 @@ class CubeMxService {
                 throw failure("CUBEMX_IOC_INVALID", "Candidate exceeds 1 MiB");
             content = await fs.readFile(candidate, "utf8");
         }
+        if (params.candidateHash && hash(content) !== params.candidateHash)
+            throw failure("CUBEMX_PROJECT_CHANGED", "Candidate changed before execution");
         const values = parseIoc(content);
         validateStructuralIoc(values);
         for (const key of [
@@ -299,7 +303,10 @@ class CubeMxService {
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
             if (existing) {
-                if (existing.requestParamsHash !== pHash) {
+                if (
+                    existing.requestParamsHash !== pHash ||
+                    (existing.configHash && existing.configHash.after !== plan.identity.after)
+                ) {
                     throw failure("CUBEMX_REQUEST_CONFLICT", "Request ID already used with different parameters", {
                         requestId: params.requestId
                     });
@@ -348,13 +355,22 @@ class CubeMxService {
 
     async status(params = {}) {
         const { root } = await this._resolveProjectRoot();
+        if (params.requestId) {
+            const op = await this.store.findOperationByRequestId(root, params.requestId);
+            return op ? this.recordFailures.get(op.operationId) || op : { status: "none" };
+        }
         if (params.operationId) {
             const op = await this.store.getOperation(root, params.operationId);
             if (!op) throw failure("INVALID_ARGUMENT", "Operation not found: " + params.operationId);
-            return op;
+            return this.recordFailures.get(op.operationId) || op;
         }
         const op = await this.store.getLatestOperation(root);
-        return op || { status: "none", message: "No operations found for this project" };
+        return (
+            (op && (this.recordFailures.get(op.operationId) || op)) || {
+                status: "none",
+                message: "No operations found for this project"
+            }
+        );
     }
 
     async execute(params = {}, signal, progress = this.options.progress) {
@@ -363,7 +379,10 @@ class CubeMxService {
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
             if (existing) {
-                if (existing.requestParamsHash !== pHash) {
+                if (
+                    existing.requestParamsHash !== pHash ||
+                    (existing.configHash && existing.configHash.after !== plan.identity.after)
+                ) {
                     throw failure("CUBEMX_REQUEST_CONFLICT", "Request ID already used with different parameters", {
                         requestId: params.requestId
                     });
@@ -461,6 +480,8 @@ class CubeMxService {
             const run = this.options.run || runCubeMx;
             const started = Date.now();
 
+            const ownedFiles = new Set([name, ".mxproject"]);
+            const generationWarnings = new Set();
             const generate = async (directory, files, runStage) => {
                 if (controller.signal.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
                 const { output, mains } = await stageGeneration(directory, files, name);
@@ -471,7 +492,13 @@ class CubeMxService {
                     timeoutMs,
                     stage: runStage
                 });
-                await fs.writeFile(path.join(directory, ".emberprobe-cubemx-output.log"), result.log || "");
+                if (!result.logPath)
+                    await fs.writeFile(path.join(directory, ".emberprobe-cubemx-output.log"), result.log || "");
+                for (const reported of result.generatedFiles || []) {
+                    const relative = path.relative(output, reported);
+                    if (inside(output, reported)) ownedFiles.add(relative);
+                }
+                for (const warning of result.warnings || []) generationWarnings.add(warning);
                 await this.store.updateOperation(plan.root, op.operationId, {
                     logPath: result.logPath || path.join(directory, ".emberprobe-cubemx-output.log")
                 });
@@ -587,6 +614,9 @@ class CubeMxService {
 
             const manifestFiles = {};
             for (const [fileName, fileEntry] of after) {
+                const text = fileEntry.bytes.toString("utf8");
+                const marked = /@attention[\s\S]*STMicroelectronics|Generated by STM32CubeMX/.test(text);
+                if (!ownedFiles.has(fileName) && !marked && before.get(fileName)?.hash === fileEntry.hash) continue;
                 let skeletonHash = fileEntry.hash;
                 const userBlocks = {};
                 if (/\.(?:c|h|cc|cpp|cxx|hh|hpp|hxx)$/i.test(fileName)) {
@@ -613,10 +643,11 @@ class CubeMxService {
             }
 
             const manifest = {
+                schemaVersion: 2,
                 timestamp: new Date().toISOString(),
                 iocPath: plan.ioc,
                 iocHash: plan.identity.after,
-                iocProperties: plan.values,
+                iocProperties: parseIoc(plan.candidate),
                 tool: {
                     executable: plan.tool.executable,
                     version: plan.tool.version
@@ -634,11 +665,14 @@ class CubeMxService {
                 backup,
                 sourceProjectStatus: "committed",
                 permissionWarning,
+                warnings: [...generationWarnings].slice(0, 20),
+                warningCount: generationWarnings.size,
                 permission: this.authorization.status(plan.trust)
             };
 
             let recordSaveFailed = false;
             try {
+                await this.store.saveManifest(plan.root, manifest);
                 await this.store.updateOperation(plan.root, op.operationId, {
                     status: "succeeded",
                     stage: "done",
@@ -646,12 +680,19 @@ class CubeMxService {
                     backupPath: backup,
                     result
                 });
-                await this.store.saveManifest(plan.root, manifest);
             } catch (err) {
                 recordSaveFailed = true;
             }
 
             if (recordSaveFailed) {
+                this.recordFailures.set(op.operationId, {
+                    ...op,
+                    status: "failed",
+                    stage: "done",
+                    sourceProjectStatus: "committed",
+                    diagnostic: "Source files committed, but generation record could not be saved",
+                    error: { code: "CUBEMX_RECORD_SAVE_FAILED", details: { committed: true, backup } }
+                });
                 throw failure(
                     "CUBEMX_RECORD_SAVE_FAILED",
                     "Source files committed, but operation record could not be saved",
@@ -664,10 +705,11 @@ class CubeMxService {
             if (stage) error.details = { ...error.details, stage };
             try {
                 const currentOp = await this.store.getOperation(plan.root, op.operationId);
-                if (currentOp?.sourceProjectStatus !== "committed") {
+                if (currentOp?.sourceProjectStatus !== "committed" || error.code === "CUBEMX_RECORD_SAVE_FAILED") {
                     await this.store.updateOperation(plan.root, op.operationId, {
                         status: error.code === "CUBEMX_CANCELLED" ? "cancelled" : "failed",
                         diagnostic: error.message,
+                        ...(error.details?.committed ? { sourceProjectStatus: "committed" } : {}),
                         error: {
                             code: error.code,
                             message: error.message,
@@ -693,11 +735,12 @@ class CubeMxService {
             // CubeMX installation, a matching tool version, or Windows.
             const project = await this._resolveProjectRoot();
             const manifest = await this.store.getManifest(project.root);
-            if (!manifest) {
+            if (!manifest || manifest.schemaVersion !== 2) {
                 return {
                     mode: "quick",
                     status: "unknown",
-                    message: "No generation manifest found for this project",
+                    message:
+                        "No compatible generation ownership manifest found; run a confirmed generation to establish one",
                     guarantee:
                         "Quick check proves changes relative to the recorded manifest only. Does not verify build or hardware behavior."
                 };
@@ -804,7 +847,10 @@ class CubeMxService {
             job.operationId = op.operationId;
 
             const execution = this._runDeepCheck(project, op, controller);
-            this.activeExecutions.set(op.operationId, execution.catch(() => {}));
+            this.activeExecutions.set(
+                op.operationId,
+                execution.catch(() => {})
+            );
             if (params.wait) return execution;
             // Queryable background operation: results land in the operation record, so a lost
             // response can be recovered with cubemx.status instead of re-running CubeMX.
@@ -910,8 +956,7 @@ class CubeMxService {
                 if (staleCandidates.length >= 50) break;
             }
 
-            const consistent =
-                drift.length === 0 && unclassifiedChanges.length === 0 && newFiles.length === 0;
+            const consistent = drift.length === 0 && unclassifiedChanges.length === 0 && newFiles.length === 0;
             const status = consistent ? "consistent" : "drift_detected";
 
             const result = {

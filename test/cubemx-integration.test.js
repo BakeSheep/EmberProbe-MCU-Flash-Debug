@@ -74,10 +74,13 @@ const exec = promisify(execFile);
 
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-bridge-")));
     const calls = [];
+    let operationStatus = "in_progress";
     const bridge = new AgentBridge(
         root,
         async (method, params) => {
             calls.push({ method, params });
+            if (method === "cubemx.start") return { operationId: "op_cli", status: "in_progress" };
+            if (method === "cubemx.status") return { operationId: "op_cli", status: operationStatus };
             return { method, params };
         },
         path.join(root, "storage")
@@ -99,8 +102,7 @@ const exec = promisify(execFile);
         assert.strictEqual(execution.params.confirmationId, "approval");
         assert.strictEqual(execution.params.remember, true);
         assert(/^req_/.test(execution.params.requestId), "execute sends a generated request id");
-        // Re-running the same command reuses the persisted request id so the service-side
-        // dedup returns the original operation instead of generating again.
+        // A completed call starts a new logical operation on the next invocation.
         await exec(process.execPath, [
             script,
             "--workspace",
@@ -114,7 +116,28 @@ const exec = promisify(execFile);
         ]);
         const executions = calls.filter((call) => call.method === "cubemx.execute");
         assert.strictEqual(executions.length, 2);
-        assert.strictEqual(executions[1].params.requestId, executions[0].params.requestId);
+        assert.notStrictEqual(executions[1].params.requestId, executions[0].params.requestId);
+        const startArgs = [script, "--workspace", root, "--start", "--candidate", candidate];
+        await exec(process.execPath, startArgs);
+        await exec(process.execPath, startArgs);
+        let starts = calls.filter((entry) => entry.method === "cubemx.start");
+        assert.strictEqual(
+            starts[0].params.requestId,
+            starts[1].params.requestId,
+            "pending request keeps its identity"
+        );
+        operationStatus = "succeeded";
+        await exec(process.execPath, startArgs);
+        starts = calls.filter((entry) => entry.method === "cubemx.start");
+        assert.notStrictEqual(
+            starts[1].params.requestId,
+            starts[2].params.requestId,
+            "completed request is not reused"
+        );
+        await fs.writeFile(candidate, "different configuration");
+        await exec(process.execPath, startArgs);
+        starts = calls.filter((entry) => entry.method === "cubemx.start");
+        assert.notStrictEqual(starts[2].params.candidateHash, starts[3].params.candidateHash);
         assert.deepStrictEqual(calls.find((call) => call.params.action === "reset").params, { action: "reset" });
         await assert.rejects(
             exec(process.execPath, [script, "--unknown"]),

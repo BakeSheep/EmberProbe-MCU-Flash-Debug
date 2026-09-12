@@ -19,7 +19,19 @@ async function atomicWriteJson(filePath, data) {
     await fs.mkdir(dir, { recursive: true });
     const tempPath = path.join(dir, `.tmp-${crypto.randomBytes(8).toString("hex")}.json`);
     await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf8");
-    await fs.rename(tempPath, filePath);
+    try {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                await fs.rename(tempPath, filePath);
+                break;
+            } catch (error) {
+                if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 5) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 20 * (attempt + 1)));
+            }
+        }
+    } finally {
+        await fs.unlink(tempPath).catch(() => {});
+    }
 }
 
 async function readJson(filePath) {

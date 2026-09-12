@@ -20,7 +20,7 @@ const {
     changedUserCodeBlockNames
 } = require("../src/services/cubemxOperations");
 const { normalizeGenerated, stageGeneration, applyFiles, hash } = require("../src/services/cubemxProject");
-const { args, resolveRequestId, requestFingerprint } = require("../skills/mcu-cubemx/scripts/cubemx");
+const { args, resolveRequestId, requestFingerprint, finishRequest } = require("../skills/mcu-cubemx/scripts/cubemx");
 
 // Mirrors computeParamsHash in cubemxService.js so tests can forge dedup records.
 const paramsHash = (params) =>
@@ -288,13 +288,27 @@ const sampleIoc = [
                 const target = path.join(directory, "Core", "Src", "main.c");
                 await fs.mkdir(path.dirname(target), { recursive: true });
                 await fs.writeFile(target, userCode + "int main() { return 0; }\n");
+                const logPath = path.join(directory, ".emberprobe-cubemx-output.log");
+                await fs.writeFile(logPath, "early warning\n" + "x".repeat(1024 * 1024 + 100));
                 return {
                     generatedFiles: [target],
+                    logPath,
+                    warnings: ["ordinary warning"],
                     log: "project generate\nOK\nexit\n"
                 };
             }
         });
 
+        for (const message of [
+            "[WARN] Required firmware package not installed",
+            "[ERROR] generation failed; see warning details"
+        ]) {
+            const monitor = createLogMonitor();
+            monitor.stdout(Buffer.from(message + "\nproject generate\nOK\nexit\n"));
+            assert(monitor.finish().failureLine, "blocking semantics must win over warnings");
+        }
+        const appFile = path.join(project, "application.c");
+        await fs.writeFile(appFile, "int app = 1;\n");
         // Quick check with no manifest -> status: unknown
         const checkNoManifest = await service.check({ mode: "quick" });
         assert.strictEqual(checkNoManifest.status, "unknown");
@@ -493,11 +507,20 @@ const sampleIoc = [
         // ---------------------------------------------------------
         // 5. Quick-check classification branches (against the committed manifest)
         // ---------------------------------------------------------
+        const latest = await service.status({ operationId: startResult.operationId });
+        assert((await fs.stat(latest.logPath)).size > 1024 * 1024, "full streamed log survives success");
+        assert.deepStrictEqual(latest.result.warnings, ["ordinary warning"]);
         const mainRel = path.join("Core", "Src", "main.c");
         const mainCOriginal = await fs.readFile(main, "utf8"); // user code already edited (count=999)
         const mxprojectPath = path.join(project, ".mxproject");
         const mxprojectOriginal = await fs.readFile(mxprojectPath, "utf8");
 
+        await fs.writeFile(appFile, "int app = 2;\n");
+        assert.strictEqual(
+            (await service.check()).status,
+            "consistent",
+            "ordinary application changes are not generation drift"
+        );
         // Missing manifest file
         await fs.rm(mxprojectPath);
         const checkMissing = await service.check({ mode: "quick" });
@@ -607,7 +630,8 @@ const sampleIoc = [
         assert.strictEqual(await fs.readFile(ioc2, "utf8"), candidateIocRecordFail);
         const recordFailOps = await recordFailService.store.getOperations(project2);
         const recordFailRec = recordFailOps[recordFailOps.length - 1];
-        assert.strictEqual(recordFailRec.status, "succeeded");
+        assert.strictEqual(recordFailRec.status, "failed");
+        assert.strictEqual((await recordFailService.status()).error.code, "CUBEMX_RECORD_SAVE_FAILED");
         assert.strictEqual(recordFailRec.sourceProjectStatus, "committed");
 
         // 7b. Readback verification failure -> source project status unknown
@@ -783,10 +807,7 @@ const sampleIoc = [
             requestParamsHash: paramsHash(interruptedParams),
             status: "interrupted"
         });
-        await assert.rejects(
-            service.execute(interruptedParams),
-            (err) => err.code === "CUBEMX_OPERATION_INTERRUPTED"
-        );
+        await assert.rejects(service.execute(interruptedParams), (err) => err.code === "CUBEMX_OPERATION_INTERRUPTED");
 
         // Cancel with an unknown operation id reports zero cancellations
         const unknownCancel = service.cancel({ operationId: "op_missing" });
@@ -803,7 +824,9 @@ const sampleIoc = [
         const retryId = resolveRequestId(cliWorkspace, "start", cliParams, 1000000 + 60 * 1000);
         assert.strictEqual(retryId, firstId); // reused inside the TTL window
         const expiredId = resolveRequestId(cliWorkspace, "start", cliParams, 1000000 + 16 * 60 * 1000);
-        assert.notStrictEqual(expiredId, firstId); // expired -> fresh logical operation
+        assert.strictEqual(expiredId, firstId); // unknown outcomes never expire into a new operation
+        finishRequest(cliWorkspace, "start", cliParams);
+        assert.notStrictEqual(resolveRequestId(cliWorkspace, "start", cliParams), firstId);
         const otherParams = { ...cliParams, confirmationId: "c2" };
         const otherId = resolveRequestId(cliWorkspace, "start", otherParams, 1000000 + 16 * 60 * 1000 + 1);
         assert.notStrictEqual(otherId, expiredId); // different parameters -> different fingerprint

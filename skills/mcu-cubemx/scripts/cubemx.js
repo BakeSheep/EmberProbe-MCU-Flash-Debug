@@ -4,7 +4,6 @@ const path = require("path");
 const crypto = require("crypto");
 const { call, writeDiagnostic } = require("../../_emberprobe/agent-client");
 
-const REQUEST_TTL_MS = 15 * 60 * 1000;
 const REQUEST_STORE_RELATIVE = path.join(".emberprobe-cubemx-audit", "cubemx-requests.json");
 const DEEP_GUARANTEE =
     "Deep check proves regenerability consistency under current tools. Does not verify build or hardware behavior.";
@@ -83,6 +82,7 @@ function requestFingerprint(action, params) {
             JSON.stringify({
                 action,
                 candidatePath: params.candidatePath || "",
+                candidateHash: params.candidateHash || "",
                 confirmationId: params.confirmationId || "",
                 remember: !!params.remember
             })
@@ -105,24 +105,32 @@ function saveRequestRecords(workspace, records) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, JSON.stringify(records, null, 2), "utf8");
     } catch {
-        // Request persistence only enables retry deduplication; never block the operation on it.
+        throw new Error("Cannot persist CubeMX request identity");
     }
 }
 
 // A request ID must survive the process that created it: when a bridge call is lost after the
 // operation started, re-running the same command reuses the persisted ID, and the service-side
 // dedup returns the original operation instead of generating again.
-function resolveRequestId(workspace, action, params, now = Date.now(), ttlMs = REQUEST_TTL_MS) {
+function finishRequest(workspace, action, params, operationId) {
+    const records = loadRequestRecords(workspace);
+    const key = requestFingerprint(action, params);
+    if (operationId && records[key]) records[key].operationId = operationId;
+    else delete records[key];
+    saveRequestRecords(workspace, records);
+}
+
+function resolveRequestId(workspace, action, params, now = Date.now()) {
     const fingerprint = requestFingerprint(action, params);
     const records = loadRequestRecords(workspace);
     const entry = records[fingerprint];
     if (entry && typeof entry.requestId === "string" && typeof entry.createdAt === "number") {
-        if (now - entry.createdAt < ttlMs) return entry.requestId;
+        return entry.requestId;
     }
     const requestId = "req_" + now.toString(36) + "_" + crypto.randomBytes(4).toString("hex");
     const fresh = {};
     for (const [key, value] of Object.entries(records)) {
-        if (value && typeof value.createdAt === "number" && now - value.createdAt < ttlMs) fresh[key] = value;
+        if (value && typeof value.createdAt === "number") fresh[key] = value;
     }
     fresh[fingerprint] = { requestId, createdAt: now };
     saveRequestRecords(workspace, fresh);
@@ -146,10 +154,13 @@ async function pollDeepCheck(workspace, started) {
             return { mode: "deep", operationId: started.operationId, ...record.result, guarantee: DEEP_GUARANTEE };
         }
         if (record.status === "failed" || record.status === "cancelled" || record.status === "interrupted") {
-            throw Object.assign(new Error(record.error?.message || record.diagnostic || "Deep check did not complete"), {
-                code: record.error?.code || "CUBEMX_GENERATION_FAILED",
-                details: record.error?.details
-            });
+            throw Object.assign(
+                new Error(record.error?.message || record.diagnostic || "Deep check did not complete"),
+                {
+                    code: record.error?.code || "CUBEMX_GENERATION_FAILED",
+                    details: record.error?.details
+                }
+            );
         }
     }
     throw Object.assign(
@@ -182,6 +193,7 @@ async function main() {
         );
     }
 
+    /** @type {Record<string, any>} */
     let params = {};
     if (action === "candidate") {
         params = {
@@ -208,6 +220,21 @@ async function main() {
             ...(opt.confirm ? { confirmationId: opt.confirm } : {}),
             ...(opt.remember ? { remember: true } : {})
         };
+        if (params.candidatePath)
+            params.candidateHash = crypto
+                .createHash("sha256")
+                .update(fs.readFileSync(params.candidatePath))
+                .digest("hex");
+        const pending = loadRequestRecords(workspace)[requestFingerprint(action, params)];
+        if (!opt["request-id"] && pending) {
+            const previous = await call(workspace, "cubemx.status", { requestId: pending.requestId }, 30000);
+            if (["succeeded", "failed", "cancelled"].includes(previous.status))
+                finishRequest(workspace, action, params);
+            if (previous.status === "interrupted")
+                throw new Error(
+                    "Previous CubeMX operation was interrupted; inspect --status before starting a new request"
+                );
+        }
         const requestId = opt["request-id"] || resolveRequestId(workspace, action, params);
         params.requestId = requestId;
     } else if (action === "status") {
@@ -230,6 +257,13 @@ async function main() {
 
     const timeoutMs = action === "execute" || (action === "check" && opt.deep) ? 360000 : 30000;
     let result = await call(workspace, methodName, params, timeoutMs);
+    if (action === "start" || action === "execute") {
+        try {
+            finishRequest(workspace, action, params, result.status === "in_progress" ? result.operationId : undefined);
+        } catch (error) {
+            result = { ...result, requestRecordWarning: error.message };
+        }
+    }
     if (action === "check" && opt.deep) result = await pollDeepCheck(workspace, result);
     process.stdout.write(JSON.stringify(result) + "\n");
 }
@@ -240,4 +274,4 @@ if (require.main === module)
         process.exitCode = 1;
     });
 
-module.exports = { args, resolveRequestId, requestFingerprint, pollDeepCheck };
+module.exports = { args, resolveRequestId, requestFingerprint, finishRequest, pollDeepCheck };

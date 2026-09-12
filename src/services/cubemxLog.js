@@ -19,11 +19,10 @@ function createLogMonitor(options = {}) {
         }
     }
 
-    const isWarnLine = (text) => /\b(?:warn|warning)\b/i.test(text);
+    const isWarnLine = (text) => /^(?:.*?\[WARN(?:ING)?\]|WARN(?:ING)?\s*:)/i.test(text);
 
     const isBlockingLine = (text) => {
         const diagnostic = text.replace(/\b0\s+(?:errors?|exceptions?|failures?|failed)\b/gi, "");
-        if (isWarnLine(diagnostic)) return false;
         if (/\b(?:error|fatal)\b/i.test(diagnostic)) return true;
         if (
             /(?:\bException\b|\bError\b):|^\s*at\s+[\w$./]+\([\w$.]+\.java:\d+\)|\b(?:NullPointerException|ClassNotFoundException|IOException|InvocationTargetException|RuntimeException)\b/i.test(
@@ -55,16 +54,16 @@ function createLogMonitor(options = {}) {
     const line = (text, stdout) => {
         text = text.trim();
         if (/^log4j user configuration file not found:[^\r\n]*[/\\]log4j2\.xml$/i.test(text)) return;
-        if (isWarnLine(text)) {
+        if (isBlockingLine(text)) {
+            failureLine ||= text.slice(0, 1000);
+        } else if (isWarnLine(text)) {
             const summaryText = text.slice(0, 500);
             if (!warnings.includes(summaryText) && warnings.length < 50) warnings.push(summaryText);
-        } else if (isBlockingLine(text)) {
-            failureLine ||= text.slice(0, 1000);
         }
 
         if (!stdout) return;
-        const generated = text.match(/\bGenerated code:\s*(.+[/\\]main\.c)\s*$/i);
-        if (generated && generatedFiles.size < 32) generatedFiles.add(generated[1]);
+        const generated = text.match(/\bGenerated code:\s*(.+[/\\][^/\\]+)\s*$/i);
+        if (generated && generatedFiles.size < 20000) generatedFiles.add(generated[1]);
         if (/^project\s+generate$/i.test(text)) {
             pending = true;
             confirmed = false;

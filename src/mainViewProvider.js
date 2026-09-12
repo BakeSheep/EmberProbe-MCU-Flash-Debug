@@ -267,7 +267,11 @@ class MainViewProvider {
                 "cubemx.candidate": (params) => this._cubemxService.generateCandidate(params || {}),
                 "cubemx.start": (params) => this._startAgentCubeMxOperation(params || {}),
                 "cubemx.status": (params) => this._cubemxService.status(params || {}),
-                "cubemx.check": (params) => this._cubemxService.check(params || {}),
+                "cubemx.check": async (params) => {
+                    const result = await this._cubemxService.check(params || {});
+                    if (result.operationId) this._showAgentCubeMxProgress(result.operationId);
+                    return result;
+                },
                 "cubemx.execute": (params) =>
                     vscode.window.withProgress(
                         {
@@ -1835,9 +1839,7 @@ class MainViewProvider {
             },
             async (progress, token) => {
                 progress.report({ message: this._t("cubemx.generating") });
-                const subscription = token.onCancellationRequested(() =>
-                    this._cubemxService.cancel({ operationId })
-                );
+                const subscription = token.onCancellationRequested(() => this._cubemxService.cancel({ operationId }));
                 try {
                     await execution;
                 } finally {
