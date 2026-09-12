@@ -43,9 +43,9 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、段布局和大符号，不占用调试探针。
 - `mcu-peripheral-debug`：解析工作区 SVD，查询、读取和解码外设寄存器/位域，并通过每次一次性确认执行暂停态安全写入。
 - `mcu-debug-control`：启动、停止和控制 Cortex-Debug 会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
-- `mcu-cubemx`：在 Windows 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。
+- `mcu-cubemx`：在 Windows 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。支持异步生成（`--start` 后用 `--status` 查询、`--cancel --operation-id` 取消）、工作区 JSON 变更文件（`--changes-file`）与显式删除键（`--deletions`）、以及一致性检查（`--check` 快检、`--check --deep` 隔离重生成深检）。
 
-CubeMX 路径位于“MCU 配置 → 其他配置”，插件启动时自动检测并保存为本机全局设置。`.ioc` 默认留空，点击“自动检测配置”后选择工作区工程，也可手动选择或清空。需要与 `.ioc` 版本一致的独立 CubeMX、配套 Java 和已安装固件包；支持在工程根目录或工程内工具链子目录生成，不支持外部路径、链接或生成钩子。授权可选择仅本次或记住当前工程 24 小时，通过 Skill 的 `--reset-permission` 撤销。初始化配置应修改 `.ioc`，业务逻辑放独立源文件或 `USER CODE` 区域；生成成功后仍需使用工程原有构建命令验证。恢复副本保存在工程中的 `.emberprobe-cubemx-*` 目录，确认结果后可自行删除，不应提交到版本库。
+CubeMX 路径位于“MCU 配置 → 其他配置”，插件启动时自动检测并保存为本机全局设置。`.ioc` 默认留空，点击“自动检测配置”后选择工作区工程，也可手动选择或清空。需要与 `.ioc` 版本一致的独立 CubeMX、配套 Java 和已安装固件包；支持在工程根目录或工程内工具链子目录生成，不支持外部路径、链接或生成钩子。授权可选择仅本次或记住当前工程 24 小时，通过 Skill 的 `--reset-permission` 撤销。初始化配置应修改 `.ioc`，业务逻辑放独立源文件或 `USER CODE` 区域；生成成功后仍需使用工程原有构建命令验证。恢复副本保存在工程中的 `.emberprobe-cubemx-*` 目录，确认结果后可自行删除，不应提交到版本库。生成操作记录保存在扩展全局存储中，可在扩展重启后查询 `unchanged / committed / rolledBack / recoveryRequired / unknown` 状态；深检失败时的日志会保留在存储目录中。快检只对比上次提交清单与当前文件，不要求 CubeMX 可用；快检证明“相对记录的变化”，深检证明“当前工具下可再生成的一致性”，两者都不证明构建或硬件行为正确。同一 `--start`/`--execute` 命令在 15 分钟内重跑会复用请求 ID 并返回原操作，不会重复生成。
 
 配置 STM32 target 和 CubeMX 后，侧栏会检查 CubeMX 仓库中的对应系列固件包（含自定义仓库）；选择 `.ioc` 后按其指定版本检查。缺包时可点击“在 CubeMX 中安装”，通过 CubeMX 的原生交互流程完成登录、许可确认及安装。只有 target 时先选择版本；可选版本来自 CubeMX 本机缓存，不代表已验证与工程兼容。返回 VS Code 后重新检查。SVD、CubeMX 和 `.ioc` 均标记为可选。
 

@@ -183,6 +183,7 @@ class MainViewProvider {
         });
         this._cubemxService = new CubeMxService({
             storage: context.workspaceState,
+            storageDir: context.globalStorageUri?.fsPath,
             config: () => this._configurationStore.snapshot(),
             roots: () => (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath)
         });
@@ -261,9 +262,12 @@ class MainViewProvider {
                 "config.get": () => this._configurationSnapshot(),
                 "config.set": (params) => this._setAgentConfiguration(params.values || {}),
                 "cubemx.detect": () => this._cubemxConfiguration.detect(),
-                "cubemx.inspect": () => this._cubemxService.inspect(),
+                "cubemx.inspect": (params) => this._cubemxService.inspect(params || {}),
                 "cubemx.prepare": (params) => this._cubemxService.prepare(params || {}),
                 "cubemx.candidate": (params) => this._cubemxService.generateCandidate(params || {}),
+                "cubemx.start": (params) => this._startAgentCubeMxOperation(params || {}),
+                "cubemx.status": (params) => this._cubemxService.status(params || {}),
+                "cubemx.check": (params) => this._cubemxService.check(params || {}),
                 "cubemx.execute": (params) =>
                     vscode.window.withProgress(
                         {
@@ -285,7 +289,7 @@ class MainViewProvider {
                         }
                     ),
                 "cubemx.permission": (params) => this._cubemxService.permission(params || {}),
-                "cubemx.cancel": () => this._cubemxService.cancel(),
+                "cubemx.cancel": (params) => this._cubemxService.cancel(params || {}),
                 "flash.authorize": (params) => this._authorizeAgentFlash(params || {}),
                 "flash.execute": (params) => this._agentFlashService.execute(params || {}),
                 "flash.verify": (params) => this._agentFlashService.execute(params || {}, true),
@@ -1811,6 +1815,36 @@ class MainViewProvider {
     // 被篡改的脚本等于借 Agent 之名运行任意代码（不阻断，用户可能是有意自定义）
     _warnIfSkillsModified() {
         this._skillStatusService.warnIfModified();
+    }
+    // 后台生成没有自己的 withProgress 窗口（Bridge 调用立即返回 operationId），
+    // 因此为运行中的操作挂一个可取消的通知，复用既有进度与取消交互
+    _startAgentCubeMxOperation(params) {
+        return this._cubemxService.start(params).then((started) => {
+            if (started?.operationId) this._showAgentCubeMxProgress(started.operationId);
+            return started;
+        });
+    }
+    _showAgentCubeMxProgress(operationId) {
+        const execution = this._cubemxService.activeExecutions.get(operationId);
+        if (!execution) return;
+        vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: this._t("cubemx.generating"),
+                cancellable: true
+            },
+            async (progress, token) => {
+                progress.report({ message: this._t("cubemx.generating") });
+                const subscription = token.onCancellationRequested(() =>
+                    this._cubemxService.cancel({ operationId })
+                );
+                try {
+                    await execution;
+                } finally {
+                    subscription.dispose();
+                }
+            }
+        );
     }
     // 已安装 Skills 与插件内置版本存在差异（可更新/被修改/不完整）时提示升级；
     // 每个会话最多提示一次，避免侧边栏刷新与工作区切换反复打扰

@@ -68,12 +68,28 @@ function fileDiff(before, after) {
 }
 function normalizeGenerated(files, generated, iocName) {
     const values = parseIoc(files.get(iocName).bytes.toString("utf8"));
-    const prefix = path.basename(iocName, path.extname(iocName)) + path.sep;
+    const projectName = path.basename(iocName, path.extname(iocName));
+    const prefix = projectName + path.sep;
     const nested = [...generated].filter(([name]) => name.startsWith(prefix));
-    if (!nested.length) return generated;
+    const expectedRoot = values["ProjectManager.UnderRoot"] === "false" ? projectName : ".";
+    const candidateDirectory = nested.length ? projectName : ".";
+    if (!nested.length) {
+        if (values["ProjectManager.UnderRoot"] === "false") {
+            throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Expected nested CubeMX output directory was not produced", {
+                expectedRoot,
+                candidateDirectory,
+                condition: "missing_nested_output"
+            });
+        }
+        return generated;
+    }
     // Never reinterpret an existing user directory as a fresh CubeMX output tree.
     if ([...files.keys()].some((name) => name === prefix.slice(0, -1) || name.startsWith(prefix)))
-        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated project directory conflicts with existing files");
+        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated project directory conflicts with existing files", {
+            expectedRoot,
+            candidateDirectory,
+            condition: "directory_conflict"
+        });
     const nestedIoc = generated.get(prefix + iocName);
     if (
         values["ProjectManager.UnderRoot"] !== "false" ||
@@ -81,13 +97,30 @@ function normalizeGenerated(files, generated, iocName) {
         parseIoc(nestedIoc.bytes.toString("utf8"))["ProjectManager.ProjectName"] !==
             values["ProjectManager.ProjectName"] ||
         !nested.some(([name]) => /(?:^|[/\\])main\.c$/i.test(name))
-    )
-        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Cannot identify nested CubeMX output safely");
+    ) {
+        let condition = "cannot_identify_nested_output";
+        if (values["ProjectManager.UnderRoot"] !== "false") condition = "unexpected_nested_output";
+        else if (!nestedIoc) condition = "missing_nested_ioc";
+        else if (
+            parseIoc(nestedIoc.bytes.toString("utf8"))["ProjectManager.ProjectName"] !==
+            values["ProjectManager.ProjectName"]
+        )
+            condition = "project_name_mismatch";
+        else condition = "missing_nested_main";
+        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Cannot identify nested CubeMX output safely", {
+            expectedRoot,
+            candidateDirectory,
+            condition
+        });
+    }
     const normalized = new Map(generated);
     for (const [name, value] of nested) {
         const target = name.slice(prefix.length);
         if (target !== iocName && generated.get(target)?.hash !== files.get(target)?.hash)
             throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "CubeMX generated both root and nested outputs", {
+                expectedRoot,
+                candidateDirectory,
+                condition: "dual_root_and_nested_output",
                 file: target
             });
         normalized.delete(name);
@@ -106,7 +139,11 @@ async function stageGeneration(directory, files, iocName) {
     const projectName = path.basename(iocName, path.extname(iocName));
     const nested = values["ProjectManager.UnderRoot"] === "false";
     if (nested && [...files.keys()].some((file) => file === projectName || file.startsWith(projectName + path.sep)))
-        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated project directory conflicts with existing files");
+        throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated project directory conflicts with existing files", {
+            expectedRoot: projectName,
+            candidateDirectory: projectName,
+            condition: "directory_conflict"
+        });
     await materialize(directory, files);
     const output = nested ? path.join(directory, projectName) : directory;
     if (nested) await materialize(output, files);
@@ -117,7 +154,12 @@ async function stageGeneration(directory, files, iocName) {
     // Mark staged main files as old: an unchanged staged copy is not generation evidence.
     for (const file of mains) {
         const target = path.join(output, file);
-        if (!inside(output, target)) throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Invalid main output path");
+        if (!inside(output, target))
+            throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Invalid main output path", {
+                expectedRoot: output,
+                candidateDirectory: target,
+                condition: "path_outside_root"
+            });
         await fs.utimes(target, 1, 1).catch((error) => {
             if (error.code !== "ENOENT") throw error;
         });
@@ -137,7 +179,12 @@ async function assertFreshOutput(output, mains, generatedFiles = []) {
                 path.isAbsolute(generated) && path.relative(path.join(output, file), path.normalize(generated)) === ""
         );
         if (!stat?.isFile() || (stat.mtimeMs <= 1000 && !reported))
-            throw failure("CUBEMX_OUTPUT_MISSING", "CubeMX did not regenerate the expected main.c", { file });
+            throw failure("CUBEMX_OUTPUT_MISSING", "CubeMX did not regenerate the expected main.c", {
+                file,
+                expectedRoot: output,
+                candidateDirectory: output,
+                condition: "main_not_regenerated"
+            });
     }
 }
 function preserveTextFormatting(before, generated) {
@@ -229,7 +276,10 @@ async function applyFiles(root, before, after, backup, options = {}) {
     const diff = fileDiff(before, after);
     const current = await snapshot(root);
     if (fileDiff(before, current).length)
-        throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during generation; prepare again");
+        throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during generation; prepare again", {
+            // Nothing has been written yet, so callers must not treat this as a rollback.
+            condition: "pre_write_change"
+        });
     await materialize(backup, before);
     const applied = [];
     try {

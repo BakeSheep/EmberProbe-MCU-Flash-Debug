@@ -11,3 +11,5 @@ test-results/
 .zcode/
 .agents/skills/_emberprobe/agent-bridge.json
 xpack-openocd-*.zip
+.emberprobe-cubemx-audit/
+.emberprobe-*/

@@ -71,6 +71,18 @@ missing as **blocked** rather than attempting it. Unless the user explicitly ask
 download resources, generate a test SVD, change settings, or start a debug session just to make a
 check pass. Report which operations ran, which were blocked and why.
 
+## Symptom diagnosis sequence
+
+When investigating target anomalies or crashes, follow this strict symptom diagnosis order:
+
+1. **Verify build and ELF artifacts**: Confirm the selected ELF path, build timestamp, and symbol status before attempting target diagnostics.
+2. **Compare firmware**: When necessary and permitted, verify or compare target flash against the selected ELF to rule out stale or mismatched firmware.
+3. **Respect probe ownership and authorization**: Before calling `fault.read`, `variables.read`, `peripherals.read`, or debug sessions, verify probe availability and respect lock constraints (`PROBE_BUSY`).
+4. **Structure observations**: Explicitly structure findings into **Observed Fact**, **Hypothesis**, and **Next Verification Step**.
+   - No fault flags, Thread mode, or a successful compilation does **not** imply normal functionality.
+   - Do not assert a "reset loop" without concrete reset flags (e.g., RCC reset flags) or explicit core reset events.
+   - After code regeneration, always rebuild before hardware validation; rebuilding does not mean the target has been updated until programmed.
+
 ## Configuration changes
 
 - Change **only the fields the user requested**. A read (`config.get`, `--get`, `--status`,

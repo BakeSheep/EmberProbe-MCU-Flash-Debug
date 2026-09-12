@@ -23,8 +23,10 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         ].join("\n")
     );
     if (options.signal?.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
+    const logPath = options.logPath || path.join(directory, ".emberprobe-cubemx-output.log");
+    const stage = options.stage || "generating";
     return new Promise((resolve, reject) => {
-        const monitor = createLogMonitor();
+        const monitor = createLogMonitor({ logPath });
         let stopped = "";
         const child = (options.spawn || spawn)(tool.java, ["-jar", tool.executable, "-q", script], {
             cwd: path.dirname(tool.executable),
@@ -47,18 +49,26 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         child.stderr.on("data", monitor.stderr);
         child.once("error", (error) => {
             cleanup();
-            reject(failure("CUBEMX_START_FAILED", error.message));
+            monitor.finish();
+            reject(failure("CUBEMX_START_FAILED", error.message, { stage, logPath }));
         });
         child.once("close", (code) => {
             cleanup();
-            const { log, confirmed, failureLine, diagnostic, generatedFiles } = monitor.finish();
-            const details = { log: diagnostic, ...(failureLine ? { failureLine } : {}) };
+            const { log, confirmed, failureLine, diagnostic, generatedFiles, warnings, warningSummary } =
+                monitor.finish();
+            const details = {
+                stage,
+                logPath,
+                warningSummary,
+                log: diagnostic,
+                ...(failureLine ? { failureLine } : {})
+            };
             if (stopped) reject(failure(stopped, "CubeMX stopped", details));
             else if (code !== 0 || failureLine)
                 reject(failure("CUBEMX_GENERATION_FAILED", "CubeMX did not complete cleanly", { code, ...details }));
             else if (!confirmed)
                 reject(failure("CUBEMX_OUTPUT_UNCONFIRMED", "CubeMX did not report successful generation", details));
-            else resolve({ log, generatedFiles });
+            else resolve({ log, generatedFiles, logPath, warnings, warningSummary });
         });
     });
 }

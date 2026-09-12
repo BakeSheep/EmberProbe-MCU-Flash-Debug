@@ -95,11 +95,26 @@ const exec = promisify(execFile);
             assert.strictEqual(result.method, "cubemx." + (action === "reset-permission" ? "permission" : action));
         }
         const execution = calls.find((call) => call.method === "cubemx.execute");
-        assert.deepStrictEqual(execution.params, {
-            candidatePath: candidate,
-            confirmationId: "approval",
-            remember: true
-        });
+        assert.strictEqual(execution.params.candidatePath, candidate);
+        assert.strictEqual(execution.params.confirmationId, "approval");
+        assert.strictEqual(execution.params.remember, true);
+        assert(/^req_/.test(execution.params.requestId), "execute sends a generated request id");
+        // Re-running the same command reuses the persisted request id so the service-side
+        // dedup returns the original operation instead of generating again.
+        await exec(process.execPath, [
+            script,
+            "--workspace",
+            root,
+            "--execute",
+            "--candidate",
+            candidate,
+            "--confirm",
+            "approval",
+            "--remember"
+        ]);
+        const executions = calls.filter((call) => call.method === "cubemx.execute");
+        assert.strictEqual(executions.length, 2);
+        assert.strictEqual(executions[1].params.requestId, executions[0].params.requestId);
         assert.deepStrictEqual(calls.find((call) => call.params.action === "reset").params, { action: "reset" });
         await assert.rejects(
             exec(process.execPath, [script, "--unknown"]),
