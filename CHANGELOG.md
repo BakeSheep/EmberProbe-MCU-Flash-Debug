@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-09-12
+
 - 修复 CubeMX 警告掩盖错误、已完成请求误去重、清单保存失败状态丢失和完整日志截断；快检仅跟踪可识别的生成文件，深检支持取消通知，并增加显式真实 CubeMX 检查入口。
 
 - CubeMX 生成与诊断全流程升级（P0/P1）：
