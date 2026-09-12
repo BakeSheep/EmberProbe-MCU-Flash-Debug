@@ -1,6 +1,14 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "cubemx.firmwareUnknown": "Unable to verify firmware; check paths and .ioc",
+    "cubemx.firmwareInstalled": "Firmware installed",
+    "cubemx.firmwareMissing": "Required firmware missing",
+    "cubemx.installFirmware": "Install in CubeMX",
+    "cubemx.chooseFirmware": "Select the firmware version to install in CubeMX",
+    "cubemx.firmwareVersion": "Enter a firmware version (number.number.number)",
+    "cubemx.firmwareOpened":
+        "CubeMX interactive installation started. Complete sign-in and license acceptance in CubeMX. If no installer appears, use Help → Manage embedded software packages for the selected series and version. Returning here refreshes the check.",
     "cubemx.baseline": "Checking existing generated code",
     "cubemx.writing": "Applying generated files and saving recovery copies",
     "cubemx.path": "CubeMX path",

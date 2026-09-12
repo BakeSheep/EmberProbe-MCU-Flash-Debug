@@ -1,6 +1,14 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "cubemx.firmwareUnknown": "无法确认固件包，请检查路径和 .ioc",
+    "cubemx.firmwareInstalled": "固件包已安装",
+    "cubemx.firmwareMissing": "未安装所需固件包",
+    "cubemx.installFirmware": "在 CubeMX 中安装",
+    "cubemx.chooseFirmware": "选择要在 CubeMX 中安装的固件版本",
+    "cubemx.firmwareVersion": "请输入固件版本（数字.数字.数字）",
+    "cubemx.firmwareOpened":
+        "已启动 CubeMX 原生安装流程。请在 CubeMX 中完成登录和许可确认；若未显示安装窗口，请从 Help → Manage embedded software packages 安装所选系列和版本。返回后自动重新检查。",
     "cubemx.baseline": "正在检查已有生成代码",
     "cubemx.writing": "正在写回生成文件并保存恢复副本",
     "cubemx.path": "CubeMX 路径",

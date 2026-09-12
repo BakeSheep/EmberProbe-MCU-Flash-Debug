@@ -36,7 +36,7 @@ function activate(context) {
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             await provider.stopAgentBridge().catch(() => {});
-            provider.refreshSkillStatus().catch(() => {});
+            provider.refreshSkillStatus(true).catch(console.error);
         }),
         {
             dispose: () => {
@@ -68,10 +68,15 @@ function activate(context) {
         }))
     ];
     context.subscriptions.push(...subscriptions);
+    if (vscode.window.onDidChangeWindowState) context.subscriptions.push(
+        vscode.window.onDidChangeWindowState(state => {
+            if (state.focused) provider.updateView().catch(console.error);
+        })
+    );
 
     provider.refreshOpenOcdStatus(false);
     provider._cubemxConfiguration.detect().catch(console.error);
-    provider.refreshSkillStatus().catch(() => {});
+    provider.refreshSkillStatus(true).catch(console.error);
     if (process.env.EMBERPROBE_E2E === "1") {
         return { viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
     }

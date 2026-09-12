@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 根据 STM32 target 和可选 `.ioc` 检查 CubeMX 固件包，缺包时提供原生交互安装入口；其他配置统一显示“可选”。
+
 ### Added
 
 - CubeMX 新增候选 `.ioc` 派生命令，支持指定键值变更并保留其他文本；权限查询与生成校验解耦，返回授权记录及当前适用性。
@@ -14,6 +16,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - MCU 配置的“其他配置”新增全局 CubeMX 路径和工作区 `.ioc` 路径。
 
 ### Fixed
+
+- 插件启动或切换工作区时，自动检查并更新已开启的工作区 Skills（含同版本内容差异和缺失文件）；关闭状态不自动安装。
+
+- CubeMX 在实际输出目录预置旧工程以保留 USER CODE，验证本次生成产物；基线检查区分换行符及已知元数据路径差异，同时继续拦截真实手改冲突。日志流独立记录完成与错误状态，避免截断漏报、FATAL 漏判及零错误计数误报，并覆盖 C++ 用户代码保护。
 
 - 修复 `.ioc` 合法转义键名被拒绝的问题，支持 Properties 转义、续行与分隔符，语法诊断包含行号；允许工程内工具链子目录布局（`UnderRoot=false`），保留版本与外部路径检查。
 

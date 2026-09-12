@@ -9,7 +9,10 @@ const {
     changes,
     snapshot,
     fileDiff,
-    materialize,
+    normalizeGenerated,
+    stageGeneration,
+    assertFreshOutput,
+    preserveTextFormatting,
     applyFiles,
     assertUserCodePreserved
 } = require("./cubemxProject");
@@ -144,26 +147,34 @@ class CubeMxService {
             const started = Date.now();
             const generate = async (directory, files) => {
                 if (controller.signal.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
-                await materialize(directory, files);
+                const { output, mains } = await stageGeneration(directory, files, name);
                 const timeoutMs = 300000 - (Date.now() - started);
                 if (timeoutMs <= 0) throw failure("CUBEMX_TIMEOUT", "Generation exceeded five minutes");
                 const result = await run(plan.tool, directory, name, { signal: controller.signal, timeoutMs });
                 await fs.writeFile(path.join(directory, ".emberprobe-cubemx-output.log"), result.log || "");
-                const generated = await snapshot(directory);
-                if (![...generated.keys()].some((file) => /(?:^|[/\\])main\.c$/i.test(file)))
-                    throw failure("CUBEMX_OUTPUT_MISSING", "CubeMX did not produce main.c", result);
+                const raw = normalizeGenerated(files, await snapshot(directory), name);
+                await assertFreshOutput(output, mains, result.generatedFiles);
+                const generated = preserveTextFormatting(files, raw);
                 generated.set(name, files.get(name));
                 return generated;
             };
             progress?.("baseline");
             const base = await generate(baseline, before);
             const drift = fileDiff(before, base).filter((entry) => before.has(entry.file));
-            if (drift.length)
-                throw failure(
+            if (drift.length) {
+                const error = failure(
                     "CUBEMX_BASELINE_DRIFT",
                     "Existing files cannot be reproduced; review hand edits before generating",
                     { changes: drift, stage }
                 );
+                if (drift.some((entry) => entry.file.replace(/\\/g, "/") === "cmake/stm32cubemx/CMakeLists.txt"))
+                    error.suggestedActions.unshift(
+                        "Review cmake/stm32cubemx/CMakeLists.txt for manual edits: CubeMX regenerates this file. " +
+                            "If custom sources were added there, move their entries to target_sources(${CMAKE_PROJECT_NAME} PRIVATE ...) " +
+                            "in the top-level CMakeLists.txt, remove the duplicate generated-file entries, then prepare again."
+                    );
+                throw error;
+            }
             progress?.("generating");
             const input = new Map(before);
             input.set(name, { bytes: Buffer.from(plan.candidate), hash: hash(plan.candidate) });

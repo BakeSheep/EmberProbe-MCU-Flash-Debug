@@ -20,6 +20,7 @@ const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization } = require("./writeAuthorization");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
+const { CubeMxFirmware } = require("./services/cubemxFirmware");
 const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
 const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
@@ -167,6 +168,12 @@ class MainViewProvider {
                 this.updateView();
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
+        });
+        this._cubemxFirmware = new CubeMxFirmware({
+            vscode,
+            context,
+            changed: () => this.updateView(),
+            t: (key) => this._t(key)
         });
         this._cubemxConfiguration = new CubeMxConfiguration({
             vscode,
@@ -366,6 +373,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.autoDetect"] = async () => this.runAutoDetect(true);
         this.commandHandlers["mcu-vscode.selectCubeMx"] = () => this._cubemxConfiguration.select("cubemx");
         this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.select("ioc");
+        this.commandHandlers["mcu-vscode.installCubeMxFirmware"] = () => this._cubemxFirmware.install();
         this.commandHandlers["mcu-vscode.manageAgentSkills"] = async () => this.manageAgentSkills();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
@@ -1794,8 +1802,8 @@ class MainViewProvider {
     _postSkillStatus(status) {
         this._skillStatusService.post(status);
     }
-    async refreshSkillStatus() {
-        const status = await this._skillStatusService.refresh();
+    async refreshSkillStatus(autoUpdate = false) {
+        const status = await this._skillStatusService.refresh(autoUpdate);
         await this._syncAgentBridgeWithSkills(status);
         return status;
     }
@@ -2920,6 +2928,7 @@ class MainViewProvider {
         webviewView.onDidDispose(() => this._webviewRenders?.delete(webviewView.webview));
         // 设置初始内容
         this._renderWebview(webviewView.webview, this.getModernWebviewContent(), "sidebar");
+        this.updateView().catch(console.error);
         // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
         const configured =
             this._context.workspaceState.get(CACHE_KEYS.elfPath) &&
@@ -2980,6 +2989,8 @@ class MainViewProvider {
                 cubemxPath: vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",
                 cubemxStatus: this._cubemxConfiguration.status,
+                cubemxFirmware: this._cubemxFirmware?.result,
+                cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
                 mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },
@@ -3005,9 +3016,11 @@ class MainViewProvider {
             });
     }
     updateView() {
-        if (this._webviewView) {
-            return this._renderWebview(this._webviewView.webview, this.getModernWebviewContent(), "sidebar");
-        }
+        const render = () => {
+            if (this._webviewView)
+                return this._renderWebview(this._webviewView.webview, this.getModernWebviewContent(), "sidebar");
+        };
+        return this._cubemxFirmware ? this._cubemxFirmware.refresh().then(render) : render();
     }
 }
 exports.MainViewProvider = MainViewProvider;

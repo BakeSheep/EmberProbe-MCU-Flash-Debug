@@ -22,12 +22,43 @@ class SkillStatusService {
         this.onStatus(status);
     }
 
-    async refresh() {
+    async refresh(autoUpdate = false) {
+        if (this.startupUpdate) return this.startupUpdate;
+        if (autoUpdate && !this.busy) {
+            this.startupUpdate = this.updateEnabledSkills();
+            try {
+                return await this.startupUpdate;
+            } finally {
+                this.startupUpdate = null;
+            }
+        }
         const status = await this.installer.inspectSkills(this.vscode, this.context);
         this.lastStatus = status;
         this.post(status);
 
         return status;
+    }
+
+    async updateEnabledSkills() {
+        this.busy = true;
+        try {
+            let status = await this.installer.inspectSkills(this.vscode, this.context);
+            const workspace = status.scopes?.workspace;
+            if (workspace && ["outdated", "modified", "partial"].includes(workspace.state)) {
+                this.post({ ...status, busy: true });
+                status = await this.installer.installSkill(this.vscode, this.context, this.getLang(), "workspace");
+            }
+            this.lastStatus = status;
+            this.post(status);
+            return status;
+        } catch (error) {
+            const status = await this.installer.inspectSkills(this.vscode, this.context);
+            this.lastStatus = status;
+            this.post(status);
+            throw error;
+        } finally {
+            this.busy = false;
+        }
     }
 
     warnIfModified() {

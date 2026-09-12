@@ -125,7 +125,8 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         const storage = memory();
         const fakeRun = async (_tool, directory, name) => {
             const values = parseIoc(await fs.readFile(path.join(directory, name), "utf8"));
-            await fs.writeFile(path.join(directory, "main.c"), "baud=" + values["USART2.BaudRate"] + ";\n");
+            const output = values["ProjectManager.UnderRoot"] === "false" ? path.join(directory, "demo") : directory;
+            await fs.writeFile(path.join(output, "main.c"), "baud=" + values["USART2.BaudRate"] + ";\n");
             return { log: "generated" };
         };
         const service = new CubeMxService({
@@ -173,6 +174,51 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         await fs.writeFile(path.join(project, "main.c"), "hand edit");
         await rejects(() => service.execute(), "CUBEMX_BASELINE_DRIFT");
         assert.strictEqual(await fs.readFile(path.join(project, "main.c"), "utf8"), "hand edit");
+        await fs.writeFile(path.join(project, "main.c"), "baud=115200;\n");
+        // Reproduce CLI output under <ProjectName>, leaving the staged originals untouched.
+        const nestedRun = async (_tool, directory, name) => {
+            const output = path.join(directory, "demo");
+            await fs.mkdir(output, { recursive: true });
+            await fs.copyFile(path.join(directory, name), path.join(output, name));
+            const values = parseIoc(await fs.readFile(path.join(output, name), "utf8"));
+            await fs.writeFile(path.join(output, "main.c"), "baud=" + values["USART2.BaudRate"] + ";\n");
+            return { log: "generated" };
+        };
+        service.options.run = nestedRun;
+        const updated = nestedContent.replace("115200", "57600");
+        const promoted = await service.execute({ content: updated });
+        assert(promoted.generated);
+        assert.strictEqual(await fs.readFile(path.join(project, "main.c"), "utf8"), "baud=57600;\n");
+        assert(!promoted.changes.some((entry) => entry.file.startsWith("demo" + path.sep)));
+        await assert.rejects(fs.stat(path.join(project, "demo")), { code: "ENOENT" });
+        await fs.writeFile(path.join(project, "main.c"), "hand edit");
+        await rejects(() => service.execute(), "CUBEMX_BASELINE_DRIFT");
+        assert.strictEqual(await fs.readFile(path.join(project, "main.c"), "utf8"), "hand edit");
+        await fs.writeFile(path.join(project, "main.c"), "baud=57600;\n");
+        await fs.mkdir(path.join(project, "demo"));
+        await fs.writeFile(path.join(project, "demo", "user.txt"), "keep");
+        await rejects(() => service.execute(), "CUBEMX_LAYOUT_UNSUPPORTED");
+        assert.strictEqual(await fs.readFile(path.join(project, "demo", "user.txt"), "utf8"), "keep");
+        await fs.unlink(path.join(project, "demo", "user.txt"));
+        await fs.rmdir(path.join(project, "demo"));
+        service.options.run = async (...params) => {
+            await nestedRun(...params);
+            await fs.unlink(path.join(params[1], "demo", "demo.ioc"));
+            return {};
+        };
+        await rejects(() => service.execute(), "CUBEMX_LAYOUT_UNSUPPORTED");
+        service.options.run = async (...params) => {
+            await nestedRun(...params);
+            await fs.writeFile(path.join(params[1], "main.c"), "ambiguous output");
+            return {};
+        };
+        await rejects(() => service.execute(), "CUBEMX_LAYOUT_UNSUPPORTED");
+        service.options.run = nestedRun;
+        await rejects(
+            () => service.execute({ content: updated.replace("UnderRoot=false", "UnderRoot=true") }),
+            "CUBEMX_LAYOUT_UNSUPPORTED"
+        );
+        await fs.writeFile(ioc, nestedContent);
         await fs.writeFile(path.join(project, "main.c"), "baud=115200;\n");
         service.options.run = async (...params) => {
             await fakeRun(...params);
@@ -275,29 +321,104 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
 
         const runnerDir = path.join(root, "runner");
         await fs.mkdir(runnerDir);
-        const spawn = (mode) => (_executable, argv, options) => {
-            assert.strictEqual(options.shell, false);
-            assert.strictEqual(options.windowsHide, true);
-            assert(argv.includes("-q"));
-            const child = new EventEmitter();
-            child.stdout = new EventEmitter();
-            child.stderr = new EventEmitter();
-            child.kill = () => setImmediate(() => child.emit("close", 1));
-            setImmediate(() => {
-                if (mode === "hang") return;
-                if (mode === "start-error") {
-                    child.emit("error", new Error("no java"));
-                    return;
-                }
-                child.stdout.emit(
-                    "data",
-                    Buffer.from(mode === "error" ? "package not installed" : "generated successfully")
-                );
-                child.emit("close", 0);
-            });
-            return child;
-        };
+        const spawn =
+            (mode, output, exitCode = 0) =>
+            (_executable, argv, options) => {
+                assert.strictEqual(options.shell, false);
+                assert.strictEqual(options.windowsHide, true);
+                assert(argv.includes("-q"));
+                const child = new EventEmitter();
+                child.stdout = new EventEmitter();
+                child.stderr = new EventEmitter();
+                child.kill = () => setImmediate(() => child.emit("close", 1));
+                setImmediate(() => {
+                    if (mode === "hang") return;
+                    if (mode === "start-error") {
+                        child.emit("error", new Error("no java"));
+                        return;
+                    }
+                    child.stdout.emit(
+                        "data",
+                        Buffer.from(output ?? (mode === "error" ? "package not installed" : "generated successfully"))
+                    );
+                    child.emit("close", exitCode);
+                });
+                return child;
+            };
         assert((await runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok") })).log.includes("successfully"));
+        const notice = "log4j user configuration file not found: C:\\Users\\ASUS/.stm32cubemx/log4j2.xml";
+        const fallback = "Configure log4j with default settings from jar:file:/D:/software/CubeMX/";
+        const cliLines = [
+            notice,
+            fallback,
+            'config load "demo.ioc"',
+            "OK",
+            'project path "stage"',
+            "OK",
+            "project generate",
+            "2026-09-12 16:14:12,807 [INFO] CodeEngine:321 - Generated code: C:/stage/Core/Src/main.c",
+            "2026-09-12 16:14:13,704 [INFO] ProjectBuilder:5636 - Time for Generating toolchain IDE Files: 661mS.",
+            "OK",
+            "exit",
+            "Bye bye"
+        ];
+        for (const newline of ["\n", "\r\n"]) {
+            const output = cliLines.join(newline);
+            assert.strictEqual(
+                (await runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", output) })).log,
+                output
+            );
+        }
+        for (const output of [
+            "OK\nexit\nBye bye",
+            'project path "stage"\nOK\nproject generate\nexit',
+            "project generate\nGenerated code: Core/Src/main.c\nTime for Generating toolchain IDE Files: 661mS.",
+            "project generate\n[INFO] status OK\nexit",
+            "project generate\nexit\nOK",
+            'project generate\nproject path "stage"\nOK\nexit',
+            "project generate\nOK\nproject generate\nexit"
+        ])
+            await rejects(
+                () => runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", output) }),
+                "CUBEMX_OUTPUT_UNCONFIRMED"
+            );
+        for (const [output, exitCode] of [
+            [cliLines.join("\n"), 1],
+            [cliLines.concat("[ERROR] generation failed").join("\n"), 0]
+        ])
+            await rejects(
+                () => runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", output, exitCode) }),
+                "CUBEMX_GENERATION_FAILED"
+            );
+        for (const newline of ["\n", "\r\n"]) {
+            const output = [notice, fallback, "Code generated successfully"].join(newline);
+            const result = await runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", output) });
+            assert.strictEqual(result.log, output);
+        }
+        await rejects(
+            () => runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", notice + "\n" + fallback) }),
+            "CUBEMX_OUTPUT_UNCONFIRMED"
+        );
+        await rejects(
+            () => runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok", "generated successfully", 1) }),
+            "CUBEMX_GENERATION_FAILED"
+        );
+        for (const diagnostic of [
+            "[ERROR] generation failed",
+            "java.lang.Exception: failure",
+            "package not installed",
+            "firmware not found",
+            "migration required",
+            "please download firmware",
+            notice + " ERROR: generation failed"
+        ])
+            await rejects(
+                () =>
+                    runCubeMx(tool, runnerDir, "demo.ioc", {
+                        spawn: spawn("ok", [notice, fallback, diagnostic, "generated successfully"].join("\n"))
+                    }),
+                "CUBEMX_GENERATION_FAILED"
+            );
         await rejects(
             () => runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("error") }),
             "CUBEMX_GENERATION_FAILED"

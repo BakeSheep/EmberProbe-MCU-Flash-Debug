@@ -75,6 +75,33 @@ const { createFixture } = require("./helpers/service-fixture");
         await new Promise((resolve) => setImmediate(resolve));
         assert.ok(notices.length >= 2);
         assert.ok(!skillCalls.some((call) => call.includes(":global")));
+        for (const state of ["outdated", "modified", "partial"]) {
+            skillStatus.scopes.workspace = { state, root: temp };
+            const count = skillCalls.length;
+            await Promise.all([managedSkills.refresh(true), managedSkills.refresh(true), managedSkills.refresh()]);
+            assert.deepStrictEqual(skillCalls.slice(count), ["install:workspace"]);
+            assert.strictEqual(managedSkills.busy, false);
+            assert.strictEqual(managedSkills.lastStatus.scopes.workspace.state, "installed");
+        }
+        for (const state of ["installed", "notInstalled"]) {
+            skillStatus.scopes.workspace = { state, root: temp };
+            const count = skillCalls.length;
+            await managedSkills.refresh(true);
+            assert.strictEqual(skillCalls.length, count);
+        }
+        skillStatus.scopes.workspace = { state: "modified", root: temp };
+        const count = skillCalls.length;
+        await managedSkills.refresh();
+        assert.strictEqual(skillCalls.length, count, "ordinary status reads must not write Skills");
+        const install = managedSkills.installer.installSkill;
+        managedSkills.installer.installSkill = async () => {
+            throw new Error("disk full");
+        };
+        await assert.rejects(managedSkills.refresh(true), /disk full/);
+        assert.strictEqual(managedSkills.busy, false);
+        assert.strictEqual(managedSkills.startupUpdate, null);
+        managedSkills.installer.installSkill = install;
+        await managedSkills.refresh(true);
     } finally {
         fixture.dispose();
     }

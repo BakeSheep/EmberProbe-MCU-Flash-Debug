@@ -9,7 +9,7 @@ function createFixture() {
     fs.writeFileSync(elf, "elf");
     const state = new Map();
     const settings = new Map();
-    const cacheKeys = { elfPath: "elf", debugger: "debugger", mcuCore: "mcu", svdPath: "svd" };
+    const cacheKeys = { elfPath: "elf", debugger: "debugger", mcuCore: "mcu", svdPath: "svd", iocPath: "mcu.iocPath" };
     const context = {
         workspaceState: {
             get: (key) => state.get(key),
