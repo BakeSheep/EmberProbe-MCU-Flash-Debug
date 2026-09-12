@@ -90,6 +90,7 @@ class AgentFlashService {
                 elfSha256: sha256,
                 code: verified ? 0 : 1,
                 detail: failed || (verified ? "" : `OpenOCD exited with code ${execution.exitCode}`),
+                commands: execution.commands,
                 lines: execution.openocdTail
             };
         } finally {

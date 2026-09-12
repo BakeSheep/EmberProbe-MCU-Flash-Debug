@@ -107,7 +107,10 @@ const { loadProvider } = require("./helpers/load-provider");
             resolveLaunch: () => ({ executable: "openocd" }),
             check: async () => ({ compatible: true }),
             run: async (options) => {
-                assert(options.buildCommands().join(" ").includes("verify_image"));
+                const commands = options.buildCommands().join(" ");
+                assert(commands.includes("verify_image"));
+                // 校验前将 work-area 置 0，促使 OpenOCD 回退到主机侧分块比对。
+                assert(commands.includes("-work-area-size 0"));
                 entered();
                 await gate;
                 return { exitCode: 0, openocdTail: ["EP_VERIFY OK"] };
@@ -134,7 +137,11 @@ const { loadProvider } = require("./helpers/load-provider");
             openocd: params.openocd
         }).confirmationId;
         service.run = async (options) => {
-            assert(options.buildCommands().join(" ").includes("program"));
+            const commands = options.buildCommands().join(" ");
+            assert(commands.includes("program"));
+            // program 自带 verify 与 reset；work-area backup 保护被用作缓冲区的目标 RAM。
+            assert(commands.includes("verify reset exit"));
+            assert(commands.includes("-work-area-backup 1"));
             return { exitCode: 0, openocdTail: [] };
         };
         assert.strictEqual((await service.execute(params)).verified, true);

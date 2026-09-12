@@ -138,8 +138,9 @@ function lastJsonLine(stdout) {
             assert.strictEqual(verified.verified, true);
             assert.strictEqual(verified.elf, elf);
             assert.strictEqual(verified.elfSha256, downloadPreflight.elfSha256);
+            // openocdTail 逐行截断到 500 字符，命令断言必须基于返回的 commands 而非 stdout 回显。
             assert.ok(
-                verifyRun.stdout.includes("-work-area-size 0"),
+                verified.commands.join(" ").includes("-work-area-size 0"),
                 "verify should force host-side comparison without target work-area"
             );
 
@@ -153,9 +154,13 @@ function lastJsonLine(stdout) {
                 "--confirmation-id",
                 downloadPreflight.flashAuthorization.confirmationId
             ]);
-            assert.ok(downloaded.stdout.includes("verify reset exit"), "OpenOCD should receive the program command");
+            const downloadedResult = lastJsonLine(downloaded.stdout);
             assert.ok(
-                downloaded.stdout.includes("-work-area-backup 1"),
+                downloadedResult.commands.join(" ").includes("verify reset exit"),
+                "OpenOCD should receive the program command"
+            );
+            assert.ok(
+                downloadedResult.commands.join(" ").includes("-work-area-backup 1"),
                 "download should preserve target RAM used as work-area"
             );
             assert.ok(downloaded.stdout.includes("EP_VERIFY OK"));

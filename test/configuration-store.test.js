@@ -23,7 +23,8 @@ const { createFixture } = require("./helpers/service-fixture");
         const ioc = path.join(temp, "project space.ioc");
         fs.writeFileSync(ioc, "ProjectManager.FirmwarePackage=STM32Cube FW_H7 V1.13.0\n");
         const selected = await store.update({ iocPath: "project space.ioc" });
-        assert.strictEqual(selected.iocPath, fs.realpathSync(ioc));
+        // store 经 fs/promises realpath（native 绑定）展开 Windows 8.3 短名，期望值须用同一实现。
+        assert.strictEqual(selected.iocPath, await fs.promises.realpath(ioc));
         assert.strictEqual(state.get("mcu.iocPath"), selected.iocPath);
         assert.strictEqual(fixture.changed, 2);
         settings.set("cubemxPath", "C:/ST/STM32CubeMX.exe");
