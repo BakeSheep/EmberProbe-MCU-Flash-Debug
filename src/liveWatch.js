@@ -138,6 +138,8 @@ class ManagedOpenOcdSession {
     // options: { executable, probe, target, cwd, port, gdbPort, intervalMs, mode }
     // handlers: { onSample(samples,t), onStatus(msg), onError(msg), onDegraded(error), onDisconnect(error) }
     constructor(vscode, options, handlers) {
+        if (options?.isolated)
+            return /** @type {any} */ (new (require("./samplingSession").SamplingSession)(options, handlers));
         this.vscode = vscode;
         this.options = options || {};
         this.handlers = handlers || {};
@@ -197,6 +199,9 @@ class ManagedOpenOcdSession {
     }
 
     setSamplingEnabled(enabled) {
+        const nextEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
+        if (enabled && this._samplingRequested && this.samplingEnabled === nextEnabled && this.timer)
+            return this.samplingEnabled;
         this._samplingRequested = !!enabled;
         this.sampleEpoch++;
         this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;

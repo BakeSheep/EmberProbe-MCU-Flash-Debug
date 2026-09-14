@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增工作区共享的变量固定配色与线型、曲线悬停读数、聚焦查看和独立冻结快照导出；隐藏成员保留采样与历史。
+- 精简波形工具栏与悬停提示，变量卡片改为右键设置类型和样式、左侧全高色条、右侧实时值和 ×；优化结构体布局，ELF 全部变量列表仅保留名称与类型。
+- OpenOCD 传输与采样时钟移入工作线程，降低扩展宿主繁忙造成的采样停顿；Hz 按采集时间计算。
+- 修复窗口重新聚焦时 Skill 开关与 OpenOCD 状态闪烁；冻结后仍可悬停读取其他位置与曲线。
+- Added workspace-shared series styles, hover readings, focus view, and frozen snapshot export; hidden members retain sampling and history.
+- Simplified chart controls and variable cards with context-menu type/style settings, full-height color strips, right-aligned values, and clearer composite layouts; removed addresses from the ELF variable list.
+- Isolated OpenOCD transport and sampling timing in a worker thread and calculate Hz from acquisition timestamps.
+- Fixed sidebar status flicker on window refocus and kept hover inspection responsive while charts are frozen.
+
 ## [0.7.6] - 2026-09-12
 
 - 修复 CubeMX 警告掩盖错误、已完成请求误去重、清单保存失败状态丢失和完整日志截断；快检仅跟踪可识别的生成文件，深检支持取消通知，并增加显式真实 CubeMX 检查入口。

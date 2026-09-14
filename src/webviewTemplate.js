@@ -27,7 +27,9 @@ function loadRendererPrelude(area) {
             loadWebviewAsset("", "messages.js"),
             ...(area === "sidebar"
                 ? [loadWebviewAsset("sidebar", "chipView.js")]
-                : [loadWebviewAsset("liveWatch", "chart.js")])
+                : ["seriesStyles.js", "analysisState.js", "chartInspection.js", "chartControls.js", "chart.js"].map(
+                      (name) => loadWebviewAsset("liveWatch", name)
+                  ))
         ].join("\n") + "\n"
     );
 }

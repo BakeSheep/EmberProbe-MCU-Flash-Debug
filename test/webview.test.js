@@ -29,6 +29,13 @@ try {
     ])
         assert.ok(sidebar.document.getElementById(id), id);
     assert.strictEqual(sidebar.window.evil, undefined);
+    sidebar.send({
+        type: "availableVariables",
+        symbols: [{ name: "counter", watchType: "u32", address: 536870912, size: 4 }]
+    });
+    assert.equal(sidebar.document.querySelectorAll(".available-head > span").length, 2);
+    assert.equal(sidebar.document.querySelectorAll(".available-address").length, 0);
+    assert.equal(sidebar.document.querySelector(".available-row").children.length, 2);
     const click = (id) => sidebar.document.getElementById(id).click();
     click("openocdSelect");
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });

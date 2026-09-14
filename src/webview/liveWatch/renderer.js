@@ -11,7 +11,17 @@ function msgText(m) {
 }
 var statusMsg = { key: "lw.ready" };
 var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
-    COLORS = ["#4FC1FF", "#F14C4C", "#73C991", "#FFCC00", "#C586C0", "#CE9178", "#569CD6", "#DCDCAA"];
+    Styles = window.EmberProbeSeriesStyles,
+    Analysis = window.EmberProbeAnalysisState,
+    Inspection = window.EmberProbeChartInspection,
+    seriesStyles = Object.create(null),
+    styleRequests = new Set(),
+    analysis = Analysis.create(),
+    dataRevision = 0,
+    seriesCache = null,
+    boundsCache = null,
+    axisModes = {},
+    controls;
 var watch = [],
     data = Object.create(null),
     latest = Object.create(null),
@@ -57,7 +67,33 @@ function $(id) {
     return document.getElementById(id);
 }
 function colorFor(i) {
-    return i < COLORS.length ? COLORS[i] : "hsl(" + ((i * 47) % 360) + ",65%,60%)";
+    return styleFor(typeof i === "string" ? i : watch[i]?.name || String(i)).color;
+}
+function styleFor(name) {
+    if (!Object.prototype.hasOwnProperty.call(seriesStyles, name)) {
+        Styles.ensure(seriesStyles, name);
+        if (!styleRequests.has(name)) {
+            styleRequests.add(name);
+            post({ type: "setSeriesStyle", name: name });
+        }
+    }
+    return seriesStyles[name];
+}
+function plotBuffers() {
+    return analysis.snapshot || data;
+}
+function invalidateSeries() {
+    dataRevision++;
+    seriesCache = null;
+    boundsCache = null;
+}
+function toggleCurve(name) {
+    analysis.previousHidden = null;
+    analysis.focused = null;
+    hidden[name] = !hidden[name];
+    saveUi();
+    renderVars();
+    dirty = true;
 }
 function fmtAddr(a) {
     return "0x" + (Number(a) >>> 0).toString(16).toUpperCase();
@@ -88,7 +124,7 @@ function saveWatch() {
 function saveUi() {
     if (api && api.setState)
         api.setState({
-            hidden: hidden,
+            hidden: analysis.previousHidden || hidden,
             expanded: expanded,
             dispSpec: dispSpec,
             timeWindow: windowPreset,
@@ -207,6 +243,24 @@ function removeVar(name) {
     watch = watch.filter(function (w) {
         return rmv.indexOf(w) < 0;
     });
+    if (
+        rmv.some(function (w) {
+            return w.name === analysis.focused;
+        })
+    )
+        hidden = Analysis.restore(
+            analysis,
+            watch.map(function (w) {
+                return w.name;
+            })
+        );
+    Analysis.remove(
+        analysis,
+        rmv.map(function (w) {
+            return w.name;
+        })
+    );
+    invalidateSeries();
     rmv.forEach(function (w) {
         delete data[w.name];
         delete latest[w.name];
@@ -221,6 +275,11 @@ function removeVar(name) {
     dirty = true;
 }
 function renderVars() {
+    invalidateSeries();
+    if (analysis.focused)
+        watch.forEach(function (w) {
+            hidden[w.name] = w.name !== analysis.focused;
+        });
     var box = $("vars");
     box.textContent = "";
     valueCells = Object.create(null);
@@ -250,10 +309,7 @@ function renderVars() {
         sw.style.background = colorFor(idx);
         sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
         sw.onclick = function () {
-            hidden[item.name] = !hidden[item.name];
-            saveUi();
-            renderVars();
-            dirty = true;
+            toggleCurve(item.name);
         };
         var main = document.createElement("div");
         main.className = "var-main";
@@ -265,34 +321,17 @@ function renderVars() {
         val.className = "var-value";
         val.textContent = fmtExact(latest[item.name], latestText[item.name]);
         valueCells[item.name] = val;
-        main.append(name, val);
-        var sel = document.createElement("select");
-        sel.className = "type";
-        TYPES.forEach(function (t) {
-            var o = document.createElement("option");
-            o.value = t;
-            o.textContent = t;
-            o.selected = t === item.type;
-            sel.appendChild(o);
-        });
-        sel.onchange = function () {
-            item.type = sel.value;
-            data[item.name] = [];
-            latest[item.name] = null;
-            latestText[item.name] = null;
-            updateValues();
-            saveWatch();
-            dirty = true;
-        };
+        main.append(name);
+        if (controls) controls.decorate(card, item.name, sw);
         var rm = document.createElement("button");
         rm.className = "remove";
-        rm.textContent = "-";
+        rm.textContent = "×";
         rm.title = t("lw.removeVar");
         rm.setAttribute("aria-label", t("lw.removeVarName", { name: item.name }));
         rm.onclick = function () {
             removeVar(item.name);
         };
-        card.append(rm, sw, main, sel);
+        card.append(sw, main, val, rm);
         box.appendChild(card);
     });
 }
@@ -305,20 +344,26 @@ function updateValues() {
     });
 }
 function onSamples(samples) {
-    if (frozen) return;
+    if (!frozen) invalidateSeries();
     var now = Date.now();
-    sampleTimes.push(now);
-    while (sampleTimes.length && sampleTimes[0] < now - 3000) sampleTimes.shift();
-    $("rate").textContent = (sampleTimes.length / 3).toFixed(1) + " Hz";
+    // Measure acquisition timestamps, not delayed Webview message delivery.
+    var tick =
+        (samples || []).reduce(function (last, sample) {
+            return Number.isFinite(sample.t) ? Math.max(last, sample.t) : last;
+        }, 0) || now;
+    if (!sampleTimes.length || tick > sampleTimes[sampleTimes.length - 1]) sampleTimes.push(tick);
+    while (sampleTimes.length > 1 && sampleTimes[0] < tick - 3000) sampleTimes.shift();
+    var elapsed = sampleTimes.length > 1 ? tick - sampleTimes[0] : 0;
+    $("rate").textContent = (elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0).toFixed(1) + " Hz";
     (samples || []).forEach(function (s) {
         var time = Number(s.t) || now;
         if (samplingOrigin === null) samplingOrigin = time;
         latest[s.name] = s.value;
         latestText[s.name] = s.valueText ?? null;
-        if (s.value === null || s.value === undefined) return;
+        // Preserve failed samples as breaks rather than drawing across a gap.
         ensureBuf(s.name);
         var arr = data[s.name];
-        arr.push({ t: time, v: Number(s.value), valueText: s.valueText ?? null });
+        arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
         if (arr.length > MAXPTS) arr.splice(0, arr.length - MAXPTS);
     });
     updateValues();
@@ -365,9 +410,10 @@ function renderLeafInto(container, label, typeName, path, watchType, address) {
         return w.name === path;
     });
     var sw = document.createElement("button");
-    sw.className = "member-swatch" + (wi < 0 ? " off" : "");
+    sw.className = "member-swatch" + (wi < 0 || hidden[path] ? " off" : "");
     if (wi >= 0) sw.style.background = colorFor(wi);
-    sw.title = wi >= 0 ? t("lw.removeFromChart") : t("lw.addToChart");
+    sw.title = wi >= 0 ? t(hidden[path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
+    if (controls && wi >= 0) controls.decorate(row, path, sw);
     sw.onclick = function (e) {
         e.stopPropagation();
         toggleLeafInChart(path, address, watchType);
@@ -459,7 +505,7 @@ function renderCompositeCard(item, idx, box) {
     card.className = "var-card composite" + (expanded[item.name] ? " open" : "");
     var rm = document.createElement("button");
     rm.className = "remove";
-    rm.textContent = "-";
+    rm.textContent = "×";
     rm.title = t("lw.removeVar");
     rm.setAttribute("aria-label", t("lw.removeVarName", { name: item.name }));
     rm.onclick = function (e) {
@@ -496,6 +542,7 @@ function renderCompositeCard(item, idx, box) {
         dirty = true;
     };
     renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
+    if (controls) controls.decorate(card, item.name);
     content.append(head, body);
     card.append(rm, content);
     box.appendChild(card);
@@ -531,11 +578,8 @@ function toggleLeafInChart(path, address, watchType) {
         return w.name === path;
     });
     if (i >= 0) {
-        watch.splice(i, 1);
-        delete data[path];
-        delete latest[path];
-        delete latestText[path];
-        delete hidden[path];
+        toggleCurve(path);
+        return;
     } else {
         addLeafWatch(path, address, watchType);
     }
@@ -582,7 +626,6 @@ function collectLeaves(layout, name, baseAddr) {
     return out;
 }
 function onCompositeSamples(samples) {
-    if (frozen) return;
     (samples || []).forEach(function (s) {
         if (s && s.name) latest[s.name] = s.tree;
     });
@@ -691,6 +734,9 @@ function stop() {
     updateRun();
 }
 function clearHistory() {
+    Analysis.resume(analysis);
+    frozen = false;
+    invalidateSeries();
     Object.keys(data).forEach(function (n) {
         data[n] = [];
     });
@@ -988,14 +1034,68 @@ function hideExport() {
     $("exportOverlay").classList.add("hidden");
     $("exportWarn").textContent = "";
 }
+var exportSource = "archive",
+    archiveExportInfo = null;
+var sourceLabel = document.createElement("label");
+sourceLabel.className = "export-source";
+var sourceText = document.createElement("span");
+sourceText.dataset.i18n = "lw.exportSource";
+sourceText.textContent = t("lw.exportSource");
+var sourceSelect = document.createElement("select");
+sourceSelect.id = "exportSource";
+["archive", "retained", "snapshot"].forEach(function (value) {
+    var option = document.createElement("option");
+    option.value = value;
+    option.dataset.i18n = "lw.source." + value;
+    option.textContent = t(option.dataset.i18n);
+    sourceSelect.append(option);
+});
+sourceLabel.append(sourceText, sourceSelect);
+$("exportSeries").before(sourceLabel);
+sourceSelect.onchange = function () {
+    exportSource = sourceSelect.value;
+    if (exportSource === "archive") {
+        if (archiveExportInfo) showArchiveExport(archiveExportInfo);
+        else post({ type: "samplingArchiveInfo", openExport: true });
+    } else showLocalExport();
+};
+function showLocalExport() {
+    var buffers = exportSource === "snapshot" ? analysis.snapshot || {} : data;
+    var names = Object.keys(buffers).filter(function (name) {
+        return buffers[name].some(function (p) {
+            return Number.isFinite(p.v);
+        });
+    });
+    var points = names.map(function (name) {
+        return { name: name, buffer: buffers[name] };
+    });
+    var bounds = exportBounds(points);
+    showArchiveExport({ variables: names, firstTimestampMs: bounds.from, lastTimestampMs: bounds.to });
+    exportCandidates = points.map(function (item) {
+        return {
+            name: item.name,
+            buffer: item.buffer.map(function (p) {
+                return { ...p };
+            })
+        };
+    });
+}
 function showExport() {
-    post({ type: "samplingArchiveInfo", openExport: true });
+    exportSource = frozen ? "snapshot" : "archive";
+    sourceSelect.value = exportSource;
+    sourceSelect.querySelector('option[value="snapshot"]').disabled = !analysis.snapshot;
+    if (exportSource === "snapshot") showLocalExport();
+    else post({ type: "samplingArchiveInfo", openExport: true });
 }
 function showArchiveExport(info) {
     var names = Array.isArray(info && info.variables) ? info.variables : [],
         first = Number(info && info.firstTimestampMs),
         last = Number(info && info.lastTimestampMs);
     if (!names.length || !Number.isFinite(first) || !Number.isFinite(last)) {
+        exportCandidates = [];
+        $("exportSeries").textContent = "";
+        $("exportWarn").textContent = t("lw.noDataToExport");
+        $("exportOverlay").classList.remove("hidden");
         setStatusKey("lw.noDataToExport", null, "error");
         return;
     }
@@ -1035,6 +1135,26 @@ function applyExport() {
     var opts = exportOptions(selected);
     if (!opts) {
         $("exportWarn").textContent = t("lw.exportInvalidRange");
+        return;
+    }
+    if (exportSource !== "archive") {
+        post({
+            type: "exportCsv",
+            source: exportSource,
+            names: selected.map(function (c) {
+                return c.name;
+            }),
+            csv: buildCsv(
+                selected.map(function (c) {
+                    return c.name;
+                }),
+                selected.map(function (c) {
+                    return c.buffer;
+                }),
+                opts
+            )
+        });
+        hideExport();
         return;
     }
     post({
@@ -1168,13 +1288,183 @@ function resetChartView() {
     chartState.pointer = null;
     chartState.drag = null;
     chartState.visibleKey = "";
+    chartState.curveGeometry = null;
+    chartState.prepared = null;
+    chartState.hits = [];
+    chartState.geometry = null;
     $("chartOverview").classList.add("disabled");
 }
+function freezeChart() {
+    syncTimeBounds();
+    Analysis.freeze(analysis, data, MAXPTS);
+    frozen = true;
+    chartState.follow = false;
+    invalidateSeries();
+    dirty = true;
+    chartState.fastDirty = true;
+}
+function resumeChart() {
+    Analysis.resume(analysis);
+    frozen = false;
+    invalidateSeries();
+    syncTimeBounds();
+    applyWindowPreset(windowPreset);
+    renderVars();
+    dirty = true;
+    chartState.fastDirty = true;
+}
+function updateChartEmpty(series, hasBounds) {
+    var empty = $("chartEmpty");
+    if (empty.classList.contains("hidden")) return;
+    empty.removeAttribute("data-i18n");
+    var key = !watch.length
+        ? "lw.varListEmpty"
+        : watch.every(isCompositeItem)
+          ? "lw.chooseMembers"
+          : watch.every(function (w) {
+                  return isCompositeItem(w) || hidden[w.name];
+              })
+            ? "lw.allHidden"
+            : !hasBounds
+              ? frozen
+                  ? "lw.frozenNew"
+                  : "lw.waitSamples"
+              : "lw.rangeEmpty";
+    empty.textContent = t(key);
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = t(
+        !watch.length
+            ? "lw.importVars"
+            : key === "lw.chooseMembers"
+              ? "lw.expandMembers"
+              : key === "lw.allHidden"
+                ? "lw.showAll"
+                : frozen
+                  ? "lw.resume"
+                  : hasBounds
+                    ? "lw.fitTime"
+                    : "lw.startSampling"
+    );
+    button.disabled = !hasBounds && running && !frozen && key !== "lw.allHidden" && key !== "lw.chooseMembers";
+    button.onclick = function () {
+        if (!watch.length) $("import").click();
+        else if (key === "lw.chooseMembers") {
+            watch.forEach(function (w) {
+                expanded[w.name] = true;
+            });
+            sideCollapsed = false;
+            applySideLayout();
+            renderVars();
+            saveUi();
+        } else if (key === "lw.allHidden") chartAction("showAll");
+        else if (frozen) resumeChart();
+        else if (hasBounds) {
+            chartState.x = { ...chartState.bounds };
+            chartState.follow = true;
+            dirty = true;
+        } else $("run").click();
+    };
+    empty.appendChild(button);
+}
+function chartAction(action, value) {
+    var names = watch.map(function (w) {
+        return w.name;
+    });
+    if (action === "showAll" || action === "hideAll") {
+        hidden = Object.fromEntries(
+            names.map(function (name) {
+                return [name, action === "hideAll"];
+            })
+        );
+        analysis.previousHidden = null;
+        analysis.focused = null;
+        renderVars();
+        saveUi();
+    }
+    if (action === "restore") {
+        hidden = Analysis.restore(analysis, names);
+        renderVars();
+        saveUi();
+    }
+    if (action === "focus") {
+        hidden = Analysis.focus(analysis, hidden, names, value);
+        renderVars();
+        saveUi();
+    }
+    if (action === "hover") chartState.hoverName = value;
+    if (action === "style") {
+        seriesStyles[value.name] = value.style;
+        post({ type: "setSeriesStyle", ...value });
+        renderVars();
+    }
+    if (action === "type") {
+        var item = watch.find(function (entry) {
+            return entry.name === value.name;
+        });
+        if (item && !isCompositeItem(item) && TYPES.includes(value.type)) {
+            item.type = value.type;
+            data[item.name] = [];
+            latest[item.name] = null;
+            latestText[item.name] = null;
+            Analysis.remove(analysis, [item.name]);
+            invalidateSeries();
+            updateValues();
+            saveWatch();
+        }
+    }
+    if (action === "remove") removeVar(value);
+    if (action === "autoY") chartState.autoY = !chartState.autoY;
+    chartState.fastDirty = true;
+    dirty = true;
+}
+controls = window.EmberProbeChartControls.create({
+    document: document,
+    t: t,
+    fmtNum: fmtNum,
+    time: formatChartTime,
+    inspection: Inspection,
+    change: chartAction,
+    get: function () {
+        return {
+            chart: chartState,
+            analysis: analysis,
+            hidden: hidden,
+            frozen: frozen,
+            running: running,
+            style: styleFor,
+            watch: watch,
+            types: TYPES,
+            lang: LANG
+        };
+    }
+});
+canvas.addEventListener("click", function (e) {
+    var point = canvasPoint(e);
+    if (
+        e.button !== 0 ||
+        !chartState.x ||
+        $("chartEmpty").classList.contains("hidden") === false ||
+        chartRegion(point.x, point.y) !== "plot" ||
+        !chartState.curveGeometry
+    )
+        return;
+    if (Inspection.hit(chartState.curveGeometry.value, point).length) freezeChart();
+});
 function chartData() {
+    var key = JSON.stringify([
+        dataRevision,
+        !!analysis.snapshot,
+        watch.map(function (w) {
+            return w.name;
+        }),
+        hidden
+    ]);
+    if (seriesCache && seriesCache.key === key) return seriesCache.series;
     var series = [];
     watch.forEach(function (item, idx) {
         if (hidden[item.name]) return;
-        var arr = data[item.name] || [],
+        var arr = plotBuffers()[item.name] || [],
             segment = [];
         function flush() {
             if (segment.length) {
@@ -1188,13 +1478,15 @@ function chartData() {
         });
         flush();
     });
+    seriesCache = { key: key, series: series };
     return series;
 }
 function retainedTimeBounds() {
+    if (boundsCache) return boundsCache;
     var lo = Infinity,
         hi = -Infinity;
     watch.forEach(function (item) {
-        (data[item.name] || []).forEach(function (p) {
+        (plotBuffers()[item.name] || []).forEach(function (p) {
             var tt = Number(p && p.t);
             if (Number.isFinite(tt)) {
                 lo = Math.min(lo, tt);
@@ -1203,7 +1495,8 @@ function retainedTimeBounds() {
         });
     });
     if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
-    return { min: lo, max: Math.max(lo + 1, hi) };
+    boundsCache = { min: lo, max: Math.max(lo + 1, hi) };
+    return boundsCache;
 }
 function minimumXSpan() {
     return chartState.bounds ? Math.min(VP.span(chartState.bounds), 1) : 1;
@@ -1349,6 +1642,7 @@ function draw(now) {
     var series = chartData(),
         hasBounds = syncTimeBounds();
     refreshChartTimeline();
+    chartState.selectedName = chartState.hoverName;
     window.EmberProbeChart.paint({
         canvas,
         ctx,
@@ -1363,9 +1657,13 @@ function draw(now) {
         padRange,
         fmtNum,
         colorFor,
+        styleFor,
+        inspection: Inspection,
         formatChartTime,
         t
     });
+    updateChartEmpty(series, hasBounds);
+    if (controls) controls.refresh(series);
 }
 function chartRegion(x, y) {
     var g = chartState.geometry;
@@ -1556,8 +1854,38 @@ function loop(now) {
     requestAnimationFrame(loop);
 }
 window.EmberProbeMessages.connect(window, {
+    seriesStyles: function (m) {
+        seriesStyles = Styles.clean(m.styles);
+        styleRequests.clear();
+        renderVars();
+        dirty = true;
+    },
     watchList: function (m) {
-        watch = (m.items || []).slice();
+        invalidateSeries();
+        var incoming = (m.items || []).slice();
+        var removed = watch
+            .filter(function (w) {
+                return !incoming.some(function (next) {
+                    return next.name === w.name;
+                });
+            })
+            .map(function (w) {
+                return w.name;
+            });
+        Analysis.remove(analysis, removed);
+        if (removed.includes(analysis.focused))
+            hidden = Analysis.restore(
+                analysis,
+                incoming.map(function (w) {
+                    return w.name;
+                })
+            );
+        removed.forEach(function (name) {
+            delete data[name];
+            delete latest[name];
+            delete latestText[name];
+        });
+        watch = incoming;
         if (m.resetValues) {
             watch.forEach(function (item) {
                 delete latest[item.name];
@@ -1698,10 +2026,8 @@ $("export").onclick = function () {
     post({ type: "exportCsv", csv: buildCsv(names, bufs) });
 };
 $("freeze").onclick = function () {
-    frozen = !frozen;
-    this.textContent = frozen ? t("lw.resume") : t("lw.freeze");
-    chartState.fastDirty = true;
-    dirty = true;
+    if (frozen) resumeChart();
+    else freezeChart();
 };
 $("timeWindow").onchange = function () {
     if (this.value !== "custom") {
@@ -1715,8 +2041,12 @@ $("interval").onchange = function () {
     post({ type: "setInterval", intervalMs: iv });
 };
 $("norm").onclick = function () {
+    axisModes[norm ? "norm" : "raw"] = { y: chartState.y, autoY: chartState.autoY, origin: chartState.axisOrigin };
     norm = !norm;
-    chartState.autoY = true;
+    var mode = axisModes[norm ? "norm" : "raw"] || { y: null, autoY: true };
+    chartState.y = mode.y;
+    chartState.axisOrigin = mode.origin;
+    chartState.autoY = mode.autoY;
     chartState.visibleKey = "";
     $("norm").classList.toggle("ghost", !norm);
     saveUi();
@@ -1741,7 +2071,8 @@ window.EmberProbeMessages.connect(window, {
     samplingArchiveInfo: function (m) {
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
-        if (m.openExport) showArchiveExport(m);
+        archiveExportInfo = m;
+        if (m.openExport && exportSource === "archive") showArchiveExport(m);
     },
     exportCsvResult: function (m) {
         if (m.ok) {

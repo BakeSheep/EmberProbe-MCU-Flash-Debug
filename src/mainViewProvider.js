@@ -1091,6 +1091,7 @@ class MainViewProvider {
                 vscode,
                 {
                     executable,
+                    isolated: true,
                     probe,
                     target,
                     port: tclPort,
@@ -1413,6 +1414,7 @@ class MainViewProvider {
                     vscode,
                     {
                         executable,
+                        isolated: true,
                         probe: debuggerCfg,
                         target: mcuCore,
                         cwd,
@@ -1867,6 +1869,10 @@ class MainViewProvider {
     }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
     openLiveWatchPanel() {
+        if (!this._seriesStyleStore) {
+            const { SeriesStyleStore } = require("./services/seriesStyleStore");
+            this._seriesStyleStore = new SeriesStyleStore(this._context.workspaceState);
+        }
         const panelId = nextLivePanelId(this._livePanels);
         const watchKey = panelId === 1 ? CACHE_KEYS.watchList : `${CACHE_KEYS.watchList}.${panelId}`;
         const cfg = vscode.workspace.getConfiguration("emberprobe");
@@ -1923,12 +1929,31 @@ class MainViewProvider {
                 switch (message.type) {
                     case "ready":
                         entry.ready = true;
+                        await this._seriesStyleStore.initialize(
+                            this._context.workspaceState
+                                .keys()
+                                .filter(
+                                    (key) => key === CACHE_KEYS.watchList || key.startsWith(CACHE_KEYS.watchList + ".")
+                                )
+                                .sort(
+                                    (a, b) =>
+                                        (Number(a.slice(CACHE_KEYS.watchList.length + 1)) || 1) -
+                                        (Number(b.slice(CACHE_KEYS.watchList.length + 1)) || 1)
+                                )
+                                .map((key) => this._context.workspaceState.get(key) || [])
+                        );
+                        post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
                         this._syncGraphTarget(entry);
                         if (this._liveSession) {
                             const active = this._activeReadPlan();
                             if (active.length) this._liveSession.setWatch(active);
                         }
                         break;
+                    case "setSeriesStyle": {
+                        const styles = await this._seriesStyleStore.update(message.name, message.style);
+                        for (const target of this._livePanels.values()) target.post({ type: "seriesStyles", styles });
+                        break;
+                    }
                     case "importVariables": {
                         const result = this.readElfSymbols();
                         post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
@@ -1978,13 +2003,23 @@ class MainViewProvider {
                             break;
                         }
                         try {
-                            const result = await this._samplingArchive.exportCsv({
-                                scope: watchKey,
-                                outputPath: target.fsPath,
-                                names: message.names,
-                                fromMs: message.fromMs,
-                                toMs: message.toMs
-                            });
+                            let result;
+                            if (message.source === "snapshot" || message.source === "retained") {
+                                if (typeof message.csv !== "string" || message.csv.length > 64 * 1024 * 1024)
+                                    throw new Error("Invalid chart CSV");
+                                await vscode.workspace.fs.writeFile(target, Buffer.from(message.csv, "utf8"));
+                                result = {
+                                    seriesCount: Array.isArray(message.names) ? message.names.length : 0,
+                                    rows: Math.max(0, message.csv.split("\r\n").length - 1)
+                                };
+                            } else
+                                result = await this._samplingArchive.exportCsv({
+                                    scope: watchKey,
+                                    outputPath: target.fsPath,
+                                    names: message.names,
+                                    fromMs: message.fromMs,
+                                    toMs: message.toMs
+                                });
                             vscode.window.showInformationMessage(
                                 this._t("msg.csvExported", { file: path.basename(target.fsPath) })
                             );
@@ -2468,6 +2503,7 @@ class MainViewProvider {
                 vscode,
                 {
                     executable,
+                    isolated: true,
                     probe: debuggerCfg,
                     target: mcuCore,
                     cwd,
@@ -3034,7 +3070,9 @@ class MainViewProvider {
         );
     }
     _renderWebview(webview, html, scope) {
-        const revision = {};
+        // Focus refreshes must not reset the DOM and briefly show default status widgets.
+        if (this._webviewRenders.get(webview)?.html === html) return Promise.resolve();
+        const revision = { html };
         this._webviewRenders.set(webview, revision);
         return externalizeWebviewHtml({
             html,
@@ -3047,8 +3085,10 @@ class MainViewProvider {
                 if (this._webviewRenders.get(webview) === revision) webview.html = result.html;
             })
             .catch((error) => {
-                if (this._webviewRenders.get(webview) === revision)
+                if (this._webviewRenders.get(webview) === revision) {
+                    this._webviewRenders.delete(webview);
                     console.error("Unable to render EmberProbe webview:", error);
+                }
             });
     }
     updateView() {

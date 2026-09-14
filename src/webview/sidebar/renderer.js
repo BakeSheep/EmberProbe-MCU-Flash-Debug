@@ -167,9 +167,6 @@ function fmt(v) {
 function fmtExact(value, valueText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
 }
-function addr(v) {
-    return "0x" + (Number(v) >>> 0).toString(16).toUpperCase();
-}
 function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
 }
@@ -344,10 +341,7 @@ function renderAvailable() {
             const ty = document.createElement("span");
             ty.className = "available-type";
             ty.textContent = sym.typeName || t("sb.composite");
-            const ad = document.createElement("span");
-            ad.className = "available-address";
-            ad.textContent = addr(sym.address);
-            row.append(wrap, ty, ad);
+            row.append(wrap, ty);
             availableBox.appendChild(row);
             const kids = document.createElement("div");
             kids.className = "av-children" + (avExpanded[sym.name] ? " open" : "");
@@ -366,10 +360,7 @@ function renderAvailable() {
                 const lty = document.createElement("span");
                 lty.className = "available-type";
                 lty.textContent = lf.type;
-                const la = document.createElement("span");
-                la.className = "available-address";
-                la.textContent = addr(lf.address);
-                lb.append(cell, lty, la);
+                lb.append(cell, lty);
                 lb.onclick = () => sbToggle(leafEntry);
                 kids.appendChild(lb);
             });
@@ -428,10 +419,7 @@ function renderAvailable() {
             const ty = document.createElement("span");
             ty.className = "available-type";
             ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
-            const ad = document.createElement("span");
-            ad.className = "available-address";
-            ad.textContent = addr(sym.address);
-            b.append(cell, ty, ad);
+            b.append(cell, ty);
             if (!noLayout) b.onclick = () => sbToggle(entry);
             availableBox.appendChild(b);
         }

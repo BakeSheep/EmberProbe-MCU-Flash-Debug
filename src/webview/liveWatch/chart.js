@@ -22,10 +22,16 @@
             return null;
         }
         const origin = norm ? null : originFor(series);
+        const bases = new Map();
+        if (norm)
+            for (const s of series) {
+                if (!bases.has(s.item.name))
+                    bases.set(s.item.name, originFor(series.filter((item) => item.item.name === s.item.name)));
+            }
         return {
             origin,
             series: series.map((s) => {
-                const base = norm ? originFor([s]) : origin;
+                const base = norm ? bases.get(s.item.name) : origin;
                 if (base === null) return s;
                 return {
                     ...s,
@@ -52,11 +58,28 @@
         padRange,
         fmtNum,
         colorFor,
+        styleFor,
+        inspection,
         formatChartTime,
         t
     }) {
         const $ = (id) => elements[id];
-        const prepared = offsetSeries(series, norm, chartState.x);
+        const sourceSeries = series;
+        const prepareKey = JSON.stringify([norm, chartState.x]);
+        if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== prepareKey)
+            chartState.prepared = { source: series, key: prepareKey, value: offsetSeries(series, norm, chartState.x) };
+        const prepared = chartState.prepared.value;
+        if (
+            !norm &&
+            chartState.axisOrigin !== undefined &&
+            chartState.axisOrigin !== prepared.origin &&
+            chartState.y &&
+            !chartState.autoY
+        ) {
+            const shift = Number((chartState.axisOrigin ?? 0n) - (prepared.origin ?? 0n));
+            chartState.y = { min: chartState.y.min + shift, max: chartState.y.max + shift };
+        }
+        chartState.axisOrigin = prepared.origin;
         series = prepared.series;
         function axisText(value) {
             if (prepared.origin === null) return fmtNum(value);
@@ -138,6 +161,7 @@
             ctx.clearRect(0, 0, w, h);
             var empty = $("chartEmpty");
             if (!hasBounds || !series.length) {
+                chartState.hits = [];
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
                 $("range").textContent = "-";
@@ -168,24 +192,35 @@
             chartState.geometry = { padL: padL, padR: padR, padT: padT, padB: padB, pw: pw, ph: ph, w: w, h: h };
             if (chartState.visibleKey !== visibleKey) {
                 chartState.visibleKey = visibleKey;
-                chartState.autoY = true;
             }
-            series.forEach(function (s) {
-                var lo = Infinity,
-                    hi = -Infinity;
-                s.arr.forEach(function (p) {
-                    if (p.t < chartState.x.min || p.t > chartState.x.max) return;
-                    total++;
-                    lo = Math.min(lo, p.v);
-                    hi = Math.max(hi, p.v);
-                    vMin = Math.min(vMin, p.v);
-                    vMax = Math.max(vMax, p.v);
+            if (!chartState.prepared.stats) {
+                const ranges = new Map();
+                series.forEach(function (s) {
+                    var lo = Infinity,
+                        hi = -Infinity;
+                    s.arr.forEach(function (p) {
+                        if (p.t < chartState.x.min || p.t > chartState.x.max) return;
+                        total++;
+                        lo = Math.min(lo, p.v);
+                        hi = Math.max(hi, p.v);
+                        vMin = Math.min(vMin, p.v);
+                        vMax = Math.max(vMax, p.v);
+                    });
+                    const previous = ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
+                    ranges.set(s.item.name, { min: Math.min(previous.min, lo), max: Math.max(previous.max, hi) });
                 });
-                var base = padRange(lo, hi);
-                s.vMin = base.min;
-                s.vMax = base.max;
-            });
+                series.forEach((s) => {
+                    const range = ranges.get(s.item.name),
+                        base = padRange(range.min, range.max);
+                    s.vMin = base.min;
+                    s.vMax = base.max;
+                });
+                chartState.prepared.stats = { total, vMin, vMax };
+            } else {
+                ({ total, vMin, vMax } = chartState.prepared.stats);
+            }
             if (!total) {
+                chartState.hits = [];
                 empty.classList.remove("hidden");
                 $("points").textContent = t("lw.points", { n: 0 });
                 $("range").textContent = "-";
@@ -211,6 +246,36 @@
             function Yp(v, s) {
                 return Yg(norm ? normalizedValue(v, s) : v);
             }
+            const geometryKey = JSON.stringify([prepareKey, chartState.y, w, h, padR]);
+            if (
+                !chartState.curveGeometry ||
+                chartState.curveGeometry.source !== sourceSeries ||
+                chartState.curveGeometry.key !== geometryKey
+            ) {
+                chartState.curveGeometry = {
+                    source: sourceSeries,
+                    key: geometryKey,
+                    value: series.map((s, index) => {
+                        const from = inspection ? Math.max(0, inspection.lowerBound(s.arr, chartState.x.min) - 1) : 0;
+                        const to = inspection
+                            ? Math.min(s.arr.length, inspection.lowerBound(s.arr, chartState.x.max) + 1)
+                            : s.arr.length;
+                        const points = s.arr
+                            .slice(from, to)
+                            .map((p, i) => ({ x: X(p.t), y: Yp(p.v, s), raw: sourceSeries[index].arr[from + i] }));
+                        return {
+                            name: s.item.name,
+                            points,
+                            drawing: inspection ? inspection.envelope(points) : points
+                        };
+                    })
+                };
+            }
+            const pointer = chartState.pointer;
+            const inPlot =
+                pointer && pointer.x >= padL && pointer.x <= padL + pw && pointer.y >= padT && pointer.y <= padT + ph;
+            chartState.hits = inspection && inPlot ? inspection.hit(chartState.curveGeometry.value, pointer) : [];
+            const selected = chartState.selectedName || chartState.hits[0]?.name;
             ctx.lineWidth = 1;
             ctx.font = "10px " + fontFam;
             ctx.textBaseline = "middle";
@@ -248,31 +313,40 @@
             ctx.beginPath();
             ctx.rect(padL, padT, pw, ph);
             ctx.clip();
-            series.forEach(function (s) {
-                ctx.strokeStyle = colorFor(s.idx);
-                ctx.lineWidth = 1.7;
-                ctx.lineJoin = "round";
-                ctx.beginPath();
-                var started = false,
-                    last = null;
-                s.arr.forEach(function (p) {
-                    var x = X(p.t),
-                        y = Yp(p.v, s);
-                    if (started) ctx.lineTo(x, y);
-                    else {
-                        ctx.moveTo(x, y);
-                        started = true;
-                    }
-                    if (p.t >= chartState.x.min && p.t <= chartState.x.max) last = p;
-                });
-                ctx.stroke();
-                if (last) {
-                    ctx.fillStyle = colorFor(s.idx);
+            chartState.curveGeometry.value
+                .slice()
+                .sort((a, b) => Number(a.name === selected) - Number(b.name === selected))
+                .forEach(function (s) {
+                    const index = series.findIndex((item) => item.item.name === s.name);
+                    const appearance = styleFor
+                        ? styleFor(s.name)
+                        : { color: colorFor(series[index].idx), line: "solid" };
+                    ctx.strokeStyle = appearance.color;
+                    ctx.setLineDash(appearance.line === "dashed" ? [8, 4] : appearance.line === "dotted" ? [2, 4] : []);
+                    ctx.globalAlpha = selected && selected !== s.name ? 0.4 : 1;
+                    ctx.lineWidth = selected === s.name ? 3 : 1.7;
+                    ctx.lineJoin = "round";
                     ctx.beginPath();
-                    ctx.arc(X(last.t), Yp(last.v, s), 2.8, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            });
+                    var started = false,
+                        last = null;
+                    s.drawing.forEach(function (p) {
+                        var x = p.x,
+                            y = p.y;
+                        if (started) ctx.lineTo(x, y);
+                        else {
+                            ctx.moveTo(x, y);
+                            started = true;
+                        }
+                        if (p.raw.t >= chartState.x.min && p.raw.t <= chartState.x.max) last = p;
+                    });
+                    ctx.stroke();
+                    if (last) {
+                        ctx.fillStyle = appearance.color;
+                        ctx.beginPath();
+                        ctx.arc(last.x, last.y, 2.8, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                });
             ctx.restore();
             drawCrosshair({ background: background, focus: focus });
             $("points").textContent = t("lw.points", { n: total });

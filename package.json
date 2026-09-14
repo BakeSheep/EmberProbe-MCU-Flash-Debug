@@ -161,6 +161,7 @@
   },
   "files": [
     "dist/extension.js",
+    "dist/samplingWorker.js",
     "dist/webview/**/*",
     "src/webview/**/*",
     "resources/**/*.tar.gz",

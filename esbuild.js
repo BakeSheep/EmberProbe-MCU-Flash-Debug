@@ -37,7 +37,16 @@ function webviewBuild(area) {
     });
 }
 
-Promise.all([extensionBuild, webviewBuild("sidebar"), webviewBuild("liveWatch")]).catch((error) => {
+const samplingBuild = esbuild.build({
+    absWorkingDir: __dirname,
+    entryPoints: [path.join(__dirname, "src", "samplingWorker.js")],
+    bundle: true,
+    outfile: path.join(__dirname, "dist", "samplingWorker.js"),
+    platform: "node",
+    format: "cjs",
+    target: "node20"
+});
+Promise.all([extensionBuild, samplingBuild, webviewBuild("sidebar"), webviewBuild("liveWatch")]).catch((error) => {
     console.error(error);
     process.exit(1);
 });

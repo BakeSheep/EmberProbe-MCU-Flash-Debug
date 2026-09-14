@@ -41,6 +41,28 @@ async function run() {
     assert.strictEqual(config.get("maxSamples"), 2000);
     console.log("✓ contributes bounded live-watch defaults");
 
+    const { Worker } = require("worker_threads");
+    const worker = new Worker(path.join(extension.extensionPath, "dist", "samplingWorker.js"), { workerData: {} });
+    try {
+        const result = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Packaged sampling worker did not respond")), 5000);
+            worker.once("error", (error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+            worker.once("message", (message) => {
+                clearTimeout(timer);
+                resolve(message);
+            });
+            worker.postMessage({ id: 1, method: "waitForIdle", args: [100] });
+        });
+        assert.equal(result.id, 1);
+        assert.equal(result.result, true);
+        console.log("✓ packaged sampling worker starts independently without hardware");
+    } finally {
+        await worker.terminate();
+    }
+
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     assert.ok(
