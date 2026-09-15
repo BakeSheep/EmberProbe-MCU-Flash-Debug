@@ -283,6 +283,19 @@ const execFileAsync = promisify(execFile);
         assert.ok(!pointer.token, "workspace pointer must never contain the bridge token");
         const result = await call(root, "config.get", { test: true });
         assert.deepStrictEqual(result, { method: "config.get", params: { test: true } });
+        for (const action of ["status", "start", "stop"]) {
+            const cli = await execFileAsync(process.execPath, [
+                path.resolve(__dirname, "../skills/mcu-variables/scripts/sampling.js"),
+                "--workspace",
+                root,
+                `--${action}`,
+                ...(action === "start" ? ["--interval", "250"] : [])
+            ]);
+            assert.deepStrictEqual(JSON.parse(cli.stdout), {
+                method: `sampling.${action}`,
+                params: action === "start" ? { intervalMs: 250 } : {}
+            });
+        }
         const fastPath = await execFileAsync(process.execPath, [
             path.resolve(__dirname, "../skills/mcu-variables/scripts/read.js"),
             "--workspace",

@@ -203,3 +203,108 @@ const {
     console.error(error);
     process.exitCode = 1;
 });
+
+// §1 回归：工作区中的符号链接/junction 绝不可被安装/卸载流程穿透。
+// 攻击者可在仓库里提交 .agents/skills/_emberprobe → 任意目录 的链接，
+// 旧实现会 readdir 跟随链接并逐个 rm 条目，等价于对工作区外目录执行 rm -rf。
+(async () => {
+    const context = { extensionPath: path.resolve(__dirname, "..") };
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+
+    async function runCase(label, setup, action, assertions) {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), `emberprobe-symlink-${label}-ws-`));
+        const victim = fs.mkdtempSync(path.join(os.tmpdir(), `emberprobe-symlink-${label}-victim-`));
+        const vscode = {
+            workspace: { workspaceFolders: [{ uri: { fsPath: workspace } }] },
+            window: { showInformationMessage() {} }
+        };
+        try {
+            fs.writeFileSync(path.join(victim, "sensitive.txt"), "user data");
+            fs.mkdirSync(path.join(victim, "subdir"), { recursive: true });
+            fs.writeFileSync(path.join(victim, "subdir", "nested.txt"), "nested data");
+            await setup(workspace, victim);
+            await action(vscode);
+            assert.ok(fs.existsSync(path.join(victim, "sensitive.txt")), `${label}: victim sensitive.txt must survive`);
+            assert.ok(
+                fs.existsSync(path.join(victim, "subdir", "nested.txt")),
+                `${label}: victim subdir/nested.txt must survive`
+            );
+            await assertions(workspace, victim);
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+            fs.rmSync(victim, { recursive: true, force: true });
+        }
+    }
+
+    // (a) _emberprobe 是指向工作区外目录的链接
+    await runCase(
+        "runtime",
+        async (workspace, victim) => {
+            fs.mkdirSync(path.join(workspace, ".agents", "skills"), { recursive: true });
+            fs.symlinkSync(victim, path.join(workspace, ".agents", "skills", "_emberprobe"), linkType);
+        },
+        (vscode) => installSkill(vscode, context, "en", "workspace"),
+        async (workspace) => {
+            const st = fs.lstatSync(path.join(workspace, ".agents", "skills", "_emberprobe"));
+            assert.ok(!st.isSymbolicLink(), "runtime: _emberprobe must not remain a symlink");
+            assert.ok(st.isDirectory(), "runtime: _emberprobe must be a real directory after install");
+        }
+    );
+
+    // (b) .agents/skills 本身是链接
+    await runCase(
+        "target-root",
+        async (workspace, victim) => {
+            fs.mkdirSync(path.join(workspace, ".agents"), { recursive: true });
+            fs.symlinkSync(victim, path.join(workspace, ".agents", "skills"), linkType);
+        },
+        (vscode) => installSkill(vscode, context, "en", "workspace"),
+        async (workspace) => {
+            const st = fs.lstatSync(path.join(workspace, ".agents", "skills"));
+            assert.ok(!st.isSymbolicLink(), "target-root: .agents/skills must not remain a symlink");
+        }
+    );
+
+    // (c) 单个 skill 目录是链接
+    await runCase(
+        "per-skill",
+        async (workspace, victim) => {
+            fs.mkdirSync(path.join(workspace, ".agents", "skills"), { recursive: true });
+            fs.symlinkSync(victim, path.join(workspace, ".agents", "skills", "mcu-flash"), linkType);
+        },
+        (vscode) => installSkill(vscode, context, "en", "workspace"),
+        async (workspace) => {
+            const st = fs.lstatSync(path.join(workspace, ".agents", "skills", "mcu-flash"));
+            assert.ok(!st.isSymbolicLink(), "per-skill: mcu-flash must not remain a symlink");
+        }
+    );
+
+    // (d) .agents 本身是链接（mkdir recursive 会穿透）
+    await runCase(
+        "agents-dir",
+        async (workspace, victim) => {
+            fs.symlinkSync(victim, path.join(workspace, ".agents"), linkType);
+        },
+        (vscode) => installSkill(vscode, context, "en", "workspace"),
+        async (workspace) => {
+            const st = fs.lstatSync(path.join(workspace, ".agents"));
+            assert.ok(!st.isSymbolicLink(), "agents-dir: .agents must not remain a symlink");
+        }
+    );
+
+    // (e) uninstallSkill 遇到 .agents/skills 是链接时也不得穿透
+    await runCase(
+        "uninstall",
+        async (workspace, victim) => {
+            fs.mkdirSync(path.join(workspace, ".agents"), { recursive: true });
+            fs.symlinkSync(victim, path.join(workspace, ".agents", "skills"), linkType);
+        },
+        (vscode) => uninstallSkill(vscode, context, "en", "workspace"),
+        async () => {}
+    );
+
+    console.log("Skill installer symlink hardening tests passed");
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

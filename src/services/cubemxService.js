@@ -27,6 +27,10 @@ const {
 } = require("./cubemxOperations");
 const { categorizeChanges, validateStructuralIoc } = require("./cubemxCandidate");
 
+// Mirrors parseIoc's cap: permission() reads the workspace .ioc directly and must reject an
+// oversized file before feeding it to the property parser (§17.3).
+const MAX_IOC_BYTES = 1024 * 1024;
+
 function computeParamsHash(params) {
     return hash(
         JSON.stringify({
@@ -261,6 +265,8 @@ class CubeMxService {
             const roots = await Promise.all(this.options.roots().map((root) => fs.realpath(root)));
             const workspace = roots.find((root) => inside(root, ioc));
             if (!workspace) throw new Error("Selected .ioc is not inside the workspace");
+            if ((await fs.stat(ioc)).size > MAX_IOC_BYTES)
+                throw failure("CUBEMX_IOC_INVALID", ".ioc must be UTF-8 text under 1 MiB");
             const values = require("./javaProperties").parseProperties(await fs.readFile(ioc, "utf8"));
             if (!values["Mcu.Name"]) throw new Error("Chip identity is unavailable");
             const tool = await (this.options.installation || installation)(config.cubemxPath);

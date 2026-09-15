@@ -301,6 +301,9 @@ class MainViewProvider {
                 "variables.exportCsv": (params) => this._exportAgentCsv(params || {}),
                 "variables.read": (params) => this._readAgentVariables(params),
                 "variables.sample": (params) => this._sampleAgentVariables(params),
+                "sampling.status": (params) => this._controlAgentSampling("status", params),
+                "sampling.start": (params) => this._controlAgentSampling("start", params),
+                "sampling.stop": (params) => this._controlAgentSampling("stop", params),
                 "variables.write": (params) => this._writeAgentVariables(params),
                 "variables.write.permission": (params) => this._agentWritePermission(params),
                 "chip.read": () => this.readChipInfoAction(true),
@@ -2322,6 +2325,36 @@ class MainViewProvider {
             );
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
         this._postConsumerStatuses(this._samplingStatus());
+    }
+
+    /** @param {{ intervalMs?: number }} params */
+    async _controlAgentSampling(action, params = {}) {
+        if (
+            !params ||
+            typeof params !== "object" ||
+            Array.isArray(params) ||
+            Object.keys(params).some((key) => action !== "start" || key !== "intervalMs") ||
+            (params.intervalMs !== undefined &&
+                (!Number.isInteger(params.intervalMs) || params.intervalMs < 20 || params.intervalMs > 10000))
+        ) {
+            throw Object.assign(new Error("Sampling accepts only an integer intervalMs from 20 to 10000 on start"), {
+                code: "INVALID_PARAMS"
+            });
+        }
+        if (action === "start") {
+            // Use the same watch union, probe ownership and UI notifications as the sidebar.
+            await this.startLiveWatch(undefined, params.intervalMs ?? this._liveIntervalMs, "sidebar");
+        } else if (action === "stop") {
+            // Cancel temporary Agent reads as well as persistent sampling; leave debugging active.
+            const agentStopped = this.stopAgentReadIfRunning();
+            const liveStopped = this.stopLiveWatch();
+            await Promise.all([agentStopped, liveStopped]);
+        }
+        return {
+            ...this._samplingStatus(),
+            starting: this._liveStarting,
+            intervalMs: this._liveIntervalMs ?? 100
+        };
     }
 
     _samplingStatus() {

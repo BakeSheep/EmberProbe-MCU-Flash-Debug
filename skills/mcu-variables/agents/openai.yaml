@@ -1,4 +1,4 @@
 interface:
   display_name: "MCU Variables"
-  short_description: "Read, trend, export, or safely modify variables"
-  default_prompt: "Use $mcu-variables to inspect or explicitly modify the requested live MCU variables."
+  short_description: "Read variables, control sampling, or safely tune RAM"
+  default_prompt: "Use $mcu-variables to inspect live MCU variables or control shared sampling as requested."

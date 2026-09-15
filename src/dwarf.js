@@ -64,7 +64,15 @@ function parseDwarf(buffer) {
         return {
             types: new Map(),
             layouts: new Map(),
-            diagnostics: [{ code: "DWARF_PARSE_FAILED", stage: "parse", message: e.message || String(e) }]
+            // 仅保留 DWARF_BUDGET_EXCEEDED 这类解析器主动抛出的结构化错误码；
+            // 其余异常（如 Buffer.from(null) 的 ERR_INVALID_ARG_TYPE）一律归为 DWARF_PARSE_FAILED。
+            diagnostics: [
+                {
+                    code: e.code === "DWARF_BUDGET_EXCEEDED" ? e.code : "DWARF_PARSE_FAILED",
+                    stage: "parse",
+                    message: e.message || String(e)
+                }
+            ]
         };
     }
 }

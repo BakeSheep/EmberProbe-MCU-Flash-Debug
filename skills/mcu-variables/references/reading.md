@@ -2,6 +2,24 @@
 
 Use `scripts/read.js` from the Skill directory.
 
+## Shared sampling controls
+
+Use these commands when asked to start, stop, or inspect persistent sidebar/chart sampling:
+
+```bash
+node <skill-dir>/scripts/sampling.js --workspace <workspace> --status
+node <skill-dir>/scripts/sampling.js --workspace <workspace> --start --interval 100
+node <skill-dir>/scripts/sampling.js --workspace <workspace> --stop
+```
+
+`--interval` is optional, in milliseconds (20–10000); omission preserves the current interval. Start uses the union of enabled sidebar and chart watches. To add requested variables first, use `read.js --add-to sidebar` below. An empty watch list enables sampling intent but collects no data until variables are added.
+
+This is the same shared state as the user's controls: the sidebar and open charts update immediately, and sampling continues after the CLI exits. `running`/`intentEnabled` describe the shared switch; inspect `starting`, `canRead`, and `mode` before claiming that acquisition is active. Query status again after pending startup or debug transitions. Stop also cancels a temporary Agent read, but does not terminate debugging or clear watch lists/history. Do not use `debug.js --stop` to stop sampling.
+
+For a finite trend or one-time read, use the commands below; they do not require persistent sampling to be started.
+
+## Reads and trends
+
 For a current value, pass names directly. Do not search source declarations first, require pre-started sampling, or add type suffixes unless the user requests reinterpretation:
 
 ```bash

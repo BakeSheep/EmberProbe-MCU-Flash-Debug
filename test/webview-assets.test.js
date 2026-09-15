@@ -137,3 +137,88 @@ for (const file of [
     console.error(error);
     process.exitCode = 1;
 });
+
+// §4 CSP 构建加固：对畸形/恶意标记 fail-closed，并保证唯一权威 CSP meta。
+(async () => {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-webview-csp-"));
+    try {
+        const assetRootUri = { scheme: "file", fsPath: temp, path: "/global-storage/webview-assets" };
+        const vscode = {
+            Uri: {
+                joinPath: (root, name) => ({ scheme: root.scheme, fsPath: path.join(root.fsPath, name), root })
+            }
+        };
+        const webview = {
+            cspSource: "vscode-webview://test",
+            asWebviewUri: (uri) => ({ toString: () => `vscode-resource:/${path.basename(uri.fsPath)}` })
+        };
+        const base = `<head><style>body{color:red}</style></head><body><script>var a=1;</script></body>`;
+
+        // (1) 第二个注入的 CSP meta 不得存活；最终只保留唯一权威 meta。
+        const twoMeta =
+            `<head>` +
+            `<meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'self'">` +
+            `<meta http-equiv="Content-Security-Policy" content="default-src *;script-src 'unsafe-inline'">` +
+            `<style>body{color:red}</style></head><body><script>var a=1;</script></body>`;
+        const result = await externalizeWebviewHtml({
+            html: twoMeta,
+            webview,
+            vscode,
+            assetRootUri,
+            scope: "csp-two"
+        });
+        const metas = result.html.match(/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/gi) || [];
+        assert.strictEqual(metas.length, 1, "exactly one authoritative CSP meta must remain");
+        assert.ok(!/default-src\s+\*/i.test(result.html), "injected permissive CSP must be removed");
+        assert.ok(!/'unsafe-inline'/i.test(result.html), "no policy may retain 'unsafe-inline'");
+
+        // (2) 脚本体内含 "</script>" 时不得把标记泄漏到 nonce 脚本标签之外。
+        await assert.rejects(
+            () =>
+                externalizeWebviewHtml({
+                    html: base.replace("var a=1;", 'var s="</script>";var b=2;'),
+                    webview,
+                    vscode,
+                    assetRootUri,
+                    scope: "csp-script"
+                }),
+            { code: "WEBVIEW_ASSET_EXTRACTION_FAILED" },
+            "stray </script> must fail closed"
+        );
+
+        // (3) 非标准 <stylesheet> 块不得原样穿透。
+        await assert.rejects(
+            () =>
+                externalizeWebviewHtml({
+                    html: base.replace("<body>", "<body><stylesheet>RAW</stylesheet>"),
+                    webview,
+                    vscode,
+                    assetRootUri,
+                    scope: "csp-stylesheet"
+                }),
+            { code: "WEBVIEW_ASSET_EXTRACTION_FAILED" },
+            "<stylesheet> must fail closed"
+        );
+
+        // (4) 内联事件处理器 / style 属性不得在外部化后存活。
+        await assert.rejects(
+            () =>
+                externalizeWebviewHtml({
+                    html: base.replace("<body>", '<body><div onclick="alert(1)" style="x:y">z</div>'),
+                    webview,
+                    vscode,
+                    assetRootUri,
+                    scope: "csp-inline"
+                }),
+            { code: "WEBVIEW_ASSET_EXTRACTION_FAILED" },
+            "inline on*/style attributes must fail closed"
+        );
+
+        console.log("Webview CSP hardening tests passed");
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

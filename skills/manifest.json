@@ -55,12 +55,13 @@
     },
     {
       "name": "mcu-variables",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "runtime": true,
       "required": [
         "SKILL.md",
         "scripts/read.js",
         "scripts/write.js",
+        "scripts/sampling.js",
         "references/reading.md",
         "references/writing.md",
         "agents/openai.yaml"

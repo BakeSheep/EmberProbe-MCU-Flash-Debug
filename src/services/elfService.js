@@ -1,5 +1,10 @@
 "use strict";
 
+// §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
+// autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
+// 整份 readFileSync 进内存再送入 DWARF 解析，直接压垮扩展宿主。
+const MAX_ELF_BYTES = 64 * 1024 * 1024;
+
 class ElfService {
     constructor(options) {
         this.context = options.context;
@@ -30,6 +35,15 @@ class ElfService {
         let before;
         try {
             before = this.fs.statSync(elfPath);
+            if (before.size > MAX_ELF_BYTES)
+                throw Object.assign(
+                    new Error(this.t("live.elfTooLarge", { path: elfPath, limit: MAX_ELF_BYTES / (1024 * 1024) })),
+                    {
+                        code: "ELF_TOO_LARGE",
+                        i18nKey: "live.elfTooLarge",
+                        i18nParams: { path: elfPath, limit: MAX_ELF_BYTES / (1024 * 1024) }
+                    }
+                );
             if (
                 this.cache?.elfPath === elfPath &&
                 this.cache.mtimeMs === before.mtimeMs &&
@@ -42,6 +56,8 @@ class ElfService {
                 throw new Error("ELF changed while it was being read; retry after the build finishes");
             }
         } catch (error) {
+            // 体积上限是结构化拒绝，不能被下面的通用读取失败包裹掉。
+            if (error.code === "ELF_TOO_LARGE") throw error;
             throw Object.assign(new Error(this.t("live.elfReadFail", { path: elfPath })), {
                 code: "ELF_READ_FAILED",
                 i18nKey: "live.elfReadFail",

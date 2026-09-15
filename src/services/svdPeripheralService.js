@@ -6,6 +6,9 @@ const { XMLParser, XMLValidator } = require("fast-xml-parser");
 
 const SUPPORTED_SIZES = new Set([8, 16, 32, 64]);
 const NORMAL_WRITE_ACCESS = "read-write";
+// SVD 数值受寄存器宽度约束（≤64 位），任何合法表示都远短于此上限；
+// 超过即拒绝，避免逐字符 BigInt 移位（Θ(L²)）或超长十进制 BigInt 解析卡死扩展宿主。
+const MAX_SVD_VALUE_CHARS = 256;
 
 function consumeBudget(budget) {
     if (--budget.remaining < 0)
@@ -26,6 +29,10 @@ function text(value) {
 function integer(value, label, options = {}) {
     const raw = text(value).replace(/_/g, "");
     if (!raw && options.optional) return undefined;
+    if (raw.length > MAX_SVD_VALUE_CHARS)
+        throw Object.assign(new Error(`SVD integer for ${label} exceeds ${MAX_SVD_VALUE_CHARS} characters`), {
+            code: "INVALID_SVD_VALUE"
+        });
     let parsed;
     if (/^#[01]+$/i.test(raw)) parsed = BigInt(`0b${raw.slice(1)}`);
     else if (/^0b[01]+$/i.test(raw)) parsed = BigInt(raw);
@@ -168,6 +175,11 @@ function enumerationValue(rawValue) {
         const value = integer(raw, "enumerated value", { bigint: true });
         return { value, mask: null };
     }
+    // 逐字符 `<<= 1n` 是 Θ(L²)：先按位上限拒绝，杜绝超长二进制占位符卡死事件循环。
+    if (binary[1].length > MAX_SVD_VALUE_CHARS)
+        throw Object.assign(new Error(`SVD enumerated value exceeds ${MAX_SVD_VALUE_CHARS} bits`), {
+            code: "INVALID_SVD_VALUE"
+        });
     let value = 0n;
     let mask = 0n;
     for (const digit of binary[1].toLowerCase()) {

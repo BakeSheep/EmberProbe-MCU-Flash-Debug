@@ -54,6 +54,28 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(noDwarfWide.isComposite, false, "an 8-byte symbol without DWARF should remain a scalar");
         assert.strictEqual(noDwarfWide.watchType, "u64");
         assert.strictEqual(noDwarfWide.hasDwarfWriteType, false, "a guessed u64 type must remain read-only");
+
+        // §3：解析前必须有 ELF 体积硬上限。autoDetect 会取工作区 mtime 最新的 .elf，
+        // 旧实现 readFileSync 无任何上限，多 GB 的 .elf 会被整份读入内存并送入 DWARF 解析。
+        let readCalls = 0;
+        const oversized = new ElfService({
+            context: { workspaceState: { get: () => "/fake/huge.elf" } },
+            cacheKey: "elf",
+            fs: {
+                statSync: () => ({ size: 128 * 1024 * 1024, mtimeMs: 1 }),
+                readFileSync: () => {
+                    readCalls++;
+                    throw new Error("readFileSync must not be reached for an oversized ELF");
+                }
+            },
+            crypto: require("crypto"),
+            cleanPath: (value) => value,
+            t: (key) => key,
+            elfSymbols: { parseElfSymbols: () => ({ symbols: [], warnings: [] }), defaultType: () => "u32" },
+            dwarf: { parseDwarf: () => ({ types: new Map(), layouts: new Map() }) }
+        });
+        assert.throws(() => oversized.read(), { code: "ELF_TOO_LARGE" }, "超过体积上限的 ELF 必须被拒绝");
+        assert.strictEqual(readCalls, 0, "体积校验必须在 readFileSync 之前生效");
     } finally {
         fixture.dispose();
     }

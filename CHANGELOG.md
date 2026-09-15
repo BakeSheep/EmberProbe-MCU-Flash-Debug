@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增 Agent Skills 采样启停与状态查询，与侧边栏和图表共享采样状态。
+- Added Agent Skills sampling start, stop, and status commands synchronized with the sidebar and charts.
+
 ## [0.7.7] - 2026-09-14
 
 - 新增工作区共享的变量固定配色与线型、曲线悬停读数、聚焦查看和独立冻结快照导出；隐藏成员保留采样与历史。

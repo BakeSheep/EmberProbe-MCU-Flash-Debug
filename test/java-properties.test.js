@@ -38,4 +38,11 @@ assert.throws(
         ),
     /External/
 );
+// §17.3: continuation detection must stay linear. A long internal backslash run followed by a
+// short trailing run must not drive quadratic backtracking in the line-continuation scan.
+const longRunStarted = process.hrtime.bigint();
+const longRun = parseProperties("A=" + "\\".repeat(100000) + "x\\\\");
+const longRunMs = Number(process.hrtime.bigint() - longRunStarted) / 1e6;
+assert.strictEqual(longRun.A, "\\".repeat(50000) + "x\\", "continuation scan must preserve decode semantics");
+assert.ok(longRunMs < 2000, `continuation detection must be linear, took ${longRunMs.toFixed(0)}ms`);
 console.log("Real CubeMX fixture and Java Properties parsing tests passed");

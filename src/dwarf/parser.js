@@ -73,7 +73,28 @@ function _parseDwarfInternal(buffer) {
     const variableOffsets = []; // 所有变量 DIE；跨 CU 的 origin 继承需在完整解析后处理
     const infoStart = 0,
         infoEnd = info.size;
+    // §2：缩写缓存改为有界 LRU，并以全局预算约束跨 CU 的缩写/属性总量。
+    // abbrevOff 是文件可控的 u32，旧实现以它为键无界缓存，N 个不同偏移
+    // 就能让 N 份完整缩写表同时存活，直至扩展宿主 OOM。
+    const MAX_ABBREV_CACHE_ENTRIES = 8;
     const abbrevCache = new Map();
+    const abbrevBudget = { abbrevs: 0, attrs: 0, maxAbbrevs: 20000, maxAttrs: 200000 };
+    const abbrevCacheGet = (key) => {
+        if (!abbrevCache.has(key)) return undefined;
+        const value = abbrevCache.get(key);
+        abbrevCache.delete(key);
+        abbrevCache.set(key, value); // 移到末尾（最近使用）
+        return value;
+    };
+    const abbrevCacheSet = (key, value) => {
+        if (abbrevCache.has(key)) abbrevCache.delete(key);
+        abbrevCache.set(key, value);
+        while (abbrevCache.size > MAX_ABBREV_CACHE_ENTRIES) abbrevCache.delete(abbrevCache.keys().next().value);
+    };
+    // §3：DIE 预算改为整个解析全局。旧实现 guard 定义在 CU 循环内，每个 CU 都重置，
+    // 而 dies/childrenMap/variableOffsets 从不重置，因此预算只约束单个 CU。
+    const MAX_DIES_TOTAL = 2000000;
+    let totalDies = 0;
     let p = infoStart;
     while (p + 4 <= infoEnd) {
         const cuStart = p;
@@ -108,20 +129,18 @@ function _parseDwarfInternal(buffer) {
                 p += 1;
             }
             if (cuStart + 4 + unitLength > infoEnd || p > cuEnd) throw new Error("Truncated DWARF unit");
-            let abbrev = abbrevCache.get(abbrevOff);
+            let abbrev = abbrevCacheGet(abbrevOff);
             if (!abbrev) {
-                abbrev = parseAbbrev(abbrevSec.data, abbrevOff);
-                abbrevCache.set(abbrevOff, abbrev);
+                abbrev = parseAbbrev(abbrevSec.data, abbrevOff, abbrevBudget);
+                abbrevCacheSet(abbrevOff, abbrev);
             }
             const cuRel = cuStart - infoStart;
             let strOffsetsBase = 8;
             const cur = { p };
             try {
-                let guard = 0;
                 const parentStack = []; // { offset, dieOff } — 有子项的 DIE 栈，用于构建 childrenMap
-                const MAX_DIES_PER_UNIT = 2000000;
                 while (cur.p < cuEnd) {
-                    if (guard++ >= MAX_DIES_PER_UNIT)
+                    if (++totalDies > MAX_DIES_TOTAL)
                         throw Object.assign(new Error("DWARF DIE budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
                     const dieOff = cur.p - infoStart;
                     const code = readULEB(cuBuffer, cur);
@@ -221,19 +240,17 @@ function _parseDwarfInternal(buffer) {
                     }
                 }
             } catch (e) {
+                // 全局预算耗尽必须中止整个解析，而不是吞掉后继续下一个 CU 累积内存。
+                if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
                 diagnostics.push({
-                    code:
-                        e.code === "DWARF_BUDGET_EXCEEDED"
-                            ? e.code
-                            : /unknown DWARF form/.test(e.message)
-                              ? "DWARF_UNSUPPORTED"
-                              : "DWARF_CU_INVALID",
+                    code: /unknown DWARF form/.test(e.message) ? "DWARF_UNSUPPORTED" : "DWARF_CU_INVALID",
                     stage: "attributes",
                     offset: p,
                     message: e.message
                 });
             }
         } catch (e) {
+            if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
             diagnostics.push({ code: "DWARF_CU_INVALID", stage: "header", offset: p, message: e.message });
         }
         p = cuEnd;

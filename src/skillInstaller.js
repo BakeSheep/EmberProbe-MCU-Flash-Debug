@@ -22,6 +22,41 @@ async function exists(file) {
     }
 }
 
+function insidePath(root, target) {
+    const relative = path.relative(root, target);
+    return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+}
+
+// §1 加固：工作区（或用户主目录）下的 .agents / .agents/skills / _emberprobe / 各 skill
+// 目录若被替换为符号链接或 junction，旧实现会穿透链接并对链接目标执行 readdir+rm，
+// 等价于对工作区外任意目录执行 rm -rf。这里在任何 mkdir/readdir/rm/cp 之前先消毒：
+// - 符号链接或非目录：fs.rm 只 unlink 链接本身，绝不进入目标（Node.js 行为，已实测）；
+// - 真实目录：realpath 必须落在允许的根之内，否则拒绝操作。
+async function sanitizeSkillPath(target, realRoot) {
+    const st = await fs.lstat(target).catch(() => null);
+    if (!st) return;
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+        await fs.rm(target, { recursive: true, force: true });
+        return;
+    }
+    const real = await fs.realpath(target);
+    if (!insidePath(realRoot, real))
+        throw Object.assign(new Error(`Refusing to operate on a skill path outside the workspace: ${target}`), {
+            code: "SKILL_PATH_OUTSIDE_WORKSPACE"
+        });
+}
+
+async function sanitizeSkillTree(targetRoot, rootBase, manifest) {
+    if (!rootBase) return;
+    const realRoot = await fs.realpath(rootBase).catch(() => rootBase);
+    await sanitizeSkillPath(path.dirname(targetRoot), realRoot);
+    await sanitizeSkillPath(targetRoot, realRoot);
+    await sanitizeSkillPath(path.join(targetRoot, "_emberprobe"), realRoot);
+    for (const entry of manifest.skills) await sanitizeSkillPath(path.join(targetRoot, entry.name), realRoot);
+    for (const entry of manifest.legacySkills || [])
+        await sanitizeSkillPath(path.join(targetRoot, entry.name), realRoot);
+}
+
 async function digest(file) {
     return crypto
         .createHash("sha256")
@@ -195,6 +230,8 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
     const manifest = await readManifest(context);
     const sourceRoot = path.join(context.extensionPath, "skills");
     const targetRoot = skillsRootFor(vscode, scope);
+    // §1：在任何 mkdir/readdir/rm/cp 之前消毒整条工作区路径，拒绝穿透符号链接。
+    await sanitizeSkillTree(targetRoot, workspace.uri.fsPath, manifest);
     const stage = path.join(path.dirname(targetRoot), `.emberprobe-stage-${process.pid}-${Date.now()}`);
     await fs.mkdir(stage, { recursive: true });
     try {
@@ -255,6 +292,9 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
 async function uninstallSkill(vscode, context, lang, scope) {
     const manifest = await readManifest(context);
     const targetRoot = skillsRootFor(vscode, scope);
+    // §1：卸载同样不得穿透工作区/主目录中的符号链接。
+    const rootBase = scope === "global" ? os.homedir() : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    await sanitizeSkillTree(targetRoot, rootBase, manifest);
     let removed = 0;
     if (targetRoot && (await exists(targetRoot))) {
         for (const entry of manifest.skills) {

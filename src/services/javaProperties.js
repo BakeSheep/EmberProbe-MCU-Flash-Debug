@@ -1,6 +1,14 @@
 "use strict";
 const { failure } = require("./cubemxEnvironment");
 
+// Counts the trailing backslash run in linear time. The previous `/\\+$/` regex retried the
+// match at every internal backslash position, making continuation detection O(n²) (§17.3).
+function trailingBackslashes(text) {
+    let count = 0;
+    while (count < text.length && text[text.length - 1 - count] === "\\") count++;
+    return count;
+}
+
 function parseProperties(content, records = []) {
     const values = Object.create(null);
     const lines = content.replace(/^\uFEFF/, "").split(/\r\n|\n|\r/);
@@ -26,7 +34,7 @@ function parseProperties(content, records = []) {
         const line = index + 1;
         let logical = lines[index].replace(/^[ \t\f]+/, "");
         if (!logical || /^[#!]/.test(logical)) continue;
-        while ((logical.match(/\\+$/)?.[0].length || 0) % 2 === 1) {
+        while (trailingBackslashes(logical) % 2 === 1) {
             logical = logical.slice(0, -1);
             if (++index >= lines.length) break;
             logical += lines[index].replace(/^[ \t\f]+/, "");

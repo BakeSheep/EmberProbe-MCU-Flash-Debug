@@ -452,6 +452,7 @@ module.exports = Object.freeze({
     "live.probeDisconnected": "检测到调试器已断开，实时采样已自动停止",
     "live.elfFirst": "请先在侧栏选择 ELF 固件",
     "live.elfReadFail": "无法读取 ELF：{path}",
+    "live.elfTooLarge": "ELF 超过 {limit} MiB 安全上限，已拒绝解析：{path}",
     "live.varNotFound": "ELF 中未找到变量：{name}",
     "warn.noDwarf": "未读取到 DWARF 类型信息，类型按大小推测（如需精确类型，请用带 -g 的 Debug 构建）",
     "diag.title": "=== EmberProbe 芯片信息读取诊断 ===",

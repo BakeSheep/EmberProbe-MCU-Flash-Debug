@@ -459,6 +459,7 @@ module.exports = Object.freeze({
     "live.probeDisconnected": "Debugger disconnected; live sampling stopped automatically",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",
     "live.elfReadFail": "Cannot read ELF: {path}",
+    "live.elfTooLarge": "ELF exceeds the {limit} MiB safety limit and was not parsed: {path}",
     "live.varNotFound": "Variable not found in the ELF: {name}",
     "warn.noDwarf": "No DWARF type info found; types are inferred from size (build with -g for precise types)",
     "diag.title": "=== EmberProbe chip info read diagnostics ===",

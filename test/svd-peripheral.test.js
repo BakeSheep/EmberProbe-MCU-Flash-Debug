@@ -9,7 +9,8 @@ const {
     parseSvd,
     resolveTarget,
     decodeInteger,
-    encodeInteger
+    encodeInteger,
+    integer
 } = require("../src/services/svdPeripheralService");
 const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthorization");
 
@@ -101,6 +102,23 @@ class FakeDebugBridge {
         () => parseSvd(Buffer.from(SVD.replace("<size>64</size>", "<size>24</size>"))),
         (error) => error.code === "UNSUPPORTED_SVD_REGISTER_SIZE"
     );
+
+    // §17.2：SVD 数值必须在 BigInt 转换前拒绝超长输入。enumeratedValue 曾用逐字符
+    // `value <<= 1n`（Θ(L²)）且无长度上限，几 MB 的 <value>#1010…</value> 能卡死扩展宿主数分钟。
+    assert.throws(
+        () => parseSvd(Buffer.from(SVD.replace("<value>1</value>", `<value>#${"1".repeat(4096)}</value>`))),
+        (error) => error.code === "INVALID_SVD_VALUE",
+        "超长二进制 enumeratedValue 必须被拒绝，而不是逐字符移位"
+    );
+    // integer() 的十进制分支在 bigint:true 时跳过 MAX_SAFE_INTEGER 检查，同样需要长度守卫。
+    assert.throws(
+        () => integer("9".repeat(4096), "reset value", { bigint: true }),
+        (error) => error.code === "INVALID_SVD_VALUE",
+        "超长十进制 SVD 数值必须被拒绝"
+    );
+    // 合法宽度（≤64 位）的数值仍应正常解析，上限不得过紧。
+    assert.strictEqual(integer("0xFFFFFFFFFFFFFFFF", "reset value", { bigint: true }), 0xffffffffffffffffn);
+    assert.strictEqual(integer("#1111", "enumerated value", { bigint: true }), 15n);
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-svd-peripheral-"));
     try {

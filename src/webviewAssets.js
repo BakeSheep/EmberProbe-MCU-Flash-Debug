@@ -80,6 +80,25 @@ async function externalizeWebviewHtml(options) {
         });
     }
 
+    // Fail closed on markup the regex extractor cannot fully account for. A script body
+    // holding a literal </script> truncates the lazy match and leaks the tail past the
+    // nonce tag; a non-standard <stylesheet> block is never extracted; inline on*/style
+    // attributes execute despite the CSP. Reject all three instead of shipping broken HTML.
+    const scriptOpens = (html.match(/<script/gi) || []).length;
+    const scriptCloses = (html.match(/<\/script>/gi) || []).length;
+    if (
+        /<style/i.test(html) ||
+        scriptOpens !== scriptCount ||
+        scriptCloses !== scriptCount ||
+        /\son\w+\s*=/i.test(html) ||
+        /\sstyle\s*=/i.test(html)
+    ) {
+        throw Object.assign(new Error(`Webview ${scope} contained markup that failed CSP hardening`), {
+            code: "WEBVIEW_ASSET_EXTRACTION_FAILED",
+            scope
+        });
+    }
+
     await withAssetScope(assetRootUri.fsPath, scope, async (key) => {
         const signature = JSON.stringify(assets.map((asset) => asset.name));
         if (assetCache.get(key) === signature) return;
@@ -105,11 +124,15 @@ async function externalizeWebviewHtml(options) {
             `style-src ${webview.cspSource}`
         ].join(";") + ";";
     const meta = `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`;
-    if (/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/i.test(html)) {
-        html = html.replace(/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/i, meta);
-    } else {
-        html = html.replace(/<head>/i, `<head>${meta}`);
-    }
+    // Replace the first CSP meta with the authoritative policy and drop every other one, so
+    // an injected duplicate such as `default-src *; script-src 'unsafe-inline'` cannot survive.
+    let cspInjected = false;
+    html = html.replace(/<meta\s+http-equiv=["']Content-Security-Policy["'][^>]*>/gi, () => {
+        if (cspInjected) return "";
+        cspInjected = true;
+        return meta;
+    });
+    if (!cspInjected) html = html.replace(/<head>/i, `<head>${meta}`);
     return { html, nonce, styleCount, scriptCount };
 }
 
