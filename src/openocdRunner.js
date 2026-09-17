@@ -1,4 +1,5 @@
 "use strict";
+const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 const { spawn } = require("child_process");
 const { isSafeCfgPath, resolveOpenOcdLaunch } = require("./openocdScripts");
 
@@ -121,135 +122,7 @@ function parseLine(line) {
     return null;
 }
 
-// 常见失败原因 → 排查建议
-function hintForErrors(errors) {
-    const text = errors.join("\n").toLowerCase();
-    if (
-        /(can't find|cannot find|no such file|unknown command|invalid command).*(\.cfg|interface|target)|\.cfg.*(can't find|cannot find)/.test(
-            text
-        )
-    )
-        return "OpenOCD 找不到配置脚本：请确认探针/目标配置名正确，且 OpenOCD 的 scripts 目录完整（或检查 openocdPath 指向的安装是否完整）";
-    if (/address already in use|couldn't bind|can't bind|error .*binding/.test(text))
-        return "端口被占用：可能已有 OpenOCD/GDB 在运行，请关闭后重试（默认占用 3333/4444/6666）";
-    if (
-        /cannot read idr|error connecting dp|target not examined|init failed|no target connected|dp initialisation failed/.test(
-            text
-        )
-    )
-        return "无法连接目标芯片：请检查 SWD/JTAG 接线、目标板供电与 NRST 连接";
-    if (/voltage|unpowered|not powered|电压|未供电/.test(text))
-        return "目标板可能未供电或供电异常：请检查目标板电源与探针 VCC/GND 连接";
-    if (/scan chain|all ones|all zeroes|tap .*(disabled|invalid)/.test(text))
-        return "JTAG/SWD 链路异常：请检查接线、上拉电阻与时钟设置";
-    if (/unable to find|no device found|no .*found|open failed/.test(text))
-        return "未找到调试器：请检查 USB 连接与驱动，或确认探针型号选择是否正确";
-    if (/libusb|access denied|usb_open|permission denied/.test(text))
-        return "USB 驱动/权限异常：Windows 上可用 Zadig 将探针驱动替换为 WinUSB；Linux 上需安装 udev 规则（openocd/contrib/60-openocd.rules）或将用户加入 plugdev 等设备组后重新插拔探针";
-    if (/timed? ?out/.test(text)) return "通信超时：请检查接线是否牢固，或降低适配器时钟后重试";
-    if (/protected|unlock|rdp|read out protection|option byte/.test(text))
-        return "芯片可能处于读保护（RDP）状态：请先解除保护或全片擦除";
-    if (/flash write failed|failed erasing|failed to write|error writing|error erasing|write discontinued/.test(text))
-        return "Flash 写入/擦除失败：请检查供电稳定性、是否写保护，或确认目标配置是否匹配";
-    if (/verify|verification/.test(text)) return "校验失败：Flash 内容不一致，请检查供电稳定性后重试";
-    if (/not halted|target running/.test(text))
-        return "目标未进入停机状态：请检查复位配置（reset_config），或在连接时按住复位";
-    return "";
-}
-
-// 将 OpenOCD 原始日志归一化为稳定的机器可读诊断，供 UI 与 Agent Skills 共用。
-// 匹配顺序很重要：目标芯片未连接与调试器未找到是两类完全不同的故障。
-function diagnoseOpenOcdFailure(lines, details = {}) {
-    const tail = (Array.isArray(lines) ? lines : [lines])
-        .map((line) => String(line || "").trim())
-        .filter(Boolean)
-        .slice(-8);
-    const text = tail.join("\n").toLowerCase();
-    const make = (code, category, likelyCause, suggestedActions, retryable = true) => ({
-        code,
-        category,
-        stage: "openocd_start",
-        message: likelyCause,
-        likelyCause,
-        retryable,
-        suggestedActions,
-        details: { ...details, openocdTail: tail }
-    });
-    if (
-        /(can't find|cannot find|no such file|unknown command|invalid command).*(\.cfg|interface|target)|\.cfg.*(can't find|cannot find)/.test(
-            text
-        )
-    ) {
-        return make(
-            "OPENOCD_CONFIG_INVALID",
-            "configuration",
-            "OpenOCD 找不到探针或目标配置脚本。",
-            ["检查 EmberProbe 中的调试器与 MCU 目标配置。", "确认 openocdPath 指向完整的 OpenOCD 安装。"],
-            false
-        );
-    }
-    if (/address already in use|couldn't bind|can't bind|error .*binding/.test(text)) {
-        return make("TCL_PORT_IN_USE", "resource_conflict", "OpenOCD Tcl 端口已被其他进程占用。", [
-            "关闭残留的 OpenOCD 或其他调试会话后重试。",
-            "必要时在 EmberProbe 配置中更换 Tcl 端口。"
-        ]);
-    }
-    if (/voltage.*(?:0(?:\.0+)?\b|too low)|unpowered|not powered|target power.*(?:off|low)/.test(text)) {
-        return make("TARGET_UNPOWERED", "target_connection", "目标板未供电或目标电压过低。", [
-            "检查目标板电源。",
-            "检查探针 VCC/GND 与目标板共地连接。"
-        ]);
-    }
-    if (
-        /cannot read idr|error connecting dp|target not examined|init failed|no target connected|dp initialisation failed|unable to connect to target|jtag scan chain interrogation failed|all ones|all zeroes/.test(
-            text
-        )
-    ) {
-        return make(
-            "TARGET_NOT_CONNECTED",
-            "target_connection",
-            "调试器已启动，但无法与目标 MCU 建立 SWD/JTAG 连接。",
-            [
-                "检查 MCU 供电以及 SWDIO/SWCLK/GND/NRST 接线。",
-                "确认所选 MCU target 配置与实际芯片一致。",
-                "可尝试降低 adapter speed 后重试。"
-            ]
-        );
-    }
-    if (/libusb.*(?:access|permission)|access denied|permission denied|usb_open.*access/.test(text)) {
-        return make("PROBE_PERMISSION_DENIED", "probe_connection", "操作系统拒绝访问调试探针。", [
-            "检查是否有其他调试程序占用探针。",
-            "检查 USB 驱动与当前用户权限。",
-            "Linux 上需安装 udev 规则（openocd/contrib/60-openocd.rules，执行 sudo cp 后 udevadm control --reload）或将用户加入 plugdev 等设备组，并重新插拔探针。"
-        ]);
-    }
-    if (
-        /unable to find.*(?:cmsis|dap|st-?link|j-?link|probe)|no device found|no .*probe.*found|libusb_open.*(?:not found|no device)|open failed.*(?:probe|device)|unable to open.*(?:probe|device)/.test(
-            text
-        )
-    ) {
-        return make("PROBE_NOT_FOUND", "probe_connection", "OpenOCD 未找到或无法打开配置的调试探针。", [
-            "检查探针 USB 连接。",
-            "确认 EmberProbe 中选择的调试器型号正确。",
-            "关闭可能占用探针的其他调试软件。"
-        ]);
-    }
-    if (/timed? ?out|timeout/.test(text)) {
-        return make("OPENOCD_CONNECTION_TIMEOUT", "connection_timeout", "OpenOCD 与探针或目标 MCU 通信超时。", [
-            "检查 USB、目标供电和调试接线。",
-            "降低 adapter speed 后重试。"
-        ]);
-    }
-    return make(
-        "OPENOCD_START_FAILED",
-        "openocd",
-        tail
-            .slice()
-            .reverse()
-            .find((line) => /\berror\b|failed|unable|denied/i.test(line)) || "OpenOCD 未能建立采样连接。",
-        ["检查诊断中的 openocdTail 原始输出。", "确认探针、目标板供电、接线和 EmberProbe 配置。"]
-    );
-}
+const { diagnoseOpenOcdFailure, hintForErrors } = require("../skills/_emberprobe/openocd-diagnostics");
 
 // 复用同一个终端，避免每次下载都新建终端导致堆叠
 let sharedTerminal = null;
@@ -289,7 +162,7 @@ function runOpenOcd(vscode, options, onProgress) {
     }
     let launch;
     try {
-        launch = resolveOpenOcdLaunch(options.executable, options.probe, options.target);
+        launch = resolveOpenOcdLaunch(options.executable, options.probe, options.target, options.transport);
     } catch (error) {
         return Promise.reject(error);
     }
@@ -301,12 +174,7 @@ function runOpenOcd(vscode, options, onProgress) {
         const programCmd = `program ${quoteTclWord(elfPath)} verify reset exit`;
         const preserveWorkArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
         const args = [
-            "-s",
-            launch.scriptsRoot,
-            "-f",
-            launch.probePath,
-            "-f",
-            launch.targetPath,
+            ...buildOpenOcdConfigArgs(launch, options.transport),
             "-c",
             "bindto 127.0.0.1",
             "-c",
@@ -381,7 +249,7 @@ function runOpenOcd(vscode, options, onProgress) {
             const text = line.replace(/\r/g, "");
             if (text) {
                 rawTail.push(text);
-                if (rawTail.length > 8) rawTail.shift();
+                // Bounded by the process output limit; classify before trimming for display.
             }
             const event = parseLine(text);
             if (!event) return;
@@ -471,13 +339,14 @@ function runOpenOcd(vscode, options, onProgress) {
                 if (errors.length) {
                     print("  失败原因：");
                     for (const message of errors.slice(-5)) print(`  • ${message}`, "\x1b[31m");
-                    const hint = hintForErrors(errors);
+                    const hint = hintForErrors(rawTail, { probe: options.probe });
                     if (hint) print(`  建议：${hint}`, "\x1b[33m");
                 } else if (rawTail.length) {
                     print("  未解析到明确错误，OpenOCD 末尾输出：");
                     for (const raw of rawTail.slice(-5)) print(`  ${raw}`, "\x1b[2m");
                 }
-                reject(new Error(lastError || failureText));
+                const diagnostic = diagnoseOpenOcdFailure(rawTail, { probe: options.probe, exitCode: code });
+                reject(Object.assign(new Error(lastError || failureText), diagnostic));
             }
         });
     });

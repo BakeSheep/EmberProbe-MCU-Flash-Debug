@@ -75,7 +75,3 @@ esbuild.js Single-file VSIX bundle build config
 ## License & Attribution
 
 The extension code is licensed under MIT. License and source information for the npm runtime dependencies and the bundled xPack OpenOCD is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-### Real CubeMX integration check
-
-On Windows, explicitly run `node scripts/check-cubemx-integration.js <project.ioc> <STM32CubeMX.exe>` with the matching installed tool and firmware package. It checks root and nested generation layouts in retained temporary copies without building, flashing, or modifying the source project. Differences produce a nonzero exit code; output includes the artifact directory. Normal tests do not run this check.

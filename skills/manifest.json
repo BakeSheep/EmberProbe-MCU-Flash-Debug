@@ -1,6 +1,15 @@
 {
   "schemaVersion": 1,
-  "shared": ["agent-client.js", "agent-workflow.md", "flash-common.js", "openocd-policy.js"],
+  "shared": [
+    "agent-client.js",
+    "agent-workflow.md",
+    "file-identity.js",
+    "flash-common.js",
+    "openocd-diagnostics.js",
+    "openocd-launch.js",
+    "openocd-policy.js",
+    "probe-detection.js"
+  ],
   "legacySkills": [
     {
       "name": "mcu-download",

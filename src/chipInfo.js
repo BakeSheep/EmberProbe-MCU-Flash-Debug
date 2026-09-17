@@ -15,6 +15,7 @@ async function readChipInfo(vscode, options, onProgress) {
             executable: options.executable,
             probe: options.probe,
             target: options.target,
+            transport: options.transport,
             cwd: options.cwd,
             timeoutMs: 15000,
             buildCommands: () => cmds,
@@ -30,6 +31,9 @@ async function readChipInfo(vscode, options, onProgress) {
         } catch (e) {
             /* ignore */
         }
+    }
+    if (execution.exitCode !== 0 && execution.diagnostic) {
+        throw Object.assign(new Error(execution.diagnostic.message), execution.diagnostic);
     }
     const info = parser.finish(execution.exitCode);
     report({ stage: "done", message: "读取完成" });

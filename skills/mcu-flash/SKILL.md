@@ -23,3 +23,10 @@ Choose exactly one operation from the user's request:
 Programming already performs OpenOCD's program-and-verify sequence. If the user asks to flash and confirm success in one request, run only the programming workflow and report its verification result; do not start a second verification session.
 
 Both operations must complete detection first and report the selected ELF, ELF SHA-256, target, probe, and OpenOCD executable. Never guess a missing target or probe. Do not run either operation while EmberProbe is sampling, downloading, or debugging because the probe has a single owner.
+
+## OpenOCD compatibility
+
+- Preflight `ready` requires a readable ELF, compatible executable, and valid interface/target scripts. Report `diagnostics` and `notes` when false; do not execute or request confirmation.
+- `--transport auto|swd|jtag|hla_swd|hla_jtag` overrides the workspace transport. Missing values use the workspace setting, then `auto`. Keep the same transport for confirmation and execution.
+- Multiple detected probe types require an explicit `--probe`; same-model probes cannot be selected by serial number yet.
+- Windows J-Link USB failures may indicate a legacy SEGGER driver binding. Explain the reported diagnostic; do not automatically replace drivers or retry flashing.

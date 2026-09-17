@@ -1,6 +1,7 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "msg.selectDetectedProbe": "检测到多种探针，请选择要使用的型号",
     "lw.hideAll": "隐藏全部",
     "lw.chooseMembers": "请选择要绘制的标量成员",
     "lw.expandMembers": "展开成员",

@@ -13,7 +13,11 @@ function fail(message) {
 async function main() {
     const options = parseArgs(process.argv.slice(2));
     const result = await preflight(options);
-    if (!result.ready) fail("Detection incomplete. Provide or select ELF, target, and probe.");
+    if (!result.ready) {
+        emit(result);
+        if (options.execute) fail("OpenOCD preflight failed: " + result.notes.join(" "));
+        return;
+    }
     if (!fs.existsSync(result.elf)) fail(`ELF not found: ${result.elf}`);
     if (!isSafeCfgPath(result.target) || !isSafeCfgPath(result.probe)) fail("Unsafe OpenOCD configuration path.");
     let authorization;
@@ -56,6 +60,7 @@ async function main() {
             target: result.target,
             probe: result.probe,
             openocd: result.openocd,
+            transport: result.transport,
             confirmationId: options["confirmation-id"]
         },
         150000

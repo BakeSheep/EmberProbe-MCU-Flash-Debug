@@ -1,5 +1,7 @@
 "use strict";
+const { buildOpenOcdConfigArgs } = require("../openocdScripts");
 
+const { diagnoseOpenOcdFailure } = require("../../skills/_emberprobe/openocd-diagnostics");
 const { spawn } = require("child_process");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 
@@ -25,17 +27,17 @@ function runOpenOcdOnce(options) {
     const commands = options.buildCommands();
     let launch;
     try {
-        launch = (options.resolveLaunch || resolveOpenOcdLaunch)(options.executable, options.probe, options.target);
+        launch = (options.resolveLaunch || resolveOpenOcdLaunch)(
+            options.executable,
+            options.probe,
+            options.target,
+            options.transport
+        );
     } catch (error) {
         return Promise.reject(error);
     }
     const args = [
-        "-s",
-        launch.scriptsRoot,
-        "-f",
-        launch.probePath,
-        "-f",
-        launch.targetPath,
+        ...buildOpenOcdConfigArgs(launch, options.transport),
         "-c",
         "bindto 127.0.0.1",
         "-c",
@@ -64,6 +66,7 @@ function runOpenOcdOnce(options) {
         }
 
         const openocdTail = [];
+        const diagnosticLines = [];
         const pending = { stdout: "", stderr: "" };
         let settled = false;
         let terminalError = null;
@@ -74,11 +77,18 @@ function runOpenOcdOnce(options) {
             settled = true;
             clearTimeout(timer);
             if (error) reject(error);
-            else resolve({ exitCode, openocdTail: openocdTail.slice(), commands: commands.slice() });
+            else
+                resolve({
+                    exitCode,
+                    openocdTail: openocdTail.slice(),
+                    commands: commands.slice(),
+                    diagnostic: diagnoseOpenOcdFailure(diagnosticLines, { probe: options.probe, exitCode })
+                });
         };
         const handleLine = (raw) => {
             const clean = String(raw).replace(ANSI_RE, "").replace(/\r/g, "").trim();
             if (!clean) return;
+            diagnosticLines.push(clean);
             openocdTail.push(clean.slice(0, 500));
             if (openocdTail.length > tailLimit) openocdTail.shift();
             if (typeof options.onLine === "function") options.onLine(clean);

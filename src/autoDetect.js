@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs/promises");
+const { probeCandidates, probeFromText: debuggerFromInventory } = require("../skills/_emberprobe/probe-detection");
 const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
@@ -109,24 +110,13 @@ async function usbInventory() {
     }
 }
 
-function debuggerFromInventory(inventory) {
-    const devices = String(inventory || "").toLowerCase();
-    if (/st[- ]?link|stm32\s+stlink/.test(devices)) return "stlink.cfg";
-    if (/j[- ]?link|segger/.test(devices)) return "jlink.cfg";
-    // Accept the spellings emitted by common firmware and Windows descriptors:
-    // CMSIS-DAP, CMSIS DAP, CMSIS_DAP, CMSISDAP, DAPLink and MCU-Link.
-    if (/cmsis(?:[- _]?dap)|daplink|pico\s?probe|mcu[- ]?link/.test(devices)) return "cmsis-dap.cfg";
-    if (/xds[- ]?110/.test(devices)) return "xds110.cfg";
-    if (/nu[- ]?link/.test(devices)) return "nulink.cfg";
-    return "";
-}
-
 async function detectDebugger() {
-    return debuggerFromInventory(await usbInventory());
+    const inventory = await usbInventory();
+    return { debugger: debuggerFromInventory(inventory), probeCandidates: probeCandidates(inventory) };
 }
 
 async function detectWorkspace(vscode) {
     const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
-    return { elf, mcu, debugger: debuggerConfig };
+    return { elf, mcu, ...debuggerConfig };
 }
 module.exports = { detectWorkspace, targetFromText, debuggerFromInventory, usbInventory };

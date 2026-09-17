@@ -26,6 +26,7 @@ const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
+const { canonicalFileSync } = require("../skills/_emberprobe/file-identity");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
@@ -646,7 +647,14 @@ class MainViewProvider {
                 const { cwd } = this._commandContext(resource);
                 await this._flashService.download(
                     vscode,
-                    { executable, elf: cleanElfPath, probe: debuggerCfg, target: mcuCore, cwd },
+                    {
+                        executable,
+                        elf: cleanElfPath,
+                        transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
+                        probe: debuggerCfg,
+                        target: mcuCore,
+                        cwd
+                    },
                     (event) => {
                         // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
                         const message = { type: "openocdProgress", ...event };
@@ -673,7 +681,7 @@ class MainViewProvider {
         return snapshot;
     }
     _authorizeAgentFlash(params) {
-        const elfPath = fs.realpathSync(path.resolve(String(params.elf || "")));
+        const elfPath = canonicalFileSync(path.resolve(String(params.elf || "")));
         const sha256 = crypto.createHash("sha256").update(fs.readFileSync(elfPath)).digest("hex");
         if (sha256 !== String(params.elfSha256 || "")) {
             throw Object.assign(new Error("The ELF changed before flash confirmation"), {
@@ -688,6 +696,7 @@ class MainViewProvider {
         return this._flashAuthorization.authorize(
             {
                 elf: { path: elfPath, sha256 },
+                transport: openocdScripts.normalizeTransport(params.transport),
                 target: params.target,
                 probe: params.probe,
                 openocd: params.openocd
@@ -1096,6 +1105,7 @@ class MainViewProvider {
                     executable,
                     isolated: true,
                     probe,
+                    transport: cfg.get("transport", "auto"),
                     target,
                     port: tclPort,
                     gdbPort,
@@ -1418,6 +1428,7 @@ class MainViewProvider {
                     {
                         executable,
                         isolated: true,
+                        transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
                         cwd,
@@ -1708,7 +1719,13 @@ class MainViewProvider {
             if (!executable) busy("chip.notReady", "OPENOCD_NOT_READY");
             const { cwd } = this._commandContext();
             return await this._faultService.read(
-                { executable, probe: debuggerCfg, target: mcuCore, cwd },
+                {
+                    executable,
+                    transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
+                    probe: debuggerCfg,
+                    target: mcuCore,
+                    cwd
+                },
                 () => this.readElfSymbols().functions || []
             );
         } finally {
@@ -2537,6 +2554,7 @@ class MainViewProvider {
                 {
                     executable,
                     isolated: true,
+                    transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                     probe: debuggerCfg,
                     target: mcuCore,
                     cwd,
@@ -3062,6 +3080,12 @@ class MainViewProvider {
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        if (!currentDebugger && result.probeCandidates?.length > 1 && force) {
+            result.debugger =
+                (await vscode.window.showQuickPick(result.probeCandidates, {
+                    placeHolder: this._t("msg.selectDetectedProbe")
+                })) || "";
+        }
         if (result.elf && (force || !currentElf))
             await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
         if (result.debugger && (force || !currentDebugger))

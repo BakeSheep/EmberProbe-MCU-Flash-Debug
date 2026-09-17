@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs/promises");
+const { canonicalFile } = require("../../skills/_emberprobe/file-identity");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
@@ -24,14 +25,14 @@ class AgentFlashService {
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {
-            const elf = await fs.realpath(String(params.elf || ""));
+            const elf = await canonicalFile(String(params.elf || ""));
             const buffer = await fs.readFile(elf);
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
             if (sha256 !== params.elfSha256)
                 throw Object.assign(new Error("ELF changed before execution"), {
                     code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
                 });
-            const launch = this.resolveLaunch(params.openocd, params.probe, params.target);
+            const launch = this.resolveLaunch(params.openocd, params.probe, params.target, params.transport);
             const compatible = await this.check(launch.executable);
             if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
             if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
@@ -40,6 +41,7 @@ class AgentFlashService {
                 this.authorization.authorize(
                     {
                         elf: { path: elf, sha256 },
+                        transport: params.transport,
                         target: params.target,
                         probe: params.probe,
                         openocd: params.openocd
@@ -71,6 +73,7 @@ class AgentFlashService {
                 executable: launch.executable,
                 probe: params.probe,
                 target: params.target,
+                transport: params.transport,
                 resolveLaunch: () => launch,
                 buildCommands: () => commands,
                 timeoutMs: 120000,
@@ -89,7 +92,10 @@ class AgentFlashService {
                 elf,
                 elfSha256: sha256,
                 code: verified ? 0 : 1,
-                detail: failed || (verified ? "" : `OpenOCD exited with code ${execution.exitCode}`),
+                detail:
+                    failed ||
+                    (verified ? "" : execution.diagnostic?.message || `OpenOCD exited with code ${execution.exitCode}`),
+                ...(verified ? {} : { diagnostic: execution.diagnostic }),
                 commands: execution.commands,
                 lines: execution.openocdTail
             };

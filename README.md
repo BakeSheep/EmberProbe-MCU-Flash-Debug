@@ -77,7 +77,3 @@ esbuild.js 单文件 VSIX 打包构建配置
 ## 许可证与归属
 
 扩展代码采用 MIT 许可证。npm 运行时依赖与自带 xPack OpenOCD 的许可证及来源信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-### 真实 CubeMX 集成检查
-
-在 Windows 上显式运行 `node scripts/check-cubemx-integration.js <project.ioc> <STM32CubeMX.exe>`，使用已安装的匹配版本及固件包检查根目录和嵌套目录两种生成布局。检查只在临时副本运行，不构建、不烧录、不改原工程；差异会使退出码非零，临时资料路径在输出中保留。普通测试不运行此检查。

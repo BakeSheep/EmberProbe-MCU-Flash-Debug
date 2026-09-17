@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs");
+const { normalizeTransport } = require("../openocdScripts");
 const path = require("path");
 
 const ALLOWED_KEYS = new Set([
@@ -10,6 +11,7 @@ const ALLOWED_KEYS = new Set([
     "iocPath",
     "cubemxPath",
     "openocdPath",
+    "transport",
     "sampleIntervalMs",
     "tclPort",
     "maxSamples"
@@ -53,6 +55,7 @@ class ConfigurationStore {
             debugger: this.context.workspaceState.get(this.cacheKeys.debugger) || "",
             mcu: this.context.workspaceState.get(this.cacheKeys.mcuCore) || "",
             svd: this.context.workspaceState.get(this.cacheKeys.svdPath) || "",
+            transport: cfg.get("transport", "auto"),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
@@ -129,6 +132,8 @@ class ConfigurationStore {
                         code: key === "mcu" ? "INVALID_MCU" : "INVALID_DEBUGGER"
                     });
                 addState(key, value);
+            } else if (key === "transport") {
+                addSetting(key, normalizeTransport(value));
             } else if (NUMBER_RANGES[key]) {
                 const [min, max] = NUMBER_RANGES[key];
                 const number = Number(value);

@@ -77,6 +77,30 @@ function resolver(executable = "openocd") {
         "shutdown"
     ]);
 
+    const usbChild = fakeChild();
+    const failure = await runOpenOcdOnce({
+        executable: "fake",
+        probe: "jlink.cfg",
+        target: "stm32f4x.cfg",
+        transport: "swd",
+        resolveLaunch: resolver(),
+        buildCommands: () => ["init"],
+        spawnImpl: (_file, args) => {
+            assert(
+                args.indexOf("transport select swd") > args.indexOf("/trusted/openocd/scripts/interface/cmsis-dap.cfg")
+            );
+            assert(args.indexOf("transport select swd") < args.indexOf("/trusted/openocd/scripts/target/stm32f4x.cfg"));
+            process.nextTick(() => {
+                usbChild.stderr.write("Error: LIBUSB_ERROR_NOT_");
+                usbChild.stderr.write("FOUND\n" + "Info: subsequent output\n".repeat(30) + "Error: init failed");
+                usbChild.emit("close", 1);
+            });
+            return usbChild;
+        }
+    });
+    assert.strictEqual(failure.diagnostic.code, "PROBE_NOT_FOUND");
+    assert(!failure.openocdTail.some((line) => line.includes("LIBUSB")), "diagnosis must precede display truncation");
+
     // 同步 spawn 失败与异步 error 事件的 ENOENT 语义必须一致。
     const enoent = Object.assign(new Error("missing"), { code: "ENOENT" });
     await assert.rejects(

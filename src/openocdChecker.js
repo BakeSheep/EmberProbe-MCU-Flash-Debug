@@ -6,6 +6,7 @@
 // - 内存级缓存避免每次烧录/调试/实时查看都重新探测；
 // - 所有检测与安装状态通过回调交给侧边栏展示，不发送通知弹窗。
 
+const { resolveExecutablePath } = require("./openocdScripts");
 const { spawn } = require("child_process");
 const installer = require("./openocdInstaller");
 const i18n = require("./i18n");
@@ -43,10 +44,6 @@ function probeOpenOcd(executable) {
             errorKey: "oc.errNoPath"
         });
     }
-    // Windows 上裸命令名（无路径分隔符、无扩展名）先通过 where.exe 解析完整路径，
-    // 避免 spawn shell:false 对 PATH 搜索不健壮的问题。
-    const needsResolve =
-        process.platform === "win32" && !target.includes("\\") && !target.includes("/") && !/\.\w+$/.test(target);
     const doProbe = (resolved) =>
         new Promise((resolve) => {
             let child;
@@ -126,40 +123,18 @@ function probeOpenOcd(executable) {
                 }
             });
         });
-    if (!needsResolve) return doProbe(target);
-    // Windows 裸命令名：先用 where.exe 解析完整路径，失败则回退到原始名称
-    return new Promise((resolve) => {
-        let out = "";
-        let settled = false;
-        const finish = (resolved) => {
-            if (!settled) {
-                settled = true;
-                resolve(resolved);
-            }
-        };
-        const t = setTimeout(() => finish(doProbe(target)), 3000);
-        try {
-            const w = spawn("where.exe", [target], { windowsHide: true, shell: false });
-            w.stdout.on("data", (d) => {
-                out += d.toString();
-            });
-            w.on("error", () => {
-                clearTimeout(t);
-                finish(doProbe(target));
-            });
-            w.on("close", () => {
-                clearTimeout(t);
-                const first = out
-                    .split(/\r?\n/)
-                    .map((l) => l.trim())
-                    .find((l) => l);
-                finish(doProbe(first || target));
-            });
-        } catch (e) {
-            clearTimeout(t);
-            finish(doProbe(target));
-        }
-    });
+    try {
+        return doProbe(resolveExecutablePath(target));
+    } catch (error) {
+        return Promise.resolve({
+            found: false,
+            path: target,
+            requested: target,
+            version: "",
+            error: error.message,
+            code: error.code
+        });
+    }
 }
 
 function getCachedResult() {

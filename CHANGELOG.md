@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 Windows ELF 路径盘符大小写导致烧录授权失效，以及正常目标电压被误报为未供电。
+- 新增统一 SWD/JTAG 传输配置、J-Link USB 驱动/占用诊断、完整脚本预检与多型号探针选择。
+- Fixed Windows ELF path identity during flash authorization and false low-voltage diagnostics.
+- Added shared SWD/JTAG transport settings, USB driver/ownership diagnostics, script preflight, and explicit selection for multiple probe types.
+
 - 新增 Agent Skills 采样启停与状态查询，与侧边栏和图表共享采样状态。
 - Added Agent Skills sampling start, stop, and status commands synchronized with the sidebar and charts.
 

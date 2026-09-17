@@ -11,6 +11,7 @@ const { execFile } = require("child_process");
 const { promisify } = require("util");
 const { AgentBridge } = require("../src/agentBridge");
 const { FlashAuthorization } = require("../src/flashAuthorization");
+const { canonicalFileSync } = require("../skills/_emberprobe/file-identity");
 const flashCommon = require("../skills/_emberprobe/flash-common");
 
 const execFileAsync = promisify(execFile);
@@ -88,6 +89,7 @@ function lastJsonLine(stdout) {
                 return flashAuthorization.authorize(
                     {
                         elf: { path: params.elf, sha256: params.elfSha256 },
+                        transport: params.transport,
                         target: params.target,
                         probe: params.probe,
                         openocd: params.openocd
@@ -107,7 +109,7 @@ function lastJsonLine(stdout) {
         await bridge.start();
 
         const downloadPreflight = firstJsonLine((await run("mcu-flash/scripts/program.js")).stdout);
-        assert.strictEqual(downloadPreflight.elf, elf);
+        assert.strictEqual(downloadPreflight.elf, canonicalFileSync(elf));
         assert.strictEqual(downloadPreflight.target, "geehy/apm32f4x.cfg");
         assert.strictEqual(downloadPreflight.probe, "cmsis-dap.cfg");
         assert.strictEqual(downloadPreflight.openocd, fakeOpenOcd);
@@ -115,17 +117,29 @@ function lastJsonLine(stdout) {
             assert.strictEqual(downloadPreflight.openocdVersion, "0.12.0");
             assert.strictEqual(downloadPreflight.openocdCompatible, true);
         }
-        assert.strictEqual(downloadPreflight.ready, true);
+        assert.strictEqual(downloadPreflight.ready, canRunFakeOpenOcd);
         assert.ok(/^[0-9a-f]{64}$/.test(downloadPreflight.elfSha256));
-        assert.strictEqual(downloadPreflight.flashAuthorization.confirmationRequired, true);
+        if (canRunFakeOpenOcd) assert.strictEqual(downloadPreflight.flashAuthorization.confirmationRequired, true);
+        else assert.strictEqual(downloadPreflight.flashAuthorization, undefined);
         // 任务2：配置成功时来源标记为 config，且没有降级诊断
-        assert.deepStrictEqual(downloadPreflight.diagnostics, []);
+        if (canRunFakeOpenOcd) assert.deepStrictEqual(downloadPreflight.diagnostics, []);
+        else assert.strictEqual(downloadPreflight.diagnostics[0].error.code, "OPENOCD_EXECUTABLE_UNSUPPORTED");
         assert.deepStrictEqual(downloadPreflight.sources, {
             elf: "config",
             target: "config",
             probe: "config",
+            transport: "default",
             openocd: "config"
         });
+        const explicitTransport = firstJsonLine(
+            (await run("mcu-flash/scripts/program.js", ["--transport", "swd"])).stdout
+        );
+        assert.strictEqual(explicitTransport.transport, "swd");
+        assert.strictEqual(explicitTransport.sources.transport, "explicit");
+        await assert.rejects(
+            run("mcu-flash/scripts/program.js", ["--transport", "invalid"]),
+            /Unsupported OpenOCD transport/
+        );
 
         const verifyPreflight = firstJsonLine((await run("mcu-flash/scripts/verify.js")).stdout);
         assert.strictEqual(verifyPreflight.target, "geehy/apm32f4x.cfg");
@@ -136,7 +150,7 @@ function lastJsonLine(stdout) {
             const verifyRun = await run("mcu-flash/scripts/verify.js", ["--execute"]);
             const verified = lastJsonLine(verifyRun.stdout);
             assert.strictEqual(verified.verified, true);
-            assert.strictEqual(verified.elf, elf);
+            assert.strictEqual(verified.elf, canonicalFileSync(elf));
             assert.strictEqual(verified.elfSha256, downloadPreflight.elfSha256);
             // openocdTail 逐行截断到 500 字符，命令断言必须基于返回的 commands 而非 stdout 回显。
             assert.ok(
@@ -171,15 +185,17 @@ function lastJsonLine(stdout) {
             const oldPreflight = firstJsonLine(
                 (await run("mcu-flash/scripts/program.js", ["--openocd", oldOpenOcd])).stdout
             );
+            assert.strictEqual(oldPreflight.ready, false);
+            assert.strictEqual(oldPreflight.flashAuthorization, undefined);
             await assert.rejects(
                 run("mcu-flash/scripts/program.js", [
                     "--execute",
                     "--openocd",
                     oldOpenOcd,
                     "--confirmation-id",
-                    oldPreflight.flashAuthorization.confirmationId
+                    "unavailable"
                 ]),
-                (error) => /Incompatible OpenOCD 0\.11\.0/.test(error.stderr || ""),
+                (error) => /OpenOCD preflight failed: OpenOCD 0\.11\.0 is incompatible/.test(error.stderr || ""),
                 "Agent download must refuse OpenOCD 0.11"
             );
         }
@@ -196,19 +212,22 @@ function lastJsonLine(stdout) {
                 "--probe",
                 "stlink.cfg",
                 "--target",
-                "stm32f4x.cfg"
+                "stm32f4x.cfg",
+                "--openocd",
+                path.join(bareRoot, "missing-openocd")
             ]);
             const bareJson = firstJsonLine(bare.stdout);
-            assert.strictEqual(bareJson.elf, fs.realpathSync(upperElf));
-            assert.strictEqual(bareJson.ready, true);
+            assert.strictEqual(bareJson.elf, canonicalFileSync(upperElf));
+            assert.strictEqual(bareJson.ready, false);
             // 任务2：Bridge 不可用时降级为自动检测，来源与诊断完整，且不得误报硬件故障
             assert.deepStrictEqual(bareJson.sources, {
                 elf: "auto",
                 target: "explicit",
                 probe: "explicit",
-                openocd: "default"
+                transport: "default",
+                openocd: "explicit"
             });
-            assert.strictEqual(bareJson.diagnostics.length, 1);
+            assert.ok(bareJson.diagnostics.length >= 2);
             assert.strictEqual(bareJson.diagnostics[0].error.code, "BRIDGE_UNAVAILABLE");
             assert.ok(
                 !/硬件未连接|hardware (?:not connected|disconnected)|probe (?:not connected|disconnected)|not attached/i.test(
@@ -245,16 +264,21 @@ function lastJsonLine(stdout) {
                 probe: "stlink.cfg",
                 openocd: path.join(cfgFailRoot, "missing-openocd")
             });
-            assert.strictEqual(cfgFailPreflight.diagnostics.length, 1);
+            assert.strictEqual(cfgFailPreflight.diagnostics.length, 2);
             assert.strictEqual(cfgFailPreflight.diagnostics[0].error.code, "BRIDGE_TIMEOUT");
             assert.strictEqual(cfgFailPreflight.diagnostics[0].operation, "config.get");
             assert.deepStrictEqual(cfgFailPreflight.sources, {
                 elf: "explicit",
                 target: "explicit",
                 probe: "explicit",
+                transport: "default",
                 openocd: "explicit"
             });
-            assert.strictEqual(cfgFailPreflight.ready, true, "配置超时但显式参数完整时预检仍应可用");
+            assert.strictEqual(
+                cfgFailPreflight.ready,
+                false,
+                "A missing executable must block execution even with complete configuration"
+            );
         } finally {
             await cfgFailBridge.stop();
             fs.rmSync(cfgFailRoot, { recursive: true, force: true });

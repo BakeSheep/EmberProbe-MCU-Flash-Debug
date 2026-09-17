@@ -1,15 +1,18 @@
 "use strict";
 
 const crypto = require("crypto");
+const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
+const { normalizeTransport } = require("./openocdScripts");
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 function flashIdentity(plan) {
     return {
         elf: {
-            path: String(plan?.elf?.path || ""),
+            path: normalizeFileIdentity(plan?.elf?.path || ""),
             sha256: String(plan?.elf?.sha256 || "")
         },
+        transport: normalizeTransport(plan?.transport),
         target: String(plan?.target || ""),
         probe: String(plan?.probe || ""),
         openocd: String(plan?.openocd || "")

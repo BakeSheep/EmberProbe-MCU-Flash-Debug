@@ -1,6 +1,7 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "msg.selectDetectedProbe": "Multiple probe types detected. Select the probe to use.",
     "lw.hideAll": "Hide all",
     "lw.chooseMembers": "Select scalar members to plot",
     "lw.expandMembers": "Expand members",

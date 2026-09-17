@@ -76,9 +76,19 @@ class ChipInfoService {
         let diagnostics = null;
         try {
             const { cwd } = this.commandContext();
-            const info = await this.chipInfo.readChipInfo(this.vscode, { executable, probe, target, cwd }, (event) => {
-                if (event?.stage === "raw") diagnostics = event;
-            });
+            const info = await this.chipInfo.readChipInfo(
+                this.vscode,
+                {
+                    executable,
+                    probe,
+                    target,
+                    cwd,
+                    transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto")
+                },
+                (event) => {
+                    if (event?.stage === "raw") diagnostics = event;
+                }
+            );
             this.info = info;
             this.post({ state: "ready", key: "chip.done" }, info);
             this.onDiagnostics(diagnostics, info);

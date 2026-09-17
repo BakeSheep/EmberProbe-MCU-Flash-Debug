@@ -1,4 +1,5 @@
 "use strict";
+const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 // 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，并通过 Tcl-RPC 只读采样 RAM。
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
@@ -248,14 +249,14 @@ class ManagedOpenOcdSession {
                 code: "LIVE_MEMORY_UNSUPPORTED"
             });
         }
-        const launch = resolveOpenOcdLaunch(this.options.executable, this.options.probe, this.options.target);
+        const launch = resolveOpenOcdLaunch(
+            this.options.executable,
+            this.options.probe,
+            this.options.target,
+            this.options.transport
+        );
         const args = [
-            "-s",
-            launch.scriptsRoot,
-            "-f",
-            launch.probePath,
-            "-f",
-            launch.targetPath,
+            ...buildOpenOcdConfigArgs(launch, this.options.transport),
             "-c",
             "bindto 127.0.0.1",
             "-c",
@@ -302,14 +303,18 @@ class ManagedOpenOcdSession {
                 const clean = line.trim();
                 if (!clean) continue;
                 this._openOcdLogTail.push(clean.slice(0, 500));
-                if (this._openOcdLogTail.length > 20) this._openOcdLogTail.shift();
+                if (this._openOcdLogTail.length > 4096) this._openOcdLogTail.shift();
                 // 采样中拔出调试器：USB 读写失败等致命信号 → 自动停止采样，避免错误反复刷屏
                 if (this._isFatalProbeLog(clean)) {
                     if (!this.stopped && !this.connectionFailed) {
                         this._abortConnection(
-                            Object.assign(new Error("Debugger disconnected; live sampling stopped"), {
-                                i18nKey: "live.probeDisconnected"
-                            })
+                            Object.assign(
+                                new Error("Debugger disconnected; live sampling stopped"),
+                                diagnoseOpenOcdFailure(this._openOcdLogTail, { probe: this.options.probe }),
+                                {
+                                    i18nKey: "live.probeDisconnected"
+                                }
+                            )
                         );
                     }
                     return;
@@ -325,9 +330,19 @@ class ManagedOpenOcdSession {
                 }
             }
         };
-        this.child.stdout.on("data", onLog);
-        this.child.stderr.on("data", onLog);
+        const pendingLogs = { stdout: "", stderr: "" };
+        const collectLog = (stream, chunk) => {
+            pendingLogs[stream] += chunk.toString();
+            const lines = pendingLogs[stream].split(/\r?\n/);
+            pendingLogs[stream] = (lines.pop() || "").slice(-65536);
+            if (lines.length) onLog(lines.join("\n"));
+        };
+        this.child.stdout.on("data", (chunk) => collectLog("stdout", chunk));
+        this.child.stderr.on("data", (chunk) => collectLog("stderr", chunk));
         this.child.on("close", (code) => {
+            for (const stream of ["stdout", "stderr"]) {
+                if (pendingLogs[stream]) onLog(pendingLogs[stream]);
+            }
             const expected = this.stopped;
             this.child = null;
             if (this.timer) {
@@ -344,7 +359,11 @@ class ManagedOpenOcdSession {
             this.socket = null;
             this.stopped = true;
             if (!expected) {
-                const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, { exitCode: code, port });
+                const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
+                    probe: this.options.probe,
+                    exitCode: code,
+                    port
+                });
                 const error = Object.assign(new Error(diagnostic.message), diagnostic, {
                     i18nKey: "live.serviceExited",
                     i18nParams: { code, port }
@@ -429,6 +448,7 @@ class ManagedOpenOcdSession {
             if (this.stopped) throw this.connectionError || new Error("OpenOCD service exited before Tcl was ready");
             if (!this.child || Date.now() >= deadline) {
                 const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
+                    probe: this.options.probe,
                     port: clampInteger(this.options.port, 6666, 1, 65535)
                 });
                 throw Object.assign(new Error(diagnostic.message), diagnostic);
@@ -468,7 +488,10 @@ class ManagedOpenOcdSession {
                     }
                     if (this.stopped) reject(this.connectionError || new Error("已停止"));
                     else if (Date.now() > deadline) {
-                        const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, { port });
+                        const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
+                            probe: this.options.probe,
+                            port
+                        });
                         reject(Object.assign(new Error(diagnostic.message), diagnostic));
                     } else setTimeout(attempt, 200);
                 };

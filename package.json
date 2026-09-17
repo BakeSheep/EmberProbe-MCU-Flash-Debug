@@ -155,6 +155,18 @@
           "default": "",
           "scope": "machine",
           "description": "STM32CubeMX.exe path, shared by workspaces on this machine. Detected automatically on Windows."
+        },
+        "emberprobe.transport": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "swd",
+            "jtag",
+            "hla_swd",
+            "hla_jtag"
+          ],
+          "default": "auto",
+          "description": "OpenOCD 传输协议；auto 保留探针脚本默认值。J-Link 仅接 SWD 时请选择 swd。HLA 探针使用对应 hla_* 协议。"
         }
       }
     }

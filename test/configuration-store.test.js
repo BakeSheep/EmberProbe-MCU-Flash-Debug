@@ -75,6 +75,10 @@ const { createFixture } = require("./helpers/service-fixture");
             store.workspacePath("alias/firmware.elf", ".elf"),
             canonical(path.join(inside, "firmware.elf"))
         );
+        assert.strictEqual(store.snapshot().transport, "auto");
+        assert.strictEqual((await store.update({ transport: "swd" })).transport, "swd");
+        await assert.rejects(store.update({ transport: "swd; shutdown" }), { code: "OPENOCD_TRANSPORT_INVALID" });
+        assert.strictEqual(store.snapshot().transport, "swd");
     } finally {
         fixture.dispose();
         fs.rmSync(outside, { recursive: true, force: true });

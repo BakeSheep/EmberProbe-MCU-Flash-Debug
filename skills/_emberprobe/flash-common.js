@@ -4,6 +4,9 @@
 // 不依赖扩展本体；bridge 不可用时各项检测自动降级为工作区推断。
 
 const fs = require("fs");
+const { canonicalFileSync } = require("./file-identity");
+const { probeCandidates, probeFromText } = require("./probe-detection");
+const { isSafeCfgPath, resolveExecutablePath, resolveOpenOcdLaunch, normalizeTransport } = require("./openocd-launch");
 const path = require("path");
 const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
@@ -42,7 +45,7 @@ const TARGET_RULES = [
 
 function parseArgs(argv) {
     const out = { execute: false };
-    const valued = ["--workspace", "--elf", "--target", "--probe", "--openocd", "--confirmation-id"];
+    const valued = ["--workspace", "--elf", "--target", "--probe", "--openocd", "--transport", "--confirmation-id"];
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i];
         if (key === "--execute") out.execute = true;
@@ -72,6 +75,7 @@ async function authorizeFlash(result, confirmationId) {
         target: result.target,
         probe: result.probe,
         openocd: result.openocd,
+        transport: result.transport,
         confirmationId
     });
 }
@@ -136,17 +140,6 @@ function execText(command, args) {
     });
 }
 
-// 兼容常见固件与设备描述里的拼写：CMSIS-DAP / CMSIS DAP / CMSISDAP / DAPLink / MCU-Link 等。
-function probeFromText(text) {
-    const devices = String(text || "").toLowerCase();
-    if (/st[- ]?link|stm32\s+stlink/.test(devices)) return "stlink.cfg";
-    if (/j[- ]?link|segger/.test(devices)) return "jlink.cfg";
-    if (/cmsis(?:[- _]?dap)|daplink|pico\s?probe|mcu[- ]?link/.test(devices)) return "cmsis-dap.cfg";
-    if (/xds[- ]?110/.test(devices)) return "xds110.cfg";
-    if (/nu[- ]?link/.test(devices)) return "nulink.cfg";
-    return "";
-}
-
 async function detectProbe() {
     const notes = [];
     let text = "";
@@ -176,7 +169,10 @@ async function detectProbe() {
                     : `${tool} is not installed. Install usbutils (e.g. sudo apt install usbutils) or pass --probe explicitly.`
             );
     }
-    return { probe: probeFromText(text), notes };
+    const candidates = probeCandidates(text);
+    if (candidates.length > 1)
+        notes.push("Multiple probe types detected; select --probe explicitly: " + candidates.join(", "));
+    return { probe: probeFromText(text), candidates, notes };
 }
 
 function sha256(file) {
@@ -189,59 +185,26 @@ function sha256(file) {
     });
 }
 
-// OpenOCD 的 -f 参数只接受相对 scripts/ 的 cfg 名，拒绝绝对路径、盘符与目录穿越，
-// 防止把任意本地文件当作 OpenOCD 配置执行。
-function isSafeCfgPath(value) {
-    if (!value || !value.endsWith(".cfg") || value.includes("\\") || value.startsWith("/")) return false;
-    if (/[\0\n\r]|:/.test(value)) return false;
-    return value.split("/").every((part) => part && part !== "." && part !== "..");
-}
-
-function resolveExecutablePath(executable) {
-    const configured = String(executable || "").trim();
-    if (!configured) return "";
-    if (configured.includes("/") || configured.includes("\\")) {
-        const absolute = path.resolve(configured);
-        try {
-            return fs.realpathSync(absolute);
-        } catch {
-            return absolute;
-        }
-    }
-    const extensions =
-        process.platform === "win32"
-            ? String(process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
-                  .split(";")
-                  .filter(Boolean)
-            : [""];
-    for (const entry of String(process.env.PATH || "")
-        .split(path.delimiter)
-        .filter(Boolean)) {
-        for (const extension of extensions) {
-            const candidate = path.join(
-                entry,
-                process.platform === "win32" && !path.extname(configured)
-                    ? configured + extension.toLowerCase()
-                    : configured
-            );
-            try {
-                fs.accessSync(candidate, fs.constants.X_OK);
-                return fs.realpathSync(candidate);
-            } catch {
-                /* try next PATH entry */
-            }
-        }
-    }
-    return configured;
-}
-
 function checkOpenOcdVersion(version) {
     const { compatible, reason, minimumVersion } = checkCompatibility(version);
     return { compatible, reason, minimumVersion };
 }
 
 function probeOpenOcdCompatibility(executable, timeoutMs = 5000, spawnProcess = spawn) {
-    const binary = resolveExecutablePath(executable);
+    let binary;
+    try {
+        binary = resolveExecutablePath(executable);
+    } catch (error) {
+        return Promise.resolve({
+            found: false,
+            path: executable,
+            version: "",
+            compatible: false,
+            minimumVersion: MIN_OPENOCD_VERSION,
+            error: error.message,
+            code: error.code
+        });
+    }
     return new Promise((resolve) => {
         let child;
         try {
@@ -308,61 +271,6 @@ function probeOpenOcdCompatibility(executable, timeoutMs = 5000, spawnProcess = 
             });
         });
     });
-}
-
-function resolveOpenOcdLaunch(executable, probe, target) {
-    if (!isSafeCfgPath(probe) || !isSafeCfgPath(target)) throw new Error("Unsafe OpenOCD configuration path.");
-    const binary = resolveExecutablePath(executable);
-    if (!binary || (!binary.includes("/") && !binary.includes("\\"))) {
-        throw Object.assign(new Error(`Unable to resolve OpenOCD executable: ${executable}`), {
-            code: "OPENOCD_NOT_FOUND"
-        });
-    }
-    const prefix = path.dirname(path.dirname(binary));
-    const roots = [
-        process.env.OPENOCD_SCRIPTS,
-        path.join(prefix, "scripts"),
-        path.join(prefix, "openocd", "scripts"),
-        path.join(prefix, "share", "openocd", "scripts")
-    ].filter(Boolean);
-    let scriptsRoot = "";
-    for (const root of roots) {
-        try {
-            const resolved = fs.realpathSync(root);
-            if (fs.statSync(path.join(resolved, "target")).isDirectory()) {
-                scriptsRoot = resolved;
-                break;
-            }
-        } catch {
-            /* try next layout */
-        }
-    }
-    if (!scriptsRoot)
-        throw Object.assign(new Error(`Unable to locate OpenOCD scripts for ${binary}`), {
-            code: "OPENOCD_SCRIPTS_NOT_FOUND"
-        });
-    const resolveConfig = (kind, name) => {
-        const base = fs.realpathSync(path.join(scriptsRoot, kind));
-        let resolved;
-        try {
-            resolved = fs.realpathSync(path.join(base, ...name.split("/")));
-        } catch {
-            throw Object.assign(new Error(`OpenOCD config not found: ${kind}/${name}`), {
-                code: "OPENOCD_CONFIG_NOT_FOUND"
-            });
-        }
-        const relative = path.relative(base, resolved);
-        if (!relative || relative.startsWith("..") || path.isAbsolute(relative))
-            throw new Error(`Unsafe OpenOCD config: ${kind}/${name}`);
-        return resolved;
-    };
-    return {
-        executable: binary,
-        scriptsRoot,
-        cwd: scriptsRoot,
-        probePath: resolveConfig("interface", probe),
-        targetPath: resolveConfig("target", target)
-    };
 }
 
 function tclQuote(value) {
@@ -462,6 +370,10 @@ async function preflight(options) {
     const diagnostics = diagnostic ? [diagnostic] : [];
     const sources = { elf: "none", target: "none", probe: "none", openocd: "none" };
     const notes = [];
+    const transport = normalizeTransport(options.transport ?? config?.transport ?? "auto");
+    sources.transport =
+        options.transport !== undefined ? "explicit" : config?.transport !== undefined ? "config" : "default";
+    let candidates = [];
     let elf = "";
     if (options.elf) {
         elf = String(options.elf);
@@ -512,6 +424,7 @@ async function preflight(options) {
     if (!probe) {
         const detected = await detectProbe();
         probe = detected.probe;
+        candidates = detected.candidates;
         sources.probe = probe ? "auto" : "none";
         notes.push(...detected.notes);
     }
@@ -530,14 +443,30 @@ async function preflight(options) {
     let elfSha256 = "";
     if (elf) {
         try {
+            elf = canonicalFileSync(elf);
             const stats = fs.statSync(elf);
-            if (stats.isFile()) {
-                elfMtimeUtc = stats.mtime.toISOString();
-                elfSha256 = await sha256(elf);
-            }
-        } catch {}
+            if (!stats.isFile())
+                throw Object.assign(new Error("ELF path must be a file"), { code: "ELF_FILE_INVALID" });
+            elfMtimeUtc = stats.mtime.toISOString();
+            elfSha256 = await sha256(elf);
+        } catch (error) {
+            diagnostics.push(diagnosticForError(error, { operation: "elf.read" }));
+            notes.push(`Cannot read ELF: ${error.message}`);
+        }
+    }
+    let scriptsReady = false;
+    if (target && probe) {
+        try {
+            resolveOpenOcdLaunch(openocd, probe, target, transport);
+            scriptsReady = true;
+        } catch (error) {
+            diagnostics.push(diagnosticForError(error, { operation: "openocd.launch" }));
+            notes.push(error.message);
+        }
     }
     return {
+        transport,
+        probeCandidates: candidates,
         workspace: root,
         elf,
         elfSha256,
@@ -548,7 +477,7 @@ async function preflight(options) {
         openocdVersion: openocdCheck.version,
         openocdCompatible: openocdCheck.compatible,
         minimumOpenocdVersion: MIN_OPENOCD_VERSION,
-        ready: Boolean(elf && target && probe),
+        ready: Boolean(elfSha256 && target && probe && scriptsReady && openocdCheck.compatible),
         notes,
         sources,
         diagnostics

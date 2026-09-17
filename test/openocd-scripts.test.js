@@ -31,7 +31,7 @@ try {
     fs.mkdirSync(path.join(interfaceDir, "wch"), { recursive: true });
     fs.mkdirSync(bin, { recursive: true });
     const executable = path.join(bin, process.platform === "win32" ? "openocd.exe" : "openocd");
-    fs.writeFileSync(executable, "");
+    fs.writeFileSync(executable, "", { mode: 0o755 });
     fs.writeFileSync(path.join(target, "stm32f4x.cfg"), "");
     fs.writeFileSync(path.join(target, "geehy", "apm32f4x.cfg"), "");
     fs.writeFileSync(path.join(interfaceDir, "cmsis-dap.cfg"), "");

@@ -159,6 +159,7 @@ async function readFaultInfo(options) {
         executable: options.executable,
         probe: options.probe,
         target: options.target,
+        transport: options.transport,
         cwd: options.cwd,
         timeoutMs: 15000,
         buildCommands: () => cmds,
@@ -170,7 +171,9 @@ async function readFaultInfo(options) {
     });
     // 只要读到关键故障寄存器即视为成功；否则用 OpenOCD 日志归类失败原因
     if (result.values.cfsr !== undefined || result.values.hfsr !== undefined) return result;
-    const diagnostic = diagnoseOpenOcdFailure(execution.openocdTail, { exitCode: execution.exitCode });
+    const diagnostic =
+        execution.diagnostic ||
+        diagnoseOpenOcdFailure(execution.openocdTail, { probe: options.probe, exitCode: execution.exitCode });
     throw Object.assign(new Error(diagnostic.message), diagnostic, { code: diagnostic.code || "FAULT_READ_FAILED" });
 }
 
