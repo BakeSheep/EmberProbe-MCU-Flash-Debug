@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-09-17
+
 - 修复 Windows ELF 路径盘符大小写导致烧录授权失效，以及正常目标电压被误报为未供电。
 - 新增统一 SWD/JTAG 传输配置、J-Link USB 驱动/占用诊断、完整脚本预检与多型号探针选择。
 - Fixed Windows ELF path identity during flash authorization and false low-voltage diagnostics.
