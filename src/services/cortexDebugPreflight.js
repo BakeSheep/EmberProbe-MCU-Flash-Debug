@@ -2,6 +2,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { execFile } = require("child_process");
 const { executableName, findOnPath, resolveCortexToolchain } = require("./cortexToolchainService");
 
@@ -66,7 +67,37 @@ function readWindowsPath(platform = process.platform, run = execFile) {
     });
 }
 
-async function ensureDebugTools(vscode, folder, state, t, readPath = readWindowsPath, launch = {}) {
+function readCurrentPath(platform = process.platform, run = execFile, env = process.env) {
+    if (platform === "win32") return readWindowsPath(platform, run);
+    if (platform !== "linux") return Promise.resolve("");
+    // Read the user's login/interactive profile after a toolchain install. Never execute
+    // workspace content or interpolate configuration into shell code. Bound slow profiles.
+    const shell = env.SHELL || "/bin/sh";
+    const name = path.basename(shell);
+    if (!path.isAbsolute(shell) || !["bash", "zsh", "fish", "sh", "dash", "ksh"].includes(name))
+        return Promise.resolve("");
+    const marker = "\0EMBERPROBE_PATH\0";
+    return new Promise((resolve) => {
+        run(
+            shell,
+            [
+                ["sh", "dash"].includes(name) ? "-lc" : "-ilc",
+                "printf '\\000EMBERPROBE_PATH\\000'; /usr/bin/printenv -0 PATH"
+            ],
+            { cwd: os.homedir(), env, timeout: 5000, maxBuffer: 128 * 1024, encoding: "utf8" },
+            (error, stdout) => {
+                if (error) return resolve("");
+                const output = String(stdout);
+                const start = output.indexOf(marker);
+                if (start < 0) return resolve("");
+                const end = output.indexOf("\0", start + marker.length);
+                resolve(end < 0 ? "" : output.slice(start + marker.length, end));
+            }
+        );
+    });
+}
+
+async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrentPath, launch = {}) {
     const cfg = vscode.workspace.getConfiguration("cortex-debug", folder.uri);
     const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
     const platformKey = process.platform === "darwin" ? "osx" : process.platform;
@@ -117,4 +148,4 @@ async function ensureDebugTools(vscode, folder, state, t, readPath = readWindows
     }
 }
 
-module.exports = { resolveDebugTools, ensureDebugTools, readWindowsPath };
+module.exports = { resolveDebugTools, ensureDebugTools, readWindowsPath, readCurrentPath };

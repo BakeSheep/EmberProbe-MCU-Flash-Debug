@@ -3,7 +3,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
 const { CubeMxAuthorization } = require("../cubemxAuthorization");
-const { failure, inside, installation } = require("./cubemxEnvironment");
+const { failure, inside, installation, supportedPlatform } = require("./cubemxEnvironment");
 const {
     hash,
     parseIoc,
@@ -94,10 +94,12 @@ class CubeMxService {
     }
 
     async inspect(params = {}) {
-        if ((this.options.platform || process.platform) !== "win32")
-            throw failure("CUBEMX_WINDOWS_ONLY", "CubeMX generation currently supports Windows only");
+        if (!supportedPlatform(this.options.platform || process.platform))
+            throw failure("CUBEMX_PLATFORM_UNSUPPORTED", "CubeMX generation supports Windows and Linux");
         const { workspace, root, ioc, config } = await this._resolveProjectRoot();
-        const tool = await (this.options.installation || installation)(config.cubemxPath);
+        const tool = await (this.options.installation || installation)(config.cubemxPath, {
+            platform: this.options.platform || process.platform
+        });
         const content = await fs.readFile(ioc, "utf8");
         const values = parseIoc(content);
         validateStructuralIoc(values);
@@ -269,7 +271,9 @@ class CubeMxService {
                 throw failure("CUBEMX_IOC_INVALID", ".ioc must be UTF-8 text under 1 MiB");
             const values = require("./javaProperties").parseProperties(await fs.readFile(ioc, "utf8"));
             if (!values["Mcu.Name"]) throw new Error("Chip identity is unavailable");
-            const tool = await (this.options.installation || installation)(config.cubemxPath);
+            const tool = await (this.options.installation || installation)(config.cubemxPath, {
+                platform: this.options.platform || process.platform
+            });
             const trust = { workspace, ioc, chip: values["Mcu.Name"], tool, output: path.dirname(ioc) };
             return { ...summary, ...this.authorization.status(trust), applicability: "verified" };
         } catch (error) {
@@ -490,7 +494,7 @@ class CubeMxService {
             const generationWarnings = new Set();
             const generate = async (directory, files, runStage) => {
                 if (controller.signal.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
-                const { output, mains } = await stageGeneration(directory, files, name);
+                const { output, mains } = await stageGeneration(directory, files, name, plan.tool);
                 const timeoutMs = 300000 - (Date.now() - started);
                 if (timeoutMs <= 0) throw failure("CUBEMX_TIMEOUT", "Generation exceeded five minutes");
                 const result = await run(plan.tool, directory, name, {
@@ -508,7 +512,7 @@ class CubeMxService {
                 await this.store.updateOperation(plan.root, op.operationId, {
                     logPath: result.logPath || path.join(directory, ".emberprobe-cubemx-output.log")
                 });
-                const raw = normalizeGenerated(files, await snapshot(directory), name);
+                const raw = normalizeGenerated(files, await snapshot(directory), name, plan.tool);
                 await assertFreshOutput(output, mains, result.generatedFiles);
                 const generated = preserveTextFormatting(files, raw);
                 generated.set(name, files.get(name));
@@ -876,14 +880,14 @@ class CubeMxService {
             await this.store.updateOperation(root, op.operationId, { stagePath: stage });
 
             const run = this.options.run || runCubeMx;
-            const { output, mains } = await stageGeneration(stage, before, name);
+            const { output, mains } = await stageGeneration(stage, before, name, project.tool);
             const runResult = await run(project.tool, stage, name, {
                 signal: controller.signal,
                 timeoutMs: 300000,
                 stage: "deepCheck"
             });
 
-            const raw = normalizeGenerated(before, await snapshot(stage), name);
+            const raw = normalizeGenerated(before, await snapshot(stage), name, project.tool);
             await assertFreshOutput(output, mains, runResult.generatedFiles);
             const generated = preserveTextFormatting(before, raw);
             generated.set(name, before.get(name));

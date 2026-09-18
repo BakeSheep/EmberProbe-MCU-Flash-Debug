@@ -4,7 +4,12 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { resolveDebugTools, ensureDebugTools, readWindowsPath } = require("../src/services/cortexDebugPreflight");
+const {
+    resolveDebugTools,
+    ensureDebugTools,
+    readWindowsPath,
+    readCurrentPath
+} = require("../src/services/cortexDebugPreflight");
 const { executableName } = require("../src/services/cortexToolchainService");
 
 (async () => {
@@ -109,7 +114,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
         saved.clear();
         delete settings.gdbPath;
         currentPath = bin;
-        assert.deepStrictEqual(await run(), expected, "newly saved Windows PATH works without restarting the host");
+        assert.deepStrictEqual(await run(), expected, "refreshed PATH works without restarting the host");
         assert.strictEqual(await readWindowsPath("linux"), "");
         const windowsPath = await readWindowsPath("win32", (file, args, options, callback) => {
             assert.ok(file.endsWith("powershell.exe"));
@@ -123,6 +128,53 @@ const { executableName } = require("../src/services/cortexToolchainService");
             await readWindowsPath("win32", (file, args, options, callback) => callback(new Error("timeout"), "")),
             "",
             "failed environment lookup falls back to manual selection"
+        );
+        for (const shell of ["/bin/bash", "/bin/zsh", "/usr/bin/fish", "/bin/sh", "/bin/dash", "/bin/ksh"]) {
+            const refreshed = await readCurrentPath(
+                "linux",
+                (file, args, options, callback) => {
+                    assert.strictEqual(file, shell);
+                    assert.strictEqual(args[0], ["sh", "dash"].includes(path.basename(shell)) ? "-lc" : "-ilc");
+                    assert.strictEqual(options.cwd, os.homedir());
+                    assert.strictEqual(options.timeout, 5000);
+                    assert.strictEqual(options.env.SHELL, shell);
+                    callback(null, `profile banner\nPATH=/wrong\0\0EMBERPROBE_PATH\0${bin}\0trailing output`);
+                },
+                { SHELL: shell }
+            );
+            assert.strictEqual(refreshed, bin);
+        }
+        for (const output of ["banner only", "\0EMBERPROBE_PATH\0unterminated", "\0EMBERPROBE_PATH\0\0"]) {
+            assert.strictEqual(
+                await readCurrentPath("linux", (_file, _args, _opts, callback) => callback(null, output), {}),
+                ""
+            );
+        }
+        assert.strictEqual(
+            await readCurrentPath("linux", (_file, _args, _opts, callback) => callback(new Error("timeout"), ""), {}),
+            ""
+        );
+        for (const shell of ["relative/bash", "/bin/unsupported", "/bin/bash -c evil"]) {
+            assert.strictEqual(
+                await readCurrentPath(
+                    "linux",
+                    () => {
+                        throw new Error("must not spawn");
+                    },
+                    { SHELL: shell }
+                ),
+                ""
+            );
+        }
+        assert.strictEqual(
+            await readCurrentPath("darwin", () => {
+                throw new Error("must not spawn");
+            }),
+            ""
+        );
+        assert.strictEqual(
+            await readCurrentPath("win32", (_file, _args, _opts, callback) => callback(null, "C:\\tools")),
+            "C:\\tools"
         );
         console.log("Cortex-Debug preflight tests passed");
     } finally {

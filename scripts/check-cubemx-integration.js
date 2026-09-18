@@ -2,15 +2,18 @@
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
+const { supportedPlatform } = require("../src/services/cubemxEnvironment");
 const { CubeMxService } = require("../src/services/cubemxService");
 const { snapshot, materialize, hash } = require("../src/services/cubemxProject");
 const { deriveCandidate } = require("../src/services/cubemxCandidate");
 
 // Explicit real-tool check; never discovers or modifies a user's source project implicitly.
 async function main() {
-    const [iocArgument, toolArgument] = process.argv.slice(2);
-    if (process.platform !== "win32" || !iocArgument || !toolArgument)
-        throw new Error("Usage (Windows): node scripts/check-cubemx-integration.js <project.ioc> <STM32CubeMX.exe>");
+    const [iocArgument, toolArgument, seed] = process.argv.slice(2);
+    if (!supportedPlatform() || !iocArgument || !toolArgument || (seed && seed !== "--seed"))
+        throw new Error(
+            "Usage (Windows/Linux): node scripts/check-cubemx-integration.js <project.ioc> <CubeMX executable> [--seed]"
+        );
     const ioc = await fs.realpath(iocArgument);
     const files = await snapshot(path.dirname(ioc));
     const name = path.basename(ioc);
@@ -32,6 +35,13 @@ async function main() {
             config: () => ({ iocPath: path.join(root, name), cubemxPath: path.resolve(toolArgument) }),
             roots: () => [root]
         });
+        // For .ioc-only fixtures, establish generated files in the disposable copy first.
+        // Authorization remains the same prepare/confirm flow as production generation.
+        if (seed) {
+            const prepared = await service.prepare();
+            if (!("confirmationId" in prepared)) throw new Error("Expected a fresh fixture confirmation");
+            await service.execute({ confirmationId: prepared.confirmationId });
+        }
         results.push({ underRoot, ...(await service.check({ mode: "deep", wait: true })) });
     }
     console.log(JSON.stringify({ artifacts: temp, results }, null, 2));

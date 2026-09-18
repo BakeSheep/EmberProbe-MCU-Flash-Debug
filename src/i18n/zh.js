@@ -54,7 +54,7 @@ module.exports = Object.freeze({
     "cubemx.writing": "正在写回生成文件并保存恢复副本",
     "cubemx.path": "CubeMX 路径",
     "cubemx.ioc": ".ioc 路径",
-    "cubemx.windowsOnly": "CubeMX 生成仅支持 Windows",
+    "cubemx.platformUnsupported": "CubeMX 生成支持 Windows 和 Linux",
     "cubemx.invalid": "CubeMX 路径无效，请重新选择",
     "cubemx.ready": "CubeMX 已就绪",
     "cubemx.missing": "未找到 CubeMX，请选择安装路径",

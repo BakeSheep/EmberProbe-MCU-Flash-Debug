@@ -87,7 +87,7 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         await fs.writeFile(path.join(install, "STM32CubeMX.exe"), "test");
         await fs.writeFile(path.join(install, "jre/bin/java.exe"), "test");
         await fs.writeFile(path.join(install, "version.xml"), "<Version>6.12.0</Version>");
-        const tool = await installation(path.join(install, "STM32CubeMX.exe"));
+        const tool = await installation(path.join(install, "STM32CubeMX.exe"), { platform: "win32" });
         assert.strictEqual(tool.version, "6.12.0");
         // Non-default installs are recorded by CubeMX itself, even without PATH,
         // uninstall registry entries or version.xml in the installation.
@@ -96,7 +96,7 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         const updaterFile = path.join(updaterDirectory, "updater.ini");
         await fs.writeFile(updaterFile, `SoftwarePath=${install}${path.sep}\r\nSoftVersion=MX.6.17.0\r\n`);
         await fs.unlink(path.join(install, "version.xml"));
-        const updaterOptions = { env: { USERPROFILE: root }, exec: async () => ({ stdout: "" }) };
+        const updaterOptions = { platform: "win32", env: { USERPROFILE: root }, exec: async () => ({ stdout: "" }) };
         const recordedInstall = await discover(updaterOptions);
         assert.strictEqual(recordedInstall.executable, tool.executable);
         assert.strictEqual(recordedInstall.version, "6.17.0");
@@ -111,7 +111,8 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         );
         await assert.rejects(installation("relative.exe"));
         assert.strictEqual(
-            (await discover({ env: { PATH: install }, exec: async () => ({ stdout: "" }) })).executable,
+            (await discover({ platform: "win32", env: { PATH: install }, exec: async () => ({ stdout: "" }) }))
+                .executable,
             tool.executable
         );
 
@@ -246,8 +247,8 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
             () => service.prepare({ content: candidate.replace("6.12.0", "6.11.0") }),
             "CUBEMX_LAYOUT_UNSUPPORTED"
         );
-        service.options.platform = "linux";
-        await rejects(() => service.inspect(), "CUBEMX_WINDOWS_ONLY");
+        service.options.platform = "darwin";
+        await rejects(() => service.inspect(), "CUBEMX_PLATFORM_UNSUPPORTED");
         service.options.platform = "win32";
         config.iocPath = "";
         await rejects(() => service.inspect(), "CUBEMX_IOC_MISSING");

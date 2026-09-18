@@ -54,7 +54,7 @@ module.exports = Object.freeze({
     "cubemx.writing": "Applying generated files and saving recovery copies",
     "cubemx.path": "CubeMX path",
     "cubemx.ioc": ".ioc path",
-    "cubemx.windowsOnly": "CubeMX generation supports Windows only",
+    "cubemx.platformUnsupported": "CubeMX generation supports Windows and Linux",
     "cubemx.invalid": "Invalid CubeMX path; select it again",
     "cubemx.ready": "CubeMX is ready",
     "cubemx.missing": "CubeMX not found; select its installation",

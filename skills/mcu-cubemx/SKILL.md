@@ -1,11 +1,11 @@
 ---
 name: mcu-cubemx
-description: Modify an existing STM32 .ioc configuration and regenerate initialization code with STM32CubeMX on Windows through EmberProbe. Use for pin, peripheral, clock or initialization changes and requested code regeneration.
+description: Modify an existing STM32 .ioc configuration and regenerate initialization code with STM32CubeMX on Windows/Linux through EmberProbe. Use for pin, peripheral, clock or initialization changes and requested code regeneration.
 ---
 
 # CubeMX initialization code
 
-Requires Windows, the EmberProbe Agent Bridge, an existing configured `.ioc`, and the matching standalone CubeMX installation with its bundled Java and installed firmware package. No hardware is required.
+Requires Windows or Linux, the EmberProbe Agent Bridge, an existing configured `.ioc`, and the matching standalone CubeMX installation with its bundled Java and installed firmware package. No hardware is required. On Linux, select the standalone `STM32CubeMX` launcher (no `.exe` suffix) with its bundled `jre/bin/java`; firmware package installation is interactive and requires a graphical desktop.
 
 Use `mcu-config` to select `iocPath`. CubeMX executable paths are read-only through the Bridge. Firmware package status is derived by the sidebar from the MCU target and optional IOC; it is not a writable `config.set` field, and `--inspect` does not verify package installation. For missing packages, use the sidebar's native interactive firmware installer; the Bridge generation workflow does not install packages or change the IOC's package version.
 
@@ -26,7 +26,7 @@ Use `--permission` to inspect remembered authorization independently of generati
 
 To derive a candidate without editing the source, use:
 
-```powershell
+```sh
 node <skill-dir>/scripts/cubemx.js --workspace <workspace> --generate-candidate --output candidate.ioc --changes '{"USART2.BaudRate":"115200"}'
 # Or using a workspace changes file:
 node <skill-dir>/scripts/cubemx.js --workspace <workspace> --generate-candidate --output candidate.ioc --changes-file changes.json

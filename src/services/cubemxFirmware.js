@@ -4,7 +4,7 @@ const path = require("path");
 const os = require("os");
 const { spawn } = require("child_process");
 const { XMLParser } = require("fast-xml-parser");
-const { installation, workspaceIoc } = require("./cubemxEnvironment");
+const { installation, workspaceIoc, supportedPlatform, cubeMxCommand } = require("./cubemxEnvironment");
 const { parseProperties } = require("./javaProperties");
 const parser = new XMLParser({ ignoreAttributes: false, processEntities: false });
 const families = "H7RS WB0 WBA WL3 F0 F1 F2 F3 F4 F7 G0 G4 H5 H7 L0 L1 L4 L5 U0 U3 U5 C0 N6 WB WL".split(" ");
@@ -66,8 +66,8 @@ async function availableVersions(directory, family) {
 }
 async function inspectFirmware(config, options = {}) {
     const family = targetFamily(config.target);
-    if ((options.platform || process.platform) !== "win32" || !config.cubemxPath || !family) return null;
-    await (options.installation || installation)(config.cubemxPath);
+    if (!supportedPlatform(options.platform || process.platform) || !config.cubemxPath || !family) return null;
+    await (options.installation || installation)(config.cubemxPath, { platform: options.platform || process.platform });
     const settings = await updaterSettings(options.home || os.homedir());
     let requiredVersion = "";
     if (config.iocPath) {
@@ -105,7 +105,8 @@ async function launchInstaller(tool, family, version, options = {}) {
             `swmgr refresh\nswmgr install stm32cube_${family.toLowerCase()}_${version} ask\n`,
             "utf8"
         );
-        const child = (options.spawn || spawn)(tool.java, ["-jar", tool.executable, "-s", script], {
+        const command = cubeMxCommand(tool, "-s", script);
+        const child = (options.spawn || spawn)(command.command, command.args, {
             cwd: path.dirname(tool.executable),
             shell: false,
             windowsHide: true,

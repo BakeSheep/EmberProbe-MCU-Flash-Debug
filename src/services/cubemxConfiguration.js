@@ -1,10 +1,11 @@
 "use strict";
 const path = require("path");
-const { discover, installation, workspaceIoc } = require("./cubemxEnvironment");
+const { discover, installation, workspaceIoc, supportedPlatform } = require("./cubemxEnvironment");
 
 class CubeMxConfiguration {
     constructor(options) {
         Object.assign(this, options);
+        this.platform = options.platform || process.platform;
         this.vscode = options.vscode;
         this.context = options.context;
         this.changed = options.changed;
@@ -12,8 +13,8 @@ class CubeMxConfiguration {
         this.status = "";
     }
     async detect() {
-        if (process.platform !== "win32") {
-            this.status = this.t("cubemx.windowsOnly");
+        if (!supportedPlatform(this.platform || process.platform)) {
+            this.status = this.t("cubemx.platformUnsupported");
             return null;
         }
         const cfg = this.vscode.workspace.getConfiguration("emberprobe");
@@ -24,7 +25,9 @@ class CubeMxConfiguration {
                 "stm32cube-ide-core.configuration.productSTM32CubeMX"
             );
             const hint = official.inspect?.("executablePath")?.globalValue;
-            tool = configured ? await installation(configured) : await discover({ hints: [hint] });
+            tool = configured
+                ? await installation(configured, { platform: this.platform || process.platform })
+                : await discover({ hints: [hint], platform: this.platform || process.platform });
         } catch {
             this.status = this.t("cubemx.invalid");
             this.changed();
@@ -63,10 +66,12 @@ class CubeMxConfiguration {
         if (action.action === "select") {
             const files = await v.window.showOpenDialog({
                 canSelectMany: false,
-                filters: { "CubeMX executable": ["exe"] }
+                ...((this.platform || process.platform) === "win32"
+                    ? { filters: { "CubeMX executable": ["exe"] } }
+                    : {})
             });
             if (!files?.[0]) return;
-            value = (await installation(files[0].fsPath)).executable;
+            value = (await installation(files[0].fsPath, { platform: this.platform || process.platform })).executable;
         }
         await v.workspace.getConfiguration("emberprobe").update("cubemxPath", value, v.ConfigurationTarget.Global);
         this.changed();

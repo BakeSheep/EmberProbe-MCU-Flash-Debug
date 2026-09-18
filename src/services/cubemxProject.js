@@ -66,15 +66,16 @@ function fileDiff(before, after) {
         .filter((name) => before.get(name)?.hash !== after.get(name)?.hash)
         .map((file) => ({ file, action: !before.has(file) ? "added" : !after.has(file) ? "deleted" : "modified" }));
 }
-function normalizeGenerated(files, generated, iocName) {
+function normalizeGenerated(files, generated, iocName, options = {}) {
     const values = parseIoc(files.get(iocName).bytes.toString("utf8"));
     const projectName = path.basename(iocName, path.extname(iocName));
     const prefix = projectName + path.sep;
     const nested = [...generated].filter(([name]) => name.startsWith(prefix));
-    const expectedRoot = values["ProjectManager.UnderRoot"] === "false" ? projectName : ".";
+    const nestedOutput = options.platform === "linux" || values["ProjectManager.UnderRoot"] === "false";
+    const expectedRoot = nestedOutput ? projectName : ".";
     const candidateDirectory = nested.length ? projectName : ".";
     if (!nested.length) {
-        if (values["ProjectManager.UnderRoot"] === "false") {
+        if (nestedOutput) {
             throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Expected nested CubeMX output directory was not produced", {
                 expectedRoot,
                 candidateDirectory,
@@ -92,14 +93,14 @@ function normalizeGenerated(files, generated, iocName) {
         });
     const nestedIoc = generated.get(prefix + iocName);
     if (
-        values["ProjectManager.UnderRoot"] !== "false" ||
+        !nestedOutput ||
         !nestedIoc ||
         parseIoc(nestedIoc.bytes.toString("utf8"))["ProjectManager.ProjectName"] !==
             values["ProjectManager.ProjectName"] ||
         !nested.some(([name]) => /(?:^|[/\\])main\.c$/i.test(name))
     ) {
         let condition = "cannot_identify_nested_output";
-        if (values["ProjectManager.UnderRoot"] !== "false") condition = "unexpected_nested_output";
+        if (!nestedOutput) condition = "unexpected_nested_output";
         else if (!nestedIoc) condition = "missing_nested_ioc";
         else if (
             parseIoc(nestedIoc.bytes.toString("utf8"))["ProjectManager.ProjectName"] !==
@@ -134,10 +135,12 @@ async function materialize(root, files) {
         await fs.writeFile(path.join(root, name), value.bytes);
     }
 }
-async function stageGeneration(directory, files, iocName) {
+async function stageGeneration(directory, files, iocName, options = {}) {
     const values = parseIoc(files.get(iocName).bytes.toString("utf8"));
     const projectName = path.basename(iocName, path.extname(iocName));
-    const nested = values["ProjectManager.UnderRoot"] === "false";
+    // The Linux native CLI appends the project name to `project path`, including
+    // UnderRoot=true projects. Seed that tree so user code is available to CubeMX.
+    const nested = options.platform === "linux" || values["ProjectManager.UnderRoot"] === "false";
     if (nested && [...files.keys()].some((file) => file === projectName || file.startsWith(projectName + path.sep)))
         throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated project directory conflicts with existing files", {
             expectedRoot: projectName,

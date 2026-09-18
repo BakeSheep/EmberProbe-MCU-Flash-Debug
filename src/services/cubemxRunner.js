@@ -2,7 +2,7 @@
 const fs = require("fs/promises");
 const path = require("path");
 const { spawn } = require("child_process");
-const { failure } = require("./cubemxEnvironment");
+const { failure, cubeMxCommand } = require("./cubemxEnvironment");
 
 const { createLogMonitor } = require("./cubemxLog");
 
@@ -28,7 +28,8 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
     return new Promise((resolve, reject) => {
         const monitor = createLogMonitor({ logPath });
         let stopped = "";
-        const child = (options.spawn || spawn)(tool.java, ["-jar", tool.executable, "-q", script], {
+        const command = cubeMxCommand(tool, "-q", script);
+        const child = (options.spawn || spawn)(command.command, command.args, {
             cwd: path.dirname(tool.executable),
             shell: false,
             windowsHide: true,
