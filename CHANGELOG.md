@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-09-18
+
+- 新增 Linux CubeMX 自动发现、配置、固件包检测与安装、隔离生成和深度检查；工具链检测支持重新读取用户 shell 的 PATH。
+- Added Linux CubeMX discovery, configuration, firmware package detection/installation, isolated generation and deep checks, plus refreshed shell PATH lookup for debug tools.
+
 - 修复 GDB 下载进度消息导致调试中断；抑制持续目标轮询失败时采样状态闪烁，并避免 H7 芯片信息读取扫描其他系列寄存器。
 - Fixed GDB download progress parsing, repeated polling-error flicker, and cross-family register probing during H7 chip inspection.
 

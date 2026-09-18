@@ -2,7 +2,7 @@
   "name": "emberprobe",
   "displayName": "EmberProbe - MCU Flash & Debug",
   "description": "Modern MCU flashing and debugging with OpenOCD, automatic target detection, live variables, and Agent Skills.",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "publisher": "BakeSheep",
   "repository": {
     "type": "git",
@@ -155,7 +155,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "STM32CubeMX.exe path, shared by workspaces on this machine. Detected automatically on Windows."
+          "description": "Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX), shared by workspaces on this machine. Detected automatically on Windows and Linux."
         },
         "emberprobe.transport": {
           "type": "string",
