@@ -8,7 +8,10 @@ const { executableName, findOnPath, resolveCortexToolchain } = require("./cortex
 function resolveDebugTools(options = {}) {
     const platform = options.platform || process.platform;
     const prefix = String(options.prefix || "arm-none-eabi").replace(/-+$/, "");
-    const pair = resolveCortexToolchain(options);
+    const pair =
+        options.gdbPath && path.isAbsolute(options.gdbPath) && !options.toolchainPath && !options.configuredObjdump
+            ? resolveCortexToolchain({ ...options, toolchainPath: path.dirname(options.gdbPath) })
+            : resolveCortexToolchain(options);
     const candidates = options.gdbPath
         ? [options.gdbPath]
         : [
@@ -63,25 +66,28 @@ function readWindowsPath(platform = process.platform, run = execFile) {
     });
 }
 
-async function ensureDebugTools(vscode, folder, state, t, readPath = readWindowsPath) {
+async function ensureDebugTools(vscode, folder, state, t, readPath = readWindowsPath, launch = {}) {
     const cfg = vscode.workspace.getConfiguration("cortex-debug", folder.uri);
+    const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
     const platformKey = process.platform === "darwin" ? "osx" : process.platform;
-    const setting = (name) => cfg.get(`${name}.${platformKey}`) || cfg.get(name);
+    const setting = (name) => launch[name] || own.get(name) || cfg.get(`${name}.${platformKey}`) || cfg.get(name);
     const options = {
         gdbPath: setting("gdbPath"),
         configuredObjdump: setting("objdumpPath"),
         toolchainPath: setting("armToolchainPath"),
-        prefix: cfg.get("armToolchainPrefix", "arm-none-eabi")
+        prefix: setting("armToolchainPrefix") || "arm-none-eabi"
     };
-    const configured = resolveDebugTools(options);
+    const configured = resolveDebugTools({ ...options, envPath: "" });
     if (configured) return configured;
-    const key = `cortexDebugToolchain:${folder.uri.toString()}`;
+    const key = `emberprobeToolchain:${folder.uri.toString()}`;
     const selectedOptions = { prefix: options.prefix, envPath: "" };
-    const saved = state.get(key);
+    const saved = state.get(key) || state.get(`cortexDebugToolchain:${folder.uri.toString()}`);
     if (saved) {
         const tools = resolveDebugTools({ ...selectedOptions, toolchainPath: saved });
         if (tools) return tools;
     }
+    const fromPath = resolveDebugTools(options);
+    if (fromPath) return fromPath;
     // Long-running VS Code processes may still hold PATH from before toolchain installation.
     const currentPath = await readPath();
     if (currentPath) {

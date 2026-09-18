@@ -11,14 +11,14 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - ELF文件烧录：一键烧录ELF文件并运行。
 - 实时变量观测：在目标运行时非侵入式读取 Cortex-M 内存；侧边栏提供独立数值列表，可同时打开多个拥有独立观察列表和历史缓冲的实时图表面板。
 - 实时变量写入：在目标运行时实时更改内存，提供滑条、输入框、鼠标滚轮多种值更改方式，更改后自动回读。
-- Cortex-Debug 联动：启动断点调试。
-- 可选安装九个 Agent Skills，覆盖固件编程与校验、实时变量读写、SVD 外设调试、Cortex-Debug 会话/断点控制、芯片和故障信息读取、ELF 分析，以及配置同步。
+- 内置断点调试：无需 Cortex-Debug，支持断点、单步、调用栈、变量及内存读写。
+- 可选安装九个 Agent Skills，覆盖固件编程与校验、实时变量读写、SVD 外设调试、调试会话/断点控制、芯片和故障信息读取、ELF 分析，以及配置同步。
 
 ## 环境要求
 
 - Visual Studio Code 1.85 或更高版本
 - OpenOCD
-- Cortex-Debug 插件(可选)
+- ARM GDB 工具链（断点调试必需）；已有 Cortex-Debug 配置仍可使用
 
 ## 实时变量观测
 
@@ -48,7 +48,7 @@ EmberProbe提供以下skills。
 - `mcu-fault-analyzer`：读取并解码 Cortex-M 故障寄存器，并使用当前 ELF 对 PC/LR 进行符号化。
 - `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、段布局和大符号。
 - `mcu-peripheral-debug`：解析工作区 SVD，查询、读取和解码外设寄存器/位域。
-- `mcu-debug-control`：启动、停止和控制 Cortex-Debug 会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
+- `mcu-debug-control`：启动、停止和控制 调试会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
 - `mcu-cubemx`：在 Windows 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。
 
 ## 开发与构建
@@ -77,3 +77,23 @@ esbuild.js 单文件 VSIX 打包构建配置
 ## 许可证与归属
 
 扩展代码采用 MIT 许可证。npm 运行时依赖与自带 xPack OpenOCD 的许可证及来源信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 内置调试
+
+侧栏“启动调试”或 F5 使用自有 `emberprobe` 调试器。先选择工作区 ELF、探针和目标；launch 默认烧录并运行至 main，入口无法解析时保持暂停。attach 只连接并暂停，不烧录、不复位。重启复位并运行至入口，不重复烧录。
+
+工具链可通过 `emberprobe.gdbPath`、`emberprobe.armToolchainPath`、`emberprobe.armToolchainPrefix` 和 `emberprobe.objdumpPath` 配置，兼容原 Cortex-Debug 设置和目录缓存。无需安装 Cortex-Debug 扩展。
+
+`launch.json` 示例（attach 可将 request 改为 attach）：
+
+```json
+{
+  "type": "emberprobe",
+  "request": "launch",
+  "name": "EmberProbe",
+  "executable": "${workspaceFolder}/build/firmware.elf",
+  "runToEntryPoint": "main"
+}
+```
+
+`runToEntryPoint` 设为空字符串可保持暂停；`sourceFileMap` 将编译时源码目录映射到本地目录。支持源码、函数及条件断点，不支持日志/命中次数/数据断点、RTOS、SWO/RTT 和反汇编视图。旧 Cortex-Debug launch.json 不自动修改。

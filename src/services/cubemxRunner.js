@@ -44,6 +44,7 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         const cleanup = () => {
             clearTimeout(timer);
             options.signal?.removeEventListener("abort", cancel);
+            fs.unlink(script).catch(() => {});
         };
         child.stdout.on("data", monitor.stdout);
         child.stderr.on("data", monitor.stderr);

@@ -11,14 +11,14 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - ELF flashing: flash the ELF file and run it in one click.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
-- Cortex-Debug integration: starts breakpoint debugging.
-- Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, Cortex-Debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
+- Built-in debugging: breakpoints, stepping, stack frames, variables, and memory access without Cortex-Debug.
+- Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
 
 - Visual Studio Code 1.85 or later
 - OpenOCD
-- Cortex-Debug plugin (optional)
+- ARM GDB toolchain (required for debugging); existing Cortex-Debug configurations remain supported
 
 ## Live Variable Watch
 
@@ -47,7 +47,7 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 - `mcu-fault-analyzer`: reads and decodes Cortex-M fault registers and symbolizes PC/LR with the current ELF.
 - `mcu-elf-analyze`: analyzes Flash/RAM usage, section layout, and large symbols offline without occupying the debug probe.
 - `mcu-peripheral-debug`: parses the workspace SVD, reads and decodes paused peripheral registers/fields, and performs safe writes after a fresh one-time confirmation for every request.
-- `mcu-debug-control`: starts, stops, and controls Cortex-Debug sessions, including pause/continue/stepping/restart plus source-line and function breakpoints.
+- `mcu-debug-control`: starts, stops, and controls debug sessions, including pause/continue/stepping/restart plus source-line and function breakpoints.
 
 ## Development & Build
 
@@ -75,3 +75,23 @@ esbuild.js Single-file VSIX bundle build config
 ## License & Attribution
 
 The extension code is licensed under MIT. License and source information for the npm runtime dependencies and the bundled xPack OpenOCD is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Built-in debugging
+
+The sidebar and F5 use the independent `emberprobe` debugger. Select a workspace ELF, probe, and target first. Launch downloads the ELF and runs to main; an unresolved entry leaves the target halted. Attach halts without downloading or resetting. Restart resets and runs to the entry without downloading again.
+
+Configure tools through `emberprobe.gdbPath`, `emberprobe.armToolchainPath`, `emberprobe.armToolchainPrefix`, and `emberprobe.objdumpPath`. Legacy Cortex-Debug settings and cached directories remain compatible; the extension itself is not required.
+
+Example launch.json configuration (use request attach for attachment):
+
+```json
+{
+  "type": "emberprobe",
+  "request": "launch",
+  "name": "EmberProbe",
+  "executable": "${workspaceFolder}/build/firmware.elf",
+  "runToEntryPoint": "main"
+}
+```
+
+Set `runToEntryPoint` to an empty string to stay halted; `sourceFileMap` maps build-time source prefixes to local paths. Source, function, and conditional breakpoints are supported. Hit counts, logpoints, data breakpoints, RTOS, SWO/RTT, and disassembly views are not included. Existing Cortex-Debug launch.json entries are unchanged.

@@ -27,7 +27,9 @@ const { createFixture } = require("./helpers/service-fixture");
             onDiagnostics: () => {},
             isDebugActive: () => false
         });
-        assert.deepStrictEqual(await chipService.read(), { core: "Cortex-M4" });
+        const chipResult = await chipService.read();
+        assert.strictEqual(chipResult.core, "Cortex-M4");
+        assert.ok(Number.isFinite(Date.parse(chipResult.readAt)));
         assert.strictEqual(chipService.running, false);
         assert.ok(chipPosts.some((message) => message.type === "chipInfo"));
         active.add("download");

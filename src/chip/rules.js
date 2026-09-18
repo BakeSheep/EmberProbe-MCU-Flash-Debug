@@ -340,19 +340,19 @@ function buildChipInfoCommands(target) {
     for (const a of ALL_IDCODE_ADDRS) exhaustiveReads.push("catch { echo [mdw 0x" + a.toString(16) + "] }");
     for (const a of ALL_FLASHSIZE_ADDRS) exhaustiveReads.push("catch { echo [mdw 0x" + a.toString(16) + "] }");
     for (const a of ALL_UID_ADDRS) exhaustiveReads.push("catch { echo [mdw 0x" + a.toString(16) + " 3] }");
-    // 运行中的 H7 对调试状态切换更敏感：这里只访问当前 target 的已知寄存器，
-    // 不执行 flash probe、跨系列地址扫描或 halt/resume。原本已暂停时才允许完整探测。
-    const identityCmd =
-        'catch { if {[[target current] curstate] eq "halted"} { ' +
-        exhaustiveReads.join("; ") +
-        " } else { " +
-        preferredReads.join("; ") +
-        " } }";
+    // A halted H7 does not make other STM32 families' address ranges safe.
+    const identityCmd = preferredReads.length
+        ? preferredReads.join("; ")
+        : 'catch { if {[[target current] curstate] eq "halted"} { ' +
+          exhaustiveReads.join("; ") +
+          " } else { " +
+          preferredReads.join("; ") +
+          " } }";
     return [
         "init",
-        "catch { poll }",
+        "set _ep_poll_ok [expr {![catch { poll } _ep_poll_error]}]",
         'catch { echo "EP_KV name [target current]" }',
-        'catch { echo "EP_KV state [[target current] curstate]" }',
+        'if {$_ep_poll_ok} { catch { echo "EP_KV state [[target current] curstate]" } } else { echo "EP_KV state unknown"; echo "EP_KV stateError $_ep_poll_error" }',
         'catch { echo "EP_KV endian [[target current] cget -endian]" }',
         'catch { echo "EP_KV transport [transport select]" }',
         `catch { echo [mdw ${CPUID_HEX}] }`,
@@ -360,7 +360,7 @@ function buildChipInfoCommands(target) {
         `catch { echo [mdw 0x${ROM_PIDR0_ADDR.toString(16)} 4] }`,
         `catch { echo [mdw 0x${ROM_CIDR_ADDR.toString(16)} 4] }`,
         identityCmd,
-        'catch { if {[[target current] curstate] eq "halted"} { catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] } } }',
+        'catch { if {$_ep_poll_ok && [[target current] curstate] eq "halted"} { catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] } } }',
         "shutdown"
     ];
 }

@@ -1,4 +1,5 @@
 "use strict";
+const { isSupportedDebugSession } = require("./services/debugConfiguration");
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainViewProvider = void 0;
 const vscode = require("vscode");
@@ -485,7 +486,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
         // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
-        this.commandHandlers["mcu-vscode.debug"] = async (resource) => {
+        this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration) => {
             let probePrepared = false;
             let startAccepted = false;
             try {
@@ -499,15 +500,11 @@ class MainViewProvider {
                 }
                 this._debugCommandPending = true;
                 console.log("主进程执行启动调试命令");
-                let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
+                let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!elfPath || !debuggerCfg || !mcuCore) {
                     vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
-                    return false;
-                }
-                if (!vscode.extensions.getExtension("marus25.cortex-debug")) {
-                    vscode.window.showErrorMessage(this._t("msg.needCortexDebug"));
                     return false;
                 }
                 // 修复类型错误：处理 undefined 情况，用空字符串兜底
@@ -521,7 +518,9 @@ class MainViewProvider {
                     vscode,
                     workspaceFolder,
                     this._context.workspaceState,
-                    (key) => this._t(key)
+                    (key) => this._t(key),
+                    undefined,
+                    configuration || {}
                 );
                 if (!cortexTools) return false;
                 // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
@@ -534,7 +533,7 @@ class MainViewProvider {
                 ]);
                 if (!openocdPath) return false;
                 const svdPath = cleanWindowsPath(resolvedSvdPath);
-                const launch = openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
+                openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
                 await this.prepareForCortexDebug(workspaceFolder);
                 probePrepared = true;
                 this._debugStartLease = this._probeCoordinator.acquire("debugStart");
@@ -547,19 +546,23 @@ class MainViewProvider {
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
                 const debugConfig = {
-                    type: "cortex-debug",
-                    name: this._t("msg.debugConfigName"),
-                    request: "launch",
-                    cwd: launch.cwd,
+                    ...configuration,
+                    type: "emberprobe",
+                    name: configuration?.name || this._t("msg.debugConfigName"),
+                    request: configuration?.request || "launch",
+                    cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
                     executable: elfPath,
-                    servertype: "external",
                     gdbTarget: managed.gdbTarget,
-                    showDevDebugOutput: "none",
+                    runToEntryPoint: configuration?.runToEntryPoint ?? "main",
                     __emberprobeManagedToken: this._managedDebugToken
                 };
                 if (svdPath) debugConfig.svdFile = svdPath;
                 Object.assign(debugConfig, cortexTools);
                 const startupGate = this._armDebugStartupWatchdog();
+                if (configuration) {
+                    startAccepted = true;
+                    return debugConfig;
+                }
                 const startRequest = Promise.resolve(
                     vscode.debug.startDebugging(workspaceFolder, debugConfig, { suppressDebugView: true })
                 ).then(
@@ -583,7 +586,7 @@ class MainViewProvider {
             } catch (err) {
                 this._clearDebugStartupWatchdog();
                 const errorMsg = err.message;
-                console.error("调试启动失败：", errorMsg);
+                console.error("调试启动失败：", err.stack || errorMsg);
                 vscode.window.showErrorMessage(this._t("msg.debugFailed", { error: errorMsg }));
                 if (probePrepared) {
                     if (this._debugStarting) this._debugStartLease?.release();
@@ -606,7 +609,7 @@ class MainViewProvider {
             if (
                 this._debugStarting ||
                 this._debugBridge.hasAnySession ||
-                vscode.debug.activeDebugSession?.type === "cortex-debug"
+                isSupportedDebugSession(vscode.debug.activeDebugSession)
             ) {
                 vscode.window.showWarningMessage(this._t("msg.debugBusyForDownload"));
                 return false;
@@ -1137,7 +1140,7 @@ class MainViewProvider {
                         this._postConsumerStatuses(
                             {
                                 mode: "debug-running-degraded",
-                                key: "live.debugTclDegraded",
+                                key: error?.i18nKey || "live.debugTclDegraded",
                                 source: "openocd",
                                 canRead: false,
                                 canWrite: false,
@@ -1199,7 +1202,9 @@ class MainViewProvider {
         lease?.release();
     }
     _armDebugStartupWatchdog() {
-        const version = vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
+        const version = this._managedDebugToken
+            ? ""
+            : vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
         return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
             this._recoverDebugStartupTimeout()
         );
@@ -1219,6 +1224,7 @@ class MainViewProvider {
     }
     async _recoverDebugStartupTimeout() {
         if (!this._debugLifecycle.pending) return;
+        const ownDebug = !!this._managedDebugToken;
         const session = this._debugLifecycle.session;
         const timeoutMs = this._debugLifecycle.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
         this._clearDebugStartupWatchdog();
@@ -1253,7 +1259,9 @@ class MainViewProvider {
             await this._stopManagedDebugServer();
             await this.restoreSamplingAfterDebug();
         }
-        const version = vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
+        const version = ownDebug
+            ? ""
+            : vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
         const key = debugStartupPolicy(process.platform, version).messageKey;
         vscode.window.showErrorMessage(this._t(key, { seconds: timeoutMs / 1000, version }));
     }
@@ -1906,7 +1914,8 @@ class MainViewProvider {
                 localResourceRoots: [this._webviewAssetRootUri]
             }
         );
-        const post = (m) => panel.webview.postMessage(m);
+        const panelWebview = panel.webview;
+        const post = (m) => panelWebview.postMessage(m);
         const entry = {
             panelId,
             panel,
@@ -1934,7 +1943,7 @@ class MainViewProvider {
             if (event.webviewPanel.active) entry.focusOrder = ++this._livePanelFocusOrder;
         });
         panel.onDidDispose(() => {
-            this._webviewRenders?.delete(panel.webview);
+            this._webviewRenders?.delete(panelWebview);
             this._livePanels.delete(panelId);
             pruneWebviewAssets(this._webviewAssetRootUri.fsPath, `live-watch-${panelId}`, new Set());
             this._rejectPanelCsvExports(panelId);
@@ -2481,7 +2490,7 @@ class MainViewProvider {
         const activeItems = this._activeReadPlan();
         if (
             this._debugBridge.hasSession ||
-            vscode.debug.activeDebugSession?.type === "cortex-debug" ||
+            isSupportedDebugSession(vscode.debug.activeDebugSession) ||
             this._debugStarting ||
             this._debugCommandPending
         ) {
@@ -2678,7 +2687,7 @@ class MainViewProvider {
         }
     }
     handleDebugSessionStart(session) {
-        if (!session || session.type !== "cortex-debug") return;
+        if (!session || !isSupportedDebugSession(session)) return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
             this._debugLifecycle.session = session;
@@ -2706,7 +2715,7 @@ class MainViewProvider {
         this._debugBridge.handleRequest(session, message);
     }
     async handleDebugSessionTerminate(session) {
-        if (!session || session.type !== "cortex-debug") return;
+        if (!session || !isSupportedDebugSession(session)) return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._terminatedDebugSessionIds.add(session.id);
         if (
@@ -2723,7 +2732,7 @@ class MainViewProvider {
         await this.restoreSamplingAfterDebug();
     }
     handleDebugAdapterExit(session) {
-        if (!session || session.type !== "cortex-debug") return;
+        if (!session || !isSupportedDebugSession(session)) return;
         const managedStartup =
             this._debugLifecycle.pending &&
             (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session));
@@ -3048,7 +3057,14 @@ class MainViewProvider {
                 }
             }
         });
-        webviewView.onDidDispose(() => this._webviewRenders?.delete(webviewView.webview));
+        const sidebarWebview = webviewView.webview;
+        webviewView.onDidDispose(() => {
+            this._webviewRenders?.delete(sidebarWebview);
+            if (this._webviewView === webviewView) {
+                this._webviewView = null;
+                this._sidebarReady = false;
+            }
+        });
         // 设置初始内容
         this._renderWebview(webviewView.webview, this.getModernWebviewContent(), "sidebar");
         this.updateView().catch(console.error);

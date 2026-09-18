@@ -51,7 +51,8 @@
     "onCommand:mcu-vscode.downloadOfficialSvd",
     "onCommand:mcu-vscode.selectExistingSvd",
     "onCommand:mcu-vscode.switchWorkspaceSvd",
-    "onCommand:mcu-vscode.checkOpenOcd"
+    "onCommand:mcu-vscode.checkOpenOcd",
+    "onDebugResolve:emberprobe"
   ],
   "contributes": {
     "viewsContainers": {
@@ -167,9 +168,120 @@
           ],
           "default": "auto",
           "description": "OpenOCD 传输协议；auto 保留探针脚本默认值。J-Link 仅接 SWD 时请选择 swd。HLA 探针使用对应 hla_* 协议。"
+        },
+        "emberprobe.gdbPath": {
+          "type": "string",
+          "default": "",
+          "description": "ARM GDB executable path."
+        },
+        "emberprobe.armToolchainPath": {
+          "type": "string",
+          "default": "",
+          "description": "ARM toolchain bin directory."
+        },
+        "emberprobe.armToolchainPrefix": {
+          "type": "string",
+          "default": "",
+          "description": "Toolchain prefix; defaults to arm-none-eabi."
+        },
+        "emberprobe.objdumpPath": {
+          "type": "string",
+          "default": "",
+          "description": "ARM objdump executable path."
         }
       }
-    }
+    },
+    "debuggers": [
+      {
+        "type": "emberprobe",
+        "label": "EmberProbe",
+        "languages": [
+          "c",
+          "cpp",
+          "asm"
+        ],
+        "program": "./dist/debugAdapter.js",
+        "runtime": "node",
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "executable": {
+                "type": "string",
+                "description": "ELF file; defaults to the selected workspace ELF."
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "gdbPath": {
+                "type": "string"
+              },
+              "runToEntryPoint": {
+                "type": "string",
+                "default": "main",
+                "description": "Launch/restart entry point; empty keeps the target halted."
+              },
+              "sourceFileMap": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "attach": {
+            "properties": {
+              "executable": {
+                "type": "string",
+                "description": "ELF file; defaults to the selected workspace ELF."
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "gdbPath": {
+                "type": "string"
+              },
+              "runToEntryPoint": {
+                "type": "string",
+                "default": "main",
+                "description": "Launch/restart entry point; empty keeps the target halted."
+              },
+              "sourceFileMap": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "emberprobe",
+            "request": "launch",
+            "name": "EmberProbe: Launch",
+            "runToEntryPoint": "main"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "EmberProbe: launch",
+            "body": {
+              "type": "emberprobe",
+              "request": "launch",
+              "name": "EmberProbe: launch"
+            }
+          },
+          {
+            "label": "EmberProbe: attach",
+            "body": {
+              "type": "emberprobe",
+              "request": "attach",
+              "name": "EmberProbe: attach"
+            }
+          }
+        ]
+      }
+    ]
   },
   "files": [
     "dist/extension.js",
@@ -184,7 +296,8 @@
     "ROADMAP.md",
     "CHANGELOG.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "dist/debugAdapter.js"
   ],
   "scripts": {
     "test": "npm run check",
@@ -206,6 +319,7 @@
     "test:unit": "node scripts/run-tests.js --tests"
   },
   "dependencies": {
+    "@vscode/debugadapter": "1.68.0",
     "fast-xml-parser": "^5.11.0",
     "fzstd": "^0.1.1",
     "tar": "^7.5.22",

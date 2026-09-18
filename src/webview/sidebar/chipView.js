@@ -112,6 +112,8 @@
                 chipRow(t("chip.regInfo"), t("chip.regHint"), { always: true, muted: true })
             ].join("");
         }
+        g3 += chipRow(t("chip.readAt"), info.readAt ? new Date(info.readAt).toLocaleString() : "");
+        g3 += chipRow(t("chip.stateError"), info.stateError);
         const groups =
             '<div class="chip-group"><div class="chip-group-title">' +
             t("chip.groupChip") +

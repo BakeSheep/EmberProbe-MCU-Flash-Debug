@@ -180,14 +180,13 @@ assert.ok(
 );
 
 // 芯片信息读取不得改变运行目标状态。H7 running 分支只读本系列身份寄存器，
-// flash probe 与跨系列扫描只能位于原本 halted 的分支。
+// 已知型号即便暂停也不应扫描其他系列寄存器。
 const chipInfoCommands = buildChipInfoCommands("stm32h7x.cfg");
 const allChipInfoCommands = chipInfoCommands.join("\n");
 assert.ok(!/(?:^|[;{\s])halt(?:[;}\s]|$)/.test(allChipInfoCommands), "chip info must never halt a running target");
 assert.ok(!/(?:^|[;{\s])resume(?:[;}\s]|$)/.test(allChipInfoCommands), "chip info must never resume a target");
-const identityCommand = chipInfoCommands.find((command) => command.includes("flash probe 0"));
-assert.ok(identityCommand && identityCommand.includes('curstate] eq "halted"'));
-const runningIdentityBranch = identityCommand.split("} else {")[1];
+assert.ok(!allChipInfoCommands.includes("flash probe 0"));
+const runningIdentityBranch = allChipInfoCommands;
 assert.ok(runningIdentityBranch.includes("mdw 0x5c001000"));
 assert.ok(runningIdentityBranch.includes("mdw 0x1ff1e880"));
 assert.ok(runningIdentityBranch.includes("mdw 0x1ff1e800 3"));

@@ -7,6 +7,7 @@ exports.deactivate = deactivate;
 const vscode = require("vscode");
 const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
+const { validateDebugConfiguration } = require("./services/debugConfiguration");
 let activeProvider = null;
 
 function activate(context) {
@@ -49,22 +50,30 @@ function activate(context) {
                 return config;
             }
         }),
-        vscode.debug.registerDebugAdapterTrackerFactory("cortex-debug", {
+        vscode.debug.registerDebugConfigurationProvider("emberprobe", {
+            async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+                if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
+                if (provider._matchesManagedDebugSession({ configuration: config })) return config;
+                const validated = validateDebugConfiguration(config, folder);
+                return await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated) || undefined;
+            }
+        }),
+        ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
             createDebugAdapterTracker(session) {
                 provider.handleDebugSessionStart(session);
                 return {
                     onWillReceiveMessage: message => provider.handleDebugAdapterRequest(session, message),
                     onDidSendMessage: message => provider.handleDebugAdapterMessage(session, message),
-                    onError: error => console.error("Cortex-Debug adapter error:", error),
+                    onError: error => console.error("Debug adapter error:", error),
                     onExit: () => provider.handleDebugAdapterExit(session)?.catch(error => {
-                        console.error("Unable to clean up after Cortex-Debug adapter exit:", error);
+                        console.error("Unable to clean up after debug adapter exit:", error);
                     })
                 };
             }
-        }),
+        })),
         vscode.debug.onDidStartDebugSession(session => provider.handleDebugSessionStart(session)),
         vscode.debug.onDidTerminateDebugSession(session => provider.handleDebugSessionTerminate(session).catch(error => {
-            console.error("Unable to restore EmberProbe sampling after Cortex-Debug:", error);
+            console.error("Unable to restore EmberProbe sampling after debugging:", error);
         }))
     ];
     context.subscriptions.push(...subscriptions);
@@ -78,7 +87,7 @@ function activate(context) {
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     if (process.env.EMBERPROBE_E2E === "1") {
-        return { viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
+        return { debugTestProvider: provider, viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
     }
 }
 

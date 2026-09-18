@@ -89,6 +89,7 @@ class ChipInfoService {
                     if (event?.stage === "raw") diagnostics = event;
                 }
             );
+            info.readAt = new Date().toISOString();
             this.info = info;
             this.post({ state: "ready", key: "chip.done" }, info);
             this.onDiagnostics(diagnostics, info);

@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 GDB 下载进度消息导致调试中断；抑制持续目标轮询失败时采样状态闪烁，并避免 H7 芯片信息读取扫描其他系列寄存器。
+- Fixed GDB download progress parsing, repeated polling-error flicker, and cross-family register probing during H7 chip inspection.
+
+- 新增独立 EmberProbe 断点调试器，支持基础 GDB 调试、launch/attach 与现有采样协作，无需安装 Cortex-Debug。
+- Added the independent EmberProbe debugger with GDB debugging, launch/attach, and sampling integration; Cortex-Debug is no longer required.
+
 ## [0.7.8] - 2026-09-17
 
 - 修复 Windows ELF 路径盘符大小写导致烧录授权失效，以及正常目标电压被误报为未供电。

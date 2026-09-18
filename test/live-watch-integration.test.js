@@ -210,13 +210,14 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(shutdownFrame, "shutdown\x1a");
     assert.strictEqual(child.killed, false, "a clean OpenOCD exit must not be followed by a kill signal");
 
-    // 芯片复位导致的瞬时读取错误，在下一次完整采样成功后必须清除并恢复正常显示。
+    // Recovery needs a quiet interval and consecutive reads, not a single read.
+    let recoveryNow = 0;
     const recoveryStatuses = [];
     const recoveryErrors = [];
     const recoverySamples = [];
     const recovering = new LiveWatchSession(
         null,
-        {},
+        { now: () => recoveryNow },
         {
             onStatus: (status) => recoveryStatuses.push(status),
             onError: (error) => recoveryErrors.push(error),
@@ -235,8 +236,12 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.deepStrictEqual(recoveryErrors, ["target reset during read"]);
     assert.strictEqual(recovering._sampleErrorActive, true);
     await recovering._sampleTick();
+    assert.strictEqual(recovering._sampleErrorActive, true);
+    recoveryNow = 2001;
+    await recovering._sampleTick();
+    await recovering._sampleTick();
     assert.strictEqual(recovering._sampleErrorActive, false);
-    assert.strictEqual(recoverySamples.length, 1);
+    assert.strictEqual(recoverySamples.length, 3);
     assert.deepStrictEqual(recoveryStatuses, [{ key: "sb.sampling" }]);
 
     console.log("Live watch Tcl-RPC integration tests passed");

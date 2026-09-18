@@ -37,6 +37,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
         fs.chmodSync(tool("nm"), 0o755);
 
         const settings = { gdbPath: path.join(root, "missing") };
+        const ownSettings = {};
         const saved = new Map();
         const state = { get: (key) => saved.get(key), update: async (key, value) => saved.set(key, value) };
         const folder = { uri: { toString: () => "workspace-one" } };
@@ -46,9 +47,12 @@ const { executableName } = require("../src/services/cortexToolchainService");
         const vscode = {
             workspace: {
                 getConfiguration: (section, uri) => {
-                    assert.strictEqual(section, "cortex-debug");
+                    assert.ok(["cortex-debug", "emberprobe"].includes(section));
                     assert.strictEqual(uri, folder.uri);
-                    return { get: (key, fallback) => settings[key] ?? fallback };
+                    return {
+                        get: (key, fallback) =>
+                            section === "emberprobe" ? (ownSettings[key] ?? fallback) : (settings[key] ?? fallback)
+                    };
                 }
             },
             window: {
@@ -70,7 +74,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
                 async () => currentPath
             );
         assert.deepStrictEqual(await run(), expected);
-        assert.strictEqual(saved.get("cortexDebugToolchain:workspace-one"), bin);
+        assert.strictEqual(saved.get("emberprobeToolchain:workspace-one"), bin);
         warning = undefined;
         assert.deepStrictEqual(await run(), expected, "remembered directory works without prompting");
         saved.clear();
@@ -85,6 +89,23 @@ const { executableName } = require("../src/services/cortexToolchainService");
         settings.gdbPath = tool("gdb");
         warning = undefined;
         assert.deepStrictEqual(await run(), expected, "valid explicit settings take priority");
+        settings.gdbPath = path.join(root, "missing");
+        ownSettings.gdbPath = tool("gdb");
+        assert.deepStrictEqual(await run(), expected, "EmberProbe settings override legacy configuration");
+        ownSettings.gdbPath = path.join(root, "missing");
+        assert.deepStrictEqual(
+            await ensureDebugTools(
+                vscode,
+                folder,
+                state,
+                (key) => key,
+                async () => "",
+                { gdbPath: tool("gdb") }
+            ),
+            expected,
+            "launch settings override EmberProbe settings"
+        );
+        delete ownSettings.gdbPath;
         saved.clear();
         delete settings.gdbPath;
         currentPath = bin;

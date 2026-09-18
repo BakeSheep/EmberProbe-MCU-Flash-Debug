@@ -1,4 +1,5 @@
 "use strict";
+const { isSupportedDebugSession } = require("./debugConfiguration");
 
 const MIN_DAP_INTERVAL_MS = 250;
 const MAX_READ_BYTES = 4096;
@@ -115,7 +116,7 @@ class DebugSessionBridge {
             session: session
                 ? {
                       id: session.id,
-                      name: session.name || session.configuration?.name || "Cortex-Debug",
+                      name: session.name || session.configuration?.name || "debugger",
                       workspace: session.workspaceFolder?.uri?.fsPath || sessionFolderKey(session)
                   }
                 : null,
@@ -125,11 +126,11 @@ class DebugSessionBridge {
 
     assertUniqueSession() {
         if (this.conflict || (this.allSessions.size && !this.hasSession))
-            throw Object.assign(new Error("More than one Cortex-Debug session matches this workspace"), {
+            throw Object.assign(new Error("More than one debugger session matches this workspace"), {
                 code: "DEBUG_SESSION_CONFLICT"
             });
         if (!this.activeSession)
-            throw Object.assign(new Error("No Cortex-Debug session is active for this workspace"), {
+            throw Object.assign(new Error("No debugger session is active for this workspace"), {
                 code: "DEBUG_SESSION_NOT_ACTIVE"
             });
         return this.activeSession;
@@ -138,18 +139,18 @@ class DebugSessionBridge {
     assertPausedAccess(options = {}) {
         this.assertUniqueSession();
         if (!this.paused)
-            throw Object.assign(new Error("The Cortex-Debug target must be paused"), { code: "TARGET_NOT_PAUSED" });
+            throw Object.assign(new Error("The debugger target must be paused"), { code: "TARGET_NOT_PAUSED" });
         if (this.transitionKind)
-            throw Object.assign(new Error("Cortex-Debug execution control is in progress"), {
+            throw Object.assign(new Error("The debugger execution control is in progress"), {
                 code: "DEBUG_STATE_TRANSITION",
                 details: { transition: this.transitionKind }
             });
         if (this.capabilities.read !== true)
-            throw Object.assign(new Error("Cortex-Debug does not support DAP readMemory"), {
+            throw Object.assign(new Error("The debugger does not support DAP readMemory"), {
                 code: "DEBUG_MEMORY_READ_UNSUPPORTED"
             });
         if (options.write && this.capabilities.write !== true)
-            throw Object.assign(new Error("Cortex-Debug does not support DAP writeMemory"), {
+            throw Object.assign(new Error("The debugger does not support DAP writeMemory"), {
                 code: "DEBUG_MEMORY_WRITE_UNSUPPORTED"
             });
         return this.activeSession;
@@ -201,7 +202,7 @@ class DebugSessionBridge {
     }
 
     attach(session) {
-        if (!session || session.type !== "cortex-debug") return;
+        if (!session || !isSupportedDebugSession(session)) return;
         this.allSessions.set(session.id, session);
         this._recomputeSessions();
     }
@@ -413,7 +414,7 @@ class DebugSessionBridge {
                 this.stateWaiters.delete(waiter);
                 signal?.removeEventListener("abort", waiter.onAbort);
                 reject(
-                    Object.assign(new Error("Timed out waiting for Cortex-Debug state change"), {
+                    Object.assign(new Error("Timed out waiting for debugger state change"), {
                         code: "DEBUG_CONTROL_TIMEOUT",
                         details: { status: this.agentStatus() }
                     })
@@ -558,7 +559,7 @@ class DebugSessionBridge {
         const result = unwrapResponse(await session.customRequest("threads", {}));
         const threads = arrayThreads(result.threads).filter((thread) => Number.isInteger(thread?.id));
         if (!threads.length)
-            throw Object.assign(new Error("Cortex-Debug returned no thread for execution control"), {
+            throw Object.assign(new Error("The debugger returned no thread for execution control"), {
                 code: "DEBUG_THREAD_NOT_FOUND"
             });
         threads.sort((left, right) => left.id - right.id);
@@ -598,7 +599,7 @@ class DebugSessionBridge {
                 code: "DEBUG_ACTION_UNSUPPORTED"
             });
         if (action === "restart" && this.capabilities.restart !== true)
-            throw Object.assign(new Error("Cortex-Debug does not advertise restart support"), {
+            throw Object.assign(new Error("The debugger does not advertise restart support"), {
                 code: "DEBUG_ACTION_UNSUPPORTED",
                 details: { action }
             });
@@ -621,7 +622,7 @@ class DebugSessionBridge {
             (status) => ({ kind: "state", status, error: null }),
             (error) => ({ kind: "stateError", status: null, error })
         );
-        // Some Cortex-Debug backends emit the conclusive state event but never settle
+        // Some debugger backends emit the conclusive state event but never settle
         // customRequest(). Observe both concurrently so a confirmed transition is not
         // misreported as BRIDGE_TIMEOUT. The mapped promise also absorbs a late reject.
         const requestOutcome = Promise.resolve()
@@ -633,22 +634,22 @@ class DebugSessionBridge {
         const first = await Promise.race([stateOutcome, requestOutcome]);
         if (first.kind === "requestError") {
             stateAbort.abort();
-            throw first.error || new Error("Cortex-Debug rejected the control request");
+            throw first.error || new Error("The debugger rejected the control request");
         }
         const final = first.kind === "response" ? await stateOutcome : first;
         if (final.kind === "stateError") {
-            const stateError = final.error || new Error("Cortex-Debug state wait failed");
+            const stateError = final.error || new Error("The debugger state wait failed");
             stateError.details = { ...(stateError.details || {}), action, threadId, before };
             throw stateError;
         }
         const status = final.status;
         if (status.state === "conflict")
-            throw Object.assign(new Error("Multiple Cortex-Debug sessions match this workspace"), {
+            throw Object.assign(new Error("Multiple debugger sessions match this workspace"), {
                 code: "DEBUG_SESSION_CONFLICT",
                 details: { action, threadId, before, status }
             });
         if (status.state === "none" || status.session?.id !== session.id)
-            throw Object.assign(new Error("Cortex-Debug session ended during execution control"), {
+            throw Object.assign(new Error("The debugger session ended during execution control"), {
                 code: "DEBUG_SESSION_NOT_ACTIVE",
                 details: { action, threadId, before, status }
             });
@@ -656,8 +657,8 @@ class DebugSessionBridge {
     }
 
     async read(items, session = this.activeSession, expectedEpoch = null) {
-        if (!session || this.conflict) throw new Error("No unique Cortex-Debug session is available");
-        if (!this.capabilities.read) throw new Error("Cortex-Debug does not support DAP readMemory");
+        if (!session || this.conflict) throw new Error("No unique debugger session is available");
+        if (!this.capabilities.read) throw new Error("The debugger does not support DAP readMemory");
         const samples = [];
         for (const group of mergeReadPlan(items)) {
             if (expectedEpoch !== null && expectedEpoch !== this.epoch)
@@ -695,7 +696,7 @@ class DebugSessionBridge {
     async writeAndVerify(items) {
         const session = this.activeSession;
         if (!this.canWrite || !session)
-            throw new Error("Cortex-Debug target must be paused and support DAP writeMemory");
+            throw new Error("The debugger target must be paused and support DAP writeMemory");
         this._invalidate();
         const waitDeadline = this.now() + 2000;
         while (this.polling && this.canWrite && this.now() < waitDeadline)

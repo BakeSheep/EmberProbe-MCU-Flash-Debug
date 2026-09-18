@@ -87,6 +87,7 @@ function createChipParser(target) {
         targetName: "",
         // 运行信息
         targetState: "",
+        stateError: "",
         haltReason: "",
         pc: "",
         sp: "",
@@ -114,6 +115,7 @@ function createChipParser(target) {
         if (kv) {
             if (kv.key === "name" && kv.value) info.targetName = kv.value;
             else if (kv.key === "state" && kv.value) info.targetState = kv.value;
+            else if (kv.key === "stateError") info.stateError = kv.value;
             else if (kv.key === "endian" && kv.value) info.endian = kv.value;
             else if (kv.key === "transport" && !info.transport) info.transport = normalizeTransport(kv.value);
             return;

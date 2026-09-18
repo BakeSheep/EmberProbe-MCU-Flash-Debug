@@ -20,6 +20,7 @@ class SamplingSession {
             if (message.state) {
                 this.childPid = message.state.childPid;
                 this.stopped = message.state.stopped;
+                this.pollingFailed = message.state.pollingFailed === true;
                 if (message.state.generation === this.generation) this.samplingEnabled = message.state.samplingEnabled;
             }
             if (message.event === "samples") {
@@ -87,6 +88,7 @@ class SamplingSession {
         this.notify("setIntervalMs", [this.options.intervalMs]);
     }
     setSamplingEnabled(enabled) {
+        if (enabled && this.pollingFailed) return false;
         if (enabled && this.samplingEnabled) return true;
         this.generation++;
         this.deliveryEnabled = !!enabled;

@@ -64,15 +64,15 @@ class DebugControlService {
         const current = this.status();
         if (current.state === "running" || current.state === "paused") return { alreadyActive: true, status: current };
         if (current.state === "conflict")
-            throw error("Multiple Cortex-Debug sessions match this workspace", "DEBUG_SESSION_CONFLICT");
+            throw error("Multiple debugger sessions match this workspace", "DEBUG_SESSION_CONFLICT");
         const started = await this.startDebug();
-        if (!started) throw error("Cortex-Debug did not start", "DEBUG_START_FAILED");
+        if (!started) throw error("debugger did not start", "DEBUG_START_FAILED");
         const status = await this.debugBridge.waitForState(
             (next) => next.state === "running" || next.state === "paused" || next.state === "conflict",
             15000
         );
         if (status.state === "conflict")
-            throw error("Multiple Cortex-Debug sessions match this workspace", "DEBUG_SESSION_CONFLICT");
+            throw error("Multiple debugger sessions match this workspace", "DEBUG_SESSION_CONFLICT");
         return { alreadyActive: false, status };
     }
 
@@ -98,7 +98,7 @@ class DebugControlService {
         const session = this.debugBridge.assertUniqueSession();
         const before = this.status();
         const stopped = await this.vscode.debug.stopDebugging(session);
-        if (stopped === false) throw error("VS Code refused to stop the Cortex-Debug session", "DEBUG_STOP_FAILED");
+        if (stopped === false) throw error("VS Code refused to stop the debugger session", "DEBUG_STOP_FAILED");
         const status = await this.debugBridge.waitForState((next) => next.state === "none", 10000);
         return { action, before, status };
     }

@@ -11,6 +11,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
     const state = () => ({
         generation,
         samplingEnabled: session.samplingEnabled,
+        pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
         childPid: session.child?.pid
     });

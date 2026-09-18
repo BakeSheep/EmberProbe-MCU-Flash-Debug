@@ -160,6 +160,14 @@ class ManagedOpenOcdSession {
         this._lastReadError = "";
         this._notifiedError = "";
         this._sampleErrorActive = false;
+        this._lastErrorAt = 0;
+        this._lastReportedError = "";
+        this._lastErrorPostedAt = 0;
+        this._successfulReads = 0;
+        this._pollFailureSince = null;
+        this._pollFailureCount = 0;
+        this._pollFailureLocked = false;
+        this.now = this.options.now || Date.now;
         this.connectionFailed = false;
         this.connectionError = null;
         this._startReject = null; // start() 进行中时捕获的 reject，用于单通道上报连接期失败
@@ -200,6 +208,7 @@ class ManagedOpenOcdSession {
     }
 
     setSamplingEnabled(enabled) {
+        if (enabled && this._pollFailureLocked) return false;
         const nextEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
         if (enabled && this._samplingRequested && this.samplingEnabled === nextEnabled && this.timer)
             return this.samplingEnabled;
@@ -226,8 +235,37 @@ class ManagedOpenOcdSession {
         if (this.handlers.onStatus) this.handlers.onStatus(msg);
     }
     _error(msg) {
+        this._lastErrorAt = this.now();
+        this._successfulReads = 0;
+        const duplicate =
+            this._sampleErrorActive && (this._lastReportedError === msg || this.now() - this._lastErrorPostedAt < 2000);
         this._sampleErrorActive = true;
+        if (duplicate) return;
+        this._lastReportedError = msg;
+        this._lastErrorPostedAt = this.now();
         if (this.handlers.onError) this.handlers.onError(msg);
+    }
+    _handlePollingFailure(message) {
+        if (this._pollFailureLocked) return;
+        const now = this.now();
+        if (this._pollFailureSince === null || now - this._lastErrorAt > 5000) {
+            this._pollFailureSince = now;
+            this._pollFailureCount = 0;
+        }
+        this._pollFailureCount++;
+        this._error(message);
+        if (this._pollFailureCount < 3 || now - this._pollFailureSince < 3000) return;
+        this._pollFailureLocked = true;
+        this.setSamplingEnabled(false);
+        const error = Object.assign(new Error(message), {
+            code: "LIVE_TARGET_POLL_FAILED",
+            i18nKey: "live.targetPollingFailed"
+        });
+        if (this.mode === "debug") {
+            // Keep GDB's server alive, but do not reconnect/re-enable runtime reads.
+            this._status({ key: error.i18nKey });
+            this.handlers.onDegraded?.(error);
+        } else this._abortConnection(error);
     }
     // 采样中拔出调试器的致命日志特征（USB 读写失败 / 设备丢失），用于自动停止采样
     _isFatalProbeLog(line) {
@@ -320,6 +358,10 @@ class ManagedOpenOcdSession {
                     return;
                 }
                 if (this.connectionFailed) continue;
+                if (/\bPolling failed\b/i.test(clean)) {
+                    this._handlePollingFailure(clean);
+                    continue;
+                }
                 // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (
@@ -979,9 +1021,13 @@ class ManagedOpenOcdSession {
             if (epoch !== this.sampleEpoch || !this.samplingEnabled) return;
             if (this.handlers.onSample) this.handlers.onSample(samples, t);
             if (ok === this.watch.length && this._sampleErrorActive) {
-                // 芯片复位会造成一次短暂的 MEM-AP 读取失败；后续完整采样成功即恢复正常状态，
-                // 避免错误提示和灰显一直粘滞到用户手动重启采样。
+                // One successful memory read does not prove target polling recovered.
+                this._successfulReads++;
+                if (this._successfulReads < 3 || this.now() - this._lastErrorAt < 2000) return;
                 this._sampleErrorActive = false;
+                this._lastReportedError = "";
+                this._pollFailureSince = null;
+                this._pollFailureCount = 0;
                 this._lastReadError = "";
                 this._notifiedError = "";
                 this._status({ key: "sb.sampling" });
