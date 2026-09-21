@@ -1,6 +1,16 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "probe.configure": "探针连接设置",
+    "probe.serial": "J-Link 序列号",
+    "probe.transport": "SWD / JTAG 协议",
+    "probe.speed": "调试速度（kHz）",
+    "probe.speedDefault": "0 使用接口/目标脚本的默认速度",
+    "probe.manualSerial": "手动输入序列号",
+    "probe.serialRequired": "选择 J-Link 序列号",
+    "probe.diagnostic": "连接诊断",
+    "probe.activeConnection": "当前连接",
+    "probe.staleConnection": "配置已变更，重新连接后才能写入",
     "msg.selectDetectedProbe": "检测到多种探针，请选择要使用的型号",
     "lw.hideAll": "隐藏全部",
     "lw.chooseMembers": "请选择要绘制的标量成员",

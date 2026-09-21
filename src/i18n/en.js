@@ -1,6 +1,16 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "probe.configure": "Probe connection",
+    "probe.serial": "J-Link serial number",
+    "probe.transport": "SWD / JTAG transport",
+    "probe.speed": "Adapter speed (kHz)",
+    "probe.speedDefault": "0 uses the interface/target script default",
+    "probe.manualSerial": "Enter serial number",
+    "probe.serialRequired": "Select J-Link serial",
+    "probe.diagnostic": "Connection diagnostic",
+    "probe.activeConnection": "Active connection",
+    "probe.staleConnection": "Settings changed — restart before writing",
     "msg.selectDetectedProbe": "Multiple probe types detected. Select the probe to use.",
     "lw.hideAll": "Hide all",
     "lw.chooseMembers": "Select scalar members to plot",

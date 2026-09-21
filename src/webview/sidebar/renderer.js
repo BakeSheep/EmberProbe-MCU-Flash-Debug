@@ -13,6 +13,17 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
+function showProbeDiagnostic(message) {
+    const diagnostic = message.diagnostic;
+    if (!diagnostic) return;
+    const panel = document.getElementById("probeDiagnostic");
+    const output = document.getElementById("probeDiagnosticText");
+    output.textContent = JSON.stringify(diagnostic, null, 2);
+    panel.hidden = false;
+}
+document.getElementById("probeDiagnosticCopy").addEventListener("click", () => {
+    api?.postMessage({ type: "copyText", text: document.getElementById("probeDiagnosticText").textContent });
+});
 let sideWatch = [],
     writeList = [],
     available = [],
@@ -1334,12 +1345,14 @@ window.EmberProbeMessages.connect(window, {
         openocdStatus(m);
     },
     openocdProgress: function (m) {
+        showProbeDiagnostic(m);
         progress(m);
     },
     commandSuccess: function (m) {
         setStat("ready", "sb.commandDone");
     },
     commandError: function (m) {
+        showProbeDiagnostic(m);
         setStat("error", m.key || "", m.params, m.error || t("sb.commandFailed"));
     },
     sidebarWatchList: function (m) {
@@ -1375,18 +1388,30 @@ window.EmberProbeMessages.connect(window, {
         sbOnComposite(m.samples || []);
     },
     liveStatus: function (m) {
+        showProbeDiagnostic(m);
+        const connection = document.getElementById("probeActiveConnection");
+        connection.hidden = !m.connection;
+        if (m.connection)
+            connection.textContent = [
+                t(m.connectionStale ? "probe.staleConnection" : "probe.activeConnection"),
+                m.connection.probeSerial || m.connection.probe,
+                m.connection.transport,
+                m.connection.adapterSpeedKhz + " kHz"
+            ].join(" · ");
         liveStatus(m);
     },
     chipInfo: function (m) {
         renderChip(m.info);
     },
     chipInfoStatus: function (m) {
+        showProbeDiagnostic(m);
         chipStatus(m);
     },
     svdStatus: function (m) {
         svdStatus(m);
     },
     liveError: function (m) {
+        showProbeDiagnostic(m);
         liveStatus({
             running: liveRunning,
             error: true,

@@ -58,6 +58,7 @@ const exec = promisify(execFile);
         }
     );
     const provider = Object.create(Provider.prototype);
+    provider._debugBridge = { hasAnySession: false };
     provider._cubemxConfiguration = {
         detectIoc: async () => {
             scans++;

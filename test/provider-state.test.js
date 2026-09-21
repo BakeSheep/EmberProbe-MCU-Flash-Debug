@@ -36,6 +36,7 @@ function deferred() {
     );
     const p = Object.create(P.prototype);
     p._probeCoordinator = new ProbeCoordinator();
+    p._probeConnectionService = { prepare: async () => ({}) };
     p._samplingCoordinator = new SamplingCoordinator();
     p._debugLifecycle = new DebugLifecycle();
     p._chipInfoService = { running: false };

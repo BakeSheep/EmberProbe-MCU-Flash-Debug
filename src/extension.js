@@ -29,6 +29,7 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.connectionConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();

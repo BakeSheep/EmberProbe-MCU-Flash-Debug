@@ -36,6 +36,8 @@ async function main() {
             probe: result.probe,
             openocd: result.openocd,
             transport: result.transport,
+            probeSerial: result.probeSerial,
+            adapterSpeedKhz: result.adapterSpeedKhz,
             confirmationId: options["confirmation-id"]
         },
         150000

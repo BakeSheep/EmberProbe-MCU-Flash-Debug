@@ -106,6 +106,7 @@ const { loadProvider } = require("./helpers/load-provider");
             isDebugActive: () => false,
             resolveLaunch: () => ({ executable: "openocd" }),
             check: async () => ({ compatible: true }),
+            prepare: async (params) => params,
             run: async (options) => {
                 const commands = options.buildCommands().join(" ");
                 assert(commands.includes("verify_image"));

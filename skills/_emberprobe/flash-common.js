@@ -12,6 +12,8 @@ const crypto = require("crypto");
 const { execFile, spawn } = require("child_process");
 const { call, diagnosticForError } = require("./agent-client");
 const { MIN_OPENOCD_VERSION, parseVersion: parseOpenOcdVersion, checkCompatibility } = require("./openocd-policy");
+const { normalizeProbeSerial, normalizeAdapterSpeed } = require("./probe-connection");
+const { prepareProbeConnection } = require("./probe-preflight");
 
 const TARGET_RULES = [
     ["apm32f0", "geehy/apm32f0x.cfg"],
@@ -45,7 +47,17 @@ const TARGET_RULES = [
 
 function parseArgs(argv) {
     const out = { execute: false };
-    const valued = ["--workspace", "--elf", "--target", "--probe", "--openocd", "--transport", "--confirmation-id"];
+    const valued = [
+        "--workspace",
+        "--elf",
+        "--target",
+        "--probe",
+        "--openocd",
+        "--transport",
+        "--probe-serial",
+        "--adapter-speed-khz",
+        "--confirmation-id"
+    ];
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i];
         if (key === "--execute") out.execute = true;
@@ -76,6 +88,8 @@ async function authorizeFlash(result, confirmationId) {
         probe: result.probe,
         openocd: result.openocd,
         transport: result.transport,
+        probeSerial: result.probeSerial,
+        adapterSpeedKhz: result.adapterSpeedKhz,
         confirmationId
     });
 }
@@ -371,6 +385,16 @@ async function preflight(options) {
     const sources = { elf: "none", target: "none", probe: "none", openocd: "none" };
     const notes = [];
     const transport = normalizeTransport(options.transport ?? config?.transport ?? "auto");
+    let probeSerial = normalizeProbeSerial(options["probe-serial"] ?? config?.probeSerial ?? "");
+    const adapterSpeedKhz = normalizeAdapterSpeed(options["adapter-speed-khz"] ?? config?.adapterSpeedKhz ?? 0);
+    sources.probeSerial =
+        options["probe-serial"] !== undefined ? "explicit" : config?.probeSerial !== undefined ? "config" : "default";
+    sources.adapterSpeedKhz =
+        options["adapter-speed-khz"] !== undefined
+            ? "explicit"
+            : config?.adapterSpeedKhz !== undefined
+              ? "config"
+              : "default";
     sources.transport =
         options.transport !== undefined ? "explicit" : config?.transport !== undefined ? "config" : "default";
     let candidates = [];
@@ -458,6 +482,17 @@ async function preflight(options) {
     if (target && probe) {
         try {
             resolveOpenOcdLaunch(openocd, probe, target, transport);
+            const connection = await prepareProbeConnection({
+                openocd,
+                probe,
+                target,
+                transport,
+                probeSerial,
+                adapterSpeedKhz
+            });
+            if (!probeSerial && connection.probeSerial) sources.probeSerial = "inventory";
+            probeSerial = connection.probeSerial;
+            notes.push(...connection.inventory.notes);
             scriptsReady = true;
         } catch (error) {
             diagnostics.push(diagnosticForError(error, { operation: "openocd.launch" }));
@@ -466,6 +501,8 @@ async function preflight(options) {
     }
     return {
         transport,
+        probeSerial,
+        adapterSpeedKhz,
         probeCandidates: candidates,
         workspace: root,
         elf,

@@ -54,6 +54,12 @@ function fixture() {
         _webviewView: { webview: { postMessage: (message) => sidebar.push(message) } },
         _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
         _resolveOpenOcdPath: async () => "fake-openocd",
+        _probeConnectionService: {
+            prepare: async (_options, interactive) => {
+                provider.lastInteractive = interactive;
+                return { probeSerial: "1234", adapterSpeedKhz: 100 };
+            }
+        },
         _resolveTclPort: async () => 6666,
         _commandContext: () => ({}),
         _t: (key) => key
@@ -86,6 +92,7 @@ function fixture() {
     assert.strictEqual(p._samplingIntent, false);
 
     const started = await p._controlAgentSampling("start", { intervalMs: 250 });
+    assert.strictEqual(p.lastInteractive, false, "Agent sampling must not prompt");
     assert.strictEqual(started.running, true);
     assert.strictEqual(started.canRead, true);
     assert.strictEqual(started.intervalMs, 250);

@@ -1,4 +1,5 @@
 "use strict";
+const { serializeError } = require("./errorEnvelope");
 
 class ChipInfoService {
     constructor(options) {
@@ -9,6 +10,7 @@ class ChipInfoService {
         this.coordinator = options.coordinator;
         this.t = options.t;
         this.resolveExecutable = options.resolveExecutable;
+        this.prepareConnection = options.prepareConnection;
         this.commandContext = options.commandContext;
         this.onPost = options.onPost;
         this.onDiagnostics = options.onDiagnostics;
@@ -63,7 +65,8 @@ class ChipInfoService {
                 state: "error",
                 key: error.i18nKey,
                 params: error.i18nParams,
-                message: error.message || String(error)
+                message: error.message || String(error),
+                diagnostic: serializeError(error)
             });
             return null;
         }
@@ -76,6 +79,9 @@ class ChipInfoService {
         let diagnostics = null;
         try {
             const { cwd } = this.commandContext();
+            const connection = this.prepareConnection
+                ? await this.prepareConnection({ executable, probe, target }, !forAgent)
+                : {};
             const info = await this.chipInfo.readChipInfo(
                 this.vscode,
                 {
@@ -83,7 +89,8 @@ class ChipInfoService {
                     probe,
                     target,
                     cwd,
-                    transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto")
+                    transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
+                    ...connection
                 },
                 (event) => {
                     if (event?.stage === "raw") diagnostics = event;
@@ -99,7 +106,8 @@ class ChipInfoService {
                 state: "error",
                 key: error.i18nKey,
                 params: error.i18nParams,
-                message: error.message || String(error)
+                message: error.message || String(error),
+                diagnostic: serializeError(error)
             });
             this.onDiagnostics(diagnostics, null);
             if (forAgent) throw error;

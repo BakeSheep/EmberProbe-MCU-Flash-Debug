@@ -1,6 +1,29 @@
 "use strict";
 const crypto = require("crypto");
 const { ConfirmationStore } = require("./confirmationStore");
+const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
+
+function writeConnectionIdentity(connection) {
+    if (!connection) return null;
+    if (connection.kind === "dap") {
+        return {
+            kind: "dap",
+            sessionId: String(connection.sessionId || ""),
+            workspace: String(connection.workspace || "")
+        };
+    }
+    return { kind: "openocd", ...connectionIdentity(connection) };
+}
+
+function connectionFingerprint(plan) {
+    const identity = writeConnectionIdentity(plan?.connection);
+    if (
+        !identity ||
+        (identity.kind === "dap" ? !identity.sessionId : !("probe" in identity) || !identity.probe || !identity.target)
+    )
+        return "";
+    return JSON.stringify(identity);
+}
 
 const DEFAULT_STORAGE_KEY = "agent.writeTrusted";
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
@@ -12,6 +35,7 @@ function writePlanIdentity(plan) {
     const elf = plan?.elfResult?.elf || {};
     return {
         elf: { path: String(elf.path || ""), sha256: String(elf.sha256 || "") },
+        connection: writeConnectionIdentity(plan?.connection),
         items: (plan?.items || []).map((item) => ({
             name: item.name,
             address: Number(item.address) >>> 0,
@@ -57,7 +81,9 @@ class WriteAuthorization {
             age < this.trustTtlMs &&
             typeof sha256 === "string" &&
             sha256 &&
-            trust.elfSha256 === sha256
+            trust.elfSha256 === sha256 &&
+            connectionFingerprint(plan) &&
+            trust.connection === connectionFingerprint(plan)
         );
     }
 
@@ -94,9 +120,10 @@ class WriteAuthorization {
                 expiresAt,
                 scope: "workspace",
                 question:
-                    "Allow this MCU memory write? Choose once, or allow future writes for this ELF in this workspace for 24 hours. Changing the ELF requires confirmation again.",
+                    "Allow this MCU memory write? Choose once, or allow future writes for this ELF and connection in this workspace for 24 hours. Changing the ELF or connection requires confirmation again.",
                 choices: ["once", "workspace"],
                 elf: identity.elf,
+                connection: identity.connection,
                 items: (plan.items || []).map((item) => ({
                     name: item.name,
                     address: `0x${(Number(item.address) >>> 0).toString(16).toUpperCase()}`,
@@ -108,6 +135,11 @@ class WriteAuthorization {
     }
 
     authorize(plan, options = {}) {
+        if (!connectionFingerprint(plan))
+            throw authorizationError(
+                "A connection identity is required before confirming a write",
+                "WRITE_CONNECTION_REQUIRED"
+            );
         if (this.isTrusted(plan)) return { authorized: true, mode: "workspace", remember: false };
         const confirmationId = String(options.confirmationId || "").trim();
         if (!confirmationId) {
@@ -139,7 +171,7 @@ class WriteAuthorization {
         }
         if (fingerprintWritePlan(plan) !== pending.fingerprint) {
             throw authorizationError(
-                "The requested variables or values changed; request confirmation again",
+                "The connection, requested variables or values changed; request confirmation again",
                 "WRITE_CONFIRMATION_INVALID"
             );
         }
@@ -148,13 +180,17 @@ class WriteAuthorization {
 
     async trustWorkspace(plan) {
         const elfSha256 = plan?.elfResult?.elf?.sha256;
-        if (typeof elfSha256 !== "string" || !elfSha256) {
+        if (typeof elfSha256 !== "string" || !elfSha256 || !connectionFingerprint(plan)) {
             throw authorizationError(
-                "ELF fingerprint is required to remember write permission",
+                "ELF fingerprint and connection identity are required to remember write permission",
                 "WRITE_CONFIRMATION_INVALID"
             );
         }
-        await this.storage.update(this.storageKey, { trustedAt: this.now(), elfSha256 });
+        await this.storage.update(this.storageKey, {
+            trustedAt: this.now(),
+            elfSha256,
+            connection: connectionFingerprint(plan)
+        });
         return this.status(plan);
     }
 
@@ -169,6 +205,7 @@ module.exports = {
     WriteAuthorization,
     writePlanIdentity,
     fingerprintWritePlan,
+    writeConnectionIdentity,
     DEFAULT_STORAGE_KEY,
     DEFAULT_TTL_MS,
     DEFAULT_TRUST_TTL_MS

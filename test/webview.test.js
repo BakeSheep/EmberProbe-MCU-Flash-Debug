@@ -37,6 +37,17 @@ try {
     assert.equal(sidebar.document.querySelectorAll(".available-address").length, 0);
     assert.equal(sidebar.document.querySelector(".available-row").children.length, 2);
     const click = (id) => sidebar.document.getElementById(id).click();
+    const diagnostic = {
+        code: "PROBE_OPEN_FAILED",
+        message: "<script>evil()</script>",
+        details: { openocdTail: ["Failed to open device"] }
+    };
+    sidebar.send({ type: "commandError", error: "Failed", diagnostic });
+    assert.strictEqual(sidebar.document.getElementById("probeDiagnostic").hidden, false);
+    assert(sidebar.document.getElementById("probeDiagnosticText").textContent.includes("PROBE_OPEN_FAILED"));
+    assert.strictEqual(sidebar.document.getElementById("probeDiagnosticText").querySelector("script"), null);
+    click("probeDiagnosticCopy");
+    assert.deepStrictEqual(JSON.parse(sidebar.messages.at(-1).text), diagnostic);
     click("openocdSelect");
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });
     click("chipRead");

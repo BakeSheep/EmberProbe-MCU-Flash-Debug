@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { normalizeTransport } = require("./openocdScripts");
+const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
@@ -13,6 +14,8 @@ function flashIdentity(plan) {
             sha256: String(plan?.elf?.sha256 || "")
         },
         transport: normalizeTransport(plan?.transport),
+        probeSerial: normalizeProbeSerial(plan?.probeSerial),
+        adapterSpeedKhz: normalizeAdapterSpeed(plan?.adapterSpeedKhz),
         target: String(plan?.target || ""),
         probe: String(plan?.probe || ""),
         openocd: String(plan?.openocd || "")

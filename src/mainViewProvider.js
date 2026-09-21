@@ -18,7 +18,7 @@ const faultInfo = require("./faultInfo");
 const validation = require("./validation");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
-const { WriteAuthorization } = require("./writeAuthorization");
+const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { CubeMxFirmware } = require("./services/cubemxFirmware");
@@ -36,6 +36,11 @@ const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
 const { FeedbackPromptService } = require("./services/feedbackPromptService");
 const { ChipInfoService } = require("./services/chipInfoService");
+const { ProbeConnectionService } = require("./services/probeConnectionService");
+const { listProbes } = require("../skills/_emberprobe/probe-inventory");
+const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
+const { serializeError } = require("./services/errorEnvelope");
+const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 const {
     LiveWatchService,
     buildActiveReadPlan,
@@ -136,7 +141,12 @@ class MainViewProvider {
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => this._postConsumerStatuses(status, !!status.error),
             onError: (error) =>
-                this._postLive({ type: "liveError", key: error.i18nKey, message: error.message || String(error) }),
+                this._postLive({
+                    type: "liveError",
+                    key: error.i18nKey,
+                    message: error.message || String(error),
+                    diagnostic: serializeError(error)
+                }),
             onTargetState: (event) => this._handleManagedTargetState(event),
             beforePausedRead: () => this._quiesceManagedRuntimeRead()
         });
@@ -165,11 +175,17 @@ class MainViewProvider {
             cacheKeys: CACHE_KEYS,
             cleanPath: cleanWindowsPath,
             isSafeCfg: openocdRunner.isSafeCfg,
+            beforeChange: (values) => this._assertConnectionEditable(values),
             onChanged: async () => {
                 await this._refreshElfBindings();
                 this.updateView();
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
+        });
+        this._probeConnectionService = new ProbeConnectionService({
+            getConfig: () => this._configurationStore.snapshot(),
+            save: (values) => this._configurationStore.update(values),
+            window: vscode.window
         });
         this._cubemxFirmware = new CubeMxFirmware({
             vscode,
@@ -225,6 +241,7 @@ class MainViewProvider {
             coordinator: this._probeCoordinator,
             t: (key, params) => this._t(key, params),
             resolveExecutable: (executable) => this._resolveOpenOcdPath(executable),
+            prepareConnection: (options, interactive) => this._probeConnectionService.prepare(options, interactive),
             commandContext: () => this._commandContext(),
             onPost: (message) => this._webviewView?.webview.postMessage(message),
             onDiagnostics: (diag, info) => this._writeChipDiagnostics(diag, info),
@@ -247,7 +264,7 @@ class MainViewProvider {
             vscode,
             debugBridge: this._debugBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            startDebug: () => this.commandHandlers["mcu-vscode.debug"]()
+            startDebug: () => this.commandHandlers["mcu-vscode.debug"](undefined, undefined, false)
         });
         this._agentFlashService = new AgentFlashService({
             coordinator: this._probeCoordinator,
@@ -262,6 +279,7 @@ class MainViewProvider {
             onCall: () => this._warnIfSkillsModified(),
             handlers: {
                 "config.get": () => this._configurationSnapshot(),
+                "probe.list": () => listProbes(),
                 "config.set": (params) => this._setAgentConfiguration(params.values || {}),
                 "cubemx.detect": () => this._cubemxConfiguration.detect(),
                 "cubemx.inspect": (params) => this._cubemxService.inspect(params || {}),
@@ -313,7 +331,10 @@ class MainViewProvider {
                 "elf.analyze": (params) => this._analyzeElf(params || {}),
                 "peripherals.list": (params) => this._svdPeripheralService.list(params || {}),
                 "peripherals.read": (params) => this._svdPeripheralService.read(params || {}),
-                "peripherals.write": (params) => this._svdPeripheralService.write(params || {}),
+                "peripherals.write": (params) => {
+                    this._assertWriteSessionCurrent(this._debugBridge);
+                    return this._svdPeripheralService.write(params || {});
+                },
                 "debug.status": () => this._debugControlService.status(),
                 "debug.start": () => this._debugControlService.start(),
                 "debug.control": (params) => this._debugControlService.control(params || {}),
@@ -375,6 +396,7 @@ class MainViewProvider {
         return this._openOcdStatusService.refresh(showChecking);
     }
     async _handleOpenOcdAction(action) {
+        if (["select", "install"].includes(action)) this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
     }
     // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。
@@ -432,8 +454,65 @@ class MainViewProvider {
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
+        this.commandHandlers["mcu-vscode.configureProbeConnection"] = async () => {
+            this._assertConnectionEditable({ probeSerial: true });
+            const config = this._configurationStore.snapshot();
+            const selected = await vscode.window.showQuickPick(
+                [
+                    { label: this._t("probe.serial"), value: "probeSerial" },
+                    { label: this._t("probe.transport"), value: "transport" },
+                    { label: this._t("probe.speed"), value: "adapterSpeedKhz" }
+                ],
+                { title: this._t("probe.configure") }
+            );
+            if (!selected) return false;
+            let value;
+            if (selected.value === "transport") {
+                value = await vscode.window.showQuickPick(["swd", "jtag"], { title: this._t("probe.transport") });
+            } else if (selected.value === "probeSerial") {
+                const inventory = await listProbes();
+                /** @type {Array<{label: string, description: string, value: string}>} */
+                const choices = inventory.devices
+                    .filter((device) => device.serial)
+                    .map((device) => ({ label: device.serial, description: device.name, value: device.serial }));
+                choices.push({ label: this._t("probe.manualSerial"), description: "", value: "" });
+                const device = await vscode.window.showQuickPick(choices, { title: this._t("probe.serial") });
+                if (!device) return false;
+                value =
+                    device.value ||
+                    (await vscode.window.showInputBox({
+                        title: this._t("probe.serial"),
+                        value: config.probeSerial,
+                        validateInput: (input) => {
+                            try {
+                                return normalizeProbeSerial(input) ? undefined : this._t("probe.serialRequired");
+                            } catch (error) {
+                                return error.message;
+                            }
+                        }
+                    }));
+            } else {
+                value = await vscode.window.showInputBox({
+                    title: this._t("probe.speed"),
+                    prompt: this._t("probe.speedDefault"),
+                    value: String(config.adapterSpeedKhz),
+                    validateInput: (input) => {
+                        try {
+                            normalizeAdapterSpeed(input);
+                            return undefined;
+                        } catch (error) {
+                            return error.message;
+                        }
+                    }
+                });
+            }
+            if (value === undefined) return false;
+            await this._configurationStore.update({ [selected.value]: value });
+            return true;
+        };
         // 2. 选择调试器
         this.commandHandlers["mcu-vscode.selectDebugger"] = async () => {
+            this._assertConnectionEditable({ debugger: true });
             console.log("主进程执行选择调试器命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this._resolveOpenOcdPath(configured);
@@ -448,6 +527,13 @@ class MainViewProvider {
             quickPick.onDidChangeSelection(async (selection) => {
                 if (selection[0]) {
                     const debuggerCfg = selection[0].label;
+                    try {
+                        this._assertConnectionEditable({ debugger: debuggerCfg });
+                    } catch (error) {
+                        quickPick.dispose();
+                        vscode.window.showWarningMessage(error.message);
+                        return;
+                    }
                     await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
                     vscode.window.showInformationMessage(this._t("msg.debuggerSelected", { name: debuggerCfg }));
                     this.updateView();
@@ -459,6 +545,7 @@ class MainViewProvider {
         };
         // 3. 选择 MCU 核心（无修改）
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
+            this._assertConnectionEditable({ mcu: true });
             console.log("主进程执行选择 MCU 核心命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this._resolveOpenOcdPath(configured);
@@ -473,6 +560,13 @@ class MainViewProvider {
             quickPick.onDidChangeSelection(async (selection) => {
                 if (selection[0]) {
                     const mcuCore = selection[0].label;
+                    try {
+                        this._assertConnectionEditable({ mcu: mcuCore });
+                    } catch (error) {
+                        quickPick.dispose();
+                        vscode.window.showWarningMessage(error.message);
+                        return;
+                    }
                     await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
                     vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: mcuCore }));
                     this.updateView();
@@ -486,7 +580,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
         // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
-        this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration) => {
+        this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration, interactive = true) => {
             let probePrepared = false;
             let startAccepted = false;
             try {
@@ -541,7 +635,8 @@ class MainViewProvider {
                     openocdPath,
                     debuggerCfg,
                     mcuCore,
-                    vscode.workspace.getConfiguration("emberprobe")
+                    vscode.workspace.getConfiguration("emberprobe"),
+                    interactive
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
@@ -656,6 +751,10 @@ class MainViewProvider {
                         transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
+                        ...(await this._probeConnectionService.prepare(
+                            { executable, probe: debuggerCfg, target: mcuCore },
+                            true
+                        )),
                         cwd
                     },
                     (event) => {
@@ -683,7 +782,54 @@ class MainViewProvider {
         snapshot.svd = (await this._svdManager.peekBound())?.path || "";
         return snapshot;
     }
-    _authorizeAgentFlash(params) {
+    _assertConnectionEditable(values) {
+        const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
+        if (
+            keys.some((key) => Object.hasOwn(values, key)) &&
+            (this._liveSession || this._managedDebugServer || this._agentReadSession || this._debugBridge.hasAnySession)
+        )
+            throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
+                code: "PROBE_CONFIGURATION_BUSY"
+            });
+    }
+    connectionConfigurationChanged() {
+        this._probeConnectionService.markConfigurationChanged([
+            this._liveSession,
+            this._managedDebugServer,
+            this._agentReadSession,
+            this._debugBridge.activeSession
+        ]);
+        if (this._liveSession || this._managedDebugServer) this._postConsumerStatuses({});
+    }
+    _assertWriteSessionCurrent(session) {
+        const physical =
+            session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
+        if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
+        this._probeConnectionService.assertCurrent(physical);
+    }
+    _sessionWriteConnection(session) {
+        this._assertWriteSessionCurrent(session);
+        if (session === this._debugBridge) {
+            if (this._managedDebugServer?.options) return writeConnectionIdentity(this._managedDebugServer.options);
+            const active = this._debugBridge.activeSession;
+            return writeConnectionIdentity({
+                kind: "dap",
+                sessionId: active.id,
+                workspace: active.workspaceFolder?.uri?.fsPath || ""
+            });
+        }
+        return writeConnectionIdentity(session.options);
+    }
+    async _prepareWriteConnection() {
+        if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
+        if (this._debugBridge.canWrite) return this._sessionWriteConnection(this._debugBridge);
+        const config = this._configurationStore.snapshot();
+        const executable = await this._resolveOpenOcdPath(config.openocdPath);
+        return writeConnectionIdentity(
+            await this._probeConnectionService.prepare({ executable, probe: config.debugger, target: config.mcu })
+        );
+    }
+    async _authorizeAgentFlash(params) {
         const elfPath = canonicalFileSync(path.resolve(String(params.elf || "")));
         const sha256 = crypto.createHash("sha256").update(fs.readFileSync(elfPath)).digest("hex");
         if (sha256 !== String(params.elfSha256 || "")) {
@@ -696,13 +842,16 @@ class MainViewProvider {
                 code: "OPENOCD_CONFIGURATION_ERROR"
             });
         }
+        const connection = await prepareProbeConnection(params);
         return this._flashAuthorization.authorize(
             {
                 elf: { path: elfPath, sha256 },
                 transport: openocdScripts.normalizeTransport(params.transport),
                 target: params.target,
                 probe: params.probe,
-                openocd: params.openocd
+                openocd: connection.openocd,
+                probeSerial: connection.probeSerial,
+                adapterSpeedKhz: connection.adapterSpeedKhz
             },
             params.confirmationId
         );
@@ -1094,7 +1243,8 @@ class MainViewProvider {
         } else if (!deniedKey) this._runtimeDeniedKey = "";
         return plan.allowed;
     }
-    async _startManagedDebugServer(executable, probe, target, cfg) {
+    async _startManagedDebugServer(executable, probe, target, cfg, interactive = true) {
+        const connection = await this._probeConnectionService.prepare({ executable, probe, target }, interactive);
         let lastError = null;
         const inspect = typeof cfg.inspect === "function" ? cfg.inspect("tclPort") : null;
         const fixedTcl = !!(inspect && (inspect.workspaceValue !== undefined || inspect.globalValue !== undefined));
@@ -1110,6 +1260,7 @@ class MainViewProvider {
                     probe,
                     transport: cfg.get("transport", "auto"),
                     target,
+                    ...connection,
                     port: tclPort,
                     gdbPort,
                     mode: "debug",
@@ -1135,7 +1286,11 @@ class MainViewProvider {
                         }
                     },
                     onError: (message) =>
-                        this._postLive({ type: "liveError", message: message?.message || String(message) }),
+                        this._postLive({
+                            type: "liveError",
+                            message: message?.message || String(message),
+                            diagnostic: serializeError(message)
+                        }),
                     onDegraded: (error) =>
                         this._postConsumerStatuses(
                             {
@@ -1145,7 +1300,8 @@ class MainViewProvider {
                                 canRead: false,
                                 canWrite: false,
                                 snapshotReady: false,
-                                message: error?.message
+                                message: error?.message,
+                                diagnostic: serializeError(error)
                             },
                             true
                         ),
@@ -1158,7 +1314,8 @@ class MainViewProvider {
                                 canRead: false,
                                 canWrite: false,
                                 snapshotReady: false,
-                                message: error?.message
+                                message: error?.message,
+                                diagnostic: serializeError(error)
                             },
                             true
                         )
@@ -1439,6 +1596,11 @@ class MainViewProvider {
                         transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
+                        ...(await this._probeConnectionService.prepare({
+                            executable,
+                            probe: debuggerCfg,
+                            target: mcuCore
+                        })),
                         cwd,
                         port: await this._resolveTclPort(cfg),
                         intervalMs: 10000
@@ -1607,6 +1769,11 @@ class MainViewProvider {
     }
     // 会话内写入执行核心：写前读取 → 写入 → 回读校验，Agent 与侧边栏 UI 写入共用。
     async _executeWritePlan(session, source, plan) {
+        const connection = this._sessionWriteConnection(session);
+        if (!plan.connection || JSON.stringify(connection) !== JSON.stringify(writeConnectionIdentity(plan.connection)))
+            throw Object.assign(new Error("The active connection changed after write confirmation"), {
+                code: "WRITE_CONNECTION_CHANGED"
+            });
         const { elfResult, items } = plan;
         const transaction = await session.writeAndVerify(
             items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
@@ -1650,13 +1817,15 @@ class MainViewProvider {
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
         const plan = this._agentWritePlan(params.values);
+        plan.connection = await this._prepareWriteConnection();
         const authorization = this._writeAuthorization.authorize(plan, {
             confirmationId: params.confirmationId,
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
-        const result = await this._withAgentProbe(({ session, source }) =>
-            this._executeWritePlan(session, source, plan)
+        const result = await this._withAgentProbe(
+            ({ session, source }) => this._executeWritePlan(session, source, plan),
+            { allowPausedDebugRead: true }
         );
         let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
         if (authorization.remember) {
@@ -1682,6 +1851,7 @@ class MainViewProvider {
             throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
         }
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
+        plan.connection = this._sessionWriteConnection(session);
         if (dapSession)
             this._postConsumerStatuses(
                 dapSession.status({ mode: "debug-paused-writing", key: "live.dapWriting", canWrite: false })
@@ -1696,7 +1866,10 @@ class MainViewProvider {
         const action = String(params?.action || "status");
         if (action === "status") {
             try {
-                return this._writeAuthorization.status({ elfResult: this.readElfSymbols() });
+                return this._writeAuthorization.status({
+                    elfResult: this.readElfSymbols(),
+                    connection: await this._prepareWriteConnection()
+                });
             } catch {
                 return this._writeAuthorization.status();
             }
@@ -1732,6 +1905,11 @@ class MainViewProvider {
                     transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                     probe: debuggerCfg,
                     target: mcuCore,
+                    ...(await this._probeConnectionService.prepare({
+                        executable,
+                        probe: debuggerCfg,
+                        target: mcuCore
+                    })),
                     cwd
                 },
                 () => this.readElfSymbols().functions || []
@@ -2147,6 +2325,12 @@ class MainViewProvider {
     }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
     _postLive(message) {
+        if (message.type === "liveError" && message.message && typeof message.message === "object")
+            message = {
+                ...message,
+                diagnostic: serializeError(message.message),
+                message: message.message.message || String(message.message)
+            };
         for (const entry of this._livePanels.values()) entry.post(message);
         this._webviewView?.webview.postMessage(message);
     }
@@ -2369,7 +2553,7 @@ class MainViewProvider {
         }
         if (action === "start") {
             // Use the same watch union, probe ownership and UI notifications as the sidebar.
-            await this.startLiveWatch(undefined, params.intervalMs ?? this._liveIntervalMs, "sidebar");
+            await this.startLiveWatch(undefined, params.intervalMs ?? this._liveIntervalMs, "sidebar", false);
         } else if (action === "stop") {
             // Cancel temporary Agent reads as well as persistent sampling; leave debugging active.
             const agentStopped = this.stopAgentReadIfRunning();
@@ -2384,13 +2568,25 @@ class MainViewProvider {
     }
 
     _samplingStatus() {
-        return this._samplingCoordinator.status({
+        const status = this._samplingCoordinator.status({
             intent: this._samplingIntent,
             bridge: this._debugBridge,
             standaloneRunning: this._liveWatchRunning,
             managedServer: this._managedDebugServer,
             agentStatus: this._agentSamplingStatus
         });
+        const session = this._managedDebugServer || this._liveSession;
+        if (session?.options?.settingsIdentity) {
+            status.connection = writeConnectionIdentity(session.options);
+            try {
+                this._probeConnectionService.assertCurrent(session);
+            } catch (error) {
+                status.canWrite = false;
+                status.connectionStale = true;
+                status.diagnostic = serializeError(error);
+            }
+        }
+        return status;
     }
 
     async _refreshSamplingPlan() {
@@ -2472,7 +2668,7 @@ class MainViewProvider {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    async startLiveWatch(items, intervalMs, consumer = "graph") {
+    async startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
         if (this._downloadRunning)
             throw Object.assign(new Error(this._t("live.downloadRunning")), { i18nKey: "live.downloadRunning" });
         if (this._chipInfoRunning)
@@ -2566,6 +2762,10 @@ class MainViewProvider {
                     transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                     probe: debuggerCfg,
                     target: mcuCore,
+                    ...(await this._probeConnectionService.prepare(
+                        { executable, probe: debuggerCfg, target: mcuCore },
+                        interactive
+                    )),
                     cwd,
                     port: await this._resolveTclPort(cfg),
                     intervalMs: validation.clampInteger(intervalMs || cfg.get("sampleIntervalMs", 100), 100, 20, 10000)
@@ -2589,7 +2789,8 @@ class MainViewProvider {
                             {
                                 key: err && err.i18nKey,
                                 params: err && err.i18nParams,
-                                message: (err && err.message) || String(err)
+                                message: (err && err.message) || String(err),
+                                diagnostic: serializeError(err)
                             },
                             true
                         );
@@ -2619,7 +2820,15 @@ class MainViewProvider {
                 if (this._liveWatchRunning) this._liveWatchLease?.release();
             }
             this._liveConsumers.clear();
-            this._postConsumerStatuses({ key: error.i18nKey, params: error.i18nParams, message: error.message }, true);
+            this._postConsumerStatuses(
+                {
+                    key: error.i18nKey,
+                    params: error.i18nParams,
+                    message: error.message,
+                    diagnostic: serializeError(error)
+                },
+                true
+            );
             throw error;
         } finally {
             startingLease.release();
@@ -2907,6 +3116,7 @@ class MainViewProvider {
                             cmd: cmd,
                             key: error.i18nKey,
                             params: error.i18nParams,
+                            diagnostic: serializeError(error),
                             error: errorMsg
                         });
                     }
@@ -3091,6 +3301,7 @@ class MainViewProvider {
     }
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
+        if (force) this._assertConnectionEditable({ debugger: true, mcu: true });
         const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
         const result = await autoDetect.detectWorkspace(vscode);
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
@@ -3104,6 +3315,8 @@ class MainViewProvider {
         }
         if (result.elf && (force || !currentElf))
             await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
+        if ((result.debugger && (force || !currentDebugger)) || (result.mcu && (force || !currentMcu)))
+            this._assertConnectionEditable({ debugger: true, mcu: true });
         if (result.debugger && (force || !currentDebugger))
             await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
         if (result.mcu && (force || !currentMcu))
@@ -3137,6 +3350,16 @@ class MainViewProvider {
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
+                probeConnection: [
+                    /jlink/i.test(this._context.workspaceState.get(CACHE_KEYS.debugger) || "")
+                        ? vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "") ||
+                          this._t("probe.serialRequired")
+                        : "",
+                    vscode.workspace.getConfiguration("emberprobe").get("transport", "auto").toUpperCase(),
+                    vscode.workspace.getConfiguration("emberprobe").get("adapterSpeedKhz", 0) + " kHz"
+                ]
+                    .filter(Boolean)
+                    .join(" · "),
                 mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },
             this._lang

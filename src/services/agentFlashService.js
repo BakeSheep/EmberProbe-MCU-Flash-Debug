@@ -9,6 +9,7 @@ const { quoteTclWord } = require("../openocdRunner");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { runOpenOcdOnce } = require("./openocdExec");
 const { probeOpenOcdCompatibility } = require("../../skills/_emberprobe/flash-common");
+const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 
 class AgentFlashService {
     constructor(options) {
@@ -18,6 +19,7 @@ class AgentFlashService {
         this.resolveLaunch = options.resolveLaunch || resolveOpenOcdLaunch;
         this.check = options.check || probeOpenOcdCompatibility;
         this.run = options.run || runOpenOcdOnce;
+        this.prepare = options.prepare || prepareProbeConnection;
     }
 
     async execute(params, verify = false) {
@@ -35,6 +37,7 @@ class AgentFlashService {
             const launch = this.resolveLaunch(params.openocd, params.probe, params.target, params.transport);
             const compatible = await this.check(launch.executable);
             if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
+            const connection = await this.prepare(params, { resolveLaunch: () => launch });
             if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
             if (!verify) {
                 if (!params.confirmationId) throw new Error("Flash confirmation is required");
@@ -44,7 +47,9 @@ class AgentFlashService {
                         transport: params.transport,
                         target: params.target,
                         probe: params.probe,
-                        openocd: params.openocd
+                        openocd: connection.openocd,
+                        probeSerial: connection.probeSerial,
+                        adapterSpeedKhz: connection.adapterSpeedKhz
                     },
                     params.confirmationId
                 );
@@ -74,6 +79,9 @@ class AgentFlashService {
                 probe: params.probe,
                 target: params.target,
                 transport: params.transport,
+                probeSerial: connection.probeSerial,
+                adapterSpeedKhz: connection.adapterSpeedKhz,
+                inventory: connection.inventory,
                 resolveLaunch: () => launch,
                 buildCommands: () => commands,
                 timeoutMs: 120000,

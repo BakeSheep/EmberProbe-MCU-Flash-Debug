@@ -6,6 +6,12 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
 function makePlan(overrides = {}) {
     return {
         elfResult: { elf: { path: "firmware.elf", sha256: overrides.sha256 || "abc123" } },
+        connection: overrides.connection || {
+            probe: "jlink.cfg",
+            target: "stm32f1x.cfg",
+            transport: "swd",
+            probeSerial: "1234"
+        },
         items: [
             {
                 name: "kp",
@@ -53,6 +59,14 @@ function makePlan(overrides = {}) {
         (error) => error.code === "ELF_CHANGED_DURING_WRITE_CONFIRMATION"
     );
     const changedValue = auth.authorize(plan).response.confirmationId;
+    const changedProbe = auth.authorize(plan).response.confirmationId;
+    assert.throws(
+        () =>
+            auth.authorize(makePlan({ connection: { ...plan.connection, probeSerial: "5678" } }), {
+                confirmationId: changedProbe
+            }),
+        { code: "WRITE_CONFIRMATION_INVALID" }
+    );
     assert.throws(
         () => auth.authorize(makePlan({ bytes: [0, 0, 128, 63], value: 1 }), { confirmationId: changedValue }),
         (error) => error.code === "WRITE_CONFIRMATION_INVALID"
@@ -82,6 +96,7 @@ function makePlan(overrides = {}) {
     assert.strictEqual(auth.authorize(makePlan({ sha256: "changed" })).authorized, false);
     assert.strictEqual(auth.status(makePlan({ sha256: "changed" })).trusted, false);
     assert.strictEqual(auth.status().trusted, false, "status without current ELF must not claim trust");
+    assert.strictEqual(auth.isTrusted(makePlan({ connection: { ...plan.connection, probeSerial: "5678" } })), false);
     assert.strictEqual(auth.isTrusted({ elfResult: { elf: {} } }), false);
     await assert.rejects(() => auth.trustWorkspace({}), { code: "WRITE_CONFIRMATION_INVALID" });
     const savedTrust = values.get("agent.writeTrusted");

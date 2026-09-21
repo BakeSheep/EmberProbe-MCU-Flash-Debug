@@ -22,7 +22,7 @@ function makeFakeOpenOcd(dir) {
     const scripts = path.join(dir, "openocd", "scripts");
     fs.mkdirSync(path.join(scripts, "interface"), { recursive: true });
     fs.mkdirSync(path.join(scripts, "target", "geehy"), { recursive: true });
-    fs.writeFileSync(path.join(scripts, "interface", "cmsis-dap.cfg"), "");
+    fs.writeFileSync(path.join(scripts, "interface", "cmsis-dap.cfg"), "adapter driver cmsis-dap");
     fs.writeFileSync(path.join(scripts, "target", "geehy", "apm32f4x.cfg"), "");
     fs.mkdirSync(bin, { recursive: true });
     if (process.platform === "win32") {
@@ -36,7 +36,7 @@ function makeFakeOpenOcd(dir) {
     const file = path.join(bin, "fake-openocd.sh");
     fs.writeFileSync(
         file,
-        '#!/bin/sh\necho "Open On-Chip Debugger 0.12.0"\necho "ARGS:$@"\necho "EP_VERIFY OK"\nexit 0\n'
+        '#!/bin/sh\necho "Open On-Chip Debugger 0.12.0"\necho "ARGS:$@"\necho "EP_ADAPTERS_BEGIN"\necho "cmsis-dap { swd jtag }"\necho "EP_ADAPTERS_END"\necho "EP_ADAPTER_NAME=cmsis-dap"\necho "EP_VERIFY OK"\nexit 0\n'
     );
     fs.chmodSync(file, 0o755);
     return file;
@@ -129,6 +129,8 @@ function lastJsonLine(stdout) {
             target: "config",
             probe: "config",
             transport: "default",
+            probeSerial: "default",
+            adapterSpeedKhz: "default",
             openocd: "config"
         });
         const explicitTransport = firstJsonLine(
@@ -225,6 +227,8 @@ function lastJsonLine(stdout) {
                 target: "explicit",
                 probe: "explicit",
                 transport: "default",
+                probeSerial: "default",
+                adapterSpeedKhz: "default",
                 openocd: "explicit"
             });
             assert.ok(bareJson.diagnostics.length >= 2);
@@ -272,6 +276,8 @@ function lastJsonLine(stdout) {
                 target: "explicit",
                 probe: "explicit",
                 transport: "default",
+                probeSerial: "default",
+                adapterSpeedKhz: "default",
                 openocd: "explicit"
             });
             assert.strictEqual(
