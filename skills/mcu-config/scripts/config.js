@@ -6,11 +6,14 @@ function args(argv) {
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i];
         if (key === "--get") out.get = true;
+        else if (key === "--probes") out.probes = true;
         else if (key === "--workspace" || key === "--set") {
             if (!argv[i + 1]) throw new Error(`Missing value for ${key}`);
             out[key.slice(2)] = argv[++i];
         } else throw new Error(`Unknown argument: ${key}`);
     }
+    if ([out.get, out.probes, out.set !== undefined].filter(Boolean).length > 1)
+        throw new Error("Choose only one of --get, --set or --probes");
     return out;
 }
 
@@ -31,7 +34,7 @@ async function main() {
     const workspace = opt.workspace || process.cwd();
     const result = opt.set
         ? await call(workspace, "config.set", { values: parseSet(opt.set) })
-        : await call(workspace, "config.get", {});
+        : await call(workspace, opt.probes ? "probe.list" : "config.get", {});
     process.stdout.write(JSON.stringify(result) + "\n");
 }
 

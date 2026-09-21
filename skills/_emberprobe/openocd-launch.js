@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeProbeSerial, normalizeAdapterSpeed } = require("./probe-connection");
 
 function normalizeTransport(value = "auto") {
     if (!["auto", "swd", "jtag", "hla_swd", "hla_jtag"].includes(value)) {
@@ -12,16 +13,20 @@ function normalizeTransport(value = "auto") {
     return value;
 }
 
-function buildOpenOcdConfigArgs(launch, transport = "auto") {
+function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
     normalizeTransport(transport);
+    const serial = normalizeProbeSerial(connection.probeSerial);
+    const speed = normalizeAdapterSpeed(connection.adapterSpeedKhz);
     return [
         "-s",
         launch.scriptsRoot,
         "-f",
         launch.probePath,
+        ...(serial ? ["-c", `adapter serial ${serial}`] : []),
         ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
         "-f",
-        launch.targetPath
+        launch.targetPath,
+        ...(speed ? ["-c", `adapter speed ${speed}`] : [])
     ];
 }
 

@@ -1,0 +1,149 @@
+"use strict";
+const assert = require("assert");
+const {
+    resolveProbeConnection,
+    normalizeProbeSerial,
+    normalizeAdapterSpeed
+} = require("../skills/_emberprobe/probe-connection");
+const { parseWindowsInventory, parseMacInventory, listProbes } = require("../skills/_emberprobe/probe-inventory");
+const {
+    checkAdapterCapability,
+    prepareProbeConnection,
+    parseAdapterList
+} = require("../skills/_emberprobe/probe-preflight");
+const { buildOpenOcdConfigArgs } = require("../skills/_emberprobe/openocd-launch");
+
+async function main() {
+    const { args: configArgs } = require("../skills/mcu-config/scripts/config");
+    assert.strictEqual(configArgs(["--probes"]).probes, true);
+    assert.throws(() => configArgs(["--probes", "--set", "probeSerial=1234"]));
+    assert(require("../skills/_emberprobe/agent-client").isReadOnlyMethod("probe.list"));
+    const parent = "USB\\VID_1366&PID_0105\\123456789";
+    const devices = parseWindowsInventory(
+        JSON.stringify([
+            { instanceId: parent, name: "USB Composite Device" },
+            {
+                instanceId: "USB\\VID_1366&PID_0105&MI_00\\location",
+                parentId: parent.toLowerCase(),
+                name: "J-Link",
+                service: "JLink"
+            },
+            {
+                instanceId: "USB\\VID_1366&PID_0105&MI_02\\location",
+                parentId: parent,
+                name: "J-Link",
+                service: "WinUSB"
+            }
+        ])
+    );
+    assert.strictEqual(devices.length, 1, "composite interfaces are one physical probe");
+    assert.strictEqual(devices[0].serial, "123456789");
+    assert.strictEqual(devices[0].interfaces.length, 3);
+    assert.strictEqual(devices[0].interfaces[2].service, "WinUSB");
+    const unknown = parseWindowsInventory(JSON.stringify({ instanceId: "USB\\VID_1366&PID_0101\\6&abc&0&1" }));
+    assert.strictEqual(unknown[0].serial, "", "USB location is not a serial");
+    const mac = parseMacInventory(
+        JSON.stringify({
+            SPUSBDataType: [
+                {
+                    _items: [
+                        { vendor_id: "0x1366 (SEGGER)", product_id: "0x0101", _name: "J-Link", serial_num: "001234" }
+                    ]
+                }
+            ]
+        })
+    );
+    assert.strictEqual(mac[0].serial, "1234");
+    const linux = await listProbes({
+        platform: "linux",
+        readdir: async () => ["1-2", "1-2:1.0", "usb1"],
+        readFile: async (file) => {
+            if (file.endsWith("idVendor")) return "1366\n";
+            if (file.endsWith("serial")) return "1234\n";
+            throw new Error("unreadable optional attribute");
+        }
+    });
+    assert.strictEqual(linux.devices.length, 1);
+    assert.strictEqual(linux.devices[0].serial, "1234");
+    const unavailable = await listProbes({
+        platform: "win32",
+        run: async () => {
+            throw new Error("denied");
+        }
+    });
+    assert.strictEqual(unavailable.available, false);
+    assert.match(unavailable.notes[0], /denied/);
+
+    const config = { probe: "jlink.cfg", target: "stm32f1x.cfg", transport: "swd" };
+    const inventory = { available: true, devices };
+    assert.strictEqual(resolveProbeConnection(config, inventory).probeSerial, "123456789");
+    const fails = (options, list, code) =>
+        assert.throws(
+            () => resolveProbeConnection(options, list),
+            (error) => error.code === code
+        );
+    fails({ ...config, transport: "auto" }, inventory, "PROBE_TRANSPORT_REQUIRED");
+    fails(config, unavailable, "PROBE_SELECTION_REQUIRED");
+    fails({ ...config, probeSerial: "12" }, inventory, "PROBE_SELECTED_NOT_FOUND");
+    fails(config, { available: true, devices: [...devices, ...devices] }, "PROBE_SELECTION_REQUIRED");
+    fails(
+        { ...config, probeSerial: "123456789" },
+        { available: true, devices: [...devices, ...devices] },
+        "PROBE_IDENTITY_AMBIGUOUS"
+    );
+    assert.strictEqual(resolveProbeConnection({ ...config, probeSerial: "12" }, unavailable).probeSerial, "12");
+    for (const value of ["1; shutdown", "-1", "4294967296", "1.5"]) assert.throws(() => normalizeProbeSerial(value));
+    for (const value of [-1, 1.5, Infinity, "100; shutdown"]) assert.throws(() => normalizeAdapterSpeed(value));
+
+    const launch = {
+        executable: "openocd",
+        probePath: "/scripts/interface/jlink.cfg",
+        targetPath: "/scripts/target/stm32f1x.cfg",
+        scriptsRoot: "/scripts"
+    };
+    const calls = [];
+    const options = {
+        stat: async () => ({ mtimeMs: 1, size: 2 }),
+        readFile: async () => "adapter driver jlink",
+        run: async (_exe, args) => {
+            calls.push(args);
+            if (args.includes("-f")) return "EP_ADAPTER_NAME=jlink\n";
+            return "EP_ADAPTERS_BEGIN\njlink { jtag swd } st-link { dapdirect_swd }\nEP_ADAPTERS_END";
+        }
+    };
+    assert.deepStrictEqual(parseAdapterList("EP_ADAPTERS_BEGIN\njlink st-link\nEP_ADAPTERS_END"), ["jlink", "st-link"]);
+    assert.strictEqual((await checkAdapterCapability(launch, options)).adapterFamily, "jlink");
+    assert(
+        calls.every((args) => args.includes("noinit") && !args.includes("init") && !args.includes(launch.targetPath))
+    );
+    await assert.rejects(
+        checkAdapterCapability(launch, {
+            ...options,
+            run: async () => "EP_ADAPTERS_BEGIN\ncmsis-dap { swd }\nEP_ADAPTERS_END"
+        }),
+        (error) => error.code === "PROBE_DRIVER_MISSING"
+    );
+    const prepared = await prepareProbeConnection(config, {
+        resolveLaunch: () => launch,
+        checkCapability: async () => ({ adapterFamily: "jlink" }),
+        listProbes: async () => inventory
+    });
+    assert.strictEqual(prepared.probeSerial, "123456789");
+    const args = buildOpenOcdConfigArgs(launch, "swd", { probeSerial: "1234", adapterSpeedKhz: 100 });
+    const order = [
+        launch.probePath,
+        "adapter serial 1234",
+        "transport select swd",
+        launch.targetPath,
+        "adapter speed 100"
+    ].map((item) => args.indexOf(item));
+    assert(
+        order.every((index, i) => index >= 0 && (!i || index > order[i - 1])),
+        "connection order is interface/serial/transport/target/speed"
+    );
+    console.log("Probe inventory, identity and preflight tests passed");
+}
+main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

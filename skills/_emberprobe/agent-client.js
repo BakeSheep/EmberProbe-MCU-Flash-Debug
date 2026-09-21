@@ -414,6 +414,7 @@ const DIAGNOSTICS = {
 const READ_ONLY_METHODS = new Set([
     "cubemx.inspect",
     "config.get",
+    "probe.list",
     "chip.read",
     "fault.read",
     "elf.analyze",

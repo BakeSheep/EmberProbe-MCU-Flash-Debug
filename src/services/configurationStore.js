@@ -2,6 +2,7 @@
 const fs = require("fs");
 const { normalizeTransport } = require("../openocdScripts");
 const path = require("path");
+const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
 
 const ALLOWED_KEYS = new Set([
     "elf",
@@ -12,6 +13,8 @@ const ALLOWED_KEYS = new Set([
     "cubemxPath",
     "openocdPath",
     "transport",
+    "probeSerial",
+    "adapterSpeedKhz",
     "sampleIntervalMs",
     "tclPort",
     "maxSamples"
@@ -46,6 +49,7 @@ class ConfigurationStore {
         this.cleanPath = options.cleanPath;
         this.isSafeCfg = options.isSafeCfg;
         this.onChanged = options.onChanged || (() => {});
+        this.beforeChange = options.beforeChange || (() => {});
     }
 
     snapshot() {
@@ -56,6 +60,8 @@ class ConfigurationStore {
             mcu: this.context.workspaceState.get(this.cacheKeys.mcuCore) || "",
             svd: this.context.workspaceState.get(this.cacheKeys.svdPath) || "",
             transport: cfg.get("transport", "auto"),
+            probeSerial: cfg.get("probeSerial", ""),
+            adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
@@ -101,6 +107,7 @@ class ConfigurationStore {
             throw Object.assign(new Error("Configuration values must be an object"), { code: "INVALID_CONFIG_VALUE" });
         const cfg = this.vscode.workspace.getConfiguration("emberprobe");
         const operations = [];
+        await this.beforeChange(values);
         const state = this.context.workspaceState;
         const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger", iocPath: "iocPath" };
         const addState = (key, value) => {
@@ -134,6 +141,10 @@ class ConfigurationStore {
                 addState(key, value);
             } else if (key === "transport") {
                 addSetting(key, normalizeTransport(value));
+            } else if (key === "probeSerial") {
+                addSetting(key, normalizeProbeSerial(value));
+            } else if (key === "adapterSpeedKhz") {
+                addSetting(key, normalizeAdapterSpeed(value));
             } else if (NUMBER_RANGES[key]) {
                 const [min, max] = NUMBER_RANGES[key];
                 const number = Number(value);

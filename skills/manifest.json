@@ -8,7 +8,10 @@
     "openocd-diagnostics.js",
     "openocd-launch.js",
     "openocd-policy.js",
-    "probe-detection.js"
+    "probe-detection.js",
+    "probe-connection.js",
+    "probe-inventory.js",
+    "probe-preflight.js"
   ],
   "legacySkills": [
     {

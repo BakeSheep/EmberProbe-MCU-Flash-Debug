@@ -157,6 +157,18 @@
           "scope": "machine",
           "description": "Standalone STM32CubeMX executable path (Windows: STM32CubeMX.exe; Linux: STM32CubeMX), shared by workspaces on this machine. Detected automatically on Windows and Linux."
         },
+        "emberprobe.probeSerial": {
+          "type": "string",
+          "default": "",
+          "description": "J-Link 序列号；多设备必须明确选择，连接时不会回退到其他设备。"
+        },
+        "emberprobe.adapterSpeedKhz": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647,
+          "default": 0,
+          "description": "调试链路时钟（kHz）；0 使用 OpenOCD 脚本默认值，不是变量采样频率。"
+        },
         "emberprobe.transport": {
           "type": "string",
           "enum": [
@@ -167,7 +179,7 @@
             "hla_jtag"
           ],
           "default": "auto",
-          "description": "OpenOCD 传输协议；auto 保留探针脚本默认值。J-Link 仅接 SWD 时请选择 swd。HLA 探针使用对应 hla_* 协议。"
+          "description": "OpenOCD 传输协议；J-Link 必须按接线明确选择 swd 或 jtag。其他探针的 auto 保留脚本默认值；HLA 探针使用对应 hla_* 协议。"
         },
         "emberprobe.gdbPath": {
           "type": "string",
