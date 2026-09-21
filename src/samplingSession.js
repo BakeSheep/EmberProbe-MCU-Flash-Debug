@@ -2,6 +2,7 @@
 const path = require("path");
 const { Worker } = require("worker_threads");
 const { clampInteger } = require("./validation");
+const { deserializeError } = require("./services/errorEnvelope");
 class SamplingSession {
     constructor(options, handlers = {}, workerPath = path.join(__dirname, "samplingWorker.js")) {
         this.options = options;
@@ -33,12 +34,14 @@ class SamplingSession {
                 }
             } else if (message.event) {
                 if (message.event === "onDisconnect" || message.event === "onDegraded") this.samplingEnabled = false;
+                if (["onDisconnect", "onDegraded", "onError"].includes(message.event) && message.args[0]?.message)
+                    message.args[0] = deserializeError(message.args[0]);
                 this.handlers[message.event]?.(...message.args);
             } else {
                 const request = this.pending.get(message.id);
                 if (!request) return;
                 this.pending.delete(message.id);
-                if (message.error) request.reject(Object.assign(new Error(message.error.message), message.error));
+                if (message.error) request.reject(deserializeError(message.error));
                 else request.resolve({ result: message.result, state: message.state });
             }
         });

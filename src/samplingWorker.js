@@ -1,6 +1,7 @@
 "use strict";
 const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { ManagedOpenOcdSession } = require("./liveWatch");
+const { serializeError } = require("./services/errorEnvelope");
 
 // The socket, command queue, sampling clock and write exclusion all have one owner.
 function run(port, options, makeSession = (config, handlers) => new ManagedOpenOcdSession(null, config, handlers)) {
@@ -15,7 +16,12 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         stopped: session.stopped,
         childPid: session.child?.pid
     });
-    const event = (name, args) => port.postMessage({ event: name, args, state: state() });
+    const event = (name, args) =>
+        port.postMessage({
+            event: name,
+            args: args.map((value) => (value instanceof Error ? serializeError(value) : value)),
+            state: state()
+        });
     const session = makeSession(
         { ...options, isolated: false },
         {
@@ -72,7 +78,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         } catch (error) {
             port.postMessage({
                 id,
-                error: { message: error.message, code: error.code, details: error.details },
+                error: serializeError(error),
                 state: state()
             });
         }

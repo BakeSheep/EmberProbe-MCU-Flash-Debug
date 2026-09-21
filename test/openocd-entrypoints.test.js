@@ -60,6 +60,8 @@ function load(file, overrides) {
         probe: "jlink.cfg",
         target: "stm32f4x.cfg",
         transport: "swd",
+        probeSerial: "1234",
+        adapterSpeedKhz: 100,
         port: 16666
     };
     const vscode = {
@@ -80,8 +82,11 @@ function load(file, overrides) {
     }
     assert.strictEqual(captured.length, 5, "Each failed operation starts exactly once");
     for (const args of captured) {
+        assert(args.indexOf("/scripts/interface/jlink.cfg") < args.indexOf("adapter serial 1234"));
+        assert(args.indexOf("adapter serial 1234") < args.indexOf("transport select swd"));
         assert(args.indexOf("/scripts/interface/jlink.cfg") < args.indexOf("transport select swd"));
         assert(args.indexOf("transport select swd") < args.indexOf("/scripts/target/stm32f4x.cfg"));
+        assert(args.indexOf("/scripts/target/stm32f4x.cfg") < args.indexOf("adapter speed 100"));
     }
     console.log("OpenOCD entrypoint transport and diagnostic tests passed");
 })().catch((error) => {

@@ -3,18 +3,9 @@ const http = require("http");
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
+const { serializeError: serializeDiagnostic } = require("./services/errorEnvelope");
 
 const MAX_BODY = 64 * 1024;
-const ERROR_FIELDS = [
-    "category",
-    "stage",
-    "likelyCause",
-    "retryable",
-    "suggestedActions",
-    "details",
-    "i18nKey",
-    "i18nParams"
-];
 
 function jsonReplacer(_key, value) {
     if (typeof value === "number" && !Number.isFinite(value)) {
@@ -29,14 +20,7 @@ function stringifyJson(value, space) {
 }
 
 function serializeError(error) {
-    const result = {
-        code: error?.code || "BRIDGE_ERROR",
-        message: error?.message || String(error)
-    };
-    for (const field of ERROR_FIELDS) {
-        if (error?.[field] !== undefined) result[field] = error[field];
-    }
-    return result;
+    return { code: error?.code || "BRIDGE_ERROR", ...serializeDiagnostic(error) };
 }
 
 class AgentBridge {

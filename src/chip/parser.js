@@ -80,6 +80,8 @@ function createChipParser(target) {
         // 调试连接
         probeName: "",
         probeVersion: "",
+        probeHardwareVersion: "",
+        probeFirmware: "",
         probe: "",
         transport: "",
         clock: "",
@@ -188,8 +190,14 @@ function createChipParser(target) {
             if (v && !info.probeVersion) info.probeVersion = v[1];
         } else if (/J-?Link/i.test(clean)) {
             if (!info.probeName) info.probeName = "J-Link";
+            if (/compiled/i.test(clean)) info.probeFirmware = clean.replace(/^.*?Info\s*:\s*/i, "");
         } else if (/DAPLink/i.test(clean)) {
             if (!info.probeName) info.probeName = "DAPLink";
+        }
+        const hardwareVersion = clean.match(/Hardware version:\s*([\d.]+)/i);
+        if (hardwareVersion && info.probeName === "J-Link") {
+            info.probeHardwareVersion = hardwareVersion[1];
+            info.probeVersion = hardwareVersion[1];
         }
         // 7) 传输协议（日志兜底：DAP 打印 SWD DPIDR；JTAG 打印 JTAG tap:）
         if (!transportLog) {

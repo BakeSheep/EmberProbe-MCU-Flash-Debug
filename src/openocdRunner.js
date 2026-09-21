@@ -39,15 +39,15 @@ function parseLine(line) {
             clock: match[1]
         };
     // 目标电压：Info : Target voltage: 3.239000（≈0 视为目标板未供电）
-    if ((match = clean.match(/target voltage:?\s*=?\s*([\d.]+)/i))) {
-        const volts = Number(match[1]);
+    const volts = parseTargetVoltage(clean);
+    if (volts !== null) {
         return {
             stage: "voltage",
             level: volts > 0.5 ? "info" : "error",
             message:
                 volts > 0.5
                     ? `目标电压 ${volts.toFixed(2)} V`
-                    : `目标电压异常（${volts.toFixed(2)} V），目标板可能未供电`,
+                    : `参考电压异常（${volts.toFixed(2)} V），请核对供电、VTref 接线与探针测量能力`,
             key: volts > 0.5 ? "run.voltage" : "run.voltageLow",
             params: { volts: volts.toFixed(2) },
             volts
@@ -122,7 +122,12 @@ function parseLine(line) {
     return null;
 }
 
-const { diagnoseOpenOcdFailure, hintForErrors } = require("../skills/_emberprobe/openocd-diagnostics");
+const {
+    diagnoseOpenOcdFailure,
+    hintForErrors,
+    parseTargetVoltage,
+    connectionDetails
+} = require("../skills/_emberprobe/openocd-diagnostics");
 
 // 复用同一个终端，避免每次下载都新建终端导致堆叠
 let sharedTerminal = null;
@@ -174,7 +179,7 @@ function runOpenOcd(vscode, options, onProgress) {
         const programCmd = `program ${quoteTclWord(elfPath)} verify reset exit`;
         const preserveWorkArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
         const args = [
-            ...buildOpenOcdConfigArgs(launch, options.transport),
+            ...buildOpenOcdConfigArgs(launch, options.transport, options),
             "-c",
             "bindto 127.0.0.1",
             "-c",
@@ -345,7 +350,7 @@ function runOpenOcd(vscode, options, onProgress) {
                     print("  未解析到明确错误，OpenOCD 末尾输出：");
                     for (const raw of rawTail.slice(-5)) print(`  ${raw}`, "\x1b[2m");
                 }
-                const diagnostic = diagnoseOpenOcdFailure(rawTail, { probe: options.probe, exitCode: code });
+                const diagnostic = diagnoseOpenOcdFailure(rawTail, { ...connectionDetails(options), exitCode: code });
                 reject(Object.assign(new Error(lastError || failureText), diagnostic));
             }
         });

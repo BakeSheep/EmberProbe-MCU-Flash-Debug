@@ -64,6 +64,7 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
             isDebugActive: () => false,
             resolveLaunch: () => ({ executable: "fake" }),
             check: async () => ({ compatible: true }),
+            prepare: async (params) => params,
             run: async (options) => {
                 runs++;
                 assert.strictEqual(options.transport, "swd");
@@ -160,8 +161,14 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
             );
             assert.strictEqual(result.code, code);
             assert.strictEqual(result.details.openocdTail.length, 8);
-            assert.strictEqual(result.suggestedActions.join(" ").includes("SEGGER"), platform === "win32");
-            assert.strictEqual(result.suggestedActions.join(" ").includes("udev"), platform === "linux");
+            assert.strictEqual(
+                result.suggestedActions.join(" ").includes("SEGGER"),
+                platform === "win32" && usb === "NOT_SUPPORTED"
+            );
+            assert.strictEqual(
+                result.suggestedActions.join(" ").includes("udev"),
+                platform === "linux" && ["ACCESS", "NOT_SUPPORTED"].includes(usb)
+            );
         }
     }
     for (const volts of ["3.300000", "3.291", "1.800000", "unknown"]) {

@@ -1,4 +1,19 @@
 "use strict";
+function connectionDetails(options) {
+    return {
+        probe: options.probe,
+        target: options.target,
+        transport: options.transport || "auto",
+        probeSerial: options.probeSerial || "",
+        adapterSpeedKhz: options.adapterSpeedKhz || 0,
+        ...(options.inventory ? { inventory: options.inventory } : {})
+    };
+}
+
+function parseTargetVoltage(line) {
+    const match = String(line || "").match(/(?:target voltage|vtarget)\s*:?\s*=?\s*(\d+(?:\.\d+)?)/i);
+    return match ? Number(match[1]) : null;
+}
 
 // 将 OpenOCD 原始日志归一化为稳定的机器可读诊断，供 UI 与 Agent Skills 共用。
 // 匹配顺序很重要：目标芯片未连接与调试器未找到是两类完全不同的故障。
@@ -13,17 +28,18 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
     const tail = retained.slice(-8).map((line) => line.slice(0, 500));
     const text = retained.join("\n").toLowerCase();
     const platform = details.platform || process.platform;
-    const usbActions = ["检查探针 USB 连接及所选型号。", "关闭可能占用探针的其他调试程序。"];
+    const usbActions = ["检查探针 USB 连接、所选序列号与实际接口。"];
+    const driverActions = [...usbActions];
     if (platform === "win32") {
-        usbActions.push(
-            /jlink/i.test(details.probe || "")
+        driverActions.push(
+            /j[- ]?link/i.test(details.probe || "")
                 ? "旧款 J-Link 的 SEGGER 驱动可能与 OpenOCD 不兼容；核对实际 USB 接口与驱动绑定。替换驱动可能影响原有 SEGGER 工具，请先确认型号和恢复方法。"
                 : "核对探针型号与 USB 驱动绑定，勿直接替换其他 USB 接口的驱动。"
         );
     } else if (platform === "linux") {
-        usbActions.push("安装 OpenOCD udev 规则并重新加载、插拔设备，检查当前用户的设备访问权限。");
+        driverActions.push("检查 OpenOCD udev 规则和当前用户的设备访问权限。");
     } else {
-        usbActions.push("检查系统是否识别探针，以及其他调试软件是否占用设备。");
+        driverActions.push("检查系统是否识别探针，以及其他调试软件是否占用设备。");
     }
     const make = (code, category, likelyCause, suggestedActions, retryable = true) => ({
         code,
@@ -44,18 +60,34 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "OPENOCD_TRANSPORT_INVALID",
             "configuration",
             "所选传输协议不受探针或 OpenOCD 配置支持。",
-            ["检查 emberprobe.transport；按接线选择 SWD/JTAG，或恢复 auto 使用脚本默认值。"],
+            ["检查 emberprobe.transport；按实际接线明确选择受支持的 SWD/JTAG 协议。"],
             false
         );
     }
     // USB root causes take precedence over the generic init/target failure that follows.
-    if (/libusb_error_busy|usb.*(?:resource busy|already in use)/.test(text)) {
-        return make("PROBE_BUSY", "resource_conflict", "调试探针正被其他程序占用。", usbActions, false);
+    if (/libusb_error_busy|(?:usb|device).*(?:resource busy|already in use)/.test(text)) {
+        return make(
+            "PROBE_BUSY",
+            "resource_conflict",
+            "调试探针正被其他程序占用。",
+            ["结束 Ozone、J-Link Commander 或其他程序中使用该探针的会话，再手动重试。"],
+            false
+        );
     }
     if (
         /libusb_error_access|libusb.*(?:access|permission)|access denied|permission denied|usb_open.*access/.test(text)
     ) {
-        return make("PROBE_PERMISSION_DENIED", "probe_connection", "操作系统拒绝访问调试探针。", usbActions, false);
+        return make(
+            "PROBE_PERMISSION_DENIED",
+            "probe_connection",
+            "操作系统拒绝访问调试探针。",
+            [
+                platform === "linux"
+                    ? "检查 OpenOCD udev 规则和当前用户的设备访问权限。"
+                    : "检查设备访问权限和占用情况。"
+            ],
+            false
+        );
     }
     if (/libusb_error_no_device/.test(text)) {
         return make("PROBE_DISCONNECTED", "probe_connection", "USB 探针已断开或设备已不可用。", usbActions, false);
@@ -65,7 +97,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "PROBE_DRIVER_UNSUPPORTED",
             "probe_connection",
             "当前 USB 驱动或接口不支持 OpenOCD 所需的访问方式。",
-            usbActions,
+            driverActions,
             false
         );
     }
@@ -74,7 +106,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "PROBE_NOT_FOUND",
             "probe_connection",
             "OpenOCD 无法打开所需 USB 设备或接口；需核对连接与驱动。",
-            usbActions,
+            [...usbActions, "核对设备是否断开、接口选择与驱动绑定；未找到设备不能单独证明驱动不兼容。"],
             false
         );
     }
@@ -97,14 +129,37 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "必要时在 EmberProbe 配置中更换 Tcl 端口。"
         ]);
     }
-    const voltages = [...text.matchAll(/target voltage\s*:?\s*=?\s*(\d+(?:\.\d+)?)/g)];
+    // Probe/open failures must win over the generic 'init failed' that follows.
     if (
-        voltages.some((match) => Number(match[1]) <= 0.5) ||
+        /no (?:j-?link|.*probe).*?(?:device )?found|unable to find.*(?:cmsis|dap|st-?link|j-?link|probe)|no device found|libusb_open.*(?:not found|no device)/.test(
+            text
+        )
+    ) {
+        return make(
+            "PROBE_NOT_FOUND",
+            "probe_connection",
+            "OpenOCD 未找到或无法访问所选调试探针。",
+            [...usbActions, "关闭可能占用探针的其他调试会话；核对驱动，但不要仅凭此错误替换驱动。"],
+            false
+        );
+    }
+    if (/(?:failed|unable) to open.*(?:probe|device)|open failed.*(?:probe|device)/.test(text)) {
+        return make(
+            "PROBE_OPEN_FAILED",
+            "probe_connection",
+            "OpenOCD 无法打开调试探针；原因尚未确定。",
+            [...usbActions, "保留打开失败的原始日志，分别核对权限、占用和驱动兼容性。"],
+            false
+        );
+    }
+    const voltages = retained.map(parseTargetVoltage).filter((volts) => volts !== null);
+    if (
+        voltages.some((volts) => volts <= 0.5) ||
         /voltage.*too low|unpowered|not powered|target power.*(?:off|low)/.test(text)
     ) {
-        return make("TARGET_UNPOWERED", "target_connection", "目标板未供电或目标电压过低。", [
+        return make("TARGET_UNPOWERED", "target_connection", "探针报告参考电压过低；需核对目标供电与测量能力。", [
             "检查目标板电源。",
-            "检查探针 VCC/GND 与目标板共地连接。"
+            "检查探针 VTref/GND 接线；J-Link OB 测量能力未知时，零读数不能单独证明目标断电。"
         ]);
     }
     if (
@@ -122,17 +177,6 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
                 "可尝试降低 adapter speed 后重试。"
             ]
         );
-    }
-    if (
-        /unable to find.*(?:cmsis|dap|st-?link|j-?link|probe)|no device found|no .*probe.*found|libusb_open.*(?:not found|no device)|open failed.*(?:probe|device)|unable to open.*(?:probe|device)/.test(
-            text
-        )
-    ) {
-        return make("PROBE_NOT_FOUND", "probe_connection", "OpenOCD 未找到或无法打开配置的调试探针。", [
-            "检查探针 USB 连接。",
-            "确认 EmberProbe 中选择的调试器型号正确。",
-            "关闭可能占用探针的其他调试软件。"
-        ]);
     }
     if (/timed? ?out|timeout/.test(text)) {
         return make("OPENOCD_CONNECTION_TIMEOUT", "connection_timeout", "OpenOCD 与探针或目标 MCU 通信超时。", [
@@ -183,4 +227,4 @@ function hintForErrors(lines, details = {}) {
     return result.suggestedActions.join(" ");
 }
 
-module.exports = { diagnoseOpenOcdFailure, hintForErrors };
+module.exports = { diagnoseOpenOcdFailure, hintForErrors, parseTargetVoltage, connectionDetails };

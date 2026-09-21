@@ -1,7 +1,7 @@
 "use strict";
 const { buildOpenOcdConfigArgs } = require("../openocdScripts");
 
-const { diagnoseOpenOcdFailure } = require("../../skills/_emberprobe/openocd-diagnostics");
+const { diagnoseOpenOcdFailure, connectionDetails } = require("../../skills/_emberprobe/openocd-diagnostics");
 const { spawn } = require("child_process");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 
@@ -37,7 +37,7 @@ function runOpenOcdOnce(options) {
         return Promise.reject(error);
     }
     const args = [
-        ...buildOpenOcdConfigArgs(launch, options.transport),
+        ...buildOpenOcdConfigArgs(launch, options.transport, options),
         "-c",
         "bindto 127.0.0.1",
         "-c",
@@ -82,7 +82,7 @@ function runOpenOcdOnce(options) {
                     exitCode,
                     openocdTail: openocdTail.slice(),
                     commands: commands.slice(),
-                    diagnostic: diagnoseOpenOcdFailure(diagnosticLines, { probe: options.probe, exitCode })
+                    diagnostic: diagnoseOpenOcdFailure(diagnosticLines, { ...connectionDetails(options), exitCode })
                 });
         };
         const handleLine = (raw) => {

@@ -20,7 +20,17 @@ const CHIP_GROUPS = Object.freeze({
         "uid",
         "endian"
     ],
-    debug: ["probeName", "probeVersion", "probe", "transport", "clock", "voltage", "targetName"],
+    debug: [
+        "probeName",
+        "probeVersion",
+        "probeHardwareVersion",
+        "probeFirmware",
+        "probe",
+        "transport",
+        "clock",
+        "voltage",
+        "targetName"
+    ],
     runtime: ["targetState", "haltReason", "pc", "sp", "lr"]
 });
 

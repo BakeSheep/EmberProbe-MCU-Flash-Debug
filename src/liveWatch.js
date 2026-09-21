@@ -10,6 +10,7 @@ const { spawn } = require("child_process");
 const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
+const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
@@ -294,7 +295,7 @@ class ManagedOpenOcdSession {
             this.options.transport
         );
         const args = [
-            ...buildOpenOcdConfigArgs(launch, this.options.transport),
+            ...buildOpenOcdConfigArgs(launch, this.options.transport, this.options),
             "-c",
             "bindto 127.0.0.1",
             "-c",
@@ -348,7 +349,7 @@ class ManagedOpenOcdSession {
                         this._abortConnection(
                             Object.assign(
                                 new Error("Debugger disconnected; live sampling stopped"),
-                                diagnoseOpenOcdFailure(this._openOcdLogTail, { probe: this.options.probe }),
+                                diagnoseOpenOcdFailure(this._openOcdLogTail, connectionDetails(this.options)),
                                 {
                                     i18nKey: "live.probeDisconnected"
                                 }
@@ -402,7 +403,7 @@ class ManagedOpenOcdSession {
             this.stopped = true;
             if (!expected) {
                 const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
-                    probe: this.options.probe,
+                    ...connectionDetails(this.options),
                     exitCode: code,
                     port
                 });
@@ -490,7 +491,7 @@ class ManagedOpenOcdSession {
             if (this.stopped) throw this.connectionError || new Error("OpenOCD service exited before Tcl was ready");
             if (!this.child || Date.now() >= deadline) {
                 const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
-                    probe: this.options.probe,
+                    ...connectionDetails(this.options),
                     port: clampInteger(this.options.port, 6666, 1, 65535)
                 });
                 throw Object.assign(new Error(diagnostic.message), diagnostic);
@@ -531,7 +532,7 @@ class ManagedOpenOcdSession {
                     if (this.stopped) reject(this.connectionError || new Error("已停止"));
                     else if (Date.now() > deadline) {
                         const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
-                            probe: this.options.probe,
+                            ...connectionDetails(this.options),
                             port
                         });
                         reject(Object.assign(new Error(diagnostic.message), diagnostic));
