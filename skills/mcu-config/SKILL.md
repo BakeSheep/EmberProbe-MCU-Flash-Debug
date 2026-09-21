@@ -29,9 +29,11 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
    node <skill-dir>/scripts/config.js --workspace <workspace> --set debugger=cmsis-dap.cfg,mcu=stm32f4x.cfg
    ```
 
-3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `transport`, `sampleIntervalMs`, `tclPort`, and `maxSamples`. `iocPath` selects an existing workspace `.ioc`; it does not edit its contents. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
+3. Supported keys are `elf`, `debugger`, `mcu`, `svd`, `iocPath`, `transport`, `probeSerial`, `adapterSpeedKhz`, `sampleIntervalMs`, `tclPort`, and `maxSamples`. `iocPath` selects an existing workspace `.ioc`; it does not edit its contents. Use `mcu-cubemx` for initialization configuration and code generation. `openocdPath` and `cubemxPath` are read-only through the Agent Bridge; instruct the user to change executable paths in VS Code settings or the EmberProbe sidebar instead.
 4. Report the normalized configuration returned by EmberProbe. The extension validates paths, configuration names, numeric ranges, and synchronizes the sidebar immediately.
 5. On failure, parse the stderr JSON diagnostic and report its `error.code`, `likelyCause`, and `suggestedActions`. Do not guess a hardware or service cause for configuration-validation errors.
+
+For J-Link, `--probes` calls `probe.list` and reads OS USB metadata without opening the debug interface. It returns `available`, physical `devices` and `notes`; unreadable fields remain unknown. Select a decimal `probeSerial` and explicit `transport=swd` or `transport=jtag` according to the user's board wiring. `adapterSpeedKhz=0` uses the script default. Do not infer compatibility from “V9/V10” alone. Stop an active session before changing connection settings; do not bypass `PROBE_CONFIGURATION_BUSY` or `PROBE_SESSION_STALE` by editing storage. Configuration and enumeration do not authorize driver replacement.
 
 ## CubeMX, IOC and firmware packages
 

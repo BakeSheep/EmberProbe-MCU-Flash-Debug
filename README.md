@@ -2,6 +2,8 @@
 
 EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD，提供固件烧录、目标自动识别与实时变量观测。
 
+J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.md)：序列号、SWD/JTAG、速度、Ozone 占用和 USB 驱动诊断。
+
 > [English documentation](README_EN.md)
 
 ## 功能特性

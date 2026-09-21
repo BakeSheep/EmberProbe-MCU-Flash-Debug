@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增 J-Link 序列号选择、显式 SWD/JTAG 与调试速度配置、连接预检和可复制诊断；写入授权绑定连接身份，配置变更后阻止旧会话写入。
+- Added J-Link serial selection, explicit transport and adapter speed, connection preflight and copyable diagnostics; write authorization binds the connection and rejects writes from sessions with changed settings.
+- 修复 J-Link 原生日志、VTarget 和 Worker 错误详情处理；HIL 复用正式连接参数并要求明确校验成功标记。
+- Fixed native J-Link log, VTarget and worker error handling; HIL uses production connection arguments and requires an explicit verification success marker.
+
 ## [0.7.9] - 2026-09-18
 
 - 新增 Linux CubeMX 自动发现、配置、固件包检测与安装、隔离生成和深度检查；工具链检测支持重新读取用户 shell 的 PATH。

@@ -4,6 +4,8 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { isSafeCfg, quoteTclWord } = require("../../src/openocdRunner");
+const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
+const { buildOpenOcdConfigArgs } = require("../../skills/_emberprobe/openocd-launch");
 
 function required(name) {
     const value = String(process.env[name] || "").trim();
@@ -19,7 +21,7 @@ function runOpenOcd(executable, args, timeoutMs) {
         const child = spawn(executable, args, { shell: false, windowsHide: true });
         let output = "";
         const collect = (chunk) => {
-            output += chunk.toString();
+            output = (output + chunk.toString()).slice(-256 * 1024);
         };
         child.stdout.on("data", collect);
         child.stderr.on("data", collect);
@@ -51,7 +53,7 @@ function runOpenOcd(executable, args, timeoutMs) {
     });
 }
 
-async function main() {
+async function main(dependencies = {}) {
     if (process.env.EMBERPROBE_HIL_CONFIRM !== "YES") {
         throw Object.assign(new Error("Set EMBERPROBE_HIL_CONFIRM=YES to permit flashing physical hardware"), {
             code: "HIL_CONFIRMATION_REQUIRED"
@@ -71,26 +73,43 @@ async function main() {
         throw Object.assign(new Error(`HIL firmware is not an ELF file: ${elf}`), { code: "HIL_INVALID_ELF" });
     }
     const fingerprint = crypto.createHash("sha256").update(fs.readFileSync(elf)).digest("hex");
+    const connection = await (dependencies.prepare || prepareProbeConnection)({
+        executable,
+        probe,
+        target,
+        transport: required("EMBERPROBE_HIL_TRANSPORT"),
+        probeSerial: process.env.EMBERPROBE_HIL_PROBE_SERIAL || "",
+        adapterSpeedKhz: process.env.EMBERPROBE_HIL_ADAPTER_SPEED_KHZ || 0
+    });
     const args = [
-        "-f",
-        `interface/${probe}`,
-        "-f",
-        `target/${target}`,
+        ...buildOpenOcdConfigArgs(connection.launch, connection.transport, connection),
         "-c",
-        "init",
+        `program ${quoteTclWord(elf.replace(/\\/g, "/"))} verify reset`,
         "-c",
-        "reset halt",
+        "echo EP_HIL_VERIFY_OK",
         "-c",
-        `program ${quoteTclWord(elf)} verify reset exit`
+        "shutdown"
     ];
-    const output = await runOpenOcd(executable, args, 120000);
-    if (!/verified|verified OK|shutdown command invoked/i.test(output)) {
+    const output = await (dependencies.run || runOpenOcd)(connection.launch.executable, args, 120000);
+    if (!/^EP_HIL_VERIFY_OK\s*$/m.test(output)) {
         throw Object.assign(new Error("OpenOCD completed without a recognizable verification marker"), {
             code: "HIL_VERIFY_MARKER_MISSING",
             output: output.slice(-8000)
         });
     }
-    console.log(JSON.stringify({ ok: true, board, elf, sha256: fingerprint, probe, target }));
+    const result = {
+        ok: true,
+        board,
+        elf,
+        sha256: fingerprint,
+        probe,
+        target,
+        transport: connection.transport,
+        probeSerial: connection.probeSerial,
+        adapterSpeedKhz: connection.adapterSpeedKhz
+    };
+    (dependencies.report || console.log)(JSON.stringify(result));
+    return result;
 }
 
 if (require.main === module) {
@@ -107,4 +126,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { required, runOpenOcd };
+module.exports = { required, runOpenOcd, main };
