@@ -37,6 +37,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                 flush();
             },
             onStatus: (...args) => event("onStatus", args),
+            onConnectionConfirmed: () => event("onConnectionConfirmed", []),
             onError: (...args) => event("onError", args),
             onDegraded: (...args) => event("onDegraded", args),
             onDisconnect: (...args) => event("onDisconnect", args)

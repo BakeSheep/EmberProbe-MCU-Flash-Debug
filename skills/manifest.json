@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "shared": [
+    "connection-fingerprint.js",
     "agent-client.js",
     "agent-workflow.md",
     "file-identity.js",

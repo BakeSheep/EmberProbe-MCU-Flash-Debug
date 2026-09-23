@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- J-Link 默认自动选择唯一探针和协议，成功后记住工作区连接；高级覆盖保留，失败不自动切换协议或降速。
+- J-Link now selects a unique probe and transport automatically and remembers successful workspace connections; advanced overrides remain, with no protocol or speed retries.
+
 - 新增 J-Link 序列号选择、显式 SWD/JTAG 与调试速度配置、连接预检和可复制诊断；写入授权绑定连接身份，配置变更后阻止旧会话写入。
 - Added J-Link serial selection, explicit transport and adapter speed, connection preflight and copyable diagnostics; write authorization binds the connection and rejects writes from sessions with changed settings.
 - 修复 J-Link 原生日志、VTarget 和 Worker 错误详情处理；HIL 复用正式连接参数并要求明确校验成功标记。

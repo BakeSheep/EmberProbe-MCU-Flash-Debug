@@ -1,7 +1,14 @@
 "use strict";
 
 module.exports = Object.freeze({
-    "probe.configure": "Probe connection",
+    "probe.configure": "Advanced probe settings",
+    "probe.automatic": "Automatic",
+    "probe.resetAutomatic": "Restore automatic connection and forget previous device",
+    "probe.source.explicit": "Override",
+    "probe.source.remembered": "Last success",
+    "probe.source.unique-device": "Only device",
+    "probe.source.cortex-m": "Cortex-M default",
+    "probe.source.script-default": "Script default",
     "probe.serial": "J-Link serial number",
     "probe.transport": "SWD / JTAG transport",
     "probe.speed": "Adapter speed (kHz)",

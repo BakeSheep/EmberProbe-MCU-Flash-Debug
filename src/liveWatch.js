@@ -835,6 +835,11 @@ class ManagedOpenOcdSession {
                 for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
             }
         }
+        if (ok && !this.stopped && !this._connectionConfirmed) {
+            this._assertReadGuard(guard);
+            this._connectionConfirmed = true;
+            this.handlers.onConnectionConfirmed?.();
+        }
         return { samples, ok };
     }
 

@@ -1,7 +1,14 @@
 "use strict";
 
 module.exports = Object.freeze({
-    "probe.configure": "探针连接设置",
+    "probe.configure": "探针高级设置",
+    "probe.automatic": "自动识别",
+    "probe.resetAutomatic": "恢复自动连接并忘记原设备",
+    "probe.source.explicit": "手动覆盖",
+    "probe.source.remembered": "成功记录",
+    "probe.source.unique-device": "唯一设备",
+    "probe.source.cortex-m": "Cortex-M 默认",
+    "probe.source.script-default": "脚本默认",
     "probe.serial": "J-Link 序列号",
     "probe.transport": "SWD / JTAG 协议",
     "probe.speed": "调试速度（kHz）",

@@ -1,10 +1,11 @@
 "use strict";
 const fs = require("fs/promises");
-const { probeCandidates, probeFromText: debuggerFromInventory } = require("../skills/_emberprobe/probe-detection");
+const {
+    detectProbe,
+    usbInventory,
+    probeFromText: debuggerFromInventory
+} = require("../skills/_emberprobe/probe-detection");
 const path = require("path");
-const { execFile } = require("child_process");
-const { promisify } = require("util");
-const execFileAsync = promisify(execFile);
 
 async function newestElf(vscode) {
     const files = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
@@ -71,48 +72,9 @@ async function detectMcu(vscode) {
     return "";
 }
 
-async function usbInventory() {
-    if (process.platform === "win32") {
-        try {
-            const { stdout } = await execFileAsync(
-                "powershell.exe",
-                [
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Get-PnpDevice -PresentOnly | Select-Object -ExpandProperty FriendlyName"
-                ],
-                { timeout: 6000, windowsHide: true }
-            );
-            if (stdout && stdout.trim()) return stdout;
-        } catch {
-            /* Get-PnpDevice may be unavailable or access-denied for non-admin VS Code. */
-        }
-        try {
-            // pnputil is available on supported Windows releases and can enumerate connected
-            // devices without importing the PnpDevice PowerShell module. Include every class:
-            // CMSIS-DAP v2 commonly appears as HID/WinUSB rather than the USB device class.
-            const { stdout } = await execFileAsync("pnputil.exe", ["/enum-devices", "/connected"], {
-                timeout: 6000,
-                windowsHide: true
-            });
-            return stdout || "";
-        } catch {
-            return "";
-        }
-    }
-    try {
-        /** @type {[string, string[]]} */
-        const command = process.platform === "darwin" ? ["system_profiler", ["SPUSBDataType"]] : ["lsusb", []];
-        return (await execFileAsync(command[0], command[1], { timeout: 6000 })).stdout;
-    } catch {
-        return "";
-    }
-}
-
 async function detectDebugger() {
-    const inventory = await usbInventory();
-    return { debugger: debuggerFromInventory(inventory), probeCandidates: probeCandidates(inventory) };
+    const detected = await detectProbe();
+    return { debugger: detected.probe, probeCandidates: detected.candidates };
 }
 
 async function detectWorkspace(vscode) {

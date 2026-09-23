@@ -11,6 +11,8 @@ class ChipInfoService {
         this.t = options.t;
         this.resolveExecutable = options.resolveExecutable;
         this.prepareConnection = options.prepareConnection;
+        this.resolveProbe = options.resolveProbe;
+        this.recordSuccess = options.recordSuccess || (async () => {});
         this.commandContext = options.commandContext;
         this.onPost = options.onPost;
         this.onDiagnostics = options.onDiagnostics;
@@ -49,7 +51,7 @@ class ChipInfoService {
         if (this.coordinator.isActive("debugStart") || this.isDebugActive()) {
             return this.rejectBusy("chip.busyDebug", "PROBE_BUSY", forAgent);
         }
-        const probe = this.context.workspaceState.get(this.cacheKeys.debugger);
+        const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || (await this.resolveProbe?.());
         const target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
         if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", forAgent);
 
@@ -96,6 +98,8 @@ class ChipInfoService {
                     if (event?.stage === "raw") diagnostics = event;
                 }
             );
+            if (!lease.released && (info.cpuid || info.core || info.idcode || info.uid))
+                await this.recordSuccess(connection);
             info.readAt = new Date().toISOString();
             this.info = info;
             this.post({ state: "ready", key: "chip.done" }, info);

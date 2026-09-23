@@ -160,7 +160,7 @@
         "emberprobe.probeSerial": {
           "type": "string",
           "default": "",
-          "description": "J-Link 序列号；多设备必须明确选择，连接时不会回退到其他设备。"
+          "description": "高级覆盖：J-Link 序列号。留空时自动选择唯一设备或工作区成功绑定；不会回退到其他设备。"
         },
         "emberprobe.adapterSpeedKhz": {
           "type": "integer",
@@ -179,7 +179,7 @@
             "hla_jtag"
           ],
           "default": "auto",
-          "description": "OpenOCD 传输协议；J-Link 必须按接线明确选择 swd 或 jtag。其他探针的 auto 保留脚本默认值；HLA 探针使用对应 hla_* 协议。"
+          "description": "高级覆盖：OpenOCD 传输协议。J-Link auto 复用有效成功记录，已知 Cortex-M 默认 SWD，其他目标采用接口脚本默认协议；不自动切换重试。"
         },
         "emberprobe.gdbPath": {
           "type": "string",

@@ -8,17 +8,23 @@ EmberProbe 使用 OpenOCD 的 J-Link 后端。“V9 JLinkOB”这类网购名称
 
 ## Configure a connection / 配置连接
 
-Use **Probe connection / 探针连接设置** in the sidebar, or workspace settings:
+Connections are automatic by default. Manual overrides remain under **Other configuration → Advanced probe settings / 其他配置 → 探针高级设置**, or workspace settings:
 
 | Setting | Meaning / 含义 |
 | --- | --- |
 | `emberprobe.probeSerial` | Decimal J-Link serial / J-Link 十进制序列号 |
-| `emberprobe.transport` | Explicit `swd` or `jtag` for J-Link, according to board wiring / J-Link 必须按接线明确选择协议 |
+| `emberprobe.transport` | `auto` by default; optional `swd` / `jtag` override / 默认自动，可手动覆盖协议 |
 | `emberprobe.adapterSpeedKhz` | Integer kHz; `0` keeps script defaults / 整数 kHz，`0` 保留脚本默认速度 |
 
-The first interactive J-Link connection asks for the transport when it is `auto`. SWD is offered first, but requires selection. Agent calls return `PROBE_TRANSPORT_REQUIRED` instead of opening a prompt. A unique probe with a readable serial may be selected automatically; multiple devices require a serial. Duplicate or ambiguous identities block connection. If a selected probe is absent, EmberProbe does not fall back to another probe. When OS inventory is unavailable, an explicit serial can still be used, with an inventory-unavailable note.
+A unique J-Link with a readable serial is selected automatically. Explicit serial settings take precedence over the last successful workspace binding; missing selected or bound devices never cause fallback to another probe. Multiple unbound devices require one device selection in the UI; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable, an explicit serial can still be used, but cannot establish a verified success record.
 
-首次交互连接若协议为 `auto`，界面要求选择 SWD/JTAG；Agent 收到结构化错误，不会弹窗代选。可读取序列号的唯一探针可以自动选定，多探针必须指定序列号；重复或不明确的身份会阻止连接。指定探针不在线时不会改连其他探针。操作系统枚举不可用时可使用明确序列号，但枚举结果不视为已验证。
+For J-Link, explicit transport overrides take precedence, followed by a valid successful connection record. Known Cortex-M targets default to SWD; other targets retain the interface script default. OpenOCD validates the selected protocol using interface-only configuration with `noinit`. This checks software configuration, not board wiring or physical probe capabilities. There is no automatic speed reduction, protocol retry, reset or driver replacement.
+
+可读取序列号的唯一 J-Link 自动选定；明确设置优先，其次使用工作区成功绑定。指定或绑定的设备不在线时，不会改连另一台。多设备且无绑定时，界面只需选择设备；Agent 返回歧义错误。协议覆盖优先于有效成功记录，已知 Cortex-M 默认 SWD，其他目标保留接口脚本默认协议。预检使用 `noinit` 验证软件配置，不探测接线、不初始化目标，也不自动降速、切换重试或替换驱动。
+
+Success history is workspace-local and is written only after a valid target memory read, successful debugger target connection, or successful download/chip read. It never overwrites user settings. Protocol reuse requires the same device identity, target, executable and scripts fingerprint (the complete scripts tree is hashed to cover sourced files). If fingerprinting is unavailable, protocol history is not reused or updated. Standalone scripts without workspace storage use the same decision rules without persistent history. Old explicit settings remain overrides. Use “Restore automatic connection and forget previous device” in advanced settings to clear the serial/protocol/speed overrides and previous device binding. Existing write authorization remains bound to the resolved physical connection.
+
+成功记录保存在工作区内部状态，只有有效目标内存读取、调试目标连接或下载/芯片读取成功后才更新，不覆盖用户设置。设备身份、目标、OpenOCD 或脚本变化会使协议记录失效；指纹不可用时不复用或更新协议记录。独立脚本使用相同决策规则，但没有工作区存储时不持久记忆。旧的显式设置继续作为覆盖项；需要更换设备并恢复自动选择时，使用高级设置中的“恢复自动连接并忘记原设备”，清除序列号、协议、速度覆盖及原设备绑定。写入授权仍绑定解析后的实际连接。
 
 `probe.list` reads OS USB metadata only: Windows PnP, Linux sysfs, or macOS system_profiler. Windows composite interfaces are grouped by their physical parent. Unknown serial/driver fields remain unknown. Capability preflight checks the selected OpenOCD build with `noinit` before starting a hardware operation. A custom interface script is trusted user code; it must not perform explicit hardware operations during configuration.
 

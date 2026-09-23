@@ -1,5 +1,6 @@
 "use strict";
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
+const { detectProbe } = require("../../skills/_emberprobe/probe-detection");
 const {
     normalizeProbeSerial,
     connectionIdentity,
@@ -10,9 +11,14 @@ const {
 class ProbeConnectionService {
     constructor(options) {
         this.getConfig = options.getConfig;
-        this.save = options.save;
         this.window = options.window;
         this.prepareConnection = options.prepareConnection || prepareProbeConnection;
+        this.getSuccessfulConnection = options.getSuccessfulConnection || (() => null);
+        this.saveSuccessfulConnection = options.saveSuccessfulConnection || (async () => {});
+        this.onResolved = options.onResolved || (() => {});
+        this.recorded = new WeakSet();
+        this.recordQueue = Promise.resolve();
+        this.detectProbe = options.detectProbe || detectProbe;
         this.staleSessions = new WeakSet();
     }
 
@@ -38,8 +44,10 @@ class ProbeConnectionService {
 
     async prepare(options, interactive = false) {
         const configured = this.getConfig();
-        let expectedSettings = JSON.stringify(connectionIdentity(configured));
-        let request = { ...configured, ...options };
+        const expectedSettings = JSON.stringify(connectionIdentity(configured));
+        let request = { ...configured, ...options, successfulConnection: this.getSuccessfulConnection() };
+        request.probe = request.probe || request.debugger || (await this.resolveProbe());
+        request.target = request.target || request.mcu;
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
                 const result = await this.prepareConnection(request);
@@ -49,24 +57,17 @@ class ProbeConnectionService {
                         "PROBE_CONFIGURATION_CHANGED",
                         "Connection settings changed during preflight; retry the operation"
                     );
-                return Object.freeze({ ...result, settingsIdentity: Object.freeze(current) });
+                const connection = Object.freeze({
+                    ...result,
+                    selection: Object.freeze({ ...result.selection }),
+                    settingsIdentity: Object.freeze(current)
+                });
+                this.onResolved(connection);
+                return connection;
             } catch (error) {
                 if (!interactive) throw error;
                 let values;
-                if (error.code === "PROBE_TRANSPORT_REQUIRED") {
-                    const selected = await this.window.showQuickPick(
-                        [
-                            {
-                                label: "SWD",
-                                description: "Recommended for Cortex-M boards wired for SWD",
-                                value: "swd"
-                            },
-                            { label: "JTAG", description: "Requires JTAG wiring on the target board", value: "jtag" }
-                        ],
-                        { title: "J-Link transport", placeHolder: "Select the transport wired on your board" }
-                    );
-                    if (selected) values = { transport: selected.value };
-                } else if (error.code === "PROBE_SELECTION_REQUIRED") {
+                if (error.code === "PROBE_SELECTION_REQUIRED") {
                     const choices = (error.details?.devices || [])
                         .filter((device) => device.serial)
                         .map((device) => ({
@@ -74,37 +75,70 @@ class ProbeConnectionService {
                             description: device.name,
                             value: device.serial
                         }));
-                    choices.push({
-                        label: "Enter serial number",
-                        description: "Use the serial printed on the probe or reported by SEGGER",
-                        value: ""
-                    });
+                    if (!choices.length) throw error;
                     const selected = await this.window.showQuickPick(choices, { title: "Select physical J-Link" });
                     if (selected) {
-                        const serial =
-                            selected.value ||
-                            (await this.window.showInputBox({
-                                title: "J-Link serial number",
-                                prompt: "Decimal serial number of the physical probe",
-                                validateInput: (value) => {
-                                    try {
-                                        return normalizeProbeSerial(value) ? undefined : "Enter a serial number";
-                                    } catch (cause) {
-                                        return cause.message;
-                                    }
-                                }
-                            }));
+                        const serial = selected.value;
                         if (serial) values = { probeSerial: normalizeProbeSerial(serial) };
                     }
                 } else throw error;
                 if (!values)
                     throw connectionError("PROBE_SELECTION_CANCELLED", "J-Link connection selection was cancelled");
-                await this.save(values);
-                expectedSettings = JSON.stringify(connectionIdentity(this.getConfig()));
                 request = { ...request, ...values };
             }
         }
         throw connectionError("PROBE_CONFIGURATION_CHANGED", "Probe configuration could not be resolved");
+    }
+
+    async resolveProbe() {
+        const configured = this.getConfig();
+        if (configured.debugger || configured.probe) return configured.debugger || configured.probe;
+        const remembered = this.getSuccessfulConnection();
+        if (remembered?.version === 1 && remembered.probe) return remembered.probe;
+        const detected = await this.detectProbe();
+        if (!detected.probe)
+            throw connectionError("PROBE_SELECTION_REQUIRED", "Cannot determine a unique probe type", {
+                candidates: detected.candidates,
+                notes: detected.notes
+            });
+        return detected.probe;
+    }
+
+    async recordSuccess(connection) {
+        if (
+            !connection ||
+            this.recorded.has(connection) ||
+            connection.adapterFamily !== "jlink" ||
+            !connection.deviceId ||
+            !connection.fingerprint ||
+            !["swd", "jtag"].includes(connection.transport) ||
+            !connection.settingsIdentity ||
+            this.settingsChanged({ options: connection })
+        )
+            return;
+        this.recorded.add(connection);
+        this.recordQueue = this.recordQueue
+            .then(async () => {
+                if (this.settingsChanged({ options: connection })) return;
+                await this.saveSuccessfulConnection({
+                    version: 1,
+                    probe: connection.probe,
+                    probeSerial: connection.probeSerial,
+                    deviceId: connection.deviceId,
+                    target: connection.target,
+                    transport: connection.transport,
+                    fingerprint: connection.fingerprint
+                });
+            })
+            .catch(() => {
+                this.recorded.delete(connection);
+            });
+        await this.recordQueue;
+    }
+
+    async forgetSuccess() {
+        await this.recordQueue;
+        await this.saveSuccessfulConnection(undefined);
     }
 }
 

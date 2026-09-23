@@ -20,6 +20,7 @@ class AgentFlashService {
         this.check = options.check || probeOpenOcdCompatibility;
         this.run = options.run || runOpenOcdOnce;
         this.prepare = options.prepare || prepareProbeConnection;
+        this.recordSuccess = options.recordSuccess || (async () => {});
     }
 
     async execute(params, verify = false) {
@@ -44,7 +45,7 @@ class AgentFlashService {
                 this.authorization.authorize(
                     {
                         elf: { path: elf, sha256 },
-                        transport: params.transport,
+                        transport: connection.transport,
                         target: params.target,
                         probe: params.probe,
                         openocd: connection.openocd,
@@ -78,7 +79,7 @@ class AgentFlashService {
                 executable: launch.executable,
                 probe: params.probe,
                 target: params.target,
-                transport: params.transport,
+                transport: connection.transport,
                 probeSerial: connection.probeSerial,
                 adapterSpeedKhz: connection.adapterSpeedKhz,
                 inventory: connection.inventory,
@@ -95,6 +96,7 @@ class AgentFlashService {
             const verified =
                 execution.exitCode === 0 &&
                 (!verify || (!failed && resultLines.some((line) => /^\s*EP_VERIFY OK\b/.test(line))));
+            if (verified && !lease.released) await this.recordSuccess(connection);
             return {
                 verified,
                 elf,

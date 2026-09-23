@@ -82,7 +82,7 @@ async function main() {
             () => resolveProbeConnection(options, list),
             (error) => error.code === code
         );
-    fails({ ...config, transport: "auto" }, inventory, "PROBE_TRANSPORT_REQUIRED");
+    assert.strictEqual(resolveProbeConnection({ ...config, transport: "auto" }, inventory).transport, "swd");
     fails(config, unavailable, "PROBE_SELECTION_REQUIRED");
     fails({ ...config, probeSerial: "12" }, inventory, "PROBE_SELECTED_NOT_FOUND");
     fails(config, { available: true, devices: [...devices, ...devices] }, "PROBE_SELECTION_REQUIRED");
@@ -126,6 +126,8 @@ async function main() {
     const prepared = await prepareProbeConnection(config, {
         resolveLaunch: () => launch,
         checkCapability: async () => ({ adapterFamily: "jlink" }),
+        resolveTransport: async (_launch, transport) => transport,
+        fingerprint: async () => "test-fingerprint",
         listProbes: async () => inventory
     });
     assert.strictEqual(prepared.probeSerial, "123456789");

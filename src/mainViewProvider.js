@@ -38,7 +38,6 @@ const { FeedbackPromptService } = require("./services/feedbackPromptService");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
-const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
 const { serializeError } = require("./services/errorEnvelope");
 const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 const {
@@ -184,7 +183,13 @@ class MainViewProvider {
         });
         this._probeConnectionService = new ProbeConnectionService({
             getConfig: () => this._configurationStore.snapshot(),
-            save: (values) => this._configurationStore.update(values),
+            getSuccessfulConnection: () => this._context.workspaceState.get("mcu.successfulProbeConnection"),
+            saveSuccessfulConnection: (value) =>
+                this._context.workspaceState.update("mcu.successfulProbeConnection", value),
+            onResolved: (connection) => {
+                this._resolvedProbeConnection = connection;
+                this.updateView();
+            },
             window: vscode.window
         });
         this._cubemxFirmware = new CubeMxFirmware({
@@ -242,6 +247,8 @@ class MainViewProvider {
             t: (key, params) => this._t(key, params),
             resolveExecutable: (executable) => this._resolveOpenOcdPath(executable),
             prepareConnection: (options, interactive) => this._probeConnectionService.prepare(options, interactive),
+            resolveProbe: () => this._probeConnectionService.resolveProbe(),
+            recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             commandContext: () => this._commandContext(),
             onPost: (message) => this._webviewView?.webview.postMessage(message),
             onDiagnostics: (diag, info) => this._writeChipDiagnostics(diag, info),
@@ -269,6 +276,8 @@ class MainViewProvider {
         this._agentFlashService = new AgentFlashService({
             coordinator: this._probeCoordinator,
             authorization: this._flashAuthorization,
+            prepare: (options) => this._probeConnectionService.prepare(options),
+            recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
         });
         this._agentService = new AgentService({
@@ -461,14 +470,25 @@ class MainViewProvider {
                 [
                     { label: this._t("probe.serial"), value: "probeSerial" },
                     { label: this._t("probe.transport"), value: "transport" },
-                    { label: this._t("probe.speed"), value: "adapterSpeedKhz" }
+                    { label: this._t("probe.speed"), value: "adapterSpeedKhz" },
+                    { label: this._t("probe.resetAutomatic"), value: "automatic" }
                 ],
                 { title: this._t("probe.configure") }
             );
             if (!selected) return false;
+            if (selected.value === "automatic") {
+                this._assertConnectionEditable({ probeSerial: true });
+                await this._configurationStore.update({ probeSerial: "", transport: "auto", adapterSpeedKhz: 0 });
+                await this._probeConnectionService.forgetSuccess();
+                this._resolvedProbeConnection = null;
+                this.updateView();
+                return true;
+            }
             let value;
             if (selected.value === "transport") {
-                value = await vscode.window.showQuickPick(["swd", "jtag"], { title: this._t("probe.transport") });
+                value = await vscode.window.showQuickPick(["auto", "swd", "jtag"], {
+                    title: this._t("probe.transport")
+                });
             } else if (selected.value === "probeSerial") {
                 const inventory = await listProbes();
                 /** @type {Array<{label: string, description: string, value: string}>} */
@@ -595,7 +615,9 @@ class MainViewProvider {
                 this._debugCommandPending = true;
                 console.log("主进程执行启动调试命令");
                 let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
-                const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+                const debuggerCfg =
+                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+                    (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!elfPath || !debuggerCfg || !mcuCore) {
                     vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
@@ -735,7 +757,9 @@ class MainViewProvider {
                 if (!executable) return false;
                 console.log("主进程执行下载程序命令");
                 let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-                const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+                const debuggerCfg =
+                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+                    (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!elfPath || !debuggerCfg || !mcuCore) {
                     vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
@@ -743,6 +767,10 @@ class MainViewProvider {
                 }
                 const cleanElfPath = cleanWindowsPath(elfPath);
                 const { cwd } = this._commandContext(resource);
+                const connection = await this._probeConnectionService.prepare(
+                    { executable, probe: debuggerCfg, target: mcuCore },
+                    true
+                );
                 await this._flashService.download(
                     vscode,
                     {
@@ -751,10 +779,7 @@ class MainViewProvider {
                         transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
-                        ...(await this._probeConnectionService.prepare(
-                            { executable, probe: debuggerCfg, target: mcuCore },
-                            true
-                        )),
+                        ...connection,
                         cwd
                     },
                     (event) => {
@@ -765,6 +790,7 @@ class MainViewProvider {
                         this._webviewView?.webview.postMessage(message);
                     }
                 );
+                if (!this._downloadLease?.released) await this._probeConnectionService.recordSuccess(connection);
                 vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
                 return true;
             } catch (err) {
@@ -842,11 +868,11 @@ class MainViewProvider {
                 code: "OPENOCD_CONFIGURATION_ERROR"
             });
         }
-        const connection = await prepareProbeConnection(params);
+        const connection = await this._probeConnectionService.prepare(params);
         return this._flashAuthorization.authorize(
             {
                 elf: { path: elfPath, sha256 },
-                transport: openocdScripts.normalizeTransport(params.transport),
+                transport: connection.transport,
                 target: params.target,
                 probe: params.probe,
                 openocd: connection.openocd,
@@ -1267,6 +1293,10 @@ class MainViewProvider {
                     intervalMs: Math.max(100, this._liveIntervalMs)
                 },
                 {
+                    onConnectionConfirmed: () => {
+                        if (this._managedDebugServer === server)
+                            void this._probeConnectionService.recordSuccess(server.options);
+                    },
                     onSample: (samples, t) => this._handleRawSamples(samples, t),
                     onStatus: (status) => {
                         if (status?.key === "live.debugRuntimeSampling" || status?.key === "live.debugTclDegraded") {
@@ -1567,7 +1597,9 @@ class MainViewProvider {
             this._agentReadLease = operationLease;
             this._agentReadCancelled = false;
             try {
-                const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+                const debuggerCfg =
+                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+                    (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!debuggerCfg || !mcuCore) {
                     throw Object.assign(new Error(this._t("live.needConfig")), {
@@ -1605,7 +1637,12 @@ class MainViewProvider {
                         port: await this._resolveTclPort(cfg),
                         intervalMs: 10000
                     },
-                    {}
+                    {
+                        onConnectionConfirmed: () => {
+                            if (!operationLease.released && this._agentReadSession === session)
+                                void this._probeConnectionService.recordSuccess(session.options);
+                        }
+                    }
                 );
                 if (operationLease.released)
                     throw Object.assign(new Error("Agent variable read was cancelled"), {
@@ -1889,7 +1926,9 @@ class MainViewProvider {
         if (this._liveWatchRunning) busy("chip.busyLive", "PROBE_BUSY");
         if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
         if (this._debugStarting || vscode.debug.activeDebugSession) busy("chip.busyDebug", "PROBE_BUSY");
-        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+        const debuggerCfg =
+            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+            (await this._probeConnectionService.resolveProbe());
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore) busy("chip.needConfig", "CONFIG_INCOMPLETE");
         this._chipInfoLease = this._probeCoordinator.acquire("chipInfo");
@@ -2676,7 +2715,9 @@ class MainViewProvider {
         if (this._agentReadRunning)
             throw Object.assign(new Error(this._t("live.agentReading")), { i18nKey: "live.agentReading" });
         if (this._liveStarting) throw Object.assign(new Error(this._t("live.starting")), { i18nKey: "live.starting" });
-        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+        const debuggerCfg =
+            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+            (await this._probeConnectionService.resolveProbe());
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore)
             throw Object.assign(new Error(this._t("live.needConfig")), { i18nKey: "live.needConfig" });
@@ -2771,6 +2812,12 @@ class MainViewProvider {
                     intervalMs: validation.clampInteger(intervalMs || cfg.get("sampleIntervalMs", 100), 100, 20, 10000)
                 },
                 {
+                    onConnectionConfirmed: () => {
+                        if (!startingLease.released && this._liveSession === session)
+                            void this._probeConnectionService.recordSuccess(session.options);
+                        else if (this._liveWatchRunning && this._liveSession === session)
+                            void this._probeConnectionService.recordSuccess(session.options);
+                    },
                     onSample: (samples, t) => {
                         if (this._liveSession === session) this._handleRawSamples(samples, t);
                     },
@@ -2917,6 +2964,14 @@ class MainViewProvider {
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {
+        if (
+            message?.type === "response" &&
+            message.success &&
+            ["launch", "attach"].includes(message.command) &&
+            this._matchesManagedDebugSession(session) &&
+            !this._terminatedDebugSessionIds.has(session.id)
+        )
+            void this._probeConnectionService.recordSuccess(this._managedDebugServer?.options);
         if (message?.type === "event" && message.event === "initialized") this._markDebugStartupReady(session);
         this._debugBridge.handleMessage(session, message);
     }
@@ -3350,16 +3405,27 @@ class MainViewProvider {
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
-                probeConnection: [
-                    /jlink/i.test(this._context.workspaceState.get(CACHE_KEYS.debugger) || "")
-                        ? vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "") ||
-                          this._t("probe.serialRequired")
-                        : "",
-                    vscode.workspace.getConfiguration("emberprobe").get("transport", "auto").toUpperCase(),
-                    vscode.workspace.getConfiguration("emberprobe").get("adapterSpeedKhz", 0) + " kHz"
-                ]
-                    .filter(Boolean)
-                    .join(" · "),
+                probeConnection:
+                    this._resolvedProbeConnection &&
+                    !this._probeConnectionService.settingsChanged({ options: this._resolvedProbeConnection })
+                        ? [
+                              this._resolvedProbeConnection.probeSerial,
+                              this._t(`probe.source.${this._resolvedProbeConnection.selection.probe}`),
+                              this._resolvedProbeConnection.transport.toUpperCase(),
+                              this._t(`probe.source.${this._resolvedProbeConnection.selection.transport}`)
+                          ]
+                              .filter(Boolean)
+                              .join(" · ")
+                        : [
+                              /jlink/i.test(this._context.workspaceState.get(CACHE_KEYS.debugger) || "")
+                                  ? vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "") ||
+                                    this._t("probe.automatic")
+                                  : "",
+                              vscode.workspace.getConfiguration("emberprobe").get("transport", "auto").toUpperCase(),
+                              vscode.workspace.getConfiguration("emberprobe").get("adapterSpeedKhz", 0) + " kHz"
+                          ]
+                              .filter(Boolean)
+                              .join(" · "),
                 mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },
             this._lang

@@ -33,6 +33,7 @@ class SamplingSession {
                     this.worker.postMessage({ ack: true });
                 }
             } else if (message.event) {
+                if (message.event === "onConnectionConfirmed" && (this.stopping || this.stopped)) return;
                 if (message.event === "onDisconnect" || message.event === "onDegraded") this.samplingEnabled = false;
                 if (["onDisconnect", "onDegraded", "onError"].includes(message.event) && message.args[0]?.message)
                     message.args[0] = deserializeError(message.args[0]);

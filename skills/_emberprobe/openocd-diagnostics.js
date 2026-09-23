@@ -60,7 +60,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "OPENOCD_TRANSPORT_INVALID",
             "configuration",
             "所选传输协议不受探针或 OpenOCD 配置支持。",
-            ["检查 emberprobe.transport；按实际接线明确选择受支持的 SWD/JTAG 协议。"],
+            ["核对自动选择结果与接口脚本；特殊接线可在高级设置覆盖 SWD/JTAG 协议。"],
             false
         );
     }

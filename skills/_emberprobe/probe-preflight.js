@@ -4,14 +4,15 @@ const { execFile } = require("child_process");
 const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
 const { resolveProbeConnection, connectionError } = require("./probe-connection");
+const { connectionFingerprint } = require("./connection-fingerprint");
 
 const capabilitiesCache = new Map();
-function query(executable, args) {
+function query(executable, args, cwd = undefined) {
     return new Promise((resolve, reject) =>
         execFile(
             executable,
             args,
-            { timeout: 5000, maxBuffer: 256 * 1024, windowsHide: true },
+            { timeout: 5000, maxBuffer: 256 * 1024, windowsHide: true, cwd },
             (error, stdout, stderr) => (error ? reject(error) : resolve(`${stdout}\n${stderr}`))
         )
     );
@@ -73,18 +74,22 @@ async function checkAdapterCapability(launch, options = {}) {
         );
     try {
         // Custom trusted interface scripts can source another script. Do not load a target or call init.
-        const output = await run(launch.executable, [
-            "-s",
-            launch.scriptsRoot,
-            "-c",
-            "noinit",
-            "-f",
-            launch.probePath,
-            "-c",
-            "echo EP_ADAPTER_NAME=[adapter name]",
-            "-c",
-            "shutdown"
-        ]);
+        const output = await run(
+            launch.executable,
+            [
+                "-s",
+                launch.scriptsRoot,
+                "-c",
+                "noinit",
+                "-f",
+                launch.probePath,
+                "-c",
+                "echo EP_ADAPTER_NAME=[adapter name]",
+                "-c",
+                "shutdown"
+            ],
+            launch.scriptsRoot
+        );
         adapterFamily = String(output).match(/^EP_ADAPTER_NAME=([\w-]+)\s*$/m)?.[1];
     } catch (cause) {
         throw connectionError(
@@ -116,9 +121,70 @@ async function prepareProbeConnection(options, dependencies = {}) {
         capability.adapterFamily === "jlink"
             ? await (dependencies.listProbes || listProbes)()
             : { available: false, devices: [], notes: [] };
-    const connection = resolveProbeConnection({ ...options, adapterFamily: capability.adapterFamily }, inventory);
+    let fingerprint = "";
+    if (capability.adapterFamily === "jlink") {
+        try {
+            fingerprint = await (dependencies.fingerprint || connectionFingerprint)(launch);
+        } catch {
+            inventory.notes.push("Connection fingerprint unavailable; protocol history will not be reused.");
+        }
+    }
+    const connection = resolveProbeConnection(
+        { ...options, fingerprint, adapterFamily: capability.adapterFamily },
+        inventory
+    );
+    if (capability.adapterFamily === "jlink")
+        connection.transport = await (dependencies.resolveTransport || resolveInterfaceTransport)(
+            launch,
+            connection.transport
+        );
     if (capability.adapterFamily !== "jlink") connection.probeSerial = "";
-    return { ...connection, openocd: launch.executable, adapterFamily: capability.adapterFamily, launch, inventory };
+    return {
+        ...connection,
+        fingerprint,
+        openocd: launch.executable,
+        adapterFamily: capability.adapterFamily,
+        launch,
+        inventory
+    };
 }
 
-module.exports = { prepareProbeConnection, checkAdapterCapability, parseAdapterList };
+async function resolveInterfaceTransport(launch, transport, run = query) {
+    if (!["auto", "swd", "jtag"].includes(transport))
+        throw connectionError("OPENOCD_TRANSPORT_INVALID", "J-Link requires an SWD or JTAG transport");
+    let output;
+    try {
+        output = await run(
+            launch.executable,
+            [
+                "-s",
+                launch.scriptsRoot,
+                "-c",
+                "noinit",
+                "-f",
+                launch.probePath,
+                ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
+                "-c",
+                "echo EP_TRANSPORT=[transport select]",
+                "-c",
+                "shutdown"
+            ],
+            launch.scriptsRoot
+        );
+    } catch (cause) {
+        throw connectionError(
+            "OPENOCD_TRANSPORT_INVALID",
+            "The interface script cannot select the requested transport",
+            { transport, cause: cause.message }
+        );
+    }
+    const selected = String(output).match(/^EP_TRANSPORT=(swd|jtag)\s*$/m)?.[1];
+    if (!selected || (transport !== "auto" && selected !== transport))
+        throw connectionError(
+            "PROBE_CAPABILITY_UNKNOWN",
+            "Cannot confirm the interface transport without initialization"
+        );
+    return selected;
+}
+
+module.exports = { prepareProbeConnection, checkAdapterCapability, parseAdapterList, resolveInterfaceTransport };

@@ -5,7 +5,7 @@
 
 const fs = require("fs");
 const { canonicalFileSync } = require("./file-identity");
-const { probeCandidates, probeFromText } = require("./probe-detection");
+const { detectProbe, probeFromText } = require("./probe-detection");
 const { isSafeCfgPath, resolveExecutablePath, resolveOpenOcdLaunch, normalizeTransport } = require("./openocd-launch");
 const path = require("path");
 const crypto = require("crypto");
@@ -144,49 +144,6 @@ function inferTarget(root) {
         if (joined.includes(keyword)) return cfg;
     }
     return "";
-}
-
-function execText(command, args) {
-    return new Promise((resolve) => {
-        execFile(command, args, { timeout: 6000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-            resolve({ ok: !error, text: error ? "" : String(stdout || "") });
-        });
-    });
-}
-
-async function detectProbe() {
-    const notes = [];
-    let text = "";
-    if (process.platform === "win32") {
-        text = (
-            await execText("powershell.exe", [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Get-PnpDevice -PresentOnly | Select-Object -ExpandProperty FriendlyName"
-            ])
-        ).text;
-        if (!text.trim()) text = (await execText("pnputil.exe", ["/enum-devices", "/connected"])).text;
-        if (!text.trim())
-            notes.push(
-                "USB enumeration unavailable (Get-PnpDevice and pnputil failed). If a probe is attached, pass --probe explicitly."
-            );
-    } else {
-        const darwin = process.platform === "darwin";
-        const tool = darwin ? "system_profiler" : "lsusb";
-        const result = await execText(tool, darwin ? ["SPUSBDataType"] : []);
-        text = result.text;
-        if (!result.ok)
-            notes.push(
-                darwin
-                    ? `${tool} is unavailable. If a probe is attached, pass --probe explicitly.`
-                    : `${tool} is not installed. Install usbutils (e.g. sudo apt install usbutils) or pass --probe explicitly.`
-            );
-    }
-    const candidates = probeCandidates(text);
-    if (candidates.length > 1)
-        notes.push("Multiple probe types detected; select --probe explicitly: " + candidates.join(", "));
-    return { probe: probeFromText(text), candidates, notes };
 }
 
 function sha256(file) {
@@ -384,7 +341,7 @@ async function preflight(options) {
     const diagnostics = diagnostic ? [diagnostic] : [];
     const sources = { elf: "none", target: "none", probe: "none", openocd: "none" };
     const notes = [];
-    const transport = normalizeTransport(options.transport ?? config?.transport ?? "auto");
+    let transport = normalizeTransport(options.transport ?? config?.transport ?? "auto");
     let probeSerial = normalizeProbeSerial(options["probe-serial"] ?? config?.probeSerial ?? "");
     const adapterSpeedKhz = normalizeAdapterSpeed(options["adapter-speed-khz"] ?? config?.adapterSpeedKhz ?? 0);
     sources.probeSerial =
@@ -492,6 +449,8 @@ async function preflight(options) {
             });
             if (!probeSerial && connection.probeSerial) sources.probeSerial = "inventory";
             probeSerial = connection.probeSerial;
+            transport = connection.transport;
+            if (connection.selection) sources.transport = connection.selection.transport;
             notes.push(...connection.inventory.notes);
             scriptsReady = true;
         } catch (error) {

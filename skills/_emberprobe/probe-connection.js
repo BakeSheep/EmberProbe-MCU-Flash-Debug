@@ -39,16 +39,28 @@ function connectionIdentity(config = {}) {
 }
 
 function resolveProbeConnection(config, inventory = { devices: [], available: false }) {
-    const result = connectionIdentity(config);
+    const result = {
+        ...connectionIdentity(config),
+        deviceId: "",
+        selection: {
+            probe: "explicit",
+            transport: config.transport && config.transport !== "auto" ? "explicit" : "script-default"
+        }
+    };
     if (!isJlink(config)) return result;
-    if (!["swd", "jtag"].includes(result.transport))
-        throw connectionError("PROBE_TRANSPORT_REQUIRED", "Select SWD or JTAG explicitly for J-Link", {
-            choices: ["swd", "jtag"]
-        });
+    const remembered = config.successfulConnection?.version === 1 ? config.successfulConnection : null;
+    result.selection = { probe: "explicit", transport: "explicit" };
+    if (!result.probeSerial && remembered?.probe === result.probe && remembered.probeSerial) {
+        result.probeSerial = normalizeProbeSerial(remembered.probeSerial);
+        result.selection.probe = "remembered";
+    }
     const devices = inventory.devices.filter((device) => device.family === "jlink");
-    if (!result.probeSerial && devices.length === 1 && devices[0].serial) result.probeSerial = devices[0].serial;
+    if (!result.probeSerial && devices.length === 1 && devices[0].serial) {
+        result.probeSerial = devices[0].serial;
+        result.selection.probe = "unique-device";
+    }
     if (!result.probeSerial)
-        throw connectionError("PROBE_SELECTION_REQUIRED", "Select a J-Link serial number before connecting", {
+        throw connectionError("PROBE_SELECTION_REQUIRED", "Cannot select a unique J-Link from current USB inventory", {
             devices
         });
     const matches = devices.filter((device) => device.serial === result.probeSerial);
@@ -68,7 +80,36 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             "Cannot establish unique identity while another J-Link has no readable serial",
             { devices }
         );
+    if (result.selection.probe === "remembered" && (!inventory.available || matches.length !== 1))
+        throw connectionError("PROBE_IDENTITY_AMBIGUOUS", "Cannot verify the remembered probe in current inventory");
+    if (result.transport === "auto") {
+        const sameDevice = !!remembered?.deviceId && matches.length === 1 && remembered.deviceId === matches[0].id;
+        if (
+            sameDevice &&
+            remembered.probeSerial === result.probeSerial &&
+            remembered.target === result.target &&
+            config.fingerprint &&
+            remembered.fingerprint === config.fingerprint &&
+            ["swd", "jtag"].includes(remembered.transport)
+        ) {
+            result.transport = remembered.transport;
+            result.selection.transport = "remembered";
+        } else if (isKnownCortexM(result.target)) {
+            result.transport = "swd";
+            result.selection.transport = "cortex-m";
+        } else {
+            result.selection.transport = "script-default";
+        }
+    }
+    result.deviceId = matches.length === 1 ? matches[0].id || "" : "";
     return result;
+}
+
+// Only targets already recognized by autoDetect; do not infer architecture from a probe's name.
+function isKnownCortexM(target) {
+    return /^(?:stm32(?:f[012347]|g[04]|h7|l[0145]|u5|wb|wl)x?|geehy\/apm32f[014]x|gd32e23x|nordic\/nrf5[12]|rp2040)\.cfg$/.test(
+        target
+    );
 }
 
 module.exports = {
