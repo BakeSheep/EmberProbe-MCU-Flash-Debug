@@ -1,11 +1,19 @@
 "use strict";
 const assert = require("assert");
+const { execFileSync, spawnSync } = require("child_process");
+const path = require("path");
 const {
     resolveProbeConnection,
     normalizeProbeSerial,
     normalizeAdapterSpeed
 } = require("../skills/_emberprobe/probe-connection");
-const { parseWindowsInventory, parseMacInventory, listProbes } = require("../skills/_emberprobe/probe-inventory");
+const {
+    parseWindowsInventory,
+    parseMacInventory,
+    listProbes,
+    windowsHelperPath,
+    WINDOWS_INVENTORY
+} = require("../skills/_emberprobe/probe-inventory");
 const {
     checkAdapterCapability,
     prepareProbeConnection,
@@ -54,6 +62,36 @@ async function main() {
         })
     );
     assert.strictEqual(mac[0].serial, "1234");
+    const helper = path.join("extension", "resources", "driver-helper", "win32-x64", "emberprobe-driver-helper.exe");
+    assert.strictEqual(windowsHelperPath(path.join("extension", "dist")), path.resolve(helper));
+    assert.strictEqual(windowsHelperPath(path.join("extension", "skills", "_emberprobe")), path.resolve(helper));
+    let fastCalls = 0;
+    const fast = await listProbes({
+        platform: "win32",
+        fastRun: async (_helper, args) => {
+            fastCalls++;
+            assert.deepStrictEqual(args, ["list"]);
+            return JSON.stringify([{ instanceId: parent, name: "J-Link", service: "WinUSB" }]);
+        },
+        run: async () => assert.fail("PowerShell fallback must not run after a successful helper inventory")
+    });
+    assert.strictEqual(fastCalls, 1);
+    assert.strictEqual(fast.devices[0].interfaces[0].service, "WinUSB");
+    if (process.platform === "win32") {
+        const powershell = path.join(
+            process.env.SystemRoot || "C:\\Windows",
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe"
+        );
+        const mock = "function Get-PnpDevice { [CmdletBinding()] param([switch]$PresentOnly)";
+        const args = (body) => ["-NoProfile", "-NonInteractive", "-Command", `${mock} ${body} }; ${WINDOWS_INVENTORY}`];
+        const empty = execFileSync(powershell, args("return"), { encoding: "utf8" });
+        assert.deepStrictEqual(parseWindowsInventory(empty), [], "an empty PnP query is a valid inventory");
+        const failed = spawnSync(powershell, args("Write-Error 'PnP unavailable'"), { encoding: "utf8" });
+        assert.notStrictEqual(failed.status, 0, "a PnP query failure must not look like an empty inventory");
+    }
     const linux = await listProbes({
         platform: "linux",
         readdir: async () => ["1-2", "1-2:1.0", "usb1"],
@@ -123,12 +161,21 @@ async function main() {
         }),
         (error) => error.code === "PROBE_DRIVER_MISSING"
     );
+    const readyInventory = {
+        available: true,
+        devices: [
+            {
+                ...devices[0],
+                interfaces: [{ ...devices[0].interfaces[0], service: "usbccgp" }, devices[0].interfaces[2]]
+            }
+        ]
+    };
     const prepared = await prepareProbeConnection(config, {
         resolveLaunch: () => launch,
         checkCapability: async () => ({ adapterFamily: "jlink" }),
         resolveTransport: async (_launch, transport) => transport,
         fingerprint: async () => "test-fingerprint",
-        listProbes: async () => inventory
+        listProbes: async () => readyInventory
     });
     assert.strictEqual(prepared.probeSerial, "123456789");
     const args = buildOpenOcdConfigArgs(launch, "swd", { probeSerial: "1234", adapterSpeedKhz: 100 });

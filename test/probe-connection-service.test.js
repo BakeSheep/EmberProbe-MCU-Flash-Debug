@@ -91,6 +91,49 @@ async function main() {
     await assert.rejects(automatic.prepare({}), { code: "PROBE_SELECTION_REQUIRED" });
     automatic.getSuccessfulConnection = () => ({ version: 1, probe: "jlink.cfg" });
     assert.strictEqual(await automatic.resolveProbe(), "jlink.cfg");
+    let driverChecks = 0;
+    automatic.driverService = {
+        requireWinUsb: (connection) => {
+            driverChecks++;
+            return connection;
+        }
+    };
+    await automatic.prepare({});
+    assert.strictEqual(driverChecks, 1, "connection preflight validates the USB driver without installing it");
+    automatic.driverService.requireWinUsb = () => {
+        throw Object.assign(new Error("Switch to WinUSB"), { code: "PROBE_DRIVER_UNSUPPORTED" });
+    };
+    await assert.rejects(automatic.prepare({}), { code: "PROBE_DRIVER_UNSUPPORTED" });
+    let preflightCalls = 0;
+    const switching = new ProbeConnectionService({
+        getConfig: () => ({ debugger: "jlink.cfg" }),
+        beforePrepare: () => {
+            throw Object.assign(new Error("Driver switch in progress"), { code: "PROBE_DRIVER_BUSY" });
+        },
+        prepareConnection: async () => {
+            preflightCalls++;
+        }
+    });
+    await assert.rejects(switching.prepare(options), { code: "PROBE_DRIVER_BUSY" });
+    assert.strictEqual(preflightCalls, 0, "driver switching blocks hardware operations before preflight starts");
+    let startSwitch = false;
+    let finishPreflight;
+    const preflightPending = new Promise((resolve) => (finishPreflight = resolve));
+    const overlapping = new ProbeConnectionService({
+        getConfig: () => ({ debugger: "jlink.cfg" }),
+        beforePrepare: () => {
+            if (startSwitch) throw Object.assign(new Error("Driver switch in progress"), { code: "PROBE_DRIVER_BUSY" });
+        },
+        prepareConnection: async () => {
+            await preflightPending;
+            return { probe: "jlink.cfg", selection: {} };
+        }
+    });
+    const pendingOperation = overlapping.prepare(options);
+    await new Promise((resolve) => setImmediate(resolve));
+    startSwitch = true;
+    finishPreflight();
+    await assert.rejects(pendingOperation, { code: "PROBE_DRIVER_BUSY" });
     console.log("Automatic connection, history and stale session tests passed");
 }
 main().catch((error) => {

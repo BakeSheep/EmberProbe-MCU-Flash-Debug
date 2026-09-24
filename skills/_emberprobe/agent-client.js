@@ -415,20 +415,36 @@ const READ_ONLY_METHODS = new Set([
     "cubemx.inspect",
     "config.get",
     "probe.list",
-    "chip.read",
-    "fault.read",
     "elf.analyze",
-    "peripherals.list",
-    "peripherals.read",
     "debug.status",
     "debug.breakpoints.list",
+    "peripherals.list"
+]);
+
+// These calls may perform a one-time USB driver installation before reading hardware.
+const DRIVER_SETUP_METHODS = new Set([
+    "chip.read",
+    "fault.read",
+    "peripherals.read",
     "variables.read",
     "variables.sample",
-    "variables.exportCsv"
+    "variables.write",
+    "variables.exportCsv",
+    "sampling.start",
+    "debug.start",
+    "flash.execute",
+    "flash.program",
+    "flash.verify"
 ]);
 
 // 状态变更超时后用于核对实际结果的查询方法；未列出的方法给出通用查询提示。
 const STATUS_QUERY_FOR = {
+    "chip.read": "probe.list",
+    "fault.read": "probe.list",
+    "peripherals.read": "probe.list",
+    "variables.read": "probe.list",
+    "variables.sample": "probe.list",
+    "variables.exportCsv": "probe.list",
     "cubemx.execute": "cubemx.inspect",
     "config.set": "config.get",
     "debug.start": "debug.status",
@@ -490,11 +506,14 @@ function writeDiagnostic(error, context) {
     process.stderr.write(JSON.stringify(diagnosticForError(error, context)) + "\n");
 }
 
-function call(workspace, method, params, timeoutMs = 20000) {
+function call(workspace, method, params, timeoutMs) {
     const info = descriptor(workspace);
     const body = Buffer.from(JSON.stringify({ method, params: params || {} }));
     // 实际(钳制后)超时预算与起始时间随超时错误一并上报，供 agent 判断耗时与恢复动作。
-    const budget = Math.max(1000, Math.min(2147483647, Number(timeoutMs) || 20000));
+    const budget = Math.max(
+        1000,
+        Math.min(2147483647, Number(timeoutMs) || (DRIVER_SETUP_METHODS.has(method) ? 360000 : 20000))
+    );
     const startedAt = Date.now();
     return new Promise((resolve, reject) => {
         const request = http.request(
@@ -535,12 +554,23 @@ function call(workspace, method, params, timeoutMs = 20000) {
                 })
             )
         );
-        request.on("error", (error) => {
+        request.on("error", async (error) => {
             // 连接层失败(ECONNREFUSED/ECONNRESET 等)保留原始传输错误码与方法上下文，
             // 由 diagnosticForError 映射为 BRIDGE_UNAVAILABLE，与请求超时区分描述。
             const err = /** @type {NodeJS.ErrnoException & { details?: Record<string, unknown> }} */ (error);
             if (err && typeof err === "object" && !err.details)
                 err.details = { method, transportError: err.code || "transport" };
+            if (err.code === "BRIDGE_TIMEOUT" && DRIVER_SETUP_METHODS.has(method)) {
+                try {
+                    const inventory = await call(workspace, "probe.list", {}, 20000);
+                    err.details = { ...err.details, driverInventory: inventory };
+                } catch (queryError) {
+                    err.details = {
+                        ...err.details,
+                        driverStatusQueryError: String(queryError?.code || queryError?.message || queryError)
+                    };
+                }
+            }
             reject(err);
         });
         request.end(body);

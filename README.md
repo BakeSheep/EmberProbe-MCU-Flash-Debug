@@ -2,7 +2,7 @@
 
 EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD，提供固件烧录、目标自动识别与实时变量观测。
 
-J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.md)：单探针自动选择、协议自动决策与成功连接记忆，以及高级覆盖、Ozone 占用和 USB 驱动诊断。
+J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.md)：单探针自动选择、协议自动决策与成功连接记忆。Windows 下使用 SEGGER USB 驱动时，需先在调试器卡片右侧选择 WinUSB；芯片读取、采样、调试和下载不会自动切换驱动。
 
 > [English documentation](README_EN.md)
 

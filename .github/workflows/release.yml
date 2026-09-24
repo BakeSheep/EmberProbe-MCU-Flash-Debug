@@ -25,7 +25,7 @@ jobs:
       ref: ${{ inputs.tag || github.ref }}
 
   build:
-    needs: gates
+    needs: [gates, driver-helper]
     timeout-minutes: 15
     name: Validate and package
     runs-on: ubuntu-latest
@@ -53,8 +53,20 @@ jobs:
       - name: Check release consistency
         run: npm run check:release
 
+      - name: Download signed driver helper
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-driver-helper
+          path: resources/driver-helper/win32-x64
+
+      - name: Verify signed helper hashes
+        run: node scripts/verify-driver-helper.js
+
       - name: Package VSIX
         run: npm run package
+
+      - name: Verify VSIX includes signed helper bytes
+        run: node scripts/verify-driver-helper.js dist/emberprobe.vsix
 
       - name: Upload verified VSIX
         uses: actions/upload-artifact@v4
@@ -91,3 +103,30 @@ jobs:
 
       - name: Publish verified release
         run: node scripts/publish-release.js
+
+  driver-helper:
+    needs: gates
+    timeout-minutes: 20
+    name: Build and sign Windows driver helper
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build libwdi and helper
+        shell: pwsh
+        run: ./scripts/build-driver-helper.ps1
+      - name: Sign helper and library
+        shell: pwsh
+        env:
+          EMBERPROBE_SIGNING_PFX_BASE64: ${{ secrets.EMBERPROBE_SIGNING_PFX_BASE64 }}
+          EMBERPROBE_SIGNING_PFX_PASSWORD: ${{ secrets.EMBERPROBE_SIGNING_PFX_PASSWORD }}
+        run: ./scripts/sign-driver-helper.ps1
+      - name: Upload signed helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-driver-helper
+          path: resources/driver-helper/win32-x64/
+          if-no-files-found: error
+          retention-days: 7

@@ -4,6 +4,7 @@ const { execFile } = require("child_process");
 const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
 const { resolveProbeConnection, connectionError } = require("./probe-connection");
+const { requireJlinkWinUsb } = require("./jlink-driver");
 const { connectionFingerprint } = require("./connection-fingerprint");
 
 const capabilitiesCache = new Map();
@@ -133,6 +134,12 @@ async function prepareProbeConnection(options, dependencies = {}) {
         { ...options, fingerprint, adapterFamily: capability.adapterFamily },
         inventory
     );
+    if (capability.adapterFamily === "jlink")
+        requireJlinkWinUsb(
+            { ...connection, adapterFamily: capability.adapterFamily, inventory },
+            dependencies.platform || process.platform,
+            dependencies.arch || process.arch
+        );
     if (capability.adapterFamily === "jlink")
         connection.transport = await (dependencies.resolveTransport || resolveInterfaceTransport)(
             launch,

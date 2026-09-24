@@ -15,15 +15,20 @@ assert.strictEqual(ci.jobs.check.name, "Node ${{ matrix.os }}");
 assert.strictEqual(ci.jobs.check.steps.filter((s) => s.run === "npm run check").length, 1);
 assert.ok(!ci.jobs.check.steps.some((s) => s.run === "npm run quality"));
 assert.ok(ci.jobs.quality.steps.some((s) => s.run === "npm run quality"));
+assert.ok(ci.jobs["driver-helper"].steps.some((s) => s.run === "./scripts/build-driver-helper.ps1"));
 for (const job of Object.values(ci.jobs)) {
     assert.ok(job["timeout-minutes"] <= 20);
     assert.ok(job.steps.some((s) => s.if === "failure()" && s.with?.["retention-days"] === 14));
 }
 assert.strictEqual(release.jobs.gates.uses, "./.github/workflows/ci.yml");
-assert.strictEqual(release.jobs.build.needs, "gates");
+assert.deepStrictEqual(release.jobs.build.needs, ["gates", "driver-helper"]);
 assert.strictEqual(release.jobs.publish.needs, "build");
 assert.strictEqual(release.permissions.contents, "read");
 assert.strictEqual(release.jobs.publish.permissions.contents, "write");
+const signingScript = fs.readFileSync(path.join(__dirname, "../scripts/sign-driver-helper.ps1"), "utf8");
+assert.match(signingScript, /Import-PfxCertificate/);
+assert.match(signingScript, /sign \/fd SHA256 \/sha1 \$thumbprint/g);
+assert.doesNotMatch(signingScript, /sign [^\r\n]* \/p\s/);
 assert.strictEqual(release.concurrency["cancel-in-progress"], false);
 assert.strictEqual(hil.jobs["flash-verify"].if, "vars.HIL_ENABLED == 'true'");
 assert.ok(!Object.hasOwn(hil.on, "pull_request") && !Object.hasOwn(hil.on, "push"));

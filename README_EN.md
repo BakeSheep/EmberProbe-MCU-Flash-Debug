@@ -2,7 +2,7 @@
 
 EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it provides firmware flashing, automatic target detection, and live variable watching.
 
-For J-Link, see [connection configuration and compatibility](docs/JLINK-COMPATIBILITY.md): automatic single-probe selection, transport decisions and successful connection history, plus advanced overrides, Ozone contention and USB driver diagnostics.
+For J-Link, see [connection configuration and compatibility](docs/JLINK-COMPATIBILITY.md): automatic probe selection, transport decisions and connection history. On Windows, select WinUSB beside the debugger card before using a J-Link bound to the SEGGER USB driver; chip reads, sampling, debugging and downloads do not change the driver automatically.
 
 > [中文文档](README.md)
 

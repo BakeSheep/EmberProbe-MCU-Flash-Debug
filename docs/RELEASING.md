@@ -4,7 +4,7 @@
 
 ## 权限与安全
 
-无需配置额外 Secret。工作流只在发布 job 中申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
+Windows J-Link 驱动功能要求发布包中的 helper 与 libwdi DLL 都经过 Authenticode 签名。发布前必须配置仓库 Secret `EMBERPROBE_SIGNING_PFX_BASE64`（代码签名 PFX 的 Base64 内容）与 `EMBERPROBE_SIGNING_PFX_PASSWORD`。缺少凭据时 Release 工作流会停止，不生成 VSIX。签名任务应仅在受控的一次性 Windows runner 上执行：脚本会临时导入证书至当前用户证书存储，并在结束时移除导入的证书和 PFX 文件；SignTool 命令行不会包含 PFX 密码。发布 job 只在发布阶段申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
 
 ## 发布稳定版本
 
@@ -25,11 +25,10 @@ git push origin v0.5.0
 
 工作流依次执行：
 
-1. 复用 CI：Windows、Ubuntu、macOS 的 Node 20 普通检查和 bundle，Ubuntu Node 24 的质量检查和固定 VS Code 1.136.1 Extension Host 冒烟测试。
-2. 三平台及独立质量、Extension Host 任务全部成功后，校验标签和发布元数据。
-3. 打包并保存 `dist/emberprobe.vsix`。
-4. 创建 GitHub Draft Release 并上传 VSIX。
-5. 附件上传成功后将 Draft Release 转为正式 Release。
+1. 复用 CI：Windows、Ubuntu、macOS 的 Node 20 普通检查和 bundle、Windows libwdi/helper 原生构建、Ubuntu Node 24 质量检查及 Extension Host 冒烟测试。
+2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名；签署 libwdi，将其 SHA-256 编入 helper 后重新构建并签署 helper，验证两份 Authenticode 签名。
+3. 校验标签与发布元数据，将已签名原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与签名后的文件一致。
+4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
 
 ## 失败与重试
 

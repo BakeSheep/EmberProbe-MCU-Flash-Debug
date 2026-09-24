@@ -37,9 +37,11 @@ const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStat
 const { FeedbackPromptService } = require("./services/feedbackPromptService");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
+const { ProbeDriverService } = require("./services/probeDriverService");
+const { jlinkDriverChoice } = require("./services/jlinkDriverChoice");
+const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { serializeError } = require("./services/errorEnvelope");
-const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 const {
     LiveWatchService,
     buildActiveReadPlan,
@@ -181,6 +183,16 @@ class MainViewProvider {
                 for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
             }
         });
+        this._probeDriverService = new ProbeDriverService({
+            extensionPath: context.extensionPath,
+            verifyReady: async (connection) => {
+                const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
+                const executable = await this._resolveOpenOcdPath(configured);
+                if (!executable) throw new Error("OpenOCD is required to verify that J-Link is ready");
+                await waitForJlinkReady(executable, connection.probeSerial);
+            },
+            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status })
+        });
         this._probeConnectionService = new ProbeConnectionService({
             getConfig: () => this._configurationStore.snapshot(),
             getSuccessfulConnection: () => this._context.workspaceState.get("mcu.successfulProbeConnection"),
@@ -190,6 +202,8 @@ class MainViewProvider {
                 this._resolvedProbeConnection = connection;
                 this.updateView();
             },
+            driverService: this._probeDriverService,
+            beforePrepare: () => this._assertProbeDriverIdle(),
             window: vscode.window
         });
         this._cubemxFirmware = new CubeMxFirmware({
@@ -463,73 +477,6 @@ class MainViewProvider {
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             }
         };
-        this.commandHandlers["mcu-vscode.configureProbeConnection"] = async () => {
-            this._assertConnectionEditable({ probeSerial: true });
-            const config = this._configurationStore.snapshot();
-            const selected = await vscode.window.showQuickPick(
-                [
-                    { label: this._t("probe.serial"), value: "probeSerial" },
-                    { label: this._t("probe.transport"), value: "transport" },
-                    { label: this._t("probe.speed"), value: "adapterSpeedKhz" },
-                    { label: this._t("probe.resetAutomatic"), value: "automatic" }
-                ],
-                { title: this._t("probe.configure") }
-            );
-            if (!selected) return false;
-            if (selected.value === "automatic") {
-                this._assertConnectionEditable({ probeSerial: true });
-                await this._configurationStore.update({ probeSerial: "", transport: "auto", adapterSpeedKhz: 0 });
-                await this._probeConnectionService.forgetSuccess();
-                this._resolvedProbeConnection = null;
-                this.updateView();
-                return true;
-            }
-            let value;
-            if (selected.value === "transport") {
-                value = await vscode.window.showQuickPick(["auto", "swd", "jtag"], {
-                    title: this._t("probe.transport")
-                });
-            } else if (selected.value === "probeSerial") {
-                const inventory = await listProbes();
-                /** @type {Array<{label: string, description: string, value: string}>} */
-                const choices = inventory.devices
-                    .filter((device) => device.serial)
-                    .map((device) => ({ label: device.serial, description: device.name, value: device.serial }));
-                choices.push({ label: this._t("probe.manualSerial"), description: "", value: "" });
-                const device = await vscode.window.showQuickPick(choices, { title: this._t("probe.serial") });
-                if (!device) return false;
-                value =
-                    device.value ||
-                    (await vscode.window.showInputBox({
-                        title: this._t("probe.serial"),
-                        value: config.probeSerial,
-                        validateInput: (input) => {
-                            try {
-                                return normalizeProbeSerial(input) ? undefined : this._t("probe.serialRequired");
-                            } catch (error) {
-                                return error.message;
-                            }
-                        }
-                    }));
-            } else {
-                value = await vscode.window.showInputBox({
-                    title: this._t("probe.speed"),
-                    prompt: this._t("probe.speedDefault"),
-                    value: String(config.adapterSpeedKhz),
-                    validateInput: (input) => {
-                        try {
-                            normalizeAdapterSpeed(input);
-                            return undefined;
-                        } catch (error) {
-                            return error.message;
-                        }
-                    }
-                });
-            }
-            if (value === undefined) return false;
-            await this._configurationStore.update({ [selected.value]: value });
-            return true;
-        };
         // 2. 选择调试器
         this.commandHandlers["mcu-vscode.selectDebugger"] = async () => {
             this._assertConnectionEditable({ debugger: true });
@@ -556,7 +503,8 @@ class MainViewProvider {
                     }
                     await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
                     vscode.window.showInformationMessage(this._t("msg.debuggerSelected", { name: debuggerCfg }));
-                    this.updateView();
+                    await this.updateView();
+                    await this._refreshJlinkDriverChoice(true);
                     quickPick.dispose();
                 }
             });
@@ -603,6 +551,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration, interactive = true) => {
             let probePrepared = false;
             let startAccepted = false;
+            let ownsPending = false;
             try {
                 if (this._agentReadRunning) {
                     vscode.window.showWarningMessage(this._t("msg.agentReadBusy"));
@@ -613,6 +562,8 @@ class MainViewProvider {
                     return false;
                 }
                 this._debugCommandPending = true;
+                ownsPending = true;
+                this._debugStartupErrorReported = false;
                 console.log("主进程执行启动调试命令");
                 let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg =
@@ -688,7 +639,8 @@ class MainViewProvider {
                 );
                 const outcome = await Promise.race([startRequest, startupGate]);
                 if (outcome.kind === "error") throw outcome.error;
-                if (outcome.kind === "timeout" || outcome.kind === "terminated") return false;
+                if (outcome.kind === "timeout" || outcome.kind === "terminated" || outcome.kind === "failed")
+                    return false;
                 const started = outcome.kind === "ready" ? true : outcome.started;
                 startAccepted = started === true;
                 if (!started) {
@@ -699,10 +651,16 @@ class MainViewProvider {
                     await this.restoreSamplingAfterDebug();
                     return false;
                 }
+                // VS Code may accept the request before GDB has attached. Keep the sidebar pending
+                // until the adapter confirms launch, terminates, or the bounded watchdog fires.
+                if (outcome.kind === "result") {
+                    const initialized = await startupGate;
+                    if (initialized.kind !== "ready") return false;
+                }
                 return true;
             } catch (err) {
                 this._clearDebugStartupWatchdog();
-                const errorMsg = err.message;
+                const errorMsg = err.i18nKey ? this._t(err.i18nKey, err.i18nParams) : err.message;
                 console.error("调试启动失败：", err.stack || errorMsg);
                 vscode.window.showErrorMessage(this._t("msg.debugFailed", { error: errorMsg }));
                 if (probePrepared) {
@@ -712,9 +670,11 @@ class MainViewProvider {
                 }
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             } finally {
-                if (this._debugStarting) this._debugStartLease?.release();
-                if (!startAccepted) this._clearDebugStartupWatchdog();
-                this._debugCommandPending = false;
+                if (ownsPending) {
+                    if (this._debugStarting) this._debugStartLease?.release();
+                    if (!startAccepted) this._clearDebugStartupWatchdog();
+                    this._debugCommandPending = false;
+                }
             }
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
@@ -794,7 +754,7 @@ class MainViewProvider {
                 vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
                 return true;
             } catch (err) {
-                const errorMsg = err.message;
+                const errorMsg = err.i18nKey ? this._t(err.i18nKey, err.i18nParams) : err.message;
                 console.error("固件下载失败：", errorMsg);
                 vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
@@ -810,12 +770,19 @@ class MainViewProvider {
     }
     _assertConnectionEditable(values) {
         const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
+        if (keys.some((key) => Object.hasOwn(values, key))) this._assertProbeDriverIdle();
         if (
             keys.some((key) => Object.hasOwn(values, key)) &&
             (this._liveSession || this._managedDebugServer || this._agentReadSession || this._debugBridge.hasAnySession)
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
                 code: "PROBE_CONFIGURATION_BUSY"
+            });
+    }
+    _assertProbeDriverIdle() {
+        if (this._probeDriverSwitching)
+            throw Object.assign(new Error("J-Link USB driver change is still in progress"), {
+                code: "PROBE_DRIVER_BUSY"
             });
     }
     connectionConfigurationChanged() {
@@ -826,6 +793,9 @@ class MainViewProvider {
             this._debugBridge.activeSession
         ]);
         if (this._liveSession || this._managedDebugServer) this._postConsumerStatuses({});
+        this._refreshJlinkDriverChoice(false).catch((error) =>
+            console.error("J-Link USB driver check failed:", error.message)
+        );
     }
     _assertWriteSessionCurrent(session) {
         const physical =
@@ -1335,7 +1305,8 @@ class MainViewProvider {
                             },
                             true
                         ),
-                    onDisconnect: (error) =>
+                    onDisconnect: (error) => {
+                        if (this._debugLifecycle.pending) this._reportDebugStartupFailure(error.message);
                         this._postConsumerStatuses(
                             {
                                 mode: "debug-server-exited",
@@ -1348,7 +1319,8 @@ class MainViewProvider {
                                 diagnostic: serializeError(error)
                             },
                             true
-                        )
+                        );
+                    }
                 }
             );
             this._managedDebugServer = server;
@@ -1408,6 +1380,16 @@ class MainViewProvider {
     }
     _markDebugStartupReady(session) {
         this._debugLifecycle.ready(session, this._matchesManagedDebugSession(session));
+    }
+    _reportDebugStartupFailure(message) {
+        if (this._debugStartupErrorReported) return;
+        this._debugStartupErrorReported = true;
+        this._webviewView?.webview.postMessage({
+            type: "commandError",
+            cmd: "mcu-vscode.debug",
+            error: message || this._t("msg.debugStartFailed")
+        });
+        this._clearDebugStartupWatchdog({ kind: "failed" });
     }
     async _recoverDebugStartupTimeout() {
         if (!this._debugLifecycle.pending) return;
@@ -2912,6 +2894,7 @@ class MainViewProvider {
         if (this._liveWatchRunning) this.stopLiveWatch({ preserveIntent: true });
     }
     async prepareForCortexDebug(folder, config) {
+        this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
         const token = config?.__emberprobeManagedToken;
         if (token && token === this._managedDebugToken && this._managedDebugServer) return;
@@ -2964,6 +2947,14 @@ class MainViewProvider {
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {
+        if (
+            message?.type === "response" &&
+            !message.success &&
+            ["launch", "attach"].includes(message.command) &&
+            this._matchesManagedDebugSession(session)
+        ) {
+            this._reportDebugStartupFailure(message.message || message.body?.error?.format);
+        }
         if (
             message?.type === "response" &&
             message.success &&
@@ -3103,6 +3094,19 @@ class MainViewProvider {
         ch.clear();
         ch.appendLine(this._t("diag.title"));
         ch.appendLine(this._t("diag.time", { time: new Date().toLocaleString() }));
+        if (diag.target) ch.appendLine(this._t("diag.target", { target: diag.target }));
+        if (diag.timings) {
+            const time = (value) => (value == null ? "-" : String(value));
+            ch.appendLine(
+                this._t("diag.timings", {
+                    config: time(diag.timings.configMs),
+                    preflight: time(diag.timings.preflightMs),
+                    read: time(diag.timings.openOcdMs),
+                    save: time(diag.timings.saveMs),
+                    total: time(diag.timings.totalMs)
+                })
+            );
+        }
         if (info) {
             const kv = [
                 [this._t("diag.kvCore"), info.core],
@@ -3130,7 +3134,7 @@ class MainViewProvider {
         ch.appendLine(this._t("diag.rawOutput"));
         (diag.lines || []).forEach((l) => ch.appendLine("  " + l));
         // Device ID 或 UID 缺失时自动展示，便于复制反馈
-        if (!info || !info.deviceId || !info.uid) ch.show(true);
+        if (!info || !info.deviceId || (chipInfo.uidBaseForTarget(diag.target) && !info.uid)) ch.show(true);
     }
     // 实现接口要求的resolveWebviewView方法（无修改）
     resolveWebviewView(webviewView) {
@@ -3150,7 +3154,15 @@ class MainViewProvider {
                         console.log("主进程接收命令：", cmd);
                         if (this.commandHandlers[cmd]) {
                             const result = await this.commandHandlers[cmd]();
-                            if (result === false) break;
+                            if (result === false) {
+                                if (cmd !== "mcu-vscode.debug" || !this._debugStartupErrorReported)
+                                    webviewView.webview.postMessage({
+                                        type: "commandError",
+                                        cmd,
+                                        error: this._t("sb.commandFailed")
+                                    });
+                                break;
+                            }
                             // 向Webview发送成功消息
                             webviewView.webview.postMessage({
                                 type: "commandSuccess",
@@ -3181,6 +3193,11 @@ class MainViewProvider {
                     this._sidebarReady = true;
                     // Webview初始化检查，直接返回成功（无需依赖commands接口）
                     webviewView.webview.postMessage({ type: "initSuccess" });
+                    if (this._probeDriverSwitching)
+                        webviewView.webview.postMessage({ type: "probeDriverSwitch", busy: true });
+                    this._refreshJlinkDriverChoice(true).catch((error) =>
+                        console.error("J-Link USB driver check failed:", error.message)
+                    );
                     // 回放最近的下载进度，避免视图重建后日志丢失
                     for (const progressMessage of this._recentProgress)
                         webviewView.webview.postMessage(progressMessage);
@@ -3199,6 +3216,21 @@ class MainViewProvider {
                         this._feedbackPromptService
                             .markShown(feedbackPrompt.kind)
                             .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
+                    }
+                    break;
+                }
+                case "selectProbeDriver": {
+                    try {
+                        await this._changeJlinkDriver(message.driver);
+                    } catch (error) {
+                        webviewView.webview.postMessage({
+                            type: "commandError",
+                            diagnostic: serializeError(error),
+                            error: error.message || String(error)
+                        });
+                        this._refreshJlinkDriverChoice(false).catch((refreshError) =>
+                            console.error("J-Link USB driver check failed:", refreshError.message)
+                        );
                     }
                     break;
                 }
@@ -3379,7 +3411,8 @@ class MainViewProvider {
         if (result.elf && (force || !currentElf)) {
             await this._refreshElfBindings();
         }
-        this.updateView();
+        await this.updateView();
+        if (result.debugger && (force || !currentDebugger)) await this._refreshJlinkDriverChoice(true);
         const found = [
             detectedIoc && ".ioc: " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
@@ -3394,6 +3427,81 @@ class MainViewProvider {
         }
         return result;
     }
+    async _refreshJlinkDriverChoice(notify = false) {
+        const revision = this._jlinkDriverChoiceRevision || 0;
+        if (this._probeDriverSwitching) return null;
+        const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
+        if (process.platform !== "win32" || debuggerCfg !== "jlink.cfg") {
+            this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: "" });
+            return null;
+        }
+        const inventory = await this._probeDriverService.reconcileInventory(await listProbes());
+        if (this._probeDriverSwitching || revision !== (this._jlinkDriverChoiceRevision || 0)) return null;
+        if (this._context.workspaceState.get(CACHE_KEYS.debugger) !== "jlink.cfg") return null;
+        const choice = jlinkDriverChoice(
+            inventory,
+            vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
+            this._context.workspaceState.get("mcu.successfulProbeConnection")
+        );
+        this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: choice?.driver || "" });
+        if (choice?.driver !== "segger") this._lastJlinkDriverWarning = "";
+        if (notify && choice?.driver === "segger" && this._lastJlinkDriverWarning !== choice.instanceId) {
+            this._lastJlinkDriverWarning = choice.instanceId;
+            vscode.window.showWarningMessage(this._t("probe.winusbRequired"));
+        }
+        return choice;
+    }
+    async _changeJlinkDriver(driver) {
+        if (driver !== "winusb" && driver !== "segger")
+            throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
+        this._assertProbeDriverIdle();
+        this._assertConnectionEditable({ probeSerial: true });
+        if (this._probeCoordinator?.anyActive())
+            throw Object.assign(new Error("Wait for the current probe operation to finish before changing drivers"), {
+                code: "PROBE_BUSY"
+            });
+        this._probeDriverSwitching = true;
+        this._jlinkDriverChoiceRevision = (this._jlinkDriverChoiceRevision || 0) + 1;
+        this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: true });
+        try {
+            const inventory = await this._probeDriverService.reconcileInventory(await listProbes());
+            const choice = jlinkDriverChoice(
+                inventory,
+                vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
+                this._context.workspaceState.get("mcu.successfulProbeConnection")
+            );
+            if (!choice)
+                throw Object.assign(new Error("No uniquely selected supported J-Link is connected"), {
+                    code: "PROBE_DRIVER_SELECTION_REQUIRED"
+                });
+            if (choice.driver === driver) {
+                this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
+                return;
+            }
+            const result =
+                driver === "winusb"
+                    ? await this._probeDriverService.ensure(choice.connection)
+                    : await this._probeDriverService.restore(choice.connection);
+            const verified = jlinkDriverChoice(
+                driver === "winusb" ? result.inventory : result,
+                vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
+                this._context.workspaceState.get("mcu.successfulProbeConnection")
+            );
+            if (verified?.driver !== driver || verified.instanceId !== choice.instanceId)
+                throw Object.assign(new Error("The selected J-Link driver could not be verified after switching"), {
+                    code: "PROBE_DRIVER_VERIFY_FAILED"
+                });
+            this._resolvedProbeConnection = null;
+            this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
+            if (driver === "segger") {
+                this._lastJlinkDriverWarning = choice.instanceId;
+                vscode.window.showWarningMessage(this._t("probe.winusbRequired"));
+            } else this._lastJlinkDriverWarning = "";
+        } finally {
+            this._probeDriverSwitching = false;
+            this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: false });
+        }
+    }
     getModernWebviewContent() {
         const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         return modernView.getModernWebviewContent(
@@ -3405,27 +3513,9 @@ class MainViewProvider {
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
                 debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
-                probeConnection:
-                    this._resolvedProbeConnection &&
-                    !this._probeConnectionService.settingsChanged({ options: this._resolvedProbeConnection })
-                        ? [
-                              this._resolvedProbeConnection.probeSerial,
-                              this._t(`probe.source.${this._resolvedProbeConnection.selection.probe}`),
-                              this._resolvedProbeConnection.transport.toUpperCase(),
-                              this._t(`probe.source.${this._resolvedProbeConnection.selection.transport}`)
-                          ]
-                              .filter(Boolean)
-                              .join(" · ")
-                        : [
-                              /jlink/i.test(this._context.workspaceState.get(CACHE_KEYS.debugger) || "")
-                                  ? vscode.workspace.getConfiguration("emberprobe").get("probeSerial", "") ||
-                                    this._t("probe.automatic")
-                                  : "",
-                              vscode.workspace.getConfiguration("emberprobe").get("transport", "auto").toUpperCase(),
-                              vscode.workspace.getConfiguration("emberprobe").get("adapterSpeedKhz", 0) + " kHz"
-                          ]
-                              .filter(Boolean)
-                              .join(" · "),
+                showJlinkDriverChoice:
+                    process.platform === "win32" &&
+                    this._context.workspaceState.get(CACHE_KEYS.debugger) === "jlink.cfg",
                 mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },
             this._lang

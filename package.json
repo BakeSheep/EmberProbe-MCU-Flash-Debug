@@ -301,6 +301,7 @@
     "dist/webview/**/*",
     "src/webview/**/*",
     "resources/**/*.tar.gz",
+    "resources/driver-helper/win32-x64/*",
     "media/**/*",
     "skills/**/*",
     "README.md",
@@ -309,6 +310,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
+    "native/vendor/libwdi/COPYING",
+    "native/vendor/libwdi/COPYING-LGPL",
     "dist/debugAdapter.js"
   ],
   "scripts": {

@@ -8,6 +8,7 @@ const { createFixture } = require("./helpers/service-fixture");
     try {
         const active = new Set();
         const chipPosts = [];
+        let chipDiagnostics = null;
         const chipService = new ChipInfoService({
             vscode: { workspace: { getConfiguration: () => ({ get: () => "openocd" }) } },
             context: { workspaceState: { get: (key) => (key === "debugger" ? "p.cfg" : "t.cfg") } },
@@ -24,7 +25,9 @@ const { createFixture } = require("./helpers/service-fixture");
             resolveExecutable: async (value) => value,
             commandContext: () => ({ cwd: temp }),
             onPost: (message) => chipPosts.push(message),
-            onDiagnostics: () => {},
+            onDiagnostics: (diagnostic) => {
+                chipDiagnostics = diagnostic;
+            },
             isDebugActive: () => false
         });
         const chipResult = await chipService.read();
@@ -32,6 +35,11 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.ok(Number.isFinite(Date.parse(chipResult.readAt)));
         assert.strictEqual(chipService.running, false);
         assert.ok(chipPosts.some((message) => message.type === "chipInfo"));
+        assert.strictEqual(chipDiagnostics.target, "t.cfg");
+        assert.ok(chipDiagnostics.timings.totalMs >= 0);
+        assert.ok(chipDiagnostics.timings.configMs >= 0);
+        assert.ok(chipDiagnostics.timings.preflightMs >= 0);
+        assert.ok(chipDiagnostics.timings.openOcdMs >= 0);
         active.add("download");
         assert.strictEqual(await chipService.read(), null);
         assert.ok(chipPosts.some((message) => message.key === "chip.busyDownload"));

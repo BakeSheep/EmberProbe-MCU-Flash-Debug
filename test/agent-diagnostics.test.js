@@ -7,6 +7,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const net = require("net");
+const http = require("http");
 const path = require("path");
 const { call, diagnosticForError, isReadOnlyMethod } = require("../skills/_emberprobe/agent-client");
 
@@ -57,7 +58,7 @@ function unpatchDescriptor() {
     try {
         // ---- 方法分类：只读可在相同前置条件下重试一次；其余按状态变更处理 ----
         assert.strictEqual(isReadOnlyMethod("config.get"), true);
-        assert.strictEqual(isReadOnlyMethod("variables.read"), true);
+        assert.strictEqual(isReadOnlyMethod("variables.read"), false, "a hardware read may configure its USB driver");
         assert.strictEqual(isReadOnlyMethod("debug.status"), true);
         assert.strictEqual(isReadOnlyMethod("config.set"), false);
         assert.strictEqual(isReadOnlyMethod("debug.start"), false);
@@ -82,6 +83,35 @@ function unpatchDescriptor() {
         assert.ok(Number.isFinite(timeoutError.details.elapsedMs) && timeoutError.details.elapsedMs >= 0);
         for (const socket of blackhole.sockets) socket.destroy();
         blackhole.server.close();
+
+        // A driver-capable hardware call checks the read-only inventory after a transport timeout.
+        const methods = [];
+        const statusServer = http.createServer((request, response) => {
+            const chunks = [];
+            request.on("data", (part) => chunks.push(part));
+            request.on("end", () => {
+                const { method } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                methods.push(method);
+                if (method === "probe.list") {
+                    response.writeHead(200, { "Content-Type": "application/json" });
+                    response.end(JSON.stringify({ ok: true, result: { available: true, devices: [] } }));
+                }
+            });
+        });
+        await new Promise((resolve) => statusServer.listen(0, "127.0.0.1", resolve));
+        patchDescriptor(statusServer.address().port, TOKEN);
+        let driverTimeout;
+        try {
+            await call(workspace, "chip.read", {}, 1000);
+        } catch (error) {
+            driverTimeout = error;
+        } finally {
+            unpatchDescriptor();
+            statusServer.close();
+        }
+        assert.strictEqual(driverTimeout?.code, "BRIDGE_TIMEOUT");
+        assert.deepStrictEqual(methods, ["chip.read", "probe.list"], "do not replay the hardware request");
+        assert.deepStrictEqual(driverTimeout.details.driverInventory, { available: true, devices: [] });
 
         // 状态变更超时：结果未知、不得声称已取消、不得自动重发、提示查询实际状态
         const stateChangeDiag = diagnosticForError(timeoutError, { operation: "config.set" });

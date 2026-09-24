@@ -9,6 +9,7 @@
     "openocd-diagnostics.js",
     "openocd-launch.js",
     "openocd-policy.js",
+    "jlink-driver.js",
     "probe-detection.js",
     "probe-connection.js",
     "probe-inventory.js",

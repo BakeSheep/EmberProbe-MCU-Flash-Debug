@@ -2,6 +2,16 @@
 
 module.exports = Object.freeze({
     "probe.configure": "Advanced probe settings",
+    "probe.usbDriver": "J-Link USB driver",
+    "probe.winusbRequired":
+        "This J-Link is using the SEGGER driver. EmberProbe needs WinUSB; select WinUSB beside Select Debugger.",
+    "probe.driverUnsupported":
+        "This J-Link uses the SEGGER USB driver, which EmberProbe does not support. Change it to WinUSB and try again.",
+    "probe.restoreDriver": "Restore the original J-Link USB driver",
+    "probe.driverInstalling": "Configuring WinUSB for J-Link; complete the Windows authorization…",
+    "probe.driverReady": "J-Link USB driver is configured",
+    "probe.driverRestoring": "Restoring the original J-Link USB driver…",
+    "probe.driverRestored": "The original J-Link USB driver is restored",
     "probe.automatic": "Automatic",
     "probe.resetAutomatic": "Restore automatic connection and forget previous device",
     "probe.source.explicit": "Override",
@@ -484,6 +494,9 @@ module.exports = Object.freeze({
     "warn.noDwarf": "No DWARF type info found; types are inferred from size (build with -g for precise types)",
     "diag.title": "=== EmberProbe chip info read diagnostics ===",
     "diag.time": "Time: {time}",
+    "diag.target": "Target configuration: {target}",
+    "diag.timings":
+        "Time: configuration {config} ms, preflight {preflight} ms, OpenOCD read {read} ms, save connection {save} ms, total {total} ms",
     "diag.parsed": "Parsed result: {content}",
     "diag.none": "(none)",
     "diag.commands": "OpenOCD commands executed:",

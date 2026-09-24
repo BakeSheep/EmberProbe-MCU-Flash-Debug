@@ -260,7 +260,7 @@ function createChipParser(target) {
                 }
             }
             // 由 DEV_ID 推断实际芯片家族，修正目标配置名推导的系列（用户选错 target 时仍能正确显示）
-            if (info.deviceId) {
+            if (info.deviceId && /^stm32/i.test(info.series)) {
                 const devNum = parseInt(info.deviceId, 16);
                 const family = DEV_ID_FAMILY[devNum];
                 if (family && family !== info.series) info.series = family;

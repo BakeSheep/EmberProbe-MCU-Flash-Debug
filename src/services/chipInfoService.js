@@ -44,6 +44,7 @@ class ChipInfoService {
     }
 
     async read(forAgent = false) {
+        const startedAt = Date.now();
         if (this.running) return this.rejectBusy("chip.reading", "CHIP_READ_RUNNING", forAgent);
         if (this.coordinator.isActive("download")) return this.rejectBusy("chip.busyDownload", "PROBE_BUSY", forAgent);
         if (this.coordinator.isActive("liveWatch")) return this.rejectBusy("chip.busyLive", "PROBE_BUSY", forAgent);
@@ -77,13 +78,25 @@ class ChipInfoService {
             return this.rejectBusy("chip.notReady", "OPENOCD_NOT_READY", forAgent);
         }
 
+        const configMs = Date.now() - startedAt;
+        let preflightMs = null;
+        let openOcdMs = null;
+        let saveMs = null;
+        const diagnosticReport = () => ({
+            ...(diagnostics || {}),
+            target,
+            timings: { configMs, preflightMs, openOcdMs, saveMs, totalMs: Date.now() - startedAt }
+        });
         this.post({ state: "reading", key: "chip.reading" });
         let diagnostics = null;
         try {
             const { cwd } = this.commandContext();
+            const preflightStartedAt = Date.now();
             const connection = this.prepareConnection
                 ? await this.prepareConnection({ executable, probe, target }, !forAgent)
                 : {};
+            preflightMs = Date.now() - preflightStartedAt;
+            const openOcdStartedAt = Date.now();
             const info = await this.chipInfo.readChipInfo(
                 this.vscode,
                 {
@@ -95,15 +108,21 @@ class ChipInfoService {
                     ...connection
                 },
                 (event) => {
-                    if (event?.stage === "raw") diagnostics = event;
+                    if (event?.stage === "raw") {
+                        diagnostics = event;
+                        openOcdMs = Date.now() - openOcdStartedAt;
+                    }
                 }
             );
+            openOcdMs = Date.now() - openOcdStartedAt;
+            const saveStartedAt = Date.now();
             if (!lease.released && (info.cpuid || info.core || info.idcode || info.uid))
                 await this.recordSuccess(connection);
+            saveMs = Date.now() - saveStartedAt;
             info.readAt = new Date().toISOString();
             this.info = info;
             this.post({ state: "ready", key: "chip.done" }, info);
-            this.onDiagnostics(diagnostics, info);
+            this.onDiagnostics(diagnosticReport(), info);
             return info;
         } catch (error) {
             this.post({
@@ -113,7 +132,7 @@ class ChipInfoService {
                 message: error.message || String(error),
                 diagnostic: serializeError(error)
             });
-            this.onDiagnostics(diagnostics, null);
+            this.onDiagnostics(diagnosticReport(), null);
             if (forAgent) throw error;
             return null;
         } finally {

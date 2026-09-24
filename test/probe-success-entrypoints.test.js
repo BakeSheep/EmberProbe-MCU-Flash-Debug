@@ -30,6 +30,10 @@ async function main() {
     provider._terminatedDebugSessionIds = new Set();
     provider._managedDebugServer = { options: connection };
     provider._markDebugStartupReady = () => {};
+    provider._clearDebugStartupWatchdog = (outcome) => {
+        assert.strictEqual(outcome.kind, "failed");
+    };
+    provider._t = (key) => key;
     provider._debugBridge = { handleMessage: () => {} };
     const session = { id: "managed" };
     provider.handleDebugAdapterMessage(session, { type: "event", event: "initialized" });

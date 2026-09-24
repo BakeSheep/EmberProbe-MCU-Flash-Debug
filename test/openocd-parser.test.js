@@ -66,6 +66,10 @@ assert.deepStrictEqual(noProbe.details.openocdTail, ["Error: unable to find a ma
 
 const noTarget = diagnoseOpenOcdFailure(["Error: Error connecting DP: cannot read IDR"], { exitCode: 1 });
 assert.strictEqual(noTarget.code, "TARGET_NOT_CONNECTED");
+const h7NoTarget = diagnoseOpenOcdFailure(["Error: Error connecting DP: cannot read IDR"], {
+    target: "stm32h7x.cfg"
+});
+assert(h7NoTarget.suggestedActions.some((action) => action.includes("手动复位")));
 assert.ok(noTarget.suggestedActions.some((action) => action.includes("SWDIO")));
 
 const noPower = diagnoseOpenOcdFailure(["Error: target voltage 0.000 V is too low"]);

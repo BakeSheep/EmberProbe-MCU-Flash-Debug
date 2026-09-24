@@ -167,6 +167,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             text
         )
     ) {
+        const h7Target = /(?:^|\/)stm32h7x\.cfg$/i.test(details.target || "");
         return make(
             "TARGET_NOT_CONNECTED",
             "target_connection",
@@ -174,7 +175,8 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             [
                 "检查 MCU 供电以及 SWDIO/SWCLK/GND/NRST 接线。",
                 "确认所选 MCU target 配置与实际芯片一致。",
-                "可尝试降低 adapter speed 后重试。"
+                "可尝试降低 adapter speed 后重试。",
+                ...(h7Target ? ["STM32H7 若持续无法读取 DP IDR，可在确认 NRST 接线后手动复位或重新上电再试。"] : [])
             ]
         );
     }

@@ -45,6 +45,9 @@ const STM32_IDCODE_BASE = {
     stm32wbx: 0xe0042000,
     stm32wlx: 0xe0042000
 };
+// Geehy APM32F4 exposes DBGMCU_IDCODE at the classic address. Keep UID and
+// flash-size reads disabled until their addresses are verified for APM32F4.
+const APM32_IDCODE_BASE = { apm32f4x: 0xe0042000 };
 const STM32_FLASHSIZE_BASE = {
     stm32f0x: 0x1ffff7cc,
     stm32f1x: 0x1ffff7e0,
@@ -319,7 +322,7 @@ function uidBaseForTarget(target) {
     return lookupStmBase(STM32_UID_BASE, target);
 }
 function idcodeBaseForTarget(target) {
-    return lookupStmBase(STM32_IDCODE_BASE, target);
+    return lookupStmBase(STM32_IDCODE_BASE, target) || lookupStmBase(APM32_IDCODE_BASE, target);
 }
 function flashSizeBaseForTarget(target) {
     return lookupStmBase(STM32_FLASHSIZE_BASE, target);

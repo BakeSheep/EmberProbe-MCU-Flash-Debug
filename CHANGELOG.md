@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Windows x64 下选择 J-Link 的 WinUSB 驱动时备份旧 SEGGER 驱动；SEGGER 驱动下的硬件操作会直接报错，调试器卡片可恢复原驱动，发布包对 helper 与 libwdi 执行签名和内容校验。
+- On Windows x64, selecting WinUSB for J-Link backs up the SEGGER driver; hardware operations reject the SEGGER driver, and the debugger card can restore it. Release artifacts verify the signed helper and libwdi.
+- 优化 J-Link 驱动切换速度；切换期间显示加载状态并阻止探针操作，按设备实际驱动校验结果更新下拉栏。
+- Speed up J-Link driver switching, show progress and block probe operations during the change, and update the selector only after verifying the device driver.
+- Windows J-Link 枚举改用原生只读接口，重复切换时复用已准备的 WinUSB 包；切换完成前验证 OpenOCD 能打开接口，并修复调试失败后侧栏一直显示“正在执行”。
+- Use native read-only J-Link inventory on Windows, reuse the prepared WinUSB package, verify OpenOCD interface readiness before completing a switch, and end the sidebar's pending state when debug startup fails.
+- 修复打包扩展中原生探针枚举程序的路径，使芯片读取、采样和烧录启动时不再因错误回退到慢速 PowerShell 枚举。
+- Fix the bundled native probe inventory path so chip reads, sampling, and flashing no longer fall back to slow PowerShell enumeration during startup.
+
 - J-Link 默认自动选择唯一探针和协议，成功后记住工作区连接；高级覆盖保留，失败不自动切换协议或降速。
 - J-Link now selects a unique probe and transport automatically and remembers successful workspace connections; advanced overrides remain, with no protocol or speed retries.
 

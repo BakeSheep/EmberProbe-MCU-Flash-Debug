@@ -6,11 +6,20 @@ const { normalizeProbeSerial } = require("./probe-connection");
 
 // Only OS metadata is read. No SEGGER tool, OpenOCD init or driver installer is invoked.
 const WINDOWS_INVENTORY = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
-@(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'USB\\VID_1366*' } | ForEach-Object {
+@($keys = @('DEVPKEY_Device_Parent', 'DEVPKEY_Device_ContainerId', 'DEVPKEY_Device_Service',
+ 'DEVPKEY_Device_DriverProvider', 'DEVPKEY_Device_DriverInfPath');
+ Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'USB\\VID_1366*' } | ForEach-Object {
  $d = $_; $p = @{};
- Get-PnpDeviceProperty -InstanceId $d.InstanceId -ErrorAction SilentlyContinue | ForEach-Object { $p[$_.KeyName] = $_.Data };
+ Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName $keys -ErrorAction SilentlyContinue | ForEach-Object { $p[$_.KeyName] = $_.Data };
  [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath'] }
 }) | ConvertTo-Json -Depth 4 -Compress`;
+function windowsHelperPath(moduleDir = __dirname) {
+    // esbuild places the extension's bundled modules in dist/; unbundled Agent Skills
+    // still run from skills/_emberprobe/. Both layouts share the extension resources/.
+    const resources = path.basename(moduleDir) === "dist" ? "../resources" : "../../resources";
+    return path.resolve(moduleDir, resources, "driver-helper/win32-x64/emberprobe-driver-helper.exe");
+}
+const WINDOWS_HELPER = windowsHelperPath();
 
 function serialOrUnknown(value) {
     try {
@@ -103,11 +112,20 @@ async function listProbes(options = {}) {
     const run = options.run || runInventory;
     try {
         let devices;
-        if (platform === "win32")
-            devices = parseWindowsInventory(
-                await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_INVENTORY])
-            );
-        else if (platform === "darwin")
+        if (platform === "win32") {
+            if (!options.run || options.fastRun) {
+                try {
+                    if (!options.fastRun) await fs.access(WINDOWS_HELPER);
+                    devices = parseWindowsInventory(await (options.fastRun || runInventory)(WINDOWS_HELPER, ["list"]));
+                } catch {
+                    // Older development helpers have no list action; keep the PowerShell fallback.
+                }
+            }
+            if (!devices)
+                devices = parseWindowsInventory(
+                    await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_INVENTORY])
+                );
+        } else if (platform === "darwin")
             devices = parseMacInventory(await run("system_profiler", ["SPUSBDataType", "-json"]));
         else if (platform === "linux") {
             devices = [];
@@ -153,4 +171,4 @@ async function listProbes(options = {}) {
     }
 }
 
-module.exports = { listProbes, parseWindowsInventory, parseMacInventory, WINDOWS_INVENTORY };
+module.exports = { listProbes, parseWindowsInventory, parseMacInventory, windowsHelperPath, WINDOWS_INVENTORY };

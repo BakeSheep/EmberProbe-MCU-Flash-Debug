@@ -78,6 +78,29 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  driver-helper:
+    name: Windows driver helper
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build libwdi and dedicated helper
+        shell: pwsh
+        run: ./scripts/build-driver-helper.ps1
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-helper-build
+          path: |
+            native/driver-helper/x64/Release/
+            native/vendor/libwdi/x64/Release/
+          if-no-files-found: warn
+          retention-days: 14
+
   extension-host:
     name: VS Code Extension Host
     runs-on: ubuntu-latest

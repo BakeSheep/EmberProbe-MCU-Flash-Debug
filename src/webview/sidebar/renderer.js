@@ -81,9 +81,21 @@ const chipRead = document.getElementById("chipRead"),
     svdStatusEl = document.getElementById("svdStatus"),
     svdSelect = document.getElementById("svdSelect"),
     svdDownload = document.getElementById("svdDownload"),
+    jlinkDriverChoice = document.getElementById("jlinkDriverChoice"),
+    jlinkDriverBusy = document.getElementById("jlinkDriverBusy"),
     otherConfig = document.getElementById("otherConfig");
 let chipHasData = false,
-    chipMoreOpen = !!(uiState && uiState.chipMoreOpen);
+    chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
+    probeDriverBusy = false,
+    confirmedProbeDriver = "";
+function setProbeDriverBusy(busy) {
+    probeDriverBusy = busy;
+    if (jlinkDriverChoice) jlinkDriverChoice.disabled = busy;
+    if (jlinkDriverBusy) jlinkDriverBusy.hidden = !busy;
+    if (chipRead) chipRead.disabled = busy || lastChip.state === "reading";
+    liveToggle.disabled = busy;
+    document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
+}
 if (otherConfig) {
     otherConfig.open = !!(uiState && uiState.otherConfigOpen);
     otherConfig.addEventListener("toggle", () => {
@@ -1111,7 +1123,7 @@ function chipStatus(m) {
     chipState.className =
         "chip-state " + (st === "error" ? "err" : st === "ready" ? "on" : st === "reading" ? "busy" : "");
     if (chipRead) {
-        chipRead.disabled = st === "reading";
+        chipRead.disabled = probeDriverBusy || st === "reading";
         chipRead.textContent = st === "reading" ? t("sb.readingEllipsis") : chipHasData ? t("sb.reread") : t("sb.read");
     }
     chipLabel.textContent = chipStatusLabel(st);
@@ -1190,6 +1202,14 @@ if (chipRead)
     };
 if (svdSelect)
     svdSelect.onclick = () => api && api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.selectExistingSvd" });
+if (jlinkDriverChoice)
+    jlinkDriverChoice.onchange = () => {
+        if (!api) return setStat("error", "sb.extNotConnected");
+        const requested = jlinkDriverChoice.value;
+        if (confirmedProbeDriver) jlinkDriverChoice.value = confirmedProbeDriver;
+        setProbeDriverBusy(true);
+        api.postMessage({ type: "selectProbeDriver", driver: requested });
+    };
 if (svdDownload)
     svdDownload.onclick = (e) => {
         e.preventDefault();
@@ -1217,7 +1237,7 @@ liveToggle.onclick = () => {
     if (api) {
         liveToggle.disabled = true;
         api.postMessage({ type: "liveToggle" });
-        setTimeout(() => (liveToggle.disabled = false), 500);
+        setTimeout(() => (liveToggle.disabled = probeDriverBusy), 500);
     }
 };
 document.getElementById("openocdInstall").onclick = () =>
@@ -1348,6 +1368,31 @@ window.EmberProbeMessages.connect(window, {
         showProbeDiagnostic(m);
         progress(m);
     },
+    probeDriverStatus: function (m) {
+        if (m.state === "installing" || m.state === "restoring") setProbeDriverBusy(true);
+        const keys = {
+            installing: "probe.driverInstalling",
+            ready: "probe.driverReady",
+            restoring: "probe.driverRestoring",
+            restored: "probe.driverRestored"
+        };
+        setStat(
+            m.state === "error" ? "error" : m.state === "ready" || m.state === "restored" ? "ready" : "checking",
+            keys[m.state] || "",
+            null,
+            m.message || ""
+        );
+    },
+    probeDriverChoice: function (m) {
+        if (!jlinkDriverChoice) return;
+        confirmedProbeDriver = m.driver;
+        jlinkDriverChoice.hidden = m.driver !== "winusb" && m.driver !== "segger";
+        if (!jlinkDriverChoice.hidden) jlinkDriverChoice.value = m.driver;
+        jlinkDriverChoice.disabled = probeDriverBusy;
+    },
+    probeDriverSwitch: function (m) {
+        setProbeDriverBusy(!!m.busy);
+    },
     commandSuccess: function (m) {
         setStat("ready", "sb.commandDone");
     },
@@ -1389,15 +1434,6 @@ window.EmberProbeMessages.connect(window, {
     },
     liveStatus: function (m) {
         showProbeDiagnostic(m);
-        const connection = document.getElementById("probeActiveConnection");
-        connection.hidden = !m.connection;
-        if (m.connection)
-            connection.textContent = [
-                t(m.connectionStale ? "probe.staleConnection" : "probe.activeConnection"),
-                m.connection.probeSerial || m.connection.probe,
-                m.connection.transport,
-                m.connection.adapterSpeedKhz + " kHz"
-            ].join(" · ");
         liveStatus(m);
     },
     chipInfo: function (m) {

@@ -89,6 +89,40 @@ try {
 } finally {
     sidebar.close();
 }
+const jlinkSidebar = render(getModernWebviewContent({ debugger: "jlink.cfg", showJlinkDriverChoice: true }, "zh"));
+try {
+    const driver = jlinkSidebar.document.getElementById("jlinkDriverChoice");
+    assert(driver);
+    assert.strictEqual(driver.hidden, true);
+    assert.strictEqual(jlinkSidebar.document.getElementById("probeActiveConnection"), null);
+    assert.strictEqual(
+        jlinkSidebar.document.querySelector('[data-command="mcu-vscode.configureProbeConnection"]'),
+        null
+    );
+    assert.strictEqual(jlinkSidebar.document.querySelector(".cubemx-status")?.textContent.includes("成功记录"), false);
+    jlinkSidebar.send({ type: "probeDriverChoice", driver: "segger" });
+    assert.strictEqual(driver.hidden, false);
+    assert.strictEqual(driver.value, "segger");
+    driver.value = "winusb";
+    driver.dispatchEvent(new jlinkSidebar.window.Event("change"));
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "selectProbeDriver", driver: "winusb" });
+    assert.strictEqual(driver.disabled, true);
+    assert.strictEqual(jlinkSidebar.document.getElementById("jlinkDriverBusy").hidden, false);
+    assert.strictEqual(jlinkSidebar.document.getElementById("chipRead").disabled, true);
+    assert.strictEqual(driver.value, "segger", "show the confirmed driver until switching succeeds");
+    jlinkSidebar.send({ type: "probeDriverChoice", driver: "winusb" });
+    assert.strictEqual(driver.disabled, true);
+    assert.strictEqual(driver.value, "winusb");
+    jlinkSidebar.send({ type: "probeDriverSwitch", busy: false });
+    assert.strictEqual(driver.disabled, false);
+    assert.strictEqual(jlinkSidebar.document.getElementById("jlinkDriverBusy").hidden, true);
+    assert.strictEqual(jlinkSidebar.document.getElementById("chipRead").disabled, false);
+    jlinkSidebar.send({ type: "probeDriverChoice", driver: "" });
+    assert.strictEqual(driver.hidden, true);
+    jlinkSidebar.assertHealthy();
+} finally {
+    jlinkSidebar.close();
+}
 const graph = render(getLiveWatchContent({ maxSamples: -10, intervalMs: 1, panelId: 2 }, "en"));
 try {
     graph.assertHealthy();

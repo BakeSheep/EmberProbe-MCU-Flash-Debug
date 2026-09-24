@@ -2,6 +2,14 @@
 
 module.exports = Object.freeze({
     "probe.configure": "探针高级设置",
+    "probe.usbDriver": "J-Link USB 驱动",
+    "probe.winusbRequired": "当前 J-Link 使用 SEGGER 驱动；EmberProbe 需要 WinUSB。请在“选择调试器”右侧选择 WinUSB。",
+    "probe.driverUnsupported": "当前 J-Link 使用 SEGGER USB 驱动，EmberProbe 不支持该驱动。请更换为 WinUSB 后重试。",
+    "probe.restoreDriver": "恢复 J-Link 原始 USB 驱动",
+    "probe.driverInstalling": "正在为 J-Link 配置 WinUSB，请完成 Windows 授权…",
+    "probe.driverReady": "J-Link USB 驱动已配置",
+    "probe.driverRestoring": "正在恢复 J-Link 原始 USB 驱动…",
+    "probe.driverRestored": "J-Link 原始 USB 驱动已恢复",
     "probe.automatic": "自动识别",
     "probe.resetAutomatic": "恢复自动连接并忘记原设备",
     "probe.source.explicit": "手动覆盖",
@@ -477,6 +485,9 @@ module.exports = Object.freeze({
     "warn.noDwarf": "未读取到 DWARF 类型信息，类型按大小推测（如需精确类型，请用带 -g 的 Debug 构建）",
     "diag.title": "=== EmberProbe 芯片信息读取诊断 ===",
     "diag.time": "时间：{time}",
+    "diag.target": "目标配置：{target}",
+    "diag.timings":
+        "耗时：配置 {config} ms，连接预检 {preflight} ms，OpenOCD 读取 {read} ms，保存连接 {save} ms，总计 {total} ms",
     "diag.parsed": "解析结果：{content}",
     "diag.none": "（无）",
     "diag.commands": "执行的 OpenOCD 命令：",

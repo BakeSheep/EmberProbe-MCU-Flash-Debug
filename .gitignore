@@ -5,6 +5,7 @@ dist/
 .DS_Store
 Thumbs.db
 .vscode-test/
+.vs/
 coverage/
 .cache/
 test-results/
@@ -13,3 +14,8 @@ test-results/
 xpack-openocd-*.zip
 .emberprobe-cubemx-audit/
 .emberprobe-*/
+native/vendor/libwdi/wdk/
+native/vendor/libwdi/x64/
+native/vendor/libwdi/Win32/
+native/driver-helper/x64/
+resources/driver-helper/

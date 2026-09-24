@@ -22,6 +22,7 @@ const {
     chooseIdcode,
     ALL_IDCODE_ADDRS
 } = require("../src/chipInfo");
+const { createChipParser } = require("../src/chip/parser");
 
 // SCB CPUID 0x410FC241 → Cortex-M4 r0p1（ARM）
 const m4 = decodeCpuid(0x410fc241);
@@ -108,6 +109,7 @@ assert.strictEqual(seriesFromFlashDriver("nrf5"), "");
 // idcodeBaseForTarget / flashSizeBaseForTarget：DBGMCU_IDCODE 与 FLASHSIZE 寄存器基址（H7 与经典型号）
 assert.strictEqual(idcodeBaseForTarget("stm32h7x.cfg"), 0x5c001000);
 assert.strictEqual(idcodeBaseForTarget("stm32f4x.cfg"), 0xe0042000);
+assert.strictEqual(idcodeBaseForTarget("geehy/apm32f4x.cfg"), 0xe0042000);
 assert.strictEqual(idcodeBaseForTarget("stm32f0x.cfg"), 0x40015800);
 assert.strictEqual(flashSizeBaseForTarget("stm32h7x.cfg"), 0x1ff1e880);
 assert.strictEqual(flashSizeBaseForTarget("stm32f4x.cfg"), 0x1fff7a22);
@@ -192,5 +194,17 @@ assert.ok(runningIdentityBranch.includes("mdw 0x1ff1e880"));
 assert.ok(runningIdentityBranch.includes("mdw 0x1ff1e800 3"));
 assert.ok(!runningIdentityBranch.includes("flash probe 0"));
 assert.ok(!runningIdentityBranch.includes("mdw 0xe0042000"), "H7 running branch must not scan classic STM32 addresses");
+
+// Geehy APM32F4 uses the classic DBGMCU IDCODE address. A targeted read avoids
+// probing unrelated STM32 memory ranges when the core is halted.
+const apmCommands = buildChipInfoCommands("geehy/apm32f4x.cfg").join("\n");
+assert.ok(apmCommands.includes("mdw 0xe0042000"));
+assert.ok(!apmCommands.includes("flash probe 0"));
+assert.ok(!apmCommands.includes("mdw 0x1fff7a10"));
+const apmParser = createChipParser("geehy/apm32f4x.cfg");
+apmParser.handleLine("0xe0042000: 10076413");
+const apmInfo = apmParser.finish(0);
+assert.strictEqual(apmInfo.series, "APM32F4X");
+assert.strictEqual(apmInfo.deviceId, "0x413");
 
 console.log("Chip info tests passed");

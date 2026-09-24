@@ -1,6 +1,7 @@
 "use strict";
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 const { detectProbe } = require("../../skills/_emberprobe/probe-detection");
+const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const {
     normalizeProbeSerial,
     connectionIdentity,
@@ -12,13 +13,23 @@ class ProbeConnectionService {
     constructor(options) {
         this.getConfig = options.getConfig;
         this.window = options.window;
-        this.prepareConnection = options.prepareConnection || prepareProbeConnection;
+        this.prepareConnection =
+            options.prepareConnection ||
+            ((request) =>
+                prepareProbeConnection(request, {
+                    listProbes: async () =>
+                        options.driverService
+                            ? options.driverService.reconcileInventory(await listProbes())
+                            : listProbes()
+                }));
         this.getSuccessfulConnection = options.getSuccessfulConnection || (() => null);
         this.saveSuccessfulConnection = options.saveSuccessfulConnection || (async () => {});
         this.onResolved = options.onResolved || (() => {});
         this.recorded = new WeakSet();
         this.recordQueue = Promise.resolve();
         this.detectProbe = options.detectProbe || detectProbe;
+        this.driverService = options.driverService || null;
+        this.beforePrepare = options.beforePrepare || (() => {});
         this.staleSessions = new WeakSet();
     }
 
@@ -43,14 +54,18 @@ class ProbeConnectionService {
     }
 
     async prepare(options, interactive = false) {
+        this.beforePrepare();
         const configured = this.getConfig();
         const expectedSettings = JSON.stringify(connectionIdentity(configured));
         let request = { ...configured, ...options, successfulConnection: this.getSuccessfulConnection() };
         request.probe = request.probe || request.debugger || (await this.resolveProbe());
         request.target = request.target || request.mcu;
         for (let attempt = 0; attempt < 3; attempt++) {
+            this.beforePrepare();
             try {
-                const result = await this.prepareConnection(request);
+                const prepared = await this.prepareConnection(request);
+                this.beforePrepare();
+                const result = this.driverService ? this.driverService.requireWinUsb(prepared) : prepared;
                 const current = connectionIdentity(this.getConfig());
                 if (JSON.stringify(current) !== expectedSettings)
                     throw connectionError(
