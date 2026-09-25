@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-09-25
+
 - Windows x64 下选择 J-Link 的 WinUSB 驱动时备份旧 SEGGER 驱动；SEGGER 驱动下的硬件操作会直接报错，调试器卡片可恢复原驱动，发布包对 helper 与 libwdi 执行签名和内容校验。
 - On Windows x64, selecting WinUSB for J-Link backs up the SEGGER driver; hardware operations reject the SEGGER driver, and the debugger card can restore it. Release artifacts verify the signed helper and libwdi.
 - 优化 J-Link 驱动切换速度；切换期间显示加载状态并阻止探针操作，按设备实际驱动校验结果更新下拉栏。
