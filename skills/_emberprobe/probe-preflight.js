@@ -23,6 +23,15 @@ function parseAdapterList(output) {
     if (!marker) return null;
     const body = marker[1].trim();
     if (!body) return [];
+    // OpenOCD 0.12.0 prints a heading followed by numbered adapter names.
+    if (body.startsWith("The following debug adapters are available:")) {
+        const lines = body
+            .split(/\r?\n/)
+            .slice(1)
+            .filter((line) => line.trim());
+        if (!lines.every((line) => /^\s*\d+:\s+[\w-]+\s*$/.test(line))) return null;
+        return lines.map((line) => line.trim().split(/\s+/)[1]);
+    }
     if (body.includes("{")) return [...body.matchAll(/([\w-]+)\s*\{[^}]*\}/g)].map((match) => match[1]);
     return /^[\w\s-]+$/.test(body) ? body.split(/\s+/) : null;
 }

@@ -172,6 +172,19 @@ async function main() {
         }
     };
     assert.deepStrictEqual(parseAdapterList("EP_ADAPTERS_BEGIN\njlink st-link\nEP_ADAPTERS_END"), ["jlink", "st-link"]);
+    const numberedAdapters =
+        "EP_ADAPTERS_BEGIN\nThe following debug adapters are available:\n1: dummy\n12: jlink\n23: cmsis-dap\n\nEP_ADAPTERS_END";
+    assert.deepStrictEqual(parseAdapterList(numberedAdapters), ["dummy", "jlink", "cmsis-dap"]);
+    assert.strictEqual(parseAdapterList(numberedAdapters.replace("12: jlink", "12: ???")), null);
+    assert.strictEqual(
+        (
+            await checkAdapterCapability(launch, {
+                ...options,
+                run: async (_exe, args) => (args.includes("-f") ? "EP_ADAPTER_NAME=jlink\n" : numberedAdapters)
+            })
+        ).adapterFamily,
+        "jlink"
+    );
     assert.strictEqual((await checkAdapterCapability(launch, options)).adapterFamily, "jlink");
     assert(
         calls.every((args) => args.includes("noinit") && !args.includes("init") && !args.includes(launch.targetPath))
