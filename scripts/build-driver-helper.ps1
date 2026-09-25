@@ -44,6 +44,16 @@ foreach ($name in @("WdfCoInstaller01011.dll", "winusbcoinstaller2.dll")) {
         throw "WDK redistributable signature verification failed: $name"
     }
 }
+$wdkRoot = (Resolve-Path -LiteralPath (Join-Path $wdk "Windows Kits/8.0")).Path
+$cEscapedWdk = $wdkRoot.Replace('\', '\\')
+$configTemplate = Join-Path $libwdi "msvc/config.h.in"
+if (-not (Test-Path -LiteralPath $configTemplate)) { throw "Missing config.h template: $configTemplate" }
+$configHeader = Join-Path $libwdi "msvc/config.h"
+$templateContent = [IO.File]::ReadAllText($configTemplate)
+$generatedContent = $templateContent.Replace('@WDK_DIR@', $cEscapedWdk)
+[IO.File]::WriteAllText($configHeader, $generatedContent, [Text.Encoding]::ASCII)
+if (-not (Test-Path -LiteralPath $configHeader)) { throw "Failed to generate $configHeader" }
+
 $installerProject = Join-Path $libwdi "libwdi/.msvc/installer_x64.vcxproj"
 Invoke-EmberProbeMsBuild $builder @($installerProject, "/m", "/p:Configuration=Release", "/p:Platform=x64", "/p:PlatformToolset=$toolset", "/p:SolutionDir=$libwdi/") "libwdi x64 installer build failed"
 $embedderProject = Join-Path $libwdi "libwdi/.msvc/embedder.vcxproj"

@@ -5,7 +5,6 @@ const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
 const { resolveProbeConnection, connectionError } = require("./probe-connection");
 const { requireJlinkWinUsb } = require("./jlink-driver");
-const { connectionFingerprint } = require("./connection-fingerprint");
 
 const capabilitiesCache = new Map();
 function query(executable, args, cwd = undefined) {
@@ -122,18 +121,7 @@ async function prepareProbeConnection(options, dependencies = {}) {
         capability.adapterFamily === "jlink"
             ? await (dependencies.listProbes || listProbes)()
             : { available: false, devices: [], notes: [] };
-    let fingerprint = "";
-    if (capability.adapterFamily === "jlink") {
-        try {
-            fingerprint = await (dependencies.fingerprint || connectionFingerprint)(launch);
-        } catch {
-            inventory.notes.push("Connection fingerprint unavailable; protocol history will not be reused.");
-        }
-    }
-    const connection = resolveProbeConnection(
-        { ...options, fingerprint, adapterFamily: capability.adapterFamily },
-        inventory
-    );
+    const connection = resolveProbeConnection({ ...options, adapterFamily: capability.adapterFamily }, inventory);
     if (capability.adapterFamily === "jlink")
         requireJlinkWinUsb(
             { ...connection, adapterFamily: capability.adapterFamily, inventory },
@@ -148,7 +136,6 @@ async function prepareProbeConnection(options, dependencies = {}) {
     if (capability.adapterFamily !== "jlink") connection.probeSerial = "";
     return {
         ...connection,
-        fingerprint,
         openocd: launch.executable,
         adapterFamily: capability.adapterFamily,
         launch,

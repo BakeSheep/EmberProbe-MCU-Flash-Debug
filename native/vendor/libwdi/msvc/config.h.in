@@ -1,0 +1,14 @@
+/*
+ * WinUSB-only configuration for EmberProbe libwdi build.
+ * Automatically configured by scripts/build-driver-helper.ps1.
+ */
+#ifndef _LIBWDI_CONFIG_H
+#define _LIBWDI_CONFIG_H
+
+#define OPT_M64 1
+#define WDF_VER 1011
+#define X64_DIR "x64"
+#define COINSTALLER_DIR "wdf"
+#define WDK_DIR "@WDK_DIR@"
+
+#endif /* _LIBWDI_CONFIG_H */

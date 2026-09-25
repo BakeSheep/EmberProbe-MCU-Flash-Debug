@@ -418,9 +418,8 @@ static int empty_directory(const wchar_t *folder) {
     return 1;
 }
 
-static int restore_original(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *device, const wchar_t *base,
-                            const wchar_t *original) {
-    wchar_t saved_inf[256], exported[MAX_PATH], published[MAX_PATH];
+static int bind_driver_from_inf(HDEVINFO set, SP_DEVINFO_DATA *device, const wchar_t *inf_path, int *attempted) {
+    wchar_t published[MAX_PATH];
     DWORD required = 0;
     SP_DRVINFO_DATA_W candidate;
     SP_DRVINFO_DETAIL_DATA_W *detail;
@@ -430,8 +429,8 @@ static int restore_original(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *de
     typedef BOOL (WINAPI *install_device_fn)(HWND, HDEVINFO, PSP_DEVINFO_DATA, PSP_DRVINFO_DATA, DWORD, PBOOL);
     install_device_fn install_device;
     int result = 0;
-    if (!read_manifest(base, id, saved_inf) || !find_exported_inf(original, exported)) return 0;
-    if (!SetupCopyOEMInfW(exported, NULL, SPOST_PATH, 0, published, MAX_PATH, &required, NULL)) return 0;
+    if (attempted) *attempted = 0;
+    if (!SetupCopyOEMInfW(inf_path, NULL, SPOST_PATH, 0, published, MAX_PATH, &required, NULL)) return 0;
     if (!SetupDiBuildDriverInfoList(set, device, SPDIT_COMPATDRIVER)) return 0;
     newdev = LoadLibraryExW(L"newdev.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!newdev) { SetupDiDestroyDriverInfoList(set, device, SPDIT_COMPATDRIVER); return 0; }
@@ -451,9 +450,13 @@ static int restore_original(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *de
         published_name = wcsrchr(published, L'\\');
         candidate_name = candidate_name ? candidate_name + 1 : detail->InfFileName;
         published_name = published_name ? published_name + 1 : published;
-        if (_wcsicmp(candidate_name, published_name) == 0 &&
-            install_device(NULL, set, device, &candidate, 0, &reboot)) {
-            result = 1;
+        if (_wcsicmp(candidate_name, published_name) == 0) {
+            if (attempted) *attempted = 1;
+            if (install_device(NULL, set, device, &candidate, 0, &reboot)) {
+                result = 1;
+            } else {
+                fprintf(stderr, "DiInstallDevice failed with code %lu\n", GetLastError());
+            }
             break;
         }
     }
@@ -463,13 +466,22 @@ static int restore_original(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *de
     return result;
 }
 
-static int install_winusb(const wchar_t *id, const wchar_t *base, const wchar_t *original,
+static int restore_original(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *device, const wchar_t *base,
+                            const wchar_t *original) {
+    wchar_t saved_inf[256], exported[MAX_PATH];
+    int attempted = 0;
+    if (!read_manifest(base, id, saved_inf) || !find_exported_inf(original, exported)) return 0;
+    return bind_driver_from_inf(set, device, exported, &attempted);
+}
+
+static int install_winusb(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *device,
+                          const wchar_t *base, const wchar_t *original,
                           const wchar_t *driver, const wchar_t *inf) {
     wchar_t executable[MAX_PATH], dll_path[MAX_PATH];
     char id_utf8[512], folder_utf8[MAX_PATH * 3];
     HMODULE library;
     HANDLE locked_dll = INVALID_HANDLE_VALUE;
-    struct wdi_device_info *list = NULL, *device;
+    struct wdi_device_info *list = NULL, *wdi_device;
     struct wdi_options_create_list list_options = { TRUE, FALSE, TRUE };
     struct wdi_options_prepare_driver prepare_options = { 0 };
     struct wdi_options_install_driver install_options = { 0 };
@@ -495,6 +507,14 @@ static int install_winusb(const wchar_t *id, const wchar_t *base, const wchar_t 
                 cat_attributes != INVALID_FILE_ATTRIBUTES &&
                 !(inf_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
                 !(cat_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+            if (reuse_package) {
+                int attempted = 0;
+                if (bind_driver_from_inf(set, device, cached_inf, &attempted)) return 0;
+                if (attempted) {
+                    /* Fast bind was attempted and failed. Do not call libwdi. */
+                    return 25;
+                }
+            }
         }
     } else if (!empty_directory(original) || !run_pnputil_export(inf, original) ||
                !find_exported_inf(original, manifest) || !save_manifest(base, id, inf)) return 21;
@@ -519,16 +539,16 @@ static int install_winusb(const wchar_t *id, const wchar_t *base, const wchar_t 
     }
     status = create_list(&list, &list_options);
     if (status != 0) { FreeLibrary(library); return 23; }
-    for (device = list; device; device = device->next)
-        if (device->device_id && _stricmp(device->device_id, id_utf8) == 0) break;
-    if (!device || !device->driver || _stricmp(device->driver, "jlink") != 0 ||
-        device->vid != 0x1366 || !supported_pid(device->pid)) result = 24;
+    for (wdi_device = list; wdi_device; wdi_device = wdi_device->next)
+        if (wdi_device->device_id && _stricmp(wdi_device->device_id, id_utf8) == 0) break;
+    if (!wdi_device || !wdi_device->driver || _stricmp(wdi_device->driver, "jlink") != 0 ||
+        wdi_device->vid != 0x1366 || !supported_pid(wdi_device->pid)) result = 24;
     else {
         prepare_options.driver_type = WDI_WINUSB;
-        status = reuse_package ? 0 : prepare(device, folder_utf8, "emberprobe-winusb.inf", &prepare_options);
+        status = reuse_package ? 0 : prepare(wdi_device, folder_utf8, "emberprobe-winusb.inf", &prepare_options);
         if (status == 0) {
             install_options.pending_install_timeout = 60000;
-            status = install(device, folder_utf8, "emberprobe-winusb.inf", &install_options);
+            status = install(wdi_device, folder_utf8, "emberprobe-winusb.inf", &install_options);
         }
         if (status != 0) {
             fprintf(stderr, "libwdi: %s\n", error_text(status));
@@ -587,7 +607,7 @@ int wmain(int argc, wchar_t **argv) {
                  !valid_oem_inf(inf)) result = 7;
         else if (debugger_process_running()) result = 11;
         else {
-            result = install_winusb(id, base, original, driver, inf);
+            result = install_winusb(id, set, &device, base, original, driver, inf);
             if (result && !rollback_if_changed(id, inf, base, original)) result = 26;
         }
     } else if (excluded_name(name) || _wcsicmp(service, L"WinUSB") != 0) result = 8;

@@ -11,6 +11,14 @@ function driverError(code, message, details = {}) {
     return connectionError(code, message, details);
 }
 
+function notifyObserver(observer, value) {
+    try {
+        Promise.resolve(observer(value)).catch(() => {});
+    } catch {
+        // Diagnostics and UI notifications must not change the driver operation's result.
+    }
+}
+
 function runHelper(executable, action, instanceId) {
     return new Promise((resolve, reject) => {
         execFile(
@@ -76,15 +84,38 @@ class ProbeDriverService {
         this.inventory = options.inventory || listProbes;
         this.run = options.run || runHelper;
         this.wait = options.wait || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+        this.now = options.now || Date.now;
         this.onStatus = options.onStatus || (() => {});
+        this.onTiming = options.onTiming || (() => {});
+        this.log = options.log || ((message) => console.log(message));
         this.verifyReady = options.verifyReady || (async () => {});
         this.inFlight = new Map();
         this.restoring = new Set();
         this.recentDrivers = new Map();
+        this.lastTimings = null;
     }
 
     get helperPath() {
         return path.join(this.extensionPath, "resources", "driver-helper", "win32-x64", "emberprobe-driver-helper.exe");
+    }
+
+    async measureStage(timings, key, operation) {
+        const startedAt = this.now();
+        try {
+            return await operation();
+        } finally {
+            timings[key] = this.now() - startedAt;
+        }
+    }
+
+    reportTiming(timing, message) {
+        this.lastTimings = timing;
+        notifyObserver(this.onTiming, timing);
+        notifyObserver(this.log, message);
+    }
+
+    reportStatus(status) {
+        notifyObserver(this.onStatus, status);
     }
 
     async invoke(action, instanceId) {
@@ -214,19 +245,45 @@ class ProbeDriverService {
         const pending = this.inFlight.get(state.instanceId);
         if (pending) return { ...connection, inventory: await pending };
         const work = (async () => {
-            this.onStatus({ state: "installing", instanceId: state.instanceId });
+            this.reportStatus({ state: "installing", instanceId: state.instanceId });
+            const startedAt = this.now();
+            const durations = { helperMs: 0, pollMs: 0, readyMs: 0 };
             try {
                 // The elevated helper re-reads the devnode and its driver before changing anything.
-                await this.invoke("install", state.instanceId);
-                await this.waitFor(state.instanceId, /^winusb(?:\s|$)/i);
-                await this.verifyReady(connection);
+                await this.measureStage(durations, "helperMs", () => this.invoke("install", state.instanceId));
+                await this.measureStage(durations, "pollMs", () => this.waitFor(state.instanceId, /^winusb(?:\s|$)/i));
+                await this.measureStage(durations, "readyMs", () => this.verifyReady(connection));
+
+                const totalMs = this.now() - startedAt;
+                const timings = { ...durations, totalMs };
+                this.reportTiming(
+                    { action: "install", instanceId: state.instanceId, ...timings },
+                    `[EmberProbe] J-Link driver switch timings (install): ` +
+                        `helper=${durations.helperMs}ms, statusPoll=${durations.pollMs}ms, ` +
+                        `openocdReady=${durations.readyMs}ms, total=${totalMs}ms`
+                );
+
                 this.recentDrivers.set(state.instanceId, "WinUSB");
                 const inventory = this.updatedInventory(connection, state.instanceId, "WinUSB");
-                this.onStatus({ state: "ready", instanceId: state.instanceId });
+                this.reportStatus({ state: "ready", instanceId: state.instanceId, timings });
                 return inventory;
             } catch (error) {
+                const totalMs = this.now() - startedAt;
+                this.reportTiming(
+                    {
+                        action: "install",
+                        instanceId: state.instanceId,
+                        ...durations,
+                        totalMs,
+                        failed: true,
+                        error: error.message
+                    },
+                    `[EmberProbe] J-Link driver switch failed (install): ` +
+                        `helper=${durations.helperMs}ms, statusPoll=${durations.pollMs}ms, ` +
+                        `openocdReady=${durations.readyMs}ms, error=${error.message}`
+                );
                 const failure = await this.rollbackAfterFailure(state.instanceId, error);
-                this.onStatus({ state: "error", instanceId: state.instanceId, message: failure.message });
+                this.reportStatus({ state: "error", instanceId: state.instanceId, message: failure.message });
                 throw failure;
             } finally {
                 this.inFlight.delete(state.instanceId);
@@ -248,16 +305,42 @@ class ProbeDriverService {
         if (this.inFlight.has(state.instanceId) || this.restoring.has(state.instanceId))
             throw driverError("PROBE_DRIVER_BUSY", "A driver change is already running");
         this.restoring.add(state.instanceId);
-        this.onStatus({ state: "restoring", instanceId: state.instanceId });
+        this.reportStatus({ state: "restoring", instanceId: state.instanceId });
+        const startedAt = this.now();
+        const durations = { helperMs: 0, pollMs: 0, readyMs: 0 };
         try {
-            await this.invoke("restore", state.instanceId);
-            const status = await this.waitFor(state.instanceId, /^jlink\s+oem\d+\.inf$/i);
+            await this.measureStage(durations, "helperMs", () => this.invoke("restore", state.instanceId));
+            const status = await this.measureStage(durations, "pollMs", () =>
+                this.waitFor(state.instanceId, /^jlink\s+oem\d+\.inf$/i)
+            );
+
+            const totalMs = this.now() - startedAt;
+            const timings = { ...durations, totalMs };
+            this.reportTiming(
+                { action: "restore", instanceId: state.instanceId, ...timings },
+                `[EmberProbe] J-Link driver switch timings (restore): ` +
+                    `helper=${durations.helperMs}ms, statusPoll=${durations.pollMs}ms, total=${totalMs}ms`
+            );
+
             this.recentDrivers.set(state.instanceId, "jlink");
             const inventory = this.updatedInventory(connection, state.instanceId, "jlink", status);
-            this.onStatus({ state: "restored", instanceId: state.instanceId });
+            this.reportStatus({ state: "restored", instanceId: state.instanceId, timings });
             return inventory;
         } catch (error) {
-            this.onStatus({ state: "error", instanceId: state.instanceId, message: error.message });
+            const totalMs = this.now() - startedAt;
+            this.reportTiming(
+                {
+                    action: "restore",
+                    instanceId: state.instanceId,
+                    ...durations,
+                    totalMs,
+                    failed: true,
+                    error: error.message
+                },
+                `[EmberProbe] J-Link driver switch failed (restore): ` +
+                    `helper=${durations.helperMs}ms, statusPoll=${durations.pollMs}ms, error=${error.message}`
+            );
+            this.reportStatus({ state: "error", instanceId: state.instanceId, message: error.message });
             throw error;
         } finally {
             this.restoring.delete(state.instanceId);

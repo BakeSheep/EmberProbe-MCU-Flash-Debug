@@ -2,13 +2,13 @@
 const assert = require("assert");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
+
 async function main() {
     let config = { transport: "auto", probeSerial: "", adapterSpeedKhz: 0 };
     let devices = [{ family: "jlink", serial: "1234", id: "usb-1" }];
     let saved = null,
         writes = 0,
         prompts = 0,
-        fingerprint = "v1",
         selected = { value: "5678" };
     const service = new ProbeConnectionService({
         getConfig: () => config,
@@ -24,9 +24,8 @@ async function main() {
             }
         },
         prepareConnection: async (options) => ({
-            ...resolveProbeConnection({ ...options, fingerprint }, { available: true, devices }),
-            adapterFamily: "jlink",
-            fingerprint
+            ...resolveProbeConnection(options, { available: true, devices }),
+            adapterFamily: "jlink"
         })
     });
     const options = { probe: "jlink.cfg", target: "stm32f1x.cfg", executable: "openocd" };
@@ -38,16 +37,45 @@ async function main() {
     assert.strictEqual(config.probeSerial, "", "automatic choices must not overwrite settings");
     assert(Object.isFrozen(result));
     assert(Object.isFrozen(result.selection));
+
+    // recordSuccess only writes probe and probeSerial
     await service.recordSuccess(result);
     await service.recordSuccess(result);
     assert.strictEqual(writes, 1);
-    assert.strictEqual(saved.probeSerial, "1234");
+    assert.deepStrictEqual(saved, {
+        version: 1,
+        probe: "jlink.cfg",
+        probeSerial: "1234"
+    });
+
+    // Test reading legacy record containing deviceId, target, transport, fingerprint
+    saved = {
+        version: 1,
+        probe: "jlink.cfg",
+        probeSerial: "1234",
+        deviceId: "usb-1",
+        target: "stm32f1x.cfg",
+        transport: "jtag",
+        fingerprint: "legacy-v1"
+    };
     const remembered = await service.prepare(options);
-    assert.strictEqual(remembered.selection.transport, "remembered");
     assert.strictEqual(remembered.selection.probe, "remembered");
-    fingerprint = "v2";
-    assert.strictEqual((await service.prepare(options)).selection.transport, "cortex-m");
+    assert.strictEqual(remembered.probeSerial, "1234");
+    assert.strictEqual(remembered.transport, "swd", "known Cortex-M uses SWD; old recorded transport is not reused");
+    assert.strictEqual(remembered.selection.transport, "cortex-m");
     assert.strictEqual((await service.prepare({ ...options, target: "other.cfg" })).transport, "auto");
+
+    // After connecting successfully with legacy record in workspace, recordSuccess migrates it
+    writes = 0;
+    const freshResult = await service.prepare(options);
+    await service.recordSuccess(freshResult);
+    assert.strictEqual(writes, 1);
+    assert.deepStrictEqual(saved, {
+        version: 1,
+        probe: "jlink.cfg",
+        probeSerial: "1234"
+    });
+
     devices = [{ family: "jlink", serial: "5678", id: "usb-2" }];
     await assert.rejects(service.prepare(options), { code: "PROBE_SELECTED_NOT_FOUND" });
     config = { ...config, probeSerial: "5678", transport: "jtag" };
@@ -58,7 +86,7 @@ async function main() {
     config = { ...config, transport: "swd" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
     await service.recordSuccess(explicit);
-    assert.strictEqual(writes, 1);
+    assert.strictEqual(writes, 1, "recordSuccess does not write if settings changed");
     config = { ...config, transport: "jtag" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
     const externalDap = {};
@@ -91,19 +119,17 @@ async function main() {
     await assert.rejects(automatic.prepare({}), { code: "PROBE_SELECTION_REQUIRED" });
     automatic.getSuccessfulConnection = () => ({ version: 1, probe: "jlink.cfg" });
     assert.strictEqual(await automatic.resolveProbe(), "jlink.cfg");
-    let driverChecks = 0;
+
+    // Single preflight entry: driverService.requireWinUsb is not redundantly called after prepareConnection
+    let redundantChecks = 0;
     automatic.driverService = {
-        requireWinUsb: (connection) => {
-            driverChecks++;
-            return connection;
+        requireWinUsb: () => {
+            redundantChecks++;
         }
     };
     await automatic.prepare({});
-    assert.strictEqual(driverChecks, 1, "connection preflight validates the USB driver without installing it");
-    automatic.driverService.requireWinUsb = () => {
-        throw Object.assign(new Error("Switch to WinUSB"), { code: "PROBE_DRIVER_UNSUPPORTED" });
-    };
-    await assert.rejects(automatic.prepare({}), { code: "PROBE_DRIVER_UNSUPPORTED" });
+    assert.strictEqual(redundantChecks, 0, "prepareConnection is the single preflight entry point");
+
     let preflightCalls = 0;
     const switching = new ProbeConnectionService({
         getConfig: () => ({ debugger: "jlink.cfg" }),
@@ -134,7 +160,7 @@ async function main() {
     startSwitch = true;
     finishPreflight();
     await assert.rejects(pendingOperation, { code: "PROBE_DRIVER_BUSY" });
-    console.log("Automatic connection, history and stale session tests passed");
+    console.log("Automatic connection, streamlined history, single preflight and stale session tests passed");
 }
 main().catch((error) => {
     console.error(error);

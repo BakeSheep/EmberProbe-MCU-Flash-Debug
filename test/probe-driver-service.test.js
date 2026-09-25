@@ -90,6 +90,9 @@ async function main() {
     let calls = 0;
     let readinessChecks = 0;
     const ready = connection({ service: "WinUSB", provider: "libwdi", inf: "oem64.inf" });
+    const timingsRecorded = [];
+    const logsRecorded = [];
+    const statusesRecorded = [];
     const service = new ProbeDriverService({
         platform: "win32",
         arch: "x64",
@@ -104,6 +107,9 @@ async function main() {
         verifyReady: async () => {
             readinessChecks++;
         },
+        onTiming: (timing) => timingsRecorded.push(timing),
+        log: (msg) => logsRecorded.push(msg),
+        onStatus: (st) => statusesRecorded.push(st),
         wait: async () => {}
     });
     // The native helper is a release artifact; test the service's invocation boundary without a binary.
@@ -125,7 +131,6 @@ async function main() {
                 listProbes: async () => before.inventory,
                 platform: "win32",
                 arch: "x64",
-                fingerprint: async () => "",
                 resolveTransport: async () => {
                     transportChecks++;
                     return "swd";
@@ -142,6 +147,18 @@ async function main() {
     const results = await Promise.all([service.ensure(before), service.ensure(before)]);
     assert.strictEqual(calls, 1, "concurrent first connections share one driver installation");
     assert.strictEqual(readinessChecks, 1, "the switch verifies interface readiness before completing");
+    assert(service.lastTimings, "ensure records lastTimings");
+    assert.strictEqual(service.lastTimings.action, "install");
+    assert.strictEqual(service.lastTimings.instanceId, id);
+    assert.strictEqual(typeof service.lastTimings.helperMs, "number");
+    assert.strictEqual(typeof service.lastTimings.pollMs, "number");
+    assert.strictEqual(typeof service.lastTimings.readyMs, "number");
+    assert.strictEqual(typeof service.lastTimings.totalMs, "number");
+    assert(service.lastTimings.totalMs >= service.lastTimings.helperMs);
+    assert.strictEqual(timingsRecorded.length, 1);
+    assert.strictEqual(timingsRecorded[0].action, "install");
+    assert(logsRecorded.some((msg) => msg.includes("J-Link driver switch timings (install)")));
+    assert(statusesRecorded.some((st) => st.state === "ready" && st.timings));
     assert.strictEqual(results[0].inventory.devices[0].interfaces[0].service, "WinUSB");
     assert.strictEqual(results[1].inventory.devices[0].interfaces[0].service, "WinUSB");
     assert.strictEqual((await service.reconcileInventory(before.inventory)).devices[0].interfaces[0].service, "WinUSB");
@@ -191,6 +208,8 @@ async function main() {
     };
     service.inventory = async () => before.inventory;
     await assert.rejects(service.ensure(before), { message: "install failed", details: { rollback: "restored" } });
+    assert.strictEqual(service.lastTimings.failed, true);
+    assert.strictEqual(service.lastTimings.action, "install");
     assert.deepStrictEqual(actions, ["install", "status", "restore", "status"]);
     assert.strictEqual(service.inFlight.size, 0);
     actions.length = 0;
@@ -216,6 +235,15 @@ async function main() {
         assert.strictEqual(action, "restore");
     };
     const restoredInventory = await service.restore(ready);
+    assert(service.lastTimings, "restore records lastTimings");
+    assert.strictEqual(service.lastTimings.action, "restore");
+    assert.strictEqual(service.lastTimings.instanceId, id);
+    assert.strictEqual(typeof service.lastTimings.helperMs, "number");
+    assert.strictEqual(typeof service.lastTimings.pollMs, "number");
+    assert.strictEqual(service.lastTimings.readyMs, 0);
+    assert.strictEqual(typeof service.lastTimings.totalMs, "number");
+    assert(logsRecorded.some((msg) => msg.includes("J-Link driver switch timings (restore)")));
+    assert(statusesRecorded.some((st) => st.state === "restored" && st.timings));
     assert.strictEqual(restoredInventory.devices[0].interfaces[0].service, "jlink");
     assert.strictEqual(restoredInventory.devices[0].interfaces[0].driverInf, "oem59.inf");
     assert.strictEqual(
@@ -230,6 +258,74 @@ async function main() {
         "stale provider metadata is reconciled as well as the driver service"
     );
     assert.strictEqual(service.restoring.size, 0);
+
+    let observedDriver = "jlink";
+    const noisyObservers = new ProbeDriverService({
+        platform: "win32",
+        arch: "x64",
+        onTiming: () => {
+            throw new Error("timing observer failed");
+        },
+        log: () => Promise.reject(new Error("log observer failed")),
+        onStatus: () => {
+            throw new Error("status observer failed");
+        }
+    });
+    noisyObservers.invoke = async (action) => {
+        if (action === "install") observedDriver = "WinUSB";
+        if (action === "restore") observedDriver = "jlink";
+        if (action === "status") return `${observedDriver} ${observedDriver === "jlink" ? "oem59.inf" : "oem64.inf"}`;
+    };
+    assert.strictEqual((await noisyObservers.ensure(before)).inventory.devices[0].interfaces[0].service, "WinUSB");
+    assert.strictEqual((await noisyObservers.restore(ready)).devices[0].interfaces[0].service, "jlink");
+    assert.strictEqual(observedDriver, "jlink", "observer failures must not cause a successful switch to roll back");
+
+    let clock = 100;
+    let statusCalls = 0;
+    const failedPoll = new ProbeDriverService({
+        platform: "win32",
+        arch: "x64",
+        now: () => clock,
+        onTiming: () => {
+            throw new Error("timing observer failed");
+        },
+        log: () => {
+            throw new Error("log observer failed");
+        },
+        onStatus: () => {
+            throw new Error("status observer failed");
+        }
+    });
+    failedPoll.invoke = async (action) => {
+        if (action === "install") clock += 4;
+        if (action === "status" && ++statusCalls === 1) {
+            clock += 19;
+            throw Object.assign(new Error("status unavailable"), { code: "PROBE_DRIVER_HELPER_MISSING" });
+        }
+        if (action === "status") return "jlink oem59.inf";
+    };
+    await assert.rejects(failedPoll.ensure(before), { code: "PROBE_DRIVER_HELPER_MISSING" });
+    assert.deepStrictEqual(
+        {
+            helperMs: failedPoll.lastTimings.helperMs,
+            pollMs: failedPoll.lastTimings.pollMs,
+            readyMs: failedPoll.lastTimings.readyMs,
+            totalMs: failedPoll.lastTimings.totalMs
+        },
+        { helperMs: 4, pollMs: 19, readyMs: 0, totalMs: 23 },
+        "a failed poll must not be attributed to the helper"
+    );
+    assert.strictEqual(statusCalls, 2, "observer failures must not prevent failure-state inspection");
+
+    const failedRestore = new ProbeDriverService({ platform: "win32", arch: "x64", now: () => clock, log: () => {} });
+    failedRestore.invoke = async () => {
+        clock += 7;
+        throw new Error("restore failed");
+    };
+    await assert.rejects(failedRestore.restore(ready), { message: "restore failed" });
+    assert.strictEqual(failedRestore.lastTimings.helperMs, 7);
+    assert.strictEqual(failedRestore.lastTimings.pollMs, 0);
+    assert.strictEqual(failedRestore.lastTimings.totalMs, 7);
     console.log("Windows J-Link driver decision and lifecycle tests passed");
 }
 

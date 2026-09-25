@@ -83,18 +83,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
     if (result.selection.probe === "remembered" && (!inventory.available || matches.length !== 1))
         throw connectionError("PROBE_IDENTITY_AMBIGUOUS", "Cannot verify the remembered probe in current inventory");
     if (result.transport === "auto") {
-        const sameDevice = !!remembered?.deviceId && matches.length === 1 && remembered.deviceId === matches[0].id;
-        if (
-            sameDevice &&
-            remembered.probeSerial === result.probeSerial &&
-            remembered.target === result.target &&
-            config.fingerprint &&
-            remembered.fingerprint === config.fingerprint &&
-            ["swd", "jtag"].includes(remembered.transport)
-        ) {
-            result.transport = remembered.transport;
-            result.selection.transport = "remembered";
-        } else if (isKnownCortexM(result.target)) {
+        if (isKnownCortexM(result.target)) {
             result.transport = "swd";
             result.selection.transport = "cortex-m";
         } else {

@@ -1,11 +1,7 @@
 "use strict";
 const assert = require("assert");
-const fs = require("fs/promises");
-const os = require("os");
-const path = require("path");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 const { resolveInterfaceTransport, prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
-const { connectionFingerprint } = require("../skills/_emberprobe/connection-fingerprint");
 const { detectProbe } = require("../skills/_emberprobe/probe-detection");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 
@@ -20,23 +16,60 @@ async function main() {
         assert.strictEqual(resolveProbeConnection({ ...config, target }, inventory).transport, "swd");
     for (const target of ["gd32vf103.cfg", "esp32.cfg", "custom.cfg"])
         assert.strictEqual(resolveProbeConnection({ ...config, target }, inventory).transport, "auto");
-    const successfulConnection = {
+
+    // Legacy record with extra fields (deviceId, fingerprint, transport: "jtag")
+    const legacyConnection = {
         version: 1,
-        ...config,
-        transport: "jtag",
+        probe: "jlink.cfg",
         probeSerial: "1234",
         deviceId: "usb-1",
-        fingerprint: "v1"
+        target: "stm32f4x.cfg",
+        transport: "jtag",
+        fingerprint: "legacy-v1"
     };
-    const cached = { ...config, successfulConnection, fingerprint: "v1" };
-    assert.strictEqual(resolveProbeConnection(cached, inventory).transport, "jtag");
-    assert.strictEqual(resolveProbeConnection({ ...cached, fingerprint: "v2" }, inventory).transport, "swd");
-    assert.strictEqual(resolveProbeConnection({ ...cached, target: "stm32f1x.cfg" }, inventory).transport, "swd");
-    assert.strictEqual(resolveProbeConnection({ ...cached, transport: "swd" }, inventory).transport, "swd");
+    // Reading legacy record must only use probe and probeSerial; legacy transport must NOT be reused
+    const resolvedLegacy = resolveProbeConnection({ ...config, successfulConnection: legacyConnection }, inventory);
+    assert.strictEqual(resolvedLegacy.probeSerial, "1234");
+    assert.strictEqual(resolvedLegacy.selection.probe, "remembered");
     assert.strictEqual(
-        resolveProbeConnection(cached, { ...inventory, devices: [{ ...inventory.devices[0], id: "usb-2" }] }).transport,
-        "swd"
+        resolvedLegacy.transport,
+        "swd",
+        "known Cortex-M uses SWD; old recorded transport is not reused"
     );
+    assert.strictEqual(resolvedLegacy.selection.transport, "cortex-m");
+
+    // User explicit transport takes highest priority over remembered and target defaults
+    const explicitUser = resolveProbeConnection(
+        { ...config, transport: "jtag", successfulConnection: legacyConnection },
+        inventory
+    );
+    assert.strictEqual(explicitUser.transport, "jtag");
+    assert.strictEqual(explicitUser.selection.transport, "explicit");
+
+    // Non-Cortex-M target uses script default
+    const nonCortex = resolveProbeConnection(
+        { ...config, target: "gd32vf103.cfg", successfulConnection: legacyConnection },
+        inventory
+    );
+    assert.strictEqual(nonCortex.transport, "auto");
+    assert.strictEqual(nonCortex.selection.transport, "script-default");
+
+    // Streamlined record with only probe and probeSerial
+    const streamlinedConnection = {
+        version: 1,
+        probe: "jlink.cfg",
+        probeSerial: "1234"
+    };
+    const resolvedStreamlined = resolveProbeConnection(
+        { ...config, successfulConnection: streamlinedConnection },
+        inventory
+    );
+    assert.strictEqual(resolvedStreamlined.probeSerial, "1234");
+    assert.strictEqual(resolvedStreamlined.selection.probe, "remembered");
+    assert.strictEqual(resolvedStreamlined.transport, "swd");
+
+    // Device missing or ambiguous handling: never switches to other probes
+    const cached = { ...config, successfulConnection: legacyConnection };
     assert.throws(() => resolveProbeConnection(cached, { available: false, devices: [] }), {
         code: "PROBE_IDENTITY_AMBIGUOUS"
     });
@@ -44,7 +77,11 @@ async function main() {
         code: "PROBE_SELECTED_NOT_FOUND"
     });
     assert.throws(
-        () => resolveProbeConnection(cached, { ...inventory, devices: [...inventory.devices, ...inventory.devices] }),
+        () =>
+            resolveProbeConnection(cached, {
+                ...inventory,
+                devices: [...inventory.devices, ...inventory.devices]
+            }),
         { code: "PROBE_IDENTITY_AMBIGUOUS" }
     );
     assert.throws(
@@ -55,6 +92,7 @@ async function main() {
             }),
         { code: "PROBE_IDENTITY_AMBIGUOUS" }
     );
+
     const launch = {
         executable: "fake",
         scriptsRoot: "scripts",
@@ -89,45 +127,19 @@ async function main() {
         resolveLaunch: () => launch,
         checkCapability: async () => ({ adapterFamily: "jlink" }),
         listProbes: async () => inventory,
-        fingerprint: async () => "v1",
         resolveTransport: (l, t) => resolveInterfaceTransport(l, t, query)
     };
     const prepared = await prepareProbeConnection(config, dependencies);
     assert.strictEqual(prepared.transport, "swd");
     assert.strictEqual(calls, 2, "one validation per preparation; no fallback attempts");
-    await prepareProbeConnection(config, {
-        ...dependencies,
-        fingerprint: async () => {
-            throw new Error("unreadable");
-        }
-    });
-    assert(inventory.notes.some((note) => note.includes("fingerprint")));
+    assert.strictEqual(prepared.fingerprint, undefined, "fingerprint is removed from preflight output");
+
     const discovered = await detectProbe({ usbInventory: async () => "", listProbes: async () => inventory });
     assert.strictEqual(discovered.probe, "jlink.cfg");
     assert.strictEqual(
         (await detectProbe({ usbInventory: async () => "ST-Link", listProbes: async () => inventory })).probe,
         ""
     );
-
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-fingerprint-"));
-    try {
-        const executable = path.join(root, "openocd");
-        const scriptsRoot = path.join(root, "scripts");
-        await fs.mkdir(path.join(scriptsRoot, "helpers"), { recursive: true });
-        await fs.writeFile(executable, "binary1");
-        const helper = path.join(scriptsRoot, "helpers", "dep.tcl");
-        await fs.writeFile(helper, "first");
-        const input = { ...launch, executable, scriptsRoot };
-        const first = await connectionFingerprint(input);
-        assert.strictEqual(await connectionFingerprint(input), first);
-        await fs.writeFile(helper, "other");
-        const second = await connectionFingerprint(input);
-        assert.notStrictEqual(first, second, "sourced script contents invalidate history");
-        await fs.writeFile(executable, "binary2");
-        assert.notStrictEqual(await connectionFingerprint(input), second);
-    } finally {
-        await fs.rm(root, { recursive: true, force: true });
-    }
 
     let confirmations = 0;
     const session = new ManagedOpenOcdSession(null, {}, { onConnectionConfirmed: () => confirmations++ });
@@ -149,7 +161,7 @@ async function main() {
         code: "LIVE_READ_CANCELLED"
     });
     assert.strictEqual(confirmations, 1);
-    console.log("Automatic transport, cache fingerprints, discovery and read confirmation tests passed");
+    console.log("Automatic transport, streamlined history, discovery and read confirmation tests passed");
 }
 main().catch((error) => {
     console.error(error);

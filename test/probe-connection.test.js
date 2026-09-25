@@ -103,6 +103,28 @@ async function main() {
     });
     assert.strictEqual(linux.devices.length, 1);
     assert.strictEqual(linux.devices[0].serial, "1234");
+    const darwinProbes = await listProbes({
+        platform: "darwin",
+        run: async (cmd, args) => {
+            assert.strictEqual(cmd, "system_profiler");
+            assert.deepStrictEqual(args, ["SPUSBDataType", "-json"]);
+            return JSON.stringify({
+                SPUSBDataType: [
+                    {
+                        _name: "J-Link",
+                        vendor_id: "0x1366 (SEGGER)",
+                        product_id: "0x0101",
+                        serial_num: "987654321",
+                        location_id: "0x14100000"
+                    }
+                ]
+            });
+        }
+    });
+    assert.strictEqual(darwinProbes.available, true);
+    assert.strictEqual(darwinProbes.devices.length, 1);
+    assert.strictEqual(darwinProbes.devices[0].serial, "987654321");
+    assert.strictEqual(darwinProbes.devices[0].family, "jlink");
     const unavailable = await listProbes({
         platform: "win32",
         run: async () => {
@@ -174,7 +196,6 @@ async function main() {
         resolveLaunch: () => launch,
         checkCapability: async () => ({ adapterFamily: "jlink" }),
         resolveTransport: async (_launch, transport) => transport,
-        fingerprint: async () => "test-fingerprint",
         listProbes: async () => readyInventory
     });
     assert.strictEqual(prepared.probeSerial, "123456789");

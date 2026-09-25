@@ -65,7 +65,7 @@ class ProbeConnectionService {
             try {
                 const prepared = await this.prepareConnection(request);
                 this.beforePrepare();
-                const result = this.driverService ? this.driverService.requireWinUsb(prepared) : prepared;
+                const result = prepared;
                 const current = connectionIdentity(this.getConfig());
                 if (JSON.stringify(current) !== expectedSettings)
                     throw connectionError(
@@ -124,25 +124,19 @@ class ProbeConnectionService {
             !connection ||
             this.recorded.has(connection) ||
             connection.adapterFamily !== "jlink" ||
-            !connection.deviceId ||
-            !connection.fingerprint ||
-            !["swd", "jtag"].includes(connection.transport) ||
-            !connection.settingsIdentity ||
-            this.settingsChanged({ options: connection })
+            !connection.probe ||
+            !connection.probeSerial ||
+            (connection.settingsIdentity && this.settingsChanged({ options: connection }))
         )
             return;
         this.recorded.add(connection);
         this.recordQueue = this.recordQueue
             .then(async () => {
-                if (this.settingsChanged({ options: connection })) return;
+                if (connection.settingsIdentity && this.settingsChanged({ options: connection })) return;
                 await this.saveSuccessfulConnection({
                     version: 1,
                     probe: connection.probe,
-                    probeSerial: connection.probeSerial,
-                    deviceId: connection.deviceId,
-                    target: connection.target,
-                    transport: connection.transport,
-                    fingerprint: connection.fingerprint
+                    probeSerial: connection.probeSerial
                 });
             })
             .catch(() => {

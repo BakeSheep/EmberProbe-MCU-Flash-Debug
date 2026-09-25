@@ -191,7 +191,11 @@ class MainViewProvider {
                 if (!executable) throw new Error("OpenOCD is required to verify that J-Link is ready");
                 await waitForJlinkReady(executable, connection.probeSerial);
             },
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status })
+            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status }),
+            log: (message) => {
+                console.log(message);
+                if (this._chipOutput) this._chipOutput.appendLine(message);
+            }
         });
         this._probeConnectionService = new ProbeConnectionService({
             getConfig: () => this._configurationStore.snapshot(),
@@ -368,25 +372,25 @@ class MainViewProvider {
         this.registerCommandHandlers();
     }
     get _downloadRunning() {
-        return this._probeCoordinator.isActive("download");
+        return this._probeCoordinator?.isActive("download") ?? false;
     }
     get _liveWatchRunning() {
-        return this._probeCoordinator.isActive("liveWatch");
+        return this._probeCoordinator?.isActive("liveWatch") ?? false;
     }
     get _liveStarting() {
-        return this._probeCoordinator.isActive("liveStart");
+        return this._probeCoordinator?.isActive("liveStart") ?? false;
     }
     get _chipInfoRunning() {
-        return this._probeCoordinator.isActive("chipInfo");
+        return this._probeCoordinator?.isActive("chipInfo") ?? false;
     }
     get _agentReadRunning() {
-        return this._probeCoordinator.isActive("agentRead");
+        return this._probeCoordinator?.isActive("agentRead") ?? false;
     }
     get _debugStarting() {
-        return this._probeCoordinator.isActive("debugStart");
+        return this._probeCoordinator?.isActive("debugStart") ?? false;
     }
     get _debugServerRunning() {
-        return this._probeCoordinator.isActive("debugServer");
+        return this._probeCoordinator?.isActive("debugServer") ?? false;
     }
     // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
     _t(key, params) {
@@ -564,6 +568,7 @@ class MainViewProvider {
                 this._debugCommandPending = true;
                 ownsPending = true;
                 this._debugStartupErrorReported = false;
+                this._debugStartupFailureCleanedUp = false;
                 console.log("主进程执行启动调试命令");
                 let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg =
@@ -639,23 +644,33 @@ class MainViewProvider {
                 );
                 const outcome = await Promise.race([startRequest, startupGate]);
                 if (outcome.kind === "error") throw outcome.error;
-                if (outcome.kind === "timeout" || outcome.kind === "terminated" || outcome.kind === "failed")
+                if (outcome.kind === "timeout" || outcome.kind === "terminated" || outcome.kind === "failed") {
+                    await this._handleDebugStartupFailure(
+                        this._debugLifecycle.session,
+                        this._t("msg.debugStartFailed")
+                    );
                     return false;
+                }
                 const started = outcome.kind === "ready" ? true : outcome.started;
                 startAccepted = started === true;
                 if (!started) {
-                    this._clearDebugStartupWatchdog();
-                    vscode.window.showErrorMessage(this._t("msg.debugStartFailed"));
-                    if (this._debugStarting) this._debugStartLease?.release();
-                    await this._stopManagedDebugServer();
-                    await this.restoreSamplingAfterDebug();
+                    await this._handleDebugStartupFailure(
+                        this._debugLifecycle.session,
+                        this._t("msg.debugStartFailed")
+                    );
                     return false;
                 }
                 // VS Code may accept the request before GDB has attached. Keep the sidebar pending
-                // until the adapter confirms launch, terminates, or the bounded watchdog fires.
+                // until both initialized and launch have arrived, terminates, or the bounded watchdog fires.
                 if (outcome.kind === "result") {
                     const initialized = await startupGate;
-                    if (initialized.kind !== "ready") return false;
+                    if (initialized.kind !== "ready") {
+                        await this._handleDebugStartupFailure(
+                            this._debugLifecycle.session,
+                            this._t("msg.debugStartFailed")
+                        );
+                        return false;
+                    }
                 }
                 return true;
             } catch (err) {
@@ -1347,23 +1362,27 @@ class MainViewProvider {
         const server = this._managedDebugServer;
         const lease = this._debugServerLease;
         this._managedDebugServer = null;
+        this._debugServerLease = null;
         this._managedDebugToken = "";
         this._managedDebugSessionId = "";
         this._runtimeDeniedKey = "";
-        if (server) {
-            server.setSamplingEnabled(false);
-            try {
-                await server.stop();
-            } catch {
-                /* ignore */
+        try {
+            if (server) {
+                server.setSamplingEnabled?.(false);
+                try {
+                    await server.stop?.();
+                } catch {
+                    /* ignore */
+                }
             }
+        } finally {
+            lease?.release();
         }
-        lease?.release();
     }
     _armDebugStartupWatchdog() {
         const version = this._managedDebugToken
             ? ""
-            : vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
+            : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
         return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
             this._recoverDebugStartupTimeout()
         );
@@ -1379,7 +1398,52 @@ class MainViewProvider {
         this._debugLifecycle.clear(outcome);
     }
     _markDebugStartupReady(session) {
-        this._debugLifecycle.ready(session, this._matchesManagedDebugSession(session));
+        this._debugLifecycle?.markInitialized(session, this._matchesManagedDebugSession(session));
+    }
+    _findManagedDebugSession(session) {
+        const managedId = this._managedDebugSessionId;
+        const candidates = [
+            session,
+            this._debugLifecycle?.session,
+            managedId ? this._debugBridge?.allSessions?.get(managedId) : null
+        ];
+        return (
+            candidates.find(
+                (candidate) =>
+                    typeof candidate?.id === "string" &&
+                    isSupportedDebugSession(candidate) &&
+                    this._matchesManagedDebugSession(candidate) &&
+                    (!managedId || candidate.id === managedId)
+            ) || null
+        );
+    }
+    async _handleDebugStartupFailure(session, message) {
+        if (this._debugStartupFailureCleanedUp) return;
+        this._debugStartupFailureCleanedUp = true;
+        const targetSession = this._findManagedDebugSession(session);
+        this._reportDebugStartupFailure(message);
+        try {
+            if (targetSession) {
+                if (targetSession.id) this._terminatedDebugSessionIds?.add(targetSession.id);
+                try {
+                    await Promise.race([
+                        Promise.resolve(vscode.debug?.stopDebugging?.(targetSession)).catch(() => false),
+                        new Promise((resolve) => setTimeout(() => resolve(false), 2000))
+                    ]);
+                } catch {
+                    /* The adapter may already have exited. */
+                }
+                this._debugBridge?.detach(targetSession);
+                this._debugReadPlanKey = "";
+            }
+            if (this._debugStarting) this._debugStartLease?.release();
+            if (typeof this._stopManagedDebugServer === "function") await this._stopManagedDebugServer();
+            if (typeof this.restoreSamplingAfterDebug === "function") await this.restoreSamplingAfterDebug();
+        } finally {
+            if (this._debugStarting) this._debugStartLease?.release();
+            this._debugServerLease?.release();
+            this._debugCommandPending = false;
+        }
     }
     _reportDebugStartupFailure(message) {
         if (this._debugStartupErrorReported) return;
@@ -1392,13 +1456,9 @@ class MainViewProvider {
         this._clearDebugStartupWatchdog({ kind: "failed" });
     }
     async _recoverDebugStartupTimeout() {
-        if (!this._debugLifecycle.pending) return;
         const ownDebug = !!this._managedDebugToken;
-        const session = this._debugLifecycle.session;
-        const timeoutMs = this._debugLifecycle.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
-        this._clearDebugStartupWatchdog();
-        this._debugStartLease?.release();
-        this._debugCommandPending = false;
+        const session = this._findManagedDebugSession();
+        const timeoutMs = this._debugLifecycle?.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
         this._postConsumerStatuses(
             {
                 mode: "debug-start-failed",
@@ -1409,30 +1469,13 @@ class MainViewProvider {
             },
             true
         );
-        if (session) {
-            const managed = !!this._managedDebugSessionId && session.id === this._managedDebugSessionId;
-            this._terminatedDebugSessionIds.add(session.id);
-            try {
-                await Promise.race([
-                    Promise.resolve(vscode.debug.stopDebugging(session)).catch(() => false),
-                    new Promise((resolve) => setTimeout(() => resolve(false), 2000))
-                ]);
-            } catch {
-                /* The adapter may already have exited. */
-            }
-            this._debugBridge.detach(session);
-            this._debugReadPlanKey = "";
-            if (managed || this._managedDebugServer) await this._stopManagedDebugServer();
-            await this.restoreSamplingAfterDebug();
-        } else {
-            await this._stopManagedDebugServer();
-            await this.restoreSamplingAfterDebug();
-        }
         const version = ownDebug
             ? ""
-            : vscode.extensions.getExtension("marus25.cortex-debug")?.packageJSON?.version || "";
+            : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
         const key = debugStartupPolicy(process.platform, version).messageKey;
-        vscode.window.showErrorMessage(this._t(key, { seconds: timeoutMs / 1000, version }));
+        const timeoutMessage = this._t(key, { seconds: timeoutMs / 1000, version });
+        vscode.window?.showErrorMessage?.(timeoutMessage);
+        await this._handleDebugStartupFailure(session, timeoutMessage);
     }
     async _quiesceManagedRuntimeRead() {
         const server = this._managedDebugServer;
@@ -2944,25 +2987,21 @@ class MainViewProvider {
             this._managedDebugServer.setSamplingEnabled(false);
         }
         this._debugBridge.attach(session);
-        this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
+        this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {
-        if (
-            message?.type === "response" &&
-            !message.success &&
-            ["launch", "attach"].includes(message.command) &&
-            this._matchesManagedDebugSession(session)
-        ) {
-            this._reportDebugStartupFailure(message.message || message.body?.error?.format);
+        const matches = this._matchesManagedDebugSession(session);
+        if (message?.type === "response" && ["launch", "attach"].includes(message.command) && matches) {
+            if (!message.success) {
+                const errorMsg = message.message || message.body?.error?.format;
+                this._reportDebugStartupFailure(errorMsg);
+            } else {
+                this._debugLifecycle?.markLaunchResponse(session, matches, true);
+                if (!this._terminatedDebugSessionIds.has(session.id)) {
+                    void this._probeConnectionService.recordSuccess(this._managedDebugServer?.options);
+                }
+            }
         }
-        if (
-            message?.type === "response" &&
-            message.success &&
-            ["launch", "attach"].includes(message.command) &&
-            this._matchesManagedDebugSession(session) &&
-            !this._terminatedDebugSessionIds.has(session.id)
-        )
-            void this._probeConnectionService.recordSuccess(this._managedDebugServer?.options);
         if (message?.type === "event" && message.event === "initialized") this._markDebugStartupReady(session);
         this._debugBridge.handleMessage(session, message);
     }

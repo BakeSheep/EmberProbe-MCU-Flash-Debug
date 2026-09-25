@@ -12,6 +12,7 @@ test-results/
 .zcode/
 .agents/skills/_emberprobe/agent-bridge.json
 xpack-openocd-*.zip
+.emberprobe/
 .emberprobe-cubemx-audit/
 .emberprobe-*/
 native/vendor/libwdi/wdk/
