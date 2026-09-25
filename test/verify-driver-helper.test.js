@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const yazl = require("yazl");
 const { expectedFiles, verifyVsix } = require("../scripts/verify-driver-helper");
 
@@ -38,6 +39,21 @@ async function makeVsix(file, files) {
             JSON.stringify({ version: 1, files: [...files].map(([name, bytes]) => ({ name, sha256: digest(bytes) })) })
         );
         const expected = expectedFiles(root);
+        const isolated = path.join(root, "isolated");
+        const scripts = path.join(isolated, "scripts");
+        const native = path.join(isolated, "resources", "driver-helper", "win32-x64");
+        fs.mkdirSync(scripts, { recursive: true });
+        fs.mkdirSync(native, { recursive: true });
+        fs.copyFileSync(
+            path.join(__dirname, "../scripts/verify-driver-helper.js"),
+            path.join(scripts, "verify-driver-helper.js")
+        );
+        for (const name of ["manifest.json", ...files.keys()])
+            fs.copyFileSync(path.join(root, name), path.join(native, name));
+        assert.match(
+            execFileSync(process.execPath, [path.join(scripts, "verify-driver-helper.js")], { encoding: "utf8" }),
+            /hashes verified/
+        );
         const good = path.join(root, "good.vsix");
         await makeVsix(good, files);
         await verifyVsix(good, expected);

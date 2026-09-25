@@ -3,7 +3,6 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const yauzl = require("yauzl");
 
 const directory = path.resolve(__dirname, "../resources/driver-helper/win32-x64");
 function hash(bytes) {
@@ -24,6 +23,7 @@ function expectedFiles(base = directory) {
 }
 
 async function verifyVsix(file, expected) {
+    const yauzl = require("yauzl");
     const zip = await new Promise((resolve, reject) =>
         yauzl.open(file, { lazyEntries: true }, (error, opened) => (error ? reject(error) : resolve(opened)))
     );
