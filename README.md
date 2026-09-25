@@ -6,6 +6,8 @@ J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.
 
 > [English documentation](README_EN.md)
 
+![实时图表面板：采样波形、当前数值与写入列表](docs/images/live-watch-waveform.png)
+
 ## 功能特性
 
 - 自动检测工作区中最新的 ELF 文件与 MCU 目标。

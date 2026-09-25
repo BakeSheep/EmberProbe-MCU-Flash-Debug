@@ -6,6 +6,8 @@ For J-Link, see [connection configuration and compatibility](docs/JLINK-COMPATIB
 
 > [中文文档](README.md)
 
+![Live watch chart panel with sampled waveforms, current values, and the write list](docs/images/live-watch-waveform.png)
+
 ## Features
 
 - Automatically detects the newest ELF file and MCU target in the workspace.

@@ -10,6 +10,8 @@ coverage/
 .cache/
 test-results/
 .zcode/
+.workbuddy-ai/
+promo/
 .agents/skills/_emberprobe/agent-bridge.json
 xpack-openocd-*.zip
 .emberprobe/
