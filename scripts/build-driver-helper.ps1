@@ -88,4 +88,9 @@ if ($LASTEXITCODE -ne 0 -or -not $inventoryJson.TrimStart().StartsWith("[")) {
     throw "Driver helper read-only inventory smoke test failed"
 }
 $null = ConvertFrom-Json -InputObject $inventoryJson
+$files = @("emberprobe-driver-helper.exe", "libwdi.dll") | ForEach-Object {
+    $file = Join-Path $output $_
+    @{ name = $_; sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() }
+}
+@{ version = 1; files = $files } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $output "manifest.json") -Encoding utf8
 Get-ChildItem -LiteralPath $output | Get-FileHash -Algorithm SHA256 | Select-Object Path, Hash

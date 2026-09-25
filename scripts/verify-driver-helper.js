@@ -49,13 +49,13 @@ async function verifyVsix(file, expected) {
     });
     zip.close();
     for (const [name, digest] of expected)
-        if (found.get(name) !== digest) throw new Error(`VSIX is missing the signed helper bytes: ${name}`);
+        if (found.get(name) !== digest) throw new Error(`VSIX is missing the verified helper bytes: ${name}`);
 }
 
 async function main() {
     const expected = expectedFiles();
     if (process.argv[2]) await verifyVsix(path.resolve(process.argv[2]), expected);
-    console.log("Signed Windows driver helper hashes verified");
+    console.log("Windows driver helper hashes verified");
 }
 
 if (require.main === module)

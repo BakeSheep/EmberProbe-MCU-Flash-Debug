@@ -4,7 +4,7 @@
 
 ## 权限与安全
 
-Windows J-Link 驱动功能要求发布包中的 helper 与 libwdi DLL 都经过 Authenticode 签名。发布前必须配置仓库 Secret `EMBERPROBE_SIGNING_PFX_BASE64`（代码签名 PFX 的 Base64 内容）与 `EMBERPROBE_SIGNING_PFX_PASSWORD`。缺少凭据时 Release 工作流会停止，不生成 VSIX。签名任务应仅在受控的一次性 Windows runner 上执行：脚本会临时导入证书至当前用户证书存储，并在结束时移除导入的证书和 PFX 文件；SignTool 命令行不会包含 PFX 密码。发布 job 只在发布阶段申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
+Windows J-Link 驱动功能在本版随未签名的 helper 与 libwdi DLL 发布。Release 工作流在一次性 Windows runner 上构建它们，生成 SHA-256 清单，并验证构建产物与 VSIX 内字节一致；helper 在提权后还会核对配套 DLL 的 SHA-256。哈希校验不能提供发布者身份认证，Windows 可能显示“未知发布者”或根据本机策略阻止运行。发布 job 只在发布阶段申请 `contents: write`，并使用 GitHub 自动提供的短期 `GITHUB_TOKEN` 创建 Release。建议保护 `v*` 标签，防止未审查的提交触发发布。
 
 ## 发布稳定版本
 
@@ -26,8 +26,8 @@ git push origin v0.5.0
 工作流依次执行：
 
 1. 复用 CI：Windows、Ubuntu、macOS 的 Node 20 普通检查和 bundle、Windows libwdi/helper 原生构建、Ubuntu Node 24 质量检查及 Extension Host 冒烟测试。
-2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名；签署 libwdi，将其 SHA-256 编入 helper 后重新构建并签署 helper，验证两份 Authenticode 签名。
-3. 校验标签与发布元数据，将已签名原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与签名后的文件一致。
+2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名，将 libwdi 的 SHA-256 编入 helper，并生成两个未签名原生文件的 SHA-256 清单。
+3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
 4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
 
 ## 失败与重试

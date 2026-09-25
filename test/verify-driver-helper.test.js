@@ -29,8 +29,8 @@ async function makeVsix(file, files) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-helper-verify-"));
     try {
         const files = new Map([
-            ["emberprobe-driver-helper.exe", Buffer.from("signed exe")],
-            ["libwdi.dll", Buffer.from("signed dll")]
+            ["emberprobe-driver-helper.exe", Buffer.from("native exe")],
+            ["libwdi.dll", Buffer.from("native dll")]
         ]);
         for (const [name, bytes] of files) fs.writeFileSync(path.join(root, name), bytes);
         fs.writeFileSync(
@@ -43,10 +43,10 @@ async function makeVsix(file, files) {
         await verifyVsix(good, expected);
         const missing = path.join(root, "missing.vsix");
         await makeVsix(missing, new Map([["emberprobe-driver-helper.exe", files.get("emberprobe-driver-helper.exe")]]));
-        await assert.rejects(verifyVsix(missing, expected), /missing the signed helper bytes/);
+        await assert.rejects(verifyVsix(missing, expected), /missing the verified helper bytes/);
         fs.writeFileSync(path.join(root, "libwdi.dll"), "tampered");
         assert.throws(() => expectedFiles(root), /hash mismatch/);
-        console.log("Signed helper manifest and VSIX content tests passed");
+        console.log("Native helper manifest and VSIX content tests passed");
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

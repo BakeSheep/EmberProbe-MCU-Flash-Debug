@@ -22,13 +22,16 @@ for (const job of Object.values(ci.jobs)) {
 }
 assert.strictEqual(release.jobs.gates.uses, "./.github/workflows/ci.yml");
 assert.deepStrictEqual(release.jobs.build.needs, ["gates", "driver-helper"]);
+assert.ok(release.jobs["driver-helper"].steps.some((s) => s.run === "node scripts/verify-driver-helper.js"));
+assert.ok(!release.jobs["driver-helper"].steps.some((s) => /sign-driver-helper\.ps1/.test(s.run || "")));
+assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-driver-helper.js"));
+assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-driver-helper.js dist/emberprobe.vsix"));
 assert.strictEqual(release.jobs.publish.needs, "build");
 assert.strictEqual(release.permissions.contents, "read");
 assert.strictEqual(release.jobs.publish.permissions.contents, "write");
-const signingScript = fs.readFileSync(path.join(__dirname, "../scripts/sign-driver-helper.ps1"), "utf8");
-assert.match(signingScript, /Import-PfxCertificate/);
-assert.match(signingScript, /sign \/fd SHA256 \/sha1 \$thumbprint/g);
-assert.doesNotMatch(signingScript, /sign [^\r\n]* \/p\s/);
+const buildScript = fs.readFileSync(path.join(__dirname, "../scripts/build-driver-helper.ps1"), "utf8");
+assert.match(buildScript, /manifest\.json/);
+assert.match(buildScript, /Get-FileHash -LiteralPath \$file -Algorithm SHA256/);
 assert.strictEqual(release.concurrency["cancel-in-progress"], false);
 assert.strictEqual(hil.jobs["flash-verify"].if, "vars.HIL_ENABLED == 'true'");
 assert.ok(!Object.hasOwn(hil.on, "pull_request") && !Object.hasOwn(hil.on, "push"));
