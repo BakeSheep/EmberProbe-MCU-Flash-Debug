@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-09-26
+
+- 修复 Ubuntu 等环境中 OpenOCD 0.12.0 编号式适配器列表的解析，避免连接预检误报无法识别适配器列表；保留其他列表格式的兼容性。
+- Fix parsing of OpenOCD 0.12.0 numbered adapter lists on Ubuntu and other environments, preventing unrecognized adapter-list errors during connection preflight while preserving compatibility with other list formats.
+
 ## [0.7.10] - 2026-09-25
 
 - Windows x64 下选择 J-Link 的 WinUSB 驱动时备份旧 SEGGER 驱动；SEGGER 驱动下的硬件操作会直接报错，调试器卡片可恢复原驱动。发布包对未签名的 helper 与 libwdi 执行 SHA-256 内容校验。
