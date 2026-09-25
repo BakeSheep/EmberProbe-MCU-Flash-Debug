@@ -128,7 +128,7 @@ function lastJsonLine(stdout) {
             elf: "config",
             target: "config",
             probe: "config",
-            transport: "default",
+            transport: canRunFakeOpenOcd ? "script-default" : "default",
             probeSerial: "default",
             adapterSpeedKhz: "default",
             openocd: "config"
