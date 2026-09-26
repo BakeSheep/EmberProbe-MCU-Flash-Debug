@@ -42,4 +42,49 @@ async function readChipInfo(vscode, options, onProgress) {
     report({ stage: "done", message: "读取完成" });
     return info;
 }
-module.exports = { ...rules, readChipInfo };
+async function controlTarget(options, action) {
+    if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) throw new Error("Invalid OpenOCD configuration name");
+    const operations = {
+        pause: { command: "halt", expected: "running" },
+        continue: { command: "resume", expected: "halted" },
+        reset: { command: "reset run" }
+    };
+    const operation = operations[action];
+    if (!operation)
+        throw Object.assign(new Error(`Unsupported target action: ${action}`), { code: "CHIP_ACTION_INVALID" });
+    const check = operation.expected
+        ? `poll; if {[[target current] curstate] ne "${operation.expected}"} { error "Target is no longer ${operation.expected}" }; `
+        : "";
+    const script =
+        `set _ep_rc [catch { ${check}${operation.command}; poll; set _ep_state [[target current] curstate] } _ep_msg]; ` +
+        'if {$_ep_rc} { echo "EP_CONTROL_ERROR $_ep_msg" } else { echo "EP_CONTROL_OK $_ep_state" }';
+    let outcome = null;
+    const execution = await (options.run || runOpenOcdOnce)({
+        executable: options.executable,
+        probe: options.probe,
+        target: options.target,
+        transport: options.transport,
+        probeSerial: options.probeSerial,
+        adapterSpeedKhz: options.adapterSpeedKhz,
+        inventory: options.inventory,
+        cwd: options.cwd,
+        timeoutMs: 15000,
+        buildCommands: () => ["init", script, "shutdown"],
+        onLine: (line) => {
+            const match = line.match(/\bEP_CONTROL_(OK|ERROR)\s+(.+)$/);
+            if (match) outcome = { ok: match[1] === "OK", value: match[2].trim() };
+        }
+    });
+    if (!outcome?.ok || execution.exitCode !== 0) {
+        throw Object.assign(
+            new Error(
+                outcome?.ok
+                    ? execution.diagnostic?.message || "OpenOCD control failed"
+                    : outcome?.value || execution.diagnostic?.message || "OpenOCD control failed"
+            ),
+            { code: "CHIP_CONTROL_FAILED" }
+        );
+    }
+    return { state: outcome.value };
+}
+module.exports = { ...rules, readChipInfo, controlTarget };

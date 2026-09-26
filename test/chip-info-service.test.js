@@ -9,11 +9,20 @@ const { createFixture } = require("./helpers/service-fixture");
         const active = new Set();
         const chipPosts = [];
         let chipDiagnostics = null;
+        let targetState = "running";
+        const actions = [];
         const chipService = new ChipInfoService({
             vscode: { workspace: { getConfiguration: () => ({ get: () => "openocd" }) } },
             context: { workspaceState: { get: (key) => (key === "debugger" ? "p.cfg" : "t.cfg") } },
             cacheKeys: { debugger: "debugger", mcuCore: "target" },
-            chipInfo: { readChipInfo: async () => ({ core: "Cortex-M4" }) },
+            chipInfo: {
+                readChipInfo: async () => ({ core: "Cortex-M4", targetState }),
+                controlTarget: async (_options, action) => {
+                    actions.push(action);
+                    targetState = action === "pause" ? "halted" : "running";
+                    return { state: targetState };
+                }
+            },
             coordinator: {
                 isActive: (name) => active.has(name),
                 acquire: (name) => {
@@ -40,8 +49,19 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.ok(chipDiagnostics.timings.configMs >= 0);
         assert.ok(chipDiagnostics.timings.preflightMs >= 0);
         assert.ok(chipDiagnostics.timings.openOcdMs >= 0);
+        assert.strictEqual((await chipService.control("pause")).targetState, "halted");
+        assert.strictEqual((await chipService.control("continue")).targetState, "running");
+        assert.strictEqual((await chipService.control("reset")).targetState, "running");
+        assert.deepStrictEqual(actions, ["pause", "continue", "reset"]);
+        assert.strictEqual(chipService.running, false);
+        await assert.rejects(
+            () => chipService.control("bogus"),
+            (error) => error.code === "CHIP_ACTION_INVALID"
+        );
         active.add("download");
         assert.strictEqual(await chipService.read(), null);
+        assert.strictEqual(await chipService.control("pause"), null);
+        assert.deepStrictEqual(actions, ["pause", "continue", "reset"]);
         assert.ok(chipPosts.some((message) => message.key === "chip.busyDownload"));
         active.delete("download");
 

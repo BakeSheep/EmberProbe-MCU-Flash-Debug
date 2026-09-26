@@ -461,7 +461,13 @@ class MainViewProvider {
                 post({ type: "peripheralWriteResult", target: message.target, result });
             }
         } catch (error) {
-            post({ type: "peripheralError", operation, code: error.code, message: error.message || String(error) });
+            post({
+                type: "peripheralError",
+                operation,
+                target: operation === "peripheralWriteRequest" ? message.target : undefined,
+                code: error.code,
+                message: error.message || String(error)
+            });
         }
     }
     _postOpenOcdStatus(status) {
@@ -3586,6 +3592,10 @@ class MainViewProvider {
                 case "readChipInfo": {
                     await this.readChipInfoAction();
                     await this._svdManager.syncStatus();
+                    break;
+                }
+                case "chipControl": {
+                    await this._chipInfoService.control(message.action);
                     break;
                 }
                 case "cancelSvdDownload": {

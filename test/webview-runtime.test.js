@@ -76,6 +76,21 @@ try {
         main.innerHTML = render(info, opts);
         assert.strictEqual(main.querySelector("script"), null);
         assert.ok(main.querySelector("#chipMore").open);
+        const actions = [...main.querySelectorAll("[data-chip-action]")].map((button) => button.dataset.chipAction);
+        assert.deepStrictEqual(
+            actions,
+            info?.targetState === "running"
+                ? ["pause", "reset"]
+                : info?.targetState === "halted"
+                  ? ["continue", "reset"]
+                  : ["reset"]
+        );
+        for (const button of main.querySelectorAll("[data-chip-action]")) {
+            assert.ok(button.closest(".chip-state-stat"), "target controls belong in the state card");
+            assert.ok(button.querySelector("svg"), "target controls use an icon");
+            assert.strictEqual(button.textContent, "", "icon controls do not show text labels");
+            assert.ok(button.getAttribute("aria-label"), "icon controls have an accessible label");
+        }
     }
 } finally {
     dom.window.close();

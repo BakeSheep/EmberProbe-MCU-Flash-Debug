@@ -57,10 +57,46 @@
             (info.chip || info.series || info.targetName || "—") +
             (info.authenticity === "compatible" ? " · " + t("chip.compatTag") : "");
         const stt = CHIP_STATE_TEXT[info.targetState] || info.targetState || "—";
+        const icons = {
+            pause: '<path d="M6 4v12m8-12v12" stroke-width="2.5" stroke-linecap="round"/>',
+            continue: '<path d="M6 4.5 15 10 6 15.5z" fill="currentColor" stroke="none"/>',
+            reset: '<path d="M16.5 10a6.5 6.5 0 1 1-1.6-4.3M16.5 3v4.5H12" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>'
+        };
+        function controlButton(action, label) {
+            const name = chipEsc(label);
+            return (
+                '<button type="button" class="chip-control" data-chip-action="' +
+                action +
+                '" aria-label="' +
+                name +
+                '" title="' +
+                name +
+                '"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" aria-hidden="true" focusable="false">' +
+                icons[action] +
+                "</svg></button>"
+            );
+        }
+        const toggle =
+            info.targetState === "running"
+                ? controlButton("pause", t("chip.pause"))
+                : info.targetState === "halted"
+                  ? controlButton("continue", t("chip.continue"))
+                  : "";
+        const stateCard =
+            '<div class="chip-stat chip-state-stat"><span class="chip-k">' +
+            chipEsc(t("chip.targetState")) +
+            '</span><span class="chip-v" title="' +
+            chipEsc(stt) +
+            '">' +
+            chipEsc(stt) +
+            '</span><span class="chip-controls">' +
+            toggle +
+            controlButton("reset", t("chip.reset")) +
+            "</span></div>";
         const grid = [
             chipStat(t("chip.adapterClock"), info.clock),
             chipStat(t("chip.designer"), info.designer),
-            chipStat(t("chip.targetState"), stt),
+            stateCard,
             chipStat(t("chip.debugProbe"), chipProbe(info))
         ].join("");
         const en = info.endian

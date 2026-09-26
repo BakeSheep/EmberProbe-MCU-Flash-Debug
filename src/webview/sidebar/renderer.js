@@ -98,6 +98,9 @@ function setProbeDriverBusy(busy) {
     if (jlinkDriverChoice) jlinkDriverChoice.disabled = busy;
     if (jlinkDriverBusy) jlinkDriverBusy.hidden = !busy;
     if (chipRead) chipRead.disabled = busy || lastChip.state === "reading";
+    chipBody?.querySelectorAll(".chip-control").forEach((button) => {
+        button.disabled = busy || lastChip.state === "reading";
+    });
     liveToggle.disabled = busy;
     document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
 }
@@ -1179,7 +1182,18 @@ function chipStatus(m) {
         chipRead.disabled = probeDriverBusy || st === "reading";
         chipRead.textContent = st === "reading" ? t("sb.readingEllipsis") : chipHasData ? t("sb.reread") : t("sb.read");
     }
-    chipLabel.textContent = chipStatusLabel(st);
+    chipLabel.textContent = m.key || m.message ? msgText(m) : chipStatusLabel(st);
+    chipLabel.title = chipLabel.textContent;
+    chipBody.querySelectorAll(".chip-control").forEach((button) => {
+        button.disabled = probeDriverBusy || st === "reading";
+    });
+    chipBody.querySelector(".chip-action-error")?.remove();
+    if (st === "error" && chipHasData) {
+        const note = document.createElement("div");
+        note.className = "chip-note chip-err chip-action-error";
+        note.textContent = msgText(m) || t("chip.stError");
+        chipBody.appendChild(note);
+    }
     if (st === "error" && !chipHasData) {
         chipBody.textContent = "";
         const n = document.createElement("div");
@@ -1247,6 +1261,15 @@ function renderChip(info) {
                 if (api) api.postMessage({ type: "copyText", text: b.dataset.copy });
             })
     );
+    chipBody.querySelectorAll(".chip-control").forEach((button) => {
+        button.disabled = probeDriverBusy || lastChip.state === "reading";
+        button.onclick = () => {
+            if (!api) return setStat("error", "sb.extNotConnected");
+            chipStatus({ state: "reading", key: "chip.controlling" });
+            api.postMessage({ type: "chipControl", action: button.dataset.chipAction });
+        };
+    });
+    if (lastChip.state === "error") chipStatus(lastChip);
 }
 if (chipRead)
     chipRead.onclick = () => {

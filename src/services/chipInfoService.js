@@ -18,6 +18,7 @@ class ChipInfoService {
         this.onDiagnostics = options.onDiagnostics;
         this.isDebugActive = options.isDebugActive;
         this.info = null;
+        this.infoConnection = null;
     }
 
     get running() {
@@ -121,6 +122,7 @@ class ChipInfoService {
             saveMs = Date.now() - saveStartedAt;
             info.readAt = new Date().toISOString();
             this.info = info;
+            this.infoConnection = { probe, target };
             this.post({ state: "ready", key: "chip.done" }, info);
             this.onDiagnostics(diagnosticReport(), info);
             return info;
@@ -137,6 +139,74 @@ class ChipInfoService {
             return null;
         } finally {
             lease.release();
+        }
+    }
+
+    async control(action) {
+        if (!["pause", "continue", "reset"].includes(action))
+            throw Object.assign(new Error(`Unsupported target action: ${action}`), { code: "CHIP_ACTION_INVALID" });
+        if (!this.info) return this.rejectBusy("chip.notRead", "CHIP_NOT_READ", false);
+        if (this.running) return this.rejectBusy("chip.reading", "CHIP_READ_RUNNING", false);
+        if (this.coordinator.isActive("download")) return this.rejectBusy("chip.busyDownload", "PROBE_BUSY", false);
+        if (this.coordinator.isActive("liveWatch")) return this.rejectBusy("chip.busyLive", "PROBE_BUSY", false);
+        if (this.coordinator.isActive("agentRead")) return this.rejectBusy("chip.busyAgent", "PROBE_BUSY", false);
+        if (this.coordinator.isActive("debugStart") || this.isDebugActive())
+            return this.rejectBusy("chip.busyDebug", "PROBE_BUSY", false);
+        const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || this.infoConnection?.probe;
+        const target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
+        if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", false);
+        if (probe !== this.infoConnection?.probe || target !== this.infoConnection?.target)
+            return this.rejectBusy("chip.readAgain", "CHIP_INFO_STALE", false);
+        let lease;
+        try {
+            lease = this.coordinator.acquire("chipInfo");
+            this.post({ state: "reading", key: "chip.controlling" });
+            const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
+            const executable = await this.resolveExecutable(configured);
+            if (!executable) throw Object.assign(new Error(this.t("chip.notReady")), { i18nKey: "chip.notReady" });
+            const { cwd } = this.commandContext();
+            const connection = this.prepareConnection
+                ? await this.prepareConnection({ executable, probe, target }, true)
+                : {};
+            if (lease.released || this.isDebugActive())
+                throw Object.assign(new Error(this.t("chip.busyDebug")), { i18nKey: "chip.busyDebug" });
+            const options = {
+                executable,
+                probe,
+                target,
+                cwd,
+                transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
+                ...connection
+            };
+            const result = await this.chipInfo.controlTarget(options, action);
+            // Show the verified transition even if the subsequent full information read fails.
+            this.info = {
+                ...this.info,
+                targetState: result.state,
+                haltReason: "",
+                pc: "",
+                sp: "",
+                lr: "",
+                stateError: "",
+                readAt: new Date().toISOString()
+            };
+            this.post(null, this.info);
+            const info = await this.chipInfo.readChipInfo(this.vscode, options);
+            info.readAt = new Date().toISOString();
+            this.info = info;
+            this.post({ state: "ready", key: "chip.done" }, info);
+            return info;
+        } catch (error) {
+            this.post({
+                state: "error",
+                key: error.i18nKey,
+                params: error.i18nParams,
+                message: error.message || String(error),
+                diagnostic: serializeError(error)
+            });
+            return null;
+        } finally {
+            lease?.release();
         }
     }
 }
