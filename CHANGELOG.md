@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.7.13] - 2026-09-26
+
+- 修复 DWARF 结构体、联合体及 typedef 复合变量的识别与按需展开，恢复侧栏和实时监视中的成员浏览及已选变量。
+- Fix DWARF struct, union, and typedef recognition and lazy expansion, restoring member browsing and selected variables in the sidebar and live watch.
+- 修复无符号枚举和多维数组的类型及成员偏移解析；布尔变量仅允许写入 0 或 1，类型信息不可靠时拒绝写入。
+- Fix unsigned enum and multidimensional array types and offsets; restrict boolean writes to 0 or 1 and reject writes without reliable type information.
+
 ## [0.7.12] - 2026-09-26
 
 - 新增侧栏“外设寄存器”外设树，与 MCU 配置、芯片信息和实时读写并列；在其他配置中绑定 SVD 后自动可用，支持寄存器/位域读取、格式切换及侧栏内直接写入（Agent Skill 写入保留许可）。
