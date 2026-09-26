@@ -732,13 +732,21 @@ class SvdPeripheralService {
         return pending;
     }
 
-    async _write(params) {
+    writeFromUi(params = {}) {
+        const pending = (this.writeQueue || Promise.resolve()).then(() => this._write(params, true));
+        this.writeQueue = pending.catch(() => {});
+        return pending;
+    }
+
+    async _write(params, fromUi = false) {
         const model = await this.model();
         const guard = this._guard(true);
         const plan = await this._writePlan(model, params.writes, guard);
         guard();
-        if (!params.confirmationId) return this.authorization.request(plan);
-        this.authorization.authorize(plan, params.confirmationId);
+        if (!fromUi) {
+            if (!params.confirmationId) return this.authorization.request(plan);
+            this.authorization.authorize(plan, params.confirmationId);
+        }
         const results = [];
         let attempted = null;
         try {
@@ -769,7 +777,12 @@ class SvdPeripheralService {
             error.retryable = false;
             throw error;
         }
-        return { svd: model.svd, session: this.debugBridge.agentStatus(), permission: { mode: "once" }, results };
+        return {
+            svd: model.svd,
+            session: this.debugBridge.agentStatus(),
+            permission: { mode: fromUi ? "direct-ui" : "once" },
+            results
+        };
     }
 }
 

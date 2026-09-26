@@ -27,7 +27,7 @@ function parseDwarfVariableTypes(buffer) {
 function parseCompositeLayout(buffer) {
     try {
         const parsed = _parseDwarfCached(buffer);
-        return parsed ? buildCompositeLayouts(parsed) : new Map();
+        return parsed ? buildCompositeLayouts(parsed, () => {}) : new Map();
     } catch (e) {
         return new Map();
     }
@@ -45,7 +45,16 @@ function parseDwarf(buffer) {
             };
         const types = buildVariableTypes(parsed);
         try {
-            return { types, layouts: buildCompositeLayouts(parsed), diagnostics: parsed.diagnostics };
+            const diagnostics = [...parsed.diagnostics];
+            const layouts = buildCompositeLayouts(parsed, (name, error) => {
+                diagnostics.push({
+                    code: error.code || "DWARF_PARSE_FAILED",
+                    stage: "layouts",
+                    symbol: name,
+                    message: error.message
+                });
+            });
+            return { types, layouts, diagnostics };
         } catch (error) {
             return {
                 types,

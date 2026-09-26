@@ -26,7 +26,7 @@ function loadRendererPrelude(area) {
             loadWebviewAsset("", "runtime.js"),
             loadWebviewAsset("", "messages.js"),
             ...(area === "sidebar"
-                ? [loadWebviewAsset("sidebar", "chipView.js")]
+                ? [loadWebviewAsset("sidebar", "chipView.js"), loadWebviewAsset("sidebar", "peripherals.js")]
                 : ["seriesStyles.js", "analysisState.js", "chartInspection.js", "chartControls.js", "chart.js"].map(
                       (name) => loadWebviewAsset("liveWatch", name)
                   ))

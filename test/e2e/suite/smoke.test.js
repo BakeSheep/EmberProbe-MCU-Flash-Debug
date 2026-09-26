@@ -63,6 +63,28 @@ async function run() {
         await worker.terminate();
     }
 
+    const elfWorker = new Worker(path.join(extension.extensionPath, "dist", "elfWorker.js"), {
+        workerData: { path: path.join(workspace, "missing-firmware.elf") }
+    });
+    try {
+        const response = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Packaged ELF worker did not respond")), 5000);
+            elfWorker.once("error", (error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+            elfWorker.once("message", (message) => {
+                clearTimeout(timer);
+                resolve(message);
+            });
+        });
+        assert.strictEqual(response.type, "failed");
+        assert.strictEqual(response.error.code, "ELF_READ_FAILED");
+        console.log("✓ packaged ELF worker starts independently without hardware");
+    } finally {
+        await elfWorker.terminate();
+    }
+
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
     assert.ok(

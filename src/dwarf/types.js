@@ -53,9 +53,10 @@ function encodingToWatchType(encoding, size) {
     }
     return "";
 }
-function _resolveTypeInfo(refKey, dies, childrenMap, cache) {
+function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
     if (cache.has(refKey)) return cache.get(refKey);
     const placeholder = { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
+    if (depth > 32) return placeholder;
     cache.set(refKey, placeholder);
     const d = dies.get(refKey);
     if (!d) return placeholder;
@@ -71,7 +72,10 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache) {
             };
             break;
         case DW_TAG_typedef: {
-            const inner = d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache) : placeholder;
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : placeholder;
             result = {
                 kind: inner.kind,
                 typeName: nm || inner.typeName,
@@ -83,11 +87,16 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache) {
         case DW_TAG_const_type:
         case DW_TAG_volatile_type:
         case DW_TAG_restrict_type:
-            result = d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache) : placeholder;
+            result =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : placeholder;
             break;
         case DW_TAG_pointer_type: {
             const inner =
-                d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache) : { typeName: "void" };
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : { typeName: "void" };
             result = { kind: "scalar", typeName: (inner.typeName || "void") + " *", watchType: "u32", byteSize: 4 };
             break;
         }
@@ -116,7 +125,10 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache) {
             };
             break;
         case DW_TAG_array_type: {
-            const inner = d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache) : placeholder;
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : placeholder;
             // GCC/Clang 不为数组类型发 DW_AT_byte_size，多维数组的元素大小必须按
             // 本层 subrange 维度 × 内层大小推导，否则行 stride 恒为 0、所有行都
             // 解码到第 0 行的地址。单个数组 DIE 挂多个 subrange 的产生器同样按
@@ -207,7 +219,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
     }
     return members;
 }
-function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budget) {
+function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budget, state) {
     const typeDie = dies.get(typeDieOff);
     const elementType =
         typeDie && typeDie.typeRef !== undefined
@@ -234,7 +246,7 @@ function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budg
     const elemSize = elementType.byteSize || 0;
     const compositeLayout =
         typeDie && typeDie.typeRef !== undefined
-            ? _buildCompositeLayout(typeDie.typeRef, dies, childrenMap, typeCache, depth + 1, budget)
+            ? _buildCompositeLayout(typeDie.typeRef, dies, childrenMap, typeCache, depth + 1, budget, state)
             : null;
     const element = {
         typeName: elementType.typeName,
@@ -253,72 +265,129 @@ function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budg
         totalElements
     };
 }
-function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, budget) {
-    if (depth > 8) return null;
+function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, budget, state) {
+    if (depth > 8 || state.active.has(typeRef))
+        throw Object.assign(new Error("DWARF composite nesting budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
+    const cached = state.cache.get(typeRef);
+    if (cached) {
+        consumeCompositeBudget(budget, cached.cost);
+        state.cache.delete(typeRef);
+        state.cache.set(typeRef, cached);
+        return cached.layout;
+    }
     consumeCompositeBudget(budget);
     const typeDie = dies.get(typeRef);
     if (!typeDie) return null;
-    if (
-        typeDie.tag === DW_TAG_typedef ||
-        typeDie.tag === DW_TAG_const_type ||
-        typeDie.tag === DW_TAG_volatile_type ||
-        typeDie.tag === DW_TAG_restrict_type
-    ) {
-        if (typeDie.typeRef === undefined) return null;
-        const nested = _buildCompositeLayout(typeDie.typeRef, dies, childrenMap, typeCache, depth + 1, budget);
-        if (nested && typeDie.tag === DW_TAG_typedef && typeDie.name) {
-            return { ...nested, typeName: typeDie.name };
-        }
-        return nested;
-    }
-    if (typeDie.tag === DW_TAG_structure_type || typeDie.tag === DW_TAG_union_type) {
-        const kind = typeDie.tag === DW_TAG_structure_type ? "struct" : "union";
-        const nm = typeDie.name || "";
-        const members = _collectMembers(typeRef, dies, childrenMap, typeCache, depth, budget);
-        // 递归解析嵌套复合成员的布局
-        for (const m of members) {
-            if (m.memberTypeRef !== undefined) {
-                const nested = _buildCompositeLayout(m.memberTypeRef, dies, childrenMap, typeCache, depth + 1, budget);
-                if (nested) m.compositeLayout = nested;
-                delete m.memberTypeRef;
+    state.active.add(typeRef);
+    const startCount = budget.nodes;
+    let layout;
+    try {
+        if (
+            typeDie.tag === DW_TAG_typedef ||
+            typeDie.tag === DW_TAG_const_type ||
+            typeDie.tag === DW_TAG_volatile_type ||
+            typeDie.tag === DW_TAG_restrict_type
+        ) {
+            if (typeDie.typeRef === undefined) return null;
+            const nested = _buildCompositeLayout(
+                typeDie.typeRef,
+                dies,
+                childrenMap,
+                typeCache,
+                depth + 1,
+                budget,
+                state
+            );
+            if (nested && typeDie.tag === DW_TAG_typedef && typeDie.name) {
+                layout = { ...nested, typeName: typeDie.name };
+            } else {
+                layout = nested;
             }
+        } else if (typeDie.tag === DW_TAG_structure_type || typeDie.tag === DW_TAG_union_type) {
+            const kind = typeDie.tag === DW_TAG_structure_type ? "struct" : "union";
+            const nm = typeDie.name || "";
+            const members = _collectMembers(typeRef, dies, childrenMap, typeCache, depth, budget);
+            // 递归解析嵌套复合成员的布局
+            for (const m of members) {
+                if (m.memberTypeRef !== undefined) {
+                    const nested = _buildCompositeLayout(
+                        m.memberTypeRef,
+                        dies,
+                        childrenMap,
+                        typeCache,
+                        depth + 1,
+                        budget,
+                        state
+                    );
+                    if (nested) m.compositeLayout = nested;
+                    delete m.memberTypeRef;
+                }
+            }
+            layout = { kind, typeName: nm ? kind + " " + nm : kind, byteSize: typeDie.byteSize || 0, members };
+        } else if (typeDie.tag === DW_TAG_array_type) {
+            layout = _buildArrayLayout(typeRef, dies, childrenMap, typeCache, depth, budget, state);
         }
-        return { kind, typeName: nm ? kind + " " + nm : kind, byteSize: typeDie.byteSize || 0, members };
+    } finally {
+        state.active.delete(typeRef);
     }
-    if (typeDie.tag === DW_TAG_array_type) {
-        return _buildArrayLayout(typeRef, dies, childrenMap, typeCache, depth, budget);
+    if (layout) {
+        const cost = budget.nodes - startCount + 1;
+        state.cache.set(typeRef, { layout, cost });
+        state.cachedNodes += cost;
+        while (state.cache.size > 64 || state.cachedNodes > 65536) {
+            const oldest = state.cache.keys().next().value;
+            state.cachedNodes -= state.cache.get(oldest).cost;
+            state.cache.delete(oldest);
+        }
     }
-    return null;
+    return layout || null;
 }
-// Count both layout visits and members across all variables, including repeated types.
+// Count layout visits and members for one requested root type.
 // Reject incomplete layouts rather than presenting truncated data as writable members.
-const MAX_COMPOSITE_NODES = 2048;
-function consumeCompositeBudget(budget) {
-    if (++budget.nodes > MAX_COMPOSITE_NODES)
+const MAX_COMPOSITE_NODES = 16384;
+function consumeCompositeBudget(budget, amount = 1) {
+    if ((budget.nodes += amount) > MAX_COMPOSITE_NODES)
         throw Object.assign(new Error("DWARF composite expansion budget exceeded"), {
             code: "DWARF_BUDGET_EXCEEDED"
         });
 }
-function buildCompositeLayouts(parsed) {
-    const budget = { nodes: 0 };
+function createCompositeLayoutResolver(parsed) {
     const { dies, childrenMap, variables } = parsed;
     const typeCache = new Map();
+    const byName = new Map();
+    for (const variable of variables)
+        if (variable.name && !byName.has(variable.name)) byName.set(variable.name, variable);
+    const state = { cache: new Map(), cachedNodes: 0, active: new Set() };
+    const failedTypes = new Map();
+    return (name) => {
+        const variable = byName.get(name);
+        if (!variable || variable.typeRef === undefined) return null;
+        if (failedTypes.has(variable.typeRef)) throw failedTypes.get(variable.typeRef);
+        const info = _resolveTypeInfo(variable.typeRef, dies, childrenMap, typeCache);
+        if (!info || !["struct", "union", "array"].includes(info.kind)) return null;
+        try {
+            return _buildCompositeLayout(variable.typeRef, dies, childrenMap, typeCache, 0, { nodes: 0 }, state);
+        } catch (error) {
+            failedTypes.set(variable.typeRef, error);
+            throw error;
+        }
+    };
+}
+function buildCompositeLayouts(parsed, onError) {
+    const resolve = createCompositeLayoutResolver(parsed);
     const result = new Map();
-    for (const v of variables) {
-        const name = v.name || "";
-        if (!name || result.has(name)) continue;
-        if (v.typeRef === undefined) continue;
-        const typeInfo = _resolveTypeInfo(v.typeRef, dies, childrenMap, typeCache);
-        if (typeInfo.kind !== "struct" && typeInfo.kind !== "union" && typeInfo.kind !== "array") continue;
-        const layout = _buildCompositeLayout(v.typeRef, dies, childrenMap, typeCache, 0, budget);
-        if (layout) {
-            // 数组类型名补充：使用变量名关联的元素类型
-            if (layout.kind === "array" && layout.elementType) {
-                layout.typeName = (layout.elementType.typeName || "") + "[]";
-            }
-            result.set(name, layout);
+    const seen = new Set();
+    for (const variable of parsed.variables) {
+        if (!variable.name || seen.has(variable.name)) continue;
+        seen.add(variable.name);
+        try {
+            const layout = resolve(variable.name);
+            if (layout) result.set(variable.name, layout);
+        } catch (error) {
+            if (onError) onError(variable.name, error);
+            else throw error;
         }
     }
     return result;
 }
-module.exports = { encodingToWatchType, buildVariableTypes, buildCompositeLayouts };
+module.exports = { encodingToWatchType, buildVariableTypes, buildCompositeLayouts, createCompositeLayoutResolver };

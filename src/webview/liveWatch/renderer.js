@@ -42,7 +42,13 @@ var watch = [],
     lastDraw = 0;
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
-    impWarnings = [];
+    impWarnings = [],
+    impVersion = "",
+    impExpanded = Object.create(null),
+    impLayoutPending = new Set(),
+    impSymbolByName = new Map(),
+    impIndexByName = new Map(),
+    impTypeChunks = 0;
 var saved = api && api.getState ? api.getState() : null,
     sideWidth = (saved && Number(saved.sideWidth)) || 260,
     sideCollapsed = !!(saved && saved.sideCollapsed),
@@ -758,14 +764,16 @@ function renderImport() {
     var matched = allSymbols.filter(function (s) {
             return !f || s.name.toLowerCase().indexOf(f) >= 0;
         }),
-        shown = matched.slice(0, 1000);
+        shown = matched.slice(0, 100),
+        leafRows = 0;
     shown.forEach(function (s) {
-        var gi = allSymbols.indexOf(s);
-        if (s.isComposite && s.compositeLayout) {
+        var gi = impIndexByName.get(s.name);
+        if (s.isComposite) {
             var row = document.createElement("div");
             row.className = "imp-row";
             var cb = document.createElement("input");
             cb.type = "checkbox";
+            cb.disabled = !s.compositeLayout;
             cb.dataset.idx = String(gi);
             cb.title = t("lw.compositeExpandable");
             var nmWrap = document.createElement("span");
@@ -773,6 +781,7 @@ function renderImport() {
             var arrow = document.createElement("span");
             arrow.className = "imp-arrow";
             arrow.textContent = "\u25B6";
+            if (impExpanded[s.name]) arrow.classList.add("open");
             var nm = document.createElement("span");
             nm.className = "imp-name";
             nm.textContent = "\u25c7 " + s.name;
@@ -790,34 +799,73 @@ function renderImport() {
             box.appendChild(row);
             var kids = document.createElement("div");
             kids.className = "imp-children";
-            collectLeaves(s.compositeLayout, s.name, s.address).forEach(function (lf) {
-                var lr = document.createElement("label");
-                lr.className = "imp-row leaf";
-                var lcb = document.createElement("input");
-                lcb.type = "checkbox";
-                lcb.dataset.leafPath = lf.path;
-                lcb.dataset.leafAddr = String(lf.address);
-                lcb.dataset.leafType = lf.type;
-                var ln = document.createElement("span");
-                ln.className = "imp-leaf-name";
-                ln.textContent = lf.label;
-                var lty = document.createElement("span");
-                lty.className = "ty";
-                lty.textContent = lf.type;
-                var la = document.createElement("span");
-                la.className = "address";
-                la.textContent = fmtAddr(lf.address);
-                var lz = document.createElement("span");
-                lz.className = "size";
-                lr.append(lcb, ln, lty, la, lz);
-                kids.appendChild(lr);
-            });
+            if (impExpanded[s.name]) kids.classList.add("open");
+            var ownLeafRows = 0;
+            var populate = function () {
+                leafRows -= ownLeafRows;
+                ownLeafRows = 0;
+                kids.textContent = "";
+                if (!s.compositeLayout) {
+                    kids.textContent = s.layoutError || t("lw.compositeNoLayout");
+                    return;
+                }
+                var leaves = collectLeaves(s.compositeLayout, s.name, s.address);
+                var shownLeaves = Math.min(leaves.length, 200 - shown.length - leafRows);
+                leaves.slice(0, shownLeaves).forEach(function (lf) {
+                    var lr = document.createElement("label");
+                    lr.className = "imp-row leaf";
+                    var lcb = document.createElement("input");
+                    lcb.type = "checkbox";
+                    lcb.dataset.leafPath = lf.path;
+                    lcb.dataset.leafAddr = String(lf.address);
+                    lcb.dataset.leafType = lf.type;
+                    var ln = document.createElement("span");
+                    ln.className = "imp-leaf-name";
+                    ln.textContent = lf.label;
+                    var lty = document.createElement("span");
+                    lty.className = "ty";
+                    lty.textContent = lf.type;
+                    var la = document.createElement("span");
+                    la.className = "address";
+                    la.textContent = fmtAddr(lf.address);
+                    var lz = document.createElement("span");
+                    lz.className = "size";
+                    lr.append(lcb, ln, lty, la, lz);
+                    kids.appendChild(lr);
+                });
+                ownLeafRows = shownLeaves;
+                leafRows += shownLeaves;
+                if (leaves.length > shownLeaves) {
+                    var note = document.createElement("div");
+                    note.textContent = t("lw.arrayMore", { n: leaves.length - shownLeaves });
+                    kids.appendChild(note);
+                }
+            };
+            if (impExpanded[s.name]) {
+                populate();
+                if (!s.compositeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
+                    impLayoutPending.add(s.name);
+                    post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
+                }
+            }
             box.appendChild(kids);
             var toggle = function (e) {
                 e.preventDefault();
                 e.stopPropagation();
                 var open = kids.classList.toggle("open");
                 arrow.classList.toggle("open", open);
+                impExpanded[s.name] = open;
+                if (open) {
+                    populate();
+                    if (!s.compositeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
+                        impLayoutPending.add(s.name);
+                        post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
+                    }
+                } else {
+                    leafRows -= ownLeafRows;
+                    ownLeafRows = 0;
+                    kids.textContent = "";
+                }
             };
             arrow.onclick = toggle;
             nm.onclick = toggle;
@@ -850,6 +898,7 @@ function renderImport() {
 }
 function showImport(symbols, warnings) {
     allSymbols = symbols || [];
+    impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
     impWarnings = warnings || [];
     openImport();
 }
@@ -1911,6 +1960,8 @@ window.EmberProbeMessages.connect(window, {
             return cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
         });
         allSymbols = m.symbols || [];
+        impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
+        impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
         impWarnings = m.warnings || [];
         if (wantImportOpen) {
             wantImportOpen = false;
@@ -1928,6 +1979,62 @@ window.EmberProbeMessages.connect(window, {
             }
             renderAutocomplete();
         }
+    },
+    variablesListReset: function (m) {
+        impVersion = m.version || "";
+        allSymbols = [];
+        impSymbolByName.clear();
+        impIndexByName.clear();
+        impTypeChunks = 0;
+        impLayoutPending.clear();
+        impWarnings = m.warnings || [];
+        if (!$("overlay").classList.contains("hidden")) renderImport();
+    },
+    variablesListChunk: function (m) {
+        if (m.version !== impVersion) return;
+        const symbols = m.symbols || [];
+        for (const symbol of symbols) {
+            impIndexByName.set(symbol.name, allSymbols.length);
+            allSymbols.push(symbol);
+            impSymbolByName.set(symbol.name, symbol);
+        }
+        if (
+            !$("overlay").classList.contains("hidden") &&
+            (allSymbols.length <= 1000 || allSymbols.length % 10000 < symbols.length)
+        )
+            renderImport();
+    },
+    variablesListDone: function (m) {
+        if (m.version && m.version !== impVersion) return;
+        impWarnings = m.warnings || impWarnings;
+        if (wantImportOpen) {
+            wantImportOpen = false;
+            openImport();
+        } else if (!$("overlay").classList.contains("hidden")) renderImport();
+    },
+    variableTypes: function (m) {
+        if (m.version !== impVersion) return;
+        for (const update of m.symbols || []) {
+            const symbol = impSymbolByName.get(update.name);
+            if (symbol) Object.assign(symbol, update);
+        }
+        if (++impTypeChunks % 10 === 0 && !$("overlay").classList.contains("hidden")) renderImport();
+    },
+    variableTypesDone: function (m) {
+        if (m.version === impVersion && !$("overlay").classList.contains("hidden")) renderImport();
+    },
+    compositeLayoutResult: function (m) {
+        if (m.version !== impVersion) return;
+        impLayoutPending.delete(m.name);
+        const symbol = impSymbolByName.get(m.name);
+        if (!symbol) return;
+        if (m.layout) {
+            symbol.compositeLayout = m.layout;
+            symbol.layoutError = "";
+        } else {
+            symbol.layoutError = m.error || t("lw.compositeNoLayout");
+        }
+        if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     addResolved: function (m) {
         addSymbol(m.symbol);
@@ -1969,7 +2076,7 @@ $("run").onclick = function () {
 };
 $("import").onclick = function () {
     wantImportOpen = true;
-    post({ type: "importVariables" });
+    post({ type: "importVariables", version: impVersion });
 };
 $("addBtn").onclick = function () {
     var n = $("addName").value.trim();
@@ -1984,7 +2091,7 @@ $("addBtn").onclick = function () {
     if (d) d.classList.remove("open");
 };
 $("addName").oninput = function () {
-    if (!allSymbols.length) post({ type: "importVariables" });
+    if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
     renderAutocomplete();
 };
 $("addName").onblur = function () {

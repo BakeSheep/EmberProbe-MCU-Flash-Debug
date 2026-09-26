@@ -101,3 +101,7 @@ esbuild.js 单文件 VSIX 打包构建配置
 ```
 
 `runToEntryPoint` 设为空字符串可保持暂停；`sourceFileMap` 将编译时源码目录映射到本地目录。支持源码、函数及条件断点，不支持日志/命中次数/数据断点、RTOS、SWO/RTT 和反汇编视图。旧 Cortex-Debug launch.json 不自动修改。
+
+### XPeripherals 外设视图
+
+侧栏中的 **外设寄存器** 与 MCU 配置、芯片信息和实时读写并列。在“其他配置”中选择现有 SVD 或下载官方 SVD 后，外设视图自动可用，可浏览外设 → 寄存器 → 位域树；暂停调试目标后可读取、刷新并切换 HEX/DEC/BIN 数值格式。点击编辑图标可在侧栏中输入数值或用 ±1 按钮直接写入；UI 写入仍执行 SVD 校验、会话检查和回读验证，Agent Skill 写入仍需一次性许可。无需安装 Cortex-Debug 或独立外设视图扩展。SVD 路径也会作为 `svdPath` 传给兼容的调试视图。

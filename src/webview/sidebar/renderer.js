@@ -27,6 +27,10 @@ document.getElementById("probeDiagnosticCopy").addEventListener("click", () => {
 let sideWatch = [],
     writeList = [],
     available = [],
+    availableByName = new Map(),
+    availableVersion = "",
+    availableLayoutPending = new Set(),
+    availableTypeChunks = 0,
     latest = Object.create(null),
     latestText = Object.create(null),
     liveRunning = false,
@@ -84,6 +88,7 @@ const chipRead = document.getElementById("chipRead"),
     jlinkDriverChoice = document.getElementById("jlinkDriverChoice"),
     jlinkDriverBusy = document.getElementById("jlinkDriverBusy"),
     otherConfig = document.getElementById("otherConfig");
+const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
@@ -165,6 +170,7 @@ function rerenderDynamic() {
     openocdStatus(lastOpenocd);
     chipStatus(lastChip);
     svdStatus(lastSvd);
+    peripheralView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
     if (lastFeedbackPrompt) renderFeedbackPrompt(lastFeedbackPrompt);
@@ -326,7 +332,9 @@ function renderAvailable() {
     }
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     const selected = new Set(sideWatch.map((w) => w.name));
-    const list = available.filter((s) => !query || s.name.toLowerCase().includes(query));
+    const matching = available.filter((s) => !query || s.name.toLowerCase().includes(query));
+    const list = matching.slice(0, 100);
+    let leafRows = 0;
     if (!list.length) {
         const e = document.createElement("div");
         e.className = "empty";
@@ -335,7 +343,7 @@ function renderAvailable() {
         return;
     }
     list.forEach((sym) => {
-        if (sym.isComposite && sym.compositeLayout) {
+        if (sym.isComposite) {
             const row = document.createElement("div");
             row.className = "available-row comp";
             const wrap = document.createElement("span");
@@ -358,7 +366,9 @@ function renderAvailable() {
             };
             wrap.append(
                 arrow,
-                mkWatchBtn(sym.name, false, "", () => sbToggle(compEntry)),
+                mkWatchBtn(sym.name, !sym.compositeLayout, sym.unsupportedReason || t("lw.compositeNoLayout"), () =>
+                    sbToggle(compEntry)
+                ),
                 nm
             );
             const ty = document.createElement("span");
@@ -368,25 +378,49 @@ function renderAvailable() {
             availableBox.appendChild(row);
             const kids = document.createElement("div");
             kids.className = "av-children" + (avExpanded[sym.name] ? " open" : "");
-            sbCollectLeaves(sym.compositeLayout, sym.name, sym.address).forEach((lf) => {
-                const lb = document.createElement("div");
-                lb.className = "available-row leaf";
-                const cell = document.createElement("span");
-                cell.className = "av-name-cell";
-                const leafEntry = { name: lf.path, address: lf.address, size: LEAF_W[lf.type] || 4, type: lf.type };
-                cell.appendChild(mkWriteBtn(leafEntry));
-                cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
-                const ln = document.createElement("span");
-                ln.className = "av-leaf-name";
-                ln.textContent = lf.label;
-                cell.appendChild(ln);
-                const lty = document.createElement("span");
-                lty.className = "available-type";
-                lty.textContent = lf.type;
-                lb.append(cell, lty);
-                lb.onclick = () => sbToggle(leafEntry);
-                kids.appendChild(lb);
-            });
+            let ownLeafRows = 0;
+            const populate = () => {
+                leafRows -= ownLeafRows;
+                ownLeafRows = 0;
+                kids.textContent = "";
+                if (!sym.compositeLayout) {
+                    const note = document.createElement("div");
+                    note.className = "sb-note";
+                    note.textContent = sym.layoutError || t("lw.compositeNoLayout");
+                    kids.appendChild(note);
+                    return;
+                }
+                const leaves = sbCollectLeaves(sym.compositeLayout, sym.name, sym.address);
+                const shownLeaves = Math.min(leaves.length, 200 - list.length - leafRows);
+                leaves.slice(0, shownLeaves).forEach((lf) => {
+                    const lb = document.createElement("div");
+                    lb.className = "available-row leaf";
+                    const cell = document.createElement("span");
+                    cell.className = "av-name-cell";
+                    const leafEntry = { name: lf.path, address: lf.address, size: LEAF_W[lf.type] || 4, type: lf.type };
+                    cell.appendChild(mkWriteBtn(leafEntry));
+                    cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
+                    const ln = document.createElement("span");
+                    ln.className = "av-leaf-name";
+                    ln.textContent = lf.label;
+                    cell.appendChild(ln);
+                    const lty = document.createElement("span");
+                    lty.className = "available-type";
+                    lty.textContent = lf.type;
+                    lb.append(cell, lty);
+                    lb.onclick = () => sbToggle(leafEntry);
+                    kids.appendChild(lb);
+                });
+                ownLeafRows = shownLeaves;
+                leafRows += shownLeaves;
+                if (leaves.length > shownLeaves) {
+                    const note = document.createElement("div");
+                    note.className = "sb-note";
+                    note.textContent = t("lw.arrayMore", { n: leaves.length - shownLeaves });
+                    kids.appendChild(note);
+                }
+            };
+            if (avExpanded[sym.name]) populate();
             availableBox.appendChild(kids);
             const toggle = (e) => {
                 e.preventDefault();
@@ -394,9 +428,21 @@ function renderAvailable() {
                 avExpanded[sym.name] = !avExpanded[sym.name];
                 arrow.classList.toggle("open", avExpanded[sym.name]);
                 kids.classList.toggle("open", avExpanded[sym.name]);
+                if (avExpanded[sym.name]) {
+                    populate();
+                    if (!sym.compositeLayout && !sym.layoutError && !availableLayoutPending.has(sym.name)) {
+                        availableLayoutPending.add(sym.name);
+                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: availableVersion });
+                    }
+                } else {
+                    leafRows -= ownLeafRows;
+                    ownLeafRows = 0;
+                    kids.textContent = "";
+                }
             };
             arrow.onclick = toggle;
-            nm.onclick = () =>
+            nm.onclick = (event) => {
+                if (!sym.compositeLayout) return toggle(event);
                 sbToggle({
                     name: sym.name,
                     address: Number(sym.address) || 0,
@@ -405,6 +451,7 @@ function renderAvailable() {
                     isComposite: true,
                     compositeLayout: sym.compositeLayout
                 });
+            };
         } else {
             const noLayout = sym.isComposite && !sym.compositeLayout;
             const b = document.createElement("div");
@@ -447,6 +494,12 @@ function renderAvailable() {
             availableBox.appendChild(b);
         }
     });
+    if (matching.length > list.length) {
+        const note = document.createElement("div");
+        note.className = "sb-note";
+        note.textContent = t("lw.showingFirst", { n: list.length });
+        availableBox.appendChild(note);
+    }
 }
 function sbIsComposite(it) {
     return !!(it && it.isComposite && it.compositeLayout);
@@ -1168,6 +1221,7 @@ function svdStatus(m) {
                 : t("svd.downloadOfficial");
         svdDownload.classList.toggle("cancel", cancellable);
     }
+    peripheralView?.onSvdStatus(m);
 }
 
 function renderChip(info) {
@@ -1421,9 +1475,59 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariables: function (m) {
         available = (m.symbols || []).slice();
+        availableByName = new Map(available.map((symbol) => [symbol.name, symbol]));
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
+        renderAvailable();
+    },
+    availableVariablesReset: function (m) {
+        availableVersion = m.version || "";
+        available = [];
+        availableByName.clear();
+        availableTypeChunks = 0;
+        availableLayoutPending.clear();
+        variableError = "";
+        renderAvailable();
+    },
+    availableVariablesChunk: function (m) {
+        if (m.version !== availableVersion) return;
+        const symbols = m.symbols || [];
+        available.push(...symbols);
+        for (const symbol of symbols) availableByName.set(symbol.name, symbol);
+        if (available.length <= 1000 || available.length % 10000 < symbols.length) renderAvailable();
+    },
+    availableVariablesDone: function (m) {
+        if (m.version && m.version !== availableVersion) return;
+        variableErrorKey = m.errorKey || "";
+        variableErrorParams = m.params || null;
+        variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
+        renderAvailable();
+    },
+    availableVariableTypes: function (m) {
+        if (m.version !== availableVersion) return;
+        for (const update of m.symbols || []) {
+            const symbol = availableByName.get(update.name);
+            if (symbol) Object.assign(symbol, update);
+        }
+        if (++availableTypeChunks % 10 === 0) renderAvailable();
+    },
+    availableTypesDone: function (m) {
+        if (m.version === availableVersion) renderAvailable();
+    },
+    compositeLayoutResult: function (m) {
+        if (m.version !== availableVersion) return;
+        availableLayoutPending.delete(m.name);
+        const symbol = availableByName.get(m.name);
+        if (!symbol) return;
+        if (m.layout) {
+            symbol.compositeLayout = m.layout;
+            symbol.unsupportedReason = "";
+            symbol.layoutError = "";
+        } else {
+            symbol.layoutError = m.error || t("lw.compositeNoLayout");
+            symbol.unsupportedReason = symbol.layoutError;
+        }
         renderAvailable();
     },
     liveSample: function (m) {
@@ -1445,6 +1549,24 @@ window.EmberProbeMessages.connect(window, {
     },
     svdStatus: function (m) {
         svdStatus(m);
+    },
+    peripheralCatalog: function (m) {
+        peripheralView?.onCatalog(m);
+    },
+    peripheralRegisters: function (m) {
+        peripheralView?.onRegisters(m);
+    },
+    peripheralReadResult: function (m) {
+        peripheralView?.onRead(m);
+    },
+    peripheralDebugStatus: function (m) {
+        peripheralView?.onDebug(m);
+    },
+    peripheralWriteResult: function (m) {
+        peripheralView?.onWrite(m);
+    },
+    peripheralError: function (m) {
+        peripheralView?.onError(m);
     },
     liveError: function (m) {
         showProbeDiagnostic(m);

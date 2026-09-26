@@ -101,3 +101,7 @@ Example launch.json configuration (use request attach for attachment):
 ```
 
 Set `runToEntryPoint` to an empty string to stay halted; `sourceFileMap` maps build-time source prefixes to local paths. Source, function, and conditional breakpoints are supported. Hit counts, logpoints, data breakpoints, RTOS, SWO/RTT, and disassembly views are not included. Existing Cortex-Debug launch.json entries are unchanged.
+
+### XPeripherals view
+
+The **XPERIPHERALS** sidebar section sits beside MCU Configuration, Chip Info, and Live Read/Write. Choose an existing SVD or download an official one under **Other Configuration**; the peripheral view then becomes available automatically. Browse the peripheral → register → field tree; pause the target to read or refresh values and switch between HEX, DEC, and BIN. Edit register and field values inline or use the ±1 buttons to write directly. UI writes retain SVD validation, session checks, and read-back verification; Agent Skill writes still require one-time permission. Neither Cortex-Debug nor a separate viewer extension is required. The SVD path is also passed as `svdPath` to compatible debug viewers.

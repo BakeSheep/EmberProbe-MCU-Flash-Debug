@@ -55,6 +55,8 @@ const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
+const { PeripheralViewService } = require("./services/peripheralViewService");
+const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegration");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ensureDebugTools } = require("./services/cortexDebugPreflight");
@@ -140,7 +142,10 @@ class MainViewProvider {
             getReadPlan: () => this._activeReadPlan(),
             getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
-            onStatus: (status) => this._postConsumerStatuses(status, !!status.error),
+            onStatus: (status) => {
+                this._postConsumerStatuses(status, !!status.error);
+                this._postPeripheralDebugStatus();
+            },
             onError: (error) =>
                 this._postLive({
                     type: "liveError",
@@ -237,6 +242,8 @@ class MainViewProvider {
             crypto,
             elfSymbols,
             dwarf,
+            workerPath: path.join(__dirname, "elfWorker.js"),
+            onChange: (phase, result, entries) => this._onElfChange(phase, result, entries),
             cleanPath: cleanWindowsPath,
             t: (key, params) => this._t(key, params)
         });
@@ -284,6 +291,10 @@ class MainViewProvider {
             loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
             debugBridge: this._debugBridge,
             authorization: this._peripheralWriteAuthorization
+        });
+        this._peripheralViewService = new PeripheralViewService({
+            peripherals: this._svdPeripheralService,
+            debugBridge: this._debugBridge
         });
         this._debugControlService = new DebugControlService({
             vscode,
@@ -415,6 +426,43 @@ class MainViewProvider {
         }
         const folder = vscode.workspace.workspaceFolders?.[0];
         return { folder, cwd: folder?.uri.fsPath };
+    }
+    _postPeripheralDebugStatus(post = (message) => this._webviewView?.webview.postMessage(message)) {
+        if (!this._debugBridge) return;
+        const status = this._debugBridge.agentStatus();
+        post({
+            type: "peripheralDebugStatus",
+            state: status.state,
+            epoch: status.epoch,
+            canRead: status.paused && status.capabilities.read === true,
+            canWrite: status.paused && status.capabilities.write === true
+        });
+    }
+    async _handlePeripheralViewRequest(webview, message) {
+        const post = (payload) => webview.postMessage(payload);
+        const operation = message.type;
+        try {
+            if (!(await this._svdManager.currentPath())) throw new Error(this._t("peripheral.configureSvdFirst"));
+            if (operation === "peripheralCatalogRequest") {
+                post({ type: "peripheralCatalog", ...(await this._peripheralViewService.catalog()) });
+            } else if (operation === "peripheralRegistersRequest") {
+                post({ type: "peripheralRegisters", ...(await this._peripheralViewService.registers(message.name)) });
+            } else if (operation === "peripheralReadRequest") {
+                post({ type: "peripheralReadResult", ...(await this._peripheralViewService.read(message.targets)) });
+            } else if (operation === "peripheralWriteRequest") {
+                if (typeof message.target !== "string" || !message.target.trim() || message.target.length > 256)
+                    throw new Error("Invalid peripheral target");
+                if (typeof message.value !== "string" || !message.value.trim() || message.value.length > 128)
+                    throw new Error("Invalid peripheral value");
+                this._assertWriteSessionCurrent(this._debugBridge);
+                const result = await this._svdPeripheralService.writeFromUi({
+                    writes: [{ target: message.target, value: message.value.trim() }]
+                });
+                post({ type: "peripheralWriteResult", target: message.target, result });
+            }
+        } catch (error) {
+            post({ type: "peripheralError", operation, code: error.code, message: error.message || String(error) });
+        }
     }
     _postOpenOcdStatus(status) {
         this._openOcdStatusService.post(status);
@@ -618,17 +666,20 @@ class MainViewProvider {
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
-                const debugConfig = {
-                    ...configuration,
-                    type: "emberprobe",
-                    name: configuration?.name || this._t("msg.debugConfigName"),
-                    request: configuration?.request || "launch",
-                    cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
-                    executable: elfPath,
-                    gdbTarget: managed.gdbTarget,
-                    runToEntryPoint: configuration?.runToEntryPoint ?? "main",
-                    __emberprobeManagedToken: this._managedDebugToken
-                };
+                const debugConfig = addPeripheralViewerSvd(
+                    {
+                        ...configuration,
+                        type: "emberprobe",
+                        name: configuration?.name || this._t("msg.debugConfigName"),
+                        request: configuration?.request || "launch",
+                        cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
+                        executable: elfPath,
+                        gdbTarget: managed.gdbTarget,
+                        runToEntryPoint: configuration?.runToEntryPoint ?? "main",
+                        __emberprobeManagedToken: this._managedDebugToken
+                    },
+                    svdPath
+                );
                 if (svdPath) debugConfig.svdFile = svdPath;
                 Object.assign(debugConfig, cortexTools);
                 const startupGate = this._armDebugStartupWatchdog();
@@ -940,7 +991,7 @@ class MainViewProvider {
             throw Object.assign(new Error("destination must be sidebar, chart, or both"), {
                 code: "INVALID_DESTINATION"
             });
-        this._elfService.invalidate();
+        await this._prepareRequestedLayouts(names);
         const symbols = this.readElfSymbols().symbols;
         const byName = new Map(symbols.map((symbol) => [symbol.name, symbol]));
         const resolved = [];
@@ -1033,7 +1084,6 @@ class MainViewProvider {
                   }
         );
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
-        this._elfService.invalidate();
         const elfResult = this.readElfSymbols();
         const byName = new Map(elfResult.symbols.map((s) => [s.name, s]));
         const folded = new Map();
@@ -1160,6 +1210,7 @@ class MainViewProvider {
         });
     }
     async _runAgentSamples(params, count, intervalMs, syncStatus) {
+        await this._prepareRequestedLayouts(params.variables);
         const { elfResult, plan, compositePlan } = this._agentVariablePlan(params);
         // 合并标量与复合变量的实际读取项：复合变量按基址整体读一次（同名去重），
         // 解码时再按各路径导航；避免同一结构体多次重复读取。
@@ -1878,7 +1929,8 @@ class MainViewProvider {
     // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
-        const plan = this._agentWritePlan(params.values);
+        await this._prepareRequestedLayouts(params.values);
+        const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
         const authorization = this._writeAuthorization.authorize(plan, {
             confirmationId: params.confirmationId,
@@ -1912,6 +1964,7 @@ class MainViewProvider {
         if (!session) {
             throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
         }
+        await this._prepareRequestedLayouts([{ name }]);
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
         plan.connection = this._sessionWriteConnection(session);
         if (dapSession)
@@ -1928,6 +1981,7 @@ class MainViewProvider {
         const action = String(params?.action || "status");
         if (action === "status") {
             try {
+                await this._elfService.ready();
                 return this._writeAuthorization.status({
                     elfResult: this.readElfSymbols(),
                     connection: await this._prepareWriteConnection()
@@ -1951,6 +2005,7 @@ class MainViewProvider {
         if (this._liveWatchRunning) busy("chip.busyLive", "PROBE_BUSY");
         if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
         if (this._debugStarting || vscode.debug.activeDebugSession) busy("chip.busyDebug", "PROBE_BUSY");
+        const elfLoad = this._elfService.load().catch(() => null);
         const debuggerCfg =
             this._context.workspaceState.get(CACHE_KEYS.debugger) ||
             (await this._probeConnectionService.resolveProbe());
@@ -1963,6 +2018,7 @@ class MainViewProvider {
             );
             if (!executable) busy("chip.notReady", "OPENOCD_NOT_READY");
             const { cwd } = this._commandContext();
+            await elfLoad;
             return await this._faultService.read(
                 {
                     executable,
@@ -1983,8 +2039,8 @@ class MainViewProvider {
         }
     }
     // 纯静态分析当前 ELF 的 Flash/RAM 占用与最大符号，不占探针
-    _analyzeElf(params) {
-        const elfResult = this.readElfSymbols();
+    async _analyzeElf(params) {
+        const elfResult = await this._elfService.load();
         let buffer;
         try {
             buffer = fs.readFileSync(elfResult.elf.path);
@@ -2226,15 +2282,53 @@ class MainViewProvider {
                         break;
                     }
                     case "importVariables": {
-                        const result = this.readElfSymbols();
-                        post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
+                        const wasLoading =
+                            !!this._elfService.resolveSymbols || !this._elfVersion(this._elfService.cache);
+                        const result = await this._elfService.load();
+                        if (wasLoading || message.version === this._elfVersion(result))
+                            post({
+                                type: "variablesListDone",
+                                version: this._elfVersion(result),
+                                warnings: result.warnings
+                            });
+                        else this._sendElfSnapshot(post, "variablesList");
                         break;
                     }
                     case "resolveVariable": {
-                        const { symbols } = this.readElfSymbols();
-                        const found = symbols.find((s) => s.name === message.name);
-                        if (found) post({ type: "addResolved", symbol: found });
-                        else post({ type: "liveError", key: "live.varNotFound", params: { name: message.name } });
+                        const { symbols } = await this._elfService.load();
+                        const found =
+                            this._elfService.symbolByName.get(message.name) ||
+                            symbols.find((s) => s.name === message.name);
+                        if (found) {
+                            if (found.isComposite) {
+                                try {
+                                    await this._elfService.layout(found.name);
+                                } catch (error) {
+                                    post({ type: "liveError", message: error.message });
+                                    break;
+                                }
+                            }
+                            post({ type: "addResolved", symbol: found });
+                        } else post({ type: "liveError", key: "live.varNotFound", params: { name: message.name } });
+                        break;
+                    }
+                    case "resolveCompositeLayout": {
+                        try {
+                            const layout = await this._resolveElfLayout(message.name, message.version);
+                            post({
+                                type: "compositeLayoutResult",
+                                name: message.name,
+                                version: message.version,
+                                layout
+                            });
+                        } catch (error) {
+                            post({
+                                type: "compositeLayoutResult",
+                                name: message.name,
+                                version: message.version,
+                                error: error.message
+                            });
+                        }
                         break;
                     }
                     case "saveWatch":
@@ -2359,7 +2453,8 @@ class MainViewProvider {
         this._invalidateElfState();
         try {
             if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
-                const result = this.readElfSymbols();
+                const result = await this._elfService.ready();
+                await this._hydrateSelectedLayouts(result);
                 await this._rebindWatchLists(result.symbols);
             }
         } finally {
@@ -2386,6 +2481,105 @@ class MainViewProvider {
     }
     readElfSymbols() {
         return this._elfService.read();
+    }
+    async _prepareRequestedLayouts(requests) {
+        const result = await this._elfService.ready();
+        const byName = this._elfService.symbolByName || new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
+        for (const request of Array.isArray(requests) ? requests : []) {
+            const name = typeof request === "string" ? request : request?.name;
+            const parsed = elfSymbols.parseMemberPath(name);
+            const base = parsed ? parsed.base : name;
+            const symbol = byName.get(base);
+            if (!symbol?.isComposite || symbol.compositeLayout) continue;
+            await this._elfService.layout(base);
+        }
+        return result;
+    }
+    _elfVersion(result) {
+        return result?.elf?.sha256 || "";
+    }
+    _sendElfSnapshot(post, listType) {
+        const result = this._elfService?.cache;
+        if (!result?.elf) return;
+        const version = this._elfVersion(result);
+        post({ type: `${listType}Reset`, version, warnings: result.warnings });
+        for (let i = 0; i < result.symbols.length; i += 1000)
+            post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
+        post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: result.warnings });
+    }
+    _onElfChange(phase, result, entries) {
+        const version = this._elfVersion(result);
+        const sidebarPost = (message) => this._webviewView?.webview.postMessage(message);
+        const graphPosts = Array.from(this._livePanels.values())
+            .filter((entry) => entry.ready)
+            .map((entry) => entry.post);
+        if (phase === "metadata") {
+            sidebarPost({ type: "availableVariablesReset", version, warnings: result.warnings });
+            for (const post of graphPosts) post({ type: "variablesListReset", version, warnings: result.warnings });
+        } else if (phase === "symbols") {
+            sidebarPost({ type: "availableVariablesChunk", version, symbols: entries });
+            for (const post of graphPosts) post({ type: "variablesListChunk", version, symbols: entries });
+        } else if (phase === "symbolsDone") {
+            sidebarPost({ type: "availableVariablesDone", version, total: result.symbols.length });
+            for (const post of graphPosts) post({ type: "variablesListDone", version, total: result.symbols.length });
+        } else if (phase === "types") {
+            const symbols = entries.map((symbol) => ({
+                name: symbol.name,
+                typeName: symbol.typeName,
+                watchType: symbol.watchType,
+                isComposite: symbol.isComposite,
+                hasDwarfWriteType: symbol.hasDwarfWriteType
+            }));
+            sidebarPost({ type: "availableVariableTypes", version, symbols });
+            for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
+        } else if (phase === "dwarfReady") {
+            sidebarPost({ type: "availableTypesDone", version });
+            for (const post of graphPosts) post({ type: "variableTypesDone", version });
+            this._elfRebindPromise = this._hydrateSelectedLayouts(result)
+                .then(() => this._rebindWatchLists(result.symbols))
+                .then(() => {
+                    this._syncSidebarTarget(sidebarPost, true);
+                    for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
+                })
+                .catch((error) => console.error("ELF watch list rebind failed:", error));
+            this._elfRebindPromise.then(() => this._refreshSamplingPlan()).catch(() => {});
+        } else if (phase === "failed") {
+            sidebarPost({
+                type: "availableVariablesDone",
+                version,
+                warnings: result.warnings,
+                error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
+            });
+            for (const post of graphPosts) post({ type: "variablesListDone", version, warnings: result.warnings });
+        }
+    }
+    async _hydrateSelectedLayouts(result) {
+        const names = new Set();
+        const keys = [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList, CACHE_KEYS.watchList];
+        for (const entry of this._livePanels.values()) keys.push(entry.watchKey);
+        for (const key of keys) {
+            for (const item of this._context.workspaceState.get(key) || []) {
+                const parsed = elfSymbols.parseMemberPath(item?.name);
+                if (parsed) names.add(parsed.base);
+                else if (item?.name) names.add(item.name);
+            }
+        }
+        const byName = new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
+        for (const name of names) {
+            const symbol = byName.get(name);
+            if (!symbol?.isComposite) continue;
+            try {
+                await this._elfService.layout(name);
+            } catch (error) {
+                result.warnings.push(`${name}: ${error.message}`);
+            }
+        }
+    }
+    async _resolveElfLayout(name, version) {
+        const result = await this._elfService.ready();
+        if (version !== this._elfVersion(result))
+            throw Object.assign(new Error("ELF changed while resolving layout"), { code: "ELF_CHANGED" });
+        return this._elfService.layout(name);
     }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
     _postLive(message) {
@@ -2427,14 +2621,19 @@ class MainViewProvider {
         for (const entry of entries) entry.latestSamples.clear();
         return { entries, rebound };
     }
-    _syncGraphTarget(entry) {
+    _syncGraphTarget(entry, skipElf = false) {
         if (!entry || !entry.ready) return;
         const post = entry.post;
-        try {
-            const result = this.readElfSymbols();
-            post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
-        } catch (error) {
-            post({ type: "variablesList", symbols: [], warnings: [error.message] });
+        if (!skipElf && this._elfService) {
+            this._sendElfSnapshot(post, "variablesList");
+            this._elfService.load().catch((error) => post({ type: "variablesListDone", warnings: [error.message] }));
+        } else if (!skipElf && this.readElfSymbols) {
+            try {
+                const result = this.readElfSymbols();
+                post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
+            } catch (error) {
+                post({ type: "variablesList", symbols: [], warnings: [error.message] });
+            }
         }
         post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
         post({
@@ -2453,20 +2652,19 @@ class MainViewProvider {
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
     }
-    _syncSidebarTarget(post) {
+    _syncSidebarTarget(post, skipElf = false) {
         post({ type: "sidebarWatchList", items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList) });
         post({ type: "sidebarWriteList", items: this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [] });
-        try {
-            const result = this.readElfSymbols();
-            post({ type: "availableVariables", symbols: result.symbols, warnings: result.warnings });
-        } catch (error) {
-            post({
-                type: "availableVariables",
-                symbols: [],
-                errorKey: error.i18nKey,
-                params: error.i18nParams,
-                error: error.message
-            });
+        if (!skipElf) {
+            this._sendElfSnapshot(post, "availableVariables");
+            this._elfService?.load().catch((error) =>
+                post({
+                    type: "availableVariablesDone",
+                    errorKey: error.i18nKey,
+                    params: error.i18nParams,
+                    error: error.message
+                })
+            );
         }
         post({
             type: "liveStatus",
@@ -2746,6 +2944,10 @@ class MainViewProvider {
         const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!debuggerCfg || !mcuCore)
             throw Object.assign(new Error(this._t("live.needConfig")), { i18nKey: "live.needConfig" });
+        if (this._elfService?.workerPath && this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
+            await this._elfService.ready();
+            await this._elfRebindPromise;
+        }
         this._samplingIntent = true;
         this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
         if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
@@ -3066,6 +3268,7 @@ class MainViewProvider {
     }
     shutdown() {
         this._cubemxService.cancel();
+        this._elfService.invalidate();
         if (this._shutdownPromise) return this._shutdownPromise;
         this._shutdownPromise = (async () => {
             this._clearDebugStartupWatchdog();
@@ -3243,6 +3446,7 @@ class MainViewProvider {
                     this._syncSidebarTarget((message) => webviewView.webview.postMessage(message));
                     this._syncChipInfo((message) => webviewView.webview.postMessage(message));
                     this._svdManager.syncStatus().catch((error) => console.error("SVD 状态检查失败：", error.message));
+                    this._postPeripheralDebugStatus((message) => webviewView.webview.postMessage(message));
                     webviewView.webview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
                     this.refreshOpenOcdStatus(false);
                     this.refreshSkillStatus().catch((error) =>
@@ -3256,6 +3460,13 @@ class MainViewProvider {
                             .markShown(feedbackPrompt.kind)
                             .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
                     }
+                    break;
+                }
+                case "peripheralCatalogRequest":
+                case "peripheralRegistersRequest":
+                case "peripheralReadRequest":
+                case "peripheralWriteRequest": {
+                    await this._handlePeripheralViewRequest(webviewView.webview, message);
                     break;
                 }
                 case "selectProbeDriver": {
@@ -3291,6 +3502,25 @@ class MainViewProvider {
                         await this._refreshElfBindings();
                     } catch (error) {
                         this._postLive({ type: "liveError", key: error.i18nKey, message: error.message });
+                    }
+                    break;
+                }
+                case "resolveCompositeLayout": {
+                    try {
+                        const layout = await this._resolveElfLayout(message.name, message.version);
+                        webviewView.webview.postMessage({
+                            type: "compositeLayoutResult",
+                            name: message.name,
+                            version: message.version,
+                            layout
+                        });
+                    } catch (error) {
+                        webviewView.webview.postMessage({
+                            type: "compositeLayoutResult",
+                            name: message.name,
+                            version: message.version,
+                            error: error.message
+                        });
                     }
                     break;
                 }

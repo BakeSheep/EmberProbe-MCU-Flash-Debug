@@ -46,6 +46,15 @@ const samplingBuild = esbuild.build({
     format: "cjs",
     target: "node20"
 });
+const elfBuild = esbuild.build({
+    absWorkingDir: __dirname,
+    entryPoints: [path.join(__dirname, "src", "elfWorker.js")],
+    bundle: true,
+    outfile: path.join(__dirname, "dist", "elfWorker.js"),
+    platform: "node",
+    format: "cjs",
+    target: "node20"
+});
 const debugBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "debug", "adapter.js")],
@@ -56,9 +65,14 @@ const debugBuild = esbuild.build({
     target: "node20",
     legalComments: "eof"
 });
-Promise.all([extensionBuild, samplingBuild, debugBuild, webviewBuild("sidebar"), webviewBuild("liveWatch")]).catch(
-    (error) => {
-        console.error(error);
-        process.exit(1);
-    }
-);
+Promise.all([
+    extensionBuild,
+    samplingBuild,
+    elfBuild,
+    debugBuild,
+    webviewBuild("sidebar"),
+    webviewBuild("liveWatch")
+]).catch((error) => {
+    console.error(error);
+    process.exit(1);
+});

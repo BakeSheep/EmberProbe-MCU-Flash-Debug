@@ -191,6 +191,14 @@ class FakeDebugBridge {
         assert.strictEqual(result.results[0].verified, true);
         assert.strictEqual(result.results[0].written, "0x00000004");
         assert.deepStrictEqual([...debugBridge.writes[0].data], [4, 0, 0, 0], "write must use exact register width");
+        const uiResult = await service.writeFromUi({ writes: [{ target: "GPIOA.MODER.MODE0", value: "1" }] });
+        assert.strictEqual(uiResult.permission.mode, "direct-ui");
+        assert.strictEqual(uiResult.results[0].verified, true);
+        assert.deepStrictEqual([...debugBridge.writes[1].data], [5, 0, 0, 0]);
+        await assert.rejects(
+            () => service.writeFromUi({ writes: [{ target: "GPIOA.STATUS", value: "0" }] }),
+            (error) => error.code === "PERIPHERAL_WRITE_NOT_ALLOWED"
+        );
         await assert.rejects(
             () => service.write({ writes: [{ target: "GPIOA.STATUS", value: "0" }] }),
             (error) => error.code === "PERIPHERAL_WRITE_NOT_ALLOWED"

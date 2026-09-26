@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增侧栏“外设寄存器”外设树，与 MCU 配置、芯片信息和实时读写并列；在其他配置中绑定 SVD 后自动可用，支持寄存器/位域读取、格式切换及侧栏内直接写入（Agent Skill 写入保留许可）。
+- Add a native XPERIPHERALS sidebar tree beside the main tools, available automatically after binding an SVD under Other Configuration, with register/field reads, value formats, and direct inline UI writes (Agent Skill permission remains required).
+- 大型 ELF 变量列表改为分批加载，结构体成员按需解析；重复类型共用布局缓存，单个过大类型不再影响其他变量。
+- Load large ELF variable lists in batches and resolve composite members on demand; shared layout caching keeps one oversized type from hiding other variables.
+
 ## [0.7.11] - 2026-09-26
 
 - 修复 Ubuntu 等环境中 OpenOCD 0.12.0 编号式适配器列表的解析，避免连接预检误报无法识别适配器列表；保留其他列表格式的兼容性。
