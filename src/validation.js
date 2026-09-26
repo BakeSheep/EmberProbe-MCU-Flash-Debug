@@ -35,6 +35,7 @@ function resolveLeafPath(name, byName, supported) {
         address: leaf.address >>> 0,
         size: Number(leaf.size) || typeByteLength(leaf.type),
         type: leaf.type,
+        ...(leaf.isBoolean ? { isBoolean: true } : {}),
         ...(Number.isInteger(leaf.bitSize) ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset } : {})
     };
 }
@@ -78,6 +79,7 @@ function normalizeWatchList(items, symbols) {
             address: Number(symbol.address) >>> 0,
             size: Number(symbol.size) >>> 0,
             type,
+            ...(symbol.isBoolean ? { isBoolean: true } : {}),
             ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {})
         });
     }

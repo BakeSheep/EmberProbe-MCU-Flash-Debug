@@ -404,6 +404,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         size: m.byteSize || typeByteLength(m.watchType),
                         type: m.watchType,
                         typeName: m.typeName || "",
+                        ...(m.isBoolean ? { isBoolean: true } : {}),
                         ...(Number.isInteger(m.bitSize) ? { bitSize: m.bitSize, bitOffset: m.bitOffset } : {})
                     });
                 }
@@ -454,7 +455,8 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         address: (baseAddr + currentOffset + i * elemSize) >>> 0,
                         size: elemSize,
                         type: elemType.watchType,
-                        typeName: elemType.typeName || ""
+                        typeName: elemType.typeName || "",
+                        ...(elemType.isBoolean ? { isBoolean: true } : {})
                     });
                 }
             }
@@ -487,6 +489,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                             size: member.byteSize || typeByteLength(member.watchType),
                             type: member.watchType,
                             typeName: member.typeName || "",
+                            ...(member.isBoolean ? { isBoolean: true } : {}),
                             ...(Number.isInteger(member.bitSize)
                                 ? { bitSize: member.bitSize, bitOffset: member.bitOffset }
                                 : {})
@@ -521,7 +524,8 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                                 address: (baseAddr + currentOffset) >>> 0,
                                 size: elemSize,
                                 type: currentLayout.elementType.watchType,
-                                typeName: currentLayout.elementType.typeName || ""
+                                typeName: currentLayout.elementType.typeName || "",
+                                ...(currentLayout.elementType.isBoolean ? { isBoolean: true } : {})
                             }
                         ];
                     }

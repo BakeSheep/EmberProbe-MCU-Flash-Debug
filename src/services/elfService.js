@@ -61,13 +61,17 @@ class ElfService {
             symbol.typeName = info?.typeName || "";
             const layout = layouts.get(symbol.name);
             const hasLayout = !!layout;
+            const knownKind = info?.kind && info.kind !== "unknown";
             symbol.isComposite =
                 hasLayout ||
-                /^(struct|union)\b/.test(symbol.typeName) ||
-                /\[\]$/.test(symbol.typeName) ||
-                (!info && ![1, 2, 4, 8].includes(Number(symbol.size)));
+                (knownKind
+                    ? ["struct", "union", "array"].includes(info.kind)
+                    : /^(struct|union)\b/.test(symbol.typeName) ||
+                      /\[\]$/.test(symbol.typeName) ||
+                      (!info && ![1, 2, 4, 8].includes(Number(symbol.size))));
             symbol.watchType = symbol.isComposite ? "" : info?.watchType || this.elfSymbols.defaultType(symbol.size);
             symbol.hasDwarfWriteType = !symbol.isComposite && !!info?.watchType;
+            if (info?.isBoolean) symbol.isBoolean = true;
             if (symbol.isComposite) {
                 symbol.compositeLayout = layout || null;
                 symbol.unsupportedReason = hasLayout ? "" : this.t("lw.compositeNoLayout");

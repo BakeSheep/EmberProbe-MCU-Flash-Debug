@@ -1840,7 +1840,8 @@ class MainViewProvider {
                     name: leaves[0].path,
                     address: leaves[0].address >>> 0,
                     type: leaves[0].type,
-                    size: leaves[0].size
+                    size: leaves[0].size,
+                    isBoolean: !!leaves[0].isBoolean
                 };
             } else {
                 const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: req.name }]);
@@ -1856,13 +1857,23 @@ class MainViewProvider {
                         }
                     );
                 }
-                target = { name: plan.name, address: plan.address, type: plan.type, size: plan.size };
+                target = {
+                    name: plan.name,
+                    address: plan.address,
+                    type: plan.type,
+                    size: plan.size,
+                    isBoolean: !!resolvedSymbol.isBoolean
+                };
             }
             if (seen.has(target.name))
                 throw Object.assign(new Error(`Variable requested more than once: ${target.name}`), {
                     code: "DUPLICATE_VARIABLE"
                 });
             seen.add(target.name);
+            if (target.isBoolean && ![0, 1, "0", "1", false, true].includes(req.value))
+                throw Object.assign(new Error(`Boolean variables accept only 0 or 1: ${req.name}`), {
+                    code: "INVALID_WRITE_VALUE"
+                });
             const bytes = elfSymbols.encodeValue(req.value, target.type);
             if (!inWritable(target.address, target.size)) {
                 throw Object.assign(
@@ -2301,7 +2312,9 @@ class MainViewProvider {
                         break;
                     }
                     case "resolveVariable": {
-                        const { symbols } = await this._elfService.load();
+                        const { symbols } = await this._elfService.ready();
+                        const version = this._elfVersion(this._elfService.cache);
+                        if (message.version && message.version !== version) break;
                         const found =
                             this._elfService.symbolByName.get(message.name) ||
                             symbols.find((s) => s.name === message.name);
@@ -2314,7 +2327,8 @@ class MainViewProvider {
                                     break;
                                 }
                             }
-                            post({ type: "addResolved", symbol: found });
+                            if (this._elfVersion(this._elfService.cache) === version)
+                                post({ type: "addResolved", version, symbol: found });
                         } else post({ type: "liveError", key: "live.varNotFound", params: { name: message.name } });
                         break;
                     }
@@ -2512,6 +2526,8 @@ class MainViewProvider {
         for (let i = 0; i < result.symbols.length; i += 1000)
             post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
         post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: result.warnings });
+        if (result.dwarfReady)
+            post({ type: listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone", version });
     }
     _onElfChange(phase, result, entries) {
         const version = this._elfVersion(result);
@@ -2534,7 +2550,8 @@ class MainViewProvider {
                 typeName: symbol.typeName,
                 watchType: symbol.watchType,
                 isComposite: symbol.isComposite,
-                hasDwarfWriteType: symbol.hasDwarfWriteType
+                hasDwarfWriteType: symbol.hasDwarfWriteType,
+                ...(symbol.isBoolean ? { isBoolean: true } : {})
             }));
             sidebarPost({ type: "availableVariableTypes", version, symbols });
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });

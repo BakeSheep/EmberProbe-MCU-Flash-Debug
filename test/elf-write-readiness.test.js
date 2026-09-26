@@ -19,6 +19,31 @@ const { loadProvider } = require("./helpers/load-provider");
         code: "DWARF_PARSE_FAILED"
     });
     assert.strictEqual(planned, false, "writes must stop before planning when DWARF is unavailable");
+    delete provider._agentWritePlan;
+    provider.readElfSymbols = () => ({
+        elf: { path: "missing" },
+        symbols: [
+            { name: "flag", address: 0x20000000, size: 1, watchType: "u8", hasDwarfWriteType: true, isBoolean: true },
+            {
+                name: "group",
+                address: 0x20000001,
+                size: 1,
+                isComposite: true,
+                compositeLayout: {
+                    kind: "struct",
+                    byteSize: 1,
+                    members: [{ name: "enabled", offset: 0, byteSize: 1, watchType: "u8", isBoolean: true }]
+                }
+            }
+        ]
+    });
+    for (const name of ["flag", "group.enabled"])
+        assert.throws(() => provider._agentWritePlan([{ name, value: 2 }], { refreshSymbols: false }), {
+            code: "INVALID_WRITE_VALUE"
+        });
+    assert.throws(() => provider._agentWritePlan([{ name: "flag", value: 1 }], { refreshSymbols: false }), {
+        code: "WRITE_NOT_ALLOWED"
+    });
     console.log("ELF write readiness tests passed");
 })().catch((error) => {
     console.error(error);

@@ -29,7 +29,9 @@ let sideWatch = [],
     available = [],
     availableByName = new Map(),
     availableVersion = "",
+    availableTypesReady = true,
     availableLayoutPending = new Set(),
+    availableAddPending = new Set(),
     availableTypeChunks = 0,
     latest = Object.create(null),
     latestText = Object.create(null),
@@ -231,7 +233,8 @@ function sbCollectLeaves(layout, name, baseAddr) {
                         path: cp,
                         label: cp.slice(name.length),
                         address: (baseAddr + mo) >>> 0,
-                        type: m.watchType
+                        type: m.watchType,
+                        ...(m.isBoolean ? { isBoolean: true } : {})
                     });
             });
         } else if (lyt.kind === "array") {
@@ -248,7 +251,8 @@ function sbCollectLeaves(layout, name, baseAddr) {
                         path: cp,
                         label: cp.slice(name.length),
                         address: (baseAddr + eo) >>> 0,
-                        type: et.watchType
+                        type: et.watchType,
+                        ...(et.isBoolean ? { isBoolean: true } : {})
                     });
             }
         }
@@ -369,8 +373,23 @@ function renderAvailable() {
             };
             wrap.append(
                 arrow,
-                mkWatchBtn(sym.name, !sym.compositeLayout, sym.unsupportedReason || t("lw.compositeNoLayout"), () =>
-                    sbToggle(compEntry)
+                mkWatchBtn(
+                    sym.name,
+                    !availableTypesReady || !!sym.layoutError,
+                    sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
+                    () => {
+                        if (sideWatch.some((item) => item.name === sym.name) || sym.compositeLayout) {
+                            sbToggle(compEntry);
+                        } else if (!availableLayoutPending.has(sym.name)) {
+                            availableAddPending.add(sym.name);
+                            availableLayoutPending.add(sym.name);
+                            api?.postMessage({
+                                type: "resolveCompositeLayout",
+                                name: sym.name,
+                                version: availableVersion
+                            });
+                        }
+                    }
                 ),
                 nm
             );
@@ -400,7 +419,13 @@ function renderAvailable() {
                     lb.className = "available-row leaf";
                     const cell = document.createElement("span");
                     cell.className = "av-name-cell";
-                    const leafEntry = { name: lf.path, address: lf.address, size: LEAF_W[lf.type] || 4, type: lf.type };
+                    const leafEntry = {
+                        name: lf.path,
+                        address: lf.address,
+                        size: LEAF_W[lf.type] || 4,
+                        type: lf.type,
+                        ...(lf.isBoolean ? { isBoolean: true } : {})
+                    };
                     cell.appendChild(mkWriteBtn(leafEntry));
                     cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
                     const ln = document.createElement("span");
@@ -471,18 +496,22 @@ function renderAvailable() {
                 name: sym.name,
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
-                type: sym.watchType
+                type: sym.watchType,
+                ...(sym.isBoolean ? { isBoolean: true } : {})
             };
             cell.appendChild(
                 mkWriteBtn(
                     entry,
-                    noLayout || !sym.hasDwarfWriteType,
+                    !availableTypesReady || noLayout || !sym.hasDwarfWriteType,
                     noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : t("sb.writeUnsupported")
                 )
             );
             cell.appendChild(
-                mkWatchBtn(sym.name, noLayout, sym.unsupportedReason || t("sb.compositeUnsupported"), () =>
-                    sbToggle(entry)
+                mkWatchBtn(
+                    sym.name,
+                    !availableTypesReady || noLayout,
+                    sym.unsupportedReason || t("sb.compositeUnsupported"),
+                    () => sbToggle(entry)
                 )
             );
             const n = document.createElement("span");
@@ -612,7 +641,18 @@ function wToggle(entry) {
     else {
         const type = entry.type || "u32",
             nb = defBounds(type);
-        if (isWideInt(type)) {
+        if (entry.isBoolean) {
+            writeList.push({
+                name: entry.name,
+                address: entry.address,
+                size: entry.size,
+                type,
+                isBoolean: true,
+                min: 0,
+                max: 1,
+                value: Number(latest[entry.name]) ? 1 : 0
+            });
+        } else if (isWideInt(type)) {
             const v = latestText[entry.name] || "0";
             writeList.push({ name: entry.name, address: entry.address, size: entry.size, type: type, value: v });
         } else {
@@ -674,6 +714,7 @@ function sendWrite(item, immediate) {
     }, wait);
 }
 function setBound(item, key, v) {
+    if (item.isBoolean) return;
     if (!Number.isFinite(v)) return;
     if (item.type !== "f32") v = Math.round(v);
     if (key === "min") item.min = Math.min(v, Number(item.max));
@@ -749,7 +790,7 @@ function buildWriteCard(item) {
     bottom.className = "write-bottom";
     const ty = document.createElement("span");
     ty.className = "value-type";
-    ty.textContent = item.type || "u32";
+    ty.textContent = item.isBoolean ? "bool" : item.type || "u32";
     const minL = document.createElement("span");
     minL.className = "bound";
     const slider = document.createElement("input");
@@ -771,6 +812,7 @@ function buildWriteCard(item) {
         slider,
         dot,
         setVal: (v) => {
+            if (item.isBoolean) v = Number(v) ? 1 : 0;
             item.value = v;
             input.value = wide ? String(v) : fmt(v);
             if (!wide) slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), v)));
@@ -801,6 +843,10 @@ function buildWriteCard(item) {
         input.onblur = commitWide;
     } else {
         const syncSlider = () => {
+            if (item.isBoolean) {
+                item.min = 0;
+                item.max = 1;
+            }
             slider.min = String(item.min);
             slider.max = String(item.max);
             slider.step = isFloat(item.type) ? "any" : "1";
@@ -810,7 +856,11 @@ function buildWriteCard(item) {
         };
         syncSlider();
         const setValue = (v, immediate) => {
-            v = isFloat(item.type) ? Number(v) : clampToType(Number(v), item.type);
+            v = item.isBoolean
+                ? Math.min(1, Math.max(0, Math.round(Number(v))))
+                : isFloat(item.type)
+                  ? Number(v)
+                  : clampToType(Number(v), item.type);
             if (!Number.isFinite(v)) v = 0;
             item.value = v;
             input.value = fmt(v);
@@ -824,7 +874,11 @@ function buildWriteCard(item) {
                 input.value = fmt(item.value);
                 return;
             }
-            const v = isFloat(item.type) ? raw : clampToType(raw, item.type);
+            const v = item.isBoolean
+                ? Math.min(1, Math.max(0, Math.round(raw)))
+                : isFloat(item.type)
+                  ? raw
+                  : clampToType(raw, item.type);
             if (v !== item.value) {
                 const bounds = shiftSliderBounds(item.min, item.max, item.value, v);
                 item.min = bounds.min;
@@ -849,14 +903,20 @@ function buildWriteCard(item) {
         minus.onclick = () => setValue((Number(item.value) || 0) - stepFor(item), true);
         plus.onclick = () => setValue((Number(item.value) || 0) + stepFor(item), true);
         slider.addEventListener("input", () => {
-            const v = isFloat(item.type) ? Number(slider.value) : clampToType(Number(slider.value), item.type);
+            const v = item.isBoolean
+                ? Math.min(1, Math.max(0, Math.round(Number(slider.value))))
+                : isFloat(item.type)
+                  ? Number(slider.value)
+                  : clampToType(Number(slider.value), item.type);
             item.value = v;
             input.value = fmt(v);
             sendWrite(item, false);
         });
         slider.addEventListener("change", () => setValue(Number(slider.value), true));
-        bindBound(minL, item, "min", syncSlider);
-        bindBound(maxL, item, "max", syncSlider);
+        if (!item.isBoolean) {
+            bindBound(minL, item, "min", syncSlider);
+            bindBound(maxL, item, "max", syncSlider);
+        }
     }
     if (!liveCanWrite) {
         row.classList.add("gated");
@@ -1498,6 +1558,7 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariables: function (m) {
         available = (m.symbols || []).slice();
+        availableTypesReady = true;
         availableByName = new Map(available.map((symbol) => [symbol.name, symbol]));
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
@@ -1506,10 +1567,12 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariablesReset: function (m) {
         availableVersion = m.version || "";
+        availableTypesReady = false;
         available = [];
         availableByName.clear();
         availableTypeChunks = 0;
         availableLayoutPending.clear();
+        availableAddPending.clear();
         variableError = "";
         renderAvailable();
     },
@@ -1536,7 +1599,9 @@ window.EmberProbeMessages.connect(window, {
         if (++availableTypeChunks % 10 === 0) renderAvailable();
     },
     availableTypesDone: function (m) {
-        if (m.version === availableVersion) renderAvailable();
+        if (m.version !== availableVersion) return;
+        availableTypesReady = true;
+        renderAvailable();
     },
     compositeLayoutResult: function (m) {
         if (m.version !== availableVersion) return;
@@ -1551,6 +1616,15 @@ window.EmberProbeMessages.connect(window, {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");
             symbol.unsupportedReason = symbol.layoutError;
         }
+        if (availableAddPending.delete(m.name) && m.layout && !sideWatch.some((item) => item.name === m.name))
+            sbToggle({
+                name: symbol.name,
+                address: Number(symbol.address) || 0,
+                size: Number(symbol.size) || 4,
+                type: "",
+                isComposite: true,
+                compositeLayout: m.layout
+            });
         renderAvailable();
     },
     liveSample: function (m) {

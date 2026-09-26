@@ -55,6 +55,34 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(noDwarfWide.watchType, "u64");
         assert.strictEqual(noDwarfWide.hasDwarfWriteType, false, "a guessed u64 type must remain read-only");
 
+        const typedefStruct = new ElfService({
+            context: { workspaceState: { get: () => elf } },
+            cacheKey: "elf",
+            fs,
+            crypto: require("crypto"),
+            cleanPath: (value) => value,
+            t: (key) => key,
+            elfSymbols: {
+                parseElfSymbols: () => ({ symbols: [{ name: "sensor", size: 4 }], warnings: [] }),
+                defaultType: () => "u32"
+            },
+            dwarf: {
+                parseDwarf: () => ({
+                    types: new Map([["sensor", { kind: "struct", typeName: "SensorAlias", watchType: "" }]]),
+                    layouts: new Map()
+                })
+            }
+        }).read().symbols[0];
+        assert.strictEqual(typedefStruct.isComposite, true, "a typedef struct must stay composite at scalar width");
+        assert.strictEqual(typedefStruct.watchType, "");
+        assert.strictEqual(typedefStruct.hasDwarfWriteType, false);
+        const pointer = { name: "pointer", size: 4 };
+        elfService._enrich(
+            { symbols: [pointer] },
+            new Map([["pointer", { kind: "scalar", typeName: "struct Sensor *", watchType: "u32" }]])
+        );
+        assert.strictEqual(pointer.isComposite, false, "a pointer to a struct must remain a scalar pointer");
+
         // §3：解析前必须有 ELF 体积硬上限。autoDetect 会取工作区 mtime 最新的 .elf，
         // 旧实现 readFileSync 无任何上限，多 GB 的 .elf 会被整份读入内存并送入 DWARF 解析。
         let readCalls = 0;

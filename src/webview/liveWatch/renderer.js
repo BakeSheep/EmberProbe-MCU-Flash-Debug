@@ -44,6 +44,7 @@ var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
     impWarnings = [],
     impVersion = "",
+    impTypesReady = true,
     impExpanded = Object.create(null),
     impLayoutPending = new Set(),
     impSymbolByName = new Map(),
@@ -194,7 +195,7 @@ function updateRun() {
     b.disabled = starting;
     b.textContent = starting ? t("lw.starting") : running ? t("lw.stopSampling") : t("lw.startSampling");
 }
-function addSymbol(sym) {
+function addSymbol(sym, resolved = false) {
     if (
         !sym ||
         !sym.name ||
@@ -203,6 +204,10 @@ function addSymbol(sym) {
         })
     )
         return;
+    if (!resolved && impVersion && (!impTypesReady || (sym.isComposite && !sym.compositeLayout))) {
+        post({ type: "resolveVariable", name: sym.name, version: impVersion });
+        return;
+    }
     if (sym.isComposite) {
         if (!sym.compositeLayout) {
             setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error");
@@ -773,7 +778,6 @@ function renderImport() {
             row.className = "imp-row";
             var cb = document.createElement("input");
             cb.type = "checkbox";
-            cb.disabled = !s.compositeLayout;
             cb.dataset.idx = String(gi);
             cb.title = t("lw.compositeExpandable");
             var nmWrap = document.createElement("span");
@@ -1960,6 +1964,7 @@ window.EmberProbeMessages.connect(window, {
             return cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
         });
         allSymbols = m.symbols || [];
+        impTypesReady = true;
         impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
         impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
         impWarnings = m.warnings || [];
@@ -1982,6 +1987,7 @@ window.EmberProbeMessages.connect(window, {
     },
     variablesListReset: function (m) {
         impVersion = m.version || "";
+        impTypesReady = false;
         allSymbols = [];
         impSymbolByName.clear();
         impIndexByName.clear();
@@ -2021,7 +2027,9 @@ window.EmberProbeMessages.connect(window, {
         if (++impTypeChunks % 10 === 0 && !$("overlay").classList.contains("hidden")) renderImport();
     },
     variableTypesDone: function (m) {
-        if (m.version === impVersion && !$("overlay").classList.contains("hidden")) renderImport();
+        if (m.version !== impVersion) return;
+        impTypesReady = true;
+        if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     compositeLayoutResult: function (m) {
         if (m.version !== impVersion) return;
@@ -2037,7 +2045,8 @@ window.EmberProbeMessages.connect(window, {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     addResolved: function (m) {
-        addSymbol(m.symbol);
+        if (m.version && m.version !== impVersion) return;
+        addSymbol(m.symbol, true);
     },
     liveSample: function (m) {
         onSamples(m.samples || []);
@@ -2085,7 +2094,7 @@ $("addBtn").onclick = function () {
         return s.name === n;
     });
     if (sym) addSymbol(sym);
-    else post({ type: "resolveVariable", name: n });
+    else post({ type: "resolveVariable", name: n, version: impVersion });
     $("addName").value = "";
     var d = $("acDrop");
     if (d) d.classList.remove("open");

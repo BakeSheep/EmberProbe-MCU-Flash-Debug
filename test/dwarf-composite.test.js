@@ -302,8 +302,10 @@ assert.deepStrictEqual(
 // —— 断言：parseDwarfVariableTypes 一致识别复合类型 ——
 const types = parseDwarfVariableTypes(buf);
 assert.strictEqual(types.get("sensorAlias").typeName, "SensorAlias");
+assert.strictEqual(types.get("sensorAlias").kind, "struct", "typedef/volatile 之后仍须保留结构体类别");
 assert.strictEqual(types.get("sensorAlias").watchType, "", "结构体整体不可作为标量观察");
 assert.strictEqual(types.get("buf").typeName, "int[]");
+assert.strictEqual(types.get("buf").kind, "array");
 
 // SHF_COMPRESSED 的真实 Debug ELF 仍应解压 DWARF，并穿透 volatile -> typedef -> struct。
 const compressedLayouts = parseCompositeLayout(compressedBuf);

@@ -53,6 +53,17 @@ function encodingToWatchType(encoding, size) {
     }
     return "";
 }
+function arrayDimensions(typeRef, dies, childrenMap) {
+    const dimensions = [];
+    for (const childOff of childrenMap.get(typeRef) || []) {
+        const child = dies.get(childOff);
+        if (!child || child.tag !== DW_TAG_subrange_type) continue;
+        const count =
+            child.subrangeCount ?? (child.subrangeUpperBound === undefined ? 0 : child.subrangeUpperBound + 1);
+        if (Number.isSafeInteger(count) && count > 0) dimensions.push(count);
+    }
+    return dimensions;
+}
 function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
     if (cache.has(refKey)) return cache.get(refKey);
     const placeholder = { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
@@ -68,7 +79,8 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 kind: "scalar",
                 typeName: nm || "base",
                 watchType: encodingToWatchType(d.encoding, d.byteSize || 0),
-                byteSize: d.byteSize || 0
+                byteSize: d.byteSize || 0,
+                isBoolean: d.encoding === DW_ATE_boolean
             };
             break;
         case DW_TAG_typedef: {
@@ -80,7 +92,8 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 kind: inner.kind,
                 typeName: nm || inner.typeName,
                 watchType: inner.watchType,
-                byteSize: d.byteSize || inner.byteSize
+                byteSize: d.byteSize || inner.byteSize,
+                isBoolean: inner.isBoolean
             };
             break;
         }
@@ -100,14 +113,23 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
             result = { kind: "scalar", typeName: (inner.typeName || "void") + " *", watchType: "u32", byteSize: 4 };
             break;
         }
-        case DW_TAG_enumeration_type:
+        case DW_TAG_enumeration_type: {
+            const underlying =
+                d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1) : null;
+            const byteSize = d.byteSize || underlying?.byteSize || 4;
+            const underlyingEncoding = underlying?.watchType?.startsWith("u")
+                ? DW_ATE_unsigned
+                : underlying?.watchType?.startsWith("i")
+                  ? DW_ATE_signed
+                  : undefined;
             result = {
                 kind: "scalar",
                 typeName: nm ? "enum " + nm : "enum",
-                watchType: encodingToWatchType(DW_ATE_signed, d.byteSize || 4),
-                byteSize: d.byteSize || 4
+                watchType: encodingToWatchType(d.encoding ?? underlyingEncoding, byteSize),
+                byteSize
             };
             break;
+        }
         case DW_TAG_structure_type:
             result = {
                 kind: "struct",
@@ -133,27 +155,13 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
             // 本层 subrange 维度 × 内层大小推导，否则行 stride 恒为 0、所有行都
             // 解码到第 0 行的地址。单个数组 DIE 挂多个 subrange 的产生器同样按
             // 维度乘积推导。
-            let dimsProduct = 1;
-            let hasDim = false;
-            const childOffsets = childrenMap.get(refKey);
-            if (childOffsets) {
-                for (const childOff of childOffsets) {
-                    const child = dies.get(childOff);
-                    if (!child || child.tag !== DW_TAG_subrange_type) continue;
-                    let dim = 0;
-                    if (child.subrangeCount !== undefined) dim = child.subrangeCount;
-                    else if (child.subrangeUpperBound !== undefined) dim = child.subrangeUpperBound + 1;
-                    if (dim > 0) {
-                        dimsProduct *= dim;
-                        hasDim = true;
-                    }
-                }
-            }
+            const dimensions = arrayDimensions(refKey, dies, childrenMap);
+            const dimsProduct = dimensions.reduce((product, count) => product * count, 1);
             result = {
                 kind: "array",
-                typeName: (inner.typeName || "") + "[]",
+                typeName: (inner.typeName || "") + "[]".repeat(Math.max(1, dimensions.length)),
                 watchType: "",
-                byteSize: d.byteSize || (hasDim ? dimsProduct * (inner.byteSize || 0) : 0)
+                byteSize: d.byteSize || (dimensions.length ? dimsProduct * (inner.byteSize || 0) : 0)
             };
             break;
         }
@@ -171,7 +179,12 @@ function buildVariableTypes(parsed) {
         const name = v.name || "";
         if (!name || result.has(name)) continue;
         const t = v.typeRef !== undefined ? _resolveTypeInfo(v.typeRef, dies, childrenMap, typeCache) : null;
-        result.set(name, { typeName: (t && t.typeName) || "", watchType: (t && t.watchType) || "" });
+        result.set(name, {
+            kind: (t && t.kind) || "unknown",
+            typeName: (t && t.typeName) || "",
+            watchType: (t && t.watchType) || "",
+            ...(t?.isBoolean ? { isBoolean: true } : {})
+        });
     }
     return result;
 }
@@ -199,13 +212,15 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
             // DWARF4 DW_AT_bit_offset 是从存储单元高位端计数；ELF32 已限定小端。
             bitOffset = byteSize * 8 - child.bitOffset - child.bitSize;
         }
+        /** @type {Record<string, any>} */
         const member = {
             name,
             offset,
             byteSize,
             typeName: memberType.typeName,
             watchType: memberType.watchType,
-            kind: memberType.kind
+            kind: memberType.kind,
+            ...(memberType.isBoolean ? { isBoolean: true } : {})
         };
         if (Number.isInteger(child.bitSize) && child.bitSize > 0 && Number.isInteger(bitOffset) && bitOffset >= 0) {
             member.bitSize = child.bitSize;
@@ -225,45 +240,58 @@ function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budg
         typeDie && typeDie.typeRef !== undefined
             ? _resolveTypeInfo(typeDie.typeRef, dies, childrenMap, typeCache)
             : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
-    const dimensions = [];
-    const childOffsets = childrenMap.get(typeDieOff);
-    if (childOffsets) {
-        for (const childOff of childOffsets) {
-            const child = dies.get(childOff);
-            if (!child || child.tag !== DW_TAG_subrange_type) continue;
-            let dim = 0;
-            if (child.subrangeCount !== undefined) {
-                dim = child.subrangeCount;
-            } else if (child.subrangeUpperBound !== undefined) {
-                dim = child.subrangeUpperBound + 1;
-            }
-            if (dim > 0) dimensions.push(dim);
-        }
-    }
+    const dimensions = arrayDimensions(typeDieOff, dies, childrenMap);
     const totalElements = dimensions.length ? dimensions.reduce((a, b) => a * b, 1) : 0;
     if (!Number.isSafeInteger(totalElements) || totalElements > 65536)
         throw Object.assign(new Error("DWARF array expansion budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
-    const elemSize = elementType.byteSize || 0;
     const compositeLayout =
         typeDie && typeDie.typeRef !== undefined
             ? _buildCompositeLayout(typeDie.typeRef, dies, childrenMap, typeCache, depth + 1, budget, state)
             : null;
+    /** @type {Record<string, any>} */
     const element = {
         typeName: elementType.typeName,
         watchType: elementType.watchType,
-        byteSize: elemSize,
-        kind: elementType.kind
+        byteSize: elementType.byteSize || 0,
+        kind: elementType.kind,
+        ...(elementType.isBoolean ? { isBoolean: true } : {})
     };
     if (compositeLayout) element.compositeLayout = compositeLayout;
-    return {
+    // GCC can encode all dimensions as subranges of one array DIE. Give each
+    // dimension its own layout node so paths and row strides stay meaningful.
+    consumeCompositeBudget(budget, Math.max(0, dimensions.length - 1));
+    /** @type {Record<string, any>} */
+    let current = element;
+    for (let index = dimensions.length - 1; index >= 0; index--) {
+        const count = dimensions[index];
+        const layout = {
+            kind: "array",
+            typeName: (current.typeName || "") + "[]",
+            watchType: "",
+            byteSize: count * current.byteSize,
+            elementType: current,
+            dimensions: [count],
+            totalElements: count
+        };
+        current = {
+            kind: "array",
+            typeName: layout.typeName,
+            watchType: "",
+            byteSize: layout.byteSize,
+            compositeLayout: layout
+        };
+    }
+    const layout = current.compositeLayout || {
         kind: "array",
         typeName: (elementType.typeName || "") + "[]",
         watchType: "",
-        byteSize: typeDie ? typeDie.byteSize || totalElements * elemSize : totalElements * elemSize,
+        byteSize: 0,
         elementType: element,
-        dimensions,
-        totalElements
+        dimensions: [],
+        totalElements: 0
     };
+    if (typeDie?.byteSize) layout.byteSize = typeDie.byteSize;
+    return layout;
 }
 function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, budget, state) {
     if (depth > 8 || state.active.has(typeRef))
