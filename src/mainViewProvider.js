@@ -27,10 +27,10 @@ const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
-const { canonicalFileSync } = require("../skills/_emberprobe/file-identity");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
+const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
@@ -288,6 +288,7 @@ class MainViewProvider {
             onStatus: (status) => this._webviewView?.webview.postMessage({ type: "svdStatus", ...status })
         });
         this._svdPeripheralService = new SvdPeripheralService({
+            workerPath: path.join(__dirname, "svdWorker.js"),
             loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
             debugBridge: this._debugBridge,
             authorization: this._peripheralWriteAuthorization
@@ -303,6 +304,7 @@ class MainViewProvider {
             startDebug: () => this.commandHandlers["mcu-vscode.debug"](undefined, undefined, false)
         });
         this._agentFlashService = new AgentFlashService({
+            getConfig: () => this._configurationStore.snapshot(),
             coordinator: this._probeCoordinator,
             authorization: this._flashAuthorization,
             prepare: (options) => this._probeConnectionService.prepare(options),
@@ -315,70 +317,7 @@ class MainViewProvider {
             // Bridge 描述文件（含 token）写入 globalStorage，工作区只留指针，避免令牌随 git/云同步泄露
             storageDirProvider: () => this._context.globalStorageUri.fsPath,
             onCall: () => this._warnIfSkillsModified(),
-            handlers: {
-                "config.get": () => this._configurationSnapshot(),
-                "probe.list": () => listProbes(),
-                "config.set": (params) => this._setAgentConfiguration(params.values || {}),
-                "cubemx.detect": () => this._cubemxConfiguration.detect(),
-                "cubemx.inspect": (params) => this._cubemxService.inspect(params || {}),
-                "cubemx.prepare": (params) => this._cubemxService.prepare(params || {}),
-                "cubemx.candidate": (params) => this._cubemxService.generateCandidate(params || {}),
-                "cubemx.start": (params) => this._startAgentCubeMxOperation(params || {}),
-                "cubemx.status": (params) => this._cubemxService.status(params || {}),
-                "cubemx.check": async (params) => {
-                    const result = await this._cubemxService.check(params || {});
-                    if (result.operationId) this._showAgentCubeMxProgress(result.operationId);
-                    return result;
-                },
-                "cubemx.execute": (params) =>
-                    vscode.window.withProgress(
-                        {
-                            location: vscode.ProgressLocation.Notification,
-                            title: this._t("cubemx.generating"),
-                            cancellable: true
-                        },
-                        async (progress, token) => {
-                            const controller = new AbortController();
-                            const subscription = token.onCancellationRequested(() => controller.abort());
-                            progress.report({ message: this._t("cubemx.generating") });
-                            try {
-                                return await this._cubemxService.execute(params || {}, controller.signal, (stage) =>
-                                    progress.report({ message: this._t("cubemx." + stage) })
-                                );
-                            } finally {
-                                subscription.dispose();
-                            }
-                        }
-                    ),
-                "cubemx.permission": (params) => this._cubemxService.permission(params || {}),
-                "cubemx.cancel": (params) => this._cubemxService.cancel(params || {}),
-                "flash.authorize": (params) => this._authorizeAgentFlash(params || {}),
-                "flash.execute": (params) => this._agentFlashService.execute(params || {}),
-                "flash.verify": (params) => this._agentFlashService.execute(params || {}, true),
-                "watch.add": (params) => this._addAgentWatch(params),
-                "variables.exportCsv": (params) => this._exportAgentCsv(params || {}),
-                "variables.read": (params) => this._readAgentVariables(params),
-                "variables.sample": (params) => this._sampleAgentVariables(params),
-                "sampling.status": (params) => this._controlAgentSampling("status", params),
-                "sampling.start": (params) => this._controlAgentSampling("start", params),
-                "sampling.stop": (params) => this._controlAgentSampling("stop", params),
-                "variables.write": (params) => this._writeAgentVariables(params),
-                "variables.write.permission": (params) => this._agentWritePermission(params),
-                "chip.read": () => this.readChipInfoAction(true),
-                "fault.read": () => this._readAgentFault(),
-                "elf.analyze": (params) => this._analyzeElf(params || {}),
-                "peripherals.list": (params) => this._svdPeripheralService.list(params || {}),
-                "peripherals.read": (params) => this._svdPeripheralService.read(params || {}),
-                "peripherals.write": (params) => {
-                    this._assertWriteSessionCurrent(this._debugBridge);
-                    return this._svdPeripheralService.write(params || {});
-                },
-                "debug.status": () => this._debugControlService.status(),
-                "debug.start": () => this._debugControlService.start(),
-                "debug.control": (params) => this._debugControlService.control(params || {}),
-                "debug.breakpoints.list": () => this._debugControlService.listBreakpoints(),
-                "debug.breakpoints.update": (params) => this._debugControlService.updateBreakpoints(params || {})
-            }
+            handlers: createAgentRoutes(this)
         });
         this.registerCommandHandlers();
     }
@@ -897,32 +836,29 @@ class MainViewProvider {
             await this._probeConnectionService.prepare({ executable, probe: config.debugger, target: config.mcu })
         );
     }
-    async _authorizeAgentFlash(params) {
-        const elfPath = canonicalFileSync(path.resolve(String(params.elf || "")));
-        const sha256 = crypto.createHash("sha256").update(fs.readFileSync(elfPath)).digest("hex");
-        if (sha256 !== String(params.elfSha256 || "")) {
-            throw Object.assign(new Error("The ELF changed before flash confirmation"), {
-                code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
-            });
-        }
-        if (!openocdRunner.isSafeCfg(params.target) || !openocdRunner.isSafeCfg(params.probe)) {
-            throw Object.assign(new Error("Invalid OpenOCD target or probe configuration"), {
-                code: "OPENOCD_CONFIGURATION_ERROR"
-            });
-        }
-        const connection = await this._probeConnectionService.prepare(params);
-        return this._flashAuthorization.authorize(
+    _executeAgentCubeMx(params) {
+        return vscode.window.withProgress(
             {
-                elf: { path: elfPath, sha256 },
-                transport: connection.transport,
-                target: params.target,
-                probe: params.probe,
-                openocd: connection.openocd,
-                probeSerial: connection.probeSerial,
-                adapterSpeedKhz: connection.adapterSpeedKhz
+                location: vscode.ProgressLocation.Notification,
+                title: this._t("cubemx.generating"),
+                cancellable: true
             },
-            params.confirmationId
+            async (progress, token) => {
+                const controller = new AbortController();
+                const subscription = token.onCancellationRequested(() => controller.abort());
+                progress.report({ message: this._t("cubemx.generating") });
+                try {
+                    return await this._cubemxService.execute(params || {}, controller.signal, (stage) =>
+                        progress.report({ message: this._t("cubemx." + stage) })
+                    );
+                } finally {
+                    subscription.dispose();
+                }
+            }
         );
+    }
+    async _authorizeAgentFlash(params) {
+        return this._agentFlashService.authorize(params);
     }
     _workspacePath(value, extension) {
         return this._configurationStore.workspacePath(value, extension);
@@ -3287,6 +3223,7 @@ class MainViewProvider {
         }
     }
     disposeDebugBridge() {
+        this._svdPeripheralService?.dispose();
         this._debugBridge.dispose();
     }
     shutdown() {

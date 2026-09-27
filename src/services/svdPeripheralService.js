@@ -3,6 +3,14 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const { XMLParser, XMLValidator } = require("fast-xml-parser");
+const { resolveSvdDerivation } = require("./svdDerivation");
+const {
+    parseWriteConstraint,
+    assertRegisterConstraints,
+    readableEnumeration,
+    writableEnumeration,
+    enumMatches
+} = require("./svdWriteConstraints");
 
 const SUPPORTED_SIZES = new Set([8, 16, 32, 64]);
 const NORMAL_WRITE_ACCESS = "read-write";
@@ -53,44 +61,9 @@ function inherit(parent, node) {
         resetValue: integer(node?.resetValue, "reset value", { optional: true, bigint: true }) ?? parent.resetValue,
         resetMask: integer(node?.resetMask, "reset mask", { optional: true, bigint: true }) ?? parent.resetMask,
         readAction: text(node?.readAction) || parent.readAction,
-        modifiedWriteValues: text(node?.modifiedWriteValues) || parent.modifiedWriteValues
+        modifiedWriteValues: text(node?.modifiedWriteValues) || parent.modifiedWriteValues,
+        writeConstraint: parseWriteConstraint(node?.writeConstraint, integer) ?? parent.writeConstraint
     };
-}
-
-function merge(base, override) {
-    if (!base || typeof base !== "object") return override;
-    if (!override || typeof override !== "object") return override === undefined ? base : override;
-    if (Array.isArray(base) || Array.isArray(override)) return override;
-    const result = { ...base };
-    for (const [key, value] of Object.entries(override)) result[key] = merge(base[key], value);
-    return result;
-}
-
-function resolveDerived(items, kind) {
-    const byName = new Map(items.map((item) => [text(item?.name), item]));
-    const cache = new Map();
-    const resolving = new Set();
-    const resolve = (item) => {
-        if (cache.has(item)) return cache.get(item);
-        if (resolving.size >= 128 || resolving.has(item))
-            throw Object.assign(new Error(`Cyclic ${kind} derivedFrom chain`), { code: "INVALID_SVD_DERIVATION" });
-        resolving.add(item);
-        const reference = text(item?.["@_derivedFrom"]);
-        let result = item;
-        if (reference) {
-            const shortName = reference.split(".").pop();
-            const base = byName.get(reference) || byName.get(shortName);
-            if (!base)
-                throw Object.assign(new Error(`Unknown ${kind} derivedFrom target: ${reference}`), {
-                    code: "INVALID_SVD_DERIVATION"
-                });
-            result = merge(resolve(base), item);
-        }
-        resolving.delete(item);
-        cache.set(item, result);
-        return result;
-    };
-    return items.map(resolve);
 }
 
 function dimIndexes(node, count) {
@@ -149,12 +122,20 @@ function fieldBits(node) {
     return { bitOffset: offset, bitWidth: width };
 }
 
-function enumerations(node) {
+function enumerations(node, budget) {
+    if (budget.enumerations.has(node)) {
+        const cached = budget.enumerations.get(node);
+        for (const _entry of cached) consumeBudget(budget);
+        return cached;
+    }
     const result = [];
     for (const group of array(node?.enumeratedValues)) {
         const usage = text(group?.usage) || "read-write";
+        if (!["read", "write", "read-write"].includes(usage))
+            throw Object.assign(new Error("Invalid enumeration usage"), { code: "INVALID_SVD_VALUE" });
         for (const entry of array(group?.enumeratedValue)) {
             if (!text(entry?.name) || entry?.value === undefined) continue;
+            consumeBudget(budget);
             const parsed = enumerationValue(entry.value);
             result.push({
                 name: text(entry.name),
@@ -165,7 +146,9 @@ function enumerations(node) {
             });
         }
     }
-    return result;
+    const shared = Object.freeze(result.map(Object.freeze));
+    budget.enumerations.set(node, shared);
+    return shared;
 }
 
 function enumerationValue(rawValue) {
@@ -194,7 +177,7 @@ function enumerationValue(rawValue) {
 }
 
 function normalizeFields(registerNode, register, defaults, budget) {
-    const raw = resolveDerived(array(registerNode?.fields?.field), "field");
+    const raw = array(registerNode?.fields?.field);
     return raw.flatMap((fieldNode) =>
         expandDim(fieldNode).map(({ node, index, offset }) => {
             consumeBudget(budget);
@@ -215,7 +198,8 @@ function normalizeFields(registerNode, register, defaults, budget) {
                 access: properties.access || register.access,
                 readAction: properties.readAction || register.readAction,
                 modifiedWriteValues: properties.modifiedWriteValues || register.modifiedWriteValues,
-                enumerations: enumerations(node)
+                writeConstraint: properties.writeConstraint,
+                enumerations: enumerations(node, budget)
             };
         })
     );
@@ -247,6 +231,7 @@ function normalizeRegister(node, peripheral, prefix, baseOffset, defaults, index
         resetMask: properties.resetMask,
         readAction: properties.readAction,
         modifiedWriteValues: properties.modifiedWriteValues,
+        writeConstraint: properties.writeConstraint,
         fields: []
     };
     register.fields = normalizeFields(node, register, properties, budget);
@@ -257,14 +242,14 @@ function normalizeRegisterGroup(group, peripheral, prefix, baseOffset, defaults,
     if (depth > 32) throw Object.assign(new Error("SVD nesting budget exceeded"), { code: "SVD_BUDGET_EXCEEDED" });
     consumeBudget(budget);
     const output = [];
-    const registers = resolveDerived(array(group?.register), "register");
+    const registers = array(group?.register);
     for (const registerNode of registers) {
         for (const item of expandDim(registerNode))
             output.push(
                 normalizeRegister(item.node, peripheral, prefix, baseOffset, defaults, item.index, item.offset, budget)
             );
     }
-    const clusters = resolveDerived(array(group?.cluster), "cluster");
+    const clusters = array(group?.cluster);
     for (const clusterNode of clusters) {
         for (const item of expandDim(clusterNode)) {
             const clusterName = expandedName(item.node, item.index);
@@ -311,16 +296,16 @@ function parseSvd(buffer, sourcePath = "") {
         allowBooleanAttributes: false,
         trimValues: true
     }).parse(xml);
-    const deviceNode = parsed?.device;
+    const deviceNode = parsed?.device ? resolveSvdDerivation(parsed.device) : null;
     if (!deviceNode) throw Object.assign(new Error("SVD device element is missing"), { code: "INVALID_SVD_STRUCTURE" });
     const endian = text(deviceNode?.cpu?.endian) || "little";
     if (!new Set(["little", "big"]).has(endian))
         throw Object.assign(new Error(`Unsupported or ambiguous SVD endian: ${endian}`), {
             code: "UNSUPPORTED_SVD_ENDIAN"
         });
-    const budget = { remaining: 100000 };
+    const budget = { remaining: 100000, enumerations: new WeakMap() };
     const defaults = inherit({ size: 32, access: "read-write" }, deviceNode);
-    const peripheralNodes = resolveDerived(array(deviceNode?.peripherals?.peripheral), "peripheral");
+    const peripheralNodes = array(deviceNode?.peripherals?.peripheral);
     const peripherals = [];
     const registersByPath = new Map();
     const fieldsByPath = new Map();
@@ -401,9 +386,7 @@ function fieldValue(registerValue, field) {
 
 function decodedField(registerValue, field) {
     const value = fieldValue(registerValue, field);
-    const enumeration = field.enumerations.find((entry) =>
-        entry.mask === null ? entry.value === value : (value & entry.mask) === entry.value
-    );
+    const enumeration = field.enumerations.find((entry) => readableEnumeration(entry) && enumMatches(entry, value));
     return {
         path: field.path,
         name: field.name,
@@ -478,7 +461,9 @@ function parseWriteValue(raw, field, bits) {
     const valueText = String(raw ?? "").trim();
     let value;
     if (field) {
-        const enumeration = field.enumerations.find((entry) => entry.name.toLowerCase() === valueText.toLowerCase());
+        const enumeration = field.enumerations.find(
+            (entry) => writableEnumeration(entry) && entry.name.toLowerCase() === valueText.toLowerCase()
+        );
         if (enumeration) {
             if (enumeration.mask !== null)
                 throw Object.assign(
@@ -519,12 +504,21 @@ function parseWriteValue(raw, field, bits) {
     return value;
 }
 
+function jsonConstraint(value) {
+    return value?.kind === "range"
+        ? { ...value, minimum: value.minimum.toString(), maximum: value.maximum.toString() }
+        : value;
+}
+
 class SvdPeripheralService {
     constructor(options = {}) {
         this.loadBoundSvd = options.loadBoundSvd;
         this.debugBridge = options.debugBridge;
         this.authorization = options.authorization;
         this.cache = new Map();
+        this.parser = options.workerPath
+            ? new (require("./svdModelService").SvdModelService)({ workerPath: options.workerPath })
+            : null;
     }
 
     async model() {
@@ -540,9 +534,19 @@ class SvdPeripheralService {
                 });
             }));
         const sha256 = bound.sha256 || crypto.createHash("sha256").update(buffer).digest("hex");
-        if (!this.cache.has(sha256)) this.cache.set(sha256, parseSvd(buffer, bound.path));
+        const key = JSON.stringify([sha256, bound.path]);
+        if (!this.cache.has(key))
+            this.cache.set(
+                key,
+                this.parser ? await this.parser.parse(buffer, bound.path, sha256) : parseSvd(buffer, bound.path)
+            );
         while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
-        return this.cache.get(sha256);
+        return this.cache.get(key);
+    }
+
+    dispose() {
+        this.parser?.dispose();
+        this.cache.clear();
     }
 
     async list(params = {}) {
@@ -573,12 +577,14 @@ class SvdPeripheralService {
                     })
                     .map((register) => ({
                         ...register,
+                        writeConstraint: jsonConstraint(register.writeConstraint),
                         resetValue:
                             register.resetValue === undefined ? undefined : hex(register.resetValue, register.size),
                         resetMask:
                             register.resetMask === undefined ? undefined : hex(register.resetMask, register.size),
                         fields: register.fields.map((field) => ({
                             ...field,
+                            writeConstraint: jsonConstraint(field.writeConstraint),
                             enumerations: field.enumerations.map((entry) => ({
                                 ...entry,
                                 value: hex(entry.value, field.bitWidth),
@@ -627,6 +633,44 @@ class SvdPeripheralService {
             _value: value,
             _bytes: bytes
         };
+    }
+
+    async readForView(targets) {
+        const model = await this.model();
+        const guard = this._guard();
+        const cached = new Map();
+        const registers = [];
+        for (const target of [...new Set(targets)]) {
+            guard();
+            try {
+                const { register, field } = resolveTarget(model, target);
+                if (field?.access === "write-only")
+                    throw Object.assign(new Error(`Field is write-only: ${field.path}`), {
+                        code: "PERIPHERAL_READ_NOT_ALLOWED"
+                    });
+                if (!cached.has(register.path)) {
+                    const value = await this._readRegister(model, register, guard);
+                    delete value._value;
+                    delete value._bytes;
+                    cached.set(register.path, value);
+                }
+                registers.push(cached.get(register.path));
+            } catch (error) {
+                guard();
+                if (
+                    [
+                        "TARGET_NOT_PAUSED",
+                        "DEBUG_STATE_CHANGED",
+                        "DEBUG_SESSION_NOT_ACTIVE",
+                        "DEBUG_SESSION_CONFLICT"
+                    ].includes(error.code)
+                )
+                    throw error;
+                registers.push({ path: target, error: error.message, code: error.code || "PERIPHERAL_READ_FAILED" });
+            }
+            guard();
+        }
+        return { session: this.debugBridge.agentStatus(), registers };
     }
 
     async read(params = {}) {
@@ -710,6 +754,7 @@ class SvdPeripheralService {
                 }
                 requested.push({ target: change.target, value: String(change.raw) });
             }
+            assertRegisterConstraints(register, written, snapshot._value);
             items.push({
                 target: requested.map((entry) => entry.target).join(","),
                 register: register.path,

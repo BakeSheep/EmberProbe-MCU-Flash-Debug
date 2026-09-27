@@ -64,31 +64,7 @@ class PeripheralViewService {
             throw new Error(`Provide 1–${MAX_READ_TARGETS} register paths`);
         }
         this.debugBridge.assertPausedAccess();
-        const expected = this.debugBridge.agentStatus();
-        const registers = [];
-        for (const target of [...new Set(targets)]) {
-            try {
-                const result = await this.peripherals.read({ targets: [target] });
-                registers.push(result.registers[0]);
-            } catch (error) {
-                if (
-                    [
-                        "TARGET_NOT_PAUSED",
-                        "DEBUG_STATE_CHANGED",
-                        "DEBUG_SESSION_NOT_ACTIVE",
-                        "DEBUG_SESSION_CONFLICT"
-                    ].includes(error.code)
-                )
-                    throw error;
-                registers.push({ path: target, error: error.message, code: error.code || "PERIPHERAL_READ_FAILED" });
-            }
-            const current = this.debugBridge.agentStatus();
-            if (current.epoch !== expected.epoch || current.session?.id !== expected.session?.id)
-                throw Object.assign(new Error("Debug target changed during peripheral refresh"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
-        }
-        return { session: this.debugBridge.agentStatus(), registers };
+        return this.peripherals.readForView(targets);
     }
 }
 

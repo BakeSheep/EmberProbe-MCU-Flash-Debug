@@ -19,6 +19,7 @@ class ElfService {
         this.workerPath = options.workerPath || null;
         this.onChange = options.onChange || (() => {});
         this.cache = null;
+        this.loadIdentity = null;
         this.generation = 0;
         this.nextRequestId = 0;
         this.pendingLayouts = new Map();
@@ -28,6 +29,7 @@ class ElfService {
 
     invalidate() {
         this.generation++;
+        this.loadIdentity = null;
         if (this.worker) {
             this.worker.terminate().catch(() => {});
             this.worker = null;
@@ -92,16 +94,28 @@ class ElfService {
                 })
             );
         if (
-            this.cache?.elf?.path === elfPath &&
-            this.cache.elf.mtimeMs === stat.mtimeMs &&
-            this.cache.elf.size === stat.size
+            this.loadIdentity?.path === elfPath &&
+            this.loadIdentity.mtimeMs === stat.mtimeMs &&
+            this.loadIdentity.size === stat.size
         )
             return this.symbolsPromise || Promise.resolve(this.cache);
         this.invalidate();
+        this.loadIdentity = { path: elfPath, mtimeMs: stat.mtimeMs, size: stat.size };
         const generation = this.generation;
         const result = { symbols: [], functions: [], warnings: [], diagnostics: [], elf: null, dwarfReady: false };
         this.cache = result;
         const types = new Map();
+        let worker;
+        try {
+            worker = new Worker(this.workerPath, {
+                workerData: { path: elfPath },
+                resourceLimits: { maxOldGenerationSizeMb: 512 }
+            });
+        } catch (error) {
+            this.loadIdentity = null;
+            this.cache = null;
+            throw error;
+        }
         this.symbolsPromise = new Promise((resolve, reject) => {
             this.resolveSymbols = resolve;
             this.rejectSymbols = reject;
@@ -111,10 +125,6 @@ class ElfService {
             this.rejectDwarf = reject;
         });
         this.dwarfPromise.catch(() => {});
-        const worker = new Worker(this.workerPath, {
-            workerData: { path: elfPath },
-            resourceLimits: { maxOldGenerationSizeMb: 512 }
-        });
         this.worker = worker;
         const ack = (kind) =>
             setImmediate(() => {
@@ -129,6 +139,7 @@ class ElfService {
         const fail = (error) => {
             if (generation !== this.generation || failed) return;
             failed = true;
+            this.loadIdentity = null;
             const failure = Object.assign(new Error(error.message || String(error)), {
                 code: error.code || "ELF_READ_FAILED"
             });
@@ -146,7 +157,7 @@ class ElfService {
             this.onChange("failed", result);
         };
         worker.on("message", (message) => {
-            if (generation !== this.generation) return;
+            if (generation !== this.generation || failed) return;
             switch (message.type) {
                 case "metadata":
                     result.elf = message.elf;

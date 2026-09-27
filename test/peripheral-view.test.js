@@ -57,6 +57,17 @@ const { loadProvider } = require("./helpers/load-provider");
             };
         }
     };
+    peripherals.readForView = async (targets) => ({
+        registers: await Promise.all(
+            targets.map(async (target) => {
+                try {
+                    return (await peripherals.read({ targets: [target] })).registers[0];
+                } catch (error) {
+                    return { path: target, code: error.code, error: error.message };
+                }
+            })
+        )
+    });
     const service = new PeripheralViewService({ peripherals, debugBridge: bridge });
     const catalog = await service.catalog();
     assert.strictEqual(catalog.peripherals[0].registerNames[0], "MODER");
@@ -67,9 +78,9 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.strictEqual(result.registers[1].code, "PERIPHERAL_READ_SIDE_EFFECT");
     await assert.rejects(service.read([]), /register paths/);
     await assert.rejects(service.read(Array(33).fill("GPIOA.MODER")), /register paths/);
-    peripherals.read = async () => {
+    peripherals.readForView = async () => {
         epoch++;
-        return { registers: [{ path: "GPIOA.MODER", value: "0x00000002" }] };
+        throw new Error("Debug target changed");
     };
     await assert.rejects(service.read(["GPIOA.MODER"]), /Debug target changed/);
 

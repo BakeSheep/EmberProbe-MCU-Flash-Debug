@@ -1,10 +1,10 @@
 "use strict";
 
 const fs = require("fs/promises");
-const { canonicalFile } = require("../../skills/_emberprobe/file-identity");
+const { inspectElf } = require("../../skills/_emberprobe/elf-file");
 const os = require("os");
 const path = require("path");
-const crypto = require("crypto");
+const { resolveExecutablePath } = require("../../skills/_emberprobe/openocd-launch");
 const { quoteTclWord } = require("../openocdRunner");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { runOpenOcdOnce } = require("./openocdExec");
@@ -13,6 +13,7 @@ const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-prefl
 
 class AgentFlashService {
     constructor(options) {
+        this.getConfig = options.getConfig;
         this.coordinator = options.coordinator;
         this.authorization = options.authorization;
         this.isDebugActive = options.isDebugActive;
@@ -23,42 +24,79 @@ class AgentFlashService {
         this.recordSuccess = options.recordSuccess || (async () => {});
     }
 
-    async execute(params, verify = false) {
+    request(params) {
+        const configured = this.getConfig();
+        const executable = resolveExecutablePath(configured.openocdPath);
+        if (!executable) throw new Error("Configure OpenOCD before flashing");
+        for (const key of ["openocd", "executable"]) {
+            if (params[key] !== undefined && resolveExecutablePath(params[key]) !== executable)
+                throw Object.assign(new Error("Agent OpenOCD must match the configured executable"), {
+                    code: "OPENOCD_EXECUTABLE_MISMATCH"
+                });
+        }
+        return {
+            executable,
+            openocd: executable,
+            probe: params.probe ?? configured.debugger,
+            target: params.target ?? configured.mcu,
+            transport: params.transport ?? configured.transport,
+            probeSerial: params.probeSerial ?? configured.probeSerial,
+            adapterSpeedKhz: params.adapterSpeedKhz ?? configured.adapterSpeedKhz
+        };
+    }
+
+    async authorize(params = {}) {
+        const request = this.request(params);
+        const elf = await inspectElf(params.elf);
+        this.assertDigest(elf.sha256, params.elfSha256);
+        this.request(request);
+        const connection = await this.prepare(request);
+        this.request(request);
+        return this.authorization.authorize({ ...this.identity(request, connection), elf }, params.confirmationId);
+    }
+
+    assertDigest(actual, expected) {
+        if (actual !== expected)
+            throw Object.assign(new Error("ELF changed before execution"), {
+                code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
+            });
+    }
+
+    identity(request, connection) {
+        return {
+            transport: connection.transport,
+            target: request.target,
+            probe: request.probe,
+            openocd: connection.openocd,
+            probeSerial: connection.probeSerial,
+            adapterSpeedKhz: connection.adapterSpeedKhz
+        };
+    }
+
+    async execute(params = {}, verify = false) {
+        const request = this.request(params);
         if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {
-            const elf = await canonicalFile(String(params.elf || ""));
-            const buffer = await fs.readFile(elf);
-            const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-            if (sha256 !== params.elfSha256)
-                throw Object.assign(new Error("ELF changed before execution"), {
-                    code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
-                });
-            const launch = this.resolveLaunch(params.openocd, params.probe, params.target, params.transport);
-            const compatible = await this.check(launch.executable);
-            if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
-            const connection = await this.prepare(params, { resolveLaunch: () => launch });
-            if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
-            if (!verify) {
-                if (!params.confirmationId) throw new Error("Flash confirmation is required");
-                this.authorization.authorize(
-                    {
-                        elf: { path: elf, sha256 },
-                        transport: connection.transport,
-                        target: params.target,
-                        probe: params.probe,
-                        openocd: connection.openocd,
-                        probeSerial: connection.probeSerial,
-                        adapterSpeedKhz: connection.adapterSpeedKhz
-                    },
-                    params.confirmationId
-                );
-            }
-            // OpenOCD consumes exactly the bytes whose hash was authorized, even if a build replaces the original ELF.
+            if (!verify && !params.confirmationId) throw new Error("Flash confirmation is required");
             temporary = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-flash-"));
             const snapshot = path.join(temporary, "firmware.elf");
-            await fs.writeFile(snapshot, buffer, { flag: "wx", mode: 0o600 });
+            const inspected = await inspectElf(params.elf, { snapshot });
+            const { path: elf, sha256 } = inspected;
+            this.assertDigest(sha256, params.elfSha256);
+            this.request(request);
+            const launch = this.resolveLaunch(request.executable, request.probe, request.target, request.transport);
+            const compatible = await this.check(launch.executable);
+            if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
+            const connection = await this.prepare(request, { resolveLaunch: () => launch });
+            if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
+            if (!verify)
+                this.authorization.authorize(
+                    { ...this.identity(request, connection), elf: inspected },
+                    params.confirmationId
+                );
+            // Only the private, bounded snapshot whose digest was authorized is consumed.
             const word = quoteTclWord(snapshot.replace(/\\/g, "/"));
             const verifyCommand =
                 'set o [[target current] curstate]; set h 0; set rc 0; set msg ""; ' +
@@ -74,11 +112,12 @@ class AgentFlashService {
                   ];
             if (lease.released || this.isDebugActive())
                 throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
+            this.request(request);
             let verifyResult;
             const execution = await this.run({
                 executable: launch.executable,
-                probe: params.probe,
-                target: params.target,
+                probe: request.probe,
+                target: request.target,
                 transport: connection.transport,
                 probeSerial: connection.probeSerial,
                 adapterSpeedKhz: connection.adapterSpeedKhz,

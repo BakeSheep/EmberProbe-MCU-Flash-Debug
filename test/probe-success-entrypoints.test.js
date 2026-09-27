@@ -1,4 +1,5 @@
 "use strict";
+const { minimalElf } = require("./helpers/elf-fixture");
 const assert = require("assert");
 const fs = require("fs/promises");
 const path = require("path");
@@ -83,11 +84,12 @@ async function main() {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-auto-flash-"));
     try {
         const elf = path.join(root, "firmware.elf");
-        await fs.writeFile(elf, "firmware");
+        await fs.writeFile(elf, minimalElf());
         let flashRecords = 0,
             fail = false,
             executionTransport;
         const flash = new AgentFlashService({
+            getConfig: () => ({ openocdPath: "fake" }),
             coordinator: new ProbeCoordinator(),
             isDebugActive: () => false,
             resolveLaunch: () => ({ executable: "fake" }),
@@ -105,7 +107,7 @@ async function main() {
         });
         const params = {
             elf,
-            elfSha256: crypto.createHash("sha256").update("firmware").digest("hex"),
+            elfSha256: crypto.createHash("sha256").update(minimalElf()).digest("hex"),
             probe: "jlink.cfg",
             target: "stm32f4x.cfg",
             transport: "auto",

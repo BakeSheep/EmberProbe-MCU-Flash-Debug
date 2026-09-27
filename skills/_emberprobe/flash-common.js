@@ -1,4 +1,5 @@
 "use strict";
+const { inspectElf } = require("./elf-file");
 // mcu-flash 编程/校验入口的共享逻辑：EmberProbe 配置复用、ELF/目标/探针自动
 // 检测与 OpenOCD 进程调用。仅依赖 Node 内置模块，随 skills/_emberprobe 一起分发，
 // 不依赖扩展本体；bridge 不可用时各项检测自动降级为工作区推断。
@@ -429,7 +430,7 @@ async function preflight(options) {
             if (!stats.isFile())
                 throw Object.assign(new Error("ELF path must be a file"), { code: "ELF_FILE_INVALID" });
             elfMtimeUtc = stats.mtime.toISOString();
-            elfSha256 = await sha256(elf);
+            elfSha256 = (await inspectElf(elf)).sha256;
         } catch (error) {
             diagnostics.push(diagnosticForError(error, { operation: "elf.read" }));
             notes.push(`Cannot read ELF: ${error.message}`);

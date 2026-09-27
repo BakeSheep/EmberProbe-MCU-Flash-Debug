@@ -1,4 +1,5 @@
 "use strict";
+const { minimalElf } = require("./helpers/elf-fixture");
 
 const assert = require("assert");
 const fs = require("fs/promises");
@@ -82,13 +83,13 @@ const { loadProvider } = require("./helpers/load-provider");
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-audit-"));
     try {
         const elf = path.join(root, "firmware.elf");
-        await fs.writeFile(elf, "firmware");
+        await fs.writeFile(elf, minimalElf());
         const params = {
             elf,
-            elfSha256: crypto.createHash("sha256").update("firmware").digest("hex"),
+            elfSha256: crypto.createHash("sha256").update(minimalElf()).digest("hex"),
             target: "t.cfg",
             probe: "p.cfg",
-            openocd: "openocd"
+            openocd: require("../src/openocdScripts").resolveExecutablePath("openocd")
         };
         const coordinator = new ProbeCoordinator();
         const authorization = new FlashAuthorization();
@@ -101,6 +102,7 @@ const { loadProvider } = require("./helpers/load-provider");
             entered = resolve;
         });
         const service = new AgentFlashService({
+            getConfig: () => ({ openocdPath: "openocd" }),
             coordinator,
             authorization,
             isDebugActive: () => false,

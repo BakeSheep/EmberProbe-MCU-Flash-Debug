@@ -1,4 +1,5 @@
 "use strict";
+const { minimalElf } = require("./helpers/elf-fixture");
 
 const assert = require("assert");
 const fs = require("fs");
@@ -27,7 +28,7 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
     const oldScripts = process.env.OPENOCD_SCRIPTS;
     try {
         const elf = path.join(root, "固件 with spaces.elf");
-        fs.writeFileSync(elf, "firmware");
+        fs.writeFileSync(elf, minimalElf());
         const supplied = process.platform === "win32" ? elf[0].toLowerCase() + elf.slice(1) : elf;
         assert.strictEqual(canonicalFileSync(supplied), await canonicalFile(elf));
         const images = path.join(root, "images");
@@ -50,15 +51,16 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
         const plan = {
             elf: {
                 path: canonicalFileSync(supplied),
-                sha256: crypto.createHash("sha256").update("firmware").digest("hex")
+                sha256: crypto.createHash("sha256").update(minimalElf()).digest("hex")
             },
             target: "stm32f4x.cfg",
             probe: "jlink.cfg",
-            openocd: "openocd",
+            openocd: launch.resolveExecutablePath("openocd"),
             transport: "swd"
         };
         let runs = 0;
         const service = new AgentFlashService({
+            getConfig: () => ({ openocdPath: "openocd" }),
             authorization,
             coordinator,
             isDebugActive: () => false,
@@ -81,7 +83,7 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
             code: "FLASH_CONFIRMATION_INVALID"
         });
         confirmationId = authorization.authorize(plan).confirmationId;
-        fs.writeFileSync(elf, "changed");
+        fs.writeFileSync(elf, minimalElf("changed"));
         await assert.rejects(service.execute({ ...params, confirmationId }), {
             code: "ELF_CHANGED_DURING_FLASH_CONFIRMATION"
         });

@@ -12,7 +12,8 @@
     "probe-detection.js",
     "probe-connection.js",
     "probe-inventory.js",
-    "probe-preflight.js"
+    "probe-preflight.js",
+    "elf-file.js"
   ],
   "legacySkills": [
     {

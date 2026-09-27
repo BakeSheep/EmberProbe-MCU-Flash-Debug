@@ -41,7 +41,7 @@ const { buildElf } = require("./perf/parse-bench");
         await worker.terminate();
         await exited;
         assert.strictEqual(service.read().symbols.length, 84, "worker failure keeps the symbol list available");
-        await assert.rejects(service.ready(), { code: "DWARF_PARSE_FAILED" });
+        assert.strictEqual((await service.ready()).dwarfReady, true, "a failed worker can be retried");
         const oldGeneration = service.generation;
         service.invalidate();
         assert.ok(service.generation > oldGeneration);

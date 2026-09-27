@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 Agent 烧录可执行文件覆盖路径，统一 ELF 64 MiB 有界读取与授权快照。
+- 修复 SVD 跨作用域继承和写入约束校验；通过 Worker 与展开预算限制解析资源。
+- 修复 ELF 并发加载误报，合并外设批量读取，拆分 Agent 路由并增加安全模块覆盖率门禁。
+
 ## [0.7.13] - 2026-09-26
 
 - 修复 DWARF 结构体、联合体及 typedef 复合变量的识别与按需展开，恢复侧栏和实时监视中的成员浏览及已选变量。

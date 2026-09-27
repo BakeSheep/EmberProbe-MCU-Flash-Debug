@@ -63,6 +63,32 @@ async function run() {
         await worker.terminate();
     }
 
+    const svdWorker = new Worker(path.join(extension.extensionPath, "dist", "svdWorker.js"), {
+        workerData: {
+            buffer: Buffer.from(
+                "<device><name>T</name><peripherals><peripheral><name>P</name><baseAddress>0</baseAddress><registers><register><name>R</name><addressOffset>0</addressOffset></register></registers></peripheral></peripherals></device>"
+            ),
+            sourcePath: "test.svd"
+        }
+    });
+    try {
+        const result = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Packaged SVD worker did not respond")), 5000);
+            svdWorker.once("error", (error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+            svdWorker.once("message", (message) => {
+                clearTimeout(timer);
+                resolve(message);
+            });
+        });
+        assert.equal(result.model.registersByPath.size, 1);
+        console.log("✓ packaged SVD worker parses independently without hardware");
+    } finally {
+        await svdWorker.terminate();
+    }
+
     const elfWorker = new Worker(path.join(extension.extensionPath, "dist", "elfWorker.js"), {
         workerData: { path: path.join(workspace, "missing-firmware.elf") }
     });

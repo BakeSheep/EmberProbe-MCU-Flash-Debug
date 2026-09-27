@@ -31,3 +31,7 @@ Both operations must complete detection first and report the selected ELF, ELF S
 - J-Link `auto` resolves to SWD for known Cortex-M targets, otherwise the interface script default, validated with `noinit`. Preserve the resolved transport reported by preflight; do not retry other protocols on failure. `--probe-serial <decimal>` selects the physical J-Link and `--adapter-speed-khz <integer>` sets kHz (`0` keeps script defaults). Report and preserve these values from preflight through confirmation and execution. A changed identity invalidates confirmation.
 - Multiple detected probe types require an explicit `--probe`. Same-model J-Links use their serial numbers; duplicate/unreadable identities must be resolved before proceeding. Use `mcu-config --probes` to inspect OS metadata. Never fall back to a different serial when the selected device is absent.
 - Windows J-Link USB failures may indicate a legacy SEGGER driver binding. Explain the reported diagnostic; do not automatically replace drivers or retry flashing.
+
+## Execution safety
+
+Bridge-backed authorization, programming and verification use the OpenOCD executable configured in EmberProbe. An explicit `--openocd` must resolve to that same executable; otherwise execution returns `OPENOCD_EXECUTABLE_MISMATCH`. Change the extension setting through the user interface before selecting another installation. ELF inputs must be regular ELF32 little-endian files no larger than 64 MiB. The extension hashes bounded reads and programs only a private snapshot matching the authorized digest.

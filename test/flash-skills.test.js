@@ -1,4 +1,5 @@
 "use strict";
+const { minimalElf } = require("./helpers/elf-fixture");
 // mcu-flash Agent Skill 中编程/校验两个入口的跨平台测试：
 // 通过 fake Agent Bridge 提供 EmberProbe 配置，用假 OpenOCD 可执行文件验证预检与执行路径。
 // Windows 上 Node 以 shell:false spawn .cmd/.sh 脚本会失败（EINVAL），因此 --execute 场景
@@ -61,13 +62,14 @@ function lastJsonLine(stdout) {
     assert.strictEqual(flashCommon.checkOpenOcdVersion("0.12.0-7").compatible, true);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-skills-"));
     const elf = path.join(root, "firmware.elf");
-    fs.writeFileSync(elf, "test firmware");
+    fs.writeFileSync(elf, minimalElf("test firmware"));
     const fakeOpenOcd = makeFakeOpenOcd(root);
 
     const flashAuthorization = new FlashAuthorization();
     const { AgentFlashService } = require("../src/services/agentFlashService");
     const { ProbeCoordinator } = require("../src/probeCoordinator");
     const executor = new AgentFlashService({
+        getConfig: () => ({ openocdPath: fakeOpenOcd }),
         coordinator: new ProbeCoordinator(),
         authorization: flashAuthorization,
         isDebugActive: () => false
@@ -246,7 +248,7 @@ function lastJsonLine(stdout) {
         // 任务2：配置获取超时但显式参数完整时，预检仍可用，来源标记为 explicit，诊断保留原始超时
         const cfgFailRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-cfgfail-"));
         const cfgFailElf = path.join(cfgFailRoot, "fw.elf");
-        fs.writeFileSync(cfgFailElf, "firmware");
+        fs.writeFileSync(cfgFailElf, minimalElf());
         const cfgFailBridge = new AgentBridge(
             cfgFailRoot,
             async (method) => {

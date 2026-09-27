@@ -55,6 +55,15 @@ const elfBuild = esbuild.build({
     format: "cjs",
     target: "node20"
 });
+const svdBuild = esbuild.build({
+    absWorkingDir: __dirname,
+    entryPoints: [path.join(__dirname, "src", "svdWorker.js")],
+    bundle: true,
+    outfile: path.join(__dirname, "dist", "svdWorker.js"),
+    platform: "node",
+    format: "cjs",
+    target: "node20"
+});
 const debugBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "debug", "adapter.js")],
@@ -69,6 +78,7 @@ Promise.all([
     extensionBuild,
     samplingBuild,
     elfBuild,
+    svdBuild,
     debugBuild,
     webviewBuild("sidebar"),
     webviewBuild("liveWatch")

@@ -313,7 +313,8 @@
     "THIRD_PARTY_NOTICES.md",
     "native/vendor/libwdi/COPYING",
     "native/vendor/libwdi/COPYING-LGPL",
-    "dist/debugAdapter.js"
+    "dist/debugAdapter.js",
+    "dist/svdWorker.js"
   ],
   "scripts": {
     "test": "npm run check",
