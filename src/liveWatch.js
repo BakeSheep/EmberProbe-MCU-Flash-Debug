@@ -16,6 +16,8 @@ const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
 const MAX_DEBUG_READ_COMMANDS = 32;
 const MAX_DEBUG_CYCLE_MS = 1000;
+const MAX_BATCH_GROUPS = 8;
+const MAX_BATCH_BYTES = 1024;
 
 // 让操作系统分配一个当前空闲的临时端口。OpenOCD 的 Tcl 端口无认证，固定端口会让
 // 采样期间的任意本机进程都能连接并下发 halt/write_memory；未显式配置端口时应随机选用。
@@ -134,6 +136,42 @@ function validateManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxComm
     return total;
 }
 
+function compileReadBatches(items) {
+    if (!Array.isArray(items) || !items.length) return [];
+    const sorted = items.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
+    const groups = [];
+    for (const v of sorted) {
+        const last = groups[groups.length - 1];
+        if (last && v.address <= last.end) {
+            last.vars.push(v);
+            last.end = Math.max(last.end, v.address + v.size);
+        } else {
+            groups.push({ start: v.address, end: v.address + v.size, vars: [v] });
+        }
+    }
+    for (const g of groups) {
+        g.byteCount = g.end - g.start;
+        g.shape = transferShape(g.start, g.byteCount);
+    }
+    const batches = [];
+    let currentBatch = [];
+    let currentBatchBytes = 0;
+    for (const g of groups) {
+        if (
+            currentBatch.length >= MAX_BATCH_GROUPS ||
+            (currentBatch.length > 0 && currentBatchBytes + g.byteCount > MAX_BATCH_BYTES)
+        ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentBatchBytes = 0;
+        }
+        currentBatch.push(g);
+        currentBatchBytes += g.byteCount;
+    }
+    if (currentBatch.length) batches.push(currentBatch);
+    return batches;
+}
+
 // 复用 openocdRunner 的配置名白名单校验
 
 class ManagedOpenOcdSession {
@@ -184,27 +222,73 @@ class ManagedOpenOcdSession {
         this._tclListening = false;
         this._silentResponseDir = "";
         this._silentResponseFile = "";
+        this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
+        this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
+        this._recentDurations = [];
+        this._consecutiveSuccesses = 0;
+        this._lastAdaptiveEvalAt = 0;
+        this._lastBackoffOrErrorAt = 0;
+        this._missedDeadlines = 0;
+        this._pauseReason = null;
+        this._compiledBatches = [];
+        this._batchUnsupported = false;
+        this._recentCycleTimestamps = [];
+    }
+
+    _warmUp() {
+        this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
+        this._recentDurations = [];
+        this._consecutiveSuccesses = 0;
+        const nowMonoMs = Number(process.hrtime.bigint() / 1000000n);
+        this._lastAdaptiveEvalAt = nowMonoMs;
+        this._lastBackoffOrErrorAt = nowMonoMs;
+        this._recentCycleTimestamps = [];
+    }
+
+    _scheduleNext(delayMs) {
+        if (this.timer) {
+            clearTimeout(this.timer);
+            this.timer = null;
+        }
+        if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
+        this.timer = setTimeout(
+            async () => {
+                this.timer = null;
+                await this._sampleTick(true);
+            },
+            Math.max(0, delayMs)
+        );
     }
 
     setWatch(list) {
         const next = Array.isArray(list) ? list.slice() : [];
         if (this.mode === "debug") validateManagedReadPlan(next);
         this.watch = next;
+        this._compiledBatches = compileReadBatches(this.watch);
+        this._warmUp();
+        if (
+            this.samplingEnabled &&
+            !this.stopped &&
+            this.socket &&
+            !this.socket.destroyed &&
+            !this.timer &&
+            !this.busy
+        ) {
+            this._scheduleNext(0);
+        }
     }
 
-    // 运行中动态调整采样间隔：重建定时器
     setIntervalMs(ms) {
-        const minimum = this.mode === "debug" ? 100 : 20;
-        const interval = clampInteger(ms, 100, minimum, 10000);
+        const interval = clampInteger(ms, 100, 5, 10000);
         this.options.intervalMs = interval;
+        this.targetIntervalMs = interval;
+        this._warmUp();
         if (this.timer) {
-            clearInterval(this.timer);
+            clearTimeout(this.timer);
             this.timer = null;
         }
-        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) {
-            this.timer = setInterval(() => {
-                this._sampleTick();
-            }, interval);
+        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed && !this.busy) {
+            this._scheduleNext(0);
         }
     }
 
@@ -217,19 +301,114 @@ class ManagedOpenOcdSession {
         this.sampleEpoch++;
         this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
         if (this.timer) {
-            clearInterval(this.timer);
+            clearTimeout(this.timer);
             this.timer = null;
         }
         if (this.samplingEnabled) {
-            const minimum = this.mode === "debug" ? 100 : 20;
-            const interval = clampInteger(this.options.intervalMs, 100, minimum, 10000);
-            this.timer = setInterval(() => {
-                this._sampleTick();
-            }, interval);
-        } else if (enabled && this.mode === "debug" && !this.stopped && this.child) {
-            this._reconnectDebugTcl();
+            this._pauseReason = null;
+            this._warmUp();
+            this._scheduleNext(0);
+        } else {
+            this._pauseReason = this.stopped ? "stopped" : this.mode === "debug" ? "debug_paused" : "paused";
+            if (enabled && this.mode === "debug" && !this.stopped && this.child) {
+                this._reconnectDebugTcl();
+            }
         }
         return this.samplingEnabled;
+    }
+
+    setPauseReason(reason) {
+        this._pauseReason = reason || null;
+        if (reason) {
+            this._lastBackoffOrErrorAt = Number(process.hrtime.bigint() / 1000000n);
+            this._consecutiveSuccesses = 0;
+        }
+    }
+
+    _computeP95Duration() {
+        if (!this._recentDurations.length) return 0;
+        const sorted = this._recentDurations.slice().sort((a, b) => a - b);
+        const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
+        return sorted[index];
+    }
+
+    _computeActualHz() {
+        if (!this.samplingEnabled || this._recentCycleTimestamps.length < 2) return 0;
+        const first = this._recentCycleTimestamps[0];
+        const last = this._recentCycleTimestamps[this._recentCycleTimestamps.length - 1];
+        const spanMs = last - first;
+        if (spanMs <= 0) return 0;
+        const count = this._recentCycleTimestamps.length - 1;
+        return Number(((count * 1000) / spanMs).toFixed(1));
+    }
+
+    stats() {
+        const p95 = this._computeP95Duration();
+        const actualHz = this._computeActualHz();
+        return {
+            targetIntervalMs: this.targetIntervalMs,
+            effectiveIntervalMs: this.effectiveIntervalMs,
+            actualHz,
+            p95DurationMs: Number(p95.toFixed(2)),
+            missedDeadlines: this._missedDeadlines,
+            pauseReason: this._pauseReason
+        };
+    }
+
+    _recordCycle(durationMs, success = true, timestamp = Date.now()) {
+        const nowMonoMs = Number(process.hrtime.bigint() / 1000000n);
+        this._recentCycleTimestamps.push(timestamp);
+        while (this._recentCycleTimestamps.length > 32 && this._recentCycleTimestamps[0] < timestamp - 3000) {
+            this._recentCycleTimestamps.shift();
+        }
+        this._recentDurations.push(durationMs);
+        if (this._recentDurations.length > 32) this._recentDurations.shift();
+
+        if (durationMs > this.effectiveIntervalMs) {
+            this._missedDeadlines++;
+        }
+
+        if (success) {
+            this._consecutiveSuccesses++;
+        } else {
+            this._consecutiveSuccesses = 0;
+            this._lastBackoffOrErrorAt = nowMonoMs;
+        }
+
+        if (nowMonoMs - this._lastAdaptiveEvalAt >= 1000) {
+            this._evaluateAdaptiveSchedule(nowMonoMs);
+            this._lastAdaptiveEvalAt = nowMonoMs;
+        }
+    }
+
+    _evaluateAdaptiveSchedule(nowMonoMs = Number(process.hrtime.bigint() / 1000000n)) {
+        if (this._recentDurations.length < 4) return;
+        const p95 = this._computeP95Duration();
+        const threshold = this.mode === "debug" ? 0.4 : 0.7;
+        const target = this.targetIntervalMs;
+
+        if (p95 > this.effectiveIntervalMs * threshold) {
+            const requiredInterval = Math.ceil(p95 / threshold);
+            const nextInterval = Math.min(
+                10000,
+                Math.max(this.effectiveIntervalMs + 5, requiredInterval, Math.round(this.effectiveIntervalMs * 1.25))
+            );
+            if (nextInterval > this.effectiveIntervalMs) {
+                this.effectiveIntervalMs = nextInterval;
+                this._consecutiveSuccesses = 0;
+                this._lastBackoffOrErrorAt = nowMonoMs;
+            }
+        } else if (
+            this._consecutiveSuccesses >= 32 &&
+            nowMonoMs - this._lastBackoffOrErrorAt >= 2000 &&
+            this.effectiveIntervalMs > target
+        ) {
+            const stepDown = Math.max(target, Math.round(this.effectiveIntervalMs * 0.85));
+            if (p95 <= stepDown * threshold) {
+                this.effectiveIntervalMs = stepDown;
+                this._consecutiveSuccesses = 0;
+            }
+        }
     }
 
     _status(msg) {
@@ -280,7 +459,8 @@ class ManagedOpenOcdSession {
             throw new Error(`非法的 OpenOCD 配置名：${this.options.probe} / ${this.options.target}`);
         }
         const port = clampInteger(this.options.port, 6666, 1, 65535);
-        const interval = clampInteger(this.options.intervalMs, 100, this.mode === "debug" ? 100 : 20, 10000);
+        this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
+        this.options.intervalMs = this.targetIntervalMs;
         const gdbPort = this.mode === "debug" ? clampInteger(this.options.gdbPort, 0, 1, 65535) : 0;
         if (this.mode === "debug" && !gdbPort) throw new Error("Managed debug OpenOCD requires a GDB port");
         if (/(^|\/)gd32vf103\.cfg$/i.test(this.options.target)) {
@@ -389,7 +569,7 @@ class ManagedOpenOcdSession {
             const expected = this.stopped;
             this.child = null;
             if (this.timer) {
-                clearInterval(this.timer);
+                clearTimeout(this.timer);
                 this.timer = null;
             }
             if (this.socket && !this.socket.destroyed) {
@@ -449,9 +629,9 @@ class ManagedOpenOcdSession {
                         this._status({ key: "lw.connected" });
                         if (this._samplingRequested) {
                             this.samplingEnabled = true;
-                            this.timer = setInterval(() => {
-                                this._sampleTick();
-                            }, interval);
+                            this._pauseReason = null;
+                            this._warmUp();
+                            this._scheduleNext(0);
                         }
                         resolve(undefined);
                     }, reject);
@@ -623,7 +803,7 @@ class ManagedOpenOcdSession {
             this.sampleEpoch++;
             this.samplingEnabled = false;
             if (this.timer) {
-                clearInterval(this.timer);
+                clearTimeout(this.timer);
                 this.timer = null;
             }
             this._rejectQueue(err);
@@ -649,7 +829,7 @@ class ManagedOpenOcdSession {
         }
         this.stopped = true;
         if (this.timer) {
-            clearInterval(this.timer);
+            clearTimeout(this.timer);
             this.timer = null;
         }
         this._rejectQueue(err);
@@ -806,33 +986,91 @@ class ManagedOpenOcdSession {
         }
     }
 
+    async _readBatchBytes(batch) {
+        if (batch.length === 1) {
+            const g = batch[0];
+            const bytes = await this._readMemoryBytes(g.start, g.byteCount);
+            return [bytes];
+        }
+        const calls = batch.map((g) => {
+            const hex = "0x" + (g.start >>> 0).toString(16);
+            return `[${this.readCmd} ${hex} ${g.shape.widthBits} ${g.shape.count}]`;
+        });
+        const cmd = `join [list ${calls.join(" ")}] "\\n"`;
+        let resp;
+        try {
+            resp = await this._sendCheckedCommand(cmd);
+        } catch (error) {
+            if (!this.altTried && /invalid command name|unknown command/i.test(error.message)) {
+                this.altTried = true;
+                this.readCmd = this.readCmd === "ocd_read_memory" ? "read_memory" : "ocd_read_memory";
+                const retryCalls = batch.map((g) => {
+                    const hex = "0x" + (g.start >>> 0).toString(16);
+                    return `[${this.readCmd} ${hex} ${g.shape.widthBits} ${g.shape.count}]`;
+                });
+                const retryCmd = `join [list ${retryCalls.join(" ")}] "\\n"`;
+                resp = await this._sendCheckedCommand(retryCmd);
+            } else {
+                throw error;
+            }
+        }
+        const lines = String(resp || "").split(/\r?\n/);
+        if (lines.length < batch.length) {
+            throw new Error("Batch memory read response truncated");
+        }
+        const result = [];
+        for (let i = 0; i < batch.length; i++) {
+            const g = batch[i];
+            const line = lines[i];
+            const values = parseMemoryElements(line, g.shape.widthBits);
+            if (values.length < g.shape.count) {
+                result.push(null);
+            } else {
+                const bytes = elementsToBytes(values.slice(0, g.shape.count), g.shape.elementBytes).slice(
+                    0,
+                    g.byteCount
+                );
+                result.push(bytes.length === g.byteCount ? bytes : null);
+            }
+        }
+        return result;
+    }
+
     async _readItems(items, t, guard = null) {
         const samples = [];
         let ok = 0;
-        // 按地址排序后将地址连续的变量合并为一次读取，减少 Tcl 往返。
-        const sorted = items.slice().sort((a, b) => (a.address >>> 0) - (b.address >>> 0));
-        const groups = [];
-        for (const v of sorted) {
-            const last = groups[groups.length - 1];
-            if (last && v.address <= last.end) {
-                last.vars.push(v);
-                last.end = Math.max(last.end, v.address + v.size);
-            } else {
-                groups.push({ start: v.address, end: v.address + v.size, vars: [v] });
-            }
-        }
-        for (const g of groups) {
+        const batches =
+            items === this.watch && this._compiledBatches?.length ? this._compiledBatches : compileReadBatches(items);
+        for (const batch of batches) {
             this._assertReadGuard(guard);
-            const bytes = await this._readMemoryBytes(g.start, g.end - g.start);
-            this._assertReadGuard(guard);
-            if (bytes) {
-                for (const v of g.vars) {
-                    const off = v.address - g.start;
-                    samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t });
-                    ok++;
+            let batchBytes = null;
+            if (!this._batchUnsupported) {
+                try {
+                    batchBytes = await this._readBatchBytes(batch);
+                } catch {
+                    this._batchUnsupported = true;
                 }
-            } else {
-                for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
+            }
+            if (!batchBytes) {
+                batchBytes = [];
+                for (const g of batch) {
+                    this._assertReadGuard(guard);
+                    const bytes = await this._readMemoryBytes(g.start, g.byteCount);
+                    batchBytes.push(bytes);
+                }
+            }
+            for (let i = 0; i < batch.length; i++) {
+                const g = batch[i];
+                const bytes = batchBytes[i];
+                if (bytes && bytes.length === g.byteCount) {
+                    for (const v of g.vars) {
+                        const off = v.address - g.start;
+                        samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t });
+                        ok++;
+                    }
+                } else {
+                    for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
+                }
             }
         }
         if (ok && !this.stopped && !this._connectionConfirmed) {
@@ -1007,7 +1245,7 @@ class ManagedOpenOcdSession {
         }
     }
 
-    async _sampleTick() {
+    async _sampleTick(fromScheduler = false) {
         if (
             !this.samplingEnabled ||
             this.busy ||
@@ -1019,24 +1257,30 @@ class ManagedOpenOcdSession {
             return;
         this.busy = true;
         const epoch = this.sampleEpoch;
+        const startNs = process.hrtime.bigint();
         const t = Date.now();
+        let readSuccess = false;
         try {
             const guard =
                 this.mode === "debug" ? { epoch, requireSampling: true, deadline: t + MAX_DEBUG_CYCLE_MS } : null;
             const { samples, ok } = await this._readItems(this.watch, t, guard);
             if (epoch !== this.sampleEpoch || !this.samplingEnabled) return;
             if (this.handlers.onSample) this.handlers.onSample(samples, t);
-            if (ok === this.watch.length && this._sampleErrorActive) {
-                // One successful memory read does not prove target polling recovered.
-                this._successfulReads++;
-                if (this._successfulReads < 3 || this.now() - this._lastErrorAt < 2000) return;
-                this._sampleErrorActive = false;
-                this._lastReportedError = "";
-                this._pollFailureSince = null;
-                this._pollFailureCount = 0;
-                this._lastReadError = "";
-                this._notifiedError = "";
-                this._status({ key: "sb.sampling" });
+            if (ok === this.watch.length) {
+                readSuccess = true;
+                if (this._sampleErrorActive) {
+                    // One successful memory read does not prove target polling recovered.
+                    this._successfulReads++;
+                    if (this._successfulReads >= 3 && this.now() - this._lastErrorAt >= 2000) {
+                        this._sampleErrorActive = false;
+                        this._lastReportedError = "";
+                        this._pollFailureSince = null;
+                        this._pollFailureCount = 0;
+                        this._lastReadError = "";
+                        this._notifiedError = "";
+                        this._status({ key: "sb.sampling" });
+                    }
+                }
             } else if (ok === 0 && this._lastReadError && this._lastReadError !== this._notifiedError) {
                 this._notifiedError = this._lastReadError;
                 this._error(
@@ -1047,6 +1291,12 @@ class ManagedOpenOcdSession {
             if (epoch === this.sampleEpoch && this.samplingEnabled && !this.connectionFailed) this._error(e.message);
         } finally {
             this.busy = false;
+            const durationMs = Number(process.hrtime.bigint() - startNs) / 1e6;
+            this._recordCycle(durationMs, readSuccess, t);
+            if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
+                const nextDelay = Math.max(0, Math.round(this.effectiveIntervalMs - durationMs));
+                this._scheduleNext(nextDelay);
+            }
         }
     }
 
@@ -1056,12 +1306,13 @@ class ManagedOpenOcdSession {
         const socket = this.socket;
         const childExited = child ? this.waitForExit(timeoutMs) : Promise.resolve(true);
         this.stopped = true;
+        this._pauseReason = "stopped";
         this.sampleEpoch++;
         this.samplingEnabled = false;
         this._samplingRequested = false;
         this.connectionFailed = true;
         if (this.timer) {
-            clearInterval(this.timer);
+            clearTimeout(this.timer);
             this.timer = null;
         }
         this._rejectQueue(new Error("采样已停止"));
@@ -1158,6 +1409,9 @@ const LiveWatchSession = ManagedOpenOcdSession;
 module.exports = {
     ManagedOpenOcdSession,
     LiveWatchSession,
+    compileReadBatches,
+    MAX_BATCH_GROUPS,
+    MAX_BATCH_BYTES,
     parseMemoryValues,
     parseMemoryElements,
     transferShape,

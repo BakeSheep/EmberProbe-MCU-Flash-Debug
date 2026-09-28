@@ -1176,7 +1176,7 @@ class MainViewProvider {
                 if (temporary && syncStatus)
                     this._postAgentSampling(true, "live.agentSampling", { current: 0, total: count });
                 const result = [];
-                const effectiveIntervalMs = source === "debug-running-openocd" ? Math.max(100, intervalMs) : intervalMs;
+                const effectiveIntervalMs = intervalMs;
                 for (let index = 0; index < count; index++) {
                     if (temporary && !this._agentReadRunning)
                         throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
@@ -1268,7 +1268,7 @@ class MainViewProvider {
                     port: tclPort,
                     gdbPort,
                     mode: "debug",
-                    intervalMs: Math.max(100, this._liveIntervalMs)
+                    intervalMs: this._liveIntervalMs ?? 100
                 },
                 {
                     onConnectionConfirmed: () => {
@@ -1717,7 +1717,7 @@ class MainViewProvider {
     }
     async _sampleAgentVariables(params) {
         const count = validation.clampInteger(params.count, 10, 2, 1000);
-        const intervalMs = validation.clampInteger(params.intervalMs, 200, 20, 60000);
+        const intervalMs = validation.clampInteger(params.intervalMs, 200, 5, 60000);
         return this._runAgentSamples(params, count, intervalMs, true);
     }
     // 解析写入请求：只允许标量符号与复合类型的单个标量叶子路径，且目标地址必须落在
@@ -2693,11 +2693,108 @@ class MainViewProvider {
         return map;
     }
     _setLiveInterval(intervalMs) {
-        const value = validation.clampInteger(intervalMs, 100, 20, 10000);
+        const value = validation.clampInteger(intervalMs, 100, 5, 10000);
         this._liveIntervalMs = value;
         if (this._liveSession) this._liveSession.setIntervalMs(value);
         this._postLive({ type: "liveInterval", intervalMs: value });
         return value;
+    }
+
+    _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
+        if (!entry.ready) return;
+        const interval = this._liveIntervalMs ?? 100;
+        if (interval >= 30 || !this._liveWatchRunning) {
+            if (scalarSamples?.length) entry.post({ type: "liveSample", samples: scalarSamples, t });
+            if (compositeSamples?.length) entry.post({ type: "liveCompositeSample", samples: compositeSamples, t });
+            return;
+        }
+        entry._pendingScalars = (entry._pendingScalars || []).concat(scalarSamples);
+        entry._pendingComposites = (entry._pendingComposites || []).concat(compositeSamples);
+        if (!entry._batchTimer) {
+            entry._batchTimer = setTimeout(() => {
+                entry._batchTimer = null;
+                const scalars = entry._pendingScalars;
+                const composites = entry._pendingComposites;
+                entry._pendingScalars = [];
+                entry._pendingComposites = [];
+                if (scalars?.length) entry.post({ type: "liveSample", samples: scalars, t: Date.now() });
+                if (composites?.length) entry.post({ type: "liveCompositeSample", samples: composites, t: Date.now() });
+            }, 25);
+        }
+    }
+
+    _postSidebarBatch(scalarSamples, compositeSamples, t) {
+        if (!this._webviewView?.webview) return;
+        const interval = this._liveIntervalMs ?? 100;
+        if (interval >= 30 || !this._liveWatchRunning) {
+            if (scalarSamples?.length)
+                this._webviewView.webview.postMessage({ type: "liveSample", samples: scalarSamples, t });
+            if (compositeSamples?.length)
+                this._webviewView.webview.postMessage({
+                    type: "liveCompositeSample",
+                    samples: compositeSamples,
+                    t
+                });
+            return;
+        }
+        this._pendingSidebarScalars = (this._pendingSidebarScalars || []).concat(scalarSamples);
+        this._pendingSidebarComposites = (this._pendingSidebarComposites || []).concat(compositeSamples);
+        if (!this._sidebarBatchTimer) {
+            this._sidebarBatchTimer = setTimeout(() => {
+                this._sidebarBatchTimer = null;
+                const scalars = this._pendingSidebarScalars;
+                const composites = this._pendingSidebarComposites;
+                this._pendingSidebarScalars = [];
+                this._pendingSidebarComposites = [];
+                if (scalars?.length)
+                    this._webviewView?.webview.postMessage({ type: "liveSample", samples: scalars, t: Date.now() });
+                if (composites?.length)
+                    this._webviewView?.webview.postMessage({
+                        type: "liveCompositeSample",
+                        samples: composites,
+                        t: Date.now()
+                    });
+            }, 25);
+        }
+    }
+
+    _flushPendingWebviewSamples() {
+        if (this._livePanels) {
+            for (const entry of this._livePanels.values()) {
+                if (entry._batchTimer) {
+                    clearTimeout(entry._batchTimer);
+                    entry._batchTimer = null;
+                }
+                if (entry._pendingScalars?.length) {
+                    const scalars = entry._pendingScalars;
+                    entry._pendingScalars = [];
+                    entry.post({ type: "liveSample", samples: scalars, t: Date.now() });
+                }
+                if (entry._pendingComposites?.length) {
+                    const composites = entry._pendingComposites;
+                    entry._pendingComposites = [];
+                    entry.post({ type: "liveCompositeSample", samples: composites, t: Date.now() });
+                }
+            }
+        }
+        if (this._sidebarBatchTimer) {
+            clearTimeout(this._sidebarBatchTimer);
+            this._sidebarBatchTimer = null;
+        }
+        if (this._pendingSidebarScalars?.length) {
+            const scalars = this._pendingSidebarScalars;
+            this._pendingSidebarScalars = [];
+            this._webviewView?.webview.postMessage({ type: "liveSample", samples: scalars, t: Date.now() });
+        }
+        if (this._pendingSidebarComposites?.length) {
+            const composites = this._pendingSidebarComposites;
+            this._pendingSidebarComposites = [];
+            this._webviewView?.webview.postMessage({
+                type: "liveCompositeSample",
+                samples: composites,
+                t: Date.now()
+            });
+        }
     }
 
     _handleRawSamples(samples, t) {
@@ -2710,10 +2807,9 @@ class MainViewProvider {
                 this._compositeMap(entry.watchKey),
                 entry.latestSamples
             );
-            if (!entry.ready) continue;
-            if (decoded.scalarSamples.length) entry.post({ type: "liveSample", samples: decoded.scalarSamples, t });
-            if (decoded.compositeSamples.length)
-                entry.post({ type: "liveCompositeSample", samples: decoded.compositeSamples, t });
+            if (entry.ready && (decoded.scalarSamples.length || decoded.compositeSamples.length)) {
+                this._postWebviewBatch(entry, decoded.scalarSamples, decoded.compositeSamples, t);
+            }
             // Keep every panel's decoding and type changes separate in exported history.
             const graphTypes = types.graphs.get(entry.watchKey);
             this._samplingArchive.append(
@@ -2733,19 +2829,16 @@ class MainViewProvider {
             this._compositeMap(CACHE_KEYS.sidebarWatchList),
             this._latestSidebarSamples
         );
-        if (sidebar.scalarSamples.length)
-            this._webviewView?.webview.postMessage({ type: "liveSample", samples: sidebar.scalarSamples, t });
-        if (sidebar.compositeSamples.length)
-            this._webviewView?.webview.postMessage({
-                type: "liveCompositeSample",
-                samples: sidebar.compositeSamples,
-                t
-            });
+        if (sidebar.scalarSamples.length || sidebar.compositeSamples.length) {
+            this._postSidebarBatch(sidebar.scalarSamples, sidebar.compositeSamples, t);
+        }
         this._samplingArchive.append(sidebar.scalarSamples, t);
     }
 
     _setSamplingArchiveBackpressure(paused) {
         this._samplingCoordinator.setBackpressure(paused);
+        const session = this._managedDebugServer || this._liveSession;
+        session?.setPauseReason?.(paused ? "archive_backpressure" : null);
         if (this._liveSession)
             this._liveSession.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
         if (this._managedDebugServer)
@@ -2755,6 +2848,16 @@ class MainViewProvider {
                 this._debugBridge
             );
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
+        if (!paused && this._liveWatchService && this._samplingArchive) {
+            const active = this._activeReadPlan ? this._activeReadPlan() : [];
+            if (active.length) {
+                const t = Date.now();
+                this._handleRawSamples(
+                    active.map((item) => ({ name: item.name, bytes: null, t })),
+                    t
+                );
+            }
+        }
         this._postConsumerStatuses(this._samplingStatus());
     }
 
@@ -2766,9 +2869,9 @@ class MainViewProvider {
             Array.isArray(params) ||
             Object.keys(params).some((key) => action !== "start" || key !== "intervalMs") ||
             (params.intervalMs !== undefined &&
-                (!Number.isInteger(params.intervalMs) || params.intervalMs < 20 || params.intervalMs > 10000))
+                (!Number.isInteger(params.intervalMs) || params.intervalMs < 5 || params.intervalMs > 10000))
         ) {
-            throw Object.assign(new Error("Sampling accepts only an integer intervalMs from 20 to 10000 on start"), {
+            throw Object.assign(new Error("Sampling accepts only an integer intervalMs from 5 to 10000 on start"), {
                 code: "INVALID_PARAMS"
             });
         }
@@ -2807,6 +2910,14 @@ class MainViewProvider {
                 status.diagnostic = serializeError(error);
             }
         }
+        const stats = typeof session?.stats === "function" ? session.stats() : null;
+        status.intervalMs = this._liveIntervalMs ?? 100;
+        status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs ?? 100;
+        status.actualHz = stats?.actualHz ?? 0;
+        status.p95DurationMs = stats?.p95DurationMs ?? 0;
+        status.missedDeadlines = stats?.missedDeadlines ?? 0;
+        status.pauseReason =
+            stats?.pauseReason ?? (this._samplingCoordinator.backpressured ? "archive_backpressure" : null);
         return status;
     }
 
@@ -2995,7 +3106,7 @@ class MainViewProvider {
                     )),
                     cwd,
                     port: await this._resolveTclPort(cfg),
-                    intervalMs: validation.clampInteger(intervalMs || cfg.get("sampleIntervalMs", 100), 100, 20, 10000)
+                    intervalMs: validation.clampInteger(intervalMs || cfg.get("sampleIntervalMs", 100), 100, 5, 10000)
                 },
                 {
                     onConnectionConfirmed: () => {
@@ -3068,6 +3179,7 @@ class MainViewProvider {
         }
     }
     stopLiveWatch(options = {}) {
+        this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
         let stopped = null;
         this._liveConsumers.clear();

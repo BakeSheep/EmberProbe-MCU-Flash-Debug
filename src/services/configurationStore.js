@@ -21,7 +21,7 @@ const ALLOWED_KEYS = new Set([
 ]);
 
 const NUMBER_RANGES = Object.freeze({
-    sampleIntervalMs: [20, 10000],
+    sampleIntervalMs: [5, 10000],
     tclPort: [1, 65535],
     maxSamples: [100, 100000]
 });

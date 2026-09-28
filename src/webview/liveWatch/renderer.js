@@ -362,7 +362,12 @@ function onSamples(samples) {
         (samples || []).reduce(function (last, sample) {
             return Number.isFinite(sample.t) ? Math.max(last, sample.t) : last;
         }, 0) || now;
-    if (!sampleTimes.length || tick > sampleTimes[sampleTimes.length - 1]) sampleTimes.push(tick);
+    (samples || []).forEach(function (s) {
+        var st = Number(s.t);
+        if (Number.isFinite(st) && (!sampleTimes.length || st > sampleTimes[sampleTimes.length - 1])) {
+            sampleTimes.push(st);
+        }
+    });
     while (sampleTimes.length > 1 && sampleTimes[0] < tick - 3000) sampleTimes.shift();
     var elapsed = sampleTimes.length > 1 ? tick - sampleTimes[0] : 0;
     $("rate").textContent = (elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0).toFixed(1) + " Hz";
@@ -730,7 +735,7 @@ function start() {
         setStatusKey("lw.needVar", null, "error");
         return;
     }
-    var iv = Math.min(10000, Math.max(20, parseInt($("interval").value, 10) || CFG.intervalMs));
+    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
     $("interval").value = String(iv);
     starting = true;
     updateRun();
@@ -2065,7 +2070,23 @@ window.EmberProbeMessages.connect(window, {
             if (!running) {
                 sampleTimes = [];
                 $("rate").textContent = "0 Hz";
+                $("rate").title = "";
             }
+        }
+        if (typeof m.actualHz === "number" && running) {
+            $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
+        }
+        if (m.effectiveIntervalMs !== undefined) {
+            $("rate").title =
+                "Target: " +
+                (m.intervalMs || $("interval").value) +
+                "ms | Effective: " +
+                m.effectiveIntervalMs +
+                "ms | P95: " +
+                (m.p95DurationMs || 0) +
+                "ms | Missed: " +
+                (m.missedDeadlines || 0) +
+                (m.pauseReason ? " | Paused: " + m.pauseReason : "");
         }
         starting = false;
         updateRun();
@@ -2152,7 +2173,7 @@ $("timeWindow").onchange = function () {
     }
 };
 $("interval").onchange = function () {
-    var iv = Math.min(10000, Math.max(20, parseInt($("interval").value, 10) || CFG.intervalMs));
+    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
     $("interval").value = String(iv);
     post({ type: "setInterval", intervalMs: iv });
 };

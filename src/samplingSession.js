@@ -22,6 +22,7 @@ class SamplingSession {
                 this.childPid = message.state.childPid;
                 this.stopped = message.state.stopped;
                 this.pollingFailed = message.state.pollingFailed === true;
+                if (message.state.stats) this._latestStats = message.state.stats;
                 if (message.state.generation === this.generation) this.samplingEnabled = message.state.samplingEnabled;
             }
             if (message.event === "samples") {
@@ -88,8 +89,20 @@ class SamplingSession {
         this.notify("setWatch", [items]);
     }
     setIntervalMs(value) {
-        this.options.intervalMs = clampInteger(value, 100, this.mode === "debug" ? 100 : 20, 10000);
+        this.options.intervalMs = clampInteger(value, 100, 5, 10000);
         this.notify("setIntervalMs", [this.options.intervalMs]);
+    }
+    stats() {
+        return (
+            this._latestStats || {
+                targetIntervalMs: this.options.intervalMs ?? 100,
+                effectiveIntervalMs: this.options.intervalMs ?? 100,
+                actualHz: 0,
+                p95DurationMs: 0,
+                missedDeadlines: 0,
+                pauseReason: this.stopped ? "stopped" : null
+            }
+        );
     }
     setSamplingEnabled(enabled) {
         if (enabled && this.pollingFailed) return false;
