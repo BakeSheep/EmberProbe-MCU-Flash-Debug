@@ -2,8 +2,6 @@
 
 EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it provides firmware flashing, automatic target detection, and live variable watching.
 
-For J-Link, see [connection configuration and compatibility](docs/JLINK-COMPATIBILITY.md): automatic probe selection, transport decisions and connection history. On Windows, select WinUSB beside the debugger card before using a J-Link bound to the SEGGER USB driver; chip reads, sampling, debugging and downloads do not change the driver automatically.
-
 > [中文文档](README.md)
 
 ![Live watch chart panel with sampled waveforms, current values, and the write list](docs/images/live-watch-waveform.png)
@@ -81,27 +79,3 @@ esbuild.js Single-file VSIX bundle build config
 ## License & Attribution
 
 The extension code is licensed under MIT. License and source information for the npm runtime dependencies and the bundled xPack OpenOCD is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Built-in debugging
-
-The sidebar and F5 use the independent `emberprobe` debugger. Select a workspace ELF, probe, and target first. Launch downloads the ELF and runs to main; an unresolved entry leaves the target halted. Attach halts without downloading or resetting. Restart resets and runs to the entry without downloading again.
-
-Configure tools through `emberprobe.gdbPath`, `emberprobe.armToolchainPath`, `emberprobe.armToolchainPrefix`, and `emberprobe.objdumpPath`. Legacy Cortex-Debug settings and cached directories remain compatible; the extension itself is not required.
-
-Example launch.json configuration (use request attach for attachment):
-
-```json
-{
-  "type": "emberprobe",
-  "request": "launch",
-  "name": "EmberProbe",
-  "executable": "${workspaceFolder}/build/firmware.elf",
-  "runToEntryPoint": "main"
-}
-```
-
-Set `runToEntryPoint` to an empty string to stay halted; `sourceFileMap` maps build-time source prefixes to local paths. Source, function, and conditional breakpoints are supported. Hit counts, logpoints, data breakpoints, RTOS, SWO/RTT, and disassembly views are not included. Existing Cortex-Debug launch.json entries are unchanged.
-
-### XPeripherals view
-
-The **XPERIPHERALS** sidebar section sits beside MCU Configuration, Chip Info, and Live Read/Write. Choose an existing SVD or download an official one under **Other Configuration**; the peripheral view then becomes available automatically. Browse the peripheral → register → field tree; pause the target to read or refresh values and switch between HEX, DEC, and BIN. Writable rows show an input and ±1 buttons directly. Press Enter or leave the input to submit; value syntax and bit width are checked before writing. UI writes retain SVD validation, session checks, and read-back verification; Agent Skill writes still require one-time permission. Neither Cortex-Debug nor a separate viewer extension is required. The SVD path is also passed as `svdPath` to compatible debug viewers.

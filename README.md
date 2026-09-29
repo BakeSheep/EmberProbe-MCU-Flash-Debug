@@ -2,8 +2,6 @@
 
 EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD，提供固件烧录、目标自动识别与实时变量观测。
 
-J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.md)：单探针自动选择、协议自动决策与成功连接记忆。Windows 下使用 SEGGER USB 驱动时，需先在调试器卡片右侧选择 WinUSB；芯片读取、采样、调试和下载不会自动切换驱动。
-
 > [English documentation](README_EN.md)
 
 ![实时图表面板：采样波形、当前数值与写入列表](docs/images/live-watch-waveform.png)
@@ -22,7 +20,7 @@ J-Link 用户请参阅[连接配置与兼容性说明](docs/JLINK-COMPATIBILITY.
 
 - Visual Studio Code 1.85 或更高版本
 - OpenOCD
-- ARM GDB 工具链（断点调试必需）；已有 Cortex-Debug 配置仍可使用
+- ARM GDB 工具链（断点调试必需）
 
 ## 实时变量观测
 
@@ -81,27 +79,3 @@ esbuild.js 单文件 VSIX 打包构建配置
 ## 许可证与归属
 
 扩展代码采用 MIT 许可证。npm 运行时依赖与自带 xPack OpenOCD 的许可证及来源信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 内置调试
-
-侧栏“启动调试”或 F5 使用自有 `emberprobe` 调试器。先选择工作区 ELF、探针和目标；launch 默认烧录并运行至 main，入口无法解析时保持暂停。attach 只连接并暂停，不烧录、不复位。重启复位并运行至入口，不重复烧录。
-
-工具链可通过 `emberprobe.gdbPath`、`emberprobe.armToolchainPath`、`emberprobe.armToolchainPrefix` 和 `emberprobe.objdumpPath` 配置，兼容原 Cortex-Debug 设置和目录缓存。无需安装 Cortex-Debug 扩展。
-
-`launch.json` 示例（attach 可将 request 改为 attach）：
-
-```json
-{
-  "type": "emberprobe",
-  "request": "launch",
-  "name": "EmberProbe",
-  "executable": "${workspaceFolder}/build/firmware.elf",
-  "runToEntryPoint": "main"
-}
-```
-
-`runToEntryPoint` 设为空字符串可保持暂停；`sourceFileMap` 将编译时源码目录映射到本地目录。支持源码、函数及条件断点，不支持日志/命中次数/数据断点、RTOS、SWO/RTT 和反汇编视图。旧 Cortex-Debug launch.json 不自动修改。
-
-### XPeripherals 外设视图
-
-侧栏中的 **外设寄存器** 与 MCU 配置、芯片信息和实时读写并列。在“其他配置”中选择现有 SVD 或下载官方 SVD 后，外设视图自动可用，可浏览外设 → 寄存器 → 位域树；暂停调试目标后可读取、刷新并切换 HEX/DEC/BIN 数值格式。可写行内直接显示数值输入框和 ±1 按钮；按 Enter 或离开输入框即提交，输入前先检查数值格式和位宽。UI 写入仍执行 SVD 校验、会话检查和回读验证，Agent Skill 写入仍需一次性许可。无需安装 Cortex-Debug 或独立外设视图扩展。SVD 路径也会作为 `svdPath` 传给兼容的调试视图。

@@ -23,7 +23,7 @@ assert.ok(
     readmeEn.includes(`current extension version is \`${pkg.version}\``),
     "English README must report the package version"
 );
-assert.ok(pkg.files.includes("ROADMAP.md"), "published package must include ROADMAP.md");
+assert.ok(pkg.files.includes("README_EN.md"), "published package must include English documentation");
 for (const script of ["release:prepare", "quality", "test:e2e", "test:hil"]) {
     assert.ok(pkg.scripts[script], `package.json must expose the ${script} workflow`);
 }
