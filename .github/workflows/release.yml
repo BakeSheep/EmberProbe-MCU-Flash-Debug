@@ -47,6 +47,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Include Windows sampling timer binary
+        run: npm install --no-save --package-lock=false --ignore-scripts --force @koromix/koffi-win32-x64@3.3.1
+
       - name: Validate tag and release metadata
         run: node scripts/validate-release.js "$RELEASE_TAG"
 
@@ -67,6 +70,9 @@ jobs:
 
       - name: Verify VSIX includes native helper bytes
         run: node scripts/verify-driver-helper.js dist/emberprobe.vsix
+
+      - name: Verify VSIX includes Windows sampling timer binary
+        run: node scripts/verify-sampling-timer-vsix.js dist/emberprobe.vsix
 
       - name: Upload verified VSIX
         uses: actions/upload-artifact@v4

@@ -307,6 +307,7 @@
   "files": [
     "dist/extension.js",
     "dist/samplingWorker.js",
+    "dist/sampling-timer/**/*",
     "dist/elfWorker.js",
     "dist/webview/**/*",
     "src/webview/**/*",
@@ -348,6 +349,7 @@
     "@vscode/debugadapter": "1.68.0",
     "fast-xml-parser": "^5.11.0",
     "fzstd": "^0.1.1",
+    "koffi": "3.3.1",
     "tar": "^7.5.22",
     "yauzl": "^3.4.0"
   },

@@ -10,6 +10,8 @@ const { spawn } = require("child_process");
 const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
+const { scheduleSamplingTick } = require("./samplingClock");
+const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
@@ -234,6 +236,7 @@ class ManagedOpenOcdSession {
         this._compiledBatches = [];
         this._batchUnsupported = false;
         this._recentCycleTimestamps = [];
+        this._timerResolutionHeld = false;
     }
 
     _warmUp() {
@@ -247,18 +250,30 @@ class ManagedOpenOcdSession {
         this._recentCycleTimestamps = [];
     }
 
-    _scheduleNext(delayMs) {
+    _clearSamplingTimer() {
         if (this.timer) {
-            clearTimeout(this.timer);
+            this.timer.cancel();
             this.timer = null;
         }
+    }
+
+    _releaseTimerResolution() {
+        if (!this._timerResolutionHeld) return;
+        windowsTimerResolution.release();
+        this._timerResolutionHeld = false;
+    }
+
+    _scheduleNext(delayMs) {
+        this._clearSamplingTimer();
         if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
-        this.timer = setTimeout(
-            async () => {
+        if (!this._timerResolutionHeld) this._timerResolutionHeld = windowsTimerResolution.acquire();
+        this.timer = scheduleSamplingTick(
+            delayMs,
+            () => {
                 this.timer = null;
-                await this._sampleTick(true);
+                this._sampleTick(true);
             },
-            Math.max(0, delayMs)
+            { highResolution: this._timerResolutionHeld }
         );
     }
 
@@ -294,10 +309,8 @@ class ManagedOpenOcdSession {
         this._warmingUp = this._recentDurations.length < 4;
         this._consecutiveSuccesses = 0;
         this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = null;
-        }
+        this._recentCycleTimestamps = [];
+        this._clearSamplingTimer();
         if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed && !this.busy) {
             this._scheduleNext(0);
         }
@@ -311,15 +324,13 @@ class ManagedOpenOcdSession {
         this._samplingRequested = !!enabled;
         this.sampleEpoch++;
         this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = null;
-        }
+        this._clearSamplingTimer();
         if (this.samplingEnabled) {
             this._pauseReason = null;
             this._warmUp();
             this._scheduleNext(0);
         } else {
+            this._releaseTimerResolution();
             this._pauseReason = this.stopped ? "stopped" : this.mode === "debug" ? "debug_paused" : "paused";
             if (enabled && this.mode === "debug" && !this.stopped && this.child) {
                 this._reconnectDebugTcl();
@@ -369,7 +380,10 @@ class ManagedOpenOcdSession {
     _recordCycle(durationMs, success = true, timestamp = Date.now()) {
         const nowMonoMs = Number(process.hrtime.bigint() / 1000000n);
         this._recentCycleTimestamps.push(timestamp);
-        while (this._recentCycleTimestamps.length > 32 && this._recentCycleTimestamps[0] < timestamp - 3000) {
+        while (
+            this._recentCycleTimestamps.length > 2 &&
+            (this._recentCycleTimestamps.length > 256 || this._recentCycleTimestamps[0] < timestamp - 1500)
+        ) {
             this._recentCycleTimestamps.shift();
         }
         this._recentDurations.push(durationMs);
@@ -402,6 +416,7 @@ class ManagedOpenOcdSession {
             this.effectiveIntervalMs = Math.min(10000, Math.max(target, Math.ceil(p95 / threshold)));
             this._warmingUp = false;
             this._consecutiveSuccesses = 0;
+            this._recentCycleTimestamps = [];
             return;
         }
 
@@ -586,10 +601,8 @@ class ManagedOpenOcdSession {
             }
             const expected = this.stopped;
             this.child = null;
-            if (this.timer) {
-                clearTimeout(this.timer);
-                this.timer = null;
-            }
+            this._clearSamplingTimer();
+            this._releaseTimerResolution();
             if (this.socket && !this.socket.destroyed) {
                 try {
                     this.socket.destroy();
@@ -820,10 +833,8 @@ class ManagedOpenOcdSession {
         if (this.mode === "debug" && this.child && !this.stopped && this._startCompleted) {
             this.sampleEpoch++;
             this.samplingEnabled = false;
-            if (this.timer) {
-                clearTimeout(this.timer);
-                this.timer = null;
-            }
+            this._clearSamplingTimer();
+            this._releaseTimerResolution();
             this._rejectQueue(err);
             if (this.socket && !this.socket.destroyed) {
                 try {
@@ -846,10 +857,8 @@ class ManagedOpenOcdSession {
             return;
         }
         this.stopped = true;
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = null;
-        }
+        this._clearSamplingTimer();
+        this._releaseTimerResolution();
         this._rejectQueue(err);
         if (this.socket && !this.socket.destroyed) {
             try {
@@ -1362,10 +1371,8 @@ class ManagedOpenOcdSession {
         this.samplingEnabled = false;
         this._samplingRequested = false;
         this.connectionFailed = true;
-        if (this.timer) {
-            clearTimeout(this.timer);
-            this.timer = null;
-        }
+        this._clearSamplingTimer();
+        this._releaseTimerResolution();
         this._rejectQueue(new Error("采样已停止"));
         if (this.connectingSocket && !this.connectingSocket.destroyed) {
             try {

@@ -6,6 +6,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 Windows 采样计时器约 15.6 ms 粒度导致的目标与实测频率差距；仅采样期间申请高精度计时，并在改频后重置实测速率窗口。
 - 实时查看改用采样频率（Hz）设置，默认 30 Hz 并保存到工作区；调整频率后根据探针读耗时快速采用安全间隔。
 - 修复 Agent 烧录可执行文件覆盖路径，统一 ELF 64 MiB 有界读取与授权快照。
 - 修复 SVD 跨作用域继承和写入约束校验；通过 Worker 与展开预算限制解析资源。

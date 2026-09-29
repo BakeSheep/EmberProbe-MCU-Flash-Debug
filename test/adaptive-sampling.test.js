@@ -78,6 +78,7 @@ async function wait(ms) {
         assert.strictEqual(session.effectiveIntervalMs, 5, "Fast probe should leave warm-up after four reads");
         session.setIntervalMs(20);
         assert.strictEqual(session.effectiveIntervalMs, 20, "User changes should apply without a slow ramp");
+        assert.strictEqual(session.stats().actualHz, 0, "A rate change must discard samples from the old target");
         session.setIntervalMs(5);
         assert.strictEqual(session.effectiveIntervalMs, 5);
         session.setIntervalMs(5);
