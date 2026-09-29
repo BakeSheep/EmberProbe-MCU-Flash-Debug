@@ -196,7 +196,7 @@
                     const row = doc.createElement("div");
                     row.className = "curve-hit";
                     row.style.borderLeftColor = s.style(hit.name).color;
-                    row.textContent = value(hit.point);
+                    row.textContent = hit.name + ": " + value(hit.point);
                     row.setAttribute("aria-label", hit.name + ": " + value(hit.point));
                     tooltip.append(row);
                 });

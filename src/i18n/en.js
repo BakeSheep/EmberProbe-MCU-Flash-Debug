@@ -139,7 +139,7 @@ module.exports = Object.freeze({
     "sb.selectDebugger": "Select Debugger",
     "sb.selectMcu": "Select MCU Target",
     "sb.otherConfig": "Other Configuration",
-    "sb.debug": "EmberProbe Debug",
+    "sb.debug": "Debug",
     "svd.selectConfig": "Select SVD File",
     "svd.notConfigured": "SVD not configured",
     "svd.configured": "SVD configured",
@@ -207,6 +207,8 @@ module.exports = Object.freeze({
     "sb.noMatch": "No matching variables",
     "sb.noImportable": "This ELF has no importable variables",
     "sb.resizeHint": "Drag up/down to resize the variable list",
+    "sb.resizePeripheralHint": "Drag up/down to resize the peripheral list",
+    "sb.githubRepo": "Open GitHub repository",
     "sb.download": "Flash",
     "sb.footConnecting": "Connecting to the extension service…",
     "sb.extNotConnected": "Extension service not connected",
@@ -530,10 +532,5 @@ module.exports = Object.freeze({
     "diag.kvCoreRev": "Core Revision",
     "diag.kvFlash": "Flash",
     "diag.kvState": "Target State",
-    "diag.channelName": "EmberProbe Chip Info",
-    "fb.starText": "Enjoying EmberProbe? Give it a Star on GitHub",
-    "fb.issueText": "Hit a problem? File an issue on GitHub",
-    "fb.featureText": "Need a new feature? File an issue on GitHub",
-    "fb.openTitle": "Open on GitHub",
-    "fb.dismissTitle": "Dismiss"
+    "diag.channelName": "EmberProbe Chip Info"
 });

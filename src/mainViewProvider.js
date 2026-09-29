@@ -34,7 +34,6 @@ const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
-const { FeedbackPromptService } = require("./services/feedbackPromptService");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
@@ -262,7 +261,6 @@ class MainViewProvider {
             t: (key, params) => this._t(key, params),
             onStatus: (status) => this._webviewView?.webview.postMessage({ type: "skillStatus", ...status })
         });
-        this._feedbackPromptService = new FeedbackPromptService({ vscode, context });
         this._chipInfoService = new ChipInfoService({
             vscode,
             context,
@@ -3524,14 +3522,6 @@ class MainViewProvider {
                     this.refreshSkillStatus().catch((error) =>
                         console.error("Agent Skills 状态检查失败：", error.message)
                     );
-                    // 反馈提示（star/issue）由 host 统一决策：同一时刻最多推送一条
-                    const feedbackPrompt = this._feedbackPromptService.resolve();
-                    if (feedbackPrompt.kind) {
-                        webviewView.webview.postMessage({ type: "feedbackPrompt", kind: feedbackPrompt.kind });
-                        this._feedbackPromptService
-                            .markShown(feedbackPrompt.kind)
-                            .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
-                    }
                     break;
                 }
                 case "peripheralCatalogRequest":
@@ -3685,16 +3675,10 @@ class MainViewProvider {
                     this._postLive({ type: "setLang", lang: this._lang });
                     break;
                 }
-                case "feedbackPromptAction": {
-                    // kind/action 白名单校验在服务内完成，非法值静默忽略；URL 只取服务内常量
-                    if (message.action === "open")
-                        this._feedbackPromptService
-                            .open(message.kind)
-                            .catch((error) => console.error("打开 GitHub 失败：", error.message || error));
-                    else if (message.action === "dismiss")
-                        this._feedbackPromptService
-                            .snooze(message.kind)
-                            .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
+                case "openGitHub": {
+                    await vscode.env.openExternal(
+                        vscode.Uri.parse("https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug")
+                    );
                     break;
                 }
             }

@@ -25,6 +25,8 @@ try {
         "chipBody",
         "writeValues",
         "varResizeHandle",
+        "peripheralResizeHandle",
+        "githubLink",
         "svdStatus"
     ])
         assert.ok(sidebar.document.getElementById(id), id);
@@ -77,14 +79,26 @@ try {
         resetValues: true
     });
     assert.ok(!sidebar.document.getElementById("liveValues").textContent.includes("7"));
-    for (const kind of ["issue", "feature", "star"]) {
-        sidebar.send({ type: "feedbackPrompt", kind });
-        assert.strictEqual(sidebar.document.getElementById("feedbackPrompt").hidden, false);
-        sidebar.document.querySelector(".fp-close").click();
-        assert.deepStrictEqual(sidebar.messages.at(-1), { type: "feedbackPromptAction", kind, action: "dismiss" });
-    }
+    assert.strictEqual(sidebar.document.getElementById("feedbackPrompt"), null);
+    assert.strictEqual(
+        sidebar.document.querySelector(".primary-actions [data-command='mcu-vscode.debug']").textContent,
+        "Debug"
+    );
+    assert.strictEqual(sidebar.document.getElementById("githubLink").textContent, "");
+    click("githubLink");
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openGitHub" });
+    const peripheralTree = sidebar.document.getElementById("peripheralTree");
+    const peripheralHandle = sidebar.document.getElementById("peripheralResizeHandle");
+    peripheralTree.getBoundingClientRect = () => ({ height: Number.parseInt(peripheralTree.style.height, 10) || 120 });
+    peripheralHandle.setPointerCapture = () => {};
+    peripheralHandle.releasePointerCapture = () => {};
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointerdown", { clientY: 100 }));
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointermove", { clientY: 160 }));
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointerup", { clientY: 160 }));
+    assert.strictEqual(peripheralTree.style.height, "180px");
     click("langToggle");
     assert.strictEqual(sidebar.messages.at(-1).type, "setLang");
+    assert.strictEqual(sidebar.document.getElementById("githubLink").getAttribute("aria-label"), "打开 GitHub 仓库");
     sidebar.assertHealthy();
 } finally {
     sidebar.close();

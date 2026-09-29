@@ -49,8 +49,7 @@ try {
     doc.body.append(row);
     controls.decorate(row, "a", swatch);
     controls.refresh(series);
-    assert.equal(doc.getElementById("curveTooltip").textContent, "1.5");
-    assert.ok(!doc.getElementById("curveTooltip").textContent.includes("a"));
+    assert.equal(doc.getElementById("curveTooltip").textContent, "a: 1.5");
     assert.ok(row.classList.contains("curve-emphasis"));
     row.dispatchEvent(new dom.window.Event("pointerenter"));
     row.dispatchEvent(new dom.window.Event("pointerleave"));
@@ -84,7 +83,7 @@ try {
     state.frozen = true;
     state.chart.hits = [{ name: "b", point: series[0].arr[1] }];
     controls.refresh(series);
-    assert.equal(doc.getElementById("curveTooltip").textContent, "2.7");
+    assert.equal(doc.getElementById("curveTooltip").textContent, "b: 2.7");
     assert.ok(doc.getElementById("chartViewStatus").textContent.includes("Frozen"));
     state.hidden.a = true;
     const hiddenRow = doc.createElement("div"),

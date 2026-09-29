@@ -137,7 +137,7 @@ module.exports = Object.freeze({
     "sb.selectDebugger": "选择调试器",
     "sb.selectMcu": "选择 MCU 目标",
     "sb.otherConfig": "其他配置",
-    "sb.debug": "EmberProbe 调试",
+    "sb.debug": "调试",
     "svd.selectConfig": "选择 SVD 文件",
     "svd.notConfigured": "SVD 未配置",
     "svd.configured": "SVD 已配置",
@@ -205,6 +205,8 @@ module.exports = Object.freeze({
     "sb.noMatch": "没有匹配变量",
     "sb.noImportable": "当前 ELF 没有可导入变量",
     "sb.resizeHint": "上下拖动调整变量列表高度",
+    "sb.resizePeripheralHint": "上下拖动调整外设列表高度",
+    "sb.githubRepo": "打开 GitHub 仓库",
     "sb.download": "烧录",
     "sb.footConnecting": "正在连接扩展服务…",
     "sb.extNotConnected": "扩展服务未连接",
@@ -521,10 +523,5 @@ module.exports = Object.freeze({
     "diag.kvCoreRev": "内核修订",
     "diag.kvFlash": "Flash",
     "diag.kvState": "目标状态",
-    "diag.channelName": "EmberProbe 芯片信息",
-    "fb.starText": "觉得插件不错？点个 Star 支持一下吧",
-    "fb.issueText": "遇到问题了？提个 Issue 告诉我们",
-    "fb.featureText": "需要新功能？提个 Issue 告诉我们",
-    "fb.openTitle": "在 GitHub 打开",
-    "fb.dismissTitle": "关闭"
+    "diag.channelName": "EmberProbe 芯片信息"
 });

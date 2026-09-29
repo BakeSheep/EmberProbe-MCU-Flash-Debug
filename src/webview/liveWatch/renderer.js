@@ -278,7 +278,9 @@ function removeVar(name) {
         delete latestText[w.name];
         delete hidden[w.name];
     });
-    delete expanded[name];
+    Object.keys(expanded).forEach(function (path) {
+        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete expanded[path];
+    });
     delete dispSpec[name];
     renderVars();
     saveWatch();
@@ -454,7 +456,7 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
-    arrow.className = "comp-arrow";
+    arrow.className = "comp-arrow" + (expanded[path] ? " open" : "");
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
@@ -464,10 +466,13 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     ty.textContent = layout.typeName || "";
     head.append(arrow, nm, ty);
     var body = document.createElement("div");
-    body.className = "comp-members";
+    body.className = "comp-members" + (expanded[path] ? " open" : "");
     head.onclick = function () {
-        var open = body.classList.toggle("open");
+        var open = !expanded[path];
+        expanded[path] = open;
+        body.classList.toggle("open", open);
         arrow.classList.toggle("open", open);
+        saveUi();
     };
     renderLayoutInto(body, layout, path, baseAddr, offset, null);
     wrap.append(head, body);
