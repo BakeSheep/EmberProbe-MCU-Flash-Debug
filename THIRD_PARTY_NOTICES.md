@@ -7,6 +7,7 @@ The bundled extension includes the following npm runtime packages:
 - `minizlib` 3.1.0 — MIT License, Copyright (c) 2017-2023 Isaac Z. Schlueter and Contributors; Node.js contributors; Joyent, Inc. and other Node contributors
 - `fast-xml-parser` 5.11.0 and its runtime dependencies (`@nodable/entities`, `fast-xml-builder`, `is-unsafe`, `path-expression-matcher`, `strnum`, `anynum`, and `xml-naming`) — MIT License
 - `yauzl` 3.4.0 and `pend` 1.2.0 — MIT License
+- `koffi` 3.3.1 and `@koromix/koffi-win32-x64` 3.3.1 — MIT License, Copyright (c) 2026 Niels Martignène; their license files are retained in the packaged dependencies.
 
 The Windows package also contains the xPack OpenOCD 0.12.0-7 binary distribution. OpenOCD is distributed under GNU GPL v2 or later, with individual bundled components under their respective licenses. The complete license set is retained inside `resources/openocd-win32-x64.tar.gz` under `distro-info/licenses/`. Corresponding release and source information is available from the [xPack OpenOCD v0.12.0-7 release](https://github.com/xpack-dev-tools/openocd-xpack/releases/tag/v0.12.0-7) and the [upstream OpenOCD v0.12.0 source](https://github.com/openocd-org/openocd/tree/v0.12.0).
 

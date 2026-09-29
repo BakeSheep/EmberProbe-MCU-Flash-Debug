@@ -30,6 +30,7 @@ function activate(context) {
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.connectionConfigurationChanged();
+            if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();

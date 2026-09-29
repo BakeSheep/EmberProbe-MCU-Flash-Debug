@@ -14,6 +14,9 @@ const { wildcardMatches, normalizeVendor } = require("./svdLibraryService");
 const DEFAULT_INDEX_URL = "https://www.keil.com/pack/index.pidx";
 const MAX_XML_BYTES = 16 * 1024 * 1024;
 const MAX_PACK_BYTES = 512 * 1024 * 1024;
+const CATALOG_CACHE_MS = 5 * 60 * 1000;
+const MAX_CACHED_PDSC = 12;
+const MAX_CACHEABLE_PDSC_BYTES = 1024 * 1024;
 
 function asArray(value) {
     return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
@@ -483,6 +486,34 @@ class OfficialSvdService {
         this.indexUrl = options.indexUrl || DEFAULT_INDEX_URL;
         this.allowHttpLocalhost = !!options.allowHttpLocalhost;
         this.timeoutMs = options.timeoutMs || 30000;
+        this.catalogCacheMs = options.catalogCacheMs ?? CATALOG_CACHE_MS;
+        this.indexCache = null;
+        this.pdscCache = new Map();
+    }
+
+    async readIndex(options) {
+        if (this.indexCache && Date.now() - this.indexCache.savedAt < this.catalogCacheMs) return this.indexCache.items;
+        const response = await requestBuffer(this.indexUrl, { ...options, maxBytes: MAX_XML_BYTES });
+        const items = parseIndex(response.buffer);
+        this.indexCache = { items, savedAt: Date.now() };
+        return items;
+    }
+
+    async readPdsc(url, options) {
+        const cached = this.pdscCache.get(url);
+        if (cached && Date.now() - cached.savedAt < this.catalogCacheMs) return cached;
+        const response = await requestBuffer(url, { ...options, maxBytes: MAX_XML_BYTES });
+        const entry = {
+            packageNode: parseXml(response.buffer, "PDSC")?.package,
+            url: response.url,
+            savedAt: Date.now()
+        };
+        if (response.buffer.length <= MAX_CACHEABLE_PDSC_BYTES) {
+            this.pdscCache.delete(url);
+            this.pdscCache.set(url, entry);
+            if (this.pdscCache.size > MAX_CACHED_PDSC) this.pdscCache.delete(this.pdscCache.keys().next().value);
+        }
+        return entry;
     }
 
     async discover(identity, options = {}) {
@@ -491,10 +522,9 @@ class OfficialSvdService {
         const common = {
             timeoutMs: this.timeoutMs,
             signal: options.signal,
-            onProgress: options.onProgress,
             allowHttpLocalhost: this.allowHttpLocalhost
         };
-        const index = parseIndex((await requestBuffer(this.indexUrl, { ...common, maxBytes: MAX_XML_BYTES })).buffer);
+        const index = await this.readIndex(common);
         throwIfAborted(options.signal);
         const ranked = index
             .map((item) => ({ ...item, score: packageScore(item, identity) }))
@@ -502,20 +532,21 @@ class OfficialSvdService {
             .sort((a, b) => b.score - a.score)
             .slice(0, 12);
         const found = [];
-        for (const item of ranked) {
+        for (const [position, item] of ranked.entries()) {
             throwIfAborted(options.signal);
+            options.onProgress?.({ phase: "catalog", current: position + 1, total: ranked.length });
             const base = item.url.endsWith("/") ? item.url : `${item.url}/`;
             const pdscUrl = new URL(`${item.vendor}.${item.name}.pdsc`, base).href;
-            let response;
+            let pdsc;
             try {
-                response = await requestBuffer(pdscUrl, { ...common, maxBytes: MAX_XML_BYTES });
+                pdsc = await this.readPdsc(pdscUrl, common);
             } catch (error) {
                 if (error?.code === "DOWNLOAD_CANCELLED") throw error;
                 throwIfAborted(options.signal);
                 continue;
             }
             throwIfAborted(options.signal);
-            const packageNode = parseXml(response.buffer, "PDSC")?.package;
+            const packageNode = pdsc.packageNode;
             const release = latestRelease(packageNode, item.version);
             if (!stableVersion(release.version)) continue;
             const devices = collectDevices(packageNode).filter(
@@ -531,7 +562,7 @@ class OfficialSvdService {
                     packageBaseUrl: String(packageNode?.url || base),
                     packageUrl: release.url || "",
                     checksum: release.checksum,
-                    pdscUrl: response.url,
+                    pdscUrl: pdsc.url,
                     license
                 });
             if (identity.exact && found.length) break;

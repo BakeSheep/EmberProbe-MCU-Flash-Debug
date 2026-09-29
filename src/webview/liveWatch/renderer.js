@@ -10,6 +10,12 @@ function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
 var statusMsg = { key: "lw.ready" };
+var requestedFrequencyHz = CFG.frequencyHz;
+function selectedFrequencyHz() {
+    var value = Number($("frequency").value);
+    if (!Number.isFinite(value) || value <= 0) value = requestedFrequencyHz;
+    return Math.min(200, Math.max(0.1, Math.round(value * 10) / 10));
+}
 var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     Styles = window.EmberProbeSeriesStyles,
     Analysis = window.EmberProbeAnalysisState,
@@ -114,6 +120,10 @@ function fmtNum(v) {
 }
 function fmtExact(v, valueText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
+}
+function setDisplayedValue(cell, value) {
+    if (cell.textContent !== value) cell.textContent = value;
+    if (cell.title !== value) cell.title = value;
 }
 var buildCsv = window.__BUILD_CSV__;
 function defType(size) {
@@ -278,7 +288,9 @@ function removeVar(name) {
         delete latestText[w.name];
         delete hidden[w.name];
     });
-    delete expanded[name];
+    Object.keys(expanded).forEach(function (path) {
+        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete expanded[path];
+    });
     delete dispSpec[name];
     renderVars();
     saveWatch();
@@ -330,7 +342,7 @@ function renderVars() {
         name.title = item.name + " \u00b7 " + fmtAddr(item.address);
         var val = document.createElement("div");
         val.className = "var-value";
-        val.textContent = fmtExact(latest[item.name], latestText[item.name]);
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
         valueCells[item.name] = val;
         main.append(name);
         if (controls) controls.decorate(card, item.name, sw);
@@ -348,11 +360,27 @@ function renderVars() {
 }
 function updateValues() {
     Object.keys(valueCells).forEach(function (n) {
-        valueCells[n].textContent = fmtExact(latest[n], latestText[n]);
+        setDisplayedValue(valueCells[n], fmtExact(latest[n], latestText[n]));
     });
     watch.forEach(function (it) {
         if (isCompositeItem(it)) updateCompositeValues(it.name);
     });
+}
+var valueRefreshTimer = null;
+var lastValueRefresh = 0;
+function scheduleValueRefresh() {
+    if (valueRefreshTimer !== null) return;
+    var elapsed = Date.now() - lastValueRefresh;
+    if (elapsed >= 100) {
+        lastValueRefresh = Date.now();
+        updateValues();
+        return;
+    }
+    valueRefreshTimer = setTimeout(function () {
+        valueRefreshTimer = null;
+        lastValueRefresh = Date.now();
+        updateValues();
+    }, 100 - elapsed);
 }
 function onSamples(samples) {
     if (!frozen) invalidateSeries();
@@ -382,7 +410,7 @@ function onSamples(samples) {
         arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
         if (arr.length > MAXPTS) arr.splice(0, arr.length - MAXPTS);
     });
-    updateValues();
+    scheduleValueRefresh();
     dirty = true;
 }
 function isCompositeItem(it) {
@@ -416,7 +444,7 @@ function updateCompositeValues(name) {
     if (!tree) return;
     walkTreeLeaves(tree, name, function (path, node) {
         var cell = compCells[path];
-        if (cell) cell.textContent = fmtExact(node.value, node.valueText);
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
     });
 }
 function renderLeafInto(container, label, typeName, path, watchType, address) {
@@ -454,7 +482,7 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
-    arrow.className = "comp-arrow";
+    arrow.className = "comp-arrow" + (expanded[path] ? " open" : "");
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
@@ -464,10 +492,13 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     ty.textContent = layout.typeName || "";
     head.append(arrow, nm, ty);
     var body = document.createElement("div");
-    body.className = "comp-members";
+    body.className = "comp-members" + (expanded[path] ? " open" : "");
     head.onclick = function () {
-        var open = body.classList.toggle("open");
+        var open = !expanded[path];
+        expanded[path] = open;
+        body.classList.toggle("open", open);
         arrow.classList.toggle("open", open);
+        saveUi();
     };
     renderLayoutInto(body, layout, path, baseAddr, offset, null);
     wrap.append(head, body);
@@ -645,9 +676,7 @@ function onCompositeSamples(samples) {
     (samples || []).forEach(function (s) {
         if (s && s.name) latest[s.name] = s.tree;
     });
-    watch.forEach(function (it) {
-        if (isCompositeItem(it)) updateCompositeValues(it.name);
-    });
+    scheduleValueRefresh();
     dirty = true;
 }
 function showArraySelectDialog(sym, cb) {
@@ -735,12 +764,13 @@ function start() {
         setStatusKey("lw.needVar", null, "error");
         return;
     }
-    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
-    $("interval").value = String(iv);
+    var frequencyHz = selectedFrequencyHz();
+    requestedFrequencyHz = frequencyHz;
+    $("frequency").value = String(frequencyHz);
     starting = true;
     updateRun();
     setStatusKey("lw.starting");
-    post({ type: "start", items: watch, intervalMs: iv });
+    post({ type: "start", items: watch, frequencyHz: frequencyHz });
 }
 function stop() {
     if (!running && !starting) return;
@@ -1426,6 +1456,10 @@ function updateChartEmpty(series, hasBounds) {
     empty.appendChild(button);
 }
 function chartAction(action, value) {
+    if (action === "importSidebar") {
+        post({ type: "importSidebarWatch", items: watch });
+        return;
+    }
     var names = watch.map(function (w) {
         return w.name;
     });
@@ -1912,6 +1946,12 @@ function loop(now) {
     requestAnimationFrame(loop);
 }
 window.EmberProbeMessages.connect(window, {
+    sidebarImportResult: function (m) {
+        setStatusKey(
+            !m.sourceCount ? "lw.sidebarEmpty" : m.added ? "lw.sidebarImported" : "lw.sidebarAlreadyImported",
+            { n: m.added || 0 }
+        );
+    },
     seriesStyles: function (m) {
         seriesStyles = Styles.clean(m.styles);
         styleRequests.clear();
@@ -2077,12 +2117,15 @@ window.EmberProbeMessages.connect(window, {
             $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
         }
         if (m.effectiveIntervalMs !== undefined) {
+            var targetHz = m.frequencyHz || requestedFrequencyHz;
             $("rate").title =
                 "Target: " +
-                (m.intervalMs || $("interval").value) +
-                "ms | Effective: " +
+                targetHz +
+                " Hz | Effective: " +
+                (1000 / m.effectiveIntervalMs).toFixed(1) +
+                " Hz (" +
                 m.effectiveIntervalMs +
-                "ms | P95: " +
+                " ms) | P95: " +
                 (m.p95DurationMs || 0) +
                 "ms | Missed: " +
                 (m.missedDeadlines || 0) +
@@ -2172,10 +2215,10 @@ $("timeWindow").onchange = function () {
         saveUi();
     }
 };
-$("interval").onchange = function () {
-    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
-    $("interval").value = String(iv);
-    post({ type: "setInterval", intervalMs: iv });
+$("frequency").onchange = function () {
+    requestedFrequencyHz = selectedFrequencyHz();
+    $("frequency").value = String(requestedFrequencyHz);
+    post({ type: "setFrequency", frequencyHz: requestedFrequencyHz });
 };
 $("norm").onclick = function () {
     axisModes[norm ? "norm" : "raw"] = { y: chartState.y, autoY: chartState.autoY, origin: chartState.axisOrigin };
@@ -2216,8 +2259,9 @@ window.EmberProbeMessages.connect(window, {
             setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
         }
     },
-    liveInterval: function (m) {
-        $("interval").value = String(m.intervalMs);
+    liveFrequency: function (m) {
+        requestedFrequencyHz = m.frequencyHz;
+        $("frequency").value = String(requestedFrequencyHz);
     }
 });
 var layout = $("layout"),

@@ -19,6 +19,8 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.ok(snapshot.elf.endsWith("/firmware.elf"));
         assert.strictEqual(snapshot.debugger, "cmsis-dap.cfg");
         assert.strictEqual(snapshot.sampleIntervalMs, 50);
+        assert.strictEqual(snapshot.sampleFrequencyHz, 20);
+        assert.strictEqual(settings.get("sampleFrequencyHz"), 20);
         assert.strictEqual(fixture.changed, 1);
         const ioc = path.join(temp, "project space.ioc");
         fs.writeFileSync(ioc, "ProjectManager.FirmwarePackage=STM32Cube FW_H7 V1.13.0\n");
@@ -44,6 +46,8 @@ const { createFixture } = require("./helpers/service-fixture");
             () => store.update({ sampleIntervalMs: 1 }),
             (error) => error.code === "INVALID_CONFIG_VALUE"
         );
+        assert.strictEqual((await store.update({ sampleFrequencyHz: 30.5 })).sampleFrequencyHz, 30.5);
+        await assert.rejects(store.update({ sampleFrequencyHz: 30.55 }), { code: "INVALID_CONFIG_VALUE" });
 
         // Agent Bridge 禁改键：openocdPath 可把探针调用引向任意可执行文件，必须拒绝
         assert.throws(

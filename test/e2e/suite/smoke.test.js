@@ -37,7 +37,8 @@ async function run() {
 
     const config = vscode.workspace.getConfiguration("emberprobe");
     assert.strictEqual(config.get("tclPort"), 6666);
-    assert.strictEqual(config.get("sampleIntervalMs"), 100);
+    assert.strictEqual(config.get("sampleIntervalMs"), 33);
+    assert.strictEqual(config.get("sampleFrequencyHz"), 30);
     assert.strictEqual(config.get("maxSamples"), 2000);
     console.log("✓ contributes bounded live-watch defaults");
 

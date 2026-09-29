@@ -5,12 +5,19 @@ exports.MainViewProvider = void 0;
 const vscode = require("vscode");
 const path = require("path");
 const modernView = require("./modernView");
+const { versionLabel } = require("./buildInfo");
 const autoDetect = require("./autoDetect");
 const skillInstaller = require("./skillInstaller");
 const openocdRunner = require("./openocdRunner");
 const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
 const liveWatchView = require("./liveWatchView");
+const {
+    configuredFrequencyHz,
+    frequencyHzFromInterval,
+    intervalMsFromHz,
+    normalizeFrequencyHz
+} = require("./samplingFrequency");
 const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
@@ -34,7 +41,6 @@ const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
-const { FeedbackPromptService } = require("./services/feedbackPromptService");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
@@ -50,7 +56,7 @@ const {
     selectPausedDebugReadSession,
     filterRuntimeRamPlan
 } = require("./services/liveWatchService");
-const { WatchListStore } = require("./services/watchListStore");
+const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
@@ -114,7 +120,8 @@ class MainViewProvider {
         this._terminatedDebugSessionIds = new Set();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
-        this._liveIntervalMs = 100;
+        this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
+        this._liveIntervalMs = intervalMsFromHz(this._liveFrequencyHz);
         this._liveConsumers = new Set();
         this._consumerTypesCache = null;
         this._watchLists = new WatchListStore({
@@ -262,7 +269,6 @@ class MainViewProvider {
             t: (key, params) => this._t(key, params),
             onStatus: (status) => this._webviewView?.webview.postMessage({ type: "skillStatus", ...status })
         });
-        this._feedbackPromptService = new FeedbackPromptService({ vscode, context });
         this._chipInfoService = new ChipInfoService({
             vscode,
             context,
@@ -1268,7 +1274,7 @@ class MainViewProvider {
                     port: tclPort,
                     gdbPort,
                     mode: "debug",
-                    intervalMs: this._liveIntervalMs ?? 100
+                    intervalMs: this._liveIntervalMs
                 },
                 {
                     onConnectionConfirmed: () => {
@@ -2183,7 +2189,7 @@ class MainViewProvider {
             liveWatchView.getLiveWatchContent(
                 {
                     maxSamples: cfg.get("maxSamples", 2000),
-                    intervalMs: cfg.get("sampleIntervalMs", 100),
+                    frequencyHz: this._liveFrequencyHz,
                     panelId
                 },
                 this._lang
@@ -2290,9 +2296,24 @@ class MainViewProvider {
                     case "saveWatch":
                         await this._saveWatchList(watchKey, message.items || []);
                         break;
+                    case "importSidebarWatch": {
+                        const saved = this._scalarWatchList(watchKey);
+                        const current = appendMissingWatchItems(message.items, saved);
+                        const sidebarItems = this._scalarWatchList(CACHE_KEYS.sidebarWatchList);
+                        const merged = appendMissingWatchItems(current, sidebarItems);
+                        if (JSON.stringify(merged) !== JSON.stringify(saved))
+                            await this._saveWatchList(watchKey, merged);
+                        post({
+                            type: "sidebarImportResult",
+                            added: merged.length - current.length,
+                            sourceCount: sidebarItems.length
+                        });
+                        break;
+                    }
                     case "start":
                         await this._saveWatchList(watchKey, message.items || []);
-                        await this.startLiveWatch(message.items || [], message.intervalMs, "graph");
+                        if (message.frequencyHz !== undefined) await this._saveLiveFrequency(message.frequencyHz);
+                        await this.startLiveWatch(message.items || [], this._liveIntervalMs, "graph");
                         break;
                     case "stop":
                         if (this._agentReadRunning) this.stopAgentReadIfRunning();
@@ -2300,6 +2321,9 @@ class MainViewProvider {
                         break;
                     case "setInterval":
                         this._setLiveInterval(message.intervalMs);
+                        break;
+                    case "setFrequency":
+                        await this._saveLiveFrequency(message.frequencyHz);
                         break;
                     case "samplingArchiveInfo":
                         post({
@@ -2692,17 +2716,51 @@ class MainViewProvider {
         }
         return map;
     }
-    _setLiveInterval(intervalMs) {
-        const value = validation.clampInteger(intervalMs, 100, 5, 10000);
+    _setLiveInterval(intervalMs, frequencyHz) {
+        const value = validation.clampInteger(intervalMs, intervalMsFromHz(this._liveFrequencyHz), 5, 10000);
+        this._liveFrequencyHz =
+            frequencyHz === undefined
+                ? value === this._liveIntervalMs
+                    ? this._liveFrequencyHz
+                    : frequencyHzFromInterval(value)
+                : normalizeFrequencyHz(frequencyHz);
         this._liveIntervalMs = value;
         if (this._liveSession) this._liveSession.setIntervalMs(value);
-        this._postLive({ type: "liveInterval", intervalMs: value });
+        this._postLive({ type: "liveFrequency", frequencyHz: this._liveFrequencyHz, intervalMs: value });
         return value;
+    }
+    async _saveLiveFrequency(frequencyHz) {
+        if (
+            typeof frequencyHz !== "number" ||
+            !Number.isFinite(frequencyHz) ||
+            frequencyHz < 0.1 ||
+            frequencyHz > 200 ||
+            Math.abs(frequencyHz * 10 - Math.round(frequencyHz * 10)) > 1e-8
+        )
+            throw Object.assign(new Error("Sampling frequency must be 0.1 to 200 Hz in 0.1 Hz steps"), {
+                code: "INVALID_SAMPLE_FREQUENCY"
+            });
+        const value = normalizeFrequencyHz(frequencyHz);
+        this._savingFrequency = true;
+        try {
+            await vscode.workspace
+                .getConfiguration("emberprobe")
+                .update("sampleFrequencyHz", value, vscode.ConfigurationTarget.Workspace);
+        } finally {
+            this._savingFrequency = false;
+        }
+        this._setLiveInterval(intervalMsFromHz(value), value);
+        return value;
+    }
+    samplingFrequencyConfigurationChanged() {
+        if (this._savingFrequency) return;
+        const value = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
+        if (value !== this._liveFrequencyHz) this._setLiveInterval(intervalMsFromHz(value), value);
     }
 
     _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
         if (!entry.ready) return;
-        const interval = this._liveIntervalMs ?? 100;
+        const interval = this._liveIntervalMs;
         if (interval >= 30 || !this._liveWatchRunning) {
             if (scalarSamples?.length) entry.post({ type: "liveSample", samples: scalarSamples, t });
             if (compositeSamples?.length) entry.post({ type: "liveCompositeSample", samples: compositeSamples, t });
@@ -2887,7 +2945,7 @@ class MainViewProvider {
         return {
             ...this._samplingStatus(),
             starting: this._liveStarting,
-            intervalMs: this._liveIntervalMs ?? 100
+            intervalMs: this._liveIntervalMs
         };
     }
 
@@ -2911,8 +2969,9 @@ class MainViewProvider {
             }
         }
         const stats = typeof session?.stats === "function" ? session.stats() : null;
-        status.intervalMs = this._liveIntervalMs ?? 100;
-        status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs ?? 100;
+        status.intervalMs = this._liveIntervalMs;
+        status.frequencyHz = this._liveFrequencyHz;
+        status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs;
         status.actualHz = stats?.actualHz ?? 0;
         status.p95DurationMs = stats?.p95DurationMs ?? 0;
         status.missedDeadlines = stats?.missedDeadlines ?? 0;
@@ -3106,7 +3165,12 @@ class MainViewProvider {
                     )),
                     cwd,
                     port: await this._resolveTclPort(cfg),
-                    intervalMs: validation.clampInteger(intervalMs || cfg.get("sampleIntervalMs", 100), 100, 5, 10000)
+                    intervalMs: validation.clampInteger(
+                        intervalMs ?? this._liveIntervalMs,
+                        this._liveIntervalMs,
+                        5,
+                        10000
+                    )
                 },
                 {
                     onConnectionConfirmed: () => {
@@ -3151,7 +3215,7 @@ class MainViewProvider {
             }
             session.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
             this._liveWatchLease = startingLease.transition("liveWatch");
-            this._setLiveInterval(intervalMs || cfg.get("sampleIntervalMs", 100));
+            this._setLiveInterval(intervalMs ?? this._liveIntervalMs);
             this._postConsumerStatuses({ key: "sb.sampling" });
         } catch (error) {
             if (session && this._liveSession === session) {
@@ -3524,14 +3588,6 @@ class MainViewProvider {
                     this.refreshSkillStatus().catch((error) =>
                         console.error("Agent Skills 状态检查失败：", error.message)
                     );
-                    // 反馈提示（star/issue）由 host 统一决策：同一时刻最多推送一条
-                    const feedbackPrompt = this._feedbackPromptService.resolve();
-                    if (feedbackPrompt.kind) {
-                        webviewView.webview.postMessage({ type: "feedbackPrompt", kind: feedbackPrompt.kind });
-                        this._feedbackPromptService
-                            .markShown(feedbackPrompt.kind)
-                            .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
-                    }
                     break;
                 }
                 case "peripheralCatalogRequest":
@@ -3685,16 +3741,10 @@ class MainViewProvider {
                     this._postLive({ type: "setLang", lang: this._lang });
                     break;
                 }
-                case "feedbackPromptAction": {
-                    // kind/action 白名单校验在服务内完成，非法值静默忽略；URL 只取服务内常量
-                    if (message.action === "open")
-                        this._feedbackPromptService
-                            .open(message.kind)
-                            .catch((error) => console.error("打开 GitHub 失败：", error.message || error));
-                    else if (message.action === "dismiss")
-                        this._feedbackPromptService
-                            .snooze(message.kind)
-                            .catch((error) => console.error("反馈提示状态保存失败：", error.message || error));
+                case "openGitHub": {
+                    await vscode.env.openExternal(
+                        vscode.Uri.parse("https://github.com/BakeSheep/EmberProbe-MCU-Flash-Debug")
+                    );
                     break;
                 }
             }
@@ -3851,6 +3901,7 @@ class MainViewProvider {
         const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         return modernView.getModernWebviewContent(
             {
+                versionLabel: versionLabel(this._context.extension?.packageJSON?.version),
                 elf: elf ? path.basename(elf) : "",
                 cubemxPath: vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",

@@ -73,6 +73,38 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.equal(panels[0].messages.at(-1).ok, true);
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
+    values.set("mcu.sidebarWatchList", [
+        { name: "shared", type: "u8" },
+        { name: "sidebarOnly", type: "u32" }
+    ]);
+    const saved = [];
+    p._scalarWatchList = (key) => values.get(key) || [];
+    p._saveWatchList = async (key, items) => {
+        saved.push(key);
+        values.set(key, items);
+    };
+    await panels[1].receive({
+        type: "importSidebarWatch",
+        panelId: 2,
+        items: [
+            { name: "shared", type: "f32" },
+            { name: "pending", type: "i16" }
+        ]
+    });
+    assert.deepStrictEqual(
+        values.get("mcu.watchList.2").map((item) => item.name),
+        ["shared", "pending", "sidebarOnly"]
+    );
+    assert.strictEqual(values.get("mcu.watchList.2")[0].type, "f32");
+    assert.deepStrictEqual(
+        values.get("mcu.watchList").map((item) => item.name),
+        ["first", "shared"]
+    );
+    assert.deepStrictEqual(saved, ["mcu.watchList.2"]);
+    assert.deepStrictEqual(panels[1].messages.at(-1), { type: "sidebarImportResult", added: 1, sourceCount: 2 });
+    await panels[1].receive({ type: "importSidebarWatch", panelId: 2, items: values.get("mcu.watchList.2") });
+    assert.deepStrictEqual(saved, ["mcu.watchList.2"], "importing twice must not duplicate or resave watches");
+    assert.deepStrictEqual(panels[1].messages.at(-1), { type: "sidebarImportResult", added: 0, sourceCount: 2 });
     console.log("Chart host migration, multi-panel styles and snapshot export tests passed");
 })().catch((error) => {
     console.error(error);

@@ -1,7 +1,9 @@
 "use strict";
 
 const esbuild = require("esbuild");
+const fs = require("fs");
 const path = require("path");
+const { isOfficialRelease } = require("./src/buildInfo");
 
 const extensionBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -11,7 +13,7 @@ const extensionBuild = esbuild.build({
     platform: "node",
     format: "cjs",
     target: "node18",
-    external: ["vscode"],
+    external: ["vscode", "koffi"],
     minify: false,
     sourcemap: false,
     legalComments: "eof"
@@ -44,7 +46,8 @@ const samplingBuild = esbuild.build({
     outfile: path.join(__dirname, "dist", "samplingWorker.js"),
     platform: "node",
     format: "cjs",
-    target: "node20"
+    target: "node20",
+    external: ["koffi"]
 });
 const elfBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -74,6 +77,45 @@ const debugBuild = esbuild.build({
     target: "node20",
     legalComments: "eof"
 });
+
+function stageSamplingTimer() {
+    const required = [
+        "koffi/package.json",
+        "koffi/index.cjs",
+        "koffi/LICENSE.txt",
+        "koffi/src/koffi/index.cjs",
+        "koffi/src/koffi/src/static.cjs"
+    ];
+    const windows = [
+        "@koromix/koffi-win32-x64/package.json",
+        "@koromix/koffi-win32-x64/index.js",
+        "@koromix/koffi-win32-x64/win32_x64/koffi.node"
+    ];
+    const output = path.join(__dirname, "dist", "sampling-timer", "node_modules");
+    for (const name of required) {
+        const source = path.join(__dirname, "node_modules", name);
+        const target = path.join(output, name);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(source, target);
+    }
+    for (const name of windows) {
+        const source = path.join(__dirname, "node_modules", name);
+        const target = path.join(output, name);
+        if (fs.existsSync(source)) {
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.copyFileSync(source, target);
+        } else fs.rmSync(target, { force: true });
+    }
+}
+
+function writeBuildInfo() {
+    const version = require("./package.json").version;
+    fs.writeFileSync(
+        path.join(__dirname, "dist", "buildInfo.json"),
+        JSON.stringify({ version, officialRelease: isOfficialRelease(version, process.env.RELEASE_TAG) }) + "\n"
+    );
+}
+
 Promise.all([
     extensionBuild,
     samplingBuild,
@@ -82,7 +124,12 @@ Promise.all([
     debugBuild,
     webviewBuild("sidebar"),
     webviewBuild("liveWatch")
-]).catch((error) => {
-    console.error(error);
-    process.exit(1);
-});
+])
+    .then(() => {
+        stageSamplingTimer();
+        writeBuildInfo();
+    })
+    .catch((error) => {
+        console.error(error);
+        process.exit(1);
+    });

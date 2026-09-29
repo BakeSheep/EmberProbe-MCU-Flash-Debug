@@ -163,6 +163,7 @@ function updateLangToggle() {
         langToggle.title = t("common.langTitle");
         langToggle.setAttribute("aria-label", t("common.langTitle"));
     }
+    document.getElementById("githubLink").setAttribute("aria-label", t("sb.githubRepo"));
 }
 function rerenderDynamic() {
     if (variableErrorKey) variableError = t(variableErrorKey, variableErrorParams);
@@ -178,7 +179,6 @@ function rerenderDynamic() {
     peripheralView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
-    if (lastFeedbackPrompt) renderFeedbackPrompt(lastFeedbackPrompt);
     applyStatus();
 }
 function setLang(l, notify) {
@@ -200,6 +200,10 @@ function fmt(v) {
 }
 function fmtExact(value, valueText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
+}
+function setDisplayedValue(cell, value) {
+    if (cell.textContent !== value) cell.textContent = value;
+    if (cell.title !== value) cell.title = value;
 }
 function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
@@ -309,7 +313,7 @@ function renderValues() {
         const val = document.createElement("span");
         val.className = "value-number";
         val.dataset.valueName = item.name;
-        val.textContent = fmtExact(latest[item.name], latestText[item.name]);
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
         const ty = document.createElement("span");
         ty.className = "value-type";
         ty.textContent = item.type || "u32";
@@ -1012,7 +1016,7 @@ function sbUpdateComposite(name) {
     if (!tree) return;
     sbWalkLeaves(tree, name, (path, node) => {
         const cell = compCells[path];
-        if (cell) cell.textContent = fmtExact(node.value, node.valueText);
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
     });
 }
 function sbNote(container, txt) {
@@ -1135,18 +1139,38 @@ function sbOnComposite(samples) {
     (samples || []).forEach((s) => {
         if (s && s.name) latest[s.name] = s.tree;
     });
-    sideWatch.forEach((it) => {
-        if (sbIsComposite(it)) sbUpdateComposite(it.name);
-    });
+    scheduleValueRefresh();
 }
 function updateValues(samples) {
     (samples || []).forEach((s) => {
         latest[s.name] = s.value;
         latestText[s.name] = s.valueText ?? null;
     });
-    document
-        .querySelectorAll("[data-value-name]")
-        .forEach((el) => (el.textContent = fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName])));
+    scheduleValueRefresh();
+}
+let valueRefreshTimer = null;
+let lastValueRefresh = 0;
+function scheduleValueRefresh() {
+    if (valueRefreshTimer !== null) return;
+    const elapsed = Date.now() - lastValueRefresh;
+    if (elapsed >= 100) {
+        lastValueRefresh = Date.now();
+        refreshDisplayedValues();
+        return;
+    }
+    valueRefreshTimer = setTimeout(() => {
+        valueRefreshTimer = null;
+        lastValueRefresh = Date.now();
+        refreshDisplayedValues();
+    }, 100 - elapsed);
+}
+function refreshDisplayedValues() {
+    document.querySelectorAll("[data-value-name]").forEach((el) => {
+        setDisplayedValue(el, fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName]));
+    });
+    sideWatch.forEach((it) => {
+        if (sbIsComposite(it)) sbUpdateComposite(it.name);
+    });
     syncWriteValues();
 }
 // 采样运行时写入卡片实时同步当前值；用户正在编辑（聚焦/写入在途/防抖中）的卡片不覆盖
@@ -1406,91 +1430,47 @@ document.getElementById("writeFold").onclick = () => {
     applyFolds();
 };
 applyFolds();
-const resizeHandle = document.getElementById("varResizeHandle"),
-    variableBrowser = document.querySelector(".variable-browser");
-if (uiState.variableHeight) availableBox.style.height = Math.max(80, Number(uiState.variableHeight)) + "px";
+const variableBrowser = document.querySelector(".variable-browser");
 if (uiState.variableBrowserOpen === false) variableBrowser.open = false;
 variableBrowser.addEventListener("toggle", () => {
     uiState.variableBrowserOpen = variableBrowser.open;
     if (api && api.setState) api.setState(uiState);
 });
-resizeHandle.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    const startY = e.clientY,
-        startHeight = availableBox.getBoundingClientRect().height;
-    resizeHandle.classList.add("dragging");
-    resizeHandle.setPointerCapture(e.pointerId);
-    const move = (ev) => {
-        const max = Math.max(120, window.innerHeight * 0.7),
-            height = Math.min(max, Math.max(80, startHeight + ev.clientY - startY));
-        availableBox.style.height = height + "px";
-    };
-    const end = (ev) => {
-        resizeHandle.classList.remove("dragging");
-        resizeHandle.releasePointerCapture(ev.pointerId);
-        resizeHandle.removeEventListener("pointermove", move);
-        resizeHandle.removeEventListener("pointerup", end);
-        resizeHandle.removeEventListener("pointercancel", end);
-        uiState.variableHeight = Math.round(availableBox.getBoundingClientRect().height);
-        if (api && api.setState) api.setState(uiState);
-    };
-    resizeHandle.addEventListener("pointermove", move);
-    resizeHandle.addEventListener("pointerup", end);
-    resizeHandle.addEventListener("pointercancel", end);
-});
-// GitHub 反馈提示条:显示哪条由 host 决策(feedbackPrompt 消息),点击经 feedbackPromptAction 回传 host 执行跳转/静默
-const feedbackPromptEl = document.getElementById("feedbackPrompt");
-let lastFeedbackPrompt = null;
-const FEEDBACK_GITHUB_SVG =
-    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
-const FEEDBACK_ARROW_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg>';
-const FEEDBACK_TEXT_KEYS = { star: "fb.starText", issue: "fb.issueText", feature: "fb.featureText" };
-function hideFeedbackPrompt() {
-    lastFeedbackPrompt = null;
-    if (feedbackPromptEl) feedbackPromptEl.hidden = true;
+function attachResizeHandle(handle, box, stateKey) {
+    const savedHeight = Number(uiState[stateKey]);
+    if (Number.isFinite(savedHeight) && savedHeight >= 80) box.style.height = savedHeight + "px";
+    handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const startY = e.clientY,
+            startHeight = box.getBoundingClientRect().height;
+        handle.classList.add("dragging");
+        handle.setPointerCapture(e.pointerId);
+        const move = (ev) => {
+            const max = Math.max(120, window.innerHeight * 0.7),
+                height = Math.min(max, Math.max(80, startHeight + ev.clientY - startY));
+            box.style.height = height + "px";
+        };
+        const end = (ev) => {
+            handle.classList.remove("dragging");
+            handle.releasePointerCapture(ev.pointerId);
+            handle.removeEventListener("pointermove", move);
+            handle.removeEventListener("pointerup", end);
+            handle.removeEventListener("pointercancel", end);
+            uiState[stateKey] = Math.round(box.getBoundingClientRect().height);
+            if (api && api.setState) api.setState(uiState);
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", end);
+        handle.addEventListener("pointercancel", end);
+    });
 }
-function renderFeedbackPrompt(m) {
-    if (!feedbackPromptEl || !api) return;
-    const kind = m && FEEDBACK_TEXT_KEYS[m.kind] ? m.kind : null;
-    if (!kind) {
-        hideFeedbackPrompt();
-        return;
-    }
-    lastFeedbackPrompt = m;
-    feedbackPromptEl.textContent = "";
-    const txt = document.createElement("span");
-    txt.className = "fp-text";
-    txt.textContent = t(FEEDBACK_TEXT_KEYS[kind]);
-    const link = document.createElement("button");
-    link.type = "button";
-    link.className = "fp-link";
-    link.title = t("fb.openTitle");
-    const ico = document.createElement("span");
-    ico.className = "fp-ico";
-    ico.innerHTML = FEEDBACK_GITHUB_SVG;
-    const lbl = document.createElement("span");
-    lbl.textContent = "Github";
-    const arrow = document.createElement("span");
-    arrow.className = "fp-arrow";
-    arrow.innerHTML = FEEDBACK_ARROW_SVG;
-    link.append(ico, lbl, arrow);
-    link.onclick = () => {
-        hideFeedbackPrompt();
-        if (api) api.postMessage({ type: "feedbackPromptAction", kind: kind, action: "open" });
-    };
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "fp-close";
-    close.textContent = "\u2715";
-    close.title = t("fb.dismissTitle");
-    close.setAttribute("aria-label", t("fb.dismissTitle"));
-    close.onclick = () => {
-        hideFeedbackPrompt();
-        if (api) api.postMessage({ type: "feedbackPromptAction", kind: kind, action: "dismiss" });
-    };
-    feedbackPromptEl.append(txt, link, close);
-    feedbackPromptEl.hidden = false;
-}
+attachResizeHandle(document.getElementById("varResizeHandle"), availableBox, "variableHeight");
+attachResizeHandle(
+    document.getElementById("peripheralResizeHandle"),
+    document.getElementById("peripheralTree"),
+    "peripheralHeight"
+);
+document.getElementById("githubLink").onclick = () => api?.postMessage({ type: "openGitHub" });
 window.EmberProbeMessages.connect(window, {
     initSuccess: function (m) {
         setStat("ready", "sb.ready");
@@ -1674,9 +1654,6 @@ window.EmberProbeMessages.connect(window, {
             params: m.params,
             message: m.message || t("sb.commandFailed")
         });
-    },
-    feedbackPrompt: function (m) {
-        renderFeedbackPrompt(m);
     },
     setLang: function (m) {
         setLang(m.lang, false);

@@ -24,6 +24,7 @@
         button("showAll", "lw.showAll", () => change("showAll"));
         button("restoreCurves", "lw.restoreCurves", () => change("restore"));
         button("hideAll", "lw.hideAll", () => change("hideAll"));
+        button("importSidebar", "lw.importSidebar", () => change("importSidebar"));
         button("autoY", "lw.autoY", () => change("autoY"), $("freeze").parentNode);
         const status = doc.createElement("span");
         status.id = "chartViewStatus";
@@ -196,7 +197,7 @@
                     const row = doc.createElement("div");
                     row.className = "curve-hit";
                     row.style.borderLeftColor = s.style(hit.name).color;
-                    row.textContent = value(hit.point);
+                    row.textContent = hit.name + ": " + value(hit.point);
                     row.setAttribute("aria-label", hit.name + ": " + value(hit.point));
                     tooltip.append(row);
                 });

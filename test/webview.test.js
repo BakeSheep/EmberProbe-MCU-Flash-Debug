@@ -25,6 +25,8 @@ try {
         "chipBody",
         "writeValues",
         "varResizeHandle",
+        "peripheralResizeHandle",
+        "githubLink",
         "svdStatus"
     ])
         assert.ok(sidebar.document.getElementById(id), id);
@@ -77,14 +79,26 @@ try {
         resetValues: true
     });
     assert.ok(!sidebar.document.getElementById("liveValues").textContent.includes("7"));
-    for (const kind of ["issue", "feature", "star"]) {
-        sidebar.send({ type: "feedbackPrompt", kind });
-        assert.strictEqual(sidebar.document.getElementById("feedbackPrompt").hidden, false);
-        sidebar.document.querySelector(".fp-close").click();
-        assert.deepStrictEqual(sidebar.messages.at(-1), { type: "feedbackPromptAction", kind, action: "dismiss" });
-    }
+    assert.strictEqual(sidebar.document.getElementById("feedbackPrompt"), null);
+    assert.strictEqual(
+        sidebar.document.querySelector(".primary-actions [data-command='mcu-vscode.debug']").textContent,
+        "Debug"
+    );
+    assert.strictEqual(sidebar.document.getElementById("githubLink").textContent, "");
+    click("githubLink");
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openGitHub" });
+    const peripheralTree = sidebar.document.getElementById("peripheralTree");
+    const peripheralHandle = sidebar.document.getElementById("peripheralResizeHandle");
+    peripheralTree.getBoundingClientRect = () => ({ height: Number.parseInt(peripheralTree.style.height, 10) || 120 });
+    peripheralHandle.setPointerCapture = () => {};
+    peripheralHandle.releasePointerCapture = () => {};
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointerdown", { clientY: 100 }));
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointermove", { clientY: 160 }));
+    peripheralHandle.dispatchEvent(new sidebar.window.MouseEvent("pointerup", { clientY: 160 }));
+    assert.strictEqual(peripheralTree.style.height, "180px");
     click("langToggle");
     assert.strictEqual(sidebar.messages.at(-1).type, "setLang");
+    assert.strictEqual(sidebar.document.getElementById("githubLink").getAttribute("aria-label"), "打开 GitHub 仓库");
     sidebar.assertHealthy();
 } finally {
     sidebar.close();
@@ -129,7 +143,17 @@ try {
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
     assert.strictEqual(graph.window.__CFG__.maxSamples, 100);
     assert.strictEqual(graph.window.__CFG__.intervalMs, 5);
+    assert.strictEqual(graph.window.__CFG__.frequencyHz, 200);
+    assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
+    graph.document.getElementById("importSidebar").click();
+    assert.deepStrictEqual(graph.messages.at(-1), {
+        type: "importSidebarWatch",
+        items: [{ name: "tick", type: "u32", address: 536870912 }],
+        panelId: 2
+    });
+    graph.send({ type: "sidebarImportResult", added: 1, sourceCount: 2 });
+    assert.ok(graph.document.getElementById("status").textContent.includes("Imported 1"));
     graph.send({ type: "liveStatus", source: "dap", snapshotReady: false, intentEnabled: true });
     assert.ok(graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
@@ -147,18 +171,21 @@ try {
         type: "liveStatus",
         running: true,
         actualHz: 123.4,
+        frequencyHz: 200,
         effectiveIntervalMs: 8,
         p95DurationMs: 3.2,
         missedDeadlines: 0
     });
     assert.strictEqual(graph.document.getElementById("rate").textContent, "123.4 Hz");
-    assert.ok(graph.document.getElementById("rate").title.includes("Effective: 8ms"));
+    assert.ok(graph.document.getElementById("rate").title.includes("Target: 200 Hz"));
+    assert.ok(graph.document.getElementById("rate").title.includes("Effective: 125.0 Hz (8 ms)"));
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
-    graph.send({ type: "liveInterval", intervalMs: 5 });
-    assert.strictEqual(graph.document.getElementById("interval").value, "5");
-    graph.send({ type: "liveInterval", intervalMs: 250 });
-    assert.strictEqual(graph.document.getElementById("interval").value, "250");
+    graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
+    assert.strictEqual(graph.document.getElementById("frequency").value, "30");
+    graph.document.getElementById("frequency").value = "45";
+    graph.document.getElementById("frequency").onchange();
+    assert.deepStrictEqual(graph.messages.at(-1), { type: "setFrequency", frequencyHz: 45, panelId: 2 });
     graph.assertHealthy();
 } finally {
     graph.close();

@@ -43,6 +43,7 @@ const SVD = Buffer.from(
     const quickPicks = [];
     const statuses = [];
     const messages = [];
+    const reports = [];
     const Uri = {
         file(file) {
             return { fsPath: file, toString: () => `file://${file}` };
@@ -75,7 +76,6 @@ const SVD = Buffer.from(
                 messages.push(message);
             },
             async withProgress(options, task) {
-                const reports = [];
                 return task({ report: (value) => reports.push(value) }, { onCancellationRequested() {} });
             }
         }
@@ -113,7 +113,8 @@ const SVD = Buffer.from(
         license: { gating: true, items: [{ title: "Test", spdx: "MIT" }] }
     };
     const official = {
-        async discover() {
+        async discover(_identity, options) {
+            options.onProgress({ phase: "catalog", current: 1, total: 5, percent: 100 });
             return [candidate];
         },
         async download(selected, options) {
@@ -150,6 +151,13 @@ const SVD = Buffer.from(
     const downloaded = await manager.downloadOfficial(folder);
     assert(downloaded?.metadata?.packageVersion === "2.0.0");
     assert(statuses.some((status) => status.state === "downloading"));
+    assert(statuses.some((status) => status.key === "svd.catalogProgress" && status.percent === null));
+    assert(reports.some((report) => report.message.includes("svd.catalogProgress") && report.increment === undefined));
+    assert.deepStrictEqual(
+        reports.filter((report) => report.increment !== undefined).map((report) => report.increment),
+        [50, 50],
+        "metadata checks must not advance the Pack download percentage"
+    );
     assert(messages.some((message) => message.includes("svd.configuredNextDebug")));
 
     quickPicks.push((items) => items.find((item) => item.entry));

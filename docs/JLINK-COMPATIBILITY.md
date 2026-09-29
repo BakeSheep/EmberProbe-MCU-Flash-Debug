@@ -1,8 +1,6 @@
 # J-Link compatibility / J-Link 兼容性
 
-Implementation and software acceptance evidence: [2026-09-21 record](JLINK-IMPLEMENTATION-2026-09-21.md).
-
-EmberProbe uses OpenOCD's J-Link backend. A marketplace label such as “V9 JLinkOB” is not a complete hardware identity. Record the actual OB implementation, firmware and hardware strings, serial number, USB interfaces and their drivers before deciding whether a driver change is appropriate. The audit and upstream references are in [J-Link audit](JLINK-AUDIT-2026-09-20.md).
+EmberProbe uses OpenOCD's J-Link backend. A marketplace label such as “V9 JLinkOB” is not a complete hardware identity. Record the actual OB implementation, firmware and hardware strings, serial number, USB interfaces and their drivers before deciding whether a driver change is appropriate.
 
 EmberProbe 使用 OpenOCD 的 J-Link 后端。“V9 JLinkOB”这类网购名称不足以判定兼容性，必须结合实际 OB 型号、固件、硬件字符串、序列号、USB 接口和驱动信息。版本标签不等于驱动兼容保证。
 
@@ -58,6 +56,6 @@ The sidebar diagnostic panel supports expanding and copying structured errors. D
 
 ## Verification boundary / 验证边界
 
-Software tests cover enumeration fixtures for all three OS families, identity selection, parameter order, native error classification, worker transport, confirmation binding and HIL success markers. These fixtures do not certify real USB drivers or probe firmware. A connected `1366:0101` J-Link V9 passed the native install, restore, extension driver-service, and interface-only OpenOCD checks on Windows build 26300.9550 using an unsigned local development helper; see the [hardware record](JLINK-DRIVER-HIL-2026-09-24.md). Released-VSIX hardware validation, Windows 10, composite J-Link devices, and Ozone interoperability still require the dedicated-board [HIL procedure](../test/hil/README.md). Record exact identities before adding a broader hardware-tested compatibility claim.
+Software tests cover enumeration fixtures for all three OS families, identity selection, parameter order, native error classification, worker transport, confirmation binding and HIL success markers. These fixtures do not certify real USB drivers or probe firmware. Released-VSIX hardware validation, Windows 10, composite J-Link devices, and Ozone interoperability still require the dedicated-board [HIL procedure](../test/hil/README.md). Record exact identities before adding a broader hardware-tested compatibility claim.
 
-软件测试覆盖三类系统的枚举样例、身份选择、参数顺序、原生日志诊断、Worker 传递、授权绑定和 HIL 成功标记，但不认证真实驱动或固件。已连接的 `1366:0101` J-Link V9 使用未签名的本地开发 helper，在 Windows 构建号 26300.9550 上通过原生安装、恢复、扩展驱动服务及 OpenOCD 仅接口检查；详见[实机记录](JLINK-DRIVER-HIL-2026-09-24.md)。发布版 VSIX 的真机验证、Windows 10、复合接口 J-Link 和 Ozone 互操作仍须按专用板 HIL 流程验收。
+软件测试覆盖三类系统的枚举样例、身份选择、参数顺序、原生日志诊断、Worker 传递、授权绑定和 HIL 成功标记，但不认证真实驱动或固件。发布版 VSIX 的真机验证、Windows 10、复合接口 J-Link 和 Ozone 互操作仍须按专用板 HIL 流程验收。

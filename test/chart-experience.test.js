@@ -149,17 +149,17 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.chartState.pointer = { x: hitPoint.x, y: hitPoint.y };
         w.dirty = true;
         w.draw(150);
-        assert.equal(doc.getElementById("curveTooltip").textContent, "1");
+        assert.equal(doc.getElementById("curveTooltip").textContent, "a: 1");
         const nextPoint = w.chartState.curveGeometry.value[0].points.at(-1);
         w.chartState.pointer = { x: nextPoint.x, y: nextPoint.y };
         w.dirty = true;
         w.draw(250);
-        assert.equal(doc.getElementById("curveTooltip").textContent, "3", "frozen hover updates at new position");
+        assert.equal(doc.getElementById("curveTooltip").textContent, "a: 3", "frozen hover updates at new position");
         const otherPoint = w.chartState.curveGeometry.value[1].points.at(-1);
         w.chartState.pointer = { x: otherPoint.x, y: otherPoint.y };
         w.dirty = true;
         w.draw(350);
-        assert.equal(doc.getElementById("curveTooltip").textContent, "4", "frozen hover can inspect another series");
+        assert.equal(doc.getElementById("curveTooltip").textContent, "b: 4", "frozen hover can inspect another series");
         w.resumeChart();
         const oldColor = w.colorFor("b"),
             count = graph.messages.length;
@@ -244,6 +244,30 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         assert.equal(w.analysis.focused, "sensor.x");
         w.removeVar("sensor.x");
         assert.equal(w.analysis.focused, null);
+        w.addSymbol({
+            name: "outer",
+            address: 0x20000004,
+            size: 4,
+            isComposite: true,
+            compositeLayout: {
+                kind: "struct",
+                members: [
+                    {
+                        name: "inner",
+                        offset: 0,
+                        compositeLayout: {
+                            kind: "struct",
+                            members: [{ name: "x", offset: 0, watchType: "u32", byteSize: 4 }]
+                        }
+                    }
+                ]
+            }
+        });
+        doc.querySelector(".comp-nest .comp-head").click();
+        assert.ok(doc.querySelector(".comp-nest .comp-members").classList.contains("open"));
+        doc.querySelector(".comp-nest .member-swatch").click();
+        assert.ok(doc.querySelector(".comp-nest .comp-members").classList.contains("open"));
+        assert.ok(w.watch.some((item) => item.name === "outer.inner.x"));
         graph.assertHealthy();
     } finally {
         graph.close();
