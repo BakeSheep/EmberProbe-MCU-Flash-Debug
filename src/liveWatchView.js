@@ -31,12 +31,26 @@ function buildCsv(names, buffers, opts) {
                 cellsByTime.set(time, cells);
                 times.push(time);
             }
-            cells[seriesIndex] = esc(point.valueText !== null && point.valueText !== undefined ? point.valueText : point.v);
+            cells[seriesIndex] = point.v == null
+                ? ''
+                : esc(point.valueText !== null && point.valueText !== undefined ? point.valueText : point.v);
         }
     });
     times.sort((a, b) => a - b);
     for (const time of times) rows.push([new Date(time).toISOString()].concat(cellsByTime.get(time)).join(','));
     return '\uFEFF' + rows.join('\r\n') + '\r\n';
+}
+function csvDataRowCount(csv) {
+    let quoted = false;
+    let lines = 0;
+    for (let i = 0; i < csv.length; i++) {
+        if (csv[i] === '"') {
+            if (quoted && csv[i + 1] === '"') i++;
+            else quoted = !quoted;
+        } else if (csv[i] === '\n' && !quoted) lines++;
+    }
+    if (csv && !csv.endsWith('\n')) lines++;
+    return Math.max(0, lines - 1);
 }
 function getLiveWatchContent(cfg, lang) {
     const raw = cfg || {};
@@ -48,6 +62,7 @@ function getLiveWatchContent(cfg, lang) {
               : DEFAULT_FREQUENCY_HZ;
     const conf = {
         maxSamples: Math.min(20000, Math.max(100, Number(raw.maxSamples) || 2000)),
+        autoMaxSamples: raw.autoMaxSamples !== false,
         frequencyHz,
         intervalMs: intervalMsFromHz(frequencyHz),
         panelId: Math.max(1, Math.floor(Number(raw.panelId) || 1))
@@ -71,4 +86,4 @@ ${liveWatchViewport}
 ${liveWatchRenderer}
 </script></body></html>`;
 }
-module.exports = { getLiveWatchContent, buildCsv };
+module.exports = { getLiveWatchContent, buildCsv, csvDataRowCount };

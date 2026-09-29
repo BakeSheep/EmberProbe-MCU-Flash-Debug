@@ -8,6 +8,7 @@ const readline = require("readline");
 const fsp = fs.promises;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
 const BACKPRESSURE_BYTES = 1024 * 1024;
+const AGENT_CSV_MAX_BYTES = 64 * 1024 * 1024;
 
 function codedError(code, message) {
     return Object.assign(new Error(message), { code });
@@ -58,8 +59,8 @@ function cleanupStaleSamplingArchives(parentDir, currentPid = process.pid, isAli
 }
 
 function sampleValueText(sample) {
+    if (sample.value == null && (sample.valueText == null || sample.valueText === "-")) return null;
     if (sample.valueText != null) return String(sample.valueText);
-    if (sample.value == null) return null;
     if (typeof sample.value === "number" && Object.is(sample.value, -0)) return "-0";
     return String(sample.value);
 }
@@ -82,6 +83,7 @@ class SamplingArchive {
         this.handle = null;
         this.drainPromise = null;
         this.exportPromise = null;
+        this.activeReads = new Set();
         this.closed = false;
         this.failed = null;
         this.limitReached = false;
@@ -212,6 +214,24 @@ class SamplingArchive {
         return this.exportPromise;
     }
 
+    readCsv(request) {
+        if (this.closed) return Promise.reject(codedError("SAMPLING_ARCHIVE_CLOSED", "Sampling history is closed"));
+        const task = this._readCsv(request).finally(() => this.activeReads.delete(task));
+        this.activeReads.add(task);
+        return task;
+    }
+
+    async _readCsv(request) {
+        const outputPath = path.join(this.rootDir, `agent-export-${crypto.randomBytes(8).toString("hex")}.csv`);
+        try {
+            const result = await this.exportCsv({ ...request, outputPath, maxOutputBytes: AGENT_CSV_MAX_BYTES });
+            if (!result.valueRows) throw codedError("CSV_EXPORT_EMPTY", "The selected range has no chart samples");
+            return { ...result, csv: await fsp.readFile(outputPath, "utf8") };
+        } finally {
+            await fsp.rm(outputPath, { force: true }).catch(() => {});
+        }
+    }
+
     async _exportCsv(request) {
         const targetPath = path.resolve(String(request.outputPath || ""));
         if (!request.outputPath || path.extname(targetPath).toLowerCase() !== ".csv") {
@@ -235,9 +255,20 @@ class SamplingArchive {
         );
         let output;
         let rowCount = 0;
+        let valueRows = 0;
+        let firstTimestampMs = null;
+        let lastTimestampMs = null;
+        let firstValueTimestampMs = null;
+        let lastValueTimestampMs = null;
+        const maxOutputBytes = Number.isFinite(request.maxOutputBytes) ? request.maxOutputBytes : Infinity;
+        const tooLarge = () =>
+            codedError("CSV_EXPORT_TOO_LARGE", "CSV result exceeds 64 MiB; use the chart's archive export");
         try {
             output = await fsp.open(temporaryPath, "wx", 0o600);
-            await output.write(`\uFEFFtime,${names.map(csvHeaderField).join(",")}\r\n`);
+            const header = `\uFEFFtime,${names.map(csvHeaderField).join(",")}\r\n`;
+            let outputBytes = Buffer.byteLength(header);
+            if (outputBytes > maxOutputBytes) throw tooLarge();
+            await output.write(header);
             const input = fs.createReadStream(this.dataPath, { start: 0, end: cutoff - 1 });
             const lines = readline.createInterface({ input, crlfDelay: Infinity });
             let batch = "";
@@ -252,8 +283,20 @@ class SamplingArchive {
                 if (!Number.isFinite(record.t) || record.t < fromMs || record.t > toMs) continue;
                 if ((record.scope || "") !== scope) continue;
                 const values = record.v && typeof record.v === "object" ? record.v : {};
-                batch += `${new Date(record.t).toISOString()},${names.map((name) => csvField(values[name])).join(",")}\r\n`;
+                const csvRow = `${new Date(record.t).toISOString()},${names.map((name) => csvField(values[name])).join(",")}\r\n`;
+                outputBytes += Buffer.byteLength(csvRow);
+                if (outputBytes > maxOutputBytes) throw tooLarge();
+                batch += csvRow;
                 rowCount += 1;
+                if (names.some((name) => values[name] != null)) {
+                    valueRows += 1;
+                    firstValueTimestampMs =
+                        firstValueTimestampMs === null ? record.t : Math.min(firstValueTimestampMs, record.t);
+                    lastValueTimestampMs =
+                        lastValueTimestampMs === null ? record.t : Math.max(lastValueTimestampMs, record.t);
+                }
+                firstTimestampMs = firstTimestampMs === null ? record.t : Math.min(firstTimestampMs, record.t);
+                lastTimestampMs = lastTimestampMs === null ? record.t : Math.max(lastTimestampMs, record.t);
                 if (batch.length >= 64 * 1024) {
                     await output.write(batch);
                     batch = "";
@@ -264,7 +307,16 @@ class SamplingArchive {
             await output.close();
             output = null;
             await fsp.rename(temporaryPath, targetPath);
-            return { outputPath: targetPath, rows: rowCount, seriesCount: names.length };
+            return {
+                outputPath: targetPath,
+                rows: rowCount,
+                valueRows,
+                seriesCount: names.length,
+                firstTimestampMs,
+                lastTimestampMs,
+                firstValueTimestampMs,
+                lastValueTimestampMs
+            };
         } catch (error) {
             if (output) await output.close().catch(() => {});
             await fsp.rm(temporaryPath, { force: true }).catch(() => {});
@@ -276,6 +328,7 @@ class SamplingArchive {
         if (this.closed) return;
         this.closed = true;
         if (this.exportPromise) await this.exportPromise.catch(() => {});
+        await Promise.allSettled([...this.activeReads]);
         await this.flush().catch(() => {});
         if (this.handle) await this.handle.close().catch(() => {});
         this.handle = null;

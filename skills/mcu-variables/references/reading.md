@@ -36,6 +36,8 @@ node <skill-dir>/scripts/read.js --workspace <workspace> --variables counter --t
 
 Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
 
+Agent CSV reads the chart's full sampling archive. Column headers include the decoded type so history remains clear if a watch's type changes. Results larger than 64 MiB are rejected explicitly; use the chart's archive export dialog for larger files.
+
 ```bash
 node <skill-dir>/scripts/read.js --workspace <workspace> --export-csv --variables counter,temperature --last 30 --output exports/live.csv
 ```

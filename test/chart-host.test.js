@@ -68,9 +68,15 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.equal(panels[0].messages.at(-1).type, "liveError");
     await panels[0].receive({ type: "setSeriesStyle", name: "shared", style: { color: "invalid", line: "solid" } });
     assert.equal(panels[0].messages.at(-1).type, "liveError");
-    await panels[0].receive({ type: "exportCsv", source: "snapshot", names: ["shared"], csv: "time,shared\r\nnow,42" });
-    assert.equal(writes[0], "time,shared\r\nnow,42");
+    await panels[0].receive({
+        type: "exportCsv",
+        source: "snapshot",
+        names: ["shared"],
+        csv: "time,shared\r\nnow,42\r\n"
+    });
+    assert.equal(writes[0], "time,shared\r\nnow,42\r\n");
     assert.equal(panels[0].messages.at(-1).ok, true);
+    assert.equal(panels[0].messages.at(-1).rowCount, 1);
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
     values.set("mcu.sidebarWatchList", [

@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { buildCsv } = require("../src/liveWatchView");
+const { buildCsv, csvDataRowCount } = require("../src/liveWatchView");
 
 // RFC 4180:BOM 头、保留字符转义、CRLF 行尾;宽表按采样时间戳对齐,晚加入的序列起始前留空单元格
 const t0 = Date.UTC(2026, 0, 2, 3, 4, 5, 678);
@@ -65,5 +65,13 @@ assert.strictEqual(
     '\uFEFFtime,"\'=HYPERLINK(""https://example.invalid"")"',
     "ELF-controlled series names must not become spreadsheet formulas"
 );
+
+assert.strictEqual(
+    buildCsv(["failed"], [[{ t: t0, v: null, valueText: "-" }]]).split("\r\n")[1],
+    "2026-01-02T03:04:05.678Z,",
+    "failed readings must leave CSV cells empty"
+);
+assert.strictEqual(csvDataRowCount(buildCsv(["line\r\nbreak"], [[{ t: t0, v: 1 }]])), 1);
+assert.strictEqual(csvDataRowCount(buildCsv(["empty"], [[]])), 0);
 
 console.log("CSV export tests passed");

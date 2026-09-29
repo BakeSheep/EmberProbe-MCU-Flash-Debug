@@ -35,7 +35,7 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 - Inspection: hover shows only a color bar and actual value. Clicking a curve uses the same snapshot freeze as the top toolbar; moving the pointer still inspects other positions and curves while frozen.
 - Visibility and axes: Show all / Hide all live under Current values; Auto Y lives in the top toolbar. Full-height color strips toggle visibility and turn gray when hidden; × on the right removes a watch.
 - Freeze: sampling and current values continue updating. Resume live releases the snapshot and follows new data. New variables appear after resuming; clearing history clears the snapshot.
-- CSV sources: keep using the full sampling archive, or select live retained samples or the frozen snapshot (the default when frozen). Snapshots and live buffers respect the per-variable sample limit. Readings do not bridge data gaps; 64-bit integer readouts preserve exact decimal text.
+- CSV sources: keep using the full sampling archive, or select live retained samples or the frozen snapshot (the default when frozen). By default, the live buffer retains at least 60 seconds at the target frequency; an explicit `emberprobe.maxSamples` setting takes precedence. Readings do not bridge data gaps; 64-bit integer readouts preserve exact decimal text.
 
 - Sampling isolation: OpenOCD transport and the sampling clock run in a worker thread so extension-host stalls from builds or synchronous ELF parsing do not stop acquisition. Hz uses acquisition timestamps. Target resets, debugger pauses, probe contention and resource exhaustion can still affect reads.
 

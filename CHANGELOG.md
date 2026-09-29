@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 200 Hz 下默认波形历史不足 60 秒、Agent CSV 静默截短，以及失败采样和导出行数的 CSV 表示；高频缓冲改为分批裁剪。
+- Fix the default chart's 60-second retention at 200 Hz, Agent CSV history truncation, failed-sample cells, and exported row counts; trim high-rate buffers in batches.
+
 ## [0.7.14] - 2026-09-29
 
 - 优化高频采样时侧栏与波形图变量数值的稳定显示；波形图可从主侧栏追加观察变量并跳过重复项。

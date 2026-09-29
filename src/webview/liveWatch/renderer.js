@@ -1,6 +1,11 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
-    CFG = window.__CFG__,
-    MAXPTS = CFG.maxSamples;
+    CFG = window.__CFG__;
+function retainedSampleLimit(frequencyHz) {
+    return CFG.autoMaxSamples
+        ? Math.min(20000, Math.max(CFG.maxSamples, Math.ceil(Number(frequencyHz) * 60) + 256))
+        : CFG.maxSamples;
+}
+var MAXPTS = retainedSampleLimit(CFG.frequencyHz);
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
@@ -408,7 +413,10 @@ function onSamples(samples) {
         ensureBuf(s.name);
         var arr = data[s.name];
         arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
-        if (arr.length > MAXPTS) arr.splice(0, arr.length - MAXPTS);
+        if (arr.length > MAXPTS) {
+            // Trim in chunks so high-rate sampling does not shift the whole buffer on every point.
+            arr.splice(0, Math.max(arr.length - MAXPTS, Math.min(256, Math.max(1, Math.floor(MAXPTS / 20)))));
+        }
     });
     scheduleValueRefresh();
     dirty = true;
@@ -1106,18 +1114,6 @@ function exportOptions() {
     var seconds = Number(mode);
     return Number.isFinite(seconds) ? { from: exportOpenedAt - seconds * 1000, to: exportOpenedAt } : null;
 }
-function csvDataRows(candidates, opts) {
-    var times = new Set(),
-        from = Number.isFinite(opts && opts.from) ? opts.from : -Infinity,
-        to = Number.isFinite(opts && opts.to) ? opts.to : Infinity;
-    (candidates || []).forEach(function (c) {
-        (c.buffer || []).forEach(function (p) {
-            var time = Number(p && p.t);
-            if (Number.isFinite(time) && time >= from && time <= to) times.add(time);
-        });
-    });
-    return times.size;
-}
 function hideExport() {
     $("exportOverlay").classList.add("hidden");
     $("exportWarn").textContent = "";
@@ -1254,98 +1250,6 @@ function applyExport() {
         toMs: opts.to
     });
     hideExport();
-}
-function agentExportCsv(m) {
-    var requested = Array.isArray(m.names) ? m.names.filter(Boolean) : [],
-        available = [];
-    watch.forEach(function (item) {
-        var buffer = data[item.name];
-        if (buffer && buffer.length) available.push({ name: item.name, buffer: buffer });
-    });
-    var byName = new Map(
-            available.map(function (item) {
-                return [item.name, item];
-            })
-        ),
-        missing = requested.filter(function (name) {
-            return !byName.has(name);
-        }),
-        selected = requested.length
-            ? requested
-                  .map(function (name) {
-                      return byName.get(name);
-                  })
-                  .filter(Boolean)
-            : available;
-    if (missing.length) {
-        post({
-            type: "agentExportCsvResult",
-            requestId: m.requestId,
-            ok: false,
-            code: "CSV_SERIES_NOT_FOUND",
-            message: "Chart series not found: " + missing.join(", "),
-            details: { missing: missing }
-        });
-        return;
-    }
-    if (!selected.length) {
-        post({
-            type: "agentExportCsvResult",
-            requestId: m.requestId,
-            ok: false,
-            code: "CSV_EXPORT_EMPTY",
-            message: "The selected chart has no sampled series"
-        });
-        return;
-    }
-    var opts = {},
-        from = Number(m.from),
-        to = Number(m.to);
-    if (Number.isFinite(from)) opts.from = from;
-    if (Number.isFinite(to)) opts.to = to;
-    if (opts.from !== undefined && opts.to !== undefined && opts.from > opts.to) {
-        post({
-            type: "agentExportCsvResult",
-            requestId: m.requestId,
-            ok: false,
-            code: "INVALID_CSV_RANGE",
-            message: "CSV export time range is invalid"
-        });
-        return;
-    }
-    var rows = csvDataRows(selected, opts);
-    if (!rows) {
-        post({
-            type: "agentExportCsvResult",
-            requestId: m.requestId,
-            ok: false,
-            code: "CSV_EXPORT_EMPTY",
-            message: "The selected range has no chart samples"
-        });
-        return;
-    }
-    var bounds = exportBounds(selected);
-    post({
-        type: "agentExportCsvResult",
-        requestId: m.requestId,
-        ok: true,
-        names: selected.map(function (item) {
-            return item.name;
-        }),
-        from: opts.from === undefined ? bounds.from : opts.from,
-        to: opts.to === undefined ? bounds.to : opts.to,
-        seriesCount: selected.length,
-        rowCount: rows,
-        csv: buildCsv(
-            selected.map(function (item) {
-                return item.name;
-            }),
-            selected.map(function (item) {
-                return item.buffer;
-            }),
-            opts
-        )
-    });
 }
 var VP = window.EmberChartViewport,
     canvas = $("chart"),
@@ -2099,9 +2003,6 @@ window.EmberProbeMessages.connect(window, {
     liveCompositeSample: function (m) {
         onCompositeSamples(m.samples || []);
     },
-    agentExportCsv: function (m) {
-        agentExportCsv(m);
-    },
     liveStatus: function (m) {
         var fresh = window.EmberProbeRuntime.liveState({ running: running }, m).fresh;
         document.body.classList.toggle("debug-stale", !fresh);
@@ -2261,6 +2162,7 @@ window.EmberProbeMessages.connect(window, {
     },
     liveFrequency: function (m) {
         requestedFrequencyHz = m.frequencyHz;
+        MAXPTS = retainedSampleLimit(requestedFrequencyHz);
         $("frequency").value = String(requestedFrequencyHz);
     }
 });

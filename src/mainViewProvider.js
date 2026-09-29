@@ -109,8 +109,6 @@ class MainViewProvider {
         this._livePanels = new Map();
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
-        this._pendingCsvExports = new Map();
-        this._csvExportSeq = 0;
         this._liveWatchService = new LiveWatchService(elfSymbols);
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this._samplingIntent = false;
@@ -889,7 +887,7 @@ class MainViewProvider {
     _focusedLivePanel() {
         return selectFocusedPanel(this._livePanels);
     }
-    _exportAgentCsv(params) {
+    async _exportAgentCsv(params) {
         const requestedPanelId = params.panelId === undefined ? null : Number(params.panelId);
         const entry = requestedPanelId === null ? this._focusedLivePanel() : this._livePanels.get(requestedPanelId);
         if (!entry || !entry.ready) {
@@ -909,27 +907,39 @@ class MainViewProvider {
         ) {
             throw Object.assign(new Error("CSV export time range is invalid"), { code: "INVALID_CSV_RANGE" });
         }
-        const requestId = `agent-csv-${Date.now()}-${++this._csvExportSeq}`;
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this._pendingCsvExports.delete(requestId);
-                reject(
-                    Object.assign(new Error("Timed out while reading chart history"), { code: "CSV_EXPORT_TIMEOUT" })
-                );
-            }, 10000);
-            this._pendingCsvExports.set(requestId, { panelId: entry.panelId, resolve, reject, timer });
-            entry.post({ type: "agentExportCsv", requestId, names, from, to });
-        });
-    }
-    _rejectPanelCsvExports(panelId) {
-        for (const [requestId, pending] of this._pendingCsvExports) {
-            if (pending.panelId !== panelId) continue;
-            clearTimeout(pending.timer);
-            this._pendingCsvExports.delete(requestId);
-            pending.reject(
-                Object.assign(new Error("The selected Live Watch panel was closed"), { code: "LIVE_PANEL_NOT_OPEN" })
-            );
+        const available = this._samplingArchive.status(entry.watchKey).variables;
+        if (!available.length) {
+            throw Object.assign(new Error("The selected chart has no sampled series"), { code: "CSV_EXPORT_EMPTY" });
         }
+        const selected = names.length
+            ? names.flatMap((name) =>
+                  available.filter((recorded) => recorded === name || recorded.startsWith(`${name} [`))
+              )
+            : available;
+        const missing = names.filter(
+            (name) => !available.some((recorded) => recorded === name || recorded.startsWith(`${name} [`))
+        );
+        if (missing.length) {
+            throw Object.assign(new Error(`Chart series not found: ${missing.join(", ")}`), {
+                code: "CSV_SERIES_NOT_FOUND",
+                details: { missing }
+            });
+        }
+        const result = await this._samplingArchive.readCsv({
+            scope: entry.watchKey,
+            names: [...new Set(selected)],
+            fromMs: from,
+            toMs: to
+        });
+        return {
+            panelId: entry.panelId,
+            names: [...new Set(selected)],
+            from: result.firstValueTimestampMs,
+            to: result.lastValueTimestampMs,
+            seriesCount: result.seriesCount,
+            rowCount: result.rows,
+            csv: result.csv
+        };
     }
     async _addAgentWatch(params) {
         const names = Array.isArray(params.variables) ? params.variables.map(String) : [];
@@ -2189,6 +2199,9 @@ class MainViewProvider {
             liveWatchView.getLiveWatchContent(
                 {
                     maxSamples: cfg.get("maxSamples", 2000),
+                    autoMaxSamples: !["workspaceFolderValue", "workspaceValue", "globalValue"].some(
+                        (scope) => cfg.inspect?.("maxSamples")?.[scope] !== undefined
+                    ),
                     frequencyHz: this._liveFrequencyHz,
                     panelId
                 },
@@ -2203,7 +2216,6 @@ class MainViewProvider {
             this._webviewRenders?.delete(panelWebview);
             this._livePanels.delete(panelId);
             pruneWebviewAssets(this._webviewAssetRootUri.fsPath, `live-watch-${panelId}`, new Set());
-            this._rejectPanelCsvExports(panelId);
             this._invalidateConsumerTypes();
             this._refreshSamplingPlan().catch(() => {});
         });
@@ -2355,7 +2367,7 @@ class MainViewProvider {
                                 await vscode.workspace.fs.writeFile(target, Buffer.from(message.csv, "utf8"));
                                 result = {
                                     seriesCount: Array.isArray(message.names) ? message.names.length : 0,
-                                    rows: Math.max(0, message.csv.split("\r\n").length - 1)
+                                    rows: liveWatchView.csvDataRowCount(message.csv)
                                 };
                             } else
                                 result = await this._samplingArchive.exportCsv({
@@ -2377,36 +2389,6 @@ class MainViewProvider {
                         } catch (error) {
                             vscode.window.showErrorMessage(this._t("msg.csvExportFailed", { msg: error.message }));
                             post({ type: "exportCsvResult", ok: false, message: error.message });
-                        }
-                        break;
-                    }
-                    case "agentExportCsvResult": {
-                        const requestId = String(message.requestId || "");
-                        const pending = this._pendingCsvExports.get(requestId);
-                        if (!pending || pending.panelId !== panelId) {
-                            throw Object.assign(new Error("Unknown CSV export request"), {
-                                code: "INVALID_CSV_EXPORT_RESPONSE"
-                            });
-                        }
-                        clearTimeout(pending.timer);
-                        this._pendingCsvExports.delete(requestId);
-                        if (!message.ok) {
-                            pending.reject(
-                                Object.assign(new Error(message.message || "Unable to export chart history"), {
-                                    code: message.code || "CSV_EXPORT_FAILED",
-                                    details: message.details
-                                })
-                            );
-                        } else {
-                            pending.resolve({
-                                panelId,
-                                names: Array.isArray(message.names) ? message.names : [],
-                                from: message.from,
-                                to: message.to,
-                                seriesCount: Number(message.seriesCount) || 0,
-                                rowCount: Number(message.rowCount) || 0,
-                                csv: String(message.csv || "")
-                            });
                         }
                         break;
                     }

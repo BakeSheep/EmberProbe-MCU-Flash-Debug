@@ -159,14 +159,7 @@ try {
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
     assert.ok(!graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
-    graph.send({ type: "agentExportCsv", requestId: "export", names: ["tick"] });
-    const exported = graph.messages.at(-1);
-    assert.strictEqual(exported.ok, true);
-    assert.strictEqual(exported.rowCount, 1);
-    assert.ok(exported.csv.includes(",7"));
-    assert.strictEqual(exported.panelId, 2);
-    graph.send({ type: "agentExportCsv", requestId: "missing", names: ["absent"] });
-    assert.strictEqual(graph.messages.at(-1).code, "CSV_SERIES_NOT_FOUND");
+    assert.strictEqual(graph.window.MAXPTS, 12256, "200 Hz retains at least a full 60-second chart window");
     graph.send({
         type: "liveStatus",
         running: true,
@@ -182,6 +175,7 @@ try {
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
     graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
+    assert.strictEqual(graph.window.MAXPTS, 2056);
     assert.strictEqual(graph.document.getElementById("frequency").value, "30");
     graph.document.getElementById("frequency").value = "45";
     graph.document.getElementById("frequency").onchange();

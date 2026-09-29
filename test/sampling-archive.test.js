@@ -38,6 +38,7 @@ async function main() {
         assert.strictEqual(sampleValueText({ value: -0, valueText: null }), "-0");
         assert.strictEqual(sampleValueText({ value: 1, valueText: "exact" }), "exact");
         assert.strictEqual(sampleValueText({ value: null, valueText: null }), null);
+        assert.strictEqual(sampleValueText({ value: null, valueText: "-" }), null);
 
         const stale = path.join(temporaryRoot, "sampling-history-999999-deadbeef");
         const active = path.join(temporaryRoot, `sampling-history-${process.pid}-abcdef`);
@@ -195,6 +196,29 @@ async function main() {
     } finally {
         await typeArchive.dispose();
         fs.rmSync(typeRoot, { recursive: true, force: true });
+    }
+
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-csv-"));
+    const agentArchive = new SamplingArchive({ rootDir: path.join(agentRoot, "history") });
+    try {
+        agentArchive.append([{ name: "value [u32]", value: 42 }], 1000, "graph");
+        await assert.rejects(
+            agentArchive.exportCsv({
+                outputPath: path.join(agentRoot, "too-large.csv"),
+                scope: "graph",
+                maxOutputBytes: 1
+            }),
+            { code: "CSV_EXPORT_TOO_LARGE" }
+        );
+        assert.ok(!fs.existsSync(path.join(agentRoot, "too-large.csv")));
+        const pendingRead = agentArchive.readCsv({ scope: "graph" });
+        const pendingDispose = agentArchive.dispose();
+        assert.match((await pendingRead).csv, /1970-01-01T00:00:01.000Z,42/);
+        await pendingDispose;
+        assert.ok(!fs.existsSync(agentArchive.rootDir));
+    } finally {
+        await agentArchive.dispose();
+        fs.rmSync(agentRoot, { recursive: true, force: true });
     }
 
     console.log("sampling archive tests passed");

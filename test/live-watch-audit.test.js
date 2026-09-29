@@ -115,6 +115,21 @@ const elf = require("../src/elfSymbols");
         await assert.rejects(archive.exportCsv({ outputPath, scope: "missing" }), { code: "CSV_EXPORT_EMPTY" });
         await archive.exportCsv({ outputPath, scope: "graph2", fromMs: 1000, toMs: 1000 });
         assert.match(fs.readFileSync(outputPath, "utf8"), /time,value \[i32\]\r\n.*?,1065353216\r\n$/);
+        p._livePanels.set(1, { ...entry, panelId: 1, focusOrder: 1 });
+        for (let i = 0; i < 2201; i++) archive.append([{ name: "value [u32]", value: i }], 3000 + i * 5, "graph");
+        const agentCsv = await p._exportAgentCsv({ panelId: 1, variables: ["value"], from: 1000, to: 20000 });
+        assert.equal(agentCsv.rowCount, 2203, "Agent export must include history beyond the chart's 2000-point limit");
+        assert.deepStrictEqual(agentCsv.names, ["value [f32]", "value [u32]"]);
+        assert.equal(agentCsv.from, 1000);
+        assert.equal(agentCsv.to, 14000);
+        assert.match(agentCsv.csv, /1970-01-01T00:00:01.000Z,1,/);
+        assert.match(agentCsv.csv, /1970-01-01T00:00:14.000Z,,2200/);
+        await assert.rejects(p._exportAgentCsv({ panelId: 1, variables: ["missing"] }), {
+            code: "CSV_SERIES_NOT_FOUND"
+        });
+        await assert.rejects(p._exportAgentCsv({ panelId: 1, variables: ["value"], from: 25000, to: 26000 }), {
+            code: "CSV_EXPORT_EMPTY"
+        });
         graph.assertHealthy();
     } finally {
         graph.close();
