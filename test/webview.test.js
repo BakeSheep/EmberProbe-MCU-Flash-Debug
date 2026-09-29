@@ -146,6 +146,14 @@ try {
     assert.strictEqual(graph.window.__CFG__.frequencyHz, 200);
     assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
+    graph.document.getElementById("importSidebar").click();
+    assert.deepStrictEqual(graph.messages.at(-1), {
+        type: "importSidebarWatch",
+        items: [{ name: "tick", type: "u32", address: 536870912 }],
+        panelId: 2
+    });
+    graph.send({ type: "sidebarImportResult", added: 1, sourceCount: 2 });
+    assert.ok(graph.document.getElementById("status").textContent.includes("Imported 1"));
     graph.send({ type: "liveStatus", source: "dap", snapshotReady: false, intentEnabled: true });
     assert.ok(graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });

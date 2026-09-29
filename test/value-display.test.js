@@ -11,6 +11,7 @@ async function checkDisplay(html, listType, selector) {
         view.send({ type: listType, items: [{ name: "counter", type: "u32", address: 536870912 }] });
         view.send({ type: "liveSample", samples: [{ name: "counter", value: 9, valueText: "9", t: 1000 }] });
         const cell = view.document.querySelector(selector);
+        assert.match(view.window.getComputedStyle(cell).fontFamily, /Consolas/);
         assert.strictEqual(cell.textContent, "9");
         view.send({ type: "liveSample", samples: [{ name: "counter", value: 100000, valueText: "100000", t: 1005 }] });
         assert.strictEqual(cell.textContent, "9", "frequent samples should not repaint the value on every message");

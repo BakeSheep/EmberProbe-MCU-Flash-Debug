@@ -1,10 +1,29 @@
 "use strict";
 const assert = require("assert");
-const { WatchListStore } = require("../src/services/watchListStore");
+const { WatchListStore, appendMissingWatchItems } = require("../src/services/watchListStore");
 const { createChipParser } = require("../src/chip/parser");
 const { parseDwarf, readULEB } = require("../src/dwarf");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
+    const existing = [
+        { name: "shared", type: "f32" },
+        { name: "chartOnly", type: "u32" }
+    ];
+    const merged = appendMissingWatchItems(existing, [
+        { name: "shared", type: "u8" },
+        { name: "sidebarOnly", type: "i16" },
+        { name: "sidebarOnly", type: "u32" },
+        null
+    ]);
+    assert.deepStrictEqual(
+        merged.map((item) => item.name),
+        ["shared", "chartOnly", "sidebarOnly"]
+    );
+    assert.strictEqual(merged[0].type, "f32", "chart-specific watch type must win for duplicate names");
+    assert.deepStrictEqual(
+        existing.map((item) => item.name),
+        ["shared", "chartOnly"]
+    );
     const fixture = createFixture();
     try {
         let symbols = [{ name: "tick", address: 1 }],

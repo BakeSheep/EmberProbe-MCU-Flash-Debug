@@ -79,6 +79,8 @@ try {
     doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape" }));
 
     doc.body.dispatchEvent(new dom.window.Event("pointerdown", { bubbles: true }));
+    doc.getElementById("importSidebar").click();
+    assert.deepEqual(actions.at(-1), ["importSidebar"]);
     for (const id of ["showAll", "hideAll", "restoreCurves", "autoY"]) doc.getElementById(id).click();
     state.frozen = true;
     state.chart.hits = [{ name: "b", point: series[0].arr[1] }];

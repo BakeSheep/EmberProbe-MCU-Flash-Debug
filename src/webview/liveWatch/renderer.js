@@ -1456,6 +1456,10 @@ function updateChartEmpty(series, hasBounds) {
     empty.appendChild(button);
 }
 function chartAction(action, value) {
+    if (action === "importSidebar") {
+        post({ type: "importSidebarWatch", items: watch });
+        return;
+    }
     var names = watch.map(function (w) {
         return w.name;
     });
@@ -1942,6 +1946,12 @@ function loop(now) {
     requestAnimationFrame(loop);
 }
 window.EmberProbeMessages.connect(window, {
+    sidebarImportResult: function (m) {
+        setStatusKey(
+            !m.sourceCount ? "lw.sidebarEmpty" : m.added ? "lw.sidebarImported" : "lw.sidebarAlreadyImported",
+            { n: m.added || 0 }
+        );
+    },
     seriesStyles: function (m) {
         seriesStyles = Styles.clean(m.styles);
         styleRequests.clear();

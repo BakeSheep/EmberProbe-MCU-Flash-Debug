@@ -24,6 +24,7 @@
         button("showAll", "lw.showAll", () => change("showAll"));
         button("restoreCurves", "lw.restoreCurves", () => change("restore"));
         button("hideAll", "lw.hideAll", () => change("hideAll"));
+        button("importSidebar", "lw.importSidebar", () => change("importSidebar"));
         button("autoY", "lw.autoY", () => change("autoY"), $("freeze").parentNode);
         const status = doc.createElement("span");
         status.id = "chartViewStatus";

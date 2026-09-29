@@ -1,4 +1,14 @@
 "use strict";
+function appendMissingWatchItems(current, additions) {
+    const result = Array.isArray(current) ? current.slice() : [];
+    const names = new Set(result.map((item) => item?.name));
+    for (const item of Array.isArray(additions) ? additions : []) {
+        if (!item || typeof item.name !== "string" || !item.name || names.has(item.name)) continue;
+        result.push(item);
+        names.add(item.name);
+    }
+    return result;
+}
 class WatchListStore {
     constructor({ state, normalize, symbols, onChanged, onError }) {
         this.state = state;
@@ -41,4 +51,4 @@ class WatchListStore {
         return result;
     }
 }
-module.exports = { WatchListStore };
+module.exports = { WatchListStore, appendMissingWatchItems };

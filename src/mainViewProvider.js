@@ -56,7 +56,7 @@ const {
     selectPausedDebugReadSession,
     filterRuntimeRamPlan
 } = require("./services/liveWatchService");
-const { WatchListStore } = require("./services/watchListStore");
+const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
@@ -2296,6 +2296,20 @@ class MainViewProvider {
                     case "saveWatch":
                         await this._saveWatchList(watchKey, message.items || []);
                         break;
+                    case "importSidebarWatch": {
+                        const saved = this._scalarWatchList(watchKey);
+                        const current = appendMissingWatchItems(message.items, saved);
+                        const sidebarItems = this._scalarWatchList(CACHE_KEYS.sidebarWatchList);
+                        const merged = appendMissingWatchItems(current, sidebarItems);
+                        if (JSON.stringify(merged) !== JSON.stringify(saved))
+                            await this._saveWatchList(watchKey, merged);
+                        post({
+                            type: "sidebarImportResult",
+                            added: merged.length - current.length,
+                            sourceCount: sidebarItems.length
+                        });
+                        break;
+                    }
                     case "start":
                         await this._saveWatchList(watchKey, message.items || []);
                         if (message.frequencyHz !== undefined) await this._saveLiveFrequency(message.frequencyHz);
