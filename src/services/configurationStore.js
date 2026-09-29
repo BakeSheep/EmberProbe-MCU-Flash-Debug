@@ -1,6 +1,7 @@
 "use strict";
 const fs = require("fs");
 const { normalizeTransport } = require("../openocdScripts");
+const { configuredFrequencyHz, frequencyHzFromInterval, intervalMsFromHz } = require("../samplingFrequency");
 const path = require("path");
 const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
 
@@ -16,12 +17,14 @@ const ALLOWED_KEYS = new Set([
     "probeSerial",
     "adapterSpeedKhz",
     "sampleIntervalMs",
+    "sampleFrequencyHz",
     "tclPort",
     "maxSamples"
 ]);
 
 const NUMBER_RANGES = Object.freeze({
     sampleIntervalMs: [5, 10000],
+    sampleFrequencyHz: [0.1, 200],
     tclPort: [1, 65535],
     maxSamples: [100, 100000]
 });
@@ -65,7 +68,8 @@ class ConfigurationStore {
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
-            sampleIntervalMs: cfg.get("sampleIntervalMs", 100),
+            sampleIntervalMs: intervalMsFromHz(configuredFrequencyHz(cfg)),
+            sampleFrequencyHz: configuredFrequencyHz(cfg),
             tclPort: cfg.get("tclPort", 6666),
             maxSamples: cfg.get("maxSamples", 2000)
         };
@@ -148,11 +152,16 @@ class ConfigurationStore {
             } else if (NUMBER_RANGES[key]) {
                 const [min, max] = NUMBER_RANGES[key];
                 const number = Number(value);
-                if (!Number.isInteger(number) || number < min || number > max)
-                    throw Object.assign(new Error(key + " must be an integer from " + min + " to " + max), {
+                const validPrecision =
+                    key === "sampleFrequencyHz"
+                        ? Number.isFinite(number) && Math.abs(number * 10 - Math.round(number * 10)) < 1e-8
+                        : Number.isInteger(number);
+                if (!validPrecision || number < min || number > max)
+                    throw Object.assign(new Error(key + " must be a value from " + min + " to " + max), {
                         code: "INVALID_CONFIG_VALUE"
                     });
                 addSetting(key, number);
+                if (key === "sampleIntervalMs") addSetting("sampleFrequencyHz", frequencyHzFromInterval(number));
             } else {
                 const executable = String(value || "").trim();
                 if (!executable || /[\r\n]/.test(executable))

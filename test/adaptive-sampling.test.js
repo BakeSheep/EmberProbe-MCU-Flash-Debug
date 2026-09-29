@@ -67,39 +67,27 @@ async function wait(ms) {
     }
 
     // -------------------------------------------------------------
-    // 2. Monotonic duration, P95, and adaptive schedule step-down/backoff
+    // 2. Fast calibration and adaptive backoff after an explicit rate change
     // -------------------------------------------------------------
     {
         const session = new ManagedOpenOcdSession(null, { intervalMs: 5, mode: "standalone" }, {});
         assert.strictEqual(session.targetIntervalMs, 5);
         assert.strictEqual(session.effectiveIntervalMs, 100, "Must warm up at 100 ms");
 
-        // Simulate 32 successful fast cycles (duration 1ms)
-        for (let i = 0; i < 32; i++) {
-            session._recordCycle(1.0);
-        }
-        assert.strictEqual(session._consecutiveSuccesses, 32);
-        const p95 = session._computeP95Duration();
-        assert.strictEqual(p95, 1.0);
+        for (let i = 0; i < 4; i++) session._recordCycle(1.0);
+        assert.strictEqual(session.effectiveIntervalMs, 5, "Fast probe should leave warm-up after four reads");
+        session.setIntervalMs(20);
+        assert.strictEqual(session.effectiveIntervalMs, 20, "User changes should apply without a slow ramp");
+        session.setIntervalMs(5);
+        assert.strictEqual(session.effectiveIntervalMs, 5);
+        session.setIntervalMs(5);
+        assert.strictEqual(session.effectiveIntervalMs, 5, "Repeating the target must not restart warm-up");
 
-        // Force quiet time to be met (> 2000 ms ago)
-        session._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
-        session._lastBackoffOrErrorAt = Number(process.hrtime.bigint() / 1000000n) - 3000;
-
-        session._evaluateAdaptiveSchedule();
-        // 100 * 0.85 = 85
-        assert.strictEqual(session.effectiveIntervalMs, 85, "Should step down towards target interval");
-
-        // Repeat step downs down to minimum 5 ms
-        while (session.effectiveIntervalMs > 5) {
-            for (let i = 0; i < 32; i++) {
-                session._recordCycle(1.0);
-            }
-            session._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
-            session._lastBackoffOrErrorAt = Number(process.hrtime.bigint() / 1000000n) - 3000;
-            session._evaluateAdaptiveSchedule();
-        }
-        assert.strictEqual(session.effectiveIntervalMs, 5, "Must reach target interval of 5 ms");
+        const slowSession = new ManagedOpenOcdSession(null, { intervalMs: 100 }, {});
+        slowSession._recentDurations = [20, 20, 20, 20];
+        slowSession.setIntervalMs(5);
+        assert.strictEqual(slowSession.targetIntervalMs, 5);
+        assert.strictEqual(slowSession.effectiveIntervalMs, 29, "Slow probes retain a measured safety margin");
 
         // Test backoff when duration exceeds 70% of effective interval
         // At 5 ms, 70% is 3.5 ms. Record durations of 4.0 ms
@@ -115,6 +103,7 @@ async function wait(ms) {
         // In debug mode, threshold is 40%
         const debugSession = new ManagedOpenOcdSession(null, { intervalMs: 10, mode: "debug" }, {});
         debugSession.effectiveIntervalMs = 10;
+        debugSession._warmingUp = false;
         // 40% of 10 is 4.0 ms. Durations of 4.5 ms should trigger backoff.
         for (let i = 0; i < 32; i++) {
             debugSession._recordCycle(4.5);

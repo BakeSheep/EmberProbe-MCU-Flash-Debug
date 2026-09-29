@@ -302,7 +302,7 @@ module.exports = Object.freeze({
     "lw.stopSampling": "Stop Sampling",
     "lw.starting": "Starting…",
     "lw.stopping": "Stopping…",
-    "lw.interval": "Interval",
+    "lw.frequency": "Sampling frequency",
     "lw.importVars": "Import Variables",
     "lw.addByName": "Add by name…",
     "lw.add": "Add",

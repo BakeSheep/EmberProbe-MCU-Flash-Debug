@@ -10,6 +10,12 @@ function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
 var statusMsg = { key: "lw.ready" };
+var requestedFrequencyHz = CFG.frequencyHz;
+function selectedFrequencyHz() {
+    var value = Number($("frequency").value);
+    if (!Number.isFinite(value) || value <= 0) value = requestedFrequencyHz;
+    return Math.min(200, Math.max(0.1, Math.round(value * 10) / 10));
+}
 var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     Styles = window.EmberProbeSeriesStyles,
     Analysis = window.EmberProbeAnalysisState,
@@ -740,12 +746,13 @@ function start() {
         setStatusKey("lw.needVar", null, "error");
         return;
     }
-    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
-    $("interval").value = String(iv);
+    var frequencyHz = selectedFrequencyHz();
+    requestedFrequencyHz = frequencyHz;
+    $("frequency").value = String(frequencyHz);
     starting = true;
     updateRun();
     setStatusKey("lw.starting");
-    post({ type: "start", items: watch, intervalMs: iv });
+    post({ type: "start", items: watch, frequencyHz: frequencyHz });
 }
 function stop() {
     if (!running && !starting) return;
@@ -2082,12 +2089,15 @@ window.EmberProbeMessages.connect(window, {
             $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
         }
         if (m.effectiveIntervalMs !== undefined) {
+            var targetHz = m.frequencyHz || requestedFrequencyHz;
             $("rate").title =
                 "Target: " +
-                (m.intervalMs || $("interval").value) +
-                "ms | Effective: " +
+                targetHz +
+                " Hz | Effective: " +
+                (1000 / m.effectiveIntervalMs).toFixed(1) +
+                " Hz (" +
                 m.effectiveIntervalMs +
-                "ms | P95: " +
+                " ms) | P95: " +
                 (m.p95DurationMs || 0) +
                 "ms | Missed: " +
                 (m.missedDeadlines || 0) +
@@ -2177,10 +2187,10 @@ $("timeWindow").onchange = function () {
         saveUi();
     }
 };
-$("interval").onchange = function () {
-    var iv = Math.min(10000, Math.max(5, parseInt($("interval").value, 10) || CFG.intervalMs));
-    $("interval").value = String(iv);
-    post({ type: "setInterval", intervalMs: iv });
+$("frequency").onchange = function () {
+    requestedFrequencyHz = selectedFrequencyHz();
+    $("frequency").value = String(requestedFrequencyHz);
+    post({ type: "setFrequency", frequencyHz: requestedFrequencyHz });
 };
 $("norm").onclick = function () {
     axisModes[norm ? "norm" : "raw"] = { y: chartState.y, autoY: chartState.autoY, origin: chartState.axisOrigin };
@@ -2221,8 +2231,9 @@ window.EmberProbeMessages.connect(window, {
             setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
         }
     },
-    liveInterval: function (m) {
-        $("interval").value = String(m.intervalMs);
+    liveFrequency: function (m) {
+        requestedFrequencyHz = m.frequencyHz;
+        $("frequency").value = String(requestedFrequencyHz);
     }
 });
 var layout = $("layout"),

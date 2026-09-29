@@ -1,5 +1,6 @@
 "use strict";
 const { STRINGS, t, normalizeLang, jsonForScript } = require("./i18n");
+const { DEFAULT_FREQUENCY_HZ, frequencyHzFromInterval, intervalMsFromHz, normalizeFrequencyHz } = require("./samplingFrequency");
 const { loadWebviewAsset } = require("./webviewTemplate");
 const liveWatchCss = loadWebviewAsset("liveWatch", "app.css");
 const liveWatchViewport = loadWebviewAsset("liveWatch", "viewport.js");
@@ -39,9 +40,16 @@ function buildCsv(names, buffers, opts) {
 }
 function getLiveWatchContent(cfg, lang) {
     const raw = cfg || {};
+    const frequencyHz =
+        raw.frequencyHz !== undefined
+            ? normalizeFrequencyHz(raw.frequencyHz)
+            : raw.intervalMs !== undefined
+              ? frequencyHzFromInterval(Math.min(10000, Math.max(5, Number(raw.intervalMs) || 100)))
+              : DEFAULT_FREQUENCY_HZ;
     const conf = {
         maxSamples: Math.min(20000, Math.max(100, Number(raw.maxSamples) || 2000)),
-        intervalMs: Math.min(10000, Math.max(5, Number(raw.intervalMs) || 100)),
+        frequencyHz,
+        intervalMs: intervalMsFromHz(frequencyHz),
         panelId: Math.max(1, Math.floor(Number(raw.panelId) || 1))
     };
     const L = normalizeLang(lang), tr = (k, p) => t(L, k, p), i18nJson = jsonForScript(STRINGS);
@@ -51,7 +59,7 @@ function getLiveWatchContent(cfg, lang) {
 <title>${tr('lw.title')}</title><style>
 ${liveWatchCss}
 </style></head><body><div class="top"><header class="bar"><i class="status-dot" id="dot"></i><span class="brand" data-i18n="lw.title">${tr('lw.title')}</span><span class="status" id="status">${tr('lw.ready')}</span><span class="hint" data-i18n="lw.hint">${tr('lw.hint')}</span><button class="lang-toggle" id="langToggle" type="button" data-i18n-title="common.langTitle" title="${tr('common.langTitle')}" aria-label="${tr('common.langTitle')}"></button></header><div class="toolbar">
-<div class="group"><button class="ghost side-toggle" id="sideToggle" title="${tr('lw.collapsePane')}">‹ ${tr('lw.valuePane')}</button><button id="run">${tr('lw.startSampling')}</button><label><span data-i18n="lw.interval">${tr('lw.interval')}</span> <input id="interval" type="number" min="5" max="10000" step="5" value="${conf.intervalMs}"> ms</label></div>
+<div class="group"><button class="ghost side-toggle" id="sideToggle" title="${tr('lw.collapsePane')}">‹ ${tr('lw.valuePane')}</button><button id="run">${tr('lw.startSampling')}</button><label><span data-i18n="lw.frequency">${tr('lw.frequency')}</span> <input id="frequency" type="number" min="0.1" max="200" step="0.1" value="${conf.frequencyHz}"> Hz</label></div>
 <div class="group"><button id="import" class="secondary" data-i18n="lw.importVars">${tr('lw.importVars')}</button><span class="ac-wrap"><input id="addName" data-i18n-ph="lw.addByName" placeholder="${tr('lw.addByName')}"><div class="ac-dropdown" id="acDrop"></div></span><button id="addBtn" class="secondary" data-i18n="lw.add">${tr('lw.add')}</button></div>
 <div class="group"><label><span data-i18n="lw.window">${tr('lw.window')}</span> <select id="timeWindow"><option value="10" data-i18n="lw.sec10">${tr('lw.sec10')}</option><option value="30" selected data-i18n="lw.sec30">${tr('lw.sec30')}</option><option value="60" data-i18n="lw.sec60">${tr('lw.sec60')}</option><option value="0" data-i18n="lw.all">${tr('lw.all')}</option><option value="custom" data-i18n="lw.windowCustom" hidden>${tr('lw.windowCustom')}</option></select></label><button id="freeze" class="ghost">${tr('lw.freeze')}</button><button id="norm" class="ghost" data-i18n="lw.normalize" data-i18n-title="lw.normalized" title="${tr('lw.normalized')}">${tr('lw.normalize')}</button><button id="clear" class="ghost" data-i18n="lw.clear">${tr('lw.clear')}</button><button id="export" class="ghost" data-i18n="lw.exportCsv" data-i18n-title="lw.exportCsvTitle" title="${tr('lw.exportCsvTitle')}">${tr('lw.exportCsv')}</button></div>
 </div></div><main class="layout" id="layout"><aside class="side"><div class="side-head"><strong data-i18n="lw.currentValues">${tr('lw.currentValues')}</strong><span class="badge" id="count">0</span><span id="rate">0 Hz</span></div><div class="var-list" id="vars"><div class="empty" data-i18n="lw.varListEmpty">${tr('lw.varListEmpty')}</div></div></aside><div class="side-splitter" id="sideSplitter" data-i18n-title="lw.splitterHint" title="${tr('lw.splitterHint')}"></div><section class="chart-pane"><div class="chart-head"><strong data-i18n="lw.history">${tr('lw.history')}</strong><span id="range">—</span><span class="spacer"></span><span id="points">${tr('lw.points',{n:0})}</span></div><div class="chart-wrap" id="chartWrap"><div class="chart-stage" id="chartStage"><canvas id="chart"></canvas><div class="chart-empty" id="chartEmpty" data-i18n="lw.chartEmpty">${tr('lw.chartEmpty')}</div></div><div class="chart-overview" id="chartOverview"><div class="chart-overview-head"><span data-i18n="lw.chartTimeline">${tr('lw.chartTimeline')}</span><span id="chartTimelineSelection">—</span></div><div class="range-axis-labels"><span id="chartAxisStart">00:00</span><span id="chartAxisEnd">00:00</span></div><div class="range-timeline chart-timeline" id="chartTimeline" data-i18n-title="lw.chartTimelineHint" title="${tr('lw.chartTimelineHint')}"><div class="range-fill chart-range-fill" id="chartRangeFill"></div><input type="range" id="chartFromRange" min="0" max="1" value="0" aria-label="${tr('lw.chartFrom')}"><input type="range" id="chartToRange" min="0" max="1" value="1" aria-label="${tr('lw.chartTo')}"></div></div></div></section></main>

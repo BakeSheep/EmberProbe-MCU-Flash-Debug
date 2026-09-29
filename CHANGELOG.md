@@ -6,6 +6,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 实时查看改用采样频率（Hz）设置，默认 30 Hz 并保存到工作区；调整频率后根据探针读耗时快速采用安全间隔。
 - 修复 Agent 烧录可执行文件覆盖路径，统一 ELF 64 MiB 有界读取与授权快照。
 - 修复 SVD 跨作用域继承和写入约束校验；通过 Worker 与展开预算限制解析资源。
 - 修复 ELF 并发加载误报，合并外设批量读取，拆分 Agent 路由并增加安全模块覆盖率门禁。

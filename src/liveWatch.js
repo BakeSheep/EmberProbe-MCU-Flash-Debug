@@ -226,6 +226,7 @@ class ManagedOpenOcdSession {
         this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
+        this._warmingUp = true;
         this._lastAdaptiveEvalAt = 0;
         this._lastBackoffOrErrorAt = 0;
         this._missedDeadlines = 0;
@@ -239,6 +240,7 @@ class ManagedOpenOcdSession {
         this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
+        this._warmingUp = true;
         const nowMonoMs = Number(process.hrtime.bigint() / 1000000n);
         this._lastAdaptiveEvalAt = nowMonoMs;
         this._lastBackoffOrErrorAt = nowMonoMs;
@@ -280,9 +282,18 @@ class ManagedOpenOcdSession {
 
     setIntervalMs(ms) {
         const interval = clampInteger(ms, 100, 5, 10000);
+        if (interval === this.targetIntervalMs) return;
         this.options.intervalMs = interval;
         this.targetIntervalMs = interval;
-        this._warmUp();
+        const p95 = this._computeP95Duration();
+        const threshold = this.mode === "debug" ? 0.4 : 0.7;
+        this.effectiveIntervalMs =
+            this._recentDurations.length >= 4
+                ? Math.min(10000, Math.max(interval, Math.ceil(p95 / threshold)))
+                : Math.max(100, interval);
+        this._warmingUp = this._recentDurations.length < 4;
+        this._consecutiveSuccesses = 0;
+        this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
         if (this.timer) {
             clearTimeout(this.timer);
             this.timer = null;
@@ -375,7 +386,7 @@ class ManagedOpenOcdSession {
             this._lastBackoffOrErrorAt = nowMonoMs;
         }
 
-        if (nowMonoMs - this._lastAdaptiveEvalAt >= 1000) {
+        if ((this._warmingUp && this._consecutiveSuccesses >= 4) || nowMonoMs - this._lastAdaptiveEvalAt >= 1000) {
             this._evaluateAdaptiveSchedule(nowMonoMs);
             this._lastAdaptiveEvalAt = nowMonoMs;
         }
@@ -386,6 +397,13 @@ class ManagedOpenOcdSession {
         const p95 = this._computeP95Duration();
         const threshold = this.mode === "debug" ? 0.4 : 0.7;
         const target = this.targetIntervalMs;
+
+        if (this._warmingUp && this._consecutiveSuccesses >= 4) {
+            this.effectiveIntervalMs = Math.min(10000, Math.max(target, Math.ceil(p95 / threshold)));
+            this._warmingUp = false;
+            this._consecutiveSuccesses = 0;
+            return;
+        }
 
         if (p95 > this.effectiveIntervalMs * threshold) {
             const requiredInterval = Math.ceil(p95 / threshold);

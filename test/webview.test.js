@@ -143,6 +143,8 @@ try {
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
     assert.strictEqual(graph.window.__CFG__.maxSamples, 100);
     assert.strictEqual(graph.window.__CFG__.intervalMs, 5);
+    assert.strictEqual(graph.window.__CFG__.frequencyHz, 200);
+    assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
     graph.send({ type: "liveStatus", source: "dap", snapshotReady: false, intentEnabled: true });
     assert.ok(graph.document.body.classList.contains("debug-stale"));
@@ -161,18 +163,21 @@ try {
         type: "liveStatus",
         running: true,
         actualHz: 123.4,
+        frequencyHz: 200,
         effectiveIntervalMs: 8,
         p95DurationMs: 3.2,
         missedDeadlines: 0
     });
     assert.strictEqual(graph.document.getElementById("rate").textContent, "123.4 Hz");
-    assert.ok(graph.document.getElementById("rate").title.includes("Effective: 8ms"));
+    assert.ok(graph.document.getElementById("rate").title.includes("Target: 200 Hz"));
+    assert.ok(graph.document.getElementById("rate").title.includes("Effective: 125.0 Hz (8 ms)"));
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
-    graph.send({ type: "liveInterval", intervalMs: 5 });
-    assert.strictEqual(graph.document.getElementById("interval").value, "5");
-    graph.send({ type: "liveInterval", intervalMs: 250 });
-    assert.strictEqual(graph.document.getElementById("interval").value, "250");
+    graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
+    assert.strictEqual(graph.document.getElementById("frequency").value, "30");
+    graph.document.getElementById("frequency").value = "45";
+    graph.document.getElementById("frequency").onchange();
+    assert.deepStrictEqual(graph.messages.at(-1), { type: "setFrequency", frequencyHz: 45, panelId: 2 });
     graph.assertHealthy();
 } finally {
     graph.close();

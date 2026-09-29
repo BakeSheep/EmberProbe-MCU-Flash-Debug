@@ -299,7 +299,7 @@ module.exports = Object.freeze({
     "lw.stopSampling": "停止采样",
     "lw.starting": "正在启动…",
     "lw.stopping": "正在停止…",
-    "lw.interval": "间隔",
+    "lw.frequency": "采样频率",
     "lw.importVars": "导入变量",
     "lw.addByName": "按名称添加…",
     "lw.add": "添加",
