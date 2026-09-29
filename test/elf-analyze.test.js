@@ -140,16 +140,20 @@ function buildElf() {
     assert.strictEqual(functions[1].address, 0x08000040);
     assert.strictEqual(functions[2].address, 0x08000060);
 
-    // —— nearestFunction：函数内命中 / 越界 / 低于首函数 ——
-    assert.deepStrictEqual(nearestFunction(functions, 0x08000012), { name: "main", offset: 0x12 });
+    // —— nearestFunction：函数内命中 / 越界 / 低于首函数（displayName 缺省回落原始名）——
+    assert.deepStrictEqual(nearestFunction(functions, 0x08000012), {
+        name: "main",
+        displayName: "main",
+        offset: 0x12
+    });
     assert.deepStrictEqual(
         nearestFunction(functions, 0x08000051),
-        { name: "uart_send", offset: 0x10 },
+        { name: "uart_send", displayName: "uart_send", offset: 0x10 },
         "Thumb bit in query address is cleared"
     );
     assert.deepStrictEqual(
         nearestFunction(functions, 0x08000065),
-        { name: "main", offset: 0x4 },
+        { name: "main", displayName: "main", offset: 0x4 },
         "later same-name static function must remain symbolizable"
     );
     assert.strictEqual(nearestFunction(functions, 0x08000100), null, "past the end of the last function");

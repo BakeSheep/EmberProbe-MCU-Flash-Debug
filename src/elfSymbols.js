@@ -10,6 +10,13 @@ const { SUPPORTED_TYPES, typeByteLength, defaultType } = require("./webview/runt
 function resolveVariableRequests(symbols, requests) {
     const list = Array.isArray(symbols) ? symbols : [];
     const exact = new Map(list.map((symbol) => [symbol.name, symbol]));
+    // displayName 唯一别名：允许用 C++ 限定名解析；多个符号共享同一 displayName（重载/歧义）时不作别名。
+    const byDisplay = new Map();
+    for (const symbol of list) {
+        const dn = symbol.displayName;
+        if (!dn || dn === symbol.name) continue;
+        byDisplay.set(dn, byDisplay.has(dn) ? null : symbol);
+    }
     const folded = new Map();
     for (const symbol of list) {
         const key = String(symbol.name || "").toLowerCase();
@@ -22,6 +29,7 @@ function resolveVariableRequests(symbols, requests) {
         if (!requestedName)
             throw Object.assign(new Error("Variable name is required"), { code: "INVALID_VARIABLE_NAME" });
         let symbol = exact.get(requestedName);
+        if (!symbol) symbol = byDisplay.get(requestedName) || undefined;
         if (!symbol) {
             const matches = folded.get(requestedName.toLowerCase()) || [];
             if (matches.length === 1) symbol = matches[0];
@@ -322,7 +330,7 @@ function nearestFunction(functions, address) {
     const offset = addr - best.address;
     // 有大小时要求落在函数范围内；无大小（汇编符号）时限制偏移不超 64KB 避免跨区域误报
     if (best.size > 0 ? offset >= best.size : offset > 0x10000) return null;
-    return { name: best.name, offset };
+    return { name: best.name, displayName: best.displayName || best.name, offset };
 }
 
 // —— 复合类型路径解析与解码 ——
@@ -336,7 +344,8 @@ function parseMemberPath(pathStr) {
     const str = String(pathStr || "").trim();
     if (!str) return null;
     // 匹配 baseName 后跟 .member 或 [index/range/*]
-    const m = str.match(/^([a-zA-Z_]\w*)/);
+    // base 允许 C++ 限定名（ns::Foo::bar）与 mangled 名（_Z...）。
+    const m = str.match(/^([A-Za-z_][\w:]*)/);
     if (!m) return null;
     const base = m[1];
     const rest = str.slice(base.length);
@@ -345,7 +354,8 @@ function parseMemberPath(pathStr) {
     while (pos < rest.length) {
         if (rest[pos] === ".") {
             pos++;
-            const nameMatch = rest.slice(pos).match(/^([a-zA-Z_]\w*)/);
+            // 成员名允许 @baseN 基类段，消除多继承同名歧义。
+            const nameMatch = rest.slice(pos).match(/^(@base\d+|[A-Za-z_]\w*)/);
             if (!nameMatch) return null;
             segments.push({ kind: "member", name: nameMatch[1] });
             pos += nameMatch[1].length;
@@ -390,8 +400,9 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
 
     function walk(currentLayout, currentOffset, currentPath, depth, pendingPathSpec = null) {
         if (depth > 10 || !currentLayout) return;
-        if (currentLayout.kind === "struct" || currentLayout.kind === "union") {
+        if (currentLayout.kind === "struct" || currentLayout.kind === "union" || currentLayout.kind === "class") {
             for (const m of currentLayout.members || []) {
+                // 虚基类等 unobservable 合成成员无 watchType/compositeLayout，静态阶段自然跳过、不产地址。
                 const memberPath = currentPath + "." + (m.name || "?");
                 const memberOffset = currentOffset + (m.offset || 0);
                 if (m.compositeLayout) {
@@ -471,9 +482,14 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
         let pendingPathSpec = null;
         for (let segmentIndex = 0; segmentIndex < pathSpec.segments.length; segmentIndex++) {
             const seg = pathSpec.segments[segmentIndex];
-            if (seg.kind === "member" && (currentLayout.kind === "struct" || currentLayout.kind === "union")) {
+            if (
+                seg.kind === "member" &&
+                (currentLayout.kind === "struct" || currentLayout.kind === "union" || currentLayout.kind === "class")
+            ) {
                 const member = (currentLayout.members || []).find((m) => m.name === seg.name);
                 if (!member) return []; // 成员不存在
+                // 显式路径指向虚基类等不可观测成员或其子路径：不产猜测地址。
+                if (member.unobservable) return [];
                 currentOffset += member.offset || 0;
                 currentPath += "." + member.name;
                 if (member.compositeLayout) {
@@ -514,7 +530,8 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         currentLayout.elementType &&
                         currentLayout.elementType.kind !== "struct" &&
                         currentLayout.elementType.kind !== "union" &&
-                        currentLayout.elementType.kind !== "array"
+                        currentLayout.elementType.kind !== "array" &&
+                        currentLayout.elementType.kind !== "class"
                     ) {
                         if (segmentIndex !== pathSpec.segments.length - 1) return [];
                         return [
@@ -580,7 +597,7 @@ function decodeComposite(bytes, layout) {
     // offset 为该节点相对变量基址的绝对字节偏移，供 UI/Agent 计算成员地址与定位路径。
     function decodeLayout(offset, lyt) {
         if (!lyt) return null;
-        if (lyt.kind === "struct" || lyt.kind === "union") {
+        if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             const members = [];
             for (const m of lyt.members || []) {
                 const mOff = offset + (m.offset || 0);

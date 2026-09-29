@@ -13,6 +13,10 @@ const {
     DW_TAG_variable,
     DW_TAG_member,
     DW_TAG_subrange_type,
+    DW_TAG_class_type,
+    DW_TAG_inheritance,
+    DW_TAG_namespace,
+    DW_TAG_subprogram,
     DW_AT_name,
     DW_AT_byte_size,
     DW_AT_abstract_origin,
@@ -28,6 +32,8 @@ const {
     DW_AT_data_bit_offset,
     DW_AT_count,
     DW_AT_upper_bound,
+    DW_AT_linkage_name,
+    DW_AT_virtuality,
     DW_ATE_boolean,
     DW_ATE_float,
     DW_ATE_signed,
@@ -70,7 +76,9 @@ function _parseDwarfInternal(buffer) {
 
     const dies = new Map(); // 节内偏移 → DIE 记录
     const childrenMap = new Map(); // 父 DIE 偏移 → [子 DIE 偏移]
+    const parentOf = new Map(); // 子 DIE 偏移 → 父 DIE 偏移（构造 C++ 限定名用）
     const variableOffsets = []; // 所有变量 DIE；跨 CU 的 origin 继承需在完整解析后处理
+    const subprogramOffsets = []; // 所有子程序 DIE（函数显示名用）
     const infoStart = 0,
         infoEnd = info.size;
     // §2：缩写缓存改为有界 LRU，并以全局预算约束跨 CU 的缩写/属性总量。
@@ -160,6 +168,7 @@ function _parseDwarfInternal(buffer) {
                             childrenMap.set(parent.dieOff, siblings);
                         }
                         siblings.push(dieOff);
+                        parentOf.set(dieOff, parent.dieOff);
                     }
                     const rec = { tag: ab.tag };
                     for (const attr of ab.attrs) {
@@ -168,6 +177,13 @@ function _parseDwarfInternal(buffer) {
                             case DW_AT_name:
                                 if (v && v.str !== undefined) rec.name = v.str;
                                 else if (v && v.strx !== undefined) rec.strx = v.strx;
+                                break;
+                            case DW_AT_linkage_name:
+                                if (v && v.str !== undefined) rec.linkageName = v.str;
+                                else if (v && v.strx !== undefined) rec.linkageStrx = v.strx;
+                                break;
+                            case DW_AT_virtuality:
+                                if (typeof v === "number") rec.virtuality = v;
                                 break;
                             case DW_AT_type:
                                 if (v && v.ref !== undefined) rec.typeRef = v.ref;
@@ -234,6 +250,7 @@ function _parseDwarfInternal(buffer) {
                     rec.base = strOffsetsBase;
                     dies.set(dieOff, rec);
                     if (rec.tag === DW_TAG_variable) variableOffsets.push(dieOff);
+                    if (rec.tag === DW_TAG_subprogram) subprogramOffsets.push(dieOff);
                     // 有子项的 DIE 入栈
                     if (ab.hasChildren) {
                         parentStack.push({ offset: dieOff, dieOff });
@@ -259,24 +276,64 @@ function _parseDwarfInternal(buffer) {
     // 统一解析 strx 名称
     for (const d of dies.values()) {
         if (d.name === undefined && d.strx !== undefined) d.name = resolveStrx(d.strx, d.base);
+        if (d.linkageName === undefined && d.linkageStrx !== undefined)
+            d.linkageName = resolveStrx(d.linkageStrx, d.base);
     }
+
+    // 作用域链（namespace/class/struct/union 祖先）构造 C++ 限定名；遇到 CU 根自然终止。
+    const SCOPE_TAGS = new Set([DW_TAG_namespace, DW_TAG_class_type, DW_TAG_structure_type, DW_TAG_union_type]);
+    const scopePrefix = (dieOff) => {
+        const parts = [];
+        let cur = parentOf.get(dieOff);
+        let guard = 0;
+        while (cur !== undefined && guard++ < 64) {
+            const d = dies.get(cur);
+            if (!d) break;
+            if (SCOPE_TAGS.has(d.tag) && d.name) parts.push(d.name);
+            cur = parentOf.get(cur);
+        }
+        return parts.reverse();
+    };
+    const buildQualifiedName = (scopeDieOff, name) => {
+        let parts = scopePrefix(scopeDieOff);
+        if (!parts.length) {
+            // 具体 DIE 直接挂在 CU 下（如类静态成员的地址 DIE）时，回落到声明 DIE 的作用域。
+            const d = dies.get(scopeDieOff);
+            for (const ref of [d?.specificationRef, d?.abstractOriginRef]) {
+                if (ref === undefined) continue;
+                const alt = scopePrefix(ref);
+                if (alt.length) {
+                    parts = alt;
+                    break;
+                }
+            }
+        }
+        return parts.length ? parts.join("::") + "::" + name : name;
+    };
 
     // LTO 常把地址留在具体变量 DIE，而把名称和类型放进 abstract_origin/specification。
     // 所有 CU 都完成后再继承，才能正确解析 DW_FORM_ref_addr 的跨 CU 引用。
     const resolveVariableIdentity = (dieOff, seen = new Set()) => {
-        if (seen.has(dieOff) || seen.size >= 16) return { name: "", typeRef: undefined };
+        if (seen.has(dieOff) || seen.size >= 16)
+            return { name: "", typeRef: undefined, linkageName: "", scopeDieOff: dieOff };
         seen.add(dieOff);
         const die = dies.get(dieOff);
-        if (!die) return { name: "", typeRef: undefined };
+        if (!die) return { name: "", typeRef: undefined, linkageName: "", scopeDieOff: dieOff };
         let name = die.name || "";
         let typeRef = die.typeRef;
+        let linkageName = die.linkageName || "";
+        let scopeDieOff = dieOff;
         for (const parentRef of [die.abstractOriginRef, die.specificationRef]) {
-            if (parentRef === undefined || (name && typeRef !== undefined)) continue;
+            if (parentRef === undefined) continue;
             const inherited = resolveVariableIdentity(parentRef, new Set(seen));
-            if (!name) name = inherited.name;
+            if (!name) {
+                name = inherited.name;
+                scopeDieOff = inherited.scopeDieOff;
+            }
             if (typeRef === undefined) typeRef = inherited.typeRef;
+            if (!linkageName) linkageName = inherited.linkageName;
         }
-        return { name, typeRef };
+        return { name, typeRef, linkageName, scopeDieOff };
     };
     const variables = [];
     for (const dieOff of variableOffsets) {
@@ -284,9 +341,27 @@ function _parseDwarfInternal(buffer) {
         if (!concrete?.hasAddr) continue;
         const identity = resolveVariableIdentity(dieOff);
         if (!identity.name || identity.typeRef === undefined) continue;
-        variables.push({ ...concrete, name: identity.name, typeRef: identity.typeRef });
+        variables.push({
+            ...concrete,
+            name: identity.name,
+            typeRef: identity.typeRef,
+            linkageName: identity.linkageName,
+            qualifiedName: buildQualifiedName(identity.scopeDieOff, identity.name)
+        });
     }
 
-    return { dies, childrenMap, resolveStrx, variables, diagnostics };
+    // 函数显示名：以 linkage name（ELF 中的 mangled 名）为键关联限定名。
+    const subprograms = [];
+    for (const dieOff of subprogramOffsets) {
+        const identity = resolveVariableIdentity(dieOff);
+        if (!identity.name) continue;
+        subprograms.push({
+            name: identity.name,
+            linkageName: identity.linkageName,
+            qualifiedName: buildQualifiedName(identity.scopeDieOff, identity.name)
+        });
+    }
+
+    return { dies, childrenMap, parentOf, resolveStrx, variables, subprograms, diagnostics };
 }
 module.exports = { parseDwarfInternal: _parseDwarfInternal };

@@ -87,6 +87,22 @@ const CACHE_KEYS = {
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
 }
+// 构建符号名索引：原始名（稳定身份）优先，追加唯一 displayName 别名以支持 C++ 限定名解析。
+// 解析出的观察项/写入项身份仍写原始 symbol.name，displayName 仅用于查表命中。
+function buildSymbolNameIndex(symbols) {
+    const list = Array.isArray(symbols) ? symbols : [];
+    const byName = new Map(list.map((symbol) => [symbol.name, symbol]));
+    const displaySeen = new Map();
+    for (const symbol of list) {
+        const dn = symbol.displayName;
+        if (!dn || dn === symbol.name) continue;
+        displaySeen.set(dn, displaySeen.has(dn) ? null : symbol);
+    }
+    for (const [dn, symbol] of displaySeen) {
+        if (symbol && !byName.has(dn)) byName.set(dn, symbol);
+    }
+    return byName;
+}
 // 实现WebviewViewProvider接口的类
 class MainViewProvider {
     constructor(context) {
@@ -951,7 +967,7 @@ class MainViewProvider {
             });
         await this._prepareRequestedLayouts(names);
         const symbols = this.readElfSymbols().symbols;
-        const byName = new Map(symbols.map((symbol) => [symbol.name, symbol]));
+        const byName = buildSymbolNameIndex(symbols);
         const resolved = [];
         const resolvedNames = new Set();
         const appendResolved = (item) => {
@@ -1043,7 +1059,7 @@ class MainViewProvider {
         );
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         const elfResult = this.readElfSymbols();
-        const byName = new Map(elfResult.symbols.map((s) => [s.name, s]));
+        const byName = buildSymbolNameIndex(elfResult.symbols);
         const folded = new Map();
         for (const s of elfResult.symbols) {
             const key = String(s.name || "").toLowerCase();
@@ -1746,7 +1762,7 @@ class MainViewProvider {
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         if (options.refreshSymbols !== false) this._elfService.invalidate();
         const elfResult = this.readElfSymbols();
-        const byName = new Map(elfResult.symbols.map((s) => [s.name, s]));
+        const byName = buildSymbolNameIndex(elfResult.symbols);
         const SHF_WRITE = 1,
             SHF_ALLOC = 2;
         let writable = [];
@@ -2062,17 +2078,25 @@ class MainViewProvider {
         const topSymbols = [
             ...(elfResult.functions || []).map((f) => ({
                 name: f.name,
+                displayName: f.displayName || f.name,
                 kind: "function",
                 size: f.size,
                 address: f.address
             })),
-            ...elfResult.symbols.map((s) => ({ name: s.name, kind: "object", size: s.size, address: s.address }))
+            ...elfResult.symbols.map((s) => ({
+                name: s.name,
+                displayName: s.displayName || s.name,
+                kind: "object",
+                size: s.size,
+                address: s.address
+            }))
         ]
             .filter((s) => s.size > 0)
             .sort((a, b) => b.size - a.size)
             .slice(0, top)
             .map((s) => ({
                 name: s.name,
+                displayName: s.displayName || s.name,
                 kind: s.kind,
                 section: sectionOf(s.address),
                 size: s.size,
@@ -2429,7 +2453,7 @@ class MainViewProvider {
         }
         this._webviewView?.webview.postMessage({
             type: "sidebarWatchList",
-            items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList),
+            items: this._watchListWithDisplayNames(CACHE_KEYS.sidebarWatchList),
             resetValues: true
         });
     }
@@ -2489,9 +2513,11 @@ class MainViewProvider {
         } else if (phase === "types") {
             const symbols = entries.map((symbol) => ({
                 name: symbol.name,
+                displayName: symbol.displayName || symbol.name,
                 typeName: symbol.typeName,
                 watchType: symbol.watchType,
                 isComposite: symbol.isComposite,
+                unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
                 ...(symbol.isBoolean ? { isBoolean: true } : {})
             }));
@@ -2571,6 +2597,25 @@ class MainViewProvider {
     _scalarWatchList(key) {
         return this._watchLists.read(key);
     }
+    // 侧边栏观察项附带 displayName（C++ 限定名）供展示；数据索引仍按原始 item.name。
+    _watchListWithDisplayNames(key) {
+        const items = this._scalarWatchList(key);
+        if (!Array.isArray(items) || !items.length) return items;
+        let byName = null;
+        try {
+            byName = buildSymbolNameIndex(this.readElfSymbols().symbols);
+        } catch {
+            byName = null;
+        }
+        if (!byName) return items;
+        return items.map((item) => {
+            if (!item || item.displayName || !item.name) return item;
+            const sym = byName.get(item.name);
+            if (sym && sym.displayName && sym.displayName !== sym.name)
+                return { ...item, displayName: sym.displayName };
+            return item;
+        });
+    }
     async _rebindWatchLists(symbols) {
         const entries = Array.from(this._livePanels.values());
         const rebound = await this._watchLists.rebind(
@@ -2618,7 +2663,7 @@ class MainViewProvider {
         }
     }
     _syncSidebarTarget(post, skipElf = false) {
-        post({ type: "sidebarWatchList", items: this._scalarWatchList(CACHE_KEYS.sidebarWatchList) });
+        post({ type: "sidebarWatchList", items: this._watchListWithDisplayNames(CACHE_KEYS.sidebarWatchList) });
         post({ type: "sidebarWriteList", items: this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [] });
         if (!skipElf) {
             this._sendElfSnapshot(post, "availableVariables");

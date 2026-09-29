@@ -210,6 +210,12 @@ function updateRun() {
     b.disabled = starting;
     b.textContent = starting ? t("lw.starting") : running ? t("lw.stopSampling") : t("lw.startSampling");
 }
+function displayNameFor(item) {
+    var symbol = allSymbols.find(function (s) {
+        return s.name === item.name;
+    });
+    return (symbol && symbol.displayName) || item.displayName || item.name;
+}
 function addSymbol(sym, resolved = false) {
     if (
         !sym ||
@@ -234,6 +240,7 @@ function addSymbol(sym, resolved = false) {
             else delete dispSpec[sym.name];
             watch.push({
                 name: sym.name,
+                displayName: sym.displayName || sym.name,
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: "",
@@ -253,6 +260,7 @@ function addSymbol(sym, resolved = false) {
     }
     watch.push({
         name: sym.name,
+        displayName: sym.displayName || sym.name,
         address: Number(sym.address) || 0,
         size: Number(sym.size) || 4,
         type: sym.watchType || defType(sym.size || 4)
@@ -343,7 +351,7 @@ function renderVars() {
         main.className = "var-main";
         var name = document.createElement("div");
         name.className = "var-name";
-        name.textContent = item.name;
+        name.textContent = displayNameFor(item);
         name.title = item.name + " \u00b7 " + fmtAddr(item.address);
         var val = document.createElement("div");
         val.className = "var-value";
@@ -514,7 +522,7 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
 }
 function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
     if (!layout) return;
-    if (layout.kind === "struct" || layout.kind === "union") {
+    if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
         var ms = layout.members || [];
         ms.forEach(function (m) {
             var cp = path + "." + m.name,
@@ -576,7 +584,8 @@ function renderCompositeCard(item, idx, box) {
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
-    nm.textContent = item.name;
+    nm.textContent = displayNameFor(item);
+    if (nm.textContent !== item.name) nm.title = item.name;
     var lay = item.compositeLayout || {};
     var ty = document.createElement("span");
     ty.className = "comp-type";
@@ -646,7 +655,7 @@ function collectLeaves(layout, name, baseAddr) {
     var out = [];
     (function walk(lyt, path, off) {
         if (!lyt) return;
-        if (lyt.kind === "struct" || lyt.kind === "union") {
+        if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             (lyt.members || []).forEach(function (m) {
                 var cp = path + "." + m.name,
                     mo = off + (Number(m.offset) || 0);
@@ -810,7 +819,7 @@ function renderImport() {
         box = $("impList");
     box.textContent = "";
     var matched = allSymbols.filter(function (s) {
-            return !f || s.name.toLowerCase().indexOf(f) >= 0;
+            return !f || s.name.toLowerCase().indexOf(f) >= 0 || (s.displayName || "").toLowerCase().indexOf(f) >= 0;
         }),
         shown = matched.slice(0, 100),
         leafRows = 0;
@@ -831,7 +840,8 @@ function renderImport() {
             if (impExpanded[s.name]) arrow.classList.add("open");
             var nm = document.createElement("span");
             nm.className = "imp-name";
-            nm.textContent = "\u25c7 " + s.name;
+            nm.textContent = "\u25c7 " + (s.displayName || s.name);
+            if (s.displayName && s.displayName !== s.name) nm.title = s.name;
             nmWrap.append(arrow, nm);
             var ty = document.createElement("span");
             ty.className = "ty";
@@ -925,7 +935,8 @@ function renderImport() {
             cb2.disabled = !!(s.isComposite && !s.compositeLayout);
             cb2.dataset.idx = String(gi);
             var nm2 = document.createElement("span");
-            nm2.textContent = (s.isComposite ? "\u25c7 " : "") + s.name;
+            nm2.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);
+            if (s.displayName && s.displayName !== s.name) nm2.title = s.name;
             var ty2 = document.createElement("span");
             ty2.className = "ty";
             ty2.textContent = s.typeName || s.watchType || defType(s.size);
@@ -969,7 +980,7 @@ function renderAutocomplete() {
     }
     var matches = allSymbols
         .filter(function (s) {
-            return s.name.toLowerCase().indexOf(q) >= 0;
+            return s.name.toLowerCase().indexOf(q) >= 0 || (s.displayName || "").toLowerCase().indexOf(q) >= 0;
         })
         .slice(0, 12);
     if (!matches.length) {
@@ -981,7 +992,8 @@ function renderAutocomplete() {
         it.className = "ac-item";
         var nm = document.createElement("span");
         nm.className = "ac-name";
-        nm.textContent = (s.isComposite ? "\u25c7 " : "") + s.name;
+        nm.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);
+        if (s.displayName && s.displayName !== s.name) nm.title = s.name;
         var ty = document.createElement("span");
         ty.className = "ac-type";
         ty.textContent = s.typeName || s.watchType || defType(s.size);
@@ -1917,6 +1929,7 @@ window.EmberProbeMessages.connect(window, {
         impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
         impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
         impWarnings = m.warnings || [];
+        renderVars();
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();

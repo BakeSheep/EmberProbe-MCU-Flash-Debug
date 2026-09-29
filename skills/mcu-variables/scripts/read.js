@@ -113,7 +113,9 @@ function variableSpecs(value) {
                 if (!trimmed) throw new Error("Variable name is required");
                 return { name: trimmed };
             }
-            const split = trimmed.lastIndexOf(":");
+            // C++ 限定名中的 :: 是名字的一部分，只有单个冒号才分隔显式类型。
+            const lastColon = trimmed.lastIndexOf(":");
+            const split = lastColon > 0 && trimmed[lastColon - 1] !== ":" ? lastColon : -1;
             const name = (split > 0 ? trimmed.slice(0, split) : trimmed).trim();
             const type = split > 0 ? trimmed.slice(split + 1).trim() : "";
             if (!name) throw new Error("Variable name is required");

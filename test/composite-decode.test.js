@@ -284,5 +284,10 @@ assert.deepStrictEqual(liveSkill.variableSpecs("sensor.x,buf[1:5],buf[*],counter
     { name: "temp", type: "f32" }
 ]);
 assert.throws(() => liveSkill.variableSpecs("counter:bogus"), /Unsupported variable type/);
+assert.deepStrictEqual(liveSkill.variableSpecs("ns::value,ns::Foo::member,ns::count:u32"), [
+    { name: "ns::value" },
+    { name: "ns::Foo::member" },
+    { name: "ns::count", type: "u32" }
+]);
 
 console.log("Composite decode & navigation tests passed");

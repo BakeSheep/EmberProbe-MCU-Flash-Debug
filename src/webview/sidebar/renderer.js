@@ -227,7 +227,7 @@ function sbCollectLeaves(layout, name, baseAddr) {
     const out = [];
     (function walk(lyt, path, off) {
         if (!lyt) return;
-        if (lyt.kind === "struct" || lyt.kind === "union") {
+        if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             (lyt.members || []).forEach((m) => {
                 const cp = path + "." + m.name,
                     mo = off + (Number(m.offset) || 0);
@@ -309,7 +309,9 @@ function renderValues() {
         row.className = "value-row";
         const n = document.createElement("span");
         n.className = "value-name";
-        n.textContent = item.name;
+        // 优先展示 C++ 限定名；原始（mangled）名以 title 保留供核对。数据仍按 item.name 索引。
+        n.textContent = item.displayName || item.name;
+        if (item.displayName && item.displayName !== item.name) n.title = item.name;
         const val = document.createElement("span");
         val.className = "value-number";
         val.dataset.valueName = item.name;
@@ -343,7 +345,9 @@ function renderAvailable() {
     }
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     const selected = new Set(sideWatch.map((w) => w.name));
-    const matching = available.filter((s) => !query || s.name.toLowerCase().includes(query));
+    const matching = available.filter(
+        (s) => !query || s.name.toLowerCase().includes(query) || (s.displayName || "").toLowerCase().includes(query)
+    );
     const list = matching.slice(0, 100);
     let leafRows = 0;
     if (!list.length) {
@@ -365,10 +369,13 @@ function renderAvailable() {
             const nm = document.createElement("span");
             nm.className = "available-name";
             const on = selected.has(sym.name);
-            nm.textContent = sym.name;
-            nm.title = on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole");
+            nm.textContent = sym.displayName || sym.name;
+            nm.title =
+                (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole")) +
+                (sym.displayName && sym.displayName !== sym.name ? " · " + sym.name : "");
             const compEntry = {
                 name: sym.name,
+                displayName: sym.displayName || sym.name,
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: "",
@@ -477,6 +484,7 @@ function renderAvailable() {
                 if (!sym.compositeLayout) return toggle(event);
                 sbToggle({
                     name: sym.name,
+                    displayName: sym.displayName || sym.name,
                     address: Number(sym.address) || 0,
                     size: Number(sym.size) || 4,
                     type: "",
@@ -498,6 +506,7 @@ function renderAvailable() {
             cell.className = "av-name-cell";
             const entry = {
                 name: sym.name,
+                displayName: sym.displayName || sym.name,
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: sym.watchType,
@@ -520,7 +529,8 @@ function renderAvailable() {
             );
             const n = document.createElement("span");
             n.className = "available-name";
-            n.textContent = sym.name;
+            n.textContent = sym.displayName || sym.name;
+            if (sym.displayName && sym.displayName !== sym.name) n.title = sym.name;
             cell.appendChild(n);
             const ty = document.createElement("span");
             ty.className = "available-type";
@@ -1044,7 +1054,7 @@ function sbRenderLeaf(container, label, typeName, path, watchType) {
 }
 function sbRenderLayout(container, layout, path) {
     if (!layout) return;
-    if (layout.kind === "struct" || layout.kind === "union") {
+    if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
         const ms = layout.members || [];
         ms.forEach((m) => {
             const cp = path + "." + m.name;
@@ -1102,7 +1112,8 @@ function sbRenderComposite(item) {
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
-    nm.textContent = item.name;
+    nm.textContent = item.displayName || item.name;
+    if (item.displayName && item.displayName !== item.name) nm.title = item.name;
     const lay = item.compositeLayout || {};
     const ty = document.createElement("span");
     ty.className = "sb-comp-type";

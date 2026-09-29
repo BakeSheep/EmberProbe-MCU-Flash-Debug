@@ -57,27 +57,61 @@ class ElfService {
         return this.cleanPath(selected);
     }
 
-    _enrich(result, types, layouts = new Map()) {
+    _enrich(result, types, layouts = new Map(), displayNames = new Map()) {
         for (const symbol of result.symbols) {
             const info = types.get(symbol.name);
+            const looksCpp = /^_Z/.test(symbol.name);
+            const unresolvedCpp = looksCpp && (!info || info.kind === "unknown");
+            symbol.displayName = displayNames.get(symbol.name) || symbol.displayName || symbol.name;
+            symbol.qualifiedName = symbol.displayName;
             symbol.typeName = info?.typeName || "";
             const layout = layouts.get(symbol.name);
-            const hasLayout = !!layout;
+            const hasLayout = !!layout && !info?.ambiguous;
+            symbol.cppTypeUnavailable = !!info?.ambiguous || unresolvedCpp;
             const knownKind = info?.kind && info.kind !== "unknown";
             symbol.isComposite =
+                !!info?.ambiguous ||
                 hasLayout ||
                 (knownKind
-                    ? ["struct", "union", "array"].includes(info.kind)
-                    : /^(struct|union)\b/.test(symbol.typeName) ||
+                    ? ["struct", "class", "union", "array"].includes(info.kind)
+                    : /^(struct|class|union)\b/.test(symbol.typeName) ||
                       /\[\]$/.test(symbol.typeName) ||
+                      unresolvedCpp ||
                       (!info && ![1, 2, 4, 8].includes(Number(symbol.size))));
             symbol.watchType = symbol.isComposite ? "" : info?.watchType || this.elfSymbols.defaultType(symbol.size);
             symbol.hasDwarfWriteType = !symbol.isComposite && !!info?.watchType;
             if (info?.isBoolean) symbol.isBoolean = true;
             if (symbol.isComposite) {
-                symbol.compositeLayout = layout || null;
-                symbol.unsupportedReason = hasLayout ? "" : this.t("lw.compositeNoLayout");
+                symbol.compositeLayout = hasLayout ? layout : null;
+                symbol.unsupportedReason = hasLayout
+                    ? ""
+                    : info?.ambiguous
+                      ? this.t("lw.cppSymbolAmbiguous")
+                      : unresolvedCpp
+                        ? this.t("lw.cppUnknownType")
+                        : this.t("lw.compositeNoLayout");
             }
+        }
+    }
+
+    _recordCppDiagnostics(result, types) {
+        for (const symbol of result.symbols) {
+            if (!/^_Z/.test(symbol.name)) continue;
+            const info = types.get(symbol.name);
+            const code = info?.ambiguous
+                ? "CPP_SYMBOL_AMBIGUOUS"
+                : !info || info.kind === "unknown"
+                  ? "CPP_TYPE_UNRESOLVED"
+                  : null;
+            if (!code) continue;
+            const message = this.t(
+                code === "CPP_SYMBOL_AMBIGUOUS" ? "diag.cppSymbolAmbiguous" : "diag.cppTypeUnresolved",
+                {
+                    name: symbol.displayName || symbol.name
+                }
+            );
+            result.diagnostics.push({ code, stage: "bind", message });
+            result.warnings.push(`${code}: ${message}`);
         }
     }
 
@@ -193,8 +227,25 @@ class ElfService {
                     ack("types");
                     break;
                 }
+                case "displayNames": {
+                    const changed = [];
+                    for (const [name, displayName] of message.entries) {
+                        const symbol = this.symbolByName.get(name);
+                        if (symbol) {
+                            symbol.displayName = displayName;
+                            symbol.qualifiedName = displayName;
+                            changed.push(symbol);
+                        }
+                    }
+                    const names = new Map(message.entries);
+                    for (const fn of result.functions) if (names.has(fn.name)) fn.displayName = names.get(fn.name);
+                    if (changed.length) this.onChange("types", result, changed);
+                    ack("displayNames");
+                    break;
+                }
                 case "dwarfReady":
                     result.diagnostics.push(...message.diagnostics);
+                    this._recordCppDiagnostics(result, types);
                     result.workerHeapUsed = message.heapUsed;
                     result.warnings.push(...message.diagnostics.map((d) => `${d.code}: ${d.message}`));
                     result.dwarfReady = true;
@@ -241,6 +292,7 @@ class ElfService {
         await this.ready();
         const symbol = this.symbolByName.get(name);
         if (!symbol) return null;
+        if (symbol.cppTypeUnavailable) return null;
         if (symbol.compositeLayout) return symbol.compositeLayout;
         const previousError = this.layoutErrors.get(name);
         if (previousError) throw Object.assign(new Error(previousError.message), { code: previousError.code });
@@ -333,7 +385,10 @@ class ElfService {
         for (const diagnostic of result.diagnostics) result.warnings.push(`${diagnostic.code}: ${diagnostic.message}`);
         const typeMap = parsed?.types || null;
         const layouts = parsed?.layouts || null;
-        this._enrich(result, typeMap || new Map(), layouts || new Map());
+        const displayNames = parsed?.displayNames || null;
+        this._enrich(result, typeMap || new Map(), layouts || new Map(), displayNames || new Map());
+        this._recordCppDiagnostics(result, typeMap || new Map());
+        for (const fn of result.functions || []) fn.displayName = displayNames?.get(fn.name) || fn.name;
         if (!typeMap || typeMap.size === 0) result.warnings.push(this.t("warn.noDwarf"));
         this.cache = { elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256, result };
         return result;

@@ -11,15 +11,28 @@ class FaultService {
         const decoded = this.faultInfo.decodeFaultRegisters(raw.values);
         let pcSymbol = "";
         let lrSymbol = "";
+        let pcSymbolRaw = "";
+        let lrSymbolRaw = "";
         let symbolication = "ok";
         try {
             const functions = functionsProvider() || [];
+            // symbolize 同时产出可读显示名与原始（mangled）名，供核对。
             const symbolize = (hex) => {
                 const fn = this.elfSymbols.nearestFunction(functions, parseInt(hex, 16));
-                return fn ? `${fn.name}+0x${fn.offset.toString(16).toUpperCase()}` : "";
+                if (!fn) return { display: "", raw: "" };
+                const off = `+0x${fn.offset.toString(16).toUpperCase()}`;
+                return { display: `${fn.displayName || fn.name}${off}`, raw: `${fn.name}${off}` };
             };
-            if (raw.pc) pcSymbol = symbolize(raw.pc);
-            if (raw.lr) lrSymbol = symbolize(raw.lr);
+            if (raw.pc) {
+                const s = symbolize(raw.pc);
+                pcSymbol = s.display;
+                pcSymbolRaw = s.raw;
+            }
+            if (raw.lr) {
+                const s = symbolize(raw.lr);
+                lrSymbol = s.display;
+                lrSymbolRaw = s.raw;
+            }
         } catch {
             symbolication = "unavailable";
         }
@@ -35,6 +48,8 @@ class FaultService {
             xpsr: raw.xpsr,
             pcSymbol,
             lrSymbol,
+            pcSymbolRaw,
+            lrSymbolRaw,
             symbolication
         };
     }

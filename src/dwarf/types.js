@@ -13,6 +13,8 @@ const {
     DW_TAG_variable,
     DW_TAG_member,
     DW_TAG_subrange_type,
+    DW_TAG_class_type,
+    DW_TAG_inheritance,
     DW_AT_name,
     DW_AT_byte_size,
     DW_AT_abstract_origin,
@@ -138,6 +140,14 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 byteSize: d.byteSize || 0
             };
             break;
+        case DW_TAG_class_type:
+            result = {
+                kind: "class",
+                typeName: nm ? "class " + nm : "class",
+                watchType: "",
+                byteSize: d.byteSize || 0
+            };
+            break;
         case DW_TAG_union_type:
             result = {
                 kind: "union",
@@ -176,15 +186,28 @@ function buildVariableTypes(parsed) {
     const typeCache = new Map();
     const result = new Map();
     for (const v of variables) {
-        const name = v.name || "";
-        if (!name || result.has(name)) continue;
+        // 以 linkage name（C++ mangled，与 ELF 符号名一致）为稳定键；C 符号无 linkage name 时回落普通名。
+        const key = v.linkageName || v.name || "";
+        if (!key) continue;
         const t = v.typeRef !== undefined ? _resolveTypeInfo(v.typeRef, dies, childrenMap, typeCache) : null;
-        result.set(name, {
+        const info = {
             kind: (t && t.kind) || "unknown",
             typeName: (t && t.typeName) || "",
             watchType: (t && t.watchType) || "",
             ...(t?.isBoolean ? { isBoolean: true } : {})
-        });
+        };
+        const prev = result.get(key);
+        if (prev) {
+            // 同一键命中多个类型不一致的候选 → 无法唯一匹配，标记歧义，交由上层诊断，不绑定类型。
+            if (
+                !prev.ambiguous &&
+                (prev.kind !== info.kind || prev.typeName !== info.typeName || prev.watchType !== info.watchType)
+            ) {
+                result.set(key, { ambiguous: true, typeName: "", watchType: "" });
+            }
+            continue;
+        }
+        result.set(key, info);
     }
     return result;
 }
@@ -193,6 +216,47 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
     const childOffsets = childrenMap.get(typeDieOff);
     if (!childOffsets) return [];
     const members = [];
+    // 基类合成成员（@baseN）置于自身成员之前，保持每条基类路径独立，天然消除跨基类同名歧义。
+    let baseIndex = 0;
+    for (const childOff of childOffsets) {
+        const child = dies.get(childOff);
+        if (!child || child.tag !== DW_TAG_inheritance) continue;
+        consumeCompositeBudget(budget);
+        const index = baseIndex++;
+        const baseType =
+            child.typeRef !== undefined
+                ? _resolveTypeInfo(child.typeRef, dies, childrenMap, typeCache)
+                : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
+        if (child.virtuality) {
+            // 虚基类偏移依赖运行期 vtable，静态阶段不产地址、不出叶子（阶段 3 再接管求址）。
+            members.push({
+                name: "@base" + index,
+                offset: 0,
+                byteSize: 0,
+                typeName: baseType.typeName,
+                kind: baseType.kind,
+                isBase: true,
+                baseIndex: index,
+                virtual: true,
+                unobservable: "virtual base requires runtime addressing"
+            });
+            continue;
+        }
+        const base = {
+            name: "@base" + index,
+            offset: child.memberOffset || 0,
+            byteSize: baseType.byteSize || 0,
+            typeName: baseType.typeName,
+            watchType: "",
+            kind: baseType.kind,
+            isBase: true,
+            baseIndex: index
+        };
+        if (baseType.kind === "struct" || baseType.kind === "class" || baseType.kind === "union") {
+            base.memberTypeRef = child.typeRef;
+        }
+        members.push(base);
+    }
     for (const childOff of childOffsets) {
         const child = dies.get(childOff);
         if (!child || child.tag !== DW_TAG_member) continue;
@@ -227,7 +291,12 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
             member.bitOffset = bitOffset;
         }
         // 若成员本身是复合类型，附加嵌套布局信息（按需，延迟到 UI 展开）
-        if (memberType.kind === "struct" || memberType.kind === "union" || memberType.kind === "array") {
+        if (
+            memberType.kind === "struct" ||
+            memberType.kind === "class" ||
+            memberType.kind === "union" ||
+            memberType.kind === "array"
+        ) {
             member.memberTypeRef = child.typeRef;
         }
         members.push(member);
@@ -331,8 +400,19 @@ function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, bud
             } else {
                 layout = nested;
             }
-        } else if (typeDie.tag === DW_TAG_structure_type || typeDie.tag === DW_TAG_union_type) {
-            const kind = typeDie.tag === DW_TAG_structure_type ? "struct" : "union";
+        } else if (
+            typeDie.tag === DW_TAG_structure_type ||
+            typeDie.tag === DW_TAG_union_type ||
+            typeDie.tag === DW_TAG_class_type
+        ) {
+            // Forward declarations have no trustworthy member offsets.
+            if (typeDie.isDecl || !Number.isSafeInteger(typeDie.byteSize) || typeDie.byteSize <= 0) return null;
+            const kind =
+                typeDie.tag === DW_TAG_structure_type
+                    ? "struct"
+                    : typeDie.tag === DW_TAG_union_type
+                      ? "union"
+                      : "class";
             const nm = typeDie.name || "";
             const members = _collectMembers(typeRef, dies, childrenMap, typeCache, depth, budget);
             // 递归解析嵌套复合成员的布局
@@ -383,16 +463,23 @@ function createCompositeLayoutResolver(parsed) {
     const { dies, childrenMap, variables } = parsed;
     const typeCache = new Map();
     const byName = new Map();
-    for (const variable of variables)
-        if (variable.name && !byName.has(variable.name)) byName.set(variable.name, variable);
+    const ambiguousNames = new Set();
+    for (const variable of variables) {
+        const key = variable.linkageName || variable.name;
+        if (!key) continue;
+        const previous = byName.get(key);
+        if (previous && previous.typeRef !== variable.typeRef) ambiguousNames.add(key);
+        else if (!previous) byName.set(key, variable);
+    }
     const state = { cache: new Map(), cachedNodes: 0, active: new Set() };
     const failedTypes = new Map();
     return (name) => {
+        if (ambiguousNames.has(name)) return null;
         const variable = byName.get(name);
         if (!variable || variable.typeRef === undefined) return null;
         if (failedTypes.has(variable.typeRef)) throw failedTypes.get(variable.typeRef);
         const info = _resolveTypeInfo(variable.typeRef, dies, childrenMap, typeCache);
-        if (!info || !["struct", "union", "array"].includes(info.kind)) return null;
+        if (!info || !["struct", "class", "union", "array"].includes(info.kind)) return null;
         try {
             return _buildCompositeLayout(variable.typeRef, dies, childrenMap, typeCache, 0, { nodes: 0 }, state);
         } catch (error) {
@@ -406,16 +493,35 @@ function buildCompositeLayouts(parsed, onError) {
     const result = new Map();
     const seen = new Set();
     for (const variable of parsed.variables) {
-        if (!variable.name || seen.has(variable.name)) continue;
-        seen.add(variable.name);
+        const key = variable.linkageName || variable.name;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
         try {
-            const layout = resolve(variable.name);
-            if (layout) result.set(variable.name, layout);
+            const layout = resolve(key);
+            if (layout) result.set(key, layout);
         } catch (error) {
-            if (onError) onError(variable.name, error);
+            if (onError) onError(key, error);
             else throw error;
         }
     }
     return result;
 }
-module.exports = { encodingToWatchType, buildVariableTypes, buildCompositeLayouts, createCompositeLayoutResolver };
+// 以 linkage name（缺失时回落普通名）为键，映射到 DWARF 作用域链构造的 C++ 限定名，供 ELF 绑定与函数显示名使用。
+function buildDisplayNames(parsed) {
+    const result = new Map();
+    const add = (rec) => {
+        const key = rec.linkageName || rec.name || "";
+        if (!key || result.has(key)) return;
+        result.set(key, rec.qualifiedName || rec.name || key);
+    };
+    for (const v of parsed.variables || []) add(v);
+    for (const s of parsed.subprograms || []) add(s);
+    return result;
+}
+module.exports = {
+    encodingToWatchType,
+    buildVariableTypes,
+    buildCompositeLayouts,
+    buildDisplayNames,
+    createCompositeLayoutResolver
+};

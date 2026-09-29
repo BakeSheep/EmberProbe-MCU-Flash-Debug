@@ -1,7 +1,7 @@
 "use strict";
 const { parseDwarfInternal: _parseDwarfInternal } = require("./dwarf/parser");
 const { readULEB, readSLEB, debugSectionData } = require("./dwarf/binary");
-const { encodingToWatchType, buildVariableTypes, buildCompositeLayouts } = require("./dwarf/types");
+const { encodingToWatchType, buildVariableTypes, buildCompositeLayouts, buildDisplayNames } = require("./dwarf/types");
 // 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
 // 外层（extension.js）仍按 ELF SHA-256 缓存最终结果；两层缓存职责不同。
 const _parseCache = new WeakMap();
@@ -41,6 +41,7 @@ function parseDwarf(buffer) {
             return {
                 types: new Map(),
                 layouts: new Map(),
+                displayNames: new Map(),
                 diagnostics: [{ code: "DWARF_PARSE_FAILED", stage: "parse", message: "DWARF parsing failed" }]
             };
         const types = buildVariableTypes(parsed);
@@ -54,11 +55,12 @@ function parseDwarf(buffer) {
                     message: error.message
                 });
             });
-            return { types, layouts, diagnostics };
+            return { types, layouts, displayNames: buildDisplayNames(parsed), diagnostics };
         } catch (error) {
             return {
                 types,
                 layouts: new Map(),
+                displayNames: new Map(),
                 diagnostics: [
                     ...parsed.diagnostics,
                     {
@@ -73,6 +75,7 @@ function parseDwarf(buffer) {
         return {
             types: new Map(),
             layouts: new Map(),
+            displayNames: new Map(),
             // 仅保留 DWARF_BUDGET_EXCEEDED 这类解析器主动抛出的结构化错误码；
             // 其余异常（如 Buffer.from(null) 的 ERR_INVALID_ARG_TYPE）一律归为 DWARF_PARSE_FAILED。
             diagnostics: [

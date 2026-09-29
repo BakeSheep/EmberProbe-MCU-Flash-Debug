@@ -32,6 +32,7 @@ const { buildElf } = require("./perf/parse-bench");
         const ready = await service.ready();
         assert.strictEqual(ready.dwarfReady, true);
         assert.strictEqual(ready.symbols.find((symbol) => symbol.name === "v0_2").typeName, "struct S0_0");
+        assert.strictEqual(ready.symbols.find((symbol) => symbol.name === "v0_2").displayName, "v0_2");
         const first = await service.layout("v0_2");
         assert.strictEqual(first.members.length, 3);
         assert.strictEqual(await service.layout("v0_2"), first, "resolved layouts are reused by the service");
