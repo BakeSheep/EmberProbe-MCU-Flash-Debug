@@ -18,8 +18,8 @@ function args(argv) {
             if (key === "--workspace") result.workspace = value;
             else {
                 const intervalMs = Number(value);
-                if (!Number.isInteger(intervalMs) || intervalMs < 20 || intervalMs > 10000)
-                    throw new Error("--interval must be an integer from 20 to 10000 milliseconds");
+                if (!Number.isInteger(intervalMs) || intervalMs < 5 || intervalMs > 10000)
+                    throw new Error("--interval must be an integer from 5 to 10000 milliseconds");
                 result.params.intervalMs = intervalMs;
             }
         } else throw new Error(`Unknown argument: ${key}`);

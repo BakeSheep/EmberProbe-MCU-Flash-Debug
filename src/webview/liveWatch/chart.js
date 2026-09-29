@@ -199,7 +199,7 @@
                     var lo = Infinity,
                         hi = -Infinity;
                     s.arr.forEach(function (p) {
-                        if (p.t < chartState.x.min || p.t > chartState.x.max) return;
+                        if (p.v === null || p.t < chartState.x.min || p.t > chartState.x.max) return;
                         total++;
                         lo = Math.min(lo, p.v);
                         hi = Math.max(hi, p.v);
@@ -330,6 +330,10 @@
                     var started = false,
                         last = null;
                     s.drawing.forEach(function (p) {
+                        if (p.raw && p.raw.v === null) {
+                            started = false;
+                            return;
+                        }
                         var x = p.x,
                             y = p.y;
                         if (started) ctx.lineTo(x, y);

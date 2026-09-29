@@ -137,7 +137,9 @@
         "emberprobe.sampleIntervalMs": {
           "type": "number",
           "default": 100,
-          "description": "实时变量采样间隔（毫秒），最小 20ms"
+          "minimum": 5,
+          "maximum": 10000,
+          "description": "实时变量采样目标间隔（毫秒），支持 5~10000ms（默认 100ms，实际频率受探针吞吐能力自适应调控）"
         },
         "emberprobe.maxSamples": {
           "type": "number",

@@ -13,6 +13,12 @@ class FakeOpenOcdServer {
         this.memory = new Map();
         this.sockets = new Set();
         this.state = "running";
+        this.readLatencyMs = 0;
+        this.rejectBatchCommand = false;
+        this.transientFailures = 0;
+        this.timeoutNext = false;
+        this.activeInFlight = 0;
+        this.maxInFlight = 0;
     }
 
     seed(address, bytes) {
@@ -51,46 +57,93 @@ class FakeOpenOcdServer {
         return this.port;
     }
 
-    _handle(socket, command) {
-        const prefix = "set _ep_rc [catch {";
-        const suffix = "} _ep_msg]";
-        if (command.startsWith(prefix)) {
-            const boundary = command.indexOf(suffix, prefix.length);
-            if (boundary >= 0) {
-                const inner = command.slice(prefix.length, boundary);
-                const result = this._execute(inner);
-                const responseFile = command.match(/set _ep_file \[open "([^"]+)" w\]/);
-                if (responseFile) {
-                    fs.writeFileSync(responseFile[1], `${result.ok ? 0 : 1}\n${result.response}`);
-                    this.responses.push("");
-                    socket.write(SUB);
-                } else {
-                    const response = (result.ok ? "EP_OK:" : "EP_ERR:") + result.response;
-                    this.responses.push(response);
-                    socket.write(response + SUB);
-                }
+    async _handle(socket, command) {
+        this.activeInFlight++;
+        this.maxInFlight = Math.max(this.maxInFlight, this.activeInFlight);
+        try {
+            if (this.readLatencyMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, this.readLatencyMs));
+            }
+            if (this.timeoutNext) {
+                this.timeoutNext = false;
                 return;
             }
+            const prefix = "set _ep_rc [catch {";
+            const suffix = "} _ep_msg]";
+            if (command.startsWith(prefix)) {
+                const boundary = command.indexOf(suffix, prefix.length);
+                if (boundary >= 0) {
+                    const inner = command.slice(prefix.length, boundary);
+                    const result = this._execute(inner);
+                    const responseFile = command.match(/set _ep_file \[open "([^"]+)" w\]/);
+                    if (responseFile) {
+                        const targetPath = responseFile[1].replace(/\\\\/g, "\\");
+                        fs.writeFileSync(targetPath, `${result.ok ? 0 : 1}\n${result.response}`);
+                        this.responses.push("");
+                        socket.write(SUB);
+                    } else {
+                        const response = (result.ok ? "EP_OK:" : "EP_ERR:") + result.response;
+                        this.responses.push(response);
+                        socket.write(response + SUB);
+                    }
+                    return;
+                }
+            }
+            const result = this._execute(command);
+            this.responses.push(result.response);
+            socket.write(result.response + SUB);
+        } finally {
+            this.activeInFlight--;
         }
-        const result = this._execute(command);
-        this.responses.push(result.response);
-        socket.write(result.response + SUB);
+    }
+
+    _executeRead(command) {
+        const read = command.match(/^(?:ocd_)?read_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+(\d+)$/i);
+        if (!read) return null;
+        if (this.transientFailures > 0) {
+            this.transientFailures--;
+            return { ok: false, response: "target memory read failed" };
+        }
+        const elementBytes = Number(read[2]) / 8;
+        const raw = this.bytes(parseInt(read[1], 16), Number(read[3]) * elementBytes);
+        const values = [];
+        for (let offset = 0; offset < raw.length; offset += elementBytes) {
+            let value = 0;
+            for (let index = 0; index < elementBytes; index++) value += raw[offset + index] * 2 ** (index * 8);
+            values.push("0x" + (value >>> 0).toString(16));
+        }
+        return { ok: true, response: values.join(" ") };
     }
 
     _execute(command) {
         this.commands.push(command);
-        const read = command.match(/^(?:ocd_)?read_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+(\d+)$/i);
-        if (read) {
-            const elementBytes = Number(read[2]) / 8;
-            const raw = this.bytes(parseInt(read[1], 16), Number(read[3]) * elementBytes);
-            const values = [];
-            for (let offset = 0; offset < raw.length; offset += elementBytes) {
-                let value = 0;
-                for (let index = 0; index < elementBytes; index++) value += raw[offset + index] * 2 ** (index * 8);
-                values.push("0x" + (value >>> 0).toString(16));
+        if (command.startsWith("join [list")) {
+            if (this.rejectBatchCommand) {
+                return { ok: false, response: 'invalid command name "join"' };
             }
-            return { ok: true, response: values.join(" ") };
+            if (this.transientFailures > 0) {
+                this.transientFailures--;
+                return { ok: false, response: "target memory read failed" };
+            }
+            const innerCommands = [];
+            const re = /\[((?:ocd_)?read_memory\s+[^\]]+)\]/g;
+            let m;
+            while ((m = re.exec(command)) !== null) {
+                innerCommands.push(m[1]);
+            }
+            if (innerCommands.length === 0) {
+                return { ok: false, response: "invalid batch command syntax" };
+            }
+            const results = [];
+            for (const subCmd of innerCommands) {
+                const res = this._executeRead(subCmd);
+                if (!res || !res.ok) return res || { ok: false, response: "unknown batch subcmd" };
+                results.push(res.response);
+            }
+            return { ok: true, response: results.join("\n") };
         }
+        const readRes = this._executeRead(command);
+        if (readRes) return readRes;
         const write = command.match(/^(?:ocd_)?write_memory\s+(0x[0-9a-f]+)\s+(8|16|32)\s+\{([^}]*)\}$/i);
         if (write) {
             const elementBytes = Number(write[2]) / 8;

@@ -128,7 +128,7 @@ try {
     graph.assertHealthy();
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
     assert.strictEqual(graph.window.__CFG__.maxSamples, 100);
-    assert.strictEqual(graph.window.__CFG__.intervalMs, 20);
+    assert.strictEqual(graph.window.__CFG__.intervalMs, 5);
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
     graph.send({ type: "liveStatus", source: "dap", snapshotReady: false, intentEnabled: true });
     assert.ok(graph.document.body.classList.contains("debug-stale"));
@@ -143,6 +143,20 @@ try {
     assert.strictEqual(exported.panelId, 2);
     graph.send({ type: "agentExportCsv", requestId: "missing", names: ["absent"] });
     assert.strictEqual(graph.messages.at(-1).code, "CSV_SERIES_NOT_FOUND");
+    graph.send({
+        type: "liveStatus",
+        running: true,
+        actualHz: 123.4,
+        effectiveIntervalMs: 8,
+        p95DurationMs: 3.2,
+        missedDeadlines: 0
+    });
+    assert.strictEqual(graph.document.getElementById("rate").textContent, "123.4 Hz");
+    assert.ok(graph.document.getElementById("rate").title.includes("Effective: 8ms"));
+    assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
+    graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
+    graph.send({ type: "liveInterval", intervalMs: 5 });
+    assert.strictEqual(graph.document.getElementById("interval").value, "5");
     graph.send({ type: "liveInterval", intervalMs: 250 });
     assert.strictEqual(graph.document.getElementById("interval").value, "250");
     graph.assertHealthy();

@@ -73,14 +73,15 @@ function fixture() {
         ["--start", "--stop"],
         ["--start", "--start"],
         ["--status", "--interval", "100"],
-        ["--start", "--interval", "19"],
+        ["--start", "--interval", "4"],
         ["--start", "--interval", "10001"],
-        ["--start", "--interval", "20.5"],
+        ["--start", "--interval", "5.5"],
         ["--start", "--interval", "NaN"],
         ["--workspace"],
         ["--unknown"]
     ])
         assert.throws(() => args(invalid));
+    assert.deepStrictEqual(args(["--start", "--interval", "5"]).params, { intervalMs: 5 });
     assert.deepStrictEqual(args(["--start", "--interval", "250"]).params, { intervalMs: 250 });
 
     const { provider: p, sidebar, chart } = fixture();

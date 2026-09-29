@@ -93,23 +93,24 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     let cancelledReadCalls = 0;
     const cancelling = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
     cancelling.samplingEnabled = true;
-    cancelling._readMemoryBytes = async () => {
+    cancelling._readBatchBytes = async (batch) => {
         cancelledReadCalls++;
         cancelling.setSamplingEnabled(false);
-        return [1];
+        return batch.map(() => [1]);
     };
     await assert.rejects(
         cancelling._readItems(
-            [
-                { name: "first", address: 0x20000000, size: 1 },
-                { name: "second", address: 0x20000008, size: 1 }
-            ],
+            Array.from({ length: 9 }, (_, index) => ({
+                name: `item-${index}`,
+                address: 0x20000000 + index * 8,
+                size: 1
+            })),
             Date.now(),
             { epoch: cancelling.sampleEpoch, requireSampling: true, deadline: Date.now() + 1000 }
         ),
         (error) => error.code === "LIVE_READ_CANCELLED"
     );
-    assert.strictEqual(cancelledReadCalls, 1, "a state change must prevent subsequent Tcl read groups");
+    assert.strictEqual(cancelledReadCalls, 1, "a state change must prevent subsequent Tcl read batches");
     cancelling.busy = true;
     assert.strictEqual(await cancelling.waitForIdle(5), false, "quiesce timeout must be observable by the DAP bridge");
     cancelling.busy = false;

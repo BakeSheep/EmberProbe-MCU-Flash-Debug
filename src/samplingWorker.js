@@ -14,7 +14,8 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         samplingEnabled: session.samplingEnabled,
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
-        childPid: session.child?.pid
+        childPid: session.child?.pid,
+        stats: typeof session.stats === "function" ? session.stats() : null
     });
     const event = (name, args) =>
         port.postMessage({
@@ -64,12 +65,14 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     "stop",
                     "setWatch",
                     "setIntervalMs",
+                    "setPauseReason",
                     "setSamplingEnabled",
                     "readOnce",
                     "writeOnce",
                     "writeAndVerify",
                     "waitForIdle",
-                    "waitForExit"
+                    "waitForExit",
+                    "stats"
                 ].includes(method)
             )
                 throw new Error("Unknown sampling operation");
