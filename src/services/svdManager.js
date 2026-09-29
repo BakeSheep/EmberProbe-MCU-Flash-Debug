@@ -268,21 +268,31 @@ class SvdManager {
                     token.onCancellationRequested(() => abort.abort());
                     let lastPercent = 0;
                     const onProgress = (event) => {
-                        const percent = Number.isFinite(event.percent) ? event.percent : null;
+                        const percent =
+                            event.phase === "catalog" ? null : Number.isFinite(event.percent) ? event.percent : null;
                         const phaseKey =
                             event.phase === "validating"
                                 ? "svd.validating"
                                 : event.phase === "catalog"
-                                  ? "svd.catalog"
+                                  ? event.total
+                                      ? "svd.catalogProgress"
+                                      : "svd.catalog"
                                   : "svd.downloading";
+                        const params =
+                            event.phase === "catalog" && event.total
+                                ? { current: event.current, total: event.total }
+                                : null;
                         this.onStatus({
                             state: event.phase === "validating" ? "validating" : "downloading",
                             key: phaseKey,
+                            params,
                             percent,
                             received: event.received,
                             total: event.total
                         });
-                        if (percent !== null) {
+                        if (event.phase === "catalog") {
+                            progress.report({ message: this.t(phaseKey, params) });
+                        } else if (percent !== null) {
                             progress.report({ increment: Math.max(0, percent - lastPercent), message: `${percent}%` });
                             lastPercent = percent;
                         } else if (event.received)

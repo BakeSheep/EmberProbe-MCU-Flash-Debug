@@ -153,6 +153,7 @@ module.exports = Object.freeze({
     "svd.cancelling": "Cancelling…",
     "svd.retry": "Retry",
     "svd.catalog": "Querying the official CMSIS-Pack catalog…",
+    "svd.catalogProgress": "Checking SVD package metadata ({current}/{total})…",
     "svd.downloadTitle": "EmberProbe: Download official SVD",
     "svd.selectAnother": "Choose another SVD file…",
     "svd.clearBinding": "Clear this workspace binding",

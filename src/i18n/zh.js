@@ -151,6 +151,7 @@ module.exports = Object.freeze({
     "svd.cancelling": "正在取消…",
     "svd.retry": "重试",
     "svd.catalog": "正在查询官方 CMSIS-Pack 目录…",
+    "svd.catalogProgress": "正在核对候选 SVD 包（{current}/{total}）…",
     "svd.downloadTitle": "EmberProbe：下载官方 SVD",
     "svd.selectAnother": "选择其他 SVD 文件…",
     "svd.clearBinding": "清除当前工作区绑定",

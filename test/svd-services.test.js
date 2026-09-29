@@ -212,7 +212,9 @@ function zipBuffer(entries) {
         ["LICENSE.txt", "test license"]
     ]);
     let baseUrl = "";
+    const requests = [];
     const server = http.createServer((req, res) => {
+        requests.push(req.url);
         if (req.url === "/index.pidx") {
             const body = `<index><url>${baseUrl}/</url><pindex><pdsc url="${baseUrl}/" vendor="Keil" name="STM32F4xx_DFP" version="1.2.3"/></pindex></index>`;
             res.setHeader("Content-Type", "application/xml");
@@ -283,8 +285,17 @@ function zipBuffer(entries) {
         );
         assert.strictEqual(candidates.length, 1);
         assert.strictEqual(candidates[0].packageVersion, "1.2.3", "pre-release packs must not be selected as stable");
+        assert(progress.every((item) => item.phase === "catalog" && item.percent == null));
+        const cachedCandidates = await official.discover(
+            { device: "STM32F407VG", vendor: "STMicroelectronics", exact: true },
+            { onProgress: (item) => progress.push(item) }
+        );
+        assert.deepStrictEqual(cachedCandidates, candidates);
+        assert.strictEqual(requests.filter((url) => url === "/index.pidx").length, 1);
+        assert.strictEqual(requests.filter((url) => url === "/Keil.STM32F4xx_DFP.pdsc").length, 1);
         const downloaded = await official.download(candidates[0], { onProgress: (item) => progress.push(item) });
         assert.deepStrictEqual(downloaded.buffer, VALID_SVD);
+        assert.strictEqual(requests.filter((url) => url === "/Keil.STM32F4xx_DFP.1.2.3.pack").length, 1);
         assert(progress.some((item) => Number.isFinite(item.percent)));
         assert((await requestBuffer(`${baseUrl}/redirect`, { allowHttpLocalhost: true })).buffer.length > 0);
         await assert.rejects(
