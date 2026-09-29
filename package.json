@@ -306,6 +306,7 @@
   },
   "files": [
     "dist/extension.js",
+    "dist/buildInfo.json",
     "dist/samplingWorker.js",
     "dist/sampling-timer/**/*",
     "dist/elfWorker.js",

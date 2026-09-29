@@ -121,6 +121,10 @@ function fmtNum(v) {
 function fmtExact(v, valueText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
 }
+function setDisplayedValue(cell, value) {
+    if (cell.textContent !== value) cell.textContent = value;
+    if (cell.title !== value) cell.title = value;
+}
 var buildCsv = window.__BUILD_CSV__;
 function defType(size) {
     return window.EmberProbeRuntime.defaultType(size);
@@ -338,7 +342,7 @@ function renderVars() {
         name.title = item.name + " \u00b7 " + fmtAddr(item.address);
         var val = document.createElement("div");
         val.className = "var-value";
-        val.textContent = fmtExact(latest[item.name], latestText[item.name]);
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
         valueCells[item.name] = val;
         main.append(name);
         if (controls) controls.decorate(card, item.name, sw);
@@ -356,11 +360,27 @@ function renderVars() {
 }
 function updateValues() {
     Object.keys(valueCells).forEach(function (n) {
-        valueCells[n].textContent = fmtExact(latest[n], latestText[n]);
+        setDisplayedValue(valueCells[n], fmtExact(latest[n], latestText[n]));
     });
     watch.forEach(function (it) {
         if (isCompositeItem(it)) updateCompositeValues(it.name);
     });
+}
+var valueRefreshTimer = null;
+var lastValueRefresh = 0;
+function scheduleValueRefresh() {
+    if (valueRefreshTimer !== null) return;
+    var elapsed = Date.now() - lastValueRefresh;
+    if (elapsed >= 100) {
+        lastValueRefresh = Date.now();
+        updateValues();
+        return;
+    }
+    valueRefreshTimer = setTimeout(function () {
+        valueRefreshTimer = null;
+        lastValueRefresh = Date.now();
+        updateValues();
+    }, 100 - elapsed);
 }
 function onSamples(samples) {
     if (!frozen) invalidateSeries();
@@ -390,7 +410,7 @@ function onSamples(samples) {
         arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
         if (arr.length > MAXPTS) arr.splice(0, arr.length - MAXPTS);
     });
-    updateValues();
+    scheduleValueRefresh();
     dirty = true;
 }
 function isCompositeItem(it) {
@@ -424,7 +444,7 @@ function updateCompositeValues(name) {
     if (!tree) return;
     walkTreeLeaves(tree, name, function (path, node) {
         var cell = compCells[path];
-        if (cell) cell.textContent = fmtExact(node.value, node.valueText);
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
     });
 }
 function renderLeafInto(container, label, typeName, path, watchType, address) {
@@ -656,9 +676,7 @@ function onCompositeSamples(samples) {
     (samples || []).forEach(function (s) {
         if (s && s.name) latest[s.name] = s.tree;
     });
-    watch.forEach(function (it) {
-        if (isCompositeItem(it)) updateCompositeValues(it.name);
-    });
+    scheduleValueRefresh();
     dirty = true;
 }
 function showArraySelectDialog(sym, cb) {

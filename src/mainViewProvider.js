@@ -5,6 +5,7 @@ exports.MainViewProvider = void 0;
 const vscode = require("vscode");
 const path = require("path");
 const modernView = require("./modernView");
+const { versionLabel } = require("./buildInfo");
 const autoDetect = require("./autoDetect");
 const skillInstaller = require("./skillInstaller");
 const openocdRunner = require("./openocdRunner");
@@ -3886,6 +3887,7 @@ class MainViewProvider {
         const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         return modernView.getModernWebviewContent(
             {
+                versionLabel: versionLabel(this._context.extension?.packageJSON?.version),
                 elf: elf ? path.basename(elf) : "",
                 cubemxPath: vscode.workspace.getConfiguration("emberprobe").get("cubemxPath", ""),
                 iocPath: this._context.workspaceState.get(CACHE_KEYS.iocPath) || "",

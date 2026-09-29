@@ -201,6 +201,10 @@ function fmt(v) {
 function fmtExact(value, valueText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
 }
+function setDisplayedValue(cell, value) {
+    if (cell.textContent !== value) cell.textContent = value;
+    if (cell.title !== value) cell.title = value;
+}
 function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
 }
@@ -309,7 +313,7 @@ function renderValues() {
         const val = document.createElement("span");
         val.className = "value-number";
         val.dataset.valueName = item.name;
-        val.textContent = fmtExact(latest[item.name], latestText[item.name]);
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
         const ty = document.createElement("span");
         ty.className = "value-type";
         ty.textContent = item.type || "u32";
@@ -1012,7 +1016,7 @@ function sbUpdateComposite(name) {
     if (!tree) return;
     sbWalkLeaves(tree, name, (path, node) => {
         const cell = compCells[path];
-        if (cell) cell.textContent = fmtExact(node.value, node.valueText);
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
     });
 }
 function sbNote(container, txt) {
@@ -1135,18 +1139,38 @@ function sbOnComposite(samples) {
     (samples || []).forEach((s) => {
         if (s && s.name) latest[s.name] = s.tree;
     });
-    sideWatch.forEach((it) => {
-        if (sbIsComposite(it)) sbUpdateComposite(it.name);
-    });
+    scheduleValueRefresh();
 }
 function updateValues(samples) {
     (samples || []).forEach((s) => {
         latest[s.name] = s.value;
         latestText[s.name] = s.valueText ?? null;
     });
-    document
-        .querySelectorAll("[data-value-name]")
-        .forEach((el) => (el.textContent = fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName])));
+    scheduleValueRefresh();
+}
+let valueRefreshTimer = null;
+let lastValueRefresh = 0;
+function scheduleValueRefresh() {
+    if (valueRefreshTimer !== null) return;
+    const elapsed = Date.now() - lastValueRefresh;
+    if (elapsed >= 100) {
+        lastValueRefresh = Date.now();
+        refreshDisplayedValues();
+        return;
+    }
+    valueRefreshTimer = setTimeout(() => {
+        valueRefreshTimer = null;
+        lastValueRefresh = Date.now();
+        refreshDisplayedValues();
+    }, 100 - elapsed);
+}
+function refreshDisplayedValues() {
+    document.querySelectorAll("[data-value-name]").forEach((el) => {
+        setDisplayedValue(el, fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName]));
+    });
+    sideWatch.forEach((it) => {
+        if (sbIsComposite(it)) sbUpdateComposite(it.name);
+    });
     syncWriteValues();
 }
 // 采样运行时写入卡片实时同步当前值；用户正在编辑（聚焦/写入在途/防抖中）的卡片不覆盖

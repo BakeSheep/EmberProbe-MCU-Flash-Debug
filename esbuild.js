@@ -3,6 +3,7 @@
 const esbuild = require("esbuild");
 const fs = require("fs");
 const path = require("path");
+const { isOfficialRelease } = require("./src/buildInfo");
 
 const extensionBuild = esbuild.build({
     absWorkingDir: __dirname,
@@ -107,6 +108,14 @@ function stageSamplingTimer() {
     }
 }
 
+function writeBuildInfo() {
+    const version = require("./package.json").version;
+    fs.writeFileSync(
+        path.join(__dirname, "dist", "buildInfo.json"),
+        JSON.stringify({ version, officialRelease: isOfficialRelease(version, process.env.RELEASE_TAG) }) + "\n"
+    );
+}
+
 Promise.all([
     extensionBuild,
     samplingBuild,
@@ -116,7 +125,10 @@ Promise.all([
     webviewBuild("sidebar"),
     webviewBuild("liveWatch")
 ])
-    .then(stageSamplingTimer)
+    .then(() => {
+        stageSamplingTimer();
+        writeBuildInfo();
+    })
     .catch((error) => {
         console.error(error);
         process.exit(1);
