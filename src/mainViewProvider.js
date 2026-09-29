@@ -2838,7 +2838,6 @@ class MainViewProvider {
     _setSamplingArchiveBackpressure(paused) {
         this._samplingCoordinator.setBackpressure(paused);
         const session = this._managedDebugServer || this._liveSession;
-        session?.setPauseReason?.(paused ? "archive_backpressure" : null);
         if (this._liveSession)
             this._liveSession.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
         if (this._managedDebugServer)
@@ -2847,6 +2846,7 @@ class MainViewProvider {
                 this._samplingIntent,
                 this._debugBridge
             );
+        session?.setPauseReason?.(paused ? "archive_backpressure" : null);
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
         if (!paused && this._liveWatchService && this._samplingArchive) {
             const active = this._activeReadPlan ? this._activeReadPlan() : [];

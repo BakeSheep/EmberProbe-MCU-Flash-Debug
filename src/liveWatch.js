@@ -149,24 +149,24 @@ function compileReadBatches(items) {
             groups.push({ start: v.address, end: v.address + v.size, vars: [v] });
         }
     }
-    for (const g of groups) {
-        g.byteCount = g.end - g.start;
-        g.shape = transferShape(g.start, g.byteCount);
-    }
     const batches = [];
     let currentBatch = [];
     let currentBatchBytes = 0;
     for (const g of groups) {
-        if (
-            currentBatch.length >= MAX_BATCH_GROUPS ||
-            (currentBatch.length > 0 && currentBatchBytes + g.byteCount > MAX_BATCH_BYTES)
-        ) {
-            batches.push(currentBatch);
-            currentBatch = [];
-            currentBatchBytes = 0;
+        g.byteCount = g.end - g.start;
+        for (let start = g.start; start < g.end; start += MAX_BATCH_BYTES) {
+            const byteCount = Math.min(MAX_BATCH_BYTES, g.end - start);
+            if (
+                currentBatch.length >= MAX_BATCH_GROUPS ||
+                (currentBatch.length > 0 && currentBatchBytes + byteCount > MAX_BATCH_BYTES)
+            ) {
+                batches.push(currentBatch);
+                currentBatch = [];
+                currentBatchBytes = 0;
+            }
+            currentBatch.push({ start, byteCount, shape: transferShape(start, byteCount), group: g, vars: g.vars });
+            currentBatchBytes += byteCount;
         }
-        currentBatch.push(g);
-        currentBatchBytes += g.byteCount;
     }
     if (currentBatch.length) batches.push(currentBatch);
     return batches;
@@ -955,7 +955,12 @@ class ManagedOpenOcdSession {
         try {
             resp = await this._sendCheckedCommand(build(this.readCmd));
         } catch (error) {
-            if (!this.altTried && /invalid command name|unknown command/i.test(error.message)) {
+            if (
+                !this.altTried &&
+                new RegExp(`(?:invalid command name|unknown command)\\s+["']?${this.readCmd}(?:["'\\s]|$)`, "i").test(
+                    error.message
+                )
+            ) {
                 this.altTried = true;
                 this.readCmd = this.readCmd === "ocd_read_memory" ? "read_memory" : "ocd_read_memory";
                 resp = await this._sendCheckedCommand(build(this.readCmd));
@@ -1001,7 +1006,12 @@ class ManagedOpenOcdSession {
         try {
             resp = await this._sendCheckedCommand(cmd);
         } catch (error) {
-            if (!this.altTried && /invalid command name|unknown command/i.test(error.message)) {
+            if (
+                !this.altTried &&
+                new RegExp(`(?:invalid command name|unknown command)\\s+["']?${this.readCmd}(?:["'\\s]|$)`, "i").test(
+                    error.message
+                )
+            ) {
                 this.altTried = true;
                 this.readCmd = this.readCmd === "ocd_read_memory" ? "read_memory" : "ocd_read_memory";
                 const retryCalls = batch.map((g) => {
@@ -1015,9 +1025,10 @@ class ManagedOpenOcdSession {
             }
         }
         const lines = String(resp || "").split(/\r?\n/);
-        if (lines.length < batch.length) {
-            throw new Error("Batch memory read response truncated");
-        }
+        if (lines.length !== batch.length)
+            throw Object.assign(new Error("Batch memory read response has an unexpected number of groups"), {
+                code: "OPENOCD_TCL_PROTOCOL_ERROR"
+            });
         const result = [];
         for (let i = 0; i < batch.length; i++) {
             const g = batch[i];
@@ -1041,36 +1052,58 @@ class ManagedOpenOcdSession {
         let ok = 0;
         const batches =
             items === this.watch && this._compiledBatches?.length ? this._compiledBatches : compileReadBatches(items);
+        const assembled = new Map();
         for (const batch of batches) {
             this._assertReadGuard(guard);
             let batchBytes = null;
             if (!this._batchUnsupported) {
                 try {
                     batchBytes = await this._readBatchBytes(batch);
-                } catch {
+                } catch (error) {
+                    const incompatible =
+                        batch.length > 1 &&
+                        (error?.code === "OPENOCD_TCL_PROTOCOL_ERROR" ||
+                            /(?:invalid command name|unknown command)\s+["']?(?:join|list)(?:["'\s]|$)/i.test(
+                                String(error?.message || "")
+                            ));
+                    if (!incompatible) throw error;
                     this._batchUnsupported = true;
                 }
             }
+            this._assertReadGuard(guard);
             if (!batchBytes) {
                 batchBytes = [];
                 for (const g of batch) {
                     this._assertReadGuard(guard);
                     const bytes = await this._readMemoryBytes(g.start, g.byteCount);
+                    this._assertReadGuard(guard);
                     batchBytes.push(bytes);
                 }
             }
             for (let i = 0; i < batch.length; i++) {
-                const g = batch[i];
+                const unit = batch[i];
+                const g = unit.group;
                 const bytes = batchBytes[i];
-                if (bytes && bytes.length === g.byteCount) {
-                    for (const v of g.vars) {
-                        const off = v.address - g.start;
-                        samples.push({ name: v.name, bytes: bytes.slice(off, off + v.size), t });
-                        ok++;
-                    }
-                } else {
-                    for (const v of g.vars) samples.push({ name: v.name, bytes: null, t });
+                let result = assembled.get(g);
+                if (!result) {
+                    result = { bytes: new Array(g.byteCount), received: 0, failed: false };
+                    assembled.set(g, result);
                 }
+                if (!bytes || bytes.length !== unit.byteCount) result.failed = true;
+                else {
+                    for (let offset = 0; offset < bytes.length; offset++)
+                        result.bytes[unit.start - g.start + offset] = bytes[offset];
+                    result.received += bytes.length;
+                }
+            }
+        }
+        for (const [g, result] of assembled) {
+            const bytes = !result.failed && result.received === g.byteCount ? result.bytes : null;
+            if (!bytes) this._lastReadError = "batch memory read returned incomplete data";
+            for (const v of g.vars) {
+                const off = v.address - g.start;
+                samples.push({ name: v.name, bytes: bytes ? bytes.slice(off, off + v.size) : null, t });
+                if (bytes) ok++;
             }
         }
         if (ok && !this.stopped && !this._connectionConfirmed) {

@@ -16,6 +16,9 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     try {
         session.setWatch(plan);
         await session.start();
+        session.setPauseReason("archive_backpressure");
+        assert.strictEqual((await session.request("stats")).result.pauseReason, "archive_backpressure");
+        session.setPauseReason(null);
         await wait(250);
         assert.ok(ticks.length >= 2);
         const begin = Date.now();

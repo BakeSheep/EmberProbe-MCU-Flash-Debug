@@ -104,6 +104,10 @@ class SamplingSession {
             }
         );
     }
+    setPauseReason(reason) {
+        this._latestStats = { ...this.stats(), pauseReason: reason || null };
+        this.notify("setPauseReason", [reason]);
+    }
     setSamplingEnabled(enabled) {
         if (enabled && this.pollingFailed) return false;
         if (enabled && this.samplingEnabled) return true;

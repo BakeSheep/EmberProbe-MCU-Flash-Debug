@@ -52,6 +52,18 @@ async function wait(ms) {
         assert.strictEqual(batchedLarge.length, 2);
         assert.strictEqual(batchedLarge[0].length, 1);
         assert.strictEqual(batchedLarge[1].length, 1);
+
+        const oversized = compileReadBatches([
+            { name: "big", address: 0x20002000, size: 2048 },
+            { name: "small", address: 0x20003000, size: 4 }
+        ]);
+        assert.strictEqual(oversized.length, 3);
+        assert.deepStrictEqual(
+            oversized.map((batch) => batch.reduce((total, unit) => total + unit.byteCount, 0)),
+            [1024, 1024, 4]
+        );
+        assert.ok(oversized.every((batch) => batch.length <= MAX_BATCH_GROUPS));
+        assert.ok(oversized.every((batch) => batch.every((unit) => unit.byteCount <= MAX_BATCH_BYTES)));
     }
 
     // -------------------------------------------------------------
@@ -141,7 +153,7 @@ async function wait(ms) {
         ]);
 
         session.setSamplingEnabled(true);
-        await wait(150);
+        await wait(250);
 
         // Verify serial constraint
         assert.strictEqual(fake.maxInFlight, 1, "There must never be more than 1 read request in flight");
@@ -160,6 +172,31 @@ async function wait(ms) {
 
         await session.stop();
         await fake.stop();
+    }
+
+    // Large contiguous values span bounded transfers without duplicating or truncating samples.
+    {
+        const fake = new FakeOpenOcdServer();
+        await fake.start();
+        const expected = Array.from({ length: 2048 }, (_, index) => index & 0xff);
+        fake.seed(0x20002000, expected);
+        fake.seed(0x20003000, [7, 8, 9, 10]);
+        const session = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+        session.socket = await fake.connect();
+        session._setupSocket();
+        try {
+            const samples = await session.readOnce([
+                { name: "big", address: 0x20002000, size: 2048 },
+                { name: "small", address: 0x20003000, size: 4 }
+            ]);
+            assert.strictEqual(samples.length, 2);
+            assert.deepStrictEqual(samples[0].bytes, expected);
+            assert.deepStrictEqual(samples[1].bytes, [7, 8, 9, 10]);
+            assert.ok(fake.commands.every((command) => !/read_memory\s+0x20002000\s+32\s+512/.test(command)));
+        } finally {
+            await session.stop();
+            await fake.stop();
+        }
     }
 
     // -------------------------------------------------------------
@@ -188,6 +225,38 @@ async function wait(ms) {
 
         await session.stop();
         await fake.stop();
+    }
+
+    // A target read error is not evidence that Tcl batching is unsupported.
+    {
+        const fake = new FakeOpenOcdServer();
+        await fake.start();
+        fake.seed(0x20000000, [1, 2, 3, 4]);
+        fake.seed(0x20000020, [5, 6, 7, 8]);
+        fake.transientFailures = 1;
+        const session = new ManagedOpenOcdSession(null, {}, {});
+        session.socket = await fake.connect();
+        session._setupSocket();
+        const plan = [
+            { name: "a", address: 0x20000000, size: 4 },
+            { name: "b", address: 0x20000020, size: 4 }
+        ];
+        try {
+            await assert.rejects(session.readOnce(plan), /target memory read failed/);
+            assert.strictEqual(session._batchUnsupported, false);
+            const samples = await session.readOnce(plan);
+            assert.deepStrictEqual(
+                samples.map((sample) => sample.bytes),
+                [
+                    [1, 2, 3, 4],
+                    [5, 6, 7, 8]
+                ]
+            );
+            assert.strictEqual(fake.commands.filter((command) => command.includes("join [list")).length, 2);
+        } finally {
+            await session.stop();
+            await fake.stop();
+        }
     }
 
     // -------------------------------------------------------------

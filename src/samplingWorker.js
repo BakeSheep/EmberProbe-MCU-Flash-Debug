@@ -65,6 +65,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     "stop",
                     "setWatch",
                     "setIntervalMs",
+                    "setPauseReason",
                     "setSamplingEnabled",
                     "readOnce",
                     "writeOnce",
