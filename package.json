@@ -190,6 +190,28 @@
           "default": "auto",
           "description": "高级覆盖：OpenOCD 传输协议。J-Link auto 复用有效成功记录，已知 Cortex-M 默认 SWD，其他目标采用接口脚本默认协议；不自动切换重试。"
         },
+        "emberprobe.rtos": {
+          "type": "string",
+          "enum": [
+            "",
+            "auto",
+            "none",
+            "FreeRTOS",
+            "ThreadX",
+            "chibios",
+            "Chromium-EC",
+            "eCos",
+            "embKernel",
+            "linux",
+            "mqx",
+            "nuttx",
+            "RIOT",
+            "uCOS-III",
+            "Zephyr"
+          ],
+          "default": "",
+          "description": "高级覆盖：调试时让 OpenOCD 感知的 RTOS（名称区分大小写）。留空表示关闭（默认），调用栈保持单线程；填写后调用栈显示 RTOS 任务，栈帧、变量与单步都绑定到对应任务。仅作用于调试模式，在 target 配置加载后、init 之前写入当前 target，因此改动在下次启动调试时生效；launch.json 的 rtos 优先于此设置。"
+        },
         "emberprobe.gdbPath": {
           "type": "string",
           "default": "",
@@ -209,6 +231,17 @@
           "type": "string",
           "default": "",
           "description": "ARM objdump executable path."
+        },
+        "emberprobe.enablePrettyPrinting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable built-in libstdc++ STL display in paused variables, watches and hovers. No Python is required."
+        },
+        "emberprobe.prettyPrinterPath": {
+          "type": "string",
+          "default": "",
+          "description": "Deprecated and ignored: STL display is implemented inside EmberProbe.",
+          "deprecationMessage": "Python printers are no longer used. Remove this setting."
         }
       }
     },
@@ -246,6 +279,37 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "rtos": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "none",
+                  "FreeRTOS",
+                  "ThreadX",
+                  "chibios",
+                  "Chromium-EC",
+                  "eCos",
+                  "embKernel",
+                  "linux",
+                  "mqx",
+                  "nuttx",
+                  "RIOT",
+                  "uCOS-III",
+                  "Zephyr"
+                ],
+                "default": "",
+                "description": "RTOS for OpenOCD task awareness. Empty keeps the single-thread behavior; a session value overrides the emberprobe.rtos setting."
+              },
+              "enablePrettyPrinting": {
+                "type": "boolean",
+                "description": "Override emberprobe.enablePrettyPrinting for this session."
+              },
+              "prettyPrinterPath": {
+                "type": "string",
+                "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
+                "deprecationMessage": "Python printers are no longer used."
               }
             }
           },
@@ -271,6 +335,37 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "rtos": {
+                "type": "string",
+                "enum": [
+                  "",
+                  "auto",
+                  "none",
+                  "FreeRTOS",
+                  "ThreadX",
+                  "chibios",
+                  "Chromium-EC",
+                  "eCos",
+                  "embKernel",
+                  "linux",
+                  "mqx",
+                  "nuttx",
+                  "RIOT",
+                  "uCOS-III",
+                  "Zephyr"
+                ],
+                "default": "",
+                "description": "RTOS for OpenOCD task awareness. Empty keeps the single-thread behavior; a session value overrides the emberprobe.rtos setting."
+              },
+              "enablePrettyPrinting": {
+                "type": "boolean",
+                "description": "Override emberprobe.enablePrettyPrinting for this session."
+              },
+              "prettyPrinterPath": {
+                "type": "string",
+                "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
+                "deprecationMessage": "Python printers are no longer used."
               }
             }
           }

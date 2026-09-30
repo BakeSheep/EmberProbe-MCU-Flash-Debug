@@ -13,6 +13,60 @@ function normalizeTransport(value = "auto") {
     return value;
 }
 
+// Cortex-Debug 1.12.1 lists these OpenOCD names, plus "none" so a workspace can explicitly opt out
+// even when the target .cfg already sets -rtos. The bundled xPack OpenOCD 0.12.0-7 also compiles
+// hwthread and rtkernel; both are deliberately withheld because hwthread reports a single unnamed
+// thread and rtkernel is RTEMS-only, so either looks like a bug when picked by accident.
+// Names are case-sensitive: OpenOCD compares them with strcmp, so never lowercase the input.
+const OPENOCD_RTOS_NAMES = Object.freeze([
+    "auto",
+    "none",
+    "FreeRTOS",
+    "ThreadX",
+    "chibios",
+    "Chromium-EC",
+    "eCos",
+    "embKernel",
+    "linux",
+    "mqx",
+    "nuttx",
+    "RIOT",
+    "uCOS-III",
+    "Zephyr"
+]);
+
+function normalizeRtos(value = "") {
+    if (value === undefined || value === null) return "";
+    const name = typeof value === "string" ? value.trim() : String(value);
+    // An empty value turns RTOS awareness off, which is distinct from "none" (tell OpenOCD
+    // explicitly). Anything else must be an allow-listed name; non-strings never are.
+    if (name === "" && typeof value === "string") return "";
+    if (!OPENOCD_RTOS_NAMES.includes(name)) {
+        throw Object.assign(
+            new Error(`Unsupported OpenOCD RTOS: ${name}. Expected one of: ${OPENOCD_RTOS_NAMES.join(", ")}`),
+            { code: "OPENOCD_RTOS_INVALID" }
+        );
+    }
+    return name;
+}
+
+// OpenOCD needs -rtos on the *current* target after the target config is loaded and before init,
+// which is what Cortex-Debug's CDRTOSConfigure does. Unlike Cortex-Debug this raises a Tcl error
+// instead of logging to stderr, so OpenOCD exits non-zero and the caller's existing startup
+// cleanup reports the failure instead of silently degrading to a non-RTOS session.
+// The interpolated name is normalizeRtos's return value, so it can only be an allow-listed member
+// matching /^[A-Za-z0-9-]+$/ -- no Tcl metacharacter can reach the command string.
+function buildOpenOcdRtosArgs(rtos) {
+    const name = normalizeRtos(rtos);
+    if (!name) return [];
+    return [
+        "-c",
+        `set _ep_rtos_target ""; catch { set _ep_rtos_target [target current] }; ` +
+            `if { $_ep_rtos_target eq "" } { error "EmberProbe: no current target to configure for RTOS ${name}" }; ` +
+            `$_ep_rtos_target configure -rtos ${name}`
+    ];
+}
+
 function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
     normalizeTransport(transport);
     const serial = normalizeProbeSerial(connection.probeSerial);
@@ -207,7 +261,10 @@ function discoverInterfaceConfigs(executable) {
 
 module.exports = {
     normalizeTransport,
+    normalizeRtos,
+    OPENOCD_RTOS_NAMES,
     buildOpenOcdConfigArgs,
+    buildOpenOcdRtosArgs,
     isSafeCfgPath,
     resolveExecutablePath,
     scriptsRootCandidates,

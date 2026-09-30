@@ -17,6 +17,14 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
 
 (async () => {
     assert.strictEqual(common.resolveOpenOcdLaunch, launch.resolveOpenOcdLaunch);
+    // The setting enum and both launch attributes duplicate the allow-list; pin them to the
+    // exported constant so the three copies cannot drift apart.
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const attributes = manifest.contributes.debuggers[0].configurationAttributes;
+    const documented = ["", ...launch.OPENOCD_RTOS_NAMES];
+    assert.deepStrictEqual(manifest.contributes.configuration.properties["emberprobe.rtos"].enum, documented);
+    assert.deepStrictEqual(attributes.launch.properties.rtos.enum, documented);
+    assert.deepStrictEqual(attributes.attach.properties.rtos.enum, documented);
     assert.strictEqual(normalizeFileIdentity("c:\\Work\\File.elf", "win32"), "C:/Work/File.elf");
     assert.notStrictEqual(normalizeFileIdentity("/Work/F.elf", "linux"), normalizeFileIdentity("/Work/f.elf", "linux"));
     assert.notStrictEqual(
@@ -113,6 +121,41 @@ const { probeCandidates, probeFromText } = require("../skills/_emberprobe/probe-
         assert.throws(() => launch.buildOpenOcdConfigArgs(resolved, "swd; shutdown"), {
             code: "OPENOCD_TRANSPORT_INVALID"
         });
+        for (const rtos of [
+            "",
+            "auto",
+            "none",
+            "FreeRTOS",
+            "ThreadX",
+            "chibios",
+            "Chromium-EC",
+            "eCos",
+            "embKernel",
+            "linux",
+            "mqx",
+            "nuttx",
+            "RIOT",
+            "uCOS-III",
+            "Zephyr"
+        ])
+            assert.strictEqual(launch.normalizeRtos(rtos), rtos, `${rtos} is a supported OpenOCD RTOS name`);
+        assert.strictEqual(launch.normalizeRtos(" FreeRTOS "), "FreeRTOS");
+        assert.strictEqual(launch.normalizeRtos(undefined), "");
+        assert.strictEqual(launch.normalizeRtos(null), "");
+        for (const bad of ["freertos", "FreeRTOs", "Chibios", "mqx; shutdown", "hwthread", "rtkernel", 4, {}])
+            assert.throws(() => launch.normalizeRtos(bad), { code: "OPENOCD_RTOS_INVALID" });
+        assert.deepStrictEqual(launch.buildOpenOcdRtosArgs(""), [], "an empty RTOS emits no OpenOCD argument");
+        const rtosArgs = launch.buildOpenOcdRtosArgs("FreeRTOS");
+        assert(
+            rtosArgs[1].includes("$_ep_rtos_target configure -rtos FreeRTOS"),
+            "configure the resolved target command rather than the variable name"
+        );
+        assert.strictEqual(rtosArgs[0], "-c");
+        assert(rtosArgs[1].includes("[target current]"), "RTOS is configured on the current target only");
+        assert(rtosArgs[1].endsWith("configure -rtos FreeRTOS"));
+        assert(rtosArgs[1].includes('error "EmberProbe: no current target'), "a missing target must fail loudly");
+        assert.throws(() => launch.buildOpenOcdRtosArgs("FreeRTOs"), { code: "OPENOCD_RTOS_INVALID" });
+        assert(launch.buildOpenOcdRtosArgs("none")[1].includes("configure -rtos none"));
         assert.throws(() => launch.resolveOpenOcdLaunch(root, "jlink.cfg", "stm32f4x.cfg"), {
             code: "OPENOCD_NOT_FOUND"
         });

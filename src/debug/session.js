@@ -9,9 +9,19 @@ const {
     ContinuedEvent,
     TerminatedEvent,
     OutputEvent,
+    ThreadEvent,
     Event
 } = require("@vscode/debugadapter");
 const { MiClient, quote } = require("./mi");
+const { DebugVariables } = require("./variables");
+const { initializePrettyPrinting } = require("../services/prettyPrinting");
+
+// GDB reports a single thread as a bare tuple rather than a one-element list, so -thread-info can
+// yield either shape depending on the build and the number of tasks.
+function threadList(result) {
+    const threads = result?.threads;
+    return Array.isArray(threads) ? threads : threads ? [threads] : [];
+}
 
 // The MI command sequence follows Cortex-Debug's GDB/MI backend. This adapter
 // owns only GDB; the extension owns the OpenOCD server and probe lease.
@@ -23,18 +33,24 @@ class EmberDebugSession extends DebugSession {
         this.ready = false;
         this.ended = false;
         this.config = {};
+        this.silentVariableOutput = false;
         this.thread = 1;
+        this.threads = new Set();
+        this.rtosAware = false;
         this.handles = new Map();
         this.nextHandle = 1;
         this.variablesByName = new Map();
         this.varObjects = new Set();
+        this.variableStore = new DebugVariables(this);
         this.breakpoints = new Map();
         this.nextBreakpoint = 1;
         this.entryBreakpoint = null;
         this.queue = Promise.resolve();
         this.internalStop = null;
         this.stopWaiters = new Set();
-        this.mi.on("output", (text) => this.sendEvent(new OutputEvent(text, "console")));
+        this.mi.on("output", (text) => {
+            if (!this.silentVariableOutput) this.sendEvent(new OutputEvent(text, "console"));
+        });
         this.mi.on("record", (record) => this.onRecord(record));
         this.mi.on("closed", (error) => {
             for (const waiter of this.stopWaiters) waiter.reject(error);
@@ -80,6 +96,7 @@ class EmberDebugSession extends DebugSession {
     end() {
         if (this.ended) return;
         this.ended = true;
+        this.variableStore.reset();
         this.handles.clear();
         this.sendEvent(new TerminatedEvent());
     }
@@ -88,16 +105,20 @@ class EmberDebugSession extends DebugSession {
         await this.mi.stop();
     }
     onRecord(record) {
+        if (record.kind === "=") return this.onAsyncThreadRecord(record);
         if (record.kind !== "*") return;
         if (record.class === "running") {
             this.running = true;
+            this.selectedFrame = undefined;
+            this.variableStore.reset();
             this.handles.clear();
             this.variablesByName.clear();
-            if (this.ready) this.sendEvent(new ContinuedEvent(this.thread, true));
+            if (this.ready) this.sendEvent(new ContinuedEvent(this.stopThreadId(), true));
         }
         if (record.class !== "stopped") return;
         this.running = false;
-        this.thread = Number(record.data["thread-id"]) || this.thread;
+        const stopped = this.confirmThread(record.data["thread-id"]);
+        if (stopped) this.thread = stopped;
         const reason = record.data.reason || "pause";
         if (record.data.bkptno === this.entryBreakpoint) this.entryBreakpoint = null;
         if (reason.startsWith("exited")) {
@@ -115,14 +136,81 @@ class EmberDebugSession extends DebugSession {
                     : ["end-stepping-range", "function-finished"].includes(reason)
                       ? "step"
                       : "pause";
-            const event = new StoppedEvent(dapReason, this.thread);
+            const event = new StoppedEvent(dapReason, this.stopThreadId());
             Object.assign(event.body, { allThreadsStopped: true });
             this.sendEvent(event);
         }
     }
+    // GDB reports RTOS task lifecycle here. =thread-selected is deliberately ignored: it changes
+    // when the user browses another task in the call stack, which is not a stop notification.
+    onAsyncThreadRecord(record) {
+        if (!this.rtosAware) return;
+        const id = Number(record.data.id);
+        if (!Number.isInteger(id) || id < 1) return;
+        if (record.class === "thread-created") {
+            if (this.threads.has(id)) return;
+            this.threads.add(id);
+            if (this.ready) this.sendEvent(new ThreadEvent("started", id));
+        } else if (record.class === "thread-exited") this.forgetThread(id);
+    }
+    confirmThread(id) {
+        const thread = Number(id);
+        if (!Number.isInteger(thread) || thread < 1) return null;
+        this.threads.add(thread);
+        return thread;
+    }
+    forgetThread(id) {
+        if (!this.threads.delete(id)) return;
+        this.variableStore.invalidateThread(id);
+        if (this.selectedFrame?.thread === id) this.selectedFrame = undefined;
+        // Dropping the stopped task is what stops a later command from reusing the task GDB last
+        // selected while the user was browsing stacks.
+        if (this.thread === id) this.thread = null;
+        if (this.ready) this.sendEvent(new ThreadEvent("exited", id));
+    }
+    // GDB is the only source of truth, so every list query reconciles the confirmed set.
+    recalibrate(ids) {
+        const seen = new Set();
+        for (const id of ids) {
+            const confirmed = this.confirmThread(id);
+            if (confirmed) seen.add(confirmed);
+        }
+        for (const id of [...this.threads]) if (!seen.has(id)) this.forgetThread(id);
+        return seen;
+    }
+    async syncThreads() {
+        return this.recalibrate(threadList(await this.mi.command("-thread-info")).map((thread) => thread.id));
+    }
+    async seedThreads() {
+        const result = await this.mi.command("-thread-info");
+        const ids = this.recalibrate(threadList(result).map((thread) => thread.id));
+        const current = Number(result["current-thread-id"]);
+        this.thread = ids.has(current) ? current : ([...ids].sort((left, right) => left - right)[0] ?? null);
+    }
+    // A stopped event may name no thread, but it must never name one GDB has not confirmed.
+    stopThreadId() {
+        return this.threads.has(this.thread) ? this.thread : undefined;
+    }
+    // Returns the task to pin, or null to keep the unpinned command form used without an RTOS.
+    async ensureThread(requested) {
+        if (!this.rtosAware) return null;
+        const thread = Number(requested);
+        if (!Number.isInteger(thread) || thread < 1)
+            throw Object.assign(new Error(`A positive integer thread ID is required, got: ${requested}`), {
+                code: "DEBUG_THREAD_INVALID"
+            });
+        // The task may have been created after the client last refreshed its list.
+        if (!this.threads.has(thread)) await this.syncThreads();
+        if (!this.threads.has(thread))
+            throw Object.assign(new Error(`RTOS task ${thread} no longer exists; refresh the call stack and retry`), {
+                code: "DEBUG_TASK_EXITED"
+            });
+        return thread;
+    }
     handleFor(value) {
         const id = this.nextHandle++;
         this.handles.set(id, value);
+        value.ref ||= id;
         return id;
     }
     paused() {
@@ -154,9 +242,11 @@ class EmberDebugSession extends DebugSession {
         const frame = this.reference(id, "frame");
         await this.mi.command(`-thread-select ${frame.thread}`);
         await this.mi.command(`-stack-select-frame ${frame.level}`);
+        this.selectedFrame = frame;
         return frame;
     }
     async clearVariables() {
+        this.variableStore.reset();
         for (const name of this.varObjects) {
             try {
                 await this.mi.command(`-var-delete ${quote(name)}`);
@@ -184,11 +274,12 @@ class EmberDebugSession extends DebugSession {
                 this.entryBreakpoint = result.bkpt.number;
             } catch (error) {
                 this.sendEvent(new OutputEvent(`Cannot stop at ${entry}: ${error.message}\n`, "stderr"));
-                this.sendEvent(new StoppedEvent("entry", this.thread));
+                this.sendEvent(new StoppedEvent("entry", this.stopThreadId()));
                 return;
             }
+            // Deliberately unpinned: run-to-entry must resume the whole system, not one task.
             await this.execute("-exec-continue");
-        } else this.sendEvent(new StoppedEvent("entry", this.thread));
+        } else this.sendEvent(new StoppedEvent("entry", this.stopThreadId()));
     }
     async launch(args, attach) {
         if (this.ready || this.ended) throw new Error("Debug session has already started or ended");
@@ -197,9 +288,12 @@ class EmberDebugSession extends DebugSession {
         if (!args.gdbPath || !/^127\.0\.0\.1:\d+$/.test(args.gdbTarget || ""))
             throw new Error("Missing managed GDB connection");
         this.config = { ...args, runToEntryPoint: args.runToEntryPoint ?? "main", attach };
+        const rtos = typeof args.rtos === "string" ? args.rtos.trim() : "";
+        this.rtosAware = rtos !== "" && rtos !== "none";
         this.mi.start(args.gdbPath, args.cwd || path.dirname(args.executable));
         await this.mi.command("-gdb-set mi-async on");
         await this.mi.command("-gdb-set pagination off");
+        await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
         await this.mi.command(`-file-exec-and-symbols ${quote(args.executable.replace(/\\/g, "/"))}`);
         await this.mi.command(`-target-select extended-remote ${args.gdbTarget}`);
         if (attach) {
@@ -210,6 +304,10 @@ class EmberDebugSession extends DebugSession {
             // Reload the reset vector after downloading a different firmware.
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
         }
+        // Only report task ids GDB has actually confirmed. Without an RTOS that is just thread 1,
+        // which keeps the single-thread command stream byte-identical to a non-RTOS session.
+        if (this.rtosAware) await this.seedThreads();
+        else this.threads.add(1);
         this.running = false;
         this.ready = true;
         return {};
@@ -314,19 +412,21 @@ class EmberDebugSession extends DebugSession {
     remoteSource(file) {
         return this.mapSource(file, true);
     }
-    variable(item, displayName) {
-        const name = item.name;
-        const ref = Number(item.numchild) > 0 ? this.handleFor({ kind: "variable", name }) : 0;
-        return {
-            name: displayName || item.exp || name,
-            value: item.value ?? "",
-            type: item.type,
-            variablesReference: ref
-        };
+    variableDiagnostic(message) {
+        this.sendEvent(new OutputEvent(message, "console"));
     }
-    async createVariable(expression) {
-        const item = await this.mi.command(`-var-create - * ${quote(expression)}`);
+    variable(item, displayName) {
+        return this.variableStore.present(this.variableStore.register(item), displayName);
+    }
+    async createVariable(expression, frame) {
+        // Pin the varobj to its task and frame so a later -var-list-children / -var-assign cannot
+        // follow GDB's selected thread once the user browses a different task in the call stack.
+        const context = this.rtosAware && frame ? `--thread ${frame.thread} --frame ${frame.level} ` : "";
+        const generation = this.variableStore.generation;
+        const item = await this.mi.command(`-var-create ${context}- * ${quote(expression)}`);
         this.varObjects.add(item.name);
+        this.variableStore.check(generation);
+        this.variableStore.root(item, frame || this.selectedFrame || { thread: this.thread, level: 0 });
         return item;
     }
     async handle(command, args) {
@@ -337,6 +437,7 @@ class EmberDebugSession extends DebugSession {
                     supportsFunctionBreakpoints: true,
                     supportsConditionalBreakpoints: true,
                     supportsSetVariable: true,
+                    supportsDelayedStackTraceLoading: true,
                     supportsReadMemoryRequest: true,
                     supportsWriteMemoryRequest: true,
                     supportsRestartRequest: true,
@@ -347,7 +448,7 @@ class EmberDebugSession extends DebugSession {
             case "attach":
                 return this.launch(args, true);
             case "configurationDone":
-                if (this.config.attach) this.sendEvent(new StoppedEvent("pause", this.thread));
+                if (this.config.attach) this.sendEvent(new StoppedEvent("pause", this.stopThreadId()));
                 else await this.enter();
                 return {};
             case "setExceptionBreakpoints":
@@ -358,8 +459,12 @@ class EmberDebugSession extends DebugSession {
                 return this.setBreakpoints(args, true);
             case "threads": {
                 const result = await this.mi.command("-thread-info");
+                const threads = threadList(result);
+                // The client re-reads the list after every stop, so this is also the point where a
+                // task that vanished without a =thread-exited record gets pruned.
+                if (this.rtosAware) this.recalibrate(threads.map((t) => t.id));
                 return {
-                    threads: (result.threads || []).map((t) => ({
+                    threads: threads.map((t) => ({
                         id: Number(t.id),
                         name: t.name || t["target-id"] || `Thread ${t.id}`
                     }))
@@ -369,27 +474,37 @@ class EmberDebugSession extends DebugSession {
                 this.paused();
                 const thread = Number(args.threadId);
                 if (!Number.isInteger(thread) || thread < 1) throw new Error("Invalid thread");
+                const start = args.startFrame ?? 0;
+                const levels = args.levels || 20;
+                if (
+                    !Number.isSafeInteger(start) ||
+                    start < 0 ||
+                    !Number.isSafeInteger(levels) ||
+                    levels < 1 ||
+                    levels > 1000 ||
+                    start + levels > 0x7fffffff
+                )
+                    throw new Error("Stack paging requires a nonnegative start and levels <= 1000");
+                await this.ensureThread(thread);
                 await this.mi.command(`-thread-select ${thread}`);
-                const result = await this.mi.command("-stack-list-frames");
+                const result = await this.mi.command(`-stack-list-frames ${start} ${start + levels - 1}`);
                 const frames = (result.stack || []).map((entry) => entry.frame || entry);
                 return {
-                    totalFrames: frames.length,
-                    stackFrames: frames
-                        .slice(args.startFrame || 0, args.levels ? (args.startFrame || 0) + args.levels : undefined)
-                        .map((f) => ({
-                            id: this.handleFor({ kind: "frame", thread, level: Number(f.level) }),
-                            name: f.func || f.addr,
-                            line: Number(f.line) || 0,
-                            column: 0,
-                            instructionPointerReference: f.addr,
-                            source:
-                                f.fullname || f.file
-                                    ? {
-                                          name: path.basename(f.fullname || f.file),
-                                          path: this.mapSource(f.fullname || f.file)
-                                      }
-                                    : undefined
-                        }))
+                    ...(frames.length < levels ? { totalFrames: start + frames.length } : {}),
+                    stackFrames: frames.map((f) => ({
+                        id: this.handleFor({ kind: "frame", thread, level: Number(f.level) }),
+                        name: f.func || f.addr,
+                        line: Number(f.line) || 0,
+                        column: 0,
+                        instructionPointerReference: f.addr,
+                        source:
+                            f.fullname || f.file
+                                ? {
+                                      name: path.basename(f.fullname || f.file),
+                                      path: this.mapSource(f.fullname || f.file)
+                                  }
+                                : undefined
+                    }))
                 };
             }
             case "scopes":
@@ -403,53 +518,25 @@ class EmberDebugSession extends DebugSession {
                         }
                     ]
                 };
-            case "variables": {
-                const handle = this.reference(args.variablesReference, null);
-                let items;
-                if (handle.kind === "scope") {
-                    await this.selectFrame(handle.frameId);
-                    const result = await this.mi.command("-stack-list-variables --simple-values");
-                    items = [];
-                    for (const local of result.variables || []) {
-                        try {
-                            items.push({ ...(await this.createVariable(local.name)), exp: local.name });
-                        } catch {
-                            items.push({
-                                ...local,
-                                exp: local.name,
-                                value: local.value || "<unavailable>",
-                                numchild: "0",
-                                name: ""
-                            });
-                        }
-                    }
-                } else if (handle.kind === "variable") {
-                    const result = await this.mi.command(`-var-list-children --all-values ${quote(handle.name)}`);
-                    items = (result.children || []).map((c) => c.child || c);
-                } else throw new Error("Invalid variable reference");
-                const names = new Map();
-                const variables = items.map((item) => {
-                    names.set(item.exp || item.name, item.name);
-                    return this.variable(item);
-                });
-                this.variablesByName.set(args.variablesReference, names);
-                return { variables };
-            }
+            case "variables":
+                return this.variableStore.variables(args);
             case "evaluate": {
                 this.paused();
-                if (args.frameId) await this.selectFrame(args.frameId);
-                const item = await this.createVariable(args.expression);
+                // Without a frame this is a session-level watch, which intentionally evaluates
+                // against the task the user last selected in the call stack.
+                const frame = args.frameId ? await this.selectFrame(args.frameId) : this.selectedFrame;
+                if (frame && !args.frameId) {
+                    await this.mi.command(`-thread-select ${frame.thread}`);
+                    await this.mi.command(`-stack-select-frame ${frame.level}`);
+                }
+                const item = await this.createVariable(args.expression, frame);
+                await this.variableStore.stl.prepare(this.variableStore.nodes.get(item.name));
                 const variable = this.variable(item);
-                return { result: variable.value, type: variable.type, variablesReference: variable.variablesReference };
+                const { name: _name, value, ...metadata } = variable;
+                return { result: value, ...metadata };
             }
-            case "setVariable": {
-                this.reference(args.variablesReference, null);
-                const name = this.variablesByName.get(args.variablesReference)?.get(args.name);
-                if (!name) throw new Error("Variable is unavailable or has not been expanded");
-                const item = await this.mi.command(`-var-assign ${quote(name)} ${quote(args.value)}`);
-                await this.mi.command("-var-update --all-values *");
-                return { value: item.value, variablesReference: 0 };
-            }
+            case "setVariable":
+                return this.variableStore.setVariable(args);
             case "readMemory":
             case "writeMemory":
                 return this.memory(command, args);
@@ -461,15 +548,20 @@ class EmberDebugSession extends DebugSession {
             case "stepIn":
             case "stepOut": {
                 this.paused();
+                // --thread is atomic, unlike -thread-select followed by the command, which would act
+                // on whatever task the user last browsed. Never combine it with --all.
+                const thread = await this.ensureThread(args.threadId);
                 await this.clearVariables();
                 const operation = { continue: "continue", next: "next", stepIn: "step", stepOut: "finish" }[command];
-                await this.execute(`-exec-${operation}`);
+                await this.execute(`-exec-${operation}${thread === null ? "" : ` --thread ${thread}`}`);
                 return command === "continue" ? { allThreadsContinued: true } : {};
             }
             case "restart":
                 await this.interrupt();
                 await this.clearVariables();
                 await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+                // A reset destroys every TCB, so the confirmed task list has to be rebuilt.
+                if (this.rtosAware) await this.seedThreads();
                 await this.enter();
                 return {};
             case "disconnect":
@@ -512,7 +604,10 @@ class EmberDebugSession extends DebugSession {
         const bytes = Buffer.from(args.data, "base64");
         if (bytes.length > 65536 || address + BigInt(bytes.length) > 0x100000000n)
             throw new Error("Memory write limit exceeded");
-        if (bytes.length) await this.mi.command(`-data-write-memory-bytes ${location} ${bytes.toString("hex")}`);
+        if (bytes.length) {
+            await this.mi.command(`-data-write-memory-bytes ${location} ${bytes.toString("hex")}`);
+            await this.clearVariables();
+        }
         return { bytesWritten: bytes.length, offset: 0 };
     }
 }

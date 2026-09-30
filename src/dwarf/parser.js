@@ -201,9 +201,11 @@ function _parseDwarfInternal(buffer) {
                                 if (typeof v === "number") rec.encoding = v;
                                 break;
                             case DW_AT_location:
-                                if (v && v.block && v.block.length >= 1)
+                                if (v && v.block && v.block.length >= 1) {
                                     rec.hasAddr = v.block[0] === 0x03 || v.block[0] === 0xa1;
-                                else if (typeof v === "number") rec.hasAddr = v === 0x03 || v === 0xa1;
+                                    if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5)
+                                        rec.address = v.block.readUInt32LE(1);
+                                } else if (typeof v === "number") rec.hasAddr = v === 0x03 || v === 0xa1;
                                 break;
                             case DW_AT_declaration:
                                 rec.isDecl = !!v;
@@ -212,22 +214,33 @@ function _parseDwarfInternal(buffer) {
                                 if (typeof v === "number") strOffsetsBase = v;
                                 break;
                             case DW_AT_data_member_location:
-                                if (typeof v === "number") rec.memberOffset = v;
-                                else if (v && v.block && v.block.length > 0) {
-                                    // DW_OP_plus_uconst (0x23) 后跟 ULEB 常量；或纯 ULEB 常量
-                                    let bp = 0;
-                                    if (v.block[bp] === 0x23) bp++;
-                                    if (bp < v.block.length) {
-                                        let val = 0,
-                                            sh = 0,
-                                            b2;
-                                        do {
-                                            b2 = v.block[bp++];
-                                            val += (b2 & 0x7f) * Math.pow(2, sh);
-                                            sh += 7;
-                                        } while (b2 & 0x80);
+                                if (typeof v === "number") {
+                                    rec.memberOffset = v;
+                                } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
+                                    // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
+                                    // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
+                                    let bp = 1;
+                                    let val = 0,
+                                        sh = 0,
+                                        b2;
+                                    do {
+                                        if (bp >= v.block.length) break;
+                                        b2 = v.block[bp++];
+                                        val += (b2 & 0x7f) * Math.pow(2, sh);
+                                        sh += 7;
+                                    } while (b2 & 0x80);
+                                    if (
+                                        bp === v.block.length &&
+                                        !(b2 & 0x80) &&
+                                        Number.isSafeInteger(val) &&
+                                        sh <= 56
+                                    ) {
                                         rec.memberOffset = val;
                                     }
+                                }
+                                if (!Number.isSafeInteger(rec.memberOffset) || rec.memberOffset < 0) {
+                                    delete rec.memberOffset;
+                                    rec.memberLocationUnsupported = true;
                                 }
                                 break;
                             case DW_AT_bit_size:

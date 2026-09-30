@@ -1,6 +1,6 @@
 "use strict";
 const fs = require("fs");
-const { normalizeTransport } = require("../openocdScripts");
+const { normalizeTransport, normalizeRtos } = require("../openocdScripts");
 const { configuredFrequencyHz, frequencyHzFromInterval, intervalMsFromHz } = require("../samplingFrequency");
 const path = require("path");
 const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
@@ -14,6 +14,7 @@ const ALLOWED_KEYS = new Set([
     "cubemxPath",
     "openocdPath",
     "transport",
+    "rtos",
     "probeSerial",
     "adapterSpeedKhz",
     "sampleIntervalMs",
@@ -63,6 +64,7 @@ class ConfigurationStore {
             mcu: this.context.workspaceState.get(this.cacheKeys.mcuCore) || "",
             svd: this.context.workspaceState.get(this.cacheKeys.svdPath) || "",
             transport: cfg.get("transport", "auto"),
+            rtos: cfg.get("rtos", ""),
             probeSerial: cfg.get("probeSerial", ""),
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
@@ -145,6 +147,8 @@ class ConfigurationStore {
                 addState(key, value);
             } else if (key === "transport") {
                 addSetting(key, normalizeTransport(value));
+            } else if (key === "rtos") {
+                addSetting(key, normalizeRtos(value));
             } else if (key === "probeSerial") {
                 addSetting(key, normalizeProbeSerial(value));
             } else if (key === "adapterSpeedKhz") {

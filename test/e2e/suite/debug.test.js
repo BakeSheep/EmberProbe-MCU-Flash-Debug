@@ -109,10 +109,38 @@ async function run() {
             frameId: stack.stackFrames[0].id
         });
         assert.strictEqual(result.result, "3");
+        const vector = await session.customRequest("evaluate", {
+            expression: "numbers",
+            frameId: stack.stackFrames[0].id
+        });
+        assert.match(vector.result, /vector length 205/);
+        assert.strictEqual(vector.indexedVariables, 205);
+        assert(vector.variablesReference > 0);
+        const first = await session.customRequest("variables", { variablesReference: vector.variablesReference });
+        assert.strictEqual(first.variables.length, 101);
+        const nextPage = first.variables.at(-1).variablesReference;
+        const second = await session.customRequest("variables", { variablesReference: nextPage });
+        assert.strictEqual(second.variables[0].name, "[100]");
+        const assigned = await session.customRequest("setVariable", {
+            variablesReference: nextPage,
+            name: "[100]",
+            value: "77"
+        });
+        assert.strictEqual(assigned.value, "77");
+        const refreshed = await session.customRequest("variables", {
+            variablesReference: vector.variablesReference,
+            start: 100,
+            count: 1
+        });
+        assert.strictEqual(refreshed.variables[0].value, "77");
+        const beforeContinue = stopped;
+        await session.customRequest("continue", { threadId: 1 });
+        await wait(() => stopped > beforeContinue);
+        await assert.rejects(session.customRequest("variables", { variablesReference: nextPage }));
         await vscode.debug.stopDebugging(session);
         await wait(() => !session && serverStops === 1);
         assert(!provider._managedDebugServer);
-        console.log("✓ independent EmberProbe F5 session over real DAP and simulated GDB, without Cortex-Debug");
+        console.log("✓ independent EmberProbe F5 over real DAP: dynamic C++ paging, writes and stale handles");
     } finally {
         if (session) await vscode.debug.stopDebugging(session);
         for (const disposable of disposables) disposable.dispose();

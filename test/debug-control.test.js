@@ -293,6 +293,121 @@ class FunctionBreakpoint {
         await assert.rejects(() => rejectedBridge.control("pause", 7), /adapter rejected request/);
         assert.strictEqual(rejectedBridge.stateWaiters.size, 0, "a rejected DAP request must cancel its state waiter");
         rejectedBridge.dispose();
+
+        const rtosBridge = new DebugSessionBridge({ onStatus() {}, controlTimeoutMs: 1000 });
+        const isRtos = (configuration) => rtosBridge.isRtosSession({ configuration });
+        assert.strictEqual(isRtos({ rtos: "FreeRTOS" }), true);
+        assert.strictEqual(isRtos({ rtos: " FreeRTOS " }), true);
+        assert.strictEqual(isRtos({ rtos: "none" }), false);
+        assert.strictEqual(isRtos({ rtos: "NONE" }), false);
+        assert.strictEqual(isRtos({ rtos: "" }), false);
+        assert.strictEqual(isRtos({}), false);
+        assert.strictEqual(rtosBridge.isRtosSession(null), false);
+        let tasks = [
+            { id: 7, name: "IDLE" },
+            { id: 9, name: "blink" }
+        ];
+        let threadQueries = 0;
+        const pinned = [];
+        const rtosSession = {
+            ...session,
+            id: "rtos",
+            configuration: { name: "RTOS", rtos: "FreeRTOS" },
+            async customRequest(command, args) {
+                if (command === "threads") {
+                    threadQueries++;
+                    return { threads: tasks };
+                }
+                if (command === "next") {
+                    pinned.push(args.threadId);
+                    rtosBridge.handleMessage(rtosSession, {
+                        type: "event",
+                        event: "stopped",
+                        body: { reason: "step", threadId: args.threadId }
+                    });
+                    return {};
+                }
+                throw new Error(`unexpected request ${command}`);
+            }
+        };
+        rtosBridge.setWorkspace(rtosSession.workspaceFolder);
+        rtosBridge.attach(rtosSession);
+        rtosBridge.handleMessage(rtosSession, {
+            type: "event",
+            event: "stopped",
+            body: { reason: "breakpoint", threadId: 7 }
+        });
+        assert.strictEqual(rtosBridge.threadId, 7);
+        // Task 7 is deleted while the target is stopped on it.
+        tasks = [{ id: 9, name: "blink" }];
+        const reconciled = await rtosBridge.control("stepOver");
+        assert.strictEqual(reconciled.threadId, 9, "the cached task id is reconciled against the live list");
+        assert.deepStrictEqual(pinned, [9], "the adapter is told which task to step");
+        assert.strictEqual(rtosBridge.threadId, 9);
+        assert.strictEqual(threadQueries, 1, "reconciliation costs exactly one threads request");
+        rtosBridge.handleMessage(rtosSession, {
+            type: "event",
+            event: "thread",
+            body: { reason: "exited", threadId: 9 }
+        });
+        assert.strictEqual(rtosBridge.threadId, null, "a task-exit event clears the cached id");
+        tasks = [];
+        await assert.rejects(
+            () => rtosBridge.control("stepOver"),
+            (error) => error.code === "DEBUG_THREAD_NOT_FOUND"
+        );
+        // The stopped task wins over a lower live id.
+        tasks = [
+            { id: 3, name: "low" },
+            { id: 9, name: "blink" }
+        ];
+        rtosBridge.handleMessage(rtosSession, {
+            type: "event",
+            event: "stopped",
+            body: { reason: "breakpoint", threadId: 9 }
+        });
+        const pinnedBeforeRejected = pinned.length;
+        await assert.rejects(
+            () => rtosBridge.control("stepOver", 7),
+            (error) => error.code === "DEBUG_TASK_EXITED"
+        );
+        assert.strictEqual(pinned.length, pinnedBeforeRejected, "an explicit exited task must not step another task");
+        const before = threadQueries;
+        assert.strictEqual((await rtosBridge.control("stepOver")).threadId, 9);
+        assert.strictEqual(threadQueries, before + 1, "a paused RTOS session reconciles before every control action");
+        rtosBridge.dispose();
+
+        const plainBridge = new DebugSessionBridge({ onStatus() {}, controlTimeoutMs: 1000 });
+        let plainQueries = 0;
+        const plainSession = {
+            ...session,
+            id: "plain",
+            async customRequest(command, args) {
+                if (command === "threads") {
+                    plainQueries++;
+                    return { threads: [{ id: 7, name: "main" }] };
+                }
+                if (command === "next") {
+                    plainBridge.handleMessage(plainSession, {
+                        type: "event",
+                        event: "stopped",
+                        body: { reason: "step", threadId: args.threadId }
+                    });
+                    return {};
+                }
+                throw new Error(`unexpected request ${command}`);
+            }
+        };
+        plainBridge.setWorkspace(plainSession.workspaceFolder);
+        plainBridge.attach(plainSession);
+        plainBridge.handleMessage(plainSession, {
+            type: "event",
+            event: "stopped",
+            body: { reason: "breakpoint", threadId: 7 }
+        });
+        assert.strictEqual((await plainBridge.control("stepOver")).threadId, 7);
+        assert.strictEqual(plainQueries, 0, "a non-RTOS session keeps the zero-round-trip path");
+        plainBridge.dispose();
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

@@ -21,7 +21,7 @@ function fixture(depth, width, variableCount = 1) {
         for (let i = 0; i < width; i++) {
             const id = depth + 1 + d * width + i;
             children.push(id);
-            dies.set(id, { tag: c.DW_TAG_member, name: `m${i}`, typeRef: d + 1 });
+            dies.set(id, { tag: c.DW_TAG_member, name: `m${i}`, typeRef: d + 1, memberOffset: 0 });
         }
         childrenMap.set(d, children);
     }

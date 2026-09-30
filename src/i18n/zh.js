@@ -360,6 +360,7 @@ module.exports = Object.freeze({
     "lw.error": "发生错误",
     "lw.compositeUnsupported": "结构体与数组暂不支持整体采样",
     "lw.compositeNoLayout": "缺少 DWARF 布局信息，无法展开成员",
+    "lw.unknownType": "未知类型",
     "lw.cppUnknownType": "C++ 符号缺少 DWARF 类型信息，不按大小猜测标量类型",
     "lw.cppSymbolAmbiguous": "C++ 符号在 DWARF 中无法唯一匹配，已停用类型绑定",
     "lw.virtualBaseUnobservable": "虚基类成员需运行期求址，当前不可观测",

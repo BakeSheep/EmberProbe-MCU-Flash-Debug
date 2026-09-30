@@ -15,6 +15,10 @@ const {
     DW_TAG_subrange_type,
     DW_TAG_class_type,
     DW_TAG_inheritance,
+    DW_TAG_reference_type,
+    DW_TAG_rvalue_reference_type,
+    DW_TAG_ptr_to_member_type,
+    DW_TAG_subroutine_type,
     DW_AT_name,
     DW_AT_byte_size,
     DW_AT_abstract_origin,
@@ -35,8 +39,39 @@ const {
     DW_ATE_signed,
     DW_ATE_signed_char,
     DW_ATE_unsigned,
-    DW_ATE_unsigned_char
+    DW_ATE_unsigned_char,
+    DW_ATE_UTF
 } = require("./constants");
+function typeFlags(info) {
+    return Object.fromEntries(
+        ["isBoolean", "isConst", "isReference", "isMemberPointer"]
+            .filter((key) => info?.[key])
+            .map((key) => [key, true])
+    );
+}
+function bindVariableSymbols(parsed, symbols) {
+    const byAddress = new Map();
+    for (const symbol of symbols) {
+        const previous = byAddress.get(symbol.address);
+        byAddress.set(symbol.address, previous === undefined ? symbol : null);
+    }
+    return {
+        ...parsed,
+        variables: parsed.variables.map((variable) => {
+            if (variable.linkageName || variable.address === undefined) return variable;
+            const symbol = byAddress.get(variable.address);
+            // Internal-linkage C++ globals and C function statics (e.g. Idle_Stack.2)
+            // can have different ELF names and no DW_AT_linkage_name. Bind only an
+            // exact, unique static address; never strip suffixes or guess by name.
+            const numberedStatic =
+                symbol?.name.startsWith(variable.name + ".") &&
+                /^\d+$/.test(symbol.name.slice(variable.name.length + 1));
+            return symbol && (/^_Z/.test(symbol.name) || numberedStatic)
+                ? { ...variable, linkageName: symbol.name }
+                : variable;
+        })
+    };
+}
 function encodingToWatchType(encoding, size) {
     if (encoding === DW_ATE_float) return size === 4 ? "f32" : size === 8 ? "f64" : "";
     if (encoding === DW_ATE_signed || encoding === DW_ATE_signed_char) {
@@ -46,7 +81,12 @@ function encodingToWatchType(encoding, size) {
         if (size === 8) return "i64";
         return "";
     }
-    if (encoding === DW_ATE_unsigned || encoding === DW_ATE_unsigned_char || encoding === DW_ATE_boolean) {
+    if (
+        encoding === DW_ATE_unsigned ||
+        encoding === DW_ATE_unsigned_char ||
+        encoding === DW_ATE_boolean ||
+        encoding === DW_ATE_UTF
+    ) {
         if (size === 1) return "u8";
         if (size === 2) return "u16";
         if (size === 4) return "u32";
@@ -95,11 +135,21 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 typeName: nm || inner.typeName,
                 watchType: inner.watchType,
                 byteSize: d.byteSize || inner.byteSize,
-                isBoolean: inner.isBoolean
+                ...typeFlags(inner)
             };
             break;
         }
-        case DW_TAG_const_type:
+        case DW_TAG_const_type: {
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : placeholder;
+            result = {
+                ...inner,
+                isConst: true
+            };
+            break;
+        }
         case DW_TAG_volatile_type:
         case DW_TAG_restrict_type:
             result =
@@ -115,6 +165,54 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
             result = { kind: "scalar", typeName: (inner.typeName || "void") + " *", watchType: "u32", byteSize: 4 };
             break;
         }
+        case DW_TAG_reference_type: {
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : { typeName: "void" };
+            result = {
+                kind: "scalar",
+                typeName: (inner.typeName || "void") + " &",
+                watchType: "u32",
+                byteSize: d.byteSize || 4,
+                isReference: true
+            };
+            break;
+        }
+        case DW_TAG_rvalue_reference_type: {
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : { typeName: "void" };
+            result = {
+                kind: "scalar",
+                typeName: (inner.typeName || "void") + " &&",
+                watchType: "u32",
+                byteSize: d.byteSize || 4,
+                isReference: true
+            };
+            break;
+        }
+        case DW_TAG_ptr_to_member_type: {
+            const inner =
+                d.typeRef !== undefined
+                    ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1)
+                    : { typeName: "void" };
+            // ARM GCC omits DW_AT_byte_size here. A member function pointer is
+            // two words (function/virtual slot plus this adjustment), not a data pointer.
+            const byteSize = d.byteSize || (inner.kind === "function" ? 8 : 4);
+            result = {
+                kind: "scalar",
+                typeName: (inner.typeName || "function") + " member pointer",
+                watchType: encodingToWatchType(DW_ATE_unsigned, byteSize),
+                byteSize,
+                isMemberPointer: true
+            };
+            break;
+        }
+        case DW_TAG_subroutine_type:
+            result = { kind: "function", typeName: "function", watchType: "", byteSize: 0 };
+            break;
         case DW_TAG_enumeration_type: {
             const underlying =
                 d.typeRef !== undefined ? _resolveTypeInfo(d.typeRef, dies, childrenMap, cache, depth + 1) : null;
@@ -171,7 +269,8 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 kind: "array",
                 typeName: (inner.typeName || "") + "[]".repeat(Math.max(1, dimensions.length)),
                 watchType: "",
-                byteSize: d.byteSize || (dimensions.length ? dimsProduct * (inner.byteSize || 0) : 0)
+                byteSize: d.byteSize || (dimensions.length ? dimsProduct * (inner.byteSize || 0) : 0),
+                ...(inner.isConst ? { isConst: true } : {})
             };
             break;
         }
@@ -194,14 +293,17 @@ function buildVariableTypes(parsed) {
             kind: (t && t.kind) || "unknown",
             typeName: (t && t.typeName) || "",
             watchType: (t && t.watchType) || "",
-            ...(t?.isBoolean ? { isBoolean: true } : {})
+            ...typeFlags(t)
         };
         const prev = result.get(key);
         if (prev) {
             // 同一键命中多个类型不一致的候选 → 无法唯一匹配，标记歧义，交由上层诊断，不绑定类型。
             if (
                 !prev.ambiguous &&
-                (prev.kind !== info.kind || prev.typeName !== info.typeName || prev.watchType !== info.watchType)
+                (prev.kind !== info.kind ||
+                    prev.typeName !== info.typeName ||
+                    prev.watchType !== info.watchType ||
+                    JSON.stringify(typeFlags(prev)) !== JSON.stringify(typeFlags(info)))
             ) {
                 result.set(key, { ambiguous: true, typeName: "", watchType: "" });
             }
@@ -227,7 +329,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
             child.typeRef !== undefined
                 ? _resolveTypeInfo(child.typeRef, dies, childrenMap, typeCache)
                 : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
-        if (child.virtuality) {
+        if (child.virtuality || child.memberOffset === undefined) {
             // 虚基类偏移依赖运行期 vtable，静态阶段不产地址、不出叶子（阶段 3 再接管求址）。
             members.push({
                 name: "@base" + index,
@@ -237,8 +339,10 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
                 kind: baseType.kind,
                 isBase: true,
                 baseIndex: index,
-                virtual: true,
-                unobservable: "virtual base requires runtime addressing"
+                ...(child.virtuality ? { virtual: true } : {}),
+                unobservable: child.virtuality
+                    ? "virtual base requires runtime addressing"
+                    : "base location is not a static offset"
             });
             continue;
         }
@@ -260,13 +364,31 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
     for (const childOff of childOffsets) {
         const child = dies.get(childOff);
         if (!child || child.tag !== DW_TAG_member) continue;
+        if (child.isDecl) continue;
+        // Union members implicitly start at zero. Other members need a known location;
+        // never turn an unsupported expression into a writable offset-zero field.
+        if (
+            child.memberLocationUnsupported ||
+            (dies.get(typeDieOff)?.tag !== DW_TAG_union_type &&
+                child.memberOffset === undefined &&
+                !Number.isInteger(child.dataBitOffset))
+        ) {
+            consumeCompositeBudget(budget);
+            members.push({
+                name: child.name || "",
+                offset: 0,
+                byteSize: 0,
+                unobservable: "member location is not a static offset"
+            });
+            continue;
+        }
         consumeCompositeBudget(budget);
         const name = child.name || "";
         const memberType =
             child.typeRef !== undefined
                 ? _resolveTypeInfo(child.typeRef, dies, childrenMap, typeCache)
                 : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
-        const byteSize = child.byteSize || memberType.byteSize || 0;
+        let byteSize = child.byteSize || memberType.byteSize || 0;
         let offset = child.memberOffset || 0;
         let bitOffset;
         if (Number.isInteger(child.dataBitOffset)) {
@@ -275,6 +397,13 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
         } else if (Number.isInteger(child.bitOffset) && Number.isInteger(child.bitSize) && byteSize > 0) {
             // DWARF4 DW_AT_bit_offset 是从存储单元高位端计数；ELF32 已限定小端。
             bitOffset = byteSize * 8 - child.bitOffset - child.bitSize;
+            if (bitOffset >= 8) {
+                offset += Math.floor(bitOffset / 8);
+                bitOffset %= 8;
+            }
+        }
+        if (Number.isInteger(child.bitSize) && child.bitSize > 0 && Number.isInteger(bitOffset) && bitOffset >= 0) {
+            byteSize = Math.ceil((bitOffset + child.bitSize) / 8);
         }
         /** @type {Record<string, any>} */
         const member = {
@@ -284,7 +413,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
             typeName: memberType.typeName,
             watchType: memberType.watchType,
             kind: memberType.kind,
-            ...(memberType.isBoolean ? { isBoolean: true } : {})
+            ...typeFlags(memberType)
         };
         if (Number.isInteger(child.bitSize) && child.bitSize > 0 && Number.isInteger(bitOffset) && bitOffset >= 0) {
             member.bitSize = child.bitSize;
@@ -323,7 +452,7 @@ function _buildArrayLayout(typeDieOff, dies, childrenMap, typeCache, depth, budg
         watchType: elementType.watchType,
         byteSize: elementType.byteSize || 0,
         kind: elementType.kind,
-        ...(elementType.isBoolean ? { isBoolean: true } : {})
+        ...typeFlags(elementType)
     };
     if (compositeLayout) element.compositeLayout = compositeLayout;
     // GCC can encode all dimensions as subranges of one array DIE. Give each
@@ -396,7 +525,13 @@ function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, bud
                 state
             );
             if (nested && typeDie.tag === DW_TAG_typedef && typeDie.name) {
-                layout = { ...nested, typeName: typeDie.name };
+                layout = {
+                    ...nested,
+                    typeName: typeDie.name,
+                    ...(nested.isConst ? { isConst: true } : {})
+                };
+            } else if (nested && typeDie.tag === DW_TAG_const_type) {
+                layout = { ...nested, isConst: true };
             } else {
                 layout = nested;
             }
@@ -463,13 +598,35 @@ function createCompositeLayoutResolver(parsed) {
     const { dies, childrenMap, variables } = parsed;
     const typeCache = new Map();
     const byName = new Map();
+    const candidates = new Map();
     const ambiguousNames = new Set();
     for (const variable of variables) {
         const key = variable.linkageName || variable.name;
         if (!key) continue;
         const previous = byName.get(key);
-        if (previous && previous.typeRef !== variable.typeRef) ambiguousNames.add(key);
-        else if (!previous) byName.set(key, variable);
+        if (!previous) {
+            byName.set(key, variable);
+            candidates.set(key, new Set([variable.typeRef]));
+            continue;
+        }
+        candidates.get(key).add(variable.typeRef);
+        if (previous.typeRef === variable.typeRef) continue;
+        const prevInfo = _resolveTypeInfo(previous.typeRef, dies, childrenMap, typeCache);
+        const curInfo = _resolveTypeInfo(variable.typeRef, dies, childrenMap, typeCache);
+        if (
+            prevInfo.kind !== curInfo.kind ||
+            prevInfo.typeName !== curInfo.typeName ||
+            prevInfo.byteSize !== curInfo.byteSize ||
+            JSON.stringify(typeFlags(prevInfo)) !== JSON.stringify(typeFlags(curInfo))
+        ) {
+            ambiguousNames.add(key);
+        } else {
+            const prevDie = dies.get(previous.typeRef);
+            const curDie = dies.get(variable.typeRef);
+            if (prevDie?.isDecl && !curDie?.isDecl) {
+                byName.set(key, variable);
+            }
+        }
     }
     const state = { cache: new Map(), cachedNodes: 0, active: new Set() };
     const failedTypes = new Map();
@@ -481,7 +638,21 @@ function createCompositeLayoutResolver(parsed) {
         const info = _resolveTypeInfo(variable.typeRef, dies, childrenMap, typeCache);
         if (!info || !["struct", "class", "union", "array"].includes(info.kind)) return null;
         try {
-            return _buildCompositeLayout(variable.typeRef, dies, childrenMap, typeCache, 0, { nodes: 0 }, state);
+            const budget = { nodes: 0 };
+            const layout = _buildCompositeLayout(variable.typeRef, dies, childrenMap, typeCache, 0, budget, state);
+            // Equal names and byte sizes do not prove equal member offsets or types.
+            // Compare complete layouts lazily, keeping the existing expansion budget.
+            let identity;
+            for (const typeRef of candidates.get(name)) {
+                if (typeRef === variable.typeRef) continue;
+                const other = _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, 0, budget, state);
+                identity ??= JSON.stringify(layout);
+                if (identity !== JSON.stringify(other)) {
+                    ambiguousNames.add(name);
+                    return null;
+                }
+            }
+            return layout;
         } catch (error) {
             failedTypes.set(variable.typeRef, error);
             throw error;
@@ -519,6 +690,7 @@ function buildDisplayNames(parsed) {
     return result;
 }
 module.exports = {
+    bindVariableSymbols,
     encodingToWatchType,
     buildVariableTypes,
     buildCompositeLayouts,

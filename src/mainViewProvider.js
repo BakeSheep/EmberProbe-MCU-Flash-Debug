@@ -1,5 +1,6 @@
 "use strict";
-const { isSupportedDebugSession } = require("./services/debugConfiguration");
+const { isSupportedDebugSession, resolveRtos } = require("./services/debugConfiguration");
+const { resolvePrettyPrinting } = require("./services/prettyPrinting");
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainViewProvider = void 0;
 const vscode = require("vscode");
@@ -592,6 +593,12 @@ class MainViewProvider {
                     vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
                     return false;
                 }
+                // 在取得探针租约之前解析，非法取值直接失败，不需要任何启动清理。
+                // 解析只做一次，OpenOCD 参数与适配器 launch config 必须看到同一个值。
+                const rtos = resolveRtos(
+                    configuration,
+                    vscode.workspace.getConfiguration("emberprobe").get("rtos", "")
+                );
                 // 修复类型错误：处理 undefined 情况，用空字符串兜底
                 elfPath = cleanWindowsPath(elfPath);
                 const { folder: workspaceFolder } = this._commandContext(resource);
@@ -599,7 +606,7 @@ class MainViewProvider {
                     vscode.window.showErrorMessage(this._t("msg.openWorkspaceForDebug"));
                     return false;
                 }
-                const cortexTools = await ensureDebugTools(
+                let cortexTools = await ensureDebugTools(
                     vscode,
                     workspaceFolder,
                     this._context.workspaceState,
@@ -608,6 +615,11 @@ class MainViewProvider {
                     configuration || {}
                 );
                 if (!cortexTools) return false;
+                const ownDebug = vscode.workspace.getConfiguration("emberprobe", workspaceFolder.uri);
+                const pretty = resolvePrettyPrinting(configuration || {}, {
+                    enablePrettyPrinting: ownDebug.get("enablePrettyPrinting", true),
+                    prettyPrinterPath: ownDebug.get("prettyPrinterPath", "")
+                });
                 // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
                 const configuredOpenOcdPath = vscode.workspace
                     .getConfiguration("emberprobe")
@@ -627,7 +639,8 @@ class MainViewProvider {
                     debuggerCfg,
                     mcuCore,
                     vscode.workspace.getConfiguration("emberprobe"),
-                    interactive
+                    interactive,
+                    rtos
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
@@ -646,7 +659,11 @@ class MainViewProvider {
                     svdPath
                 );
                 if (svdPath) debugConfig.svdFile = svdPath;
+                // 适配器据此判断自己是否处于 RTOS 感知模式；显式空值必须能覆盖 launch.json 里的旧值。
+                if (rtos) debugConfig.rtos = rtos;
+                else delete debugConfig.rtos;
                 Object.assign(debugConfig, cortexTools);
+                Object.assign(debugConfig, pretty);
                 const startupGate = this._armDebugStartupWatchdog();
                 if (configuration) {
                     startAccepted = true;
@@ -1279,7 +1296,7 @@ class MainViewProvider {
         } else if (!deniedKey) this._runtimeDeniedKey = "";
         return plan.allowed;
     }
-    async _startManagedDebugServer(executable, probe, target, cfg, interactive = true) {
+    async _startManagedDebugServer(executable, probe, target, cfg, interactive = true, rtos = "") {
         const connection = await this._probeConnectionService.prepare({ executable, probe, target }, interactive);
         let lastError = null;
         const inspect = typeof cfg.inspect === "function" ? cfg.inspect("tclPort") : null;
@@ -1295,6 +1312,7 @@ class MainViewProvider {
                     isolated: true,
                     probe,
                     transport: cfg.get("transport", "auto"),
+                    rtos,
                     target,
                     ...connection,
                     port: tclPort,
@@ -1809,11 +1827,18 @@ class MainViewProvider {
                     address: leaves[0].address >>> 0,
                     type: leaves[0].type,
                     size: leaves[0].size,
-                    isBoolean: !!leaves[0].isBoolean
+                    isBoolean: !!leaves[0].isBoolean,
+                    isConst: !!leaves[0].isConst,
+                    isReference: !!leaves[0].isReference,
+                    isMemberPointer: !!leaves[0].isMemberPointer
                 };
             } else {
                 const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: req.name }]);
                 const resolvedSymbol = byName.get(plan.name);
+                if (resolvedSymbol?.isConst || resolvedSymbol?.isReference || resolvedSymbol?.isMemberPointer)
+                    throw Object.assign(new Error(`Writing to const / read-only storage is not allowed: ${req.name}`), {
+                        code: "WRITE_NOT_ALLOWED"
+                    });
                 if (!resolvedSymbol?.hasDwarfWriteType) {
                     throw Object.assign(
                         new Error(
@@ -1830,8 +1855,22 @@ class MainViewProvider {
                     address: plan.address,
                     type: plan.type,
                     size: plan.size,
-                    isBoolean: !!resolvedSymbol.isBoolean
+                    isBoolean: !!resolvedSymbol.isBoolean,
+                    isConst: !!resolvedSymbol.isConst
                 };
+            }
+            if (target.isReference || target.isMemberPointer)
+                throw Object.assign(
+                    new Error(`Writing C++ reference or member pointer storage is not supported: ${req.name}`),
+                    {
+                        code: "WRITE_NOT_ALLOWED"
+                    }
+                );
+            if (target.isConst) {
+                throw Object.assign(new Error(`Writing to const / read-only variable is not allowed: ${req.name}`), {
+                    code: "WRITE_NOT_ALLOWED",
+                    details: { name: target.name }
+                });
             }
             if (seen.has(target.name))
                 throw Object.assign(new Error(`Variable requested more than once: ${target.name}`), {
@@ -2519,7 +2558,10 @@ class MainViewProvider {
                 isComposite: symbol.isComposite,
                 unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
-                ...(symbol.isBoolean ? { isBoolean: true } : {})
+                ...(symbol.isBoolean ? { isBoolean: true } : {}),
+                ...(symbol.isConst ? { isConst: true } : {}),
+                ...(symbol.isReference ? { isReference: true } : {}),
+                ...(symbol.isMemberPointer ? { isMemberPointer: true } : {})
             }));
             sidebarPost({ type: "availableVariableTypes", version, symbols });
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });

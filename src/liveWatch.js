@@ -1,5 +1,5 @@
 "use strict";
-const { buildOpenOcdConfigArgs } = require("./openocdScripts");
+const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs } = require("./openocdScripts");
 // 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，并通过 Tcl-RPC 只读采样 RAM。
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
@@ -517,6 +517,8 @@ class ManagedOpenOcdSession {
             this.mode === "debug" ? `gdb_port ${gdbPort}` : "gdb_port disabled",
             "-c",
             "telnet_port disabled",
+            // RTOS 感知只在调试模式下配置：独立采样是非侵入轮询，让 OpenOCD 遍历内核数据结构会改变采样行为。
+            ...(this.mode === "debug" ? buildOpenOcdRtosArgs(this.options.rtos) : []),
             ...(this.mode === "debug"
                 ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
                 : []),

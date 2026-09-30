@@ -55,3 +55,29 @@ node scripts/measure-jlink-swd.js --openocd $openocd --instance $instance --seri
 3. If a probe unplug/replug or board power cycle is needed for diagnosis, run it as a separate control with `--phase probe-replug` or `--phase board-power-cycle`. Never merge these results into the baseline or immediate-after-switch series.
 
 Compare all 10 individual outcomes and their timing distributions, not just the aggregate success rate. A failure confined to the short period after the fast-path switch calls for disabling that path and restoring the original libwdi installation flow while investigating re-enumeration/readiness timing. The same `cannot read IDR` in the baseline calls for SWD wiring, target state and probe investigation. Do not add automatic speed changes, resets, retries or driver rollback based on one IDR failure. Preserve the raw logs and identify any skipped/invalid runs explicitly.
+
+## FreeRTOS task awareness acceptance (separate from the flashing runner)
+
+`npm run test:hil` only flashes and verifies; it does not start GDB or speak DAP. RTOS task discovery is therefore accepted manually. Use a dedicated board running a FreeRTOS firmware with at least three tasks of differing priority, one of which can be deleted on demand, plus a probe with exclusive access. Record the board and probe model, probe firmware and serial, OS build, OpenOCD build and version, the `rtos` value under test, the FreeRTOS-Kernel version, and the relevant `FreeRTOSConfig.h` macros (`configUSE_TRACE_FACILITY`, `configUSE_16_BIT_TICKS`, `configMAX_PRIORITIES`) together with whether `uxTopUsedPriority` survived linking. Record the observed result of each step, not just pass/fail, and note explicitly whether task names or `Thread N` appeared.
+
+Set `emberprobe.rtos` (or the `rtos` key in `launch.json`) and start an `attach` session from the sidebar.
+
+1. Confirm the CALL STACK lists every task rather than a single thread, and record whether names are shown. A single `Thread 1` means OpenOCD found no kernel symbols; check `uxTopUsedPriority` before blaming the extension.
+2. Expand a task that is **not** the one that stopped. Confirm its frames and locals belong to that task by comparing a task-local variable against a value the firmware prints over UART.
+3. With the call stack still showing a non-stopped task, step over. Confirm the task that advances is the one that stopped, not the one being viewed, and that the response carries an explicit task ID.
+4. Hit a breakpoint inside one task. Confirm the stop is attributed to that task and that other tasks are shown as stopped too.
+5. Delete a task while its stack is open, then step. Confirm `DEBUG_TASK_EXITED` rather than a step on some other task, and confirm the CALL STACK drops the task without a reload.
+6. Restart the session, then reset the target before `vTaskStartScheduler` runs. Confirm exactly one thread is reported and no task ID is invented.
+7. Set `rtos` to `FreeRTOs` and start a session. Confirm `OPENOCD_RTOS_INVALID` with the suggested actions, and confirm no probe session, lease or live-sampling state is left behind. Repeat with a valid name the target rejects and record OpenOCD's own message.
+8. On a dual-core part, if one is available, confirm only the current target is configured and record which core was selected.
+9. On a plain non-RTOS ELF with `rtos` unset, run attach, breakpoint, inspect, step, continue, restart and disconnect. Confirm the behaviour is indistinguishable from the previous release and that standalone live sampling issues no `-rtos` argument.
+
+This procedure changes no USB driver and adds no automatic retries, resets or speed changes. Do not merge its results into the flashing runner or the H750 SWD comparison.
+
+## H750 paused C++ display acceptance (read-only attach)
+
+`node test/hil/run-cpp-paused.js` starts an isolated VS Code development host against the current bundle. It attaches to already flashed firmware, halts it, reads `app::g_statusText`, `app::g_trend` and `app::g_sensorOwner` through real DAP, then continues and disconnects. It never downloads firmware, resets the target or writes variables. Build with `npm run bundle` first; ensure the selected probe has no debugging, sampling or other owner. The user project is never edited.
+
+Set `CPP_BOARD_ELF` and `CPP_BOARD_GDB` to absolute paths, `CPP_BOARD_PROBE` to an interface filename such as `jlink.cfg`, and `CPP_BOARD_TARGET` to a target filename such as `stm32h7x.cfg`. These filenames are relative to their OpenOCD `interface` / `target` directories; do not prefix them with those directory names. Optional `CPP_BOARD_RTOS=FreeRTOS` enables task awareness; an empty value isolates STL inspection from RTOS discovery. The runner uses the normal managed OpenOCD service and probe lease.
+
+Results and failure details are written to `test-results/cpp-board.json`. The acceptance only proves the three named types present in this firmware; maps, tuples, other wrappers, large pages and writes are covered separately by repository fixtures. If attach or continue times out, inspect the reported state before another action. A failed run does not prove the target resumed.

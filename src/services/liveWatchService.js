@@ -19,7 +19,10 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
             }
             return;
         }
-        const size = elfSymbols.typeByteLength(item.type);
+        const size = Number.isInteger(item.bitSize)
+            ? Math.ceil((Number(item.bitOffset) + item.bitSize) / 8)
+            : elfSymbols.typeByteLength(item.type);
+        if (!Number.isSafeInteger(size) || size <= 0 || size > 9) return;
         const prev = byName.get(item.name);
         if (!prev) byName.set(item.name, { name: item.name, address: item.address, size });
         else if (!prev.isComposite && size > prev.size) prev.size = size;

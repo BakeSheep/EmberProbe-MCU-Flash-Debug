@@ -1,7 +1,14 @@
 "use strict";
 const { parseDwarfInternal: _parseDwarfInternal } = require("./dwarf/parser");
 const { readULEB, readSLEB, debugSectionData } = require("./dwarf/binary");
-const { encodingToWatchType, buildVariableTypes, buildCompositeLayouts, buildDisplayNames } = require("./dwarf/types");
+const {
+    encodingToWatchType,
+    buildVariableTypes,
+    buildCompositeLayouts,
+    buildDisplayNames,
+    bindVariableSymbols
+} = require("./dwarf/types");
+const { parseElfSymbols } = require("./elfSymbols");
 // 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
 // 外层（extension.js）仍按 ELF SHA-256 缓存最终结果；两层缓存职责不同。
 const _parseCache = new WeakMap();
@@ -11,6 +18,13 @@ function _parseDwarfCached(buffer) {
     let parsed = _parseCache.get(buf);
     if (parsed === undefined) {
         parsed = _parseDwarfInternal(buf);
+        let symbols = [];
+        try {
+            symbols = parseElfSymbols(buf).symbols;
+        } catch {
+            // Synthetic or stripped DWARF can still be inspected without a symbol table.
+        }
+        parsed = bindVariableSymbols(parsed, symbols);
         _parseCache.set(buf, parsed);
     }
     return parsed;

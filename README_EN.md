@@ -13,7 +13,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - ELF flashing: flash the ELF file and run it in one click.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
-- Built-in debugging: breakpoints, stepping, stack frames, variables, and memory access without Cortex-Debug.
+- Built-in debugging: breakpoints, stepping, stack frames, variables, and memory access without Cortex-Debug; optional RTOS awareness (FreeRTOS and others) lists tasks in the call stack and steps a chosen task.
 - Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
@@ -38,6 +38,19 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 - CSV sources: keep using the full sampling archive, or select live retained samples or the frozen snapshot (the default when frozen). By default, the live buffer retains at least 60 seconds at the target frequency; an explicit `emberprobe.maxSamples` setting takes precedence. Readings do not bridge data gaps; 64-bit integer readouts preserve exact decimal text.
 
 - Sampling isolation: OpenOCD transport and the sampling clock run in a worker thread so extension-host stalls from builds or synchronous ELF parsing do not stop acquisition. Hz uses acquisition timestamps. Target resets, debugger pauses, probe contention and resource exhaustion can still affect reads.
+
+## C++ Objects While Paused
+
+The built-in JavaScript STL display reads ordinary GDB types, fields and memory for VS Code variables, watches and hovers. No Python, additional toolchain or firmware changes are required. An explicitly selected GDB is retained. Automatic script loading and inferior function calls are disabled for the session.
+
+- `emberprobe.enablePrettyPrinting` defaults to `true`; launch/attach overrides the setting, including explicit `false` for raw fields.
+- `prettyPrinterPath` is deprecated and ignored, with a migration diagnosis for existing nonempty settings.
+- Pages default to 100 elements plus `More…`; explicit `count` is limited to 1000. Each request reads at most 64 KiB and traverses 4096 linked nodes. Load preceding map pages sequentially when a distant jump exceeds the traversal budget.
+- Maps expose `[index] → key/value`. Keys, container summaries and synthetic nodes are read-only. Values require GDB editability checks. Execution changes invalidate handles; container element assignments invalidate affected child handles.
+
+The target matrix is GCC 14/15, libstdc++, C++17/20 and DWARF 4/5 on little-endian ARM32 and 64-bit hosts. Supported types are short/long/embedded-NUL `string`, `vector`, `array`, `pair/tuple`, `map/unordered_map`, `unique_ptr/shared_ptr`, and `optional/variant`, including empty and nested objects. `vector<bool>` bit elements are read-only. String summaries read up to 256 bytes; characters are paged. Unknown layouts, the old string ABI, libc++, `_GLIBCXX_DEBUG` and fancy pointers fall back to raw fields with a diagnosis. Live STL sampling, virtual bases and arbitrary pointer chains are outside this iteration.
+
+Local GCC 14.2/libstdc++ and GDB 16.2 pass native regressions without Python printers. ARM32 protocol fixtures validate fields and addresses. H750_RTOS_CPP_Test with the STM32 GCC 14.3.1 ordinary GDB passes real DAP summaries and expansion for `string/vector<float>/unique_ptr<Sensor>`, including FreeRTOS mode with eight tasks; the user project was not modified. Repository fixtures cover other types and large pages; the board run does not establish the entire type matrix on ARM hardware. Linux CI defines GCC 14/15 × C++17/20 × DWARF 4/5; that Linux matrix has not been run locally. Set `CPP_GDB`, `CPP_CXX`, optional `CPP_STANDARD=17/20` and `CPP_DWARF=4/5`, then run `node test/gdb/cpp-paused.test.js`. Normal tests require no compiler or hardware. See [test/hil/README.md](test/hil/README.md) for the read-only board acceptance runner and prerequisites.
 
 ## Agent Skills
 

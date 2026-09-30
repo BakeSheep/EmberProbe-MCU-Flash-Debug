@@ -4,7 +4,11 @@ const { MessageChannel } = require("worker_threads");
 const { once } = require("events");
 const { run } = require("../src/samplingWorker");
 const { deserializeError, serializeError } = require("../src/services/errorEnvelope");
-const { diagnoseOpenOcdFailure, parseTargetVoltage } = require("../skills/_emberprobe/openocd-diagnostics");
+const {
+    diagnoseOpenOcdFailure,
+    parseTargetVoltage,
+    connectionDetails
+} = require("../skills/_emberprobe/openocd-diagnostics");
 const { parseLine } = require("../src/openocdRunner");
 const { createChipParser } = require("../src/chip/parser");
 
@@ -22,9 +26,23 @@ const { createChipParser } = require("../src/chip/parser");
         ["Error: Failed to open device: unspecified error", "PROBE_OPEN_FAILED"],
         ["Error: LIBUSB_ERROR_NOT_SUPPORTED", "PROBE_DRIVER_UNSUPPORTED"],
         ["Error: LIBUSB_ERROR_BUSY", "PROBE_BUSY"],
-        ["Info : VTarget = 0.000 V", "TARGET_UNPOWERED"]
+        ["Info : VTarget = 0.000 V", "TARGET_UNPOWERED"],
+        ["Error: Unknown RTOS type FreeRTOs, try one of: FreeRTOS, auto or none", "OPENOCD_RTOS_INVALID"],
+        ["EmberProbe: no current target to configure for RTOS FreeRTOS", "OPENOCD_RTOS_INVALID"]
     ])
         assert.strictEqual(diagnoseOpenOcdFailure([line, "Error: init failed"], details).code, code);
+    const rtosFailure = diagnoseOpenOcdFailure(
+        ["Error: Unknown RTOS type FreeRTOs, try one of: FreeRTOS, auto or none", "Error: init failed"],
+        details
+    );
+    assert.strictEqual(rtosFailure.retryable, false, "the same arguments cannot succeed on retry");
+    assert.strictEqual(rtosFailure.category, "configuration");
+    assert(rtosFailure.suggestedActions.join(" ").includes("uxTopUsedPriority"));
+    assert.strictEqual(
+        connectionDetails({ probe: "jlink.cfg", target: "stm32f4x.cfg", rtos: "FreeRTOS" }).rtos,
+        "FreeRTOS"
+    );
+    assert.strictEqual(connectionDetails({ probe: "jlink.cfg", target: "stm32f4x.cfg" }).rtos, "");
     assert(!diagnoseOpenOcdFailure(["LIBUSB_ERROR_BUSY"], details).suggestedActions.join(" ").includes("驱动"));
     assert(!diagnoseOpenOcdFailure(["LIBUSB_ERROR_ACCESS"], details).suggestedActions.join(" ").includes("替换"));
     assert.strictEqual(parseTargetVoltage("VTarget = unknown"), null);

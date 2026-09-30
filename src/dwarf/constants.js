@@ -15,7 +15,11 @@ const DW_TAG_array_type = 0x01,
     DW_TAG_class_type = 0x02,
     DW_TAG_inheritance = 0x1c,
     DW_TAG_namespace = 0x39,
-    DW_TAG_subprogram = 0x2e;
+    DW_TAG_subprogram = 0x2e,
+    DW_TAG_reference_type = 0x10,
+    DW_TAG_rvalue_reference_type = 0x42,
+    DW_TAG_ptr_to_member_type = 0x1f,
+    DW_TAG_subroutine_type = 0x15;
 const DW_AT_name = 0x03,
     DW_AT_byte_size = 0x0b,
     DW_AT_abstract_origin = 0x31,
@@ -32,13 +36,14 @@ const DW_AT_name = 0x03,
     DW_AT_count = 0x37,
     DW_AT_upper_bound = 0x2f,
     DW_AT_linkage_name = 0x6e,
-    DW_AT_virtuality = 0x15;
+    DW_AT_virtuality = 0x4c;
 const DW_ATE_boolean = 0x02,
     DW_ATE_float = 0x04,
     DW_ATE_signed = 0x05,
     DW_ATE_signed_char = 0x06,
     DW_ATE_unsigned = 0x07,
-    DW_ATE_unsigned_char = 0x08;
+    DW_ATE_unsigned_char = 0x08,
+    DW_ATE_UTF = 0x10;
 module.exports = {
     DW_TAG_array_type,
     DW_TAG_structure_type,
@@ -57,6 +62,10 @@ module.exports = {
     DW_TAG_inheritance,
     DW_TAG_namespace,
     DW_TAG_subprogram,
+    DW_TAG_reference_type,
+    DW_TAG_rvalue_reference_type,
+    DW_TAG_ptr_to_member_type,
+    DW_TAG_subroutine_type,
     DW_AT_name,
     DW_AT_byte_size,
     DW_AT_abstract_origin,
@@ -79,5 +88,6 @@ module.exports = {
     DW_ATE_signed,
     DW_ATE_signed_char,
     DW_ATE_unsigned,
-    DW_ATE_unsigned_char
+    DW_ATE_unsigned_char,
+    DW_ATE_UTF
 };

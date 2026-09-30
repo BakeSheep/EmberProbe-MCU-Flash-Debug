@@ -372,6 +372,10 @@ class DebugSessionBridge {
             this.onTargetState({ state: "continued", transition, epoch: this.stopEpoch, session });
             this.onStatus(this.status());
             this._notifyState();
+        } else if (message.event === "thread") {
+            // A task that exits invalidates the cached id, so the next control action reconciles
+            // against the live list instead of stepping a task that no longer exists.
+            if (message.body?.reason === "exited" && message.body.threadId === this.threadId) this.threadId = null;
         } else if (message.event === "terminated" || message.event === "exited") {
             const transition = this.transitionKind;
             this.transitionKind = "";
@@ -552,18 +556,46 @@ class DebugSessionBridge {
         return { bytesWritten: Number.isFinite(result.bytesWritten) ? result.bytesWritten : data.length };
     }
 
+    // DAP has no capability bit for RTOS awareness, so read the resolved launch configuration.
+    // This also covers cortex-debug sessions, which use the same `rtos` key.
+    isRtosSession(session = this.activeSession) {
+        const rtos = session?.configuration?.rtos;
+        if (typeof rtos !== "string") return false;
+        const name = rtos.trim();
+        return name !== "" && name.toLowerCase() !== "none";
+    }
+
     async _selectThread(requestedThreadId) {
-        if (Number.isInteger(requestedThreadId)) return requestedThreadId;
-        if (Number.isInteger(this.threadId)) return this.threadId;
         const session = this.assertUniqueSession();
-        const result = unwrapResponse(await session.customRequest("threads", {}));
-        const threads = arrayThreads(result.threads).filter((thread) => Number.isInteger(thread?.id));
-        if (!threads.length)
-            throw Object.assign(new Error("The debugger returned no thread for execution control"), {
-                code: "DEBUG_THREAD_NOT_FOUND"
-            });
-        threads.sort((left, right) => left.id - right.id);
-        return threads[0].id;
+        const explicit = Number.isInteger(requestedThreadId);
+        // A cached id means "the task that stopped last", never a stable task identity: GDB renumbers
+        // remote threads when one is deleted, so the number can come to denote a different task.
+        const cached = explicit ? requestedThreadId : Number.isInteger(this.threadId) ? this.threadId : null;
+        // Non-RTOS sessions and running targets keep the original zero-round-trip path.
+        if (cached !== null && (!this.isRtosSession(session) || !this.paused)) return cached;
+        try {
+            const result = unwrapResponse(await session.customRequest("threads", {}));
+            const threads = arrayThreads(result.threads).filter((thread) => Number.isInteger(thread?.id));
+            if (explicit && !threads.some((thread) => thread.id === requestedThreadId))
+                throw Object.assign(new Error(`RTOS task ${requestedThreadId} no longer exists`), {
+                    code: "DEBUG_TASK_EXITED"
+                });
+            if (!threads.length)
+                throw Object.assign(new Error("The debugger returned no thread for execution control"), {
+                    code: "DEBUG_THREAD_NOT_FOUND"
+                });
+            // Only an implicit, cached task may fall back to the lowest live task.
+            const selected = threads.some((thread) => thread.id === cached)
+                ? cached
+                : threads.sort((left, right) => left.id - right.id)[0].id;
+            this.threadId = selected;
+            return selected;
+        } catch (error) {
+            // An explicit task must never fall back when reconciliation fails. For an implicit
+            // cached task, the adapter re-validates the pinned ID before executing it.
+            if (!explicit && cached !== null && error.code !== "DEBUG_THREAD_NOT_FOUND") return cached;
+            throw error;
+        }
     }
 
     async control(action, requestedThreadId) {

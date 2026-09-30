@@ -83,6 +83,11 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual((await store.update({ transport: "swd" })).transport, "swd");
         await assert.rejects(store.update({ transport: "swd; shutdown" }), { code: "OPENOCD_TRANSPORT_INVALID" });
         assert.strictEqual(store.snapshot().transport, "swd");
+        assert.strictEqual(store.snapshot().rtos, "");
+        assert.strictEqual((await store.update({ rtos: "FreeRTOS" })).rtos, "FreeRTOS");
+        await assert.rejects(store.update({ rtos: "FreeRTOs" }), { code: "OPENOCD_RTOS_INVALID" });
+        assert.strictEqual(store.snapshot().rtos, "FreeRTOS", "A rejected update leaves the setting alone");
+        assert.strictEqual((await store.update({ rtos: "" })).rtos, "", "An empty value turns RTOS awareness off");
     } finally {
         fixture.dispose();
         fs.rmSync(outside, { recursive: true, force: true });

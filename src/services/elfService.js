@@ -1,5 +1,6 @@
 "use strict";
 const { Worker } = require("worker_threads");
+const { isCppRuntimeSymbol } = require("../elfSymbols");
 
 // §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
 // autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
@@ -79,8 +80,12 @@ class ElfService {
                       unresolvedCpp ||
                       (!info && ![1, 2, 4, 8].includes(Number(symbol.size))));
             symbol.watchType = symbol.isComposite ? "" : info?.watchType || this.elfSymbols.defaultType(symbol.size);
-            symbol.hasDwarfWriteType = !symbol.isComposite && !!info?.watchType;
+            symbol.hasDwarfWriteType =
+                !symbol.isComposite && !!info?.watchType && !info.isReference && !info.isMemberPointer && !info.isConst;
             if (info?.isBoolean) symbol.isBoolean = true;
+            if (info?.isConst) symbol.isConst = true;
+            if (info?.isReference) symbol.isReference = true;
+            if (info?.isMemberPointer) symbol.isMemberPointer = true;
             if (symbol.isComposite) {
                 symbol.compositeLayout = hasLayout ? layout : null;
                 symbol.unsupportedReason = hasLayout
@@ -198,13 +203,15 @@ class ElfService {
                     result.warnings.push(...message.warnings);
                     this.onChange("metadata", result);
                     break;
-                case "symbols":
-                    result.symbols.push(...message.entries);
-                    for (const symbol of message.entries) this.symbolByName.set(symbol.name, symbol);
-                    this._enrich({ symbols: message.entries }, types);
-                    this.onChange("symbols", result, message.entries);
+                case "symbols": {
+                    const entries = message.entries.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
+                    result.symbols.push(...entries);
+                    for (const symbol of entries) this.symbolByName.set(symbol.name, symbol);
+                    this._enrich({ symbols: entries }, types);
+                    this.onChange("symbols", result, entries);
                     ack("symbols");
                     break;
+                }
                 case "symbolsDone":
                     break;
                 case "functionsDone":
@@ -379,6 +386,7 @@ class ElfService {
         if (this.cache?.elfPath === elfPath && this.cache.sha256 === sha256) return this.cache.result;
 
         const result = this.elfSymbols.parseElfSymbols(buffer);
+        result.symbols = result.symbols.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
         result.elf = { path: elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256 };
         const parsed = this.dwarf.parseDwarf(buffer);
         result.diagnostics = parsed?.diagnostics || [];

@@ -1,6 +1,7 @@
 "use strict";
 
 const { SUPPORTED_TYPES, typeByteLength, parseMemberPath, expandCompositeLeaves } = require("./elfSymbols");
+const { variableDisplayName } = require("./webview/runtime");
 
 function cleanWindowsPath(value) {
     if (!value) return "";
@@ -53,8 +54,9 @@ function normalizeWatchList(items, symbols) {
             // 非直接符号：尝试按复合变量成员/元素路径解析为标量叶子
             const leaf = resolveLeafPath(item.name, byName, supported);
             if (leaf) {
+                const displayName = variableDisplayName(leaf, byName);
                 seen.add(item.name);
-                result.push(leaf);
+                result.push({ ...leaf, ...(displayName !== leaf.name ? { displayName } : {}) });
             }
             continue;
         }
@@ -63,6 +65,9 @@ function normalizeWatchList(items, symbols) {
             seen.add(item.name);
             result.push({
                 name: symbol.name,
+                ...(symbol.displayName && symbol.displayName !== symbol.name
+                    ? { displayName: symbol.displayName }
+                    : {}),
                 address: Number(symbol.address) >>> 0,
                 size: Number(symbol.size) >>> 0,
                 type: "",
@@ -76,6 +81,7 @@ function normalizeWatchList(items, symbols) {
         seen.add(item.name);
         result.push({
             name: symbol.name,
+            ...(symbol.displayName && symbol.displayName !== symbol.name ? { displayName: symbol.displayName } : {}),
             address: Number(symbol.address) >>> 0,
             size: Number(symbol.size) >>> 0,
             type,

@@ -6,6 +6,19 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- ELF 变量列表过滤 C++ RTTI、虚表等内部对象；修复带编号后缀的 C 静态变量与 DWARF 的匹配及成员观察路径，缺少类型信息时显示具体原因。
+- Filter C++ RTTI and vtable metadata from ELF variable lists; bind numbered C statics to DWARF, preserve their member watch paths, and explain unavailable types.
+
+- 修复 const 指针错误限制可写对象的调试赋值，以及 C++ 成员加入查看列表后显示原始符号名；名称分行展示前缀与成员名，类型小标签放在数值左侧，读写卡片保持紧凑并居中显示数值。
+- Fix editing mutable pointees through const pointers and readable C++ member names in watch lists; split prefixes and member names, place compact type badges beside values, and keep read/write cards compact with vertically centered values.
+
+- 暂停调试改为内置 JavaScript STL 展示器，复用普通 GDB，无需 Python 或额外运行包；支持有界分页、只读键、容器元素赋值和原始字段回退，废弃 prettyPrinterPath。
+- Replace Python printers with built-in JavaScript STL display using ordinary GDB, bounded paging, read-only keys, element assignment and raw-field fallback; deprecate prettyPrinterPath.
+- 修复调用栈读取忽略分页造成的 GDB 超时，以及 RTOS 启动命令没有调用实际 target 的错误；H750 的 string/vector/unique_ptr 已通过普通 ARM GDB 和 FreeRTOS 实板验证。
+- Bound stack frame reads to the requested page and invoke the resolved RTOS target correctly; validate H750 string/vector/unique_ptr display using ordinary ARM GDB with FreeRTOS.
+
+- 新增 RTOS 感知调试：`emberprobe.rtos` 设置与 launch.json 的 `rtos` 键让 OpenOCD 在 `init` 之前为当前 target 配置 RTOS，调用栈显示 FreeRTOS 等任务，栈帧、局部变量与表达式求值绑定到所属任务，继续与单步显式指定任务；默认留空，非 RTOS 工程行为不变。
+- Add RTOS-aware debugging: the `emberprobe.rtos` setting and the launch.json `rtos` key make OpenOCD configure the current target's RTOS before `init`, so the call stack lists FreeRTOS-style tasks, stack frames, locals and expression evaluation bind to the owning task, and continue and stepping carry an explicit task ID; empty by default, leaving non-RTOS projects unchanged.
 - 修复 200 Hz 下默认波形历史不足 60 秒、Agent CSV 静默截短，以及失败采样和导出行数的 CSV 表示；高频缓冲改为分批裁剪。
 - Fix the default chart's 60-second retention at 200 Hz, Agent CSV history truncation, failed-sample cells, and exported row counts; trim high-rate buffers in batches.
 

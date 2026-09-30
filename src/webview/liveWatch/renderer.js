@@ -211,10 +211,7 @@ function updateRun() {
     b.textContent = starting ? t("lw.starting") : running ? t("lw.stopSampling") : t("lw.startSampling");
 }
 function displayNameFor(item) {
-    var symbol = allSymbols.find(function (s) {
-        return s.name === item.name;
-    });
-    return (symbol && symbol.displayName) || item.displayName || item.name;
+    return EmberProbeRuntime.variableDisplayName(item, impSymbolByName);
 }
 function addSymbol(sym, resolved = false) {
     if (
@@ -351,8 +348,11 @@ function renderVars() {
         main.className = "var-main";
         var name = document.createElement("div");
         name.className = "var-name";
-        name.textContent = displayNameFor(item);
-        name.title = item.name + " \u00b7 " + fmtAddr(item.address);
+        EmberProbeRuntime.renderVariableName(name, displayNameFor(item), item.name);
+        name.title += " \u00b7 " + fmtAddr(item.address);
+        var type = document.createElement("span");
+        type.className = "var-type";
+        type.textContent = item.isBoolean ? "bool" : item.type || "u32";
         var val = document.createElement("div");
         val.className = "var-value";
         setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
@@ -367,7 +367,7 @@ function renderVars() {
         rm.onclick = function () {
             removeVar(item.name);
         };
-        card.append(sw, main, val, rm);
+        card.append(sw, main, type, val, rm);
         box.appendChild(card);
     });
 }
@@ -445,7 +445,7 @@ function walkTreeLeaves(node, path, cb) {
     if (!node) return;
     if (node.members) {
         node.members.forEach(function (m) {
-            walkTreeLeaves(m, path + "." + m.name, cb);
+            walkTreeLeaves(m, m.name ? path + "." + m.name : path, cb);
         });
     } else if (node.elements) {
         node.elements.forEach(function (e) {
@@ -525,9 +525,10 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
     if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
         var ms = layout.members || [];
         ms.forEach(function (m) {
-            var cp = path + "." + m.name,
+            var cp = m.name ? path + "." + m.name : path,
                 off = offset + (Number(m.offset) || 0);
-            if (m.compositeLayout) renderNestInto(container, m.compositeLayout, m.name, cp, baseAddr, off);
+            if (m.compositeLayout && !m.name) renderLayoutInto(container, m.compositeLayout, cp, baseAddr, off, null);
+            else if (m.compositeLayout) renderNestInto(container, m.compositeLayout, m.name, cp, baseAddr, off);
             else if (m.watchType)
                 renderLeafInto(container, m.name, m.typeName || m.watchType, cp, m.watchType, baseAddr + off);
         });
@@ -584,8 +585,7 @@ function renderCompositeCard(item, idx, box) {
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
-    nm.textContent = displayNameFor(item);
-    if (nm.textContent !== item.name) nm.title = item.name;
+    EmberProbeRuntime.renderVariableName(nm, displayNameFor(item), item.name);
     var lay = item.compositeLayout || {};
     var ty = document.createElement("span");
     ty.className = "comp-type";
@@ -613,11 +613,7 @@ function renderCompositeCard(item, idx, box) {
     updateCompositeValues(item.name);
 }
 function baseNameOf(n) {
-    n = String(n);
-    var d = n.indexOf("."),
-        b = n.indexOf("[");
-    var i = d < 0 ? b : b < 0 ? d : Math.min(d, b);
-    return i < 0 ? n : n.slice(0, i);
+    return EmberProbeRuntime.variableBaseName(String(n));
 }
 function isLeafChild(name) {
     var b = baseNameOf(name);
@@ -657,7 +653,7 @@ function collectLeaves(layout, name, baseAddr) {
         if (!lyt) return;
         if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             (lyt.members || []).forEach(function (m) {
-                var cp = path + "." + m.name,
+                var cp = m.name ? path + "." + m.name : path,
                     mo = off + (Number(m.offset) || 0);
                 if (m.compositeLayout) walk(m.compositeLayout, cp, mo);
                 else if (m.watchType)
@@ -845,7 +841,7 @@ function renderImport() {
             nmWrap.append(arrow, nm);
             var ty = document.createElement("span");
             ty.className = "ty";
-            ty.textContent = s.typeName || t("sb.composite");
+            ty.textContent = s.typeName || t("lw.unknownType");
             var a = document.createElement("span");
             a.className = "address";
             a.textContent = fmtAddr(s.address);
@@ -863,7 +859,7 @@ function renderImport() {
                 ownLeafRows = 0;
                 kids.textContent = "";
                 if (!s.compositeLayout) {
-                    kids.textContent = s.layoutError || t("lw.compositeNoLayout");
+                    kids.textContent = s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout");
                     return;
                 }
                 var leaves = collectLeaves(s.compositeLayout, s.name, s.address);
@@ -1991,6 +1987,7 @@ window.EmberProbeMessages.connect(window, {
     variableTypesDone: function (m) {
         if (m.version !== impVersion) return;
         impTypesReady = true;
+        renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     compositeLayoutResult: function (m) {

@@ -7,6 +7,12 @@ const { validateComposite } = require("./compositeValidation");
 
 const { SUPPORTED_TYPES, typeByteLength, defaultType } = require("./webview/runtime");
 
+// Itanium ABI objects describe types, virtual dispatch, or initialization guards;
+// they are not source variables and normally have no DW_TAG_variable layout.
+function isCppRuntimeSymbol(name) {
+    return /^_Z(?:T[IVSTC]|GV)/.test(name);
+}
+
 function resolveVariableRequests(symbols, requests) {
     const list = Array.isArray(symbols) ? symbols : [];
     const exact = new Map(list.map((symbol) => [symbol.name, symbol]));
@@ -342,20 +348,39 @@ function nearestFunction(functions, address) {
 // buf[0].x → { base:'buf', segments:[{kind:'index',index:0},{kind:'member',name:'x'}] }
 function parseMemberPath(pathStr) {
     const str = String(pathStr || "").trim();
-    if (!str) return null;
+    if (!str || !/^[A-Za-z_]/.test(str)) return null;
     // 匹配 baseName 后跟 .member 或 [index/range/*]
-    // base 允许 C++ 限定名（ns::Foo::bar）与 mangled 名（_Z...）。
-    const m = str.match(/^([A-Za-z_][\w:]*)/);
-    if (!m) return null;
-    const base = m[1];
-    const rest = str.slice(base.length);
+    // base 允许 C++ 限定名（ns::Foo::bar）、模板名（Holder<int>::object）与 mangled 名（_Z...）。
+    let depth = 0;
+    let baseEnd = -1;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (ch === "<") {
+            if (++depth > 32) return null;
+        } else if (ch === ">") {
+            if (depth <= 0) return null;
+            depth--;
+        } else if (depth === 0 && ch === "." && /^\.\d+(?=\.|\[|$)/.test(str.slice(i))) {
+            // GCC C function statics retain their numeric ELF suffix in the base.
+            i += str.slice(i).match(/^\.\d+/)[0].length - 1;
+        } else if (depth === 0 && (ch === "." || ch === "[")) {
+            baseEnd = i;
+            break;
+        } else if (depth === 0 && !/[\w:]/.test(ch)) {
+            return null;
+        }
+    }
+    if (depth !== 0) return null;
+    const base = (baseEnd === -1 ? str : str.slice(0, baseEnd)).trim();
+    if (!base) return null;
+    const rest = baseEnd === -1 ? "" : str.slice(baseEnd);
     const segments = [];
     let pos = 0;
     while (pos < rest.length) {
         if (rest[pos] === ".") {
             pos++;
-            // 成员名允许 @baseN 基类段，消除多继承同名歧义。
-            const nameMatch = rest.slice(pos).match(/^(@base\d+|[A-Za-z_]\w*)/);
+            // 成员名允许 @baseN 基类段、? 匿名段、或标准标识符。
+            const nameMatch = rest.slice(pos).match(/^(@base\d+|\?|[A-Za-z_]\w*)/);
             if (!nameMatch) return null;
             segments.push({ kind: "member", name: nameMatch[1] });
             pos += nameMatch[1].length;
@@ -387,6 +412,33 @@ function parseMemberPath(pathStr) {
     return { base, segments };
 }
 
+// Resolve promoted anonymous members consistently for layouts and decoded trees.
+// More than one match is ambiguous and must never select a writable address.
+function findMemberRoute(node, name, nested, depth = 0) {
+    if (depth > 16) return null;
+    const members = node.members || [];
+    const direct = members.filter((member) => (name === "?" ? !member.name && nested(member) : member.name === name));
+    if (direct.length) return direct.length === 1 ? [direct[0]] : [];
+    let match = null;
+    for (const member of members) {
+        if (member.name || !nested(member) || member.unobservable) continue;
+        const route = findMemberRoute(nested(member), name, nested, depth + 1);
+        if (!route) continue;
+        if (!route.length || match) return [];
+        match = [member, ...route];
+    }
+    return match;
+}
+
+function leafFlags(member, isConst) {
+    return {
+        ...(member.isBoolean ? { isBoolean: true } : {}),
+        ...(member.isConst || isConst ? { isConst: true } : {}),
+        ...(member.isReference ? { isReference: true } : {}),
+        ...(member.isMemberPointer ? { isMemberPointer: true } : {})
+    };
+}
+
 // 将复合变量的叶子成员展开为扁平读取项列表
 // symbol: { name, address, size }
 // layout: CompositeLayout（来自 dwarf.parseCompositeLayout）
@@ -398,15 +450,18 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
     const baseAddr = Number(symbol.address) >>> 0;
     const leaves = [];
 
-    function walk(currentLayout, currentOffset, currentPath, depth, pendingPathSpec = null) {
+    function walk(currentLayout, currentOffset, currentPath, depth, pendingPathSpec = null, isConst = false) {
         if (depth > 10 || !currentLayout) return;
+        isConst ||= !!currentLayout.isConst;
         if (currentLayout.kind === "struct" || currentLayout.kind === "union" || currentLayout.kind === "class") {
             for (const m of currentLayout.members || []) {
+                if (m.unobservable || (!m.name && !m.compositeLayout)) continue;
                 // 虚基类等 unobservable 合成成员无 watchType/compositeLayout，静态阶段自然跳过、不产地址。
-                const memberPath = currentPath + "." + (m.name || "?");
+                const isAnon = !m.name;
+                const memberPath = isAnon ? currentPath : currentPath + "." + m.name;
                 const memberOffset = currentOffset + (m.offset || 0);
                 if (m.compositeLayout) {
-                    walk(m.compositeLayout, memberOffset, memberPath, depth + 1, null);
+                    walk(m.compositeLayout, memberOffset, memberPath, depth + 1, null, isConst || !!m.isConst);
                 } else if (m.watchType) {
                     leaves.push({
                         name: symbol.name,
@@ -415,7 +470,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         size: m.byteSize || typeByteLength(m.watchType),
                         type: m.watchType,
                         typeName: m.typeName || "",
-                        ...(m.isBoolean ? { isBoolean: true } : {}),
+                        ...leafFlags(m, isConst),
                         ...(Number.isInteger(m.bitSize) ? { bitSize: m.bitSize, bitOffset: m.bitOffset } : {})
                     });
                 }
@@ -455,7 +510,8 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         currentOffset + i * elemSize,
                         currentPath + "[" + i + "]",
                         depth + 1,
-                        null
+                        null,
+                        isConst || !!elemType.isConst
                     );
                 }
             } else if (elemType.watchType) {
@@ -467,7 +523,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         size: elemSize,
                         type: elemType.watchType,
                         typeName: elemType.typeName || "",
-                        ...(elemType.isBoolean ? { isBoolean: true } : {})
+                        ...leafFlags(elemType, isConst)
                     });
                 }
             }
@@ -480,23 +536,28 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
         let currentOffset = 0;
         let currentPath = symbol.name;
         let pendingPathSpec = null;
+        let isConst = !!layout.isConst;
         for (let segmentIndex = 0; segmentIndex < pathSpec.segments.length; segmentIndex++) {
             const seg = pathSpec.segments[segmentIndex];
             if (
                 seg.kind === "member" &&
                 (currentLayout.kind === "struct" || currentLayout.kind === "union" || currentLayout.kind === "class")
             ) {
-                const member = (currentLayout.members || []).find((m) => m.name === seg.name);
-                if (!member) return []; // 成员不存在
+                const route = findMemberRoute(currentLayout, seg.name, (member) => member.compositeLayout);
+                if (!route?.length) return [];
+                const member = route[route.length - 1];
                 // 显式路径指向虚基类等不可观测成员或其子路径：不产猜测地址。
                 if (member.unobservable) return [];
-                currentOffset += member.offset || 0;
-                currentPath += "." + member.name;
+                for (const entry of route) {
+                    currentOffset += entry.offset || 0;
+                    isConst ||= !!entry.isConst || !!entry.compositeLayout?.isConst;
+                }
+                currentPath += "." + seg.name;
                 if (member.compositeLayout) {
                     currentLayout = member.compositeLayout;
                 } else {
                     // 到达标量叶子
-                    if (segmentIndex !== pathSpec.segments.length - 1) return [];
+                    if (segmentIndex !== pathSpec.segments.length - 1 || !member.watchType) return [];
                     return [
                         {
                             name: symbol.name,
@@ -505,7 +566,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                             size: member.byteSize || typeByteLength(member.watchType),
                             type: member.watchType,
                             typeName: member.typeName || "",
-                            ...(member.isBoolean ? { isBoolean: true } : {}),
+                            ...leafFlags(member, isConst),
                             ...(Number.isInteger(member.bitSize)
                                 ? { bitSize: member.bitSize, bitOffset: member.bitOffset }
                                 : {})
@@ -517,6 +578,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                 currentLayout.kind === "array"
             ) {
                 const elemSize = currentLayout.elementType ? currentLayout.elementType.byteSize : 0;
+                isConst ||= !!currentLayout.isConst || !!currentLayout.elementType?.isConst;
                 if (seg.kind === "index") {
                     const total = Number(currentLayout.totalElements) || 0;
                     if (seg.index < 0 || seg.index >= total) return [];
@@ -524,6 +586,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                     currentPath += "[" + seg.index + "]";
                     if (currentLayout.elementType && currentLayout.elementType.compositeLayout) {
                         currentLayout = currentLayout.elementType.compositeLayout;
+                        isConst ||= !!currentLayout.isConst;
                         continue;
                     }
                     if (
@@ -533,7 +596,8 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                         currentLayout.elementType.kind !== "array" &&
                         currentLayout.elementType.kind !== "class"
                     ) {
-                        if (segmentIndex !== pathSpec.segments.length - 1) return [];
+                        if (segmentIndex !== pathSpec.segments.length - 1 || !currentLayout.elementType.watchType)
+                            return [];
                         return [
                             {
                                 name: symbol.name,
@@ -542,7 +606,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                                 size: elemSize,
                                 type: currentLayout.elementType.watchType,
                                 typeName: currentLayout.elementType.typeName || "",
-                                ...(currentLayout.elementType.isBoolean ? { isBoolean: true } : {})
+                                ...leafFlags(currentLayout.elementType, isConst)
                             }
                         ];
                     }
@@ -560,7 +624,7 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
             }
         }
         // 如果导航后到达复合类型，展开其全部叶子
-        walk(currentLayout, currentOffset, currentPath, 0, pendingPathSpec);
+        walk(currentLayout, currentOffset, currentPath, 0, pendingPathSpec, isConst);
     } else {
         walk(layout, 0, symbol.name, 0, null);
     }
@@ -688,7 +752,8 @@ function navigateCompositeTree(tree, pathSpec) {
         if (!node) return null;
         if (seg.kind === "member") {
             if (!Array.isArray(node.members)) return null;
-            node = node.members.find((m) => m.name === seg.name) || null;
+            const route = findMemberRoute(node, seg.name, (member) => (Array.isArray(member.members) ? member : null));
+            node = route?.length ? route[route.length - 1] : null;
         } else if (seg.kind === "index") {
             if (!Array.isArray(node.elements)) return null;
             node = node.elements.find((e) => e.index === seg.index) || null;
@@ -724,6 +789,7 @@ function isScalarLeafNode(node) {
 
 module.exports = {
     parseElfSymbols,
+    isCppRuntimeSymbol,
     parseElfSections,
     nearestFunction,
     decodeValue,

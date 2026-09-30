@@ -19,6 +19,41 @@ concurrency:
   cancel-in-progress: ${{ github.workflow == 'CI' }}
 
 jobs:
+  cpp-gdb:
+    name: GCC ${{ matrix.gcc }} C++${{ matrix.standard }} DWARF ${{ matrix.dwarf }}
+    runs-on: ubuntu-latest
+    container:
+      image: gcc:${{ matrix.gcc }}
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        gcc: [14, 15]
+        standard: [17, 20]
+        dwarf: [4, 5]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: apt-get update && apt-get install -y gdb
+      - run: node test/gdb/cpp-paused.test.js
+        env:
+          CPP_DWARF: ${{ matrix.dwarf }}
+          CPP_STANDARD: ${{ matrix.standard }}
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-gdb-${{ matrix.gcc }}-${{ matrix.standard }}-dwarf-${{ matrix.dwarf }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
   check:
     name: Node ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -40,6 +75,11 @@ jobs:
         run: npm run check
       - name: Verify bundle
         run: npm run bundle
+      - name: Verify VSIX STL budget and exclusions
+        if: runner.os == 'Linux'
+        run: |
+          npm run package
+          node scripts/verify-stl-vsix.js
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

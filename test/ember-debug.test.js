@@ -4,7 +4,11 @@ const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const { MiClient, parseRecord, quote } = require("../src/debug/mi");
 const { EmberDebugSession } = require("../src/debug/session");
-const { validateDebugConfiguration, isSupportedDebugSession } = require("../src/services/debugConfiguration");
+const {
+    validateDebugConfiguration,
+    isSupportedDebugSession,
+    resolveRtos
+} = require("../src/services/debugConfiguration");
 
 class FakeMi extends EventEmitter {
     constructor() {
@@ -13,6 +17,7 @@ class FakeMi extends EventEmitter {
         this.id = 0;
         this.failOn = "";
         this.stopReason = "signal-received";
+        this.threads = [{ id: "1", name: "Cortex-M" }];
     }
     start(...args) {
         this.startArgs = args;
@@ -31,10 +36,12 @@ class FakeMi extends EventEmitter {
                 class: "stopped",
                 data: { reason: this.stopReason, "signal-name": "SIGINT", "thread-id": "1" }
             });
-        if (/^-exec-(continue|next|step|finish)$/.test(command))
+        if (/^-exec-(continue|next|step|finish)(?: --thread \d+)?$/.test(command))
             this.emit("record", { kind: "*", class: "running", data: {} });
-        if (command === "-thread-info") return { threads: [{ id: "1", name: "Cortex-M" }] };
-        if (command === "-stack-list-frames")
+        if (command === "-thread-info") return { threads: this.threads, "current-thread-id": this.threads[0]?.id };
+        if (command.startsWith("-thread-select") && !this.threads.some((t) => t.id === command.split(" ")[1]))
+            throw new Error(`Unknown thread ${command.split(" ")[1]}.`);
+        if (command.startsWith("-stack-list-frames"))
             return {
                 stack: [
                     { frame: { level: "0", func: "main", fullname: "/build/main.c", line: "12", addr: "0x8000000" } }
@@ -51,6 +58,7 @@ class FakeMi extends EventEmitter {
                 children: [{ child: { name: "var1.count", exp: "count", value: "3", numchild: "0", type: "int" } }]
             };
         if (command.startsWith("-var-assign")) return { value: "4" };
+        if (command.startsWith("-var-show-attributes")) return { status: "editable" };
         if (command.startsWith("-data-read-memory-bytes"))
             return { memory: [{ begin: "0x20000000", contents: "01020304" }] };
         return {};
@@ -127,6 +135,29 @@ function session() {
         ).gdbTarget,
         undefined
     );
+    for (const bad of ["FreeRTOs", "freertos", "hwthread", "mqx; shutdown", 4])
+        assert.throws(
+            () => validateDebugConfiguration({ request: "launch", rtos: bad }, folder),
+            (error) => error.code === "OPENOCD_RTOS_INVALID",
+            `${JSON.stringify(bad)} is not an OpenOCD RTOS name`
+        );
+    assert.strictEqual(validateDebugConfiguration({ request: "launch", rtos: " FreeRTOS " }, folder).rtos, "FreeRTOS");
+    assert.strictEqual(validateDebugConfiguration({ request: "launch", rtos: "" }, folder).rtos, "");
+    // launch.json wins whenever it carries a value, including an explicit empty string.
+    assert.strictEqual(resolveRtos({}, "FreeRTOS"), "FreeRTOS");
+    assert.strictEqual(resolveRtos({ rtos: "" }, "FreeRTOS"), "", "An explicit empty value overrides the setting");
+    assert.strictEqual(resolveRtos({ rtos: "Zephyr" }, "FreeRTOS"), "Zephyr");
+    assert.strictEqual(resolveRtos({ rtos: null }, "FreeRTOS"), "FreeRTOS");
+    assert.strictEqual(
+        resolveRtos(validateDebugConfiguration({ request: "launch", rtos: null }, folder), "FreeRTOS"),
+        "FreeRTOS",
+        "validation must preserve null's fallback behavior"
+    );
+    assert.strictEqual(resolveRtos(undefined, undefined), "");
+    assert.throws(
+        () => resolveRtos({ rtos: "FreeRTOs" }, ""),
+        (error) => error.code === "OPENOCD_RTOS_INVALID"
+    );
 
     const { adapter: a, mi: backend, events } = session();
     const config = {
@@ -138,6 +169,11 @@ function session() {
     const caps = await a.handle("initialize", {});
     assert(caps.supportsReadMemoryRequest && caps.supportsConditionalBreakpoints);
     await a.handle("launch", config);
+    assert(
+        backend.commands.indexOf("-gdb-set auto-load off") <
+            backend.commands.findIndex((command) => command.startsWith("-file-exec-and-symbols")),
+        "disable auto-loading before any ELF scripts can load"
+    );
     assert(
         backend.commands.indexOf('-interpreter-exec console "monitor reset halt"') <
             backend.commands.indexOf("-target-download")
@@ -167,9 +203,13 @@ function session() {
     assert.strictEqual((await a.handle("threads", {})).threads[0].id, 1);
     const frame = (await a.handle("stackTrace", { threadId: 1 })).stackFrames[0];
     assert.strictEqual(frame.source.path, "/local/main.c");
+    assert(backend.commands.includes("-stack-list-frames 0 19"));
+    await a.handle("stackTrace", { threadId: 1, startFrame: 2, levels: 3 });
+    assert(backend.commands.includes("-stack-list-frames 2 4"));
+    await assert.rejects(a.handle("stackTrace", { threadId: 1, levels: 1001 }), /paging/);
     const scope = (await a.handle("scopes", { frameId: frame.id })).scopes[0];
     const vars = (await a.handle("variables", { variablesReference: scope.variablesReference })).variables;
-    assert.strictEqual(vars[1].value, "<unavailable>");
+    assert.match(vars[1].value, /unavailable.*optimized out/);
     const children = (await a.handle("variables", { variablesReference: vars[0].variablesReference })).variables;
     assert.strictEqual(children[0].name, "count");
     assert.strictEqual(
@@ -204,6 +244,24 @@ function session() {
     assert.strictEqual(backend.commands.filter((c) => c === "-target-download").length, downloads);
     await a.handle("disconnect", {});
     assert(backend.stopped);
+    // A session without an RTOS must produce exactly the command and event stream it did before
+    // task awareness existed.
+    assert(backend.commands.some((c) => c.startsWith("-exec-continue")));
+    assert(!backend.commands.some((c) => c.includes("--thread")), "a non-RTOS session never pins a thread");
+    assert(backend.commands.includes('-var-create - * "counter"'), "varobjs keep their unpinned form");
+    assert(!events.some((e) => e.event === "thread"), "a non-RTOS session emits no thread events");
+    assert.strictEqual(
+        backend.commands.filter((c) => c === "-thread-info").length,
+        1,
+        "task awareness adds no MI round trip"
+    );
+    const plain = session();
+    plain.mi.threads = [];
+    await plain.adapter.handle("launch", config);
+    assert(plain.adapter.threads.has(1), "a non-RTOS session keeps the legacy single-thread default");
+    plain.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "breakpoint-hit" } });
+    assert.strictEqual(plain.events.at(-1).body.threadId, 1);
+    await plain.adapter.close();
     const attached = session();
     await attached.adapter.handle("attach", config);
     assert(!attached.mi.commands.some((c) => c.includes("reset") || c.includes("download")));
@@ -216,6 +274,121 @@ function session() {
     assert.strictEqual(responses.length, 1);
     assert.strictEqual(responses[0].success, false);
     await attached.adapter.close();
+
+    const optedOut = session();
+    await optedOut.adapter.handle("launch", { ...config, rtos: "none" });
+    assert.strictEqual(optedOut.adapter.rtosAware, false);
+    assert(!optedOut.mi.commands.includes("-thread-info"), '"none" never queries the task list');
+    assert(optedOut.adapter.threads.has(1));
+    await optedOut.adapter.handle("continue", { threadId: 1 });
+    assert(optedOut.mi.commands.includes("-exec-continue"));
+    assert(!optedOut.mi.commands.some((c) => c.includes("--thread")));
+    await optedOut.adapter.close();
+
+    // Nothing is invented before the scheduler has created a task.
+    const early = session();
+    early.mi.threads = [];
+    await early.adapter.handle("launch", { ...config, rtos: "FreeRTOS" });
+    assert.strictEqual(early.adapter.thread, null, "no task is assumed before GDB confirms one");
+    early.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "breakpoint-hit" } });
+    assert(!("threadId" in early.events.at(-1).body), "an unconfirmed thread id is never reported");
+    await early.adapter.close();
+
+    const rtos = session();
+    rtos.mi.threads = [{ id: "1", name: "IDLE" }];
+    await rtos.adapter.handle("launch", { ...config, rtos: "FreeRTOS" });
+    assert.strictEqual(rtos.adapter.rtosAware, true);
+    assert.deepStrictEqual([...rtos.adapter.threads], [1], "task ids come from GDB, not from a default");
+    assert.strictEqual(rtos.adapter.thread, 1);
+    assert(
+        rtos.mi.commands.indexOf("-target-select extended-remote 127.0.0.1:3333") <
+            rtos.mi.commands.indexOf("-thread-info"),
+        "the task list is seeded once GDB is attached"
+    );
+    rtos.adapter.onRecord({ kind: "=", class: "thread-created", data: { id: "2" } });
+    rtos.adapter.onRecord({ kind: "=", class: "thread-created", data: { id: "2" } });
+    rtos.adapter.onRecord({ kind: "=", class: "thread-created", data: { id: "3" } });
+    rtos.adapter.onRecord({ kind: "=", class: "thread-group-added", data: { id: "i1" } });
+    assert.deepStrictEqual(
+        [...rtos.adapter.threads].sort((l, r) => l - r),
+        [1, 2, 3]
+    );
+    assert.deepStrictEqual(
+        rtos.events.filter((e) => e.event === "thread").map((e) => [e.body.reason, e.body.threadId]),
+        [
+            ["started", 2],
+            ["started", 3]
+        ],
+        "a thread group is not a task and a duplicate creation is not reported twice"
+    );
+    rtos.events.length = 0;
+    rtos.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "breakpoint-hit", "thread-id": "3" } });
+    assert.strictEqual(rtos.adapter.thread, 3);
+    assert.strictEqual(rtos.events.at(-1).body.threadId, 3);
+    // Task 3 disappears and task 4 appears without any lifecycle notification.
+    rtos.mi.threads = [
+        { id: "1", name: "IDLE" },
+        { id: "2", name: "blink" },
+        { id: "4", name: "uart" }
+    ];
+    rtos.events.length = 0;
+    assert.deepStrictEqual(
+        (await rtos.adapter.handle("threads", {})).threads.map((t) => t.id),
+        [1, 2, 4]
+    );
+    assert.deepStrictEqual(
+        [...rtos.adapter.threads].sort((l, r) => l - r),
+        [1, 2, 4]
+    );
+    assert.deepStrictEqual(
+        rtos.events.filter((e) => e.event === "thread").map((e) => [e.body.reason, e.body.threadId]),
+        [["exited", 3]],
+        "querying the list recalibrates it"
+    );
+    assert.strictEqual(rtos.adapter.thread, null, "the stopped task is dropped when it exits");
+    rtos.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "breakpoint-hit", "thread-id": "2" } });
+    await rtos.adapter.handle("stackTrace", { threadId: 4 });
+    assert(rtos.mi.commands.includes("-thread-select 4"), "browsing another task selects it in GDB");
+    await rtos.adapter.handle("next", { threadId: 2 });
+    assert(
+        rtos.mi.commands.includes("-exec-next --thread 2"),
+        "stepping targets the requested task, not the one GDB last selected"
+    );
+    rtos.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "end-stepping-range", "thread-id": "2" } });
+    rtos.mi.threads = [
+        { id: "1", name: "IDLE" },
+        { id: "4", name: "uart" }
+    ];
+    rtos.adapter.onRecord({ kind: "=", class: "thread-exited", data: { id: "2" } });
+    assert.strictEqual(rtos.adapter.thread, null);
+    const issued = rtos.mi.commands.length;
+    await assert.rejects(rtos.adapter.handle("next", { threadId: 2 }), (e) => e.code === "DEBUG_TASK_EXITED");
+    assert(
+        !rtos.mi.commands.slice(issued).some((c) => c.startsWith("-exec-")),
+        "an exited task is rejected before any command reaches GDB"
+    );
+    await assert.rejects(rtos.adapter.handle("continue", { threadId: 0 }), (e) => e.code === "DEBUG_THREAD_INVALID");
+    rtos.mi.threads = [{ id: "1", name: "IDLE" }];
+    await rtos.adapter.handle("restart", {});
+    assert.deepStrictEqual([...rtos.adapter.threads], [1], "a reset rebuilds the task list");
+    await rtos.adapter.close();
+
+    const pinned = session();
+    pinned.mi.threads = [
+        { id: "1", name: "IDLE" },
+        { id: "2", name: "blink" }
+    ];
+    await pinned.adapter.handle("launch", { ...config, rtos: "FreeRTOS" });
+    pinned.adapter.onRecord({ kind: "*", class: "stopped", data: { reason: "breakpoint-hit", "thread-id": "2" } });
+    const taskFrame = (await pinned.adapter.handle("stackTrace", { threadId: 2 })).stackFrames[0];
+    const taskScope = (await pinned.adapter.handle("scopes", { frameId: taskFrame.id })).scopes[0];
+    await pinned.adapter.handle("variables", { variablesReference: taskScope.variablesReference });
+    await pinned.adapter.handle("evaluate", { frameId: taskFrame.id, expression: "counter" });
+    assert(
+        pinned.mi.commands.filter((c) => c === '-var-create --thread 2 --frame 0 - * "counter"').length === 2,
+        "locals and expressions are bound to the owning task and frame"
+    );
+    await pinned.adapter.close();
     console.log("Independent EmberProbe MI and DAP tests passed");
 })().catch((error) => {
     console.error(error);

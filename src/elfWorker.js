@@ -5,7 +5,12 @@ const crypto = require("crypto");
 const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { parseElfSymbols } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
-const { buildVariableTypes, buildDisplayNames, createCompositeLayoutResolver } = require("./dwarf/types");
+const {
+    buildVariableTypes,
+    buildDisplayNames,
+    createCompositeLayoutResolver,
+    bindVariableSymbols
+} = require("./dwarf/types");
 
 const MAX_ELF_BYTES = 64 * 1024 * 1024;
 const CHUNK_SIZE = 1000;
@@ -74,7 +79,7 @@ async function run(port, filePath) {
         await sendChunks(port, "symbols", result.symbols, acks);
         await sendChunks(port, "functions", result.functions, acks);
         try {
-            const parsed = parseDwarfInternal(buffer);
+            const parsed = bindVariableSymbols(parseDwarfInternal(buffer), result.symbols);
             const types = buildVariableTypes(parsed);
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);

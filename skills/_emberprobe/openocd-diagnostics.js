@@ -4,6 +4,7 @@ function connectionDetails(options) {
         probe: options.probe,
         target: options.target,
         transport: options.transport || "auto",
+        rtos: options.rtos || "",
         probeSerial: options.probeSerial || "",
         adapterSpeedKhz: options.adapterSpeedKhz || 0,
         ...(options.inventory ? { inventory: options.inventory } : {})
@@ -61,6 +62,20 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "configuration",
             "所选传输协议不受探针或 OpenOCD 配置支持。",
             ["核对自动选择结果与接口脚本；特殊接线可在高级设置覆盖 SWD/JTAG 协议。"],
+            false
+        );
+    }
+    // RTOS rejection happens before init, so it outranks the generic init/target failure below.
+    if (/unknown rtos type|no current target to configure for rtos/.test(text)) {
+        return make(
+            "OPENOCD_RTOS_INVALID",
+            "configuration",
+            "OpenOCD 拒绝了 RTOS 配置；调试会话未启动。",
+            [
+                "核对 emberprobe.rtos 或 launch.json 的 rtos 取值是否在支持列表内（区分大小写）。",
+                "确认已选择 MCU target 配置；双核目标需确认当前 target 就是运行 RTOS 的那个核。",
+                "确认固件导出了 OpenOCD 需要的内核符号（例如 FreeRTOS 的 uxTopUsedPriority 未被链接器优化掉）。"
+            ],
             false
         );
     }

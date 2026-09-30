@@ -80,7 +80,35 @@ function load(file, overrides) {
         const session = new live.ManagedOpenOcdSession(null, { ...options, mode, gdbPort: 13333 }, {});
         await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
     }
-    assert.strictEqual(captured.length, 5, "Each failed operation starts exactly once");
+    for (const mode of ["debug", "standalone"]) {
+        const session = new live.ManagedOpenOcdSession(
+            null,
+            { ...options, mode, rtos: "FreeRTOS", gdbPort: 13334 },
+            {}
+        );
+        await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
+    }
+    assert.strictEqual(captured.length, 7, "Each failed operation starts exactly once");
+    const rtosArgs = captured[5];
+    const samplingArgs = captured[6];
+    const rtosCommand = rtosArgs.find((arg) => arg.includes("configure -rtos FreeRTOS"));
+    assert(rtosCommand, "debug mode configures the RTOS");
+    assert(rtosCommand.includes("[target current]"), "only the current target is configured for the RTOS");
+    assert(rtosArgs.indexOf("/scripts/target/stm32f4x.cfg") < rtosArgs.indexOf(rtosCommand));
+    assert(rtosArgs.indexOf("adapter speed 100") < rtosArgs.indexOf(rtosCommand));
+    const workArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
+    assert(rtosArgs.indexOf(rtosCommand) < rtosArgs.indexOf(workArea));
+    assert(rtosArgs.indexOf(rtosCommand) < rtosArgs.indexOf("init"), "OpenOCD must see -rtos before init");
+    assert(!samplingArgs.some((arg) => arg.includes("-rtos")), "sampling-only sessions never configure an RTOS");
+    await assert.rejects(
+        new live.ManagedOpenOcdSession(
+            null,
+            { ...options, mode: "debug", rtos: "FreeRTOs", gdbPort: 13335 },
+            {}
+        ).start(),
+        { code: "OPENOCD_RTOS_INVALID" }
+    );
+    assert.strictEqual(captured.length, 7, "An invalid RTOS name never reaches OpenOCD");
     for (const args of captured) {
         assert(args.indexOf("/scripts/interface/jlink.cfg") < args.indexOf("adapter serial 1234"));
         assert(args.indexOf("adapter serial 1234") < args.indexOf("transport select swd"));

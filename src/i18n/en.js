@@ -363,6 +363,7 @@ module.exports = Object.freeze({
     "lw.error": "An error occurred",
     "lw.compositeUnsupported": "Structs and arrays can't be sampled as a whole",
     "lw.compositeNoLayout": "Missing DWARF layout info; cannot expand members",
+    "lw.unknownType": "Unknown type",
     "lw.cppUnknownType": "C++ symbol has no DWARF type info; refusing to guess a scalar type from its size",
     "lw.cppSymbolAmbiguous": "C++ symbol could not be uniquely matched in DWARF; type binding disabled",
     "lw.virtualBaseUnobservable": "Virtual base members require runtime addressing and are not observable",
