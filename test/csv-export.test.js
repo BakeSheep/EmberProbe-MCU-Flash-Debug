@@ -65,6 +65,23 @@ assert.strictEqual(
     '\uFEFFtime,"\'=HYPERLINK(""https://example.invalid"")"',
     "ELF-controlled series names must not become spreadsheet formulas"
 );
+// Data cells are dominated by negative readings, so a leading "-" only counts as a formula when the
+// rest is not a plain number. Mirrors csvField in src/services/samplingArchive.js.
+assert.strictEqual(
+    buildCsv(["v"], [[{ t: t0, v: -Infinity }]]).split("\r\n")[1],
+    "2026-01-02T03:04:05.678Z,'-Infinity",
+    "a non-numeric negative cell must not become a spreadsheet formula"
+);
+assert.strictEqual(
+    buildCsv(["v"], [[{ t: t0, v: -128 }]]).split("\r\n")[1],
+    "2026-01-02T03:04:05.678Z,-128",
+    "negative readings must stay numeric"
+);
+assert.strictEqual(
+    buildCsv(["v"], [[{ t: t0, v: 1, valueText: "=1+1" }]]).split("\r\n")[1],
+    "2026-01-02T03:04:05.678Z,'=1+1",
+    "a target-controlled value must not become a spreadsheet formula"
+);
 
 assert.strictEqual(
     buildCsv(["failed"], [[{ t: t0, v: null, valueText: "-" }]]).split("\r\n")[1],

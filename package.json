@@ -210,7 +210,7 @@
             "Zephyr"
           ],
           "default": "",
-          "description": "高级覆盖：调试时让 OpenOCD 感知的 RTOS（名称区分大小写）。留空表示关闭（默认），调用栈保持单线程；填写后调用栈显示 RTOS 任务，栈帧、变量与单步都绑定到对应任务。仅作用于调试模式，在 target 配置加载后、init 之前写入当前 target，因此改动在下次启动调试时生效；launch.json 的 rtos 优先于此设置。"
+          "description": "高级覆盖：调试时让 OpenOCD 感知的 RTOS（名称区分大小写）。留空表示关闭（默认），调用栈保持单线程；填写后调用栈显示 RTOS 任务，栈帧、变量与单步都绑定到对应任务。仅作用于调试模式，在 target 配置加载后、init 之前写入当前 target，因此改动在下次启动调试时生效；调试会话内的“重启”会复用同一个 OpenOCD 服务，不会重新配置，需停止后重新启动。launch.json 的 rtos 优先于此设置。"
         },
         "emberprobe.gdbPath": {
           "type": "string",

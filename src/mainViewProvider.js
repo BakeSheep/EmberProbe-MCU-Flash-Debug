@@ -971,6 +971,9 @@ class MainViewProvider {
             to: result.lastValueTimestampMs,
             seriesCount: result.seriesCount,
             rowCount: result.rows,
+            // The archive stops recording once it hits its size cap while the chart keeps drawing, so
+            // an Agent must be told the CSV covers less than the session it asked about.
+            historyTruncated: result.limitReached === true,
             csv: result.csv
         };
     }

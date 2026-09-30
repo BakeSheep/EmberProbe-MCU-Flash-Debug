@@ -1,11 +1,16 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
-function retainedSampleLimit(frequencyHz) {
-    return CFG.autoMaxSamples
-        ? Math.min(20000, Math.max(CFG.maxSamples, Math.ceil(Number(frequencyHz) * 60) + 256))
-        : CFG.maxSamples;
+var RETENTION_TRIM_CHUNK = 256;
+function retainedSampleLimit(frequencyHz, intervalMs) {
+    if (!CFG.autoMaxSamples) return CFG.maxSamples;
+    // The clock period is round(1000 / hz), so the effective rate can exceed the nominal one.
+    // Sizing the buffer from the nominal Hz under-retains at 731 of the 2000 selectable values.
+    // The extra chunk + 1 keeps the worst case (trim firing one point over the limit) above 60 s.
+    var ms = Number(intervalMs) > 0 ? Number(intervalMs) : 1000 / Number(frequencyHz);
+    var needed = Math.ceil(60000 / ms);
+    return Math.min(20000, Math.max(CFG.maxSamples, needed + RETENTION_TRIM_CHUNK + 1));
 }
-var MAXPTS = retainedSampleLimit(CFG.frequencyHz);
+var MAXPTS = retainedSampleLimit(CFG.frequencyHz, CFG.intervalMs);
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
@@ -423,7 +428,28 @@ function onSamples(samples) {
         arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
         if (arr.length > MAXPTS) {
             // Trim in chunks so high-rate sampling does not shift the whole buffer on every point.
-            arr.splice(0, Math.max(arr.length - MAXPTS, Math.min(256, Math.max(1, Math.floor(MAXPTS / 20)))));
+            // RETENTION_TRIM_CHUNK is the ceiling retainedSampleLimit compensates for; raising it
+            // here without raising it there breaks the 60-second guarantee.
+            var remove = Math.max(
+                arr.length - MAXPTS,
+                Math.min(RETENTION_TRIM_CHUNK, Math.max(1, Math.floor(MAXPTS / 20)))
+            );
+            if (CFG.autoMaxSamples) {
+                // A lower rate needs fewer future points, but the preceding minute may still contain
+                // high-rate samples. Keep the point at or just before the window boundary as well.
+                var cutoff = time - 60000,
+                    low = 0,
+                    high = arr.length;
+                while (low < high) {
+                    var mid = Math.floor((low + high) / 2);
+                    if (arr[mid].t <= cutoff) low = mid + 1;
+                    else high = mid;
+                }
+                remove = Math.min(remove, Math.max(0, low - 1));
+                // Preserve the existing hard bound even for an unexpectedly oversized input stream.
+                remove = Math.max(remove, arr.length - 20000);
+            }
+            if (remove > 0) arr.splice(0, remove);
         }
     });
     scheduleValueRefresh();
@@ -1215,7 +1241,7 @@ function showArchiveExport(info) {
     var all = $("exportRanges").querySelector("input[value=all]");
     if (all) all.checked = true;
     setExportTimelineMode();
-    $("exportWarn").textContent = "";
+    $("exportWarn").textContent = info.limitReached ? t("lw.archiveTruncated") : "";
     $("exportOverlay").classList.remove("hidden");
 }
 function applyExport() {
@@ -1296,7 +1322,8 @@ function resetChartView() {
 }
 function freezeChart() {
     syncTimeBounds();
-    Analysis.freeze(analysis, data, MAXPTS);
+    // Auto retention can exceed the new rate's point target while preserving earlier high-rate history.
+    Analysis.freeze(analysis, data, CFG.autoMaxSamples ? 20000 : MAXPTS);
     frozen = true;
     chartState.follow = false;
     invalidateSeries();
@@ -2172,7 +2199,7 @@ window.EmberProbeMessages.connect(window, {
     },
     liveFrequency: function (m) {
         requestedFrequencyHz = m.frequencyHz;
-        MAXPTS = retainedSampleLimit(requestedFrequencyHz);
+        MAXPTS = retainedSampleLimit(requestedFrequencyHz, m.intervalMs);
         $("frequency").value = String(requestedFrequencyHz);
     }
 });

@@ -14,15 +14,28 @@ function codedError(code, message) {
     return Object.assign(new Error(message), { code });
 }
 
-function csvField(value) {
-    const text = String(value ?? "");
+// Keep these rules in step with buildCsv's esc() in src/liveWatchView.js, which is serialized into
+// the live-watch page and therefore cannot import from here.
+const NUMERIC_CELL = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+function quoteCsv(text) {
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// Data cells are dominated by negative readings, so a leading "-" only counts as a formula when
+// the rest is not a plain number. Header names never contain numbers, hence the blanket rule below.
+function dataCellSafe(text) {
+    if (/^[=+@\t\r]/.test(text)) return `'${text}`;
+    return text.startsWith("-") && !NUMERIC_CELL.test(text) ? `'${text}` : text;
+}
+
+function csvField(value) {
+    return quoteCsv(dataCellSafe(String(value ?? "")));
 }
 
 function csvHeaderField(value) {
     const text = String(value ?? "");
-    const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-    return csvField(safe);
+    return quoteCsv(/^[=+\-@\t\r]/.test(text) ? `'${text}` : text);
 }
 
 function processIsAlive(pid) {
@@ -224,9 +237,12 @@ class SamplingArchive {
     async _readCsv(request) {
         const outputPath = path.join(this.rootDir, `agent-export-${crypto.randomBytes(8).toString("hex")}.csv`);
         try {
-            const result = await this.exportCsv({ ...request, outputPath, maxOutputBytes: AGENT_CSV_MAX_BYTES });
+            // Deliberately bypasses exportCsv's lock: that guard serialises user-facing exports to a
+            // chosen path, whereas an Agent read writes to a unique temporary file and must not fail
+            // just because the user happens to be exporting. flush() is reentrant, so this is safe.
+            const result = await this._exportCsv({ ...request, outputPath, maxOutputBytes: AGENT_CSV_MAX_BYTES });
             if (!result.valueRows) throw codedError("CSV_EXPORT_EMPTY", "The selected range has no chart samples");
-            return { ...result, csv: await fsp.readFile(outputPath, "utf8") };
+            return { ...result, csv: await fsp.readFile(outputPath, "utf8"), limitReached: this.limitReached };
         } finally {
             await fsp.rm(outputPath, { force: true }).catch(() => {});
         }

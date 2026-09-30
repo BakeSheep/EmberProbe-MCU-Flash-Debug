@@ -221,6 +221,66 @@ function setup(item = {}) {
     await assert.rejects(task.adapter.handle("variables", { variablesReference: task.ref }), /Stale/);
     await assert.rejects(task.adapter.handle("variables", { variablesReference: exitedScope }), /Stale/);
 
+    // The exiting task has been browsed before, and exits during another task's MI request.
+    for (const operation of ["variables", "setVariable"]) {
+        const concurrent = setup();
+        const adapter = concurrent.adapter;
+        adapter.rtosAware = true;
+        adapter.thread = 2;
+        adapter.threads = new Set([2, 3]);
+        await adapter.handle("variables", { variablesReference: concurrent.ref, count: 1 });
+        const cachedFrame = adapter.handleFor({ kind: "frame", thread: 3, level: 0 });
+        const cachedScope = adapter.handleFor({ kind: "scope", frameId: cachedFrame });
+        const cached = adapter.variableStore.root(
+            { name: "other", type: "int [1]", numchild: "1", value: "{...}" },
+            { thread: 3, level: 0 }
+        );
+        const cachedRef = adapter.variableStore.present(cached).variablesReference;
+        const command = concurrent.mi.command.bind(concurrent.mi);
+        concurrent.mi.command = async (text) => {
+            if (text.startsWith(operation === "variables" ? "-var-list-children" : "-var-show-attributes"))
+                adapter.forgetThread(3);
+            return command(text);
+        };
+        const result = await adapter.handle(operation, {
+            variablesReference: concurrent.ref,
+            count: 1,
+            name: "[0]",
+            value: "42"
+        });
+        if (operation === "setVariable") assert.strictEqual(result.value, "42");
+        else assert.strictEqual(result.variables.length, 1);
+        for (const reference of [cachedScope, cachedRef])
+            await assert.rejects(adapter.handle("variables", { variablesReference: reference }), /Stale/);
+        assert(!adapter.variableStore.nodes.has("other"));
+    }
+
+    // Losing the owning task still rejects the in-flight operation, even if its ID is reused.
+    for (const operation of ["variables", "setVariable"]) {
+        const ownerExit = setup();
+        ownerExit.adapter.rtosAware = true;
+        ownerExit.adapter.threads.add(2);
+        await ownerExit.adapter.handle("variables", { variablesReference: ownerExit.ref, count: 1 });
+        const command = ownerExit.mi.command.bind(ownerExit.mi);
+        ownerExit.mi.command = async (text) => {
+            if (text.startsWith(operation === "variables" ? "-var-list-children" : "-var-show-attributes")) {
+                ownerExit.adapter.forgetThread(2);
+                ownerExit.adapter.confirmThread(2);
+            }
+            return command(text);
+        };
+        await assert.rejects(
+            ownerExit.adapter.handle(operation, {
+                variablesReference: ownerExit.ref,
+                count: 1,
+                name: "[0]",
+                value: "42"
+            }),
+            /Stale/
+        );
+        assert(!ownerExit.mi.commands.some((text) => text.startsWith("-var-assign")));
+    }
+
     const race = setup();
     race.mi.interruptOn = "-var-list-children";
     await assert.rejects(race.adapter.handle("variables", { variablesReference: race.ref }), /paused/);

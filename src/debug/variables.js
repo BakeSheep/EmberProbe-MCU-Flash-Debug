@@ -1,7 +1,7 @@
 "use strict";
 
 const { quote } = require("./mi");
-const { StlDisplay, constValue, indirectType } = require("./stl");
+const { StlDisplay, constValue, indirectType, isInternalError } = require("./stl");
 
 const PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
@@ -30,17 +30,27 @@ class DebugVariables {
         this.nodes = new Map();
         this.synthetic = new Map();
         this.generation = 0;
+        this.threadGenerations = new Map();
         this.stl = new StlDisplay(this);
     }
     reset() {
         this.generation++;
+        this.threadGenerations.clear();
         this.nodes.clear();
         this.synthetic.clear();
         this.stl.reset();
     }
-    check(generation) {
+    snapshot(frame) {
+        const thread = this.session.rtosAware ? frame?.thread : undefined;
+        return { generation: this.generation, thread, threadGeneration: this.threadGenerations.get(thread) || 0 };
+    }
+    check(snapshot) {
         this.session.paused();
-        if (generation !== this.generation) throw new Error("Stale debug variable operation; refresh after stopping");
+        if (
+            snapshot.generation !== this.generation ||
+            snapshot.threadGeneration !== (this.threadGenerations.get(snapshot.thread) || 0)
+        )
+            throw new Error("Stale debug variable operation; refresh after stopping");
     }
     register(item, root = null, parent = null, readOnly = false) {
         let node = this.nodes.get(item.name);
@@ -121,18 +131,23 @@ class DebugVariables {
         // Assignments use live node identity, so old page mappings cannot target recreated children.
     }
     invalidateThread(thread) {
-        this.generation++;
+        // Invalidate only this task's operations, including a create still awaiting its first node.
+        this.threadGenerations.set(thread, (this.threadGenerations.get(thread) || 0) + 1);
         const owned = [];
         for (const [id, handle] of this.session.handles) {
             const frame = handle.frame || (handle.kind === "frame" ? handle : this.session.handles.get(handle.frameId));
             if (frame?.thread === thread) owned.push(id);
         }
+        const nodes = [];
+        for (const [name, node] of this.nodes) if (node.frame?.thread === thread) nodes.push(name);
+        const synthetic = [];
+        for (const [key, handle] of this.synthetic) if (handle.frame?.thread === thread) synthetic.push(key);
         for (const id of owned) {
             this.session.handles.delete(id);
             this.session.variablesByName.delete(id);
         }
-        for (const [name, node] of this.nodes) if (node.frame?.thread === thread) this.nodes.delete(name);
-        for (const [key, handle] of this.synthetic) if (handle.frame?.thread === thread) this.synthetic.delete(key);
+        for (const name of nodes) this.nodes.delete(name);
+        for (const key of synthetic) this.synthetic.delete(key);
     }
     syntheticHandle(key, value) {
         let handle = this.synthetic.get(key);
@@ -186,7 +201,7 @@ class DebugVariables {
         return { nodes, more: range.from + nodes.length < handle.locals.length };
     }
     async children(node, from, size, generation) {
-        const context = this.stl.context();
+        const context = this.stl.context(node.frame);
         await this.stl.prepare(node, context);
         if (node.unavailable) throw new Error(`Variable unavailable: ${node.unavailable}`);
         if (node.stl) {
@@ -194,6 +209,7 @@ class DebugVariables {
                 return await this.stl.expand(node, from, size, context);
             } catch (error) {
                 this.check(generation);
+                if (isInternalError(error)) throw error;
                 if (
                     /inaccessible|Cannot access|optimized|unavailable|not available|budget exceeded|Stale|running/i.test(
                         error.message
@@ -214,6 +230,7 @@ class DebugVariables {
             );
         } catch (error) {
             this.check(generation);
+            if (isInternalError(error)) throw error;
             if (!yes(node.item.dynamic) || node.raw) throw error;
             this.check(generation);
             const info = await this.session.mi.command(`-var-info-num-children ${quote(node.item.name)}`);
@@ -256,8 +273,8 @@ class DebugVariables {
     }
     async variables(args) {
         const handle = this.session.reference(args.variablesReference, null);
-        const generation = this.generation;
         const parent = handle.kind === "page" ? handle.parent : handle;
+        const generation = this.snapshot(parent.frame || this.session.handles.get(parent.frameId));
         const filter = args.filter ?? handle.filter;
         const range = pageRange({ ...args, filter }, handle.kind === "page" ? handle.start : 0);
         if (parent.frame && this.session.rtosAware) {
@@ -274,6 +291,7 @@ class DebugVariables {
             return { variables };
         }
         if (parent.kind === "variable") await this.stl.prepare(parent);
+        this.check(generation);
         const isIndexed = parent.kind === "variable" && (parent.stl ? parent.stl.indexed : indexed(parent.item));
         if (filter && filter !== (isIndexed ? "indexed" : "named")) return { variables: [] };
         const result =
@@ -283,6 +301,7 @@ class DebugVariables {
                   ? await this.children(parent, range.from, range.size, generation)
                   : null;
         if (!result) throw new Error("Invalid variable reference");
+        this.check(generation);
         const variables = [];
         if (result.map) {
             for (let index = 0; index < result.nodes.length; index += 2) {
@@ -328,8 +347,8 @@ class DebugVariables {
     }
     async setVariable(args) {
         this.session.reference(args.variablesReference, null);
-        const generation = this.generation;
         const node = this.session.variablesByName.get(args.variablesReference)?.get(args.name);
+        const generation = this.snapshot(node?.frame);
         if (node?.readOnly || node?.stl) throw new Error("Variable is read only");
         if (!node?.item.name || this.nodes.get(node.item.name) !== node)
             throw new Error("Variable is unavailable, ambiguous, or has not been expanded");
@@ -341,7 +360,7 @@ class DebugVariables {
             ) &&
             !/[\[*]/.test(node.item.type || "")
         ) {
-            const context = this.stl.context();
+            const context = this.stl.context(node.frame);
             await this.stl.bindFrame(node, context);
             if (constValue(await this.stl.canonical(node.item, context))) throw new Error("Variable is read only");
         }
@@ -351,12 +370,17 @@ class DebugVariables {
         const result = await this.session.mi.command(`-var-assign ${quote(node.item.name)} ${quote(args.value)}`);
         this.check(generation);
         node.item.value = result.value;
-        const formatted = [];
-        for (let parent = node.parent; parent; parent = parent.parent) if (parent.stl) formatted.push(parent);
-        if (formatted.length) {
-            // Synthetic elements are independent real varobjs. Never update an entire container tree.
-            for (const parent of formatted.reverse())
-                if (this.nodes.get(parent.item.name) === parent) await this.stl.refresh(parent, this.stl.context());
+        let container = null;
+        for (let parent = node.parent; parent; parent = parent.parent)
+            if (parent.stl) {
+                container = parent;
+                break;
+            }
+        if (container) {
+            // Re-read the nearest container's display without discarding references to unchanged storage.
+            if (this.nodes.get(container.item.name) === container)
+                await this.stl.refresh(container, this.stl.context(container.frame));
+            this.check(generation);
             return { value: result.value, variablesReference: 0 };
         }
         // A root that has never been expanded must not trigger an unbounded dynamic update.

@@ -101,7 +101,7 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
             value: "77"
         });
         assert.strictEqual((await expand(value, { start: 100, count: 1 }))[0].value, "77");
-        await assert.rejects(expand(first.at(-1)), /Stale/);
+        assert.strictEqual((await expand(first.at(-1)))[0].value, "77", "page references survive element writes");
         assert(!mi.commands.some((command) => /python|visualizer|enable-pretty|var-update/.test(command)));
         await session.clearVariables();
         await assert.rejects(expand(value), /Stale/);
@@ -384,6 +384,143 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
     assert(rtos.mi.commands.some((command) => /^-var-create --thread 2 --frame 1/.test(command)));
     rtos.session.variableStore.invalidateThread(2);
     await assert.rejects(rtos.expand(root), /Stale/);
+
+    // Assigning inside a nested container must refresh only the innermost one. Refreshing an outer
+    // container drops every reference the client still holds for the levels in between.
+    const nested = setup();
+    const pairFirst = nested.mi.item("elem.first", "const int", "1");
+    const pairSecond = nested.mi.item("elem.second", "int", "2");
+    const pairItem = nested.mi.item("elem", "std::pair<int, int>", "{...}", [pairFirst, pairSecond]);
+    const nestedStart = nested.mi.item("nested._M_impl._M_start", "std::pair<int, int> *", "0x20004000");
+    nestedStart.pointee = pairItem;
+    const nestedFinish = nested.mi.item("nested._M_impl._M_finish", "std::pair<int, int> *", "0x20004004");
+    const nestedStorage = nested.mi.item("nested._M_impl._M_end_of_storage", "std::pair<int, int> *", "0x20004004");
+    const nestedImpl = nested.mi.item("nested._M_impl", "std::_Vector_impl", "{...}", [
+        nestedStart,
+        nestedFinish,
+        nestedStorage
+    ]);
+    nested.mi.item("nested", "std::vector<std::pair<int, int> >", "{...}", [nestedImpl]);
+    const outer = await nested.evaluate("nested");
+    assert.match(outer.result, /vector length 1/);
+    const nestedElements = await nested.expand(outer);
+    assert.strictEqual(nestedElements[0].name, "[0]");
+    assert.deepStrictEqual(
+        (await nested.expand(nestedElements[0])).map((field) => `${field.name}=${field.value}`),
+        ["first=1", "second=2"]
+    );
+    nested.mi.commands.length = 0;
+    await nested.session.handle("setVariable", {
+        variablesReference: nestedElements[0].variablesReference,
+        name: "second",
+        value: "42"
+    });
+    assert.deepStrictEqual(
+        nested.mi.commands.filter((command) => command.startsWith("-var-delete")),
+        [],
+        "the outer container's element varobjs must survive; refreshing it would drop the client's references"
+    );
+    assert.deepStrictEqual(
+        (await nested.expand(nestedElements[0])).map((field) => `${field.name}=${field.value}`),
+        ["first=1", "second=42"],
+        "the element row the client is still showing must stay resolvable"
+    );
+    assert.strictEqual((await nested.expand(outer))[0].name, "[0]");
+
+    const plain = setup();
+    const plainField = plain.mi.item("plainElement.x", "int", "1");
+    const plainItem = plain.mi.item("plainElement", "Plain", "{...}", [plainField]);
+    vector(plain.mi, "plainVector", 1, "std::vector<Plain>");
+    plain.mi.items.get("plainVector._M_impl._M_start").pointee = plainItem;
+    const plainOuter = await plain.evaluate("plainVector");
+    const plainElement = (await plain.expand(plainOuter))[0];
+    await plain.expand(plainElement);
+    plain.mi.commands.length = 0;
+    for (const value of ["42", "43"]) {
+        await plain.session.handle("setVariable", {
+            variablesReference: plainElement.variablesReference,
+            name: "x",
+            value
+        });
+        assert.strictEqual((await plain.expand(plainElement))[0].value, value);
+        assert.strictEqual((await plain.expand(plainOuter))[0].variablesReference, plainElement.variablesReference);
+    }
+    assert(!plain.mi.commands.some((command) => command.startsWith("-var-delete")));
+    // A real relocation must still invalidate the old address-backed element.
+    const replacement = plain.mi.item("replacement", "Plain", "{...}", [plain.mi.item("replacement.x", "int", "9")]);
+    const relocated = plain.mi.items.get("plainVector._M_impl._M_start");
+    relocated.value = "0x20005000";
+    relocated.pointee = replacement;
+    plain.mi.items.get("plainVector._M_impl._M_finish").value = "0x20005004";
+    plain.mi.items.get("plainVector._M_impl._M_end_of_storage").value = "0x20005004";
+    const plainNode = plain.session.variableStore.nodes.get("plainVector");
+    await plain.session.variableStore.stl.refresh(plainNode, plain.session.variableStore.stl.context(plainNode.frame));
+    await assert.rejects(plain.expand(plainElement), /Stale/);
+    assert(plain.mi.commands.includes('-var-delete "plainElement"'));
+    const replacementElement = (await plain.expand(plainOuter))[0];
+    assert.strictEqual((await plain.expand(replacementElement))[0].value, "9");
+    await plain.session.clearVariables();
+    await assert.rejects(plain.expand(replacementElement), /Stale/);
+
+    await map.session.handle("setVariable", {
+        variablesReference: entries[0].variablesReference,
+        name: "value",
+        value: "42"
+    });
+    assert.strictEqual((await map.expand(entries[0]))[1].value, "42");
+    const refreshedEntry = (await map.expand(ordered, { start: 1, count: 1 }))[0];
+    assert.strictEqual(refreshedEntry.variablesReference, entries[0].variablesReference);
+    assert.strictEqual((await map.expand(refreshedEntry))[1].value, "42");
+
+    const unrelated = setup();
+    vector(unrelated.mi);
+    unrelated.session.rtosAware = true;
+    unrelated.session.threads = new Set([2, 3]);
+    const pinnedFrame = unrelated.session.handleFor({ kind: "frame", thread: 2, level: 0 });
+    const pinned = await unrelated.session.handle("evaluate", { expression: "numbers", frameId: pinnedFrame });
+    // A cached task exits during STL materialization on a different live task.
+    const otherFrame = unrelated.session.handleFor({ kind: "frame", thread: 3, level: 0 });
+    unrelated.mi.onCommand = (command) => {
+        if (command.startsWith("-var-create")) unrelated.session.forgetThread(3);
+    };
+    assert.strictEqual((await unrelated.expand(pinned, { count: 1 }))[0].name, "[0]");
+    assert(!unrelated.session.handles.has(otherFrame));
+    unrelated.mi.onCommand = (command) => {
+        if (command.startsWith("-var-evaluate-expression")) {
+            unrelated.session.forgetThread(2);
+            unrelated.session.confirmThread(2);
+        }
+    };
+    await assert.rejects(unrelated.expand(pinned, { count: 1 }), /Stale/);
+    unrelated.session.variableStore.invalidateThread(2);
+    await assert.rejects(unrelated.expand(pinned), /Stale/);
+
+    const creating = setup();
+    vector(creating.mi);
+    creating.session.rtosAware = true;
+    creating.session.threads.add(2);
+    const creatingFrame = { thread: 2, level: 0 };
+    creating.mi.onCommand = (command) => {
+        if (command.startsWith("-var-create")) {
+            creating.session.forgetThread(2);
+            creating.session.confirmThread(2);
+        }
+    };
+    await assert.rejects(creating.session.createVariable("numbers", creatingFrame), /Stale/);
+    assert(
+        !creating.session.variableStore.nodes.has("numbers"),
+        "a dead task's pending create must not register a node"
+    );
+
+    const selecting = setup();
+    selecting.session.rtosAware = true;
+    selecting.session.threads.add(2);
+    const selectingFrame = selecting.session.handleFor({ kind: "frame", thread: 2, level: 0 });
+    selecting.mi.onCommand = (command) => {
+        if (command === "-thread-select 2") selecting.session.forgetThread(2);
+    };
+    await assert.rejects(selecting.session.selectFrame(selectingFrame), /Stale/);
+    assert.strictEqual(selecting.session.selectedFrame, undefined, "an exited task must not become the selected frame");
 
     const stale = setup();
     vector(stale.mi);

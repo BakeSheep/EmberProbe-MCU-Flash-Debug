@@ -331,6 +331,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
                 : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
         if (child.virtuality || child.memberOffset === undefined) {
             // 虚基类偏移依赖运行期 vtable，静态阶段不产地址、不出叶子（阶段 3 再接管求址）。
+            // unobservable 是稳定的机器代码而非展示文案，消费方只判真值；如需面向用户请走 i18n。
             members.push({
                 name: "@base" + index,
                 offset: 0,
@@ -340,9 +341,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
                 isBase: true,
                 baseIndex: index,
                 ...(child.virtuality ? { virtual: true } : {}),
-                unobservable: child.virtuality
-                    ? "virtual base requires runtime addressing"
-                    : "base location is not a static offset"
+                unobservable: child.virtuality ? "virtual-base" : "base-location"
             });
             continue;
         }
@@ -378,7 +377,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache, depth, budget
                 name: child.name || "",
                 offset: 0,
                 byteSize: 0,
-                unobservable: "member location is not a static offset"
+                unobservable: "member-location"
             });
             continue;
         }

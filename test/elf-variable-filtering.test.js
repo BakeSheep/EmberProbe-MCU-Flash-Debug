@@ -26,9 +26,40 @@ const metadata = [
     "_ZGVZ8callbackvE5state"
 ];
 const missingName = "_ZN3app7missingE";
+// C reserves "_" plus an uppercase letter but not "_" plus a lowercase one, so these are legal C
+// globals that a bare /^_Z/ test would drag into the C++ unresolved-type path.
+const cLookalikes = ["_ZephyrState", "_Zcounter"];
 for (const name of metadata) assert(elf.isCppRuntimeSymbol(name));
 for (const name of [missingName, "_ZN3app7g_plantE", "_ZZ8callbackvE5state", "Idle_Stack.2", "counter"])
     assert(!elf.isCppRuntimeSymbol(name), `keep source variable ${name}`);
+for (const name of [
+    ...metadata,
+    missingName,
+    "_ZN3app7g_plantE",
+    "_ZL3foov",
+    "_ZZ8callbackvE5state",
+    "_ZSt3cin",
+    "_Z3amb"
+])
+    assert(elf.isItaniumMangled(name), `Itanium-mangled ${name}`);
+for (const name of [...cLookalikes, "counter", "Idle_Stack.2", "v0_2.1"])
+    assert(!elf.isItaniumMangled(name), `not Itanium-mangled ${name}`);
+
+// Diagnostics ship to the webview wholesale, so a firmware linking many C++ objects without debug
+// info must not be able to flood the channel; the overflow is reported, not silently dropped.
+{
+    const capped = new ElfService({ t: (key, params) => (params ? `${key} ${JSON.stringify(params)}` : key) });
+    const result = { symbols: [], diagnostics: [], warnings: [] };
+    for (let index = 0; index < 120; index++)
+        result.symbols.push({ name: `_ZN3app${index}7missingE`, displayName: `app${index}::missing` });
+    result.symbols.push({ name: "_ZephyrState", displayName: "_ZephyrState" });
+    capped._recordCppDiagnostics(result, new Map());
+    assert.strictEqual(result.diagnostics.filter((d) => d.code === "CPP_TYPE_UNRESOLVED").length, 50);
+    const truncated = result.diagnostics.filter((d) => d.code === "CPP_DIAGNOSTICS_TRUNCATED");
+    assert.strictEqual(truncated.length, 1);
+    assert.match(truncated[0].message, /"count":70/);
+    assert.strictEqual(result.warnings.length, 51);
+}
 
 // Only an unambiguous static address may bind compiler-suffixed C symbols.
 const variable = (address) => ({ name: "state", linkageName: "", address });
@@ -87,6 +118,15 @@ function fixture() {
         const entry = Buffer.alloc(16);
         entry.writeUInt32LE(0x08010000 + index * 32, 4);
         entry.writeUInt32LE(16, 8);
+        entry[12] = 0x11;
+        entry.writeUInt16LE(1, 14);
+        add(name, entry);
+    });
+    // Size 4, so the size-inferred scalar path applies and only the mangling test decides the kind.
+    cLookalikes.forEach((name, index) => {
+        const entry = Buffer.alloc(16);
+        entry.writeUInt32LE(0x08011000 + index * 16, 4);
+        entry.writeUInt32LE(4, 8);
         entry[12] = 0x11;
         entry.writeUInt16LE(1, 14);
         add(name, entry);
@@ -161,6 +201,12 @@ function fixture() {
                 assert(unresolved.cppTypeUnavailable);
                 assert.strictEqual(unresolved.watchType, "", "missing debug types must not become writable scalars");
                 assert.strictEqual(result.diagnostics.filter((d) => d.code === "CPP_TYPE_UNRESOLVED").length, 1);
+                for (const name of cLookalikes) {
+                    const cGlobal = result.symbols.find((s) => s.name === name);
+                    assert(!cGlobal.isComposite, `${name} is a C global, not an unresolved C++ object`);
+                    assert(!cGlobal.cppTypeUnavailable, `${name} must not report a C++ type problem`);
+                    assert.strictEqual(cGlobal.watchType, "u32", `${name} keeps its size-inferred scalar type`);
+                }
                 results.push(result.symbols.map((s) => [s.name, s.displayName, s.typeName]));
             } finally {
                 service.invalidate();

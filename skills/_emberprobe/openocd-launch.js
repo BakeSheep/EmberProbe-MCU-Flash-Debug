@@ -42,8 +42,10 @@ function normalizeRtos(value = "") {
     // explicitly). Anything else must be an allow-listed name; non-strings never are.
     if (name === "" && typeof value === "string") return "";
     if (!OPENOCD_RTOS_NAMES.includes(name)) {
+        // A bare ${name} renders as nothing for values such as [], which reads as a broken sentence.
+        const shown = name ? `"${name}"` : `${JSON.stringify(value)} (normalizes to an empty name)`;
         throw Object.assign(
-            new Error(`Unsupported OpenOCD RTOS: ${name}. Expected one of: ${OPENOCD_RTOS_NAMES.join(", ")}`),
+            new Error(`Unsupported OpenOCD RTOS: ${shown}. Expected one of: ${OPENOCD_RTOS_NAMES.join(", ")}`),
             { code: "OPENOCD_RTOS_INVALID" }
         );
     }

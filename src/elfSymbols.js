@@ -13,6 +13,15 @@ function isCppRuntimeSymbol(name) {
     return /^_Z(?:T[IVSTC]|GV)/.test(name);
 }
 
+// Itanium mangling puts an uppercase letter or a length digit after "_Z": N (nested), L (internal
+// linkage), Z (function-local static), S (substitution/std), T (typeinfo/vtable), G (guard), or a
+// <length><identifier> source name such as _Z3amb. Requiring uppercase-or-digit keeps legitimate C
+// identifiers such as _ZephyrState out — C reserves "_" plus an uppercase letter, but not "_" plus
+// a lowercase one, so a bare /^_Z/ test misfires on them.
+function isItaniumMangled(name) {
+    return /^_Z[A-Z0-9]/.test(String(name));
+}
+
 function resolveVariableRequests(symbols, requests) {
     const list = Array.isArray(symbols) ? symbols : [];
     const exact = new Map(list.map((symbol) => [symbol.name, symbol]));
@@ -790,6 +799,7 @@ function isScalarLeafNode(node) {
 module.exports = {
     parseElfSymbols,
     isCppRuntimeSymbol,
+    isItaniumMangled,
     parseElfSections,
     nearestFunction,
     decodeValue,

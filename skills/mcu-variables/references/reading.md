@@ -36,7 +36,7 @@ node <skill-dir>/scripts/read.js --workspace <workspace> --variables counter --t
 
 Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
 
-Agent CSV reads the chart's full sampling archive. Column headers include the decoded type so history remains clear if a watch's type changes. Results larger than 64 MiB are rejected explicitly; use the chart's archive export dialog for larger files.
+Agent CSV reads the chart's full sampling archive. Column headers include the decoded type so history remains clear if a watch's type changes. Results larger than 64 MiB are rejected explicitly; use the chart's archive export dialog for larger files. `historyTruncated: true` means the archive hit its size cap and stopped recording while the chart kept drawing, so the CSV covers less than the requested range: compare `from`/`to` with what was asked and report the gap instead of presenting the rows as complete.
 
 ```bash
 node <skill-dir>/scripts/read.js --workspace <workspace> --export-csv --variables counter,temperature --last 30 --output exports/live.csv

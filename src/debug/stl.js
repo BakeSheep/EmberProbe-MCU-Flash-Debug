@@ -6,6 +6,7 @@ const MEMORY_LIMIT = 65536;
 const WALK_LIMIT = 4096;
 const FIELD_LIMIT = 128;
 const MAX_DEPTH = 12;
+const TYPE_LINE = /(?:^|\n)type = ([^\r\n]+)/;
 
 function templateType(input) {
     const type = String(input)
@@ -102,6 +103,39 @@ function indirectType(type) {
     return /[*&]/.test(outerType(type));
 }
 
+// Every target and layout condition this module reports is a plain Error. A TypeError, RangeError
+// or a non-Error throw is a defect here, and degrading it to raw fields would hide it behind a
+// single console line.
+function isInternalError(error) {
+    return (
+        !(error instanceof Error) ||
+        error instanceof TypeError ||
+        error instanceof RangeError ||
+        error instanceof ReferenceError
+    );
+}
+
+function storageIdentity(view) {
+    // Values and summaries may change after an element write; only storage changes invalidate handles.
+    const fields = view.fields || view.tuple;
+    return JSON.stringify([
+        view.info.type,
+        view.count,
+        view.address?.toString(),
+        view.elementSize?.toString(),
+        view.bitOffset,
+        view.wordSize,
+        view.branch,
+        view.pointeeType,
+        view.first?.toString(),
+        view.sentinel?.toString(),
+        view.valueOffset?.toString(),
+        view.array?.name,
+        view.value?.name,
+        fields ? [...fields].map(([label, item]) => [label, item.name, item.type]) : null
+    ]);
+}
+
 class StlDisplay {
     constructor(store) {
         this.store = store;
@@ -113,8 +147,8 @@ class StlDisplay {
         this.types.clear();
         this.constants.clear();
     }
-    context() {
-        return { generation: this.store.generation, bytes: 0, steps: 0, fields: 0 };
+    context(frame) {
+        return { generation: this.store.snapshot(frame), bytes: 0, steps: 0, fields: 0 };
     }
     async command(command, context) {
         this.store.check(context.generation);
@@ -124,6 +158,11 @@ class StlDisplay {
     }
     async bindFrame(node, context) {
         if (!node.frame) return;
+        if (this.session.rtosAware && context.generation.thread === undefined) {
+            const snapshot = this.store.snapshot(node.frame);
+            context.generation.thread = snapshot.thread;
+            context.generation.threadGeneration = snapshot.threadGeneration;
+        }
         const frameKey = `${node.frame.thread}:${node.frame.level}`;
         if (context.frameKey === frameKey) return;
         if (this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
@@ -144,34 +183,16 @@ class StlDisplay {
         // ARM GDB can expose inherited members through a by-value base cast.
         if (kindOf(item.type)) return safeType(item.type);
         const expression = await this.path(item, context);
-        let output = "";
-        const listener = (value) => {
-            output += value;
-        };
-        this.session.mi.on("output", listener);
-        this.session.silentVariableOutput = true;
-        try {
-            await this.command(`-interpreter-exec console ${quote(`whatis /r ${expression}`)}`, context);
-        } finally {
-            this.session.mi.off("output", listener);
-            this.session.silentVariableOutput = false;
-        }
-        let match = output.match(/(?:^|\n)type = ([^\r\n]+)/);
+        const resolved = (command) => this.session.captureConsole(() => this.command(command, context));
+        let match = (await resolved(`-interpreter-exec console ${quote(`whatis /r ${expression}`)}`)).match(TYPE_LINE);
         if (!match) throw new Error("GDB did not resolve the C++ type");
         if (
             !kindOf(match[1]) &&
             !/[\[*]|^(?:unsigned |signed |long |short )*(?:int|char|bool|float|double)\b/.test(match[1])
         ) {
-            output = "";
-            this.session.mi.on("output", listener);
-            this.session.silentVariableOutput = true;
-            try {
-                await this.command(`-interpreter-exec console ${quote(`ptype /r ${expression}`)}`, context);
-            } finally {
-                this.session.mi.off("output", listener);
-                this.session.silentVariableOutput = false;
-            }
-            const expanded = output.match(/(?:^|\n)type = ([^\r\n]+)/);
+            const expanded = (await resolved(`-interpreter-exec console ${quote(`ptype /r ${expression}`)}`)).match(
+                TYPE_LINE
+            );
             if (expanded) match = expanded;
         }
         match[1] = match[1].split(" [with ")[0].split(" {")[0].split(" : ")[0].trim();
@@ -298,12 +319,19 @@ class StlDisplay {
         return node;
     }
     async physical(parent, label, item, context, readOnly = false) {
-        const node = this.store.register({ ...item, exp: label }, parent.root, parent, parent.readOnly || readOnly);
+        // Cached map payloads and tuple fields can hold pre-assignment MI values.
+        const value = (await this.command(`-var-evaluate-expression ${quote(item.name)}`, context)).value;
+        const node = this.store.register(
+            { ...item, value, exp: label },
+            parent.root,
+            parent,
+            parent.readOnly || readOnly
+        );
         node.locked ||= readOnly;
         await this.prepare(node, context);
         return node;
     }
-    async prepare(node, context = this.context()) {
+    async prepare(node, context = this.context(node.frame)) {
         if (
             node.stlAttempted ||
             node.raw ||
@@ -329,24 +357,16 @@ class StlDisplay {
                 throw new Error("Unverified STL namespace or debug ABI");
             if (!info) return;
             if (this.endian === undefined) {
-                let output = "";
-                const listener = (value) => {
-                    output += value;
-                };
-                this.session.mi.on("output", listener);
-                this.session.silentVariableOutput = true;
-                try {
-                    await this.command(`-interpreter-exec console ${quote("show endian")}`, context);
-                } finally {
-                    this.session.mi.off("output", listener);
-                    this.session.silentVariableOutput = false;
-                }
+                const output = await this.session.captureConsole(() =>
+                    this.command(`-interpreter-exec console ${quote("show endian")}`, context)
+                );
                 this.endian = /little endian/i.test(output) ? "little" : "unsupported";
             }
             if (this.endian !== "little") throw new Error("Only verified little-endian STL layouts are supported");
             node.stl = await this.describe(node, info, context);
         } catch (error) {
             this.store.check(context.generation);
+            if (isInternalError(error)) throw error;
             if (/memory budget exceeded/i.test(error.message)) {
                 node.stlAttempted = false;
                 throw error;
@@ -366,7 +386,6 @@ class StlDisplay {
         this.store.dropChildren(node);
         delete node.stl;
         node.raw = true;
-        node.stlError = error.message;
         this.session.variableDiagnostic(
             `Built-in STL display unavailable for ${node.item.type}: ${error.message}. Showing raw fields.\n`
         );
@@ -722,17 +741,22 @@ class StlDisplay {
     }
     async refresh(node, context) {
         if (!node.stl) return;
+        const previous = node.stl;
         const owned = [...this.store.nodes.values()].filter(
             (child) => child.ownsVariable && this.store.descendant(child, node)
         );
+        delete node.stl;
+        node.stlAttempted = false;
+        await this.prepare(node, context);
+        if (node.stl && storageIdentity(previous) === storageIdentity(node.stl)) {
+            node.stl.elements = previous.elements;
+            return;
+        }
         this.store.dropChildren(node);
         for (const child of owned) {
             await this.command(`-var-delete ${quote(child.item.name)}`, context);
             this.session.varObjects.delete(child.item.name);
         }
-        delete node.stl;
-        node.stlAttempted = false;
-        await this.prepare(node, context);
     }
 }
 
@@ -745,6 +769,7 @@ module.exports = {
     integer,
     safeType,
     safePath,
+    isInternalError,
     MEMORY_LIMIT,
     WALK_LIMIT
 };

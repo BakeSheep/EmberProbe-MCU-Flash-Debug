@@ -122,6 +122,7 @@ const elf = require("../src/elfSymbols");
         assert.deepStrictEqual(agentCsv.names, ["value [f32]", "value [u32]"]);
         assert.equal(agentCsv.from, 1000);
         assert.equal(agentCsv.to, 14000);
+        assert.equal(agentCsv.historyTruncated, false, "an archive below its size cap must not claim truncation");
         assert.match(agentCsv.csv, /1970-01-01T00:00:01.000Z,1,/);
         assert.match(agentCsv.csv, /1970-01-01T00:00:14.000Z,,2200/);
         await assert.rejects(p._exportAgentCsv({ panelId: 1, variables: ["missing"] }), {

@@ -27,6 +27,7 @@ jobs:
       options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
         gcc: [14, 15]
         standard: [17, 20]

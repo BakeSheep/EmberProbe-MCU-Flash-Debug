@@ -30,6 +30,18 @@ async function main() {
         assert.strictEqual(csvField("a,b"), '"a,b"');
         assert.strictEqual(csvField('a"b'), '"a""b"');
         assert.strictEqual(csvField(null), "");
+        // Data cells are dominated by negative readings, so a leading "-" only counts as a formula
+        // when the rest is not a plain number. Headers keep the blanket rule.
+        assert.strictEqual(csvField("-128"), "-128");
+        assert.strictEqual(csvField("-3.5"), "-3.5");
+        assert.strictEqual(csvField("-1e-7"), "-1e-7");
+        assert.strictEqual(csvField("-0"), "-0");
+        assert.strictEqual(csvField("-Infinity"), "'-Infinity");
+        assert.strictEqual(csvField("-cmd|' /C calc'!A0"), "'-cmd|' /C calc'!A0");
+        assert.strictEqual(csvField("=1+1"), "'=1+1");
+        assert.strictEqual(csvField("+1"), "'+1");
+        assert.strictEqual(csvField("@SUM(A1)"), "'@SUM(A1)");
+        assert.strictEqual(csvHeaderField("-offset"), "'-offset");
         assert.strictEqual(
             csvHeaderField('=HYPERLINK("https://example.invalid")'),
             '"\'=HYPERLINK(""https://example.invalid"")"'
@@ -159,7 +171,9 @@ async function main() {
             ["f64", 1.5, "1.5"],
             ["f64_nan", "nan", "NaN", "f64"],
             ["f64_inf", "inf", "Infinity", "f64"],
-            ["f64_ninf", "-inf", "-Infinity", "f64"]
+            // The cell is formula-guarded because "-Infinity" is not a plain number; "-128" and
+            // "-32768" above stay untouched.
+            ["f64_ninf", "-inf", "'-Infinity", "f64"]
         ];
         const typeMap = new Map();
         const rawSamples = fixtures.map(([name, value, , explicitType]) => {
@@ -211,6 +225,17 @@ async function main() {
             { code: "CSV_EXPORT_TOO_LARGE" }
         );
         assert.ok(!fs.existsSync(path.join(agentRoot, "too-large.csv")));
+        // An Agent read must not fail just because the user happens to be exporting: it writes to a
+        // unique temporary file, and only the user-facing path needs the serialising lock.
+        const userExport = agentArchive.exportCsv({
+            outputPath: path.join(agentRoot, "user.csv"),
+            scope: "graph"
+        });
+        const concurrentRead = agentArchive.readCsv({ scope: "graph" });
+        const concurrent = await concurrentRead;
+        assert.match(concurrent.csv, /1970-01-01T00:00:01.000Z,42/);
+        assert.strictEqual(concurrent.limitReached, false);
+        await userExport;
         const pendingRead = agentArchive.readCsv({ scope: "graph" });
         const pendingDispose = agentArchive.dispose();
         assert.match((await pendingRead).csv, /1970-01-01T00:00:01.000Z,42/);
@@ -219,6 +244,26 @@ async function main() {
     } finally {
         await agentArchive.dispose();
         fs.rmSync(agentRoot, { recursive: true, force: true });
+    }
+
+    // Once the archive hits its size cap it stops recording while the chart keeps drawing, so the
+    // Agent-facing CSV has to say so instead of silently covering a shorter window than requested.
+    const fullRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-archive-full-"));
+    const fullArchive = new SamplingArchive({ rootDir: path.join(fullRoot, "history"), maxBytes: 1024 * 1024 });
+    try {
+        fullArchive.append([{ name: "tick", value: 1 }], 1000, "graph");
+        assert.strictEqual(
+            fullArchive.append([{ name: "tick", valueText: "x".repeat(2 * 1024 * 1024) }], 2000, "graph"),
+            false,
+            "an oversized sample must be refused rather than silently dropped"
+        );
+        assert.strictEqual(fullArchive.status("graph").limitReached, true);
+        const truncated = await fullArchive.readCsv({ scope: "graph" });
+        assert.strictEqual(truncated.limitReached, true);
+        assert.match(truncated.csv, /1970-01-01T00:00:01.000Z,1/);
+    } finally {
+        await fullArchive.dispose();
+        fs.rmSync(fullRoot, { recursive: true, force: true });
     }
 
     console.log("sampling archive tests passed");

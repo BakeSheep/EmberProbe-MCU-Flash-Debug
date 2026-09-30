@@ -35,9 +35,9 @@ if { $_ep_rtos_target eq "" } { error "EmberProbe: no current target to configur
 _ep_rtos_target configure -rtos <name>
 ```
 
-If there is no current target, or OpenOCD rejects the name, this raises a Tcl error, OpenOCD exits non-zero **before opening the probe**, and the normal startup-cleanup path reports `OPENOCD_RTOS_INVALID` with suggested actions. On a dual-core part only the current target is configured, so select the core that actually runs the RTOS. Standalone live sampling never configures an RTOS: walking kernel structures would change non-intrusive polling behaviour. The value is read at OpenOCD startup, so a change takes effect at the next debug session.
+If there is no current target, or OpenOCD rejects the name, this raises a Tcl error, OpenOCD exits non-zero **before opening the probe**, and the normal startup-cleanup path reports `OPENOCD_RTOS_INVALID` with suggested actions. On a dual-core part only the current target is configured, so select the core that actually runs the RTOS. Standalone live sampling never configures an RTOS: walking kernel structures would change non-intrusive polling behaviour. The value is read at OpenOCD startup, so a change takes effect at the next debug session. The adapter's `restart` request deliberately reuses the running OpenOCD server — the extension, not the adapter, owns it — so Restart keeps the previously configured RTOS; stop and start again to apply a change.
 
-若不存在当前 target，或 OpenOCD 拒绝该名称，这里会抛出 Tcl 错误，OpenOCD **在打开探针之前**非零退出，随后由既有的启动清理流程报出带建议动作的 `OPENOCD_RTOS_INVALID`。双核器件只配置当前 target，因此请选择真正运行 RTOS 的那个核。独立实时采样永不配置 RTOS：遍历内核数据结构会改变非侵入轮询行为。该取值在 OpenOCD 启动时读取，因此改动在下次启动调试时生效。
+若不存在当前 target，或 OpenOCD 拒绝该名称，这里会抛出 Tcl 错误，OpenOCD **在打开探针之前**非零退出，随后由既有的启动清理流程报出带建议动作的 `OPENOCD_RTOS_INVALID`。双核器件只配置当前 target，因此请选择真正运行 RTOS 的那个核。独立实时采样永不配置 RTOS：遍历内核数据结构会改变非侵入轮询行为。该取值在 OpenOCD 启动时读取，因此改动在下次启动调试时生效。适配器的 `restart` 刻意复用正在运行的 OpenOCD 服务（服务由扩展而非适配器持有），因此“重启”仍保持先前配置的 RTOS；需停止后重新启动才会应用改动。
 
 ## What changes in the debugger / 调试器行为变化
 

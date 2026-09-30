@@ -1,11 +1,15 @@
 "use strict";
 const { Worker } = require("worker_threads");
-const { isCppRuntimeSymbol } = require("../elfSymbols");
+const { isCppRuntimeSymbol, isItaniumMangled } = require("../elfSymbols");
 
 // §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
 // autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
 // 整份 readFileSync 进内存再送入 DWARF 解析，直接压垮扩展宿主。
 const MAX_ELF_BYTES = 64 * 1024 * 1024;
+
+// 单个 ELF 的 C++ 绑定诊断上限。大型固件可能链接大量无调试信息的 C++ 目标文件，
+// 而 warnings 会整体下发到 webview，无上限会同时压垮诊断面板与消息通道。
+const MAX_CPP_DIAGNOSTICS = 50;
 
 class ElfService {
     constructor(options) {
@@ -61,7 +65,7 @@ class ElfService {
     _enrich(result, types, layouts = new Map(), displayNames = new Map()) {
         for (const symbol of result.symbols) {
             const info = types.get(symbol.name);
-            const looksCpp = /^_Z/.test(symbol.name);
+            const looksCpp = isItaniumMangled(symbol.name);
             const unresolvedCpp = looksCpp && (!info || info.kind === "unknown");
             symbol.displayName = displayNames.get(symbol.name) || symbol.displayName || symbol.name;
             symbol.qualifiedName = symbol.displayName;
@@ -100,8 +104,10 @@ class ElfService {
     }
 
     _recordCppDiagnostics(result, types) {
+        let recorded = 0;
+        let suppressed = 0;
         for (const symbol of result.symbols) {
-            if (!/^_Z/.test(symbol.name)) continue;
+            if (!isItaniumMangled(symbol.name)) continue;
             const info = types.get(symbol.name);
             const code = info?.ambiguous
                 ? "CPP_SYMBOL_AMBIGUOUS"
@@ -109,6 +115,11 @@ class ElfService {
                   ? "CPP_TYPE_UNRESOLVED"
                   : null;
             if (!code) continue;
+            if (recorded >= MAX_CPP_DIAGNOSTICS) {
+                suppressed++;
+                continue;
+            }
+            recorded++;
             const message = this.t(
                 code === "CPP_SYMBOL_AMBIGUOUS" ? "diag.cppSymbolAmbiguous" : "diag.cppTypeUnresolved",
                 {
@@ -117,6 +128,11 @@ class ElfService {
             );
             result.diagnostics.push({ code, stage: "bind", message });
             result.warnings.push(`${code}: ${message}`);
+        }
+        if (suppressed) {
+            const message = this.t("diag.cppDiagnosticsTruncated", { count: suppressed });
+            result.diagnostics.push({ code: "CPP_DIAGNOSTICS_TRUNCATED", stage: "bind", message });
+            result.warnings.push(`CPP_DIAGNOSTICS_TRUNCATED: ${message}`);
         }
     }
 

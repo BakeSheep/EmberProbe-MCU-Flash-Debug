@@ -12,9 +12,18 @@ function buildCsv(names, buffers, opts) {
     opts = opts || {};
     const from = Number.isFinite(opts.from) ? opts.from : -Infinity;
     const to = Number.isFinite(opts.to) ? opts.to : Infinity;
-    function esc(value, protectFormula) {
+    // This function is serialized into the live-watch page as window.__BUILD_CSV__, so it must stay
+    // self-contained and cannot close over module imports. Keep these rules in step with csvField /
+    // csvHeaderField in src/services/samplingArchive.js, which serves the archive-backed exports.
+    const NUMERIC_CELL = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+    function esc(value, header) {
         let text = String(value);
-        if (protectFormula && /^[=+\-@\t\r]/.test(text)) text = "'" + text;
+        // Header names never contain numbers, so any leading "-" is a formula risk there. Data cells
+        // are dominated by negative readings, so "-" only counts when the rest is not a plain number.
+        const risky = header
+            ? /^[=+\-@\t\r]/.test(text)
+            : /^[=+@\t\r]/.test(text) || (text.charAt(0) === "-" && !NUMERIC_CELL.test(text));
+        if (risky) text = "'" + text;
         return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
     }
     const rows = [['time'].concat(names.map(function(name){return esc(name,true)})).join(',')];

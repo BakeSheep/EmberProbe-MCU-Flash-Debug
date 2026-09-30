@@ -159,7 +159,7 @@ try {
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
     assert.ok(!graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
-    assert.strictEqual(graph.window.MAXPTS, 12256, "200 Hz retains at least a full 60-second chart window");
+    assert.strictEqual(graph.window.MAXPTS, 12257, "200 Hz retains at least a full 60-second chart window");
     graph.send({
         type: "liveStatus",
         running: true,
@@ -175,7 +175,7 @@ try {
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
     graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
-    assert.strictEqual(graph.window.MAXPTS, 2056);
+    assert.strictEqual(graph.window.MAXPTS, 2076, "retention follows the real 33 ms period, not the nominal 30 Hz");
     assert.strictEqual(graph.document.getElementById("frequency").value, "30");
     graph.document.getElementById("frequency").value = "45";
     graph.document.getElementById("frequency").onchange();

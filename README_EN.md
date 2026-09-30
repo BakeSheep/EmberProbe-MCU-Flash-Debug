@@ -13,7 +13,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - ELF flashing: flash the ELF file and run it in one click.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
-- Built-in debugging: breakpoints, stepping, stack frames, variables, and memory access without Cortex-Debug; optional RTOS awareness (FreeRTOS and others) lists tasks in the call stack and steps a chosen task.
+- Built-in debugging: breakpoints, stepping, stack frames, variables, and memory access without Cortex-Debug; optional RTOS awareness (FreeRTOS and others) lists tasks in the call stack and steps a chosen task. See [docs/RTOS-AWARENESS.md](docs/RTOS-AWARENESS.md).
 - Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements

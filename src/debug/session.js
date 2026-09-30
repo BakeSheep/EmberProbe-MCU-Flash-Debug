@@ -33,7 +33,7 @@ class EmberDebugSession extends DebugSession {
         this.ready = false;
         this.ended = false;
         this.config = {};
-        this.silentVariableOutput = false;
+        this.silentVariableOutput = 0;
         this.thread = 1;
         this.threads = new Set();
         this.rtosAware = false;
@@ -240,8 +240,11 @@ class EmberDebugSession extends DebugSession {
     }
     async selectFrame(id) {
         const frame = this.reference(id, "frame");
+        const generation = this.variableStore.snapshot(frame);
         await this.mi.command(`-thread-select ${frame.thread}`);
+        this.variableStore.check(generation);
         await this.mi.command(`-stack-select-frame ${frame.level}`);
+        this.variableStore.check(generation);
         this.selectedFrame = frame;
         return frame;
     }
@@ -412,6 +415,23 @@ class EmberDebugSession extends DebugSession {
     remoteSource(file) {
         return this.mapSource(file, true);
     }
+    // Runs one command with its console text captured instead of forwarded to the client. A counter
+    // rather than a flag, so a nested capture cannot unmask the outer one.
+    async captureConsole(run) {
+        let output = "";
+        const listener = (value) => {
+            output += value;
+        };
+        this.mi.on("output", listener);
+        this.silentVariableOutput++;
+        try {
+            await run();
+        } finally {
+            this.mi.off("output", listener);
+            this.silentVariableOutput--;
+        }
+        return output;
+    }
     variableDiagnostic(message) {
         this.sendEvent(new OutputEvent(message, "console"));
     }
@@ -422,11 +442,12 @@ class EmberDebugSession extends DebugSession {
         // Pin the varobj to its task and frame so a later -var-list-children / -var-assign cannot
         // follow GDB's selected thread once the user browses a different task in the call stack.
         const context = this.rtosAware && frame ? `--thread ${frame.thread} --frame ${frame.level} ` : "";
-        const generation = this.variableStore.generation;
+        const ownerFrame = frame || this.selectedFrame || { thread: this.thread, level: 0 };
+        const generation = this.variableStore.snapshot(ownerFrame);
         const item = await this.mi.command(`-var-create ${context}- * ${quote(expression)}`);
         this.varObjects.add(item.name);
         this.variableStore.check(generation);
-        this.variableStore.root(item, frame || this.selectedFrame || { thread: this.thread, level: 0 });
+        this.variableStore.root(item, ownerFrame);
         return item;
     }
     async handle(command, args) {
