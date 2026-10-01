@@ -374,6 +374,16 @@ class MainViewProvider {
     _t(key, params) {
         return i18n.t(this._lang, key, params);
     }
+    async _copyToClipboard(text) {
+        const value = text ? String(text) : "";
+        if (!value) return;
+        try {
+            await vscode.env.clipboard.writeText(value);
+            vscode.window.showInformationMessage(this._t("common.copied"));
+        } catch (error) {
+            vscode.window.showErrorMessage(this._t("common.copyFailed", { message: error.message }));
+        }
+    }
     _setLang(lang) {
         this._lang = i18n.normalizeLang(lang);
         this._context.globalState.update("emberprobe.lang", this._lang);
@@ -1595,11 +1605,20 @@ class MainViewProvider {
         member.failing = true;
         member.lifecycle.clear({ kind: "failed", message });
         this._postLive({ type: "liveError", message });
-        if (member.session) {
-            await vscode.debug.stopDebugging(member.session);
-            await this._debugBridge.waitForState(() => this._terminatedDebugSessionIds.has(member.session.id), 2000);
+        try {
+            if (member.session) {
+                await vscode.debug.stopDebugging(member.session);
+                await this._debugBridge.waitForState(
+                    () => this._terminatedDebugSessionIds.has(member.session.id),
+                    2000
+                );
+            }
+        } finally {
+            // A wedged adapter can hang stopDebugging or time out the terminate wait, and
+            // member.failing already blocks any retry. Dropping the member regardless is what
+            // frees the group's probe lease; skipping it wedges the probe until window reload.
+            await group.release(token);
         }
-        await group.release(token);
         if (group.stopped && this._managedDebugGroup === group) {
             await this._stopManagedDebugServer();
             await this.restoreSamplingAfterDebug();
@@ -2198,49 +2217,32 @@ class MainViewProvider {
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
-        // Use the real DAP bridge for a paused managed debug session. The generic
-        // Agent probe helper deliberately wraps paused reads in a read-only session;
-        // passing that wrapper to the write path loses the DAP connection identity
-        // between confirmation and execution.
-        if (!this._debugBridge.canWrite && this._debugBridge.agentStatus().state === "paused") {
-            await this._debugBridge.prepareWriteSnapshot(plan.items);
-        }
-        if (this._debugBridge.canWrite) {
+        // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
+        // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
+        // the write path loses the DAP connection identity between confirmation and execution.
+        // Sampling may be off, so no snapshot exists yet and canWrite is false: prime one from
+        // the write plan itself instead of falling back to a second standalone OpenOCD identity.
+        if (this._debugBridge.agentStatus().state === "paused") {
+            if (!this._debugBridge.canWrite) await this._debugBridge.prepareWriteSnapshot(plan.items);
             const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
-            let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
-            if (authorization.remember) {
-                try {
-                    permission = {
-                        mode: "workspace",
-                        ...(await this._writeAuthorization.trustWorkspace(plan)),
-                        remembered: true
-                    };
-                } catch (error) {
-                    permission = { mode: "once", trusted: false, remembered: false, warning: error.message };
-                }
-            }
-            return { ...result, permission };
+            return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
         }
         const result = await this._withAgentProbe(
-            ({ session, source }) =>
-                this._debugBridge.agentStatus().state === "paused"
-                    ? this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan)
-                    : this._executeWritePlan(session, source, plan),
-            { allowPausedDebugRead: true }
-        );
-        let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
-        if (authorization.remember) {
-            try {
-                permission = {
-                    mode: "workspace",
-                    ...(await this._writeAuthorization.trustWorkspace(plan)),
-                    remembered: true
-                };
-            } catch (error) {
-                permission = { mode: "once", trusted: false, remembered: false, warning: error.message };
+            ({ session, source }) => this._executeWritePlan(session, source, plan),
+            {
+                allowPausedDebugRead: true
             }
+        );
+        return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
+    }
+    async _writePermissionGrant(authorization, plan) {
+        if (!authorization.remember)
+            return { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
+        try {
+            return { mode: "workspace", ...(await this._writeAuthorization.trustWorkspace(plan)), remembered: true };
+        } catch (error) {
+            return { mode: "once", trusted: false, remembered: false, warning: error.message };
         }
-        return { ...result, permission };
     }
     // 侧边栏写入列表：用户在 UI 中直接操作，不经过 WriteAuthorization 确认；
     // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
@@ -2551,18 +2553,9 @@ class MainViewProvider {
                     throw Object.assign(new Error("Live panel identity mismatch"), { code: "INVALID_PANEL_ID" });
                 }
                 switch (message.type) {
-                    case "copyText": {
-                        const value = message.text ? String(message.text) : "";
-                        if (value) {
-                            try {
-                                await vscode.env.clipboard.writeText(value);
-                                vscode.window.showInformationMessage(this._t("common.copied"));
-                            } catch (e) {
-                                /* ignore clipboard errors */
-                            }
-                        }
+                    case "copyText":
+                        await this._copyToClipboard(message.text);
                         break;
-                    }
                     case "ready":
                         entry.ready = true;
                         await this._seriesStyleStore.initialize(
@@ -4125,18 +4118,9 @@ class MainViewProvider {
                     this._svdManager.cancel();
                     break;
                 }
-                case "copyText": {
-                    const value = message.text ? String(message.text) : "";
-                    if (value) {
-                        try {
-                            await vscode.env.clipboard.writeText(value);
-                            vscode.window.showInformationMessage(this._t("common.copied"));
-                        } catch (e) {
-                            /* ignore clipboard errors */
-                        }
-                    }
+                case "copyText":
+                    await this._copyToClipboard(message.text);
                     break;
-                }
                 case "setLang": {
                     this._setLang(message.lang);
                     this._postLive({ type: "setLang", lang: this._lang });

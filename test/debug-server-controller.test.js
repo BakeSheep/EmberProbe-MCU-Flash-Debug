@@ -176,7 +176,12 @@ function fixture(options = {}, overrides = {}) {
         }
     );
     await assert.rejects(failed.controller.start(), /probe unplugged/);
-    assert.strictEqual(failed.controller.state, "failed");
+    assert.strictEqual(failed.controller.state, "stopped");
+    assert.strictEqual(failed.controller.stopped, true, "a failed start must not orphan a spawned OpenOCD");
+    assert.deepStrictEqual(
+        failed.calls.filter((value) => value === "stop"),
+        ["stop"]
+    );
     await failed.controller.stop();
     let finishStart;
     const early = fixture(

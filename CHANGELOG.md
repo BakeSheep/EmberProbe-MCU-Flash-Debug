@@ -6,6 +6,21 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 实时值与成员值支持点击复制，复制失败会明确提示而不再静默忽略；修复写入一个变量后自调度采样链断裂、查看列表永久停更；清空写入框后点击加减按钮从上一个值继续步进而不是从 0 开始。
+- Click a live or member value to copy it, with clipboard failures now reported instead of silently ignored; fix the self-rescheduling sampling chain breaking after a write, which froze the watch list until sampling restarted; step from the last value instead of zero when the write field has been emptied.
+
+- 紧凑布局在窄侧栏下保持高度稳定：成员行不再在 260px 断点处变矮，实时值不再撑出横向滚动条，实时面板复合变量头的字节数标签回到与名称同一行。
+- Keep compact layouts stable at narrow sidebar widths: member rows no longer shrink at the 260px breakpoint, live values no longer force a horizontal scrollbar, and the composite byte-size badge returns to the name's row in the live panel.
+
+- 修复共享调试组中某个核启动失败且适配器无响应时成员未被释放，导致探针租约被永久占用、后续操作一律 `PROBE_BUSY` 只能重载窗口；OpenOCD 服务启动失败时确保已派生的子进程被停止，不再遗留占用探针的孤儿进程。
+- Release a shared-group member even when stopping a wedged core session throws, so a failed core no longer strands the probe lease and forces a window reload; stop an already-spawned OpenOCD when server startup fails instead of orphaning a process that holds the probe.
+
+- FreeRTOS 任务视图支持 Cortex-M55/M85（armv8.1-m）；当 `pxCurrentTCB` 为空且 `xSchedulerRunning` 与 `uxCurrentNumberOfTasks` 均被优化掉时，直接说明无法判定调度器状态，不再遍历全零链表并报出假的损坏诊断。
+- Support Cortex-M55/M85 (armv8.1-m) in the FreeRTOS task view; when `pxCurrentTCB` is null and both `xSchedulerRunning` and `uxCurrentNumberOfTasks` are optimized out, report the scheduler state as undeterminable instead of walking zero-initialized lists and emitting spurious corruption diagnostics.
+
+- 暂停的托管调试会话执行 Agent 写入时不再多余地申请一个独立探针会话。
+- Stop acquiring a redundant standalone probe session when an Agent write runs on a paused managed debug session.
+
 - 修复首次停在 main、FreeRTOS 尚未创建任务时将未初始化链表误报为损坏；任务视图显示调度器未启动或尚无任务，可选 TCB 字段缺失不再触发部分结果。
 - Recognize pre-scheduler stops with no created tasks instead of reporting zero-initialized lists as corrupt; show startup state and omit unavailable optional TCB fields without marking the snapshot partial.
 

@@ -44,7 +44,8 @@
                 for (const session of sessions) {
                     const option = document.createElement("option");
                     option.value = session.id;
-                    option.textContent = `${session.name} · ${session.serverGroup || t("rtos.core")}/${session.targetProcessor}`;
+                    const core = session.serverGroup || t("rtos.core");
+                    option.textContent = `${session.name} · ${Number.isInteger(session.targetProcessor) ? `${core}/${session.targetProcessor}` : core}`;
                     sessionPicker.append(option);
                 }
                 sessionPicker.value = state.debug.sessionId || "";

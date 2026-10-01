@@ -128,6 +128,7 @@ module.exports = Object.freeze({
     "common.optional": "Optional",
     "common.langTitle": "语言 / Language",
     "common.copied": "Copied to clipboard",
+    "common.copyFailed": "Copy failed: {message}",
     "sb.connecting": "Connecting",
     "sb.installSkillTitle": "Install Agent Skills",
     "sb.installSkillDesc": "Download, variable read/write, chip/fault diagnosis, ELF analysis and flash verify",

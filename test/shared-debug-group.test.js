@@ -264,6 +264,45 @@ function bind(group, member) {
         cleanup.coordinator.acquire("agentRead").release();
         owner._debugBridge.dispose();
     }
+    // A wedged adapter must not strand the member. member.failing blocks any retry, so if the
+    // stop/terminate wait throws before release the group keeps the probe lease until reload.
+    const wedged = makeGroup();
+    let wedgedRecovery = 0;
+    const WedgedProvider = loadProvider({
+        debug: {
+            stopDebugging: async (session) => {
+                if (session.id === "core1") throw new Error("adapter is not responding");
+                await wedgedOwner.handleDebugSessionTerminate(session);
+                return true;
+            }
+        }
+    });
+    const wedgedOwner = Object.create(WedgedProvider.prototype);
+    Object.assign(wedgedOwner, {
+        _managedDebugGroup: wedged.group,
+        _managedDebugServer: wedged.controller,
+        _debugServerLease: wedged.lease,
+        _debugBridge: new DebugSessionBridge(),
+        _terminatedDebugSessionIds: new Set(),
+        _postLive() {},
+        restoreSamplingAfterDebug: async () => wedgedRecovery++
+    });
+    const wedgedPrimaryMember = reserve(wedged.group, 0);
+    const wedgedPrimary = bind(wedged.group, wedgedPrimaryMember);
+    const wedgedSecondaryMember = reserve(wedged.group, 1);
+    const wedgedSecondary = bind(wedged.group, wedgedSecondaryMember);
+    wedgedOwner._debugBridge.attach(wedgedPrimary);
+    wedgedOwner._debugBridge.attach(wedgedSecondary);
+    await assert.rejects(wedgedOwner._failGroupedCore(wedgedSecondaryMember.token, "OpenOCD exited"), /not responding/);
+    assert.strictEqual(wedged.group.members.size, 1, "a throwing stop must still release the member");
+    assert.strictEqual(wedged.group.members.has(wedgedSecondaryMember.token), false);
+    assert.strictEqual(wedged.stops, 0);
+    await wedgedOwner.handleDebugSessionTerminate(wedgedPrimary);
+    assert.strictEqual(wedged.stops, 1);
+    assert.strictEqual(wedgedRecovery, 1);
+    assert.strictEqual(wedgedOwner._managedDebugGroup, null);
+    wedged.coordinator.acquire("agentRead").release();
+    wedgedOwner._debugBridge.dispose();
     // Failure before VS Code's start event still owns a DAP member and must stop it.
     const untracked = makeGroup();
     const pendingMember = reserve(untracked.group, 0);

@@ -126,6 +126,8 @@ class SymbolDirectory {
             // MI omits objfile identity. Match its typed catalog to each configured image's nm directory.
             const nm = config.nmPath || (config.objdumpPath && config.objdumpPath.replace(/objdump(\.exe)?$/i, "nm$1"));
             if (!nm) throw new Error("Symbol image identity requires the matching nm/objdump toolchain");
+            if (typeof nm !== "string" || !nm.trim() || /[\x00-\x1f]/.test(nm))
+                throw new Error("nmPath must name an nm executable");
             const catalog = new Map((entries || []).map((entry) => [identity(entry), entry]));
             const byImage = [];
             for (const image of images) {

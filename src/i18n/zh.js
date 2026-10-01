@@ -126,6 +126,7 @@ module.exports = Object.freeze({
     "common.optional": "可选",
     "common.langTitle": "语言 / Language",
     "common.copied": "已复制到剪贴板",
+    "common.copyFailed": "复制失败：{message}",
     "sb.connecting": "正在连接",
     "sb.installSkillTitle": "安装 Agent Skills",
     "sb.installSkillDesc": "下载、变量读写、芯片/故障诊断、ELF 分析与固件校验",

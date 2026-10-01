@@ -91,6 +91,10 @@ class OpenOcdDebugController {
                 return this.connection;
             } catch (error) {
                 if (this.state === "starting") this.state = "failed";
+                // runtime.start() can spawn OpenOCD and then fail to bind, so the process may
+                // already exist. Leaving it running holds the USB probe and blocks every later
+                // session; stop() rethrows only unconfirmed exits, which a retry may still clear.
+                await this.stop().catch(() => {});
                 throw error;
             }
         })();

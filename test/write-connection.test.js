@@ -34,7 +34,6 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
     assert.strictEqual(writes, 1);
     provider._managedDebugServer = session;
     assert.deepStrictEqual(provider._sessionWriteConnection(provider._debugBridge), plan.connection);
-    provider._debugBridge.canWrite = false;
     assert.deepStrictEqual(
         await provider._prepareWriteConnection(),
         plan.connection,

@@ -2,7 +2,7 @@
 
 const assert = require("assert");
 const { EmberDebugSession } = require("../src/debug/session");
-const { templateType, kindOf, constValue, safeType, safePath, integer } = require("../src/debug/stl");
+const { templateType, kindOf, constValue, safeType, safePath, integer, gdbVariablePath } = require("../src/debug/stl");
 const { StlMi } = require("./fixtures/stl-mi");
 
 function setup(width = 4) {
@@ -529,6 +529,21 @@ function vector(mi, name = "numbers", length = 250, type = "std::vector<int, std
             stale.session.onRecord({ kind: "*", class: "running", data: {} });
     };
     await assert.rejects(stale.evaluate("numbers"), /paused|Stale/);
+
+    // gdbVariablePath rewrites only a bare by-value cast. MI's pointer casts and GDB's quoted
+    // template/namespace casts are not matched, so they must pass through byte-identical.
+    assert.strictEqual(gdbVariablePath("(class Foo) 0x20000000"), "(class Foo &) 0x20000000");
+    assert.strictEqual(gdbVariablePath("(struct Foo) 0x20000000"), "(struct Foo &) 0x20000000");
+    assert.strictEqual(gdbVariablePath("(union Foo) 0x20000000"), "(union Foo &) 0x20000000");
+    for (const path of [
+        "(class Foo *) 0x20000000",
+        "(struct ns::Bar *) 0x20000000",
+        "('ns::Foo<int>' *) 0x20000000",
+        "g_state.velocity"
+    ])
+        assert.strictEqual(gdbVariablePath(path), path, `${path} must not be rewritten`);
+    assert.throws(() => gdbVariablePath("(class Foo) 0x20000000 + read()"), /side-effect-free/u);
+
     console.log("Built-in STL ARM32/64 layout, alias, budgets, paging, writes, maps and RTOS tests passed");
 })().catch((error) => {
     console.error(error);

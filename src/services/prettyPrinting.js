@@ -47,15 +47,23 @@ function resolvePrettyPrinting(launch = {}, settings = {}, cwd = launch.cwd || p
     return { enablePrettyPrinting, prettyPrinterPath, prettyPrintingMode, prettyPrinterFiles };
 }
 
+// Every mode disables implicit scripts and inferior function calls. The gdb branch re-asserts
+// them because loading user scripts and -enable-pretty-printing can flip them back.
+const HARDENING_COMMANDS = Object.freeze([
+    "-gdb-set auto-load off",
+    "-gdb-set print raw-values on",
+    "-gdb-set may-call-functions off",
+    "-gdb-set print object on"
+]);
+async function harden(mi) {
+    for (const command of HARDENING_COMMANDS) await mi.command(command);
+}
+
 async function initializePrettyPrinting(mi, config, report) {
     const resolved = resolvePrettyPrinting(config);
     Object.assign(config, resolved);
     config.effectivePrettyPrintingMode = resolved.prettyPrintingMode;
-    // Every mode disables implicit scripts and inferior function calls.
-    await mi.command("-gdb-set auto-load off");
-    await mi.command("-gdb-set print raw-values on");
-    await mi.command("-gdb-set may-call-functions off");
-    await mi.command("-gdb-set print object on");
+    await harden(mi);
     if (config.prettyPrinterPath)
         report("prettyPrinterPath is deprecated and ignored. EmberProbe uses its built-in STL display.\n");
     if (resolved.prettyPrintingMode !== "gdb") return resolved.prettyPrintingMode === "builtin";
@@ -70,20 +78,14 @@ async function initializePrettyPrinting(mi, config, report) {
             const script = `python exec(compile(open(${literal}, "rb").read(), ${literal}, "exec"), {"__name__": "__main__", "__file__": ${literal}})`;
             await mi.command(`-interpreter-exec console ${quote(script)}`);
         }
-        await mi.command("-gdb-set auto-load off");
-        await mi.command("-gdb-set print raw-values on");
-        await mi.command("-gdb-set may-call-functions off");
-        await mi.command("-gdb-set print object on");
+        await harden(mi);
         await mi.command("-enable-pretty-printing");
         report("GDB Python printers enabled. Their internal memory reads are outside the JavaScript byte budget.\n");
         return false;
     } catch (error) {
         // A closed/timeout transport cannot be recovered by changing display modes.
         if (mi.closed || /timed out|not running|GDB exited|transport closed/i.test(error.message)) throw error;
-        await mi.command("-gdb-set auto-load off");
-        await mi.command("-gdb-set print raw-values on");
-        await mi.command("-gdb-set may-call-functions off");
-        await mi.command("-gdb-set print object on");
+        await harden(mi);
         config.effectivePrettyPrintingMode = "builtin";
         report(`GDB pretty-printer initialization failed: ${error.message}. Using built-in STL display.\n`);
         return true;

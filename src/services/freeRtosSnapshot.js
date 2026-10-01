@@ -59,7 +59,7 @@ class FreeRtosSnapshot {
                 await this.session.mi.command('-interpreter-exec console "show endian"');
             });
             this.check(context);
-            if (width !== 4 || !/little endian/i.test(target) || !/armv[678][\w-]*m\b/i.test(target))
+            if (width !== 4 || !/little endian/i.test(target) || !/\barmv[678][\w.-]*m\b/i.test(target))
                 throw new Error(
                     "FreeRTOS snapshots currently require a little-endian single-core Cortex-M ARM32 target"
                 );
@@ -91,6 +91,18 @@ class FreeRtosSnapshot {
                 this.check(context);
                 result.kernel.supported = true;
                 result.kernel.state = scheduler === 0 ? "not-started" : "no-tasks";
+                return result;
+            }
+            // A null pxCurrentTCB with neither kernel static available is undecidable. Walking the
+            // zero-initialized lists would report them as corrupt, which is what the corroboration
+            // above exists to prevent; say that the state cannot be determined instead.
+            if (currentTcb === 0 && scheduler === undefined && taskCount === undefined) {
+                this.check(context);
+                result.kernel.supported = true;
+                this.diagnostic(
+                    context,
+                    "pxCurrentTCB is null and neither xSchedulerRunning nor uxCurrentNumberOfTasks is available, so a pre-scheduler stop cannot be told apart from list corruption"
+                );
                 return result;
             }
             // In multi-image sessions derive every layout from a primary-image variable. A global

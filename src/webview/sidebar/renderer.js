@@ -944,7 +944,10 @@ function buildWriteCard(item) {
             { passive: false }
         );
         const inputValue = () => {
-            const value = Number(input.value.trim());
+            const text = input.value.trim();
+            // An emptied field means "no edit yet", not zero; step from the last known value.
+            if (!text) return Number(item.value) || 0;
+            const value = Number(text);
             return Number.isFinite(value) ? value : Number(item.value) || 0;
         };
         minus.onclick = () => {

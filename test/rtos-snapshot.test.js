@@ -3,7 +3,7 @@
 const assert = require("assert");
 const { FreeRtosSnapshot, numeric, LIMITS } = require("../src/services/freeRtosSnapshot");
 
-function fixture({ shift = 0, missing = "", corrupt = false } = {}) {
+function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", endian = "little" } = {}) {
     const memory = new Map();
     const definitions = {
         TCB_t: {
@@ -83,7 +83,7 @@ function fixture({ shift = 0, missing = "", corrupt = false } = {}) {
         },
         captureConsole: async (run) => {
             await run();
-            return "The target architecture is armv7e-m. The target is little endian.";
+            return `The target architecture is ${arch}. The target is ${endian} endian.`;
         },
         mi: {
             command: async (command) => {
@@ -184,6 +184,34 @@ function fixture({ shift = 0, missing = "", corrupt = false } = {}) {
         assert.deepStrictEqual(result.tasks, []);
         assert.deepStrictEqual(result.diagnostics, []);
         assert(!initial.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
+    }
+    {
+        // Both kernel statics optimized out and no current TCB: undecidable, and walking the
+        // zero-initialized lists would report them as corrupt.
+        const initial = fixture();
+        initial.symbols.pxCurrentTCB = 0;
+        for (const [address, bytes] of initial.memory) initial.memory.set(address, Buffer.alloc(bytes.length));
+        const result = await new FreeRtosSnapshot(initial.session).snapshot();
+        assert.strictEqual(result.kernel.state, "unknown");
+        assert.strictEqual(result.kernel.supported, true);
+        assert.strictEqual(result.partial, true);
+        assert.deepStrictEqual(result.tasks, []);
+        assert.strictEqual(result.diagnostics.length, 1);
+        assert.match(result.diagnostics[0], /cannot be told apart|cannot be determined|undecidable|corruption/i);
+        assert(!initial.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
+    }
+    for (const arch of ["armv6-m", "armv7e-m", "armv8-m.main", "armv8.1-m", "armv8.1-m.main"]) {
+        const result = await new FreeRtosSnapshot(fixture({ arch }).session).snapshot();
+        assert.strictEqual(result.kernel.supported, true, `${arch} is a Cortex-M profile`);
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert.strictEqual(result.tasks.length, 2);
+    }
+    for (const rejected of [{ arch: "armv7-a" }, { arch: "armv8.1-a" }, { endian: "big" }]) {
+        const gate = fixture(rejected);
+        const result = await new FreeRtosSnapshot(gate.session).snapshot();
+        assert.strictEqual(result.kernel.supported, false, JSON.stringify(rejected));
+        assert.deepStrictEqual(result.tasks, []);
+        assert.match(result.diagnostics[0], /little-endian single-core Cortex-M ARM32/u);
     }
     const beforeScheduler = fixture();
     beforeScheduler.symbols.xSchedulerRunning = 0;
