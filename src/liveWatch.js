@@ -1324,15 +1324,14 @@ class ManagedOpenOcdSession {
     }
 
     async _sampleTick(fromScheduler = false) {
-        if (
-            !this.samplingEnabled ||
-            this.busy ||
-            this.stopped ||
-            !this.socket ||
-            this.socket.destroyed ||
-            !this.watch.length
-        )
+        if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
+        if (this.busy) {
+            // A read/write transaction owns the Tcl connection. Dropping the tick here would
+            // break the self-rescheduling chain, freezing the watch list until sampling restarts.
+            if (fromScheduler) this._scheduleNext(this.effectiveIntervalMs);
             return;
+        }
+        if (!this.watch.length) return;
         this.busy = true;
         const epoch = this.sampleEpoch;
         const startNs = process.hrtime.bigint();

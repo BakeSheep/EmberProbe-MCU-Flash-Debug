@@ -80,10 +80,14 @@ class FreeRtosSnapshot {
             const scheduler = await optionalSymbol("xSchedulerRunning");
             const taskCount = await optionalSymbol("uxCurrentNumberOfTasks");
             result.kernel.state = scheduler === 0 ? "not-started" : scheduler === 1 ? "running" : "unknown";
-            // Before the first task is created FreeRTOS lists are zero-initialized,
-            // not circular lists yet. Require corroborating task count/current TCB
-            // evidence; a null pointer alone must not conceal an initialized fault.
-            if (currentTcb === 0 && taskCount === 0 && (scheduler === 0 || scheduler === undefined)) {
+            // Before the scheduler starts FreeRTOS lists are zero-initialized, not
+            // circular lists yet. xSchedulerRunning is the strongest signal here:
+            // uxCurrentNumberOfTasks is frequently optimized out in a debug build,
+            // so requiring that optional symbol made the first stop walk BSS zeros
+            // and report fake list corruption. When the scheduler symbol is absent,
+            // retain the stricter current-TCB/task-count corroboration.
+            const preScheduler = currentTcb === 0 && (scheduler === 0 || (scheduler === undefined && taskCount === 0));
+            if (preScheduler) {
                 this.check(context);
                 result.kernel.supported = true;
                 result.kernel.state = scheduler === 0 ? "not-started" : "no-tasks";
@@ -287,7 +291,7 @@ class FreeRtosSnapshot {
             this.check(context);
             // These members depend on FreeRTOSConfig.h. Absence is supported;
             // invalid sizes/layouts and transport errors still need diagnostics.
-            if (!/\b(?:no member(?: or method)? named|has no member named)\b/i.test(error.message))
+            if (!/\b(?:no (?:member|field)(?: or method)? named|has no (?:member|field) named)\b/i.test(error.message))
                 this.diagnostic(context, `${layout.name}.${field}: ${error.message}`);
         }
     }

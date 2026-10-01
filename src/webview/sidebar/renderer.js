@@ -275,7 +275,9 @@ const LEAF_W = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i
 function sbRemove(name, isComp) {
     if (isComp) {
         sideWatch = sideWatch.filter((w) => w.name !== name && sbBaseNameOf(w.name) !== name);
-        delete sbExpanded[name];
+        Object.keys(sbExpanded).forEach((key) => {
+            if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete sbExpanded[key];
+        });
     } else {
         sideWatch = sideWatch.filter((w) => w.name !== name);
     }
@@ -329,6 +331,9 @@ function renderValues() {
         const ty = document.createElement("span");
         ty.className = "value-type";
         ty.textContent = item.type || "u32";
+        const nameWrap = document.createElement("span");
+        nameWrap.className = "value-name-wrap";
+        nameWrap.append(n, ty);
         const rm = document.createElement("button");
         rm.className = "watch-remove";
         rm.textContent = "✕";
@@ -339,7 +344,12 @@ function renderValues() {
             renderAvailable();
             saveSideWatch();
         };
-        row.append(n, ty, val, rm);
+        val.title = t("common.copy");
+        val.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+        });
+        row.append(nameWrap, val, rm);
         liveBox.appendChild(row);
     });
 }
@@ -580,6 +590,7 @@ function isFloat(type) {
 }
 function defBounds(type) {
     if (isWideInt(type)) return null;
+    if (isFloat(type)) return [-1, 1];
     const r = TYPE_RANGE[type];
     if (type === "u8" || type === "i8" || type === "u16" || type === "i16") return [r[0], r[1]];
     return [0, 100];
@@ -603,7 +614,11 @@ function normalizeWideInteger(raw, type) {
     }
 }
 function stepFor(item) {
-    if (item.type === "f32") return (Number(item.max) - Number(item.min)) / 100 || 0.1;
+    if (isFloat(item.type)) {
+        const value = Math.abs(Number(item.value));
+        if (!Number.isFinite(value) || value < 1) return 0.001;
+        return Math.max(0.001, Math.pow(10, Math.floor(Math.log10(value)) - 2));
+    }
     const v = Math.abs(Math.trunc(Number(item.value) || 0));
     return v < 100 ? 1 : Math.pow(10, Math.floor(Math.log10(v)) - 1);
 }
@@ -815,7 +830,8 @@ function buildWriteCard(item) {
     const ty = document.createElement("span");
     ty.className = "value-type";
     ty.textContent = item.isBoolean ? "bool" : item.type || "u32";
-    ctl.append(ty, minus, input, plus);
+    nmWrap.appendChild(ty);
+    ctl.append(minus, input, plus);
     top.append(nmWrap, ctl);
     const minL = document.createElement("span");
     minL.className = "bound";
@@ -888,6 +904,7 @@ function buildWriteCard(item) {
                   ? Number(v)
                   : clampToType(Number(v), item.type);
             if (!Number.isFinite(v)) v = 0;
+            if (Object.is(v, -0)) v = 0;
             item.value = v;
             input.value = fmt(v);
             syncSlider();
@@ -926,8 +943,18 @@ function buildWriteCard(item) {
             },
             { passive: false }
         );
-        minus.onclick = () => setValue((Number(item.value) || 0) - stepFor(item), true);
-        plus.onclick = () => setValue((Number(item.value) || 0) + stepFor(item), true);
+        const inputValue = () => {
+            const value = Number(input.value.trim());
+            return Number.isFinite(value) ? value : Number(item.value) || 0;
+        };
+        minus.onclick = () => {
+            const value = inputValue();
+            setValue(value - stepFor({ ...item, value }), true);
+        };
+        plus.onclick = () => {
+            const value = inputValue();
+            setValue(value + stepFor({ ...item, value }), true);
+        };
         slider.addEventListener("input", () => {
             const v = item.isBoolean
                 ? Math.min(1, Math.max(0, Math.round(Number(slider.value))))
@@ -1060,6 +1087,11 @@ function sbRenderLeaf(container, label, typeName, path, watchType) {
     const val = document.createElement("span");
     val.className = "sb-mval";
     val.textContent = "\u2014";
+    val.title = t("common.copy");
+    val.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+    });
     compCells[path] = val;
     row.append(nm, ty, val);
     container.appendChild(row);
@@ -1095,8 +1127,9 @@ function sbRenderNest(container, layout, fieldName, path) {
     const wrap = document.createElement("div");
     const head = document.createElement("div");
     head.className = "sb-comp-head";
+    const open = !!sbExpanded[path];
     const arrow = document.createElement("span");
-    arrow.className = "sb-arrow";
+    arrow.className = "sb-arrow" + (open ? " open" : "");
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
@@ -1106,10 +1139,13 @@ function sbRenderNest(container, layout, fieldName, path) {
     ty.textContent = layout.typeName || "";
     head.append(arrow, nm, ty);
     const body = document.createElement("div");
-    body.className = "sb-members";
+    body.className = "sb-members" + (open ? " open" : "");
     head.onclick = () => {
-        const open = body.classList.toggle("open");
-        arrow.classList.toggle("open", open);
+        const nextOpen = !sbExpanded[path];
+        sbExpanded[path] = nextOpen;
+        body.classList.toggle("open", nextOpen);
+        arrow.classList.toggle("open", nextOpen);
+        saveSbUi();
     };
     sbRenderLayout(body, layout, path);
     wrap.append(head, body);
@@ -1202,6 +1238,7 @@ function syncWriteValues() {
     writeList.forEach((item) => {
         const c = writeCells[item.name];
         if (!c) return;
+        if (Date.now() - (writeLastAt[item.name] || 0) < 1000) return;
         if (writeTimers[item.name]) return;
         if (c.input.classList.contains("pending")) return;
         const ae = document.activeElement;

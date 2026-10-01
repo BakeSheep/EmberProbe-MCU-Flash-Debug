@@ -245,6 +245,36 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(recoverySamples.length, 3);
     assert.deepStrictEqual(recoveryStatuses, [{ key: "sb.sampling" }]);
 
+    // 写入事务独占 Tcl 连接期间到达的采样节拍必须重新排队：采样链是自调度的，
+    // 直接丢弃节拍会让查看列表在写入一个变量后永久停更。
+    const busySamples = [];
+    const busySession = new ManagedOpenOcdSession(
+        null,
+        { intervalMs: 100 },
+        {
+            onSample: (samples) => busySamples.push(samples)
+        }
+    );
+    busySession.socket = { destroyed: false };
+    busySession.watch = [{ name: "counter", address: 0x20000000, size: 4 }];
+    busySession._readItems = async (_items, timestamp) => ({
+        samples: [{ name: "counter", bytes: [7, 0, 0, 0], timestamp }],
+        ok: 1
+    });
+    busySession.setSamplingEnabled(true);
+    busySession._clearSamplingTimer();
+    busySession.busy = true;
+    await busySession._sampleTick(true);
+    assert.ok(busySession.timer, "a tick skipped for an in-flight write must re-arm the sampling chain");
+    assert.deepStrictEqual(busySamples, [], "no sample may be read while the write owns the connection");
+    busySession.busy = false;
+    busySession._clearSamplingTimer();
+    await busySession._sampleTick(true);
+    assert.strictEqual(busySamples.length, 1, "sampling must resume once the write transaction releases the link");
+    busySession.setSamplingEnabled(false);
+    busySession._clearSamplingTimer();
+    busySession._releaseTimerResolution();
+
     console.log("Live watch Tcl-RPC integration tests passed");
 })().catch((error) => {
     console.error(error);

@@ -355,12 +355,14 @@ function renderVars() {
         name.className = "var-name";
         EmberProbeRuntime.renderVariableName(name, displayNameFor(item), item.name);
         name.title += " \u00b7 " + fmtAddr(item.address);
-        var type = document.createElement("span");
-        type.className = "var-type";
-        type.textContent = item.isBoolean ? "bool" : item.type || "u32";
         var val = document.createElement("div");
         val.className = "var-value";
         setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
+        val.title = t("common.copy");
+        val.addEventListener("click", function (event) {
+            event.stopPropagation();
+            if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+        });
         valueCells[item.name] = val;
         main.append(name);
         if (controls) controls.decorate(card, item.name, sw);
@@ -372,7 +374,7 @@ function renderVars() {
         rm.onclick = function () {
             removeVar(item.name);
         };
-        card.append(sw, main, type, val, rm);
+        card.append(sw, main, val, rm);
         box.appendChild(card);
     });
 }
@@ -508,14 +510,16 @@ function renderLeafInto(container, label, typeName, path, watchType, address) {
     nm.className = "member-name";
     nm.textContent = label;
     nm.title = path;
-    var ty = document.createElement("span");
-    ty.className = "member-type";
-    ty.textContent = typeName || watchType;
     var val = document.createElement("span");
     val.className = "member-value";
     val.textContent = "\u2014";
+    val.title = t("common.copy");
+    val.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+    });
     compCells[path] = val;
-    row.append(sw, nm, ty, val);
+    row.append(sw, nm, val);
     container.appendChild(row);
 }
 function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
@@ -529,10 +533,7 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     var nm = document.createElement("span");
     nm.className = "comp-name";
     nm.textContent = fieldName;
-    var ty = document.createElement("span");
-    ty.className = "comp-type";
-    ty.textContent = layout.typeName || "";
-    head.append(arrow, nm, ty);
+    head.append(arrow, nm);
     var body = document.createElement("div");
     body.className = "comp-members" + (expanded[path] ? " open" : "");
     head.onclick = function () {
@@ -613,14 +614,11 @@ function renderCompositeCard(item, idx, box) {
     nm.className = "comp-name";
     EmberProbeRuntime.renderVariableName(nm, displayNameFor(item), item.name);
     var lay = item.compositeLayout || {};
-    var ty = document.createElement("span");
-    ty.className = "comp-type";
-    ty.textContent = lay.typeName || "";
     var sz = document.createElement("span");
     sz.className = "comp-size";
     sz.textContent = (Number(item.size) || 0) + "B";
     sz.title = fmtAddr(item.address);
-    head.append(arrow, nm, ty, sz);
+    head.append(arrow, nm, sz);
     var body = document.createElement("div");
     body.className = "comp-body";
     appendNote(body, t("lw.plotMembersHint"));

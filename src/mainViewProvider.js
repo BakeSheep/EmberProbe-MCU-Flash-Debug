@@ -2551,6 +2551,18 @@ class MainViewProvider {
                     throw Object.assign(new Error("Live panel identity mismatch"), { code: "INVALID_PANEL_ID" });
                 }
                 switch (message.type) {
+                    case "copyText": {
+                        const value = message.text ? String(message.text) : "";
+                        if (value) {
+                            try {
+                                await vscode.env.clipboard.writeText(value);
+                                vscode.window.showInformationMessage(this._t("common.copied"));
+                            } catch (e) {
+                                /* ignore clipboard errors */
+                            }
+                        }
+                        break;
+                    }
                     case "ready":
                         entry.ready = true;
                         await this._seriesStyleStore.initialize(

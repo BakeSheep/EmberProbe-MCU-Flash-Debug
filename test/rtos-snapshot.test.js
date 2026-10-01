@@ -171,6 +171,20 @@ function fixture({ shift = 0, missing = "", corrupt = false } = {}) {
         assert.deepStrictEqual(result.diagnostics, []);
         assert(!initial.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
     }
+    {
+        const initial = fixture();
+        initial.symbols.xSchedulerRunning = 0;
+        initial.symbols.pxCurrentTCB = 0;
+        delete initial.symbols.uxCurrentNumberOfTasks;
+        for (const [address, bytes] of initial.memory) initial.memory.set(address, Buffer.alloc(bytes.length));
+        const result = await new FreeRtosSnapshot(initial.session).snapshot();
+        assert.strictEqual(result.kernel.state, "not-started");
+        assert.strictEqual(result.kernel.supported, true);
+        assert.strictEqual(result.partial, false);
+        assert.deepStrictEqual(result.tasks, []);
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert(!initial.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
+    }
     const beforeScheduler = fixture();
     beforeScheduler.symbols.xSchedulerRunning = 0;
     beforeScheduler.symbols.uxCurrentNumberOfTasks = 2;
