@@ -725,9 +725,28 @@ class DebugSessionBridge {
         return samples;
     }
 
+    // Agent writes may arrive while live sampling is disabled, so no background
+    // snapshot exists yet. Prime one from the exact write plan on the paused DAP
+    // session before applying the normal canWrite gate.
+    async prepareWriteSnapshot(items) {
+        const session = this.assertPausedAccess();
+        const epoch = this.epoch;
+        const samples = await this.read(items, session, epoch);
+        if (session !== this.activeSession || !this.paused || this.epoch !== epoch)
+            throw Object.assign(new Error("Target state changed during paused DAP memory read"), {
+                code: "TARGET_NOT_PAUSED",
+                details: { status: this.agentStatus() }
+            });
+        this.snapshotReady = true;
+        this.snapshotPending = false;
+        this.onSamples(samples, this.now());
+        this.onStatus(this.status());
+        return samples;
+    }
+
     async writeAndVerify(items) {
         const session = this.activeSession;
-        if (!this.canWrite || !session)
+        if (!this.paused || !session || this.capabilities.write !== true)
             throw new Error("The debugger target must be paused and support DAP writeMemory");
         this._invalidate();
         const waitDeadline = this.now() + 2000;

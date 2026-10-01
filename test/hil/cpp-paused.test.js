@@ -11,6 +11,19 @@ async function run() {
     const provider = extension.exports.debugTestProvider;
     await provider._context.workspaceState.update("mcu.debugger", process.env.CPP_BOARD_PROBE);
     await provider._context.workspaceState.update("mcu.mcuCore", process.env.CPP_BOARD_TARGET);
+    const config = vscode.workspace.getConfiguration("emberprobe");
+    if (process.env.CPP_BOARD_OPENOCD)
+        await config.update("openocdPath", process.env.CPP_BOARD_OPENOCD, vscode.ConfigurationTarget.Workspace);
+    if (process.env.CPP_BOARD_TRANSPORT)
+        await config.update("transport", process.env.CPP_BOARD_TRANSPORT, vscode.ConfigurationTarget.Workspace);
+    if (process.env.CPP_BOARD_PROBE_SERIAL)
+        await config.update("probeSerial", process.env.CPP_BOARD_PROBE_SERIAL, vscode.ConfigurationTarget.Workspace);
+    if (process.env.CPP_BOARD_ADAPTER_SPEED_KHZ)
+        await config.update(
+            "adapterSpeedKhz",
+            Number(process.env.CPP_BOARD_ADAPTER_SPEED_KHZ),
+            vscode.ConfigurationTarget.Workspace
+        );
     let session,
         stopped = false;
     const output = [];
@@ -32,6 +45,7 @@ async function run() {
     const report = {
         executable: process.env.CPP_BOARD_ELF,
         gdb: process.env.CPP_BOARD_GDB,
+        openocd: process.env.CPP_BOARD_OPENOCD || "openocd",
         rtos: process.env.CPP_BOARD_RTOS || "",
         values: {},
         output: ""
@@ -91,13 +105,77 @@ async function run() {
         assert(report.values["app::g_trend"].children.length > 0);
         assert(report.values["app::g_trend"].children.every((value) => /^\[\d+\]$/.test(value.name)));
         assert.strictEqual(report.values["app::g_sensorOwner"].children[0].name, "value");
-        assert(report.values["app::g_sensorOwner"].children[0].variablesReference > 0);
+        if (process.env.CPP_BOARD_RTOS !== "FreeRTOS")
+            assert(report.values["app::g_sensorOwner"].children[0].variablesReference > 0);
         report.values["app::g_sensorOwner"].pointee = (
             await session.customRequest("variables", {
                 variablesReference: report.values["app::g_sensorOwner"].children[0].variablesReference,
                 count: 100
             })
         ).variables;
+        if (process.env.CPP_BOARD_RTOS === "FreeRTOS") {
+            const names = new Set(report.threads.map((item) => item.name));
+            for (const expected of [
+                "defaultTask",
+                "imuProducer",
+                "controlTask",
+                "protocolTx",
+                "protocolRx",
+                "rtosMonitor",
+                "dynamicTask"
+            ])
+                assert(names.has(expected), `Missing FreeRTOS task: ${expected}`);
+            const debugValue = await evaluate("g_appDebug");
+            const debugChildren = await session.customRequest("variables", {
+                variablesReference: debugValue.variablesReference,
+                count: 200
+            });
+            assert(
+                debugChildren.variables.some((item) => item.name === "delete_dynamic_task"),
+                "g_appDebug controls were not expanded"
+            );
+            await session.customRequest("setVariable", {
+                variablesReference: debugValue.variablesReference,
+                name: "delete_dynamic_task",
+                value: "1"
+            });
+            const nested = await evaluate("app::g_nestedTrend");
+            report.values["app::g_nestedTrend"] = nested;
+            assert.match(nested.result, /vector length 2/);
+            const nestedRows = await session.customRequest("variables", {
+                variablesReference: nested.variablesReference,
+                count: 10
+            });
+            assert(nestedRows.variables[0]?.variablesReference > 0, "Nested vector element did not expand");
+            const nestedElement = await session.customRequest("variables", {
+                variablesReference: nestedRows.variables[0].variablesReference,
+                count: 10
+            });
+            const nestedBefore = nestedElement.variables.find((item) => item.name === "[1]")?.value;
+            await session.customRequest("setVariable", {
+                variablesReference: nestedRows.variables[0].variablesReference,
+                name: "[1]",
+                value: "9.5"
+            });
+            const nestedAfter = await session.customRequest("variables", {
+                variablesReference: nestedRows.variables[0].variablesReference,
+                count: 10
+            });
+            const nestedAfterValue = nestedAfter.variables.find((item) => item.name === "[1]")?.value || "";
+            report.values["app::g_nestedTrend[0][1]"] = { before: nestedBefore, after: nestedAfterValue };
+            assert(/9\.5/.test(nestedAfterValue), `Nested STL write was not retained: ${nestedAfterValue}`);
+            const dynamicThread = report.threads.find((item) => item.name === "dynamicTask");
+            await session.customRequest("continue", { threadId: thread });
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            await session.customRequest("pause", {});
+            const afterDelete = await session.customRequest("threads", {});
+            report.threadsAfterDelete = afterDelete.threads;
+            assert(!afterDelete.threads.some((item) => item.name === "dynamicTask"), "dynamicTask was not deleted");
+            await assert.rejects(
+                session.customRequest("next", { threadId: dynamicThread.id }),
+                /DEBUG_TASK_EXITED|no longer exists|thread/i
+            );
+        }
         assert(!/Built-in STL display unavailable/.test(output.join("")), "STL expansion fell back");
         report.passed = true;
         console.log("✓ H750 ordinary ARM GDB: string, vector and unique_ptr over managed DAP passed");

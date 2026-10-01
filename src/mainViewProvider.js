@@ -866,6 +866,13 @@ class MainViewProvider {
     }
     async _prepareWriteConnection() {
         if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
+        if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
+            return this._sessionWriteConnection(this._debugBridge);
+        // A managed Cortex-Debug server remains the connection that will execute an
+        // Agent write even while the DAP bridge is between stop events and reports
+        // canWrite=false. Bind the confirmation to that server instead of preparing
+        // a second standalone OpenOCD identity, which would be rejected at execution.
+        if (this._managedDebugServer) return this._sessionWriteConnection(this._debugBridge);
         if (this._debugBridge.canWrite) return this._sessionWriteConnection(this._debugBridge);
         const config = this._configurationStore.snapshot();
         const executable = await this._resolveOpenOcdPath(config.openocdPath);
@@ -1912,7 +1919,8 @@ class MainViewProvider {
         const connection = this._sessionWriteConnection(session);
         if (!plan.connection || JSON.stringify(connection) !== JSON.stringify(writeConnectionIdentity(plan.connection)))
             throw Object.assign(new Error("The active connection changed after write confirmation"), {
-                code: "WRITE_CONNECTION_CHANGED"
+                code: "WRITE_CONNECTION_CHANGED",
+                details: { expected: plan.connection, actual: connection }
             });
         const { elfResult, items } = plan;
         const transaction = await session.writeAndVerify(
@@ -1964,8 +1972,34 @@ class MainViewProvider {
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
+        // Use the real DAP bridge for a paused managed debug session. The generic
+        // Agent probe helper deliberately wraps paused reads in a read-only session;
+        // passing that wrapper to the write path loses the DAP connection identity
+        // between confirmation and execution.
+        if (!this._debugBridge.canWrite && this._debugBridge.agentStatus().state === "paused") {
+            await this._debugBridge.prepareWriteSnapshot(plan.items);
+        }
+        if (this._debugBridge.canWrite) {
+            const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
+            let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };
+            if (authorization.remember) {
+                try {
+                    permission = {
+                        mode: "workspace",
+                        ...(await this._writeAuthorization.trustWorkspace(plan)),
+                        remembered: true
+                    };
+                } catch (error) {
+                    permission = { mode: "once", trusted: false, remembered: false, warning: error.message };
+                }
+            }
+            return { ...result, permission };
+        }
         const result = await this._withAgentProbe(
-            ({ session, source }) => this._executeWritePlan(session, source, plan),
+            ({ session, source }) =>
+                this._debugBridge.agentStatus().state === "paused"
+                    ? this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan)
+                    : this._executeWritePlan(session, source, plan),
             { allowPausedDebugRead: true }
         );
         let permission = { mode: authorization.mode, trusted: this._writeAuthorization.isTrusted(plan) };

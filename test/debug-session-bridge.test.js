@@ -106,6 +106,11 @@ const delay = (ms) => clock.advance(ms);
             samples[1].map((item) => item.name),
             ["x", "y"]
         );
+        bridge.snapshotReady = false;
+        bridge.onSamples = () => {};
+        bridge.onStatus = () => {};
+        await bridge.prepareWriteSnapshot([{ name: "write-prime", address: 0x20000000, size: 4 }]);
+        assert.strictEqual(bridge.status().snapshotReady, true);
 
         bridge.handleRequest(session, { type: "request", command: "stepOut" });
         assert.strictEqual(targetEvents.at(-1).state, "transition");
