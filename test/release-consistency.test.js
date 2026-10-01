@@ -27,6 +27,11 @@ assert.ok(pkg.files.includes("README_EN.md"), "published package must include En
 for (const script of ["release:prepare", "quality", "test:e2e", "test:hil"]) {
     assert.ok(pkg.scripts[script], `package.json must expose the ${script} workflow`);
 }
+assert.match(
+    pkg.scripts.package,
+    /--allow-unused-files-pattern/u,
+    "package workflow must tolerate optional platform-specific native helper files"
+);
 assert.ok(
     gitAttributes.split(/\r?\n/u).includes("* text=auto eol=lf"),
     ".gitattributes must keep CI-formatted text files on LF across platforms"
