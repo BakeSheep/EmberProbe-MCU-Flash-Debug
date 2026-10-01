@@ -2,6 +2,7 @@
 const crypto = require("crypto");
 const { ConfirmationStore } = require("./confirmationStore");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
+const { normalizeTargetSelection } = require("../skills/_emberprobe/openocd-launch");
 
 function writeConnectionIdentity(connection) {
     if (!connection) return null;
@@ -12,7 +13,7 @@ function writeConnectionIdentity(connection) {
             workspace: String(connection.workspace || "")
         };
     }
-    return { kind: "openocd", ...connectionIdentity(connection) };
+    return { kind: "openocd", ...connectionIdentity(connection), ...normalizeTargetSelection(connection) };
 }
 
 function connectionFingerprint(plan) {

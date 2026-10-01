@@ -1,5 +1,5 @@
 "use strict";
-const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs } = require("./openocdScripts");
+const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs, buildOpenOcdTargetArgs } = require("./openocdScripts");
 // 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，并通过 Tcl-RPC 只读采样 RAM。
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
@@ -517,8 +517,9 @@ class ManagedOpenOcdSession {
             this.mode === "debug" ? `gdb_port ${gdbPort}` : "gdb_port disabled",
             "-c",
             "telnet_port disabled",
+            ...(this.mode === "debug" ? buildOpenOcdTargetArgs(this.options, this.options.gdbPorts) : []),
             // RTOS 感知只在调试模式下配置：独立采样是非侵入轮询，让 OpenOCD 遍历内核数据结构会改变采样行为。
-            ...(this.mode === "debug" ? buildOpenOcdRtosArgs(this.options.rtos) : []),
+            ...(this.mode === "debug" ? buildOpenOcdRtosArgs(this.options.rtos, !!this.options.serverGroup) : []),
             ...(this.mode === "debug"
                 ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
                 : []),
@@ -673,9 +674,24 @@ class ManagedOpenOcdSession {
             this._startReject = null;
         }
         this._startCompleted = true;
+        let targetNames;
+        if (this.options.serverGroup) {
+            targetNames = String(await this._sendCheckedCommand("target names"))
+                .trim()
+                .split(/\s+/);
+            if (
+                targetNames.length !== this.options.numberOfProcessors ||
+                targetNames.some((name) => !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(name))
+            )
+                throw new Error("OpenOCD did not return the configured shared target names");
+        }
         return Object.freeze({
             gdbTarget: this.mode === "debug" ? `127.0.0.1:${gdbPort}` : null,
+            ...(this.options.gdbPorts
+                ? { gdbTargets: this.options.gdbPorts.map((value) => `127.0.0.1:${value}`) }
+                : {}),
             tclPort: port,
+            ...(targetNames ? { targetNames } : {}),
             mode: this.mode
         });
     }
@@ -1432,11 +1448,13 @@ class ManagedOpenOcdSession {
                 });
             }
             if (!closed && childRunning()) {
+                const forcedExit = this.waitForExit(400);
                 try {
                     child.kill("SIGKILL");
                 } catch (e) {
                     /* ignore */
                 }
+                closed = await forcedExit;
             }
             if (socket && !socket.destroyed) {
                 try {

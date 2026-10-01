@@ -2,8 +2,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const { normalizeRtos } = require("../../skills/_emberprobe/openocd-launch");
+const { normalizeRtos, normalizeTargetSelection } = require("../../skills/_emberprobe/openocd-launch");
 const { resolvePrettyPrinting } = require("./prettyPrinting");
+const { normalizeDebugImages } = require("./debugImages");
 
 function isSupportedDebugSession(session) {
     return ["emberprobe", "cortex-debug"].includes(session?.type);
@@ -17,11 +18,53 @@ function resolveRtos(launch, configured) {
     return normalizeRtos(explicit ? launch.rtos : configured);
 }
 
+function normalizeDebugServerOptions(config = {}) {
+    const servertype = config.servertype ?? "openocd";
+    if (servertype !== "openocd")
+        throw Object.assign(new Error(`Unsupported EmberProbe server: ${servertype}`), {
+            code: "DEBUG_SERVER_UNSUPPORTED"
+        });
+    if (
+        config.serverpath !== undefined &&
+        (typeof config.serverpath !== "string" || !config.serverpath.trim() || /[\x00-\x1f]/.test(config.serverpath))
+    )
+        throw Object.assign(new Error("serverpath must name an OpenOCD executable"), {
+            code: "DEBUG_SERVER_PATH_INVALID"
+        });
+    const selection = normalizeTargetSelection(config);
+    if (
+        config.serverGroup !== undefined &&
+        (typeof config.serverGroup !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(config.serverGroup) ||
+            !selection.numberOfProcessors ||
+            selection.numberOfProcessors < 2)
+    )
+        throw Object.assign(
+            new Error("serverGroup requires an identifier and an explicit multi-target processor count"),
+            {
+                code: "DEBUG_GROUP_INVALID"
+            }
+        );
+    return {
+        servertype,
+        ...(config.serverpath === undefined ? {} : { serverpath: config.serverpath.trim() }),
+        ...selection,
+        ...(config.serverGroup === undefined ? {} : { serverGroup: config.serverGroup })
+    };
+}
+
 function validateDebugConfiguration(config, folder) {
     if (!folder) throw new Error("Open a workspace folder before debugging");
     if (!["launch", "attach"].includes(config.request)) throw new Error("Use launch or attach for EmberProbe");
     const result = { ...config };
-    resolvePrettyPrinting(result);
+    Object.assign(result, normalizeDebugServerOptions(result));
+    const pretty = resolvePrettyPrinting(
+        result,
+        {},
+        result.cwd ? path.resolve(folder.uri.fsPath, result.cwd) : folder.uri.fsPath
+    );
+    // Preserve absent keys so workspace settings can still apply during managed startup.
+    if (result.prettyPrinterFiles !== undefined) result.prettyPrinterFiles = pretty.prettyPrinterFiles;
     if (result.executable) {
         result.executable = path.resolve(folder.uri.fsPath, result.executable);
         if (!fs.statSync(result.executable).isFile()) throw new Error("Debug executable must be an ELF file");
@@ -30,6 +73,9 @@ function validateDebugConfiguration(config, folder) {
         result.cwd = path.resolve(folder.uri.fsPath, result.cwd);
         if (!fs.statSync(result.cwd).isDirectory()) throw new Error("Debug cwd must be a directory");
     }
+    if (result.serverpath && /[/\\]/.test(result.serverpath))
+        result.serverpath = path.resolve(result.cwd || folder.uri.fsPath, result.serverpath);
+    Object.assign(result, normalizeDebugImages(result, result.cwd || folder.uri.fsPath));
     if (result.runToEntryPoint !== undefined && typeof result.runToEntryPoint !== "string")
         throw new Error("runToEntryPoint must be a string");
     // Keep null absent so resolveRtos can fall back to the workspace setting.
@@ -47,4 +93,4 @@ function validateDebugConfiguration(config, folder) {
     return result;
 }
 
-module.exports = { isSupportedDebugSession, validateDebugConfiguration, resolveRtos };
+module.exports = { isSupportedDebugSession, validateDebugConfiguration, resolveRtos, normalizeDebugServerOptions };

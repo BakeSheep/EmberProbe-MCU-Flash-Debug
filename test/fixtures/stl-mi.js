@@ -72,7 +72,9 @@ class StlMi extends EventEmitter {
                 };
             }
             const path = name.match(/&\((.*)\)$/)?.[1];
-            return { value: String(this.items.get(path).address) };
+            const item = this.items.get(path);
+            if (!item) throw new Error("Cannot take the address of this value");
+            return { value: String(item.address) };
         }
         if (command.startsWith("-data-read-memory-bytes")) {
             const match = command.match(/ (0x[\da-f]+) (\d+)$/i);

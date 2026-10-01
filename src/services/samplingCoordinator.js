@@ -15,7 +15,11 @@ class SamplingCoordinator {
     }
     setRuntimeEnabled(server, requested, bridge) {
         return server.setSamplingEnabled(
-            this.allowed(requested) && !bridge?.paused && !bridge?.transitionKind && !bridge?.conflict
+            server.capabilities?.runtimeRead !== false &&
+                this.allowed(requested) &&
+                !bridge?.paused &&
+                !bridge?.transitionKind &&
+                !bridge?.conflict
         );
     }
     status({ intent, bridge, standaloneRunning, managedServer, agentStatus }) {
@@ -23,7 +27,13 @@ class SamplingCoordinator {
         let result;
         if (bridge.hasAnySession || bridge.hasSession) {
             result = bridge.status();
-            if (managedServer && bridge.hasSession && !bridge.paused && !bridge.conflict) {
+            if (
+                managedServer &&
+                managedServer.capabilities?.runtimeRead !== false &&
+                bridge.hasSession &&
+                !bridge.paused &&
+                !bridge.conflict
+            ) {
                 const canRead = this.allowed(intent) && !!managedServer.samplingEnabled && !bridge.transitionKind;
                 result = {
                     ...result,

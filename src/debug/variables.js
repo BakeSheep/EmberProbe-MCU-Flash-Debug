@@ -1,11 +1,13 @@
 "use strict";
 
 const { quote } = require("./mi");
-const { StlDisplay, constValue, indirectType, isInternalError } = require("./stl");
+const { StlDisplay, constValue, indirectType, isInternalError, safePath, gdbVariablePath } = require("./stl");
 
 const PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1000;
 const yes = (value) => value === "1" || value === 1;
+const visibilityGroup = (item) =>
+    !item.type && !yes(item.dynamic) && /^(public|private|protected)$/.test(item.exp || "");
 
 function pageRange(args, offset = 0) {
     const start = args.start ?? 0;
@@ -39,6 +41,40 @@ class DebugVariables {
         this.nodes.clear();
         this.synthetic.clear();
         this.stl.reset();
+    }
+    async printerOperation(command, generation) {
+        let result;
+        let output = "";
+        if ((this.session.config.effectivePrettyPrintingMode ?? this.session.config.prettyPrintingMode) === "gdb") {
+            output = await this.session.captureConsole(async () => {
+                result = await this.session.mi.command(command);
+            });
+        } else result = await this.session.mi.command(command);
+        this.check(generation);
+        const failure = /Python Exception|Error (?:occurred )?in Python|Error while executing Python/i.test(output)
+            ? new Error(output.trim().slice(0, 1024))
+            : null;
+        return { result, failure };
+    }
+    async rawFallback(node, error, generation) {
+        this.check(generation);
+        await this.session.mi.command(`-var-set-visualizer ${quote(node.item.name)} None`);
+        this.check(generation);
+        const info = await this.session.mi.command(`-var-info-num-children ${quote(node.item.name)}`);
+        const value = await this.session.mi.command(`-var-evaluate-expression ${quote(node.item.name)}`);
+        this.check(generation);
+        this.dropChildren(node);
+        node.raw = true;
+        Object.assign(node.item, {
+            dynamic: "0",
+            has_more: "0",
+            displayhint: undefined,
+            numchild: info.numchild,
+            value: value.value
+        });
+        this.session.variableDiagnostic(
+            `Variable expansion failed for ${node.item.type}: ${error.message}. Showing raw fields.\n`
+        );
     }
     snapshot(frame) {
         const thread = this.session.rtosAware ? frame?.thread : undefined;
@@ -98,7 +134,7 @@ class DebugVariables {
                 (dynamic && item.has_more === undefined && item.displayhint !== "string");
         if (expandable && !node.ref) node.ref = this.session.handleFor(node);
         const variable = {
-            name: displayName ?? item.exp ?? item.name,
+            name: displayName ?? node.label ?? item.exp ?? item.name,
             value: unavailable ? `<unavailable: ${unavailable}>` : (view?.summary ?? item.value ?? ""),
             type: item.type,
             variablesReference: expandable ? node.ref : 0
@@ -107,7 +143,42 @@ class DebugVariables {
         else if (!dynamic && expandable && Number.isSafeInteger(Number(item.numchild)))
             variable[indexed(item) ? "indexedVariables" : "namedVariables"] = Number(item.numchild);
         if (node.readOnly || view) variable.presentationHint = { attributes: ["readOnly"] };
+        if (visibilityGroup(item)) {
+            variable.value = `${Number(item.numchild) || 0} members`;
+            variable.presentationHint = { kind: "virtual", attributes: ["readOnly"] };
+        } else if (visibilityGroup(node.parent?.item || {})) {
+            variable.presentationHint = { ...variable.presentationHint, visibility: node.parent.item.exp };
+        }
+        if (node.expression) variable.evaluateName = node.expression;
+        if (node.memoryReference) variable.memoryReference = node.memoryReference;
         return variable;
+    }
+    async metadata(node) {
+        if (node.metadataReady || !node.item.name || node.unavailable || visibilityGroup(node.item)) return;
+        const generation = this.snapshot(node.frame);
+        try {
+            if (!node.expression) {
+                const path = await this.session.mi.command(`-var-info-path-expression ${quote(node.item.name)}`);
+                this.check(generation);
+                if (path.path_expr) {
+                    node.expression = gdbVariablePath(path.path_expr);
+                }
+            }
+            if (node.expression) {
+                const expression = safePath(node.expression);
+                const result = await this.session.mi.command(
+                    `-data-evaluate-expression ${quote(`(unsigned long long)&(${expression})`)}`
+                );
+                this.check(generation);
+                const match = String(result.value).match(/^\s*(0x[\da-f]+|\d+)(?=\s|$)/i);
+                if (match && BigInt(match[1]) > 0n) node.memoryReference = `0x${BigInt(match[1]).toString(16)}`;
+            }
+        } catch (error) {
+            this.check(generation);
+            if (isInternalError(error)) throw error;
+            // Computed values, bitfields and optimized objects legitimately have no address.
+        }
+        node.metadataReady = true;
     }
     descendant(node, parent) {
         for (let current = node.parent; current; current = current.parent) if (current === parent) return true;
@@ -165,13 +236,17 @@ class DebugVariables {
         // Duplicate printer labels must never silently redirect an assignment.
         names.set(label, names.has(label) && existing !== node ? null : node);
     }
-    async scopeItems(handle, range, generation) {
+    async scopeItems(handle, range, generation, context = this.stl.context(handle.frame)) {
         const frame = await this.session.selectFrame(handle.frameId);
         this.check(generation);
         if (!handle.locals) {
-            const result = await this.session.mi.command("-stack-list-variables --simple-values");
+            if (["globals", "statics"].includes(handle.scopeKind)) {
+                handle.locals = await this.session.symbolDirectory.variables(handle.scopeKind, frame.file);
+            } else {
+                const result = await this.session.mi.command("-stack-list-variables --simple-values");
+                handle.locals = result.variables || [];
+            }
             this.check(generation);
-            handle.locals = result.variables || [];
             handle.roots = new Map();
             handle.frame = frame;
         }
@@ -181,7 +256,12 @@ class DebugVariables {
             if (!node) {
                 let item;
                 try {
-                    item = { ...(await this.session.createVariable(local.name, frame)), exp: local.name };
+                    if (local.expression === null)
+                        throw new Error("Symbol image/source identity is ambiguous; no safe expression is available");
+                    item = {
+                        ...(await this.session.createVariable(local.expression || local.name, frame)),
+                        exp: local.name
+                    };
                 } catch (error) {
                     item = {
                         ...local,
@@ -196,12 +276,12 @@ class DebugVariables {
                 handle.roots.set(local.name, node);
             }
             nodes.push(node);
-            await this.stl.prepare(node);
+            await this.stl.prepare(node, context);
+            await this.metadata(node);
         }
         return { nodes, more: range.from + nodes.length < handle.locals.length };
     }
-    async children(node, from, size, generation) {
-        const context = this.stl.context(node.frame);
+    async children(node, from, size, generation, context = this.stl.context(node.frame)) {
         await this.stl.prepare(node, context);
         if (node.unavailable) throw new Error(`Variable unavailable: ${node.unavailable}`);
         if (node.stl) {
@@ -217,7 +297,7 @@ class DebugVariables {
                 )
                     throw error;
                 this.stl.fallback(node, error);
-                return this.children(node, from, size, generation);
+                return this.children(node, from, size, generation, context);
             }
         }
         const map = node.item.displayhint === "map";
@@ -225,30 +305,18 @@ class DebugVariables {
         const end = (from + size) * factor;
         let result;
         try {
-            result = await this.session.mi.command(
-                `-var-list-children --all-values ${quote(node.item.name)} ${from * factor} ${end}`
+            const operation = await this.printerOperation(
+                `-var-list-children --all-values ${quote(node.item.name)} ${from * factor} ${end}`,
+                generation
             );
+            if (operation.failure) throw operation.failure;
+            result = operation.result;
         } catch (error) {
             this.check(generation);
             if (isInternalError(error)) throw error;
             if (!yes(node.item.dynamic) || node.raw) throw error;
-            this.check(generation);
-            const info = await this.session.mi.command(`-var-info-num-children ${quote(node.item.name)}`);
-            const value = await this.session.mi.command(`-var-evaluate-expression ${quote(node.item.name)}`);
-            this.check(generation);
-            this.dropChildren(node);
-            node.raw = true;
-            Object.assign(node.item, {
-                dynamic: "0",
-                has_more: "0",
-                displayhint: undefined,
-                numchild: info.numchild,
-                value: value.value
-            });
-            this.session.variableDiagnostic(
-                `Variable expansion failed for ${node.item.type}: ${error.message}. Showing raw fields.\n`
-            );
-            return this.children(node, from, size, generation);
+            await this.rawFallback(node, error, generation);
+            return this.children(node, from, size, generation, context);
         }
         this.check(generation);
         const items = (result.children || []).map((child) => child.child || child);
@@ -265,6 +333,8 @@ class DebugVariables {
             // remain locked across dereferences; GDB checks the referent's editability.
             const readOnly = node.locked || (!indirectType(node.item.type) && node.readOnly);
             const child = this.register(item, node.root, node, readOnly || (map && index % 2 === 0));
+            if (!map && !yes(node.item.dynamic) && !item.exp)
+                child.label = `<anonymous ${/^union\b/.test(item.type || "") ? "union" : "member"} ${from + index}>`;
             child.locked ||= map && index % 2 === 0;
             return child;
         });
@@ -275,14 +345,20 @@ class DebugVariables {
         const handle = this.session.reference(args.variablesReference, null);
         const parent = handle.kind === "page" ? handle.parent : handle;
         const generation = this.snapshot(parent.frame || this.session.handles.get(parent.frameId));
+        const context = this.stl.context(parent.frame || this.session.handles.get(parent.frameId));
         const filter = args.filter ?? handle.filter;
         const range = pageRange({ ...args, filter }, handle.kind === "page" ? handle.start : 0);
+        if (parent.kind === "scope" && parent.scopeKind === "registers") {
+            if (filter === "indexed") return { variables: [] };
+            return this.registers(parent, range, generation);
+        }
         if (parent.frame && this.session.rtosAware) {
             await this.session.ensureThread(parent.frame.thread);
             this.check(generation);
         }
         if (parent.kind === "entry") {
             if (filter === "indexed") return { variables: [] };
+            for (const node of parent.nodes.slice(range.from, range.from + range.size)) await this.metadata(node);
             const variables = parent.nodes.slice(range.from, range.from + range.size).map((node, index) => {
                 const label = range.from + index === 0 ? "key" : "value";
                 this.remember(args.variablesReference, label, node);
@@ -290,15 +366,15 @@ class DebugVariables {
             });
             return { variables };
         }
-        if (parent.kind === "variable") await this.stl.prepare(parent);
+        if (parent.kind === "variable") await this.stl.prepare(parent, context);
         this.check(generation);
         const isIndexed = parent.kind === "variable" && (parent.stl ? parent.stl.indexed : indexed(parent.item));
         if (filter && filter !== (isIndexed ? "indexed" : "named")) return { variables: [] };
         const result =
             parent.kind === "scope"
-                ? await this.scopeItems(parent, range, generation)
+                ? await this.scopeItems(parent, range, generation, context)
                 : parent.kind === "variable"
-                  ? await this.children(parent, range.from, range.size, generation)
+                  ? await this.children(parent, range.from, range.size, generation, context)
                   : null;
         if (!result) throw new Error("Invalid variable reference");
         this.check(generation);
@@ -321,6 +397,7 @@ class DebugVariables {
             }
         } else {
             for (const node of result.nodes) {
+                await this.metadata(node);
                 const variable = this.present(node);
                 this.remember(args.variablesReference, variable.name, node);
                 if (parent.ref && parent.ref !== args.variablesReference)
@@ -346,10 +423,12 @@ class DebugVariables {
         return { variables };
     }
     async setVariable(args) {
-        this.session.reference(args.variablesReference, null);
+        const handle = this.session.reference(args.variablesReference, null);
+        const parent = handle.kind === "page" ? handle.parent : handle;
+        if (parent.kind === "scope" && parent.scopeKind === "registers") return this.setRegister(parent, args);
         const node = this.session.variablesByName.get(args.variablesReference)?.get(args.name);
         const generation = this.snapshot(node?.frame);
-        if (node?.readOnly || node?.stl) throw new Error("Variable is read only");
+        if (node?.readOnly || node?.stl || visibilityGroup(node?.item || {})) throw new Error("Variable is read only");
         if (!node?.item.name || this.nodes.get(node.item.name) !== node)
             throw new Error("Variable is unavailable, ambiguous, or has not been expanded");
         if (node.frame && this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
@@ -410,6 +489,68 @@ class DebugVariables {
             if (change.new_num_children !== undefined) changed.item.numchild = change.new_num_children;
         }
         return { value: result.value, variablesReference: 0 };
+    }
+    async registers(handle, range, generation) {
+        await this.session.selectFrame(handle.frameId);
+        this.check(generation);
+        if (!handle.registerNames) {
+            const result = await this.session.mi.command("-data-list-register-names");
+            this.check(generation);
+            handle.registerNames = (result["register-names"] || [])
+                .map((name, number) => ({ name, number }))
+                .filter((item) => typeof item.name === "string" && item.name);
+            handle.registers = new Map();
+        }
+        const names = handle.registerNames.slice(range.from, range.from + range.size);
+        if (!names.length) return { variables: [] };
+        const result = await this.session.mi.command(
+            `-data-list-register-values x ${names.map((item) => item.number).join(" ")}`
+        );
+        this.check(generation);
+        const values = new Map((result["register-values"] || []).map((item) => [Number(item.number), item.value]));
+        const variables = names.map((item) => {
+            handle.registers.set(item.name, item.number);
+            return {
+                name: item.name,
+                value: values.get(item.number) ?? "<unavailable>",
+                evaluateName: `$${item.name}`,
+                variablesReference: 0
+            };
+        });
+        if (range.implicit && range.from + names.length < handle.registerNames.length) {
+            const next = range.from + names.length;
+            const page = this.syntheticHandle(`registers:${handle.ref}:${next}`, {
+                kind: "page",
+                parent: handle,
+                start: next
+            });
+            variables.push({
+                name: "More…",
+                value: `from ${next}`,
+                variablesReference: page.ref,
+                presentationHint: { kind: "virtual", attributes: ["readOnly"] }
+            });
+        }
+        return { variables };
+    }
+    async setRegister(handle, args) {
+        const number = handle.registers?.get(args.name);
+        if (!Number.isInteger(number)) throw new Error("Register is unavailable or has not been expanded");
+        if (typeof args.value !== "string" || !args.value.trim()) throw new Error("Provide a register value");
+        const generation = this.snapshot(handle.frame);
+        await this.session.selectFrame(handle.frameId);
+        this.check(generation);
+        const evaluated = await this.session.mi.command(`-data-evaluate-expression ${quote(args.value)}`);
+        this.check(generation);
+        const match = String(evaluated.value).match(/^\s*(-?(?:0x[\da-f]+|\d+))(?=\s|$)/i);
+        if (!match) throw new Error("Register value must evaluate to an integer");
+        await this.session.mi.command(`-data-write-register-values x ${number} ${match[1]}`);
+        this.check(generation);
+        const result = await this.session.mi.command(`-data-list-register-values x ${number}`);
+        this.check(generation);
+        const value = (result["register-values"] || []).find((item) => Number(item.number) === number)?.value;
+        await this.session.clearVariables();
+        return { value: value ?? evaluated.value, variablesReference: 0 };
     }
 }
 

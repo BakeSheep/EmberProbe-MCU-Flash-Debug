@@ -22,6 +22,7 @@ function load(file, overrides) {
 
 (async () => {
     const captured = [];
+    let successfulSpawn = false;
     const scripts = {
         ...shared,
         resolveOpenOcdLaunch: () => ({
@@ -39,9 +40,13 @@ function load(file, overrides) {
         const child = new EventEmitter();
         child.stdout = new PassThrough();
         child.stderr = new PassThrough();
-        child.kill = () => {};
+        child.kill = () => {
+            child.exitCode = 0;
+            process.nextTick(() => child.emit("close", 0));
+        };
         child.exitCode = null;
         process.nextTick(() => {
+            if (successfulSpawn) return;
             child.stderr.write("Error: LIBUSB_ERROR_NOT_");
             child.stderr.write("FOUND\n" + "Info: trailing output\n".repeat(30) + "Error: init failed");
             child.exitCode = 1;
@@ -109,6 +114,69 @@ function load(file, overrides) {
         { code: "OPENOCD_RTOS_INVALID" }
     );
     assert.strictEqual(captured.length, 7, "An invalid RTOS name never reaches OpenOCD");
+    const multi = new live.ManagedOpenOcdSession(
+        null,
+        {
+            ...options,
+            mode: "debug",
+            rtos: "FreeRTOS",
+            numberOfProcessors: 2,
+            targetProcessor: 1,
+            targetName: "stm32h7x.cpu1",
+            gdbPort: 13336,
+            gdbPorts: [13335, 13336]
+        },
+        {}
+    );
+    await assert.rejects(multi.start(), { code: "PROBE_NOT_FOUND" });
+    const multiArgs = captured[7];
+    const coreCommand = multiArgs.find((arg) => arg.includes("set _ep_core_targets"));
+    assert(coreCommand.includes('ne "stm32h7x.cpu1"'), "The expected target name must match the selected index");
+    assert(coreCommand.includes("[llength $_ep_core_targets] != 2"), "A mismatched target count fails startup");
+    assert(coreCommand.includes("[lindex $_ep_core_targets 0] configure -gdb-port 13335"));
+    assert(coreCommand.includes("[lindex $_ep_core_targets 1] configure -gdb-port 13336"));
+    assert(coreCommand.endsWith("targets [lindex $_ep_core_targets 1]"));
+    assert(multiArgs.indexOf("telnet_port disabled") < multiArgs.indexOf(coreCommand));
+    assert(
+        multiArgs.indexOf(coreCommand) < multiArgs.indexOf(rtosCommand),
+        "Select the core before configuring its RTOS"
+    );
+    for (const invalid of [{ targetProcessor: 2 }, { targetName: "cpu; shutdown" }, { gdbPorts: [13335, 13335] }]) {
+        await assert.rejects(new live.ManagedOpenOcdSession(null, { ...multi.options, ...invalid }, {}).start());
+    }
+    assert.strictEqual(captured.length, 8, "Invalid core selection never spawns OpenOCD");
+    successfulSpawn = true;
+    for (const names of ["stm32h7x.cpu0 stm32h7x.cpu1", "stm32h7x.cpu0", "bad;shutdown stm32h7x.cpu1"]) {
+        const grouped = new live.ManagedOpenOcdSession(null, { ...multi.options, serverGroup: "dual" }, {});
+        grouped._waitForTclListening = async () => {};
+        grouped._connectWithRetry = async () => {
+            const socket = new EventEmitter();
+            socket.destroy = () => {
+                socket.destroyed = true;
+            };
+            socket.setTimeout = () => {};
+            socket.setNoDelay = () => {};
+            return socket;
+        };
+        grouped._sendCheckedCommand = async (command) => {
+            assert.strictEqual(command, "target names");
+            return names;
+        };
+        if (names === "stm32h7x.cpu0 stm32h7x.cpu1") {
+            const info = await grouped.start();
+            assert.deepStrictEqual(info.targetNames, names.split(" "));
+            assert.deepStrictEqual(info.gdbTargets, ["127.0.0.1:13335", "127.0.0.1:13336"]);
+            const launchArgs = captured.at(-1);
+            const configure = launchArgs.find((arg) => arg.includes("configure -rtos FreeRTOS"));
+            assert(
+                configure.includes("foreach") && configure.includes("[target names]"),
+                "shared RTOS applies to every confirmed target"
+            );
+            assert(launchArgs.indexOf(coreCommand) < launchArgs.indexOf(configure));
+            assert(launchArgs.indexOf(configure) < launchArgs.indexOf("init"));
+        } else await assert.rejects(grouped.start(), /shared target names/);
+        await grouped.stop();
+    }
     for (const args of captured) {
         assert(args.indexOf("/scripts/interface/jlink.cfg") < args.indexOf("adapter serial 1234"));
         assert(args.indexOf("adapter serial 1234") < args.indexOf("transport select swd"));

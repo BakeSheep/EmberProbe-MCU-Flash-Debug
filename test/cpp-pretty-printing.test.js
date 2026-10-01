@@ -31,7 +31,8 @@ const { validateDebugConfiguration } = require("../src/services/debugConfigurati
     assert.deepStrictEqual(commands, [
         "-gdb-set auto-load off",
         "-gdb-set print raw-values on",
-        "-gdb-set may-call-functions off"
+        "-gdb-set may-call-functions off",
+        "-gdb-set print object on"
     ]);
     assert.strictEqual(
         await initializePrettyPrinting(mi, { enablePrettyPrinting: false, prettyPrinterPath: "old" }, (value) =>

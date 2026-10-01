@@ -99,7 +99,7 @@ class DebugControlService {
         const before = this.status();
         const stopped = await this.vscode.debug.stopDebugging(session);
         if (stopped === false) throw error("VS Code refused to stop the debugger session", "DEBUG_STOP_FAILED");
-        const status = await this.debugBridge.waitForState((next) => next.state === "none", 10000);
+        const status = await this.debugBridge.waitForState(() => !this.debugBridge.allSessions.has(session.id), 10000);
         return { action, before, status };
     }
 

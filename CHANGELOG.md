@@ -6,10 +6,25 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复首次停在 main、FreeRTOS 尚未创建任务时将未初始化链表误报为损坏；任务视图显示调度器未启动或尚无任务，可选 TCB 字段缺失不再触发部分结果。
+- Recognize pre-scheduler stops with no created tasks instead of reporting zero-initialized lists as corrupt; show startup state and omit unavailable optional TCB fields without marking the snapshot partial.
+
+- 抽出 OpenOCD 调试 controller，新增实验性共享 `serverGroup`、独立核端口和会话路由；新核通过 attach 加入，同组仅持有一个探针租约，最后一个会话退出且服务器停止确认后释放。侧栏与 Agent 可明确选会话，切换使旧读取失效；多核关闭运行期 Tcl 采样与组内重启，实板验收仍待完成。
+- Extract the OpenOCD controller with experimental shared server groups, per-core ports and explicit sidebar/Agent routing. Joining cores attach to one probe lease; final-member cleanup waits for confirmed server exit. Session changes invalidate stale reads; groups disable restart and running Tcl sampling. Board acceptance remains pending.
+
+- 原生调试新增 Globals、文件 Statics、Registers 作用域、表达式赋值及可靠变量路径／地址；新增实验性 FreeRTOS 暂停任务表，支持筛选、排序、手动刷新和旧快照标记。栈填充估算仅在边界可验证时提供，真实板卡任务表验收仍待完成。
+- Add native globals, file statics, registers, expression assignment and reliable variable metadata; add an experimental paused FreeRTOS task table with filtering, sorting, manual refresh and stale-snapshot labels. Stack fill estimates require verified bounds; real-board task-table acceptance remains pending.
+
 - 新增 RTOS 感知调试：`emberprobe.rtos` 设置与 launch.json 的 `rtos` 键让 OpenOCD 在 `init` 之前为当前 target 配置 RTOS，调用栈显示 FreeRTOS 等任务，栈帧、局部变量与表达式求值绑定到所属任务，继续与单步显式指定任务；默认留空，非 RTOS 工程行为不变。会话内“重启”复用同一 OpenOCD 服务，改动需停止后重新启动才生效，详见 docs/RTOS-AWARENESS.md。
 - Add RTOS-aware debugging: the `emberprobe.rtos` setting and the launch.json `rtos` key make OpenOCD configure the current target's RTOS before `init`, so the call stack lists FreeRTOS-style tasks, stack frames, locals and expression evaluation bind to the owning task, and continue and stepping carry an explicit task ID; empty by default, leaving non-RTOS projects unchanged. Restart reuses the same OpenOCD server, so a change needs a full stop and start; see docs/RTOS-AWARENESS.md.
 - 暂停调试改为内置 JavaScript STL 展示器，复用普通 GDB，无需 Python 或额外运行包；支持有界分页、只读键、容器元素赋值和原始字段回退，废弃 prettyPrinterPath。
-- Replace Python printers with built-in JavaScript STL display using ordinary GDB, bounded paging, read-only keys, element assignment and raw-field fallback; deprecate prettyPrinterPath.
+- Default to built-in JavaScript STL display using ordinary GDB, bounded paging, read-only keys, element assignment and raw-field fallback; deprecate prettyPrinterPath.
+- 新增 builtin／gdb／raw 展示模式与显式 prettyPrinterFiles；GDB Python 初始化及单对象异常都有降级路径。内置展示补 list、forward_list、deque、set／multiset、multimap、unordered 变体与 weak_ptr，并增加时间预算。
+- Add builtin/gdb/raw display modes and explicit prettyPrinterFiles, with initialization and per-object Python failure fallback; extend built-in list, forward_list, deque, set/multiset, multimap, unordered variants and weak_ptr displays with a time budget.
+- 新增多符号镜像、ELF／HEX／BIN 下载配置与 launch／attach／reset GDB hooks；校验镜像地址、同名符号和主 RTOS 类型身份，attach 默认流程不下载，无法消歧的对象禁止赋值。新增下载流程通过内存 RSP 原生 GDB 测试，实板验收待完成。
+- Add multiple symbol images, ELF/HEX/BIN load configuration and launch/attach/reset GDB hooks; validate addresses, duplicate symbols and primary RTOS type identity. Managed attach does not download; ambiguous objects cannot be assigned. Native GDB tests use an in-memory RSP target; board acceptance remains pending.
+- 改进普通 C++ 类的权限组与匿名成员展示，启用暂停动态类型解析；修复基类值转换路径缺少地址及虚基类展开失败，重名成员按实际存储修改。
+- Improve C++ visibility and anonymous groups, enable paused RTTI resolution, and retain base-subobject reference paths for addresses, virtual-base expansion and isolated member assignment.
 - ELF 变量列表过滤 C++ RTTI、虚表等内部对象；修复带编号后缀的 C 静态变量与 DWARF 的匹配及成员观察路径，缺少类型信息时显示具体原因。
 - Filter C++ RTTI and vtable metadata from ELF variable lists; bind numbered C statics to DWARF, preserve their member watch paths, and explain unavailable types.
 - 修复 const 指针错误限制可写对象的调试赋值，以及 C++ 成员加入查看列表后显示原始符号名；名称分行展示前缀与成员名，类型小标签放在数值左侧，读写卡片保持紧凑并居中显示数值。

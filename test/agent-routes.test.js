@@ -49,6 +49,7 @@ const { AgentService } = require("../src/services/agentService");
         "debug.status": "_debugControlService.status",
         "debug.start": "_debugControlService.start",
         "debug.control": "_debugControlService.control",
+        "debug.select": "_selectDebugSession",
         "debug.breakpoints.list": "_debugControlService.listBreakpoints",
         "debug.breakpoints.update": "_debugControlService.updateBreakpoints"
     };

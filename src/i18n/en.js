@@ -1,6 +1,26 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "rtos.title": "RTOS tasks",
+    "rtos.chooseSession": "Choose a debug session / core",
+    "rtos.core": "Core",
+    "rtos.filter": "Filter tasks",
+    "rtos.refresh": "Refresh paused snapshot",
+    "rtos.name": "Task",
+    "rtos.state": "State",
+    "rtos.priority": "Priority",
+    "rtos.stack": "Stack used",
+    "rtos.reading": "Reading paused tasks…",
+    "rtos.stale": "Previous snapshot · target resumed or changed",
+    "rtos.pause": "Pause a native EmberProbe session to read tasks",
+    "rtos.partial": "Partial snapshot · see diagnostics",
+    "rtos.ready": "Paused task snapshot",
+    "rtos.notStarted": "FreeRTOS scheduler has not started · continue, then pause again to inspect tasks",
+    "rtos.noTasks": "FreeRTOS has no created tasks · continue, then pause again to inspect tasks",
+    "rtos.estimate": "fill estimate",
+    "rtos.savedSp": "Saved SP (current task is not live SP)",
+    "rtos.basePriority": "Base priority",
+    "rtos.runtime": "Runtime counter",
     "probe.configure": "Advanced probe settings",
     "probe.usbDriver": "J-Link USB driver",
     "probe.winusbRequired":

@@ -14,6 +14,11 @@ const {
 } = require("@vscode/debugadapter");
 const { MiClient, quote } = require("./mi");
 const { DebugVariables } = require("./variables");
+const { SymbolDirectory } = require("./symbolDirectory");
+const { FreeRtosSnapshot } = require("../services/freeRtosSnapshot");
+const { safePath } = require("./stl");
+const { normalizeDebugImages, DebugImages } = require("../services/debugImages");
+const { normalizeDebugServerOptions } = require("../services/debugConfiguration");
 const { initializePrettyPrinting } = require("../services/prettyPrinting");
 
 // GDB reports a single thread as a bare tuple rather than a one-element list, so -thread-info can
@@ -42,6 +47,9 @@ class EmberDebugSession extends DebugSession {
         this.variablesByName = new Map();
         this.varObjects = new Set();
         this.variableStore = new DebugVariables(this);
+        this.symbolDirectory = new SymbolDirectory(this);
+        this.debugImages = new DebugImages(this);
+        this.clientCapabilities = {};
         this.breakpoints = new Map();
         this.nextBreakpoint = 1;
         this.entryBreakpoint = null;
@@ -241,6 +249,8 @@ class EmberDebugSession extends DebugSession {
     async selectFrame(id) {
         const frame = this.reference(id, "frame");
         const generation = this.variableStore.snapshot(frame);
+        await this.ensureThread(frame.thread);
+        this.variableStore.check(generation);
         await this.mi.command(`-thread-select ${frame.thread}`);
         this.variableStore.check(generation);
         await this.mi.command(`-stack-select-frame ${frame.level}`);
@@ -290,23 +300,36 @@ class EmberDebugSession extends DebugSession {
             throw new Error("A valid ELF executable is required");
         if (!args.gdbPath || !/^127\.0\.0\.1:\d+$/.test(args.gdbTarget || ""))
             throw new Error("Missing managed GDB connection");
-        this.config = { ...args, runToEntryPoint: args.runToEntryPoint ?? "main", attach };
+        this.config = {
+            ...args,
+            ...normalizeDebugServerOptions(args),
+            ...normalizeDebugImages(args, args.cwd || path.dirname(args.executable)),
+            runToEntryPoint: args.runToEntryPoint ?? "main",
+            attach
+        };
+        this.symbolDirectory.reset();
+        if (this.config.serverGroup)
+            this.sendEvent(new Event("capabilities", { capabilities: { supportsRestartRequest: false } }));
         const rtos = typeof args.rtos === "string" ? args.rtos.trim() : "";
+        this.config.rtos = rtos;
         this.rtosAware = rtos !== "" && rtos !== "none";
         this.mi.start(args.gdbPath, args.cwd || path.dirname(args.executable));
         await this.mi.command("-gdb-set mi-async on");
         await this.mi.command("-gdb-set pagination off");
         await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
-        await this.mi.command(`-file-exec-and-symbols ${quote(args.executable.replace(/\\/g, "/"))}`);
+        await this.debugImages.symbols();
         await this.mi.command(`-target-select extended-remote ${args.gdbTarget}`);
+        await this.debugImages.hooks(attach ? "preAttachCommands" : "preLaunchCommands");
         if (attach) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor halt")}`);
         } else {
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
-            await this.mi.command("-target-download", 60000);
+            await this.debugImages.download();
             // Reload the reset vector after downloading a different firmware.
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
         }
+        await this.debugImages.hooks(attach ? "postAttachCommands" : "postLaunchCommands");
+        await this.debugImages.verifyRtosPrimary();
         // Only report task ids GDB has actually confirmed. Without an RTOS that is just thread 1,
         // which keeps the single-thread command stream byte-identical to a non-RTOS session.
         if (this.rtosAware) await this.seedThreads();
@@ -444,20 +467,80 @@ class EmberDebugSession extends DebugSession {
         const context = this.rtosAware && frame ? `--thread ${frame.thread} --frame ${frame.level} ` : "";
         const ownerFrame = frame || this.selectedFrame || { thread: this.thread, level: 0 };
         const generation = this.variableStore.snapshot(ownerFrame);
-        const item = await this.mi.command(`-var-create ${context}- * ${quote(expression)}`);
+        const { result: item, failure } = await this.variableStore.printerOperation(
+            `-var-create ${context}- * ${quote(expression)}`,
+            generation
+        );
         this.varObjects.add(item.name);
         this.variableStore.check(generation);
         this.variableStore.root(item, ownerFrame);
+        this.variableStore.nodes.get(item.name).expression = expression;
+        if (failure) {
+            const node = this.variableStore.nodes.get(item.name);
+            await this.variableStore.rawFallback(node, failure, generation);
+            Object.assign(item, node.item);
+        }
         return item;
+    }
+    invalidateVariables() {
+        if (this.clientCapabilities.supportsInvalidatedEvent)
+            this.sendEvent(new Event("invalidated", { areas: ["stacks", "variables"] }));
+    }
+    async evaluate(args) {
+        this.paused();
+        if (typeof args.expression !== "string" || !args.expression.trim() || args.expression.length > 16384)
+            throw new Error("Provide a nonempty expression of at most 16384 characters");
+        if (args.context === "hover") safePath(args.expression);
+        const frame = args.frameId ? await this.selectFrame(args.frameId) : this.selectedFrame;
+        if (frame && !args.frameId) {
+            const generation = this.variableStore.snapshot(frame);
+            await this.ensureThread(frame.thread);
+            this.variableStore.check(generation);
+            await this.mi.command(`-thread-select ${frame.thread}`);
+            this.variableStore.check(generation);
+            await this.mi.command(`-stack-select-frame ${frame.level}`);
+            this.variableStore.check(generation);
+        }
+        const item = await this.createVariable(args.expression, frame);
+        const node = this.variableStore.nodes.get(item.name);
+        await this.variableStore.stl.prepare(node);
+        await this.variableStore.metadata(node);
+        const { name: _name, value, ...metadata } = this.variable(item);
+        return { result: value, ...metadata };
+    }
+    async setExpression(args) {
+        if (typeof args.value !== "string" || !args.value.trim()) throw new Error("Provide an expression value");
+        await this.evaluate(args);
+        // Find the root by its expression: STL preparation may have materialized additional nodes.
+        const root = [...this.variableStore.nodes.values()]
+            .reverse()
+            .find((entry) => entry.expression === args.expression && entry.root === entry);
+        if (!root?.item.name || root.readOnly) throw new Error("Expression is read only or unavailable");
+        const generation = this.variableStore.snapshot(root.frame);
+        const attributes = await this.mi.command(`-var-show-attributes ${quote(root.item.name)}`);
+        this.variableStore.check(generation);
+        if ((attributes.attr ?? attributes.status) !== "editable") throw new Error("GDB expression is not editable");
+        await this.mi.command(`-var-assign ${quote(root.item.name)} ${quote(args.value)}`);
+        this.variableStore.check(generation);
+        const frame = root.frame;
+        await this.clearVariables();
+        this.selectedFrame = frame;
+        const refreshed = await this.evaluate({ expression: args.expression });
+        this.invalidateVariables();
+        const { result: value, ...metadata } = refreshed;
+        return { value, ...metadata };
     }
     async handle(command, args) {
         switch (command) {
             case "initialize":
+                this.clientCapabilities = { ...args };
                 return {
                     supportsConfigurationDoneRequest: true,
                     supportsFunctionBreakpoints: true,
                     supportsConditionalBreakpoints: true,
                     supportsSetVariable: true,
+                    supportsSetExpression: true,
+                    supportsEvaluateForHovers: true,
                     supportsDelayedStackTraceLoading: true,
                     supportsReadMemoryRequest: true,
                     supportsWriteMemoryRequest: true,
@@ -513,7 +596,12 @@ class EmberDebugSession extends DebugSession {
                 return {
                     ...(frames.length < levels ? { totalFrames: start + frames.length } : {}),
                     stackFrames: frames.map((f) => ({
-                        id: this.handleFor({ kind: "frame", thread, level: Number(f.level) }),
+                        id: this.handleFor({
+                            kind: "frame",
+                            thread,
+                            level: Number(f.level),
+                            file: f.fullname || f.file
+                        }),
                         name: f.func || f.addr,
                         line: Number(f.line) || 0,
                         column: 0,
@@ -528,36 +616,34 @@ class EmberDebugSession extends DebugSession {
                     }))
                 };
             }
-            case "scopes":
-                this.reference(args.frameId, "frame");
+            case "scopes": {
+                const frame = this.reference(args.frameId, "frame");
                 return {
                     scopes: [
-                        {
-                            name: "Locals & Arguments",
-                            expensive: false,
-                            variablesReference: this.handleFor({ kind: "scope", frameId: args.frameId })
-                        }
-                    ]
+                        ["Locals & Arguments", "locals", false],
+                        ["Globals", "globals", true],
+                        [`Statics: ${frame.file ? path.basename(frame.file) : "<unknown file>"}`, "statics", true],
+                        ["Registers", "registers", false]
+                    ].map(([name, scopeKind, expensive]) => ({
+                        name,
+                        expensive,
+                        variablesReference: this.handleFor({ kind: "scope", scopeKind, frame, frameId: args.frameId })
+                    }))
                 };
+            }
             case "variables":
                 return this.variableStore.variables(args);
-            case "evaluate": {
-                this.paused();
-                // Without a frame this is a session-level watch, which intentionally evaluates
-                // against the task the user last selected in the call stack.
-                const frame = args.frameId ? await this.selectFrame(args.frameId) : this.selectedFrame;
-                if (frame && !args.frameId) {
-                    await this.mi.command(`-thread-select ${frame.thread}`);
-                    await this.mi.command(`-stack-select-frame ${frame.level}`);
-                }
-                const item = await this.createVariable(args.expression, frame);
-                await this.variableStore.stl.prepare(this.variableStore.nodes.get(item.name));
-                const variable = this.variable(item);
-                const { name: _name, value, ...metadata } = variable;
-                return { result: value, ...metadata };
+            case "evaluate":
+                return this.evaluate(args);
+            case "emberprobe.rtosSnapshot":
+                return new FreeRtosSnapshot(this).snapshot();
+            case "setExpression":
+                return this.setExpression(args);
+            case "setVariable": {
+                const result = await this.variableStore.setVariable(args);
+                this.invalidateVariables();
+                return result;
             }
-            case "setVariable":
-                return this.variableStore.setVariable(args);
             case "readMemory":
             case "writeMemory":
                 return this.memory(command, args);
@@ -578,9 +664,13 @@ class EmberDebugSession extends DebugSession {
                 return command === "continue" ? { allThreadsContinued: true } : {};
             }
             case "restart":
+                if (this.config.serverGroup)
+                    throw new Error("Shared serverGroup restart is unsupported; stop all cores before resetting");
                 await this.interrupt();
                 await this.clearVariables();
+                await this.debugImages.hooks("preResetCommands");
                 await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+                await this.debugImages.hooks("postResetCommands");
                 // A reset destroys every TCB, so the confirmed task list has to be rebuilt.
                 if (this.rtosAware) await this.seedThreads();
                 await this.enter();

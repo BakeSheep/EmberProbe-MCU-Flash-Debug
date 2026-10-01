@@ -43,6 +43,7 @@ function createAgentRoutes(host, probes = listProbes) {
             return host._svdPeripheralService.write(params || {});
         },
         "debug.status": () => host._debugControlService.status(),
+        "debug.select": (params) => host._selectDebugSession(params || {}),
         "debug.start": () => host._debugControlService.start(),
         "debug.control": (params) => host._debugControlService.control(params || {}),
         "debug.breakpoints.list": () => host._debugControlService.listBreakpoints(),

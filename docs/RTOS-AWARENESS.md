@@ -59,11 +59,19 @@ OpenOCD resolves kernel structures through GDB symbol lookup against the loaded 
 
 OpenOCD 通过 GDB 对已加载 ELF 的符号查询来解析内核结构，因此镜像不能把这些符号裁剪掉。最常见的静默失败是 `uxTopUsedPriority` 被链接器优化掉，导致 `-rtos auto` 找不到任何任务。建议显式指定 RTOS 名称而非 `auto`：`auto` 会拿每个后端去试探 ELF，在裁剪或高度优化的镜像上可能误判。调用栈显示任务名还是 `Thread N`，取决于 OpenOCD 后端能从镜像里读到什么——请记录实际观察到的结果，不要假定一定会出现任务名。
 
-## Out of scope / 不在范围内
+## Task snapshots and boundaries / 任务快照与边界
 
-There is no separate task panel, no stack high-water mark and no crashed-task analysis. A task deleted while you are browsing its stack surfaces as `DEBUG_TASK_EXITED` on the next control action.
+The workspace implementation adds an experimental FreeRTOS task panel with paused, bounded reads, filtering, sorting and stale labels after resume. Optional stack fill estimates require verified bounds and layout; they are not a measurement of current live SP. The panel does not yet have board acceptance. A task deleted while you are browsing its stack surfaces as `DEBUG_TASK_EXITED` on the next control action. Crashed-task analysis remains outside the implementation; see [the parity plan](RTOS-CPP-PARITY-PLAN.md) for budgets and evidence.
 
-没有独立的任务面板，不提供栈余量（high-water mark）与崩溃任务分析。在浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。
+工作区实现已增加实验性 FreeRTOS 任务面板，仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP；任务面板尚无实板验收。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现；预算与证据详见[补齐计划](RTOS-CPP-PARITY-PLAN.md)。
+
+The initial stop at `main` commonly precedes task creation and scheduler startup. When task count and current TCB confirm an empty pre-start state, the panel shows a startup hint rather than traversing zero-initialized lists. Continue past startup and pause again to inspect tasks. Optional `pxEndOfStack` and `ulRunTimeCounter` depend on firmware configuration; absent members omit the corresponding statistics. Initialized-list corruption and failed reads still produce partial diagnostics. This follows [FreeRTOS task-list initialization](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/V10.6.2/tasks.c).
+
+首次自动停在 `main` 通常早于任务创建和调度器启动。任务数与当前 TCB 确认尚无任务时，面板显示启动提示，不遍历仍为零值的链表；继续运行过初始化，再暂停查看任务。`pxEndOfStack`、`ulRunTimeCounter` 是否存在取决于固件配置，缺失时省略对应统计；已经初始化的链表损坏或内存读取失败仍显示部分结果。
+
+Experimental OpenOCD groups use `serverGroup`, `numberOfProcessors`, `targetProcessor` and optional `targetName`. Targets receive distinct GDB ports; selection and all-target RTOS configuration precede initialization. Start one member first, then attach other cores after successful initialization. Groups share one physical lease and require explicit session selection; restart and running Tcl sampling are disabled. OpenOCD reset behavior follows target scripts and may affect the whole device. See [configuration and verification limits](SHARED-DEBUG-GROUPS.md); dual-core board acceptance remains pending.
+
+实验性 OpenOCD 共享组使用 `serverGroup`、`numberOfProcessors`、`targetProcessor` 和可选 `targetName`。每核独立 GDB 端口，初始化前选核并向全部目标配置相同 RTOS。先启动一个成员，初始化成功后通过 attach 加入其他核。组内共用一个探针租约，明确选择会话后路由；禁用组内重启和运行期 Tcl 采样。目标脚本的复位可能影响整个芯片。详见 [配置和验证边界](SHARED-DEBUG-GROUPS.md)，双核实板验收仍待完成。
 
 ## Verification boundary / 验证边界
 

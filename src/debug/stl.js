@@ -6,6 +6,10 @@ const MEMORY_LIMIT = 65536;
 const WALK_LIMIT = 4096;
 const FIELD_LIMIT = 128;
 const MAX_DEPTH = 12;
+const TIME_LIMIT_MS = 15000;
+const ORDERED_KINDS = new Set(["map", "multimap", "set", "multiset"]);
+const HASH_KINDS = new Set(["unordered_map", "unordered_multimap", "unordered_set", "unordered_multiset"]);
+const MAP_KINDS = new Set(["map", "multimap", "unordered_map", "unordered_multimap"]);
 const TYPE_LINE = /(?:^|\n)type = ([^\r\n]+)/;
 
 function templateType(input) {
@@ -61,15 +65,24 @@ function castType(type) {
 }
 
 function safePath(expression) {
-    const unquoted = String(expression || "").replace(/'([^']*)'/g, (_match, type) => safeType(type));
+    const unquoted = String(expression || "")
+        // A file-qualified static has a quoted source path, not a quoted C++ type.
+        .replace(/^'(?:\\.|[^'\\])*'::/, "__file::")
+        .replace(/'([^']*)'/g, (_match, type) => safeType(type));
     if (
         !expression ||
         expression.length > 16384 ||
         !/^[\w\s:$*.<>,&()[\]+-]+$/.test(unquoted) ||
+        /\+\+|--/.test(unquoted) ||
         /\b\w+\s*\(/.test(unquoted)
     )
         throw new Error("STL display requires a side-effect-free variable path");
     return expression;
+}
+
+function gdbVariablePath(expression) {
+    // MI's by-value base casts lose lvalue storage and can break virtual-base lookup.
+    return safePath(String(expression || "").replace(/\(\s*(class|struct|union)\s+([\w\s:<>,]+)\)/g, "($1 $2 &)"));
 }
 
 function kindOf(type) {
@@ -77,7 +90,7 @@ function kindOf(type) {
     const parsed = templateType(type);
     if (/std::(?:__debug|__\d+)::/.test(parsed.name)) return null;
     const match = parsed.name.match(
-        /^std::(?:__cxx11::)?(basic_string|vector|array|pair|tuple|map|unordered_map|unique_ptr|shared_ptr|optional|variant)$/
+        /^std::(?:__cxx11::)?(basic_string|vector|array|pair|tuple|map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|unique_ptr|shared_ptr|weak_ptr|optional|variant)$/
     );
     return match ? { kind: match[1], args: parsed.args, type: safeType(type) } : null;
 }
@@ -148,10 +161,17 @@ class StlDisplay {
         this.constants.clear();
     }
     context(frame) {
-        return { generation: this.store.snapshot(frame), bytes: 0, steps: 0, fields: 0 };
+        return {
+            generation: this.store.snapshot(frame),
+            bytes: 0,
+            steps: 0,
+            fields: 0,
+            deadline: Date.now() + TIME_LIMIT_MS
+        };
     }
     async command(command, context) {
         this.store.check(context.generation);
+        if (Date.now() > context.deadline) throw new Error("STL time budget exceeded (15 seconds)");
         const result = await this.session.mi.command(command);
         this.store.check(context.generation);
         return result;
@@ -174,7 +194,9 @@ class StlDisplay {
         return integer((await this.command(`-data-evaluate-expression ${quote(expression)}`, context)).value);
     }
     async path(item, context) {
-        return safePath((await this.command(`-var-info-path-expression ${quote(item.name)}`, context)).path_expr);
+        return gdbVariablePath(
+            (await this.command(`-var-info-path-expression ${quote(item.name)}`, context)).path_expr
+        );
     }
     async canonical(item, context) {
         const key = `${context.frameKey || ""}:${item.type}`;
@@ -311,6 +333,7 @@ class StlDisplay {
                 parent.locked || (propagateConst && parent.readOnly) || readOnly
             );
             node.ownsVariable = true;
+            node.locked ||= readOnly;
             node.item.exp = label;
             parent.stl.elements.set(label, node);
         } else
@@ -335,7 +358,9 @@ class StlDisplay {
         if (
             node.stlAttempted ||
             node.raw ||
-            this.session.config.enablePrettyPrinting === false ||
+            (this.session.config.effectivePrettyPrintingMode ??
+                this.session.config.prettyPrintingMode ??
+                (this.session.config.enablePrettyPrinting === false ? "raw" : "builtin")) !== "builtin" ||
             !node.item.name ||
             !node.item.type
         )
@@ -345,6 +370,7 @@ class StlDisplay {
         // GDB exposes function/vtable pointers and ordinary arrays as structured
         // varobjs too. They cannot be STL owners and need no type/path probes.
         if (/[\[*]/.test(outerType(input))) return;
+        if (/^(?:const )?(?:struct|union)\s*\{/.test(input)) return;
         if (!Number(node.item.numchild) && !/std::/.test(input)) return;
         const previousFields = context.fields;
         context.fields = 0;
@@ -367,7 +393,7 @@ class StlDisplay {
         } catch (error) {
             this.store.check(context.generation);
             if (isInternalError(error)) throw error;
-            if (/memory budget exceeded/i.test(error.message)) {
+            if (/(?:memory|time) budget exceeded/i.test(error.message)) {
                 node.stlAttempted = false;
                 throw error;
             }
@@ -395,7 +421,10 @@ class StlDisplay {
         const view = {
             kind,
             info,
-            indexed: ["basic_string", "vector", "array", "tuple", "map", "unordered_map"].includes(kind),
+            indexed:
+                ["basic_string", "vector", "array", "tuple", "list", "forward_list", "deque"].includes(kind) ||
+                ORDERED_KINDS.has(kind) ||
+                HASH_KINDS.has(kind),
             count: 0,
             summary: "",
             elements: new Map()
@@ -471,6 +500,27 @@ class StlDisplay {
             view.count = args.length;
             if (view.tuple.size !== view.count) throw new Error("Unsupported tuple storage layout");
             view.summary = `tuple length ${view.count}`;
+            return view;
+        }
+        if (kind === "list" || kind === "forward_list") return this.linked(node, view, context);
+        if (kind === "deque") return this.deque(node, view, context);
+        if (kind === "weak_ptr") {
+            const fields = await this.fields(node.item, ["_M_ptr", "_M_refcount"], context);
+            const control = (await this.fields(fields.get("_M_refcount"), ["_M_pi"], context)).get("_M_pi");
+            view.address = await this.number(fields.get("_M_ptr"), context);
+            const owner = await this.number(control, context);
+            let references = 0n;
+            if (owner)
+                references = await this.number(
+                    (await this.fields(control, ["_M_use_count"], context)).get("_M_use_count"),
+                    context
+                );
+            if (references < 0n) throw new Error("Corrupt weak_ptr owner count");
+            view.pointeeType = safeType(args[0]);
+            view.count = references > 0n && view.address ? 1 : 0;
+            view.summary = view.count
+                ? `weak_ptr 0x${view.address.toString(16)} (use_count ${references})`
+                : "weak_ptr expired";
             return view;
         }
         if (kind === "unique_ptr" || kind === "shared_ptr") {
@@ -551,14 +601,103 @@ class StlDisplay {
         }
         return found;
     }
+    async linked(node, view, context) {
+        const forward = view.kind === "forward_list";
+        const headerName = forward ? "_M_head" : "_M_node";
+        const header = (await this.fields(node.item, [headerName], context)).get(headerName);
+        const first = (await this.fields(header, ["_M_next"], context)).get("_M_next");
+        view.first = await this.number(first, context);
+        view.linkName = "_M_next";
+        view.linked = true;
+        const baseType = safeType(first.type.replace(/\s*\*\s*$/, ""));
+        view.linkOffsets = { _M_next: await this.offset(baseType, "_M_next", context) };
+        view.sentinel = forward
+            ? 0n
+            : (await this.address(node.item, context)) +
+              (await this.offset(view.info.type, "_M_impl._M_node", context));
+        view.valueOffset = await this.offset(
+            `std::${forward ? "_Fwd_list_node" : "_List_node"}<${safeType(view.info.args[0])}>`,
+            "_M_storage._M_storage",
+            context
+        );
+        if (forward) {
+            const seen = new Set();
+            let address = view.first;
+            while (address) {
+                this.step(context);
+                if (seen.has(address.toString())) throw new Error("Cycle in forward_list");
+                seen.add(address.toString());
+                address = await this.pointer(address + view.linkOffsets._M_next, context);
+            }
+            view.count = seen.size;
+        } else
+            view.count = count(
+                await this.number((await this.fields(header, ["_M_size"], context)).get("_M_size"), context)
+            );
+        if (view.count && (!view.first || view.first === view.sentinel))
+            throw new Error("Corrupt linked container head");
+        view.cursors = new Map([[0, view.first]]);
+        view.addresses = new Map();
+        view.seen = new Set();
+        view.summary = `${view.kind} length ${view.count}`;
+        return view;
+    }
+    async deque(node, view, context) {
+        const iterators = await this.fields(node.item, ["_M_start", "_M_finish"], context);
+        const decode = async (item) => {
+            const fields = await this.fields(item, ["_M_cur", "_M_first", "_M_last", "_M_node"], context);
+            const values = {};
+            for (const [name, field] of fields) values[name] = await this.number(field, context);
+            return values;
+        };
+        const start = await decode(iterators.get("_M_start")),
+            end = await decode(iterators.get("_M_finish"));
+        view.elementSize = await this.size(view.info.args[0], context);
+        view.width = await this.size("void*", context);
+        const blockBytes = start._M_last - start._M_first;
+        if (
+            ![4n, 8n].includes(view.width) ||
+            !start._M_node ||
+            end._M_node < start._M_node ||
+            (end._M_node - start._M_node) % view.width ||
+            blockBytes <= 0n ||
+            blockBytes % view.elementSize ||
+            end._M_last - end._M_first !== blockBytes ||
+            start._M_cur < start._M_first ||
+            start._M_cur >= start._M_last ||
+            end._M_cur < end._M_first ||
+            end._M_cur >= end._M_last ||
+            (start._M_cur - start._M_first) % view.elementSize ||
+            (end._M_cur - end._M_first) % view.elementSize
+        )
+            throw new Error("Corrupt deque iterator layout");
+        if (
+            (await this.pointer(start._M_node, context)) !== start._M_first ||
+            (await this.pointer(end._M_node, context)) !== end._M_first
+        )
+            throw new Error("Deque map does not match its iterators");
+        view.address = start._M_cur;
+        view.startNode = start._M_node;
+        view.finishNode = end._M_node;
+        view.blockSize = blockBytes / view.elementSize;
+        view.startOffset = (start._M_cur - start._M_first) / view.elementSize;
+        view.count = count(
+            ((end._M_node - start._M_node) / view.width) * view.blockSize +
+                (end._M_cur - end._M_first) / view.elementSize -
+                view.startOffset
+        );
+        view.summary = `deque length ${view.count}`;
+        return view;
+    }
     async associative(node, view, context) {
         const { kind, args } = view.info;
-        view.map = true;
-        const pair = `std::pair<${safeType(args[0])} const, ${safeType(args[1])}>`;
-        if (kind === "map") {
+        view.map = MAP_KINDS.has(kind);
+        view.associative = true;
+        const pair = view.map ? `std::pair<${safeType(args[0])} const, ${safeType(args[1])}>` : safeType(args[0]);
+        if (ORDERED_KINDS.has(kind)) {
             const fields = await this.fields(node.item, ["_M_header", "_M_node_count"], context);
             view.count = count(await this.number(fields.get("_M_node_count"), context));
-            if (!view.count) return { ...view, summary: "map length 0" };
+            if (!view.count) return { ...view, summary: `${kind} length 0` };
             view.sentinel =
                 (await this.address(node.item, context)) +
                 (await this.offset(view.info.type, "_M_t._M_impl._M_header", context));
@@ -572,7 +711,7 @@ class StlDisplay {
         } else {
             const fields = await this.fields(node.item, ["_M_before_begin", "_M_element_count"], context);
             view.count = count(await this.number(fields.get("_M_element_count"), context));
-            if (!view.count) return { ...view, summary: "unordered_map length 0" };
+            if (!view.count) return { ...view, summary: `${kind} length 0` };
             const first = await this.fields(fields.get("_M_before_begin"), ["_M_nxt"], context);
             view.first = await this.number(first.get("_M_nxt"), context);
             const hashtable = (await this.fields(node.item, ["_M_h"], context)).get("_M_h");
@@ -602,7 +741,8 @@ class StlDisplay {
     async successor(view, address, context) {
         const link = (pointer, name) => this.pointer(pointer + view.linkOffsets[name], context);
         this.step(context);
-        if (view.kind === "unordered_map") return link(address, "_M_nxt");
+        if (view.linked) return link(address, view.linkName);
+        if (HASH_KINDS.has(view.kind)) return link(address, "_M_nxt");
         let current = await link(address, "_M_right");
         if (current) {
             const visited = new Set();
@@ -670,7 +810,7 @@ class StlDisplay {
             }
         } else if (view.kind === "optional") {
             if (from < end) nodes.push(await this.physical(node, "value", view.value, context));
-        } else if (["unique_ptr", "shared_ptr"].includes(view.kind)) {
+        } else if (["unique_ptr", "shared_ptr", "weak_ptr"].includes(view.kind)) {
             if (from < end)
                 nodes.push(
                     await this.materialize(
@@ -714,9 +854,42 @@ class StlDisplay {
                     readOnly: true
                 });
             }
-        } else if (view.map) {
+        } else if (view.linked || view.kind === "deque") {
+            for (let index = from; index < end; index++) {
+                let address;
+                if (view.linked) address = (await this.mapAddress(view, index, context)) + view.valueOffset;
+                else {
+                    const ordinal = BigInt(view.startOffset) + BigInt(index);
+                    const block = BigInt(view.startNode) + (ordinal / BigInt(view.blockSize)) * BigInt(view.width);
+                    if (block > view.finishNode) throw new Error("Deque element exceeds its map");
+                    address =
+                        (await this.pointer(block, context)) +
+                        (ordinal % BigInt(view.blockSize)) * BigInt(view.elementSize);
+                }
+                nodes.push(
+                    await this.materialize(
+                        node,
+                        `[${index}]`,
+                        await this.elementExpression(view.info.args[0], address, context),
+                        context
+                    )
+                );
+            }
+        } else if (view.associative) {
             for (let index = from; index < end; index++) {
                 const address = (await this.mapAddress(view, index, context)) + view.valueOffset;
+                if (!view.map) {
+                    nodes.push(
+                        await this.materialize(
+                            node,
+                            `[${index}]`,
+                            await this.elementExpression(view.pairType, address, context),
+                            context,
+                            true
+                        )
+                    );
+                    continue;
+                }
                 const pair = await this.materialize(
                     node,
                     `entry:${index}`,
@@ -769,6 +942,7 @@ module.exports = {
     integer,
     safeType,
     safePath,
+    gdbVariablePath,
     isInternalError,
     MEMORY_LIMIT,
     WALK_LIMIT

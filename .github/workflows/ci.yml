@@ -46,11 +46,38 @@ jobs:
         env:
           CPP_DWARF: ${{ matrix.dwarf }}
           CPP_STANDARD: ${{ matrix.standard }}
+      - run: node test/gdb/printer-modes.test.js
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: cpp-gdb-${{ matrix.gcc }}-${{ matrix.standard }}-dwarf-${{ matrix.dwarf }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  arm-images:
+    name: ARM GDB image transfers (memory-only RSP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi gdb-multiarch
+      - run: node test/gdb/debug-images.test.js
+        env:
+          IMAGE_GDB: gdb-multiarch
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-images
           path: test-results/
           if-no-files-found: warn
           retention-days: 14

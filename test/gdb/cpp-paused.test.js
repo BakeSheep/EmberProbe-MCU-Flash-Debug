@@ -57,6 +57,15 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         for (const child of await expand(variable)) result.push(...(await leaves(child, depth + 1)));
         return result;
     }
+    async function classMembers(variable, depth = 0) {
+        assert(depth < 12, "bounded C++ class traversal");
+        const result = [];
+        for (const child of await expand(variable)) {
+            if (child.variablesReference) result.push(...(await classMembers(child, depth + 1)));
+            else result.push({ ...child, parent: variable.variablesReference });
+        }
+        return result;
+    }
     try {
         console.log(execFileSync(compiler, ["--version"], { encoding: "utf8", windowsHide: true }).split("\n")[0]);
         console.log(execFileSync(gdb, ["--version"], { encoding: "utf8", windowsHide: true }).split("\n")[0]);
@@ -68,6 +77,7 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
                 `-gdwarf-${dwarf}`,
                 "-O0",
                 path.resolve(__dirname, "../fixtures/cpp-paused.cpp"),
+                path.resolve(__dirname, "../fixtures/cpp-scopes-second.cpp"),
                 "-o",
                 executable
             ],
@@ -89,9 +99,116 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         adapter.threads.add(1);
         await stopAt("-exec-run");
 
+        const classes = await classMembers(await evaluate("classObject"));
+        const repeated = classes.filter((item) => item.name === "repeated");
+        assert.deepStrictEqual(repeated.map((item) => item.value).sort(), ["11", "21", "31"]);
+        assert(
+            repeated.every((item) => item.evaluateName && item.memoryReference),
+            JSON.stringify({
+                repeated,
+                paths: await Promise.all(
+                    [...adapter.variableStore.nodes.values()]
+                        .filter((node) => node.item.exp === "repeated")
+                        .map(async (node) => ({
+                            name: node.item.name,
+                            path: await mi.command(`-var-info-path-expression ${quote(node.item.name)}`)
+                        }))
+                )
+            })
+        );
+        assert.strictEqual(new Set(repeated.map((item) => item.memoryReference)).size, 3);
+        const leftMember = repeated.find((item) => item.value === "11");
+        assert.strictEqual(
+            (
+                await adapter.handle("setVariable", {
+                    variablesReference: leftMember.parent,
+                    name: "repeated",
+                    value: "71"
+                })
+            ).value,
+            "71"
+        );
+        assert.strictEqual((await evaluate("classObject.ClassLeft::repeated")).result, "71");
+        assert.strictEqual((await evaluate("classObject.ClassRight::repeated")).result, "21");
+        assert.strictEqual((await evaluate("classObject.repeated")).result, "31");
+        assert.strictEqual(
+            (await adapter.handle("setExpression", { expression: leftMember.evaluateName, value: "72" })).value,
+            "72"
+        );
+        assert.strictEqual((await evaluate("classObject.ClassLeft::repeated")).result, "72");
+        assert.strictEqual((await evaluate("classObject.ClassRight::repeated")).result, "21");
+        assert(classes.some((item) => item.name === "anonymousInt" && item.value === "41"));
+        assert(classes.some((item) => item.name === "anonymousNested" && item.value === "51"));
+        assert(classes.some((item) => item.name === "privateValue" && item.presentationHint.visibility === "private"));
+        assert(
+            classes.some((item) => item.name === "protectedValue" && item.presentationHint.visibility === "protected")
+        );
+        assert(
+            (await classMembers(await evaluate("polymorphic"))).some(
+                (item) => item.name === "derivedOnly" && item.value === "32"
+            ),
+            "GDB resolves paused RTTI to the derived class"
+        );
+        const virtualMembers = await classMembers(await evaluate("virtualObject"));
+        assert(
+            virtualMembers.some((item) => item.name === "virtualValue" && item.value === "61"),
+            "GDB resolves virtual base offsets: " + JSON.stringify(virtualMembers)
+        );
+        const constMembers = await classMembers(await evaluate("constClassObject"));
+        const constField = constMembers.find((item) => item.name === "derivedOnly");
+        assert(constField.presentationHint.attributes.includes("readOnly"));
+        await assert.rejects(
+            adapter.handle("setVariable", { variablesReference: constField.parent, name: constField.name, value: "0" }),
+            /read only/
+        );
+
         assert.match((await evaluate("shortText")).result, /hello/);
         assert.match((await evaluate("longText")).result, /xxxxxxxx|repeats 128 times/);
         assert.strictEqual((await evaluate("emptyText")).variablesReference, 0);
+        assert.deepStrictEqual(
+            (await expand(await evaluate("linkedValues"))).map((item) => item.value),
+            ["1", "2", "3"]
+        );
+        assert.deepStrictEqual(
+            (await expand(await evaluate("forwardValues"))).map((item) => item.value),
+            ["4", "5", "6"]
+        );
+        const deque = await evaluate("dequeValues");
+        assert.strictEqual(deque.indexedVariables, 259);
+        assert.deepStrictEqual(
+            (await expand(deque, { start: 125, count: 5 })).map((item) => item.value),
+            ["126", "127", "128", "129", "130"]
+        );
+        assert.deepStrictEqual(await leaves(await evaluate("weakValue")), ["19"]);
+        assert.strictEqual((await evaluate("expiredWeak")).variablesReference, 0);
+        for (const [name, expected] of [
+            ["setValues", ["1", "2", "3"]],
+            ["multiSetValues", ["1", "2", "2"]],
+            ["hashSetValues", ["7", "8"]],
+            ["hashMultiSetValues", ["7", "7", "8"]]
+        ]) {
+            const container = await evaluate(name);
+            const values = await expand(container);
+            assert.deepStrictEqual(values.map((item) => item.value).sort(), expected);
+            assert(values.every((item) => item.presentationHint.attributes.includes("readOnly")));
+            await assert.rejects(
+                adapter.handle("setVariable", {
+                    variablesReference: container.variablesReference,
+                    name: values[0].name,
+                    value: "0"
+                }),
+                /read only/
+            );
+        }
+        for (const name of ["multiMapValues", "hashMultiMapValues"]) {
+            const entries = await expand(await evaluate(name));
+            assert.strictEqual(entries.length, 2);
+            const values = [];
+            for (const item of entries) values.push((await leaves(item)).join(":"));
+            assert.deepStrictEqual(values.sort(), name === "multiMapValues" ? ["1:10", "1:11"] : ["1:20", "1:21"]);
+        }
+        for (const name of ["emptyList", "emptyForward", "emptyDeque", "emptySet", "emptyHashSet"])
+            assert.strictEqual((await evaluate(name)).variablesReference, 0, name);
         const longString = await evaluate("longText");
         let characterPage = await expand(longString),
             characterCount = 0;
@@ -246,6 +363,45 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         assert.strictEqual((await expand(changed, { count: 1 }))[0].value, "1");
         assert.strictEqual((await expand(changed, { start: 299, count: 1 }))[0].value, "300");
         assert((await expand(await evaluate("choice"))).some((child) => child.value.includes("changed")));
+
+        const frame = (await adapter.handle("stackTrace", { threadId: 1, levels: 1 })).stackFrames[0];
+        const scopes = (await adapter.handle("scopes", { frameId: frame.id })).scopes;
+        assert.strictEqual(scopes.length, 4);
+        const directory = await adapter.symbolDirectory.variables("globals");
+        const shortTextIndex = directory.findIndex((item) => item.name === "shortText");
+        assert(shortTextIndex >= 0);
+        const globals = (await expand(scopes[1], { start: shortTextIndex, count: 1 })).filter(
+            (item) => item.name === "shortText"
+        );
+        assert.strictEqual(globals.length, 1);
+        assert.strictEqual(globals[0].evaluateName, "shortText");
+        assert.match(globals[0].memoryReference, /^0x[\da-f]+$/i);
+        const statics = await expand(scopes[2]);
+        assert.strictEqual(statics.find((item) => item.name === "scopeCounter")?.value, "13");
+        const secondFile = path.resolve(__dirname, "../fixtures/cpp-scopes-second.cpp").replace(/\\/g, "/");
+        assert.strictEqual((await evaluate(`'${secondFile}'::scopeCounter`)).result, "27");
+        const registers = await expand(scopes[3]);
+        const pc = registers.find((item) => ["pc", "rip", "eip"].includes(item.name));
+        assert(pc && pc.evaluateName === `$${pc.name}`);
+        assert.strictEqual(
+            (await adapter.handle("setExpression", { frameId: frame.id, expression: "scopeCounter", value: "17" }))
+                .value,
+            "17"
+        );
+        assert.strictEqual(
+            (await evaluate(`'${secondFile}'::scopeCounter`)).result,
+            "27",
+            "the other translation unit stays independent"
+        );
+        const registerFrame = (await adapter.handle("stackTrace", { threadId: 1, levels: 1 })).stackFrames[0];
+        const registerScope = (await adapter.handle("scopes", { frameId: registerFrame.id })).scopes[3];
+        const preserved = (await expand(registerScope)).find((item) => item.name === pc.name);
+        const registerWrite = await adapter.handle("setVariable", {
+            variablesReference: registerScope.variablesReference,
+            name: pc.name,
+            value: preserved.value
+        });
+        assert.strictEqual(BigInt(registerWrite.value), BigInt(preserved.value));
         console.log(
             `Native GCC/libstdc++ + GDB C++${standard} DWARF ${dwarf}: wrappers, nested maps, paging, writes and resume passed`
         );

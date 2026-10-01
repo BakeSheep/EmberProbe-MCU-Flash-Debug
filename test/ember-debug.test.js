@@ -284,6 +284,30 @@ function session() {
     assert(optedOut.mi.commands.includes("-exec-continue"));
     assert(!optedOut.mi.commands.some((c) => c.includes("--thread")));
     await optedOut.adapter.close();
+    const grouped = session();
+    await grouped.adapter.handle("attach", {
+        ...config,
+        serverGroup: "dual",
+        numberOfProcessors: 2,
+        targetProcessor: 1
+    });
+    assert(
+        grouped.events.some(
+            (event) => event.event === "capabilities" && event.body.capabilities.supportsRestartRequest === false
+        )
+    );
+    assert(
+        !grouped.mi.commands.some((command) => command.includes("monitor reset") || command === "-target-download"),
+        "joining a group never resets or downloads"
+    );
+    const beforeRestart = grouped.mi.commands.length;
+    await assert.rejects(grouped.adapter.handle("restart", {}), /shared|group|cores/i);
+    assert.strictEqual(
+        grouped.mi.commands.length,
+        beforeRestart,
+        "shared restart is rejected before interrupting or running hooks"
+    );
+    await grouped.adapter.close();
 
     // Nothing is invented before the scheduler has created a task.
     const early = session();

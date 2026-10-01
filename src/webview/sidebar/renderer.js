@@ -91,6 +91,7 @@ const chipRead = document.getElementById("chipRead"),
     jlinkDriverBusy = document.getElementById("jlinkDriverBusy"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
+const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
 let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
@@ -177,6 +178,7 @@ function rerenderDynamic() {
     chipStatus(lastChip);
     svdStatus(lastSvd);
     peripheralView?.render();
+    rtosView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
     applyStatus();
@@ -1632,6 +1634,13 @@ window.EmberProbeMessages.connect(window, {
             });
         renderAvailable();
     },
+    debugSessionChanged: function () {
+        latest = Object.create(null);
+        latestText = Object.create(null);
+        compCells = Object.create(null);
+        renderValues();
+        renderWrites();
+    },
     liveSample: function (m) {
         updateValues(m.samples);
     },
@@ -1654,6 +1663,15 @@ window.EmberProbeMessages.connect(window, {
     },
     peripheralCatalog: function (m) {
         peripheralView?.onCatalog(m);
+    },
+    rtosDebugStatus: function (m) {
+        rtosView?.onDebug(m);
+    },
+    rtosSnapshot: function (m) {
+        rtosView?.onSnapshot(m);
+    },
+    rtosError: function (m) {
+        rtosView?.onError(m);
     },
     peripheralRegisters: function (m) {
         peripheralView?.onRegisters(m);

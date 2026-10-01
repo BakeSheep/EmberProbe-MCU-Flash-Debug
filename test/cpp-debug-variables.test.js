@@ -28,11 +28,19 @@ class PrinterMi extends EventEmitter {
         if (command === "-stack-list-variables --simple-values")
             return { variables: Array.from({ length: 205 }, (_, index) => ({ name: `local${index}` })) };
         if (command.startsWith("-var-create")) {
+            if (this.warnOnCreate) {
+                this.warnOnCreate = false;
+                this.emit("output", "Python Exception <class 'gdb.GdbError'>: printer failed\n");
+            }
             const exp = JSON.parse(command.slice(command.lastIndexOf(' "') + 1));
             return { name: exp, exp, value: "0", numchild: "0", type: "int" };
         }
         const range = /^-var-list-children --all-values "([^"]+)" (\d+) (\d+)$/.exec(command);
         if (range) {
+            if (this.warnOnExpand) {
+                this.warnOnExpand = false;
+                this.emit("output", "Python Exception <class 'gdb.GdbError'>: printer failed\n");
+            }
             if (this.failPrinter) {
                 this.failPrinter = false;
                 throw new Error("Variable iterator failure");
@@ -192,12 +200,28 @@ function setup(item = {}) {
     const raw = await fallback.adapter.handle("variables", { variablesReference: fallback.ref });
     assert.strictEqual(raw.variables.length, 2);
     assert.strictEqual(fallback.node.item.dynamic, "0");
-    assert(!fallback.mi.commands.some((command) => command.includes("var-set-visualizer")));
+    assert(fallback.mi.commands.some((command) => command === '-var-set-visualizer "root" None'));
     fallback.mi.failPrinter = true;
     await assert.rejects(
         fallback.adapter.handle("variables", { variablesReference: fallback.ref }),
         /Variable iterator/
     );
+    for (const creating of [false, true]) {
+        const warning = setup();
+        warning.adapter.config.effectivePrettyPrintingMode = "gdb";
+        warning.mi.size = 2;
+        if (creating) {
+            warning.mi.warnOnCreate = true;
+            const variable = await warning.adapter.handle("evaluate", { expression: "printerValue" });
+            assert(variable.variablesReference, "a soft Python creation failure restores expandable raw fields");
+            assert(warning.adapter.variableStore.nodes.get("printerValue").raw);
+        } else {
+            warning.mi.warnOnExpand = true;
+            const page = await warning.adapter.handle("variables", { variablesReference: warning.ref });
+            assert.strictEqual(page.variables.length, 2);
+            assert(warning.node.raw, "a soft Python iteration failure restores raw fields");
+        }
+    }
 
     const scope = setup();
     const frameId = scope.adapter.handleFor({ kind: "frame", thread: 2, level: 0 });

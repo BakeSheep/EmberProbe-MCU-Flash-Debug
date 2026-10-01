@@ -50,6 +50,9 @@ class DebugSessionBridge {
         this.beforePausedRead = options.beforePausedRead || (async () => {});
         this.allSessions = new Map();
         this.sessions = new Map();
+        this.sessionContexts = options.trackSessions === false ? null : new Map();
+        this.selectedSessionId = "";
+        this.contextSessionId = "";
         this.intentEnabled = false;
         this.workspaceKey = "";
         this.paused = false;
@@ -75,6 +78,7 @@ class DebugSessionBridge {
     }
 
     get activeSession() {
+        if (this.selectedSessionId) return this.sessions.get(this.selectedSessionId) || null;
         if (this.sessions.size !== 1) return null;
         return this.sessions.values().next().value;
     }
@@ -86,7 +90,7 @@ class DebugSessionBridge {
         return this.allSessions.size > 0;
     }
     get conflict() {
-        return this.sessions.size > 1;
+        return this.sessions.size > 1 && !this.activeSession;
     }
     get canRead() {
         return !!(
@@ -120,8 +124,47 @@ class DebugSessionBridge {
                       workspace: session.workspaceFolder?.uri?.fsPath || sessionFolderKey(session)
                   }
                 : null,
-            capabilities: { ...this.capabilities }
+            capabilities: { ...this.capabilities },
+            sessions: [...this.sessions.values()].map((candidate) => ({
+                id: candidate.id,
+                name: candidate.name || candidate.configuration?.name || "debugger",
+                serverGroup: candidate.configuration?.serverGroup || "",
+                targetProcessor: candidate.configuration?.targetProcessor ?? 0,
+                workspace: candidate.workspaceFolder?.uri?.fsPath || sessionFolderKey(candidate),
+                paused: this.sessionContexts?.get(candidate.id)?.paused ?? this.paused
+            }))
         };
+    }
+
+    selectSession(selector = {}) {
+        if (this.controlInFlight || this.writing)
+            throw Object.assign(new Error("Wait for the current debug operation before selecting another session"), {
+                code: "DEBUG_CONTROL_BUSY"
+            });
+        const { sessionId, serverGroup, targetProcessor } = selector;
+        if (
+            (sessionId !== undefined && (typeof sessionId !== "string" || !sessionId)) ||
+            (serverGroup !== undefined && (typeof serverGroup !== "string" || !serverGroup)) ||
+            (targetProcessor !== undefined && (!Number.isInteger(targetProcessor) || targetProcessor < 0)) ||
+            (sessionId === undefined && serverGroup === undefined)
+        )
+            throw Object.assign(new Error("Select a sessionId or a serverGroup with an unambiguous core"), {
+                code: "DEBUG_SESSION_SELECTION_INVALID"
+            });
+        const matches = [...this.sessions.values()].filter(
+            (session) =>
+                (sessionId === undefined || session.id === sessionId) &&
+                (serverGroup === undefined || session.configuration?.serverGroup === serverGroup) &&
+                (targetProcessor === undefined || session.configuration?.targetProcessor === targetProcessor)
+        );
+        if (matches.length !== 1)
+            throw Object.assign(new Error("The debugger selection does not identify one session in this workspace"), {
+                code: matches.length ? "DEBUG_SESSION_CONFLICT" : "DEBUG_SESSION_NOT_ACTIVE"
+            });
+        this.selectedSessionId = matches[0].id;
+        this._recomputeSessions();
+        this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
+        return this.agentStatus();
     }
 
     assertUniqueSession() {
@@ -203,6 +246,11 @@ class DebugSessionBridge {
 
     attach(session) {
         if (!session || !isSupportedDebugSession(session)) return;
+        if (this.sessionContexts && !this.sessionContexts.has(session.id)) {
+            const context = new DebugSessionBridge({ trackSessions: false });
+            context.attach(session);
+            this.sessionContexts.set(session.id, context);
+        }
         this.allSessions.set(session.id, session);
         this._recomputeSessions();
     }
@@ -210,6 +258,8 @@ class DebugSessionBridge {
     detach(session) {
         if (!session) return;
         this.allSessions.delete(session.id);
+        this.sessionContexts?.get(session.id)?.dispose();
+        this.sessionContexts?.delete(session.id);
         this._recomputeSessions();
     }
 
@@ -220,8 +270,12 @@ class DebugSessionBridge {
             return !this.workspaceKey || !key || key === this.workspaceKey;
         });
         this.sessions = new Map(matching);
+        if (this.selectedSessionId && !this.sessions.has(this.selectedSessionId)) this.selectedSessionId = "";
         const current = [...this.sessions.keys()].sort().join("|");
-        if (previous !== current) {
+        const activeId = this.activeSession?.id || "";
+        const changed = this.sessionContexts ? activeId !== this.contextSessionId : previous !== current;
+        this.contextSessionId = activeId;
+        if (changed) {
             this.paused = false;
             this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
             this.stopReason = "";
@@ -232,6 +286,20 @@ class DebugSessionBridge {
             this.transitionKind = "";
             this.transitionCommand = "";
             this.transitionRequestSeq = null;
+            const context = this.sessionContexts?.get(activeId);
+            if (context) {
+                for (const field of [
+                    "paused",
+                    "stopReason",
+                    "threadId",
+                    "transitionKind",
+                    "transitionCommand",
+                    "transitionRequestSeq"
+                ])
+                    this[field] = context[field];
+                this.capabilities = { ...context.capabilities };
+                this.snapshotPending = this.intentEnabled && this.paused;
+            }
             this._invalidate();
         }
         this.onStatus(this.status());
@@ -262,7 +330,15 @@ class DebugSessionBridge {
     }
 
     handleRequest(session, message) {
-        if (!session || !this.sessions.has(session.id) || message?.type !== "request") return;
+        if (
+            !session ||
+            (!this.allSessions.has(session.id) && !this.sessions.has(session.id)) ||
+            message?.type !== "request"
+        )
+            return;
+        this.sessionContexts?.get(session.id)?.handleRequest(session, message);
+        if (!this.sessions.has(session.id)) return;
+        if (this.sessionContexts && this.activeSession?.id !== session.id) return;
         const transitions = {
             next: "step",
             stepIn: "step",
@@ -292,7 +368,14 @@ class DebugSessionBridge {
     }
 
     handleMessage(session, message) {
-        if (!session || !this.sessions.has(session.id) || !message) return;
+        if (!session || (!this.allSessions.has(session.id) && !this.sessions.has(session.id)) || !message) return;
+        this.sessionContexts?.get(session.id)?.handleMessage(session, message);
+        if (!this.sessions.has(session.id)) return;
+        if (this.sessionContexts && this.activeSession?.id !== session.id) {
+            this.onStatus(this.status());
+            this._notifyState();
+            return;
+        }
         const failedTransition =
             message.type === "response" &&
             message.success === false &&
@@ -329,6 +412,18 @@ class DebugSessionBridge {
             this.onStatus(this.status());
             this._notifyState();
             this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
+            return;
+        }
+        if (message.type === "event" && message.event === "capabilities") {
+            const capabilities = message.body?.capabilities || {};
+            for (const [name, key] of [
+                ["read", "supportsReadMemoryRequest"],
+                ["write", "supportsWriteMemoryRequest"],
+                ["restart", "supportsRestartRequest"],
+                ["functionBreakpoints", "supportsFunctionBreakpoints"]
+            ])
+                if (Object.hasOwn(capabilities, key)) this.capabilities[name] = capabilities[key] === true;
+            this.onStatus(this.status());
             return;
         }
         if (message.type !== "event") return;
@@ -457,7 +552,6 @@ class DebugSessionBridge {
         const epoch = this.epoch;
         this.polling = true;
         try {
-            await this.beforePausedRead();
             if (epoch !== this.epoch || !this.canRead || !this.snapshotPending || this.snapshotReady) return;
             const plan = this.getReadPlan() || [];
             if (!plan.length) {
@@ -532,6 +626,9 @@ class DebugSessionBridge {
 
     async writePausedMemory(address, bytes) {
         const session = this.assertPausedAccess({ write: true });
+        if (this.writing || this.controlInFlight)
+            throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
+        const epoch = this.stopEpoch;
         const data = Uint8Array.from(bytes || []);
         if (
             !Number.isSafeInteger(Number(address)) ||
@@ -540,20 +637,29 @@ class DebugSessionBridge {
             data.length > MAX_READ_BYTES
         )
             throw Object.assign(new Error("Invalid DAP memory write range"), { code: "INVALID_MEMORY_RANGE" });
-        const result = unwrapResponse(
-            await session.customRequest("writeMemory", {
-                memoryReference: `0x${Number(address).toString(16)}`,
-                offset: 0,
-                data: Buffer.from(data).toString("base64"),
-                allowPartial: false
-            })
-        );
-        if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== data.length)
-            throw Object.assign(new Error("DAP performed a partial peripheral register write"), {
-                code: "PERIPHERAL_WRITE_PARTIAL",
-                details: { requested: data.length, written: result.bytesWritten }
-            });
-        return { bytesWritten: Number.isFinite(result.bytesWritten) ? result.bytesWritten : data.length };
+        this.writing = true;
+        try {
+            const result = unwrapResponse(
+                await session.customRequest("writeMemory", {
+                    memoryReference: `0x${Number(address).toString(16)}`,
+                    offset: 0,
+                    data: Buffer.from(data).toString("base64"),
+                    allowPartial: false
+                })
+            );
+            if (session !== this.activeSession || epoch !== this.stopEpoch || !this.paused || this.transitionKind)
+                throw Object.assign(new Error("The debugger changed during memory write"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+            if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== data.length)
+                throw Object.assign(new Error("DAP performed a partial peripheral register write"), {
+                    code: "PERIPHERAL_WRITE_PARTIAL",
+                    details: { requested: data.length, written: result.bytesWritten }
+                });
+            return { bytesWritten: Number.isFinite(result.bytesWritten) ? result.bytesWritten : data.length };
+        } finally {
+            this.writing = false;
+        }
     }
 
     // DAP has no capability bit for RTOS awareness, so read the resolved launch configuration.
@@ -599,10 +705,10 @@ class DebugSessionBridge {
     }
 
     async control(action, requestedThreadId) {
-        if (this.controlInFlight)
+        if (this.controlInFlight || this.writing)
             throw Object.assign(new Error("Another debug control action is still in progress"), {
                 code: "DEBUG_CONTROL_BUSY",
-                details: { action, activeAction: this.controlInFlight.action }
+                details: { action, activeAction: this.controlInFlight?.action || "write" }
             });
         const operationToken = { action };
         this.controlInFlight = operationToken;
@@ -617,6 +723,10 @@ class DebugSessionBridge {
         const session = this.assertUniqueSession();
         const before = this.agentStatus();
         const threadId = await this._selectThread(requestedThreadId);
+        if (session !== this.activeSession || before.epoch !== this.stopEpoch)
+            throw Object.assign(new Error("The selected debugger changed during thread discovery"), {
+                code: "DEBUG_STATE_CHANGED"
+            });
         const mapping = {
             pause: { command: "pause", paused: false, args: { threadId }, expect: "paused" },
             continue: { command: "continue", paused: true, args: { threadId, singleThread: false }, expect: "running" },
@@ -691,6 +801,9 @@ class DebugSessionBridge {
     async read(items, session = this.activeSession, expectedEpoch = null) {
         if (!session || this.conflict) throw new Error("No unique debugger session is available");
         if (!this.capabilities.read) throw new Error("The debugger does not support DAP readMemory");
+        await this.beforePausedRead();
+        if (session !== this.activeSession || !this.paused || this.transitionKind)
+            throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
         const samples = [];
         for (const group of mergeReadPlan(items)) {
             if (expectedEpoch !== null && expectedEpoch !== this.epoch)
@@ -745,6 +858,8 @@ class DebugSessionBridge {
     }
 
     async writeAndVerify(items) {
+        if (this.writing || this.controlInFlight)
+            throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const session = this.activeSession;
         if (!this.paused || !session || this.capabilities.write !== true)
             throw new Error("The debugger target must be paused and support DAP writeMemory");
@@ -813,6 +928,8 @@ class DebugSessionBridge {
         this.controlInFlight = null;
         this.allSessions.clear();
         this.sessions.clear();
+        for (const context of this.sessionContexts?.values() || []) context.dispose();
+        this.sessionContexts?.clear();
     }
 }
 

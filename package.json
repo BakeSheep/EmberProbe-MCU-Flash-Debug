@@ -235,13 +235,32 @@
         "emberprobe.enablePrettyPrinting": {
           "type": "boolean",
           "default": true,
-          "description": "Enable built-in libstdc++ STL display in paused variables, watches and hovers. No Python is required."
+          "description": "Legacy display switch: false selects raw when prettyPrintingMode is not explicitly configured."
+        },
+        "emberprobe.prettyPrintingMode": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "gdb",
+            "raw"
+          ],
+          "default": "builtin",
+          "description": "Paused C++ display: builtin requires no Python; gdb loads only explicit prettyPrinterFiles; raw shows physical fields."
+        },
+        "emberprobe.prettyPrinterFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "default": [],
+          "description": "Explicit Python printer scripts for gdb mode. Relative paths resolve against the debug cwd; scripts execute inside GDB."
         },
         "emberprobe.prettyPrinterPath": {
           "type": "string",
           "default": "",
           "description": "Deprecated and ignored: STL display is implemented inside EmberProbe.",
-          "deprecationMessage": "Python printers are no longer used. Remove this setting."
+          "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb for explicit Python scripts."
         }
       }
     },
@@ -259,6 +278,34 @@
         "configurationAttributes": {
           "launch": {
             "properties": {
+              "servertype": {
+                "type": "string",
+                "enum": [
+                  "openocd"
+                ],
+                "description": "Managed debug server backend."
+              },
+              "serverpath": {
+                "type": "string",
+                "description": "Override the OpenOCD executable; paths resolve against debug cwd."
+              },
+              "numberOfProcessors": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 32,
+                "description": "Experimental target selection: expected count of OpenOCD targets."
+              },
+              "targetProcessor": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 31,
+                "description": "Zero-based index in OpenOCD target names; must be less than numberOfProcessors."
+              },
+              "targetName": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$",
+                "description": "Expected target name at targetProcessor; a mismatch fails startup."
+              },
               "executable": {
                 "type": "string",
                 "description": "ELF file; defaults to the selected workspace ELF."
@@ -306,15 +353,258 @@
                 "type": "boolean",
                 "description": "Override emberprobe.enablePrettyPrinting for this session."
               },
+              "prettyPrintingMode": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "gdb",
+                  "raw"
+                ],
+                "description": "Override the paused C++ display mode for this session."
+              },
+              "prettyPrinterFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "description": "Explicit Python printer scripts, loaded only in gdb mode."
+              },
               "prettyPrinterPath": {
                 "type": "string",
                 "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
-                "deprecationMessage": "Python printers are no longer used."
+                "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb."
+              },
+              "symbolFiles": {
+                "type": "array",
+                "maxItems": 32,
+                "description": "Ordered symbol images. First is primary; omitted uses executable; [] loads no symbols. Paths resolve against cwd.",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "file"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "offset": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -4294967295,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "textaddress": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "sections": {
+                          "type": "array",
+                          "maxItems": 128,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "name",
+                              "address"
+                            ],
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[.\\w$][.\\w$-]{0,127}$"
+                              },
+                              "address": {
+                                "oneOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 4294967295
+                                  },
+                                  {
+                                    "type": "string",
+                                    "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "loadFiles": {
+                "type": "array",
+                "maxItems": 32,
+                "description": "Launch downloads in order. Omitted uses executable; [] skips downloads. Attach never downloads. BIN requires address; ELF/HEX accept offset.",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "file"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "elf",
+                            "hex",
+                            "bin"
+                          ]
+                        },
+                        "address": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "offset": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -4294967295,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "preLaunchCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed launch commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postLaunchCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed launch commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "preAttachCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed attach commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postAttachCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed attach commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "preResetCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed reset commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postResetCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed reset commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "serverGroup": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+                "description": "Experimental shared OpenOCD group. Requires numberOfProcessors >= 2. Start the first core, then attach other cores with matching physical settings; stop all members before resetting."
               }
             }
           },
           "attach": {
             "properties": {
+              "servertype": {
+                "type": "string",
+                "enum": [
+                  "openocd"
+                ],
+                "description": "Managed debug server backend."
+              },
+              "serverpath": {
+                "type": "string",
+                "description": "Override the OpenOCD executable; paths resolve against debug cwd."
+              },
+              "numberOfProcessors": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 32,
+                "description": "Experimental target selection: expected count of OpenOCD targets."
+              },
+              "targetProcessor": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 31,
+                "description": "Zero-based index in OpenOCD target names; must be less than numberOfProcessors."
+              },
+              "targetName": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$",
+                "description": "Expected target name at targetProcessor; a mismatch fails startup."
+              },
               "executable": {
                 "type": "string",
                 "description": "ELF file; defaults to the selected workspace ELF."
@@ -362,10 +652,225 @@
                 "type": "boolean",
                 "description": "Override emberprobe.enablePrettyPrinting for this session."
               },
+              "prettyPrintingMode": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "gdb",
+                  "raw"
+                ],
+                "description": "Override the paused C++ display mode for this session."
+              },
+              "prettyPrinterFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "description": "Explicit Python printer scripts, loaded only in gdb mode."
+              },
               "prettyPrinterPath": {
                 "type": "string",
                 "description": "Deprecated and ignored. EmberProbe uses built-in STL display.",
-                "deprecationMessage": "Python printers are no longer used."
+                "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb."
+              },
+              "symbolFiles": {
+                "type": "array",
+                "maxItems": 32,
+                "description": "Ordered symbol images. First is primary; omitted uses executable; [] loads no symbols. Paths resolve against cwd.",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "file"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "offset": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -4294967295,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "textaddress": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "sections": {
+                          "type": "array",
+                          "maxItems": 128,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "name",
+                              "address"
+                            ],
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[.\\w$][.\\w$-]{0,127}$"
+                              },
+                              "address": {
+                                "oneOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 4294967295
+                                  },
+                                  {
+                                    "type": "string",
+                                    "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "loadFiles": {
+                "type": "array",
+                "maxItems": 32,
+                "description": "Launch downloads in order. Omitted uses executable; [] skips downloads. Attach never downloads. BIN requires address; ELF/HEX accept offset.",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "file"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "elf",
+                            "hex",
+                            "bin"
+                          ]
+                        },
+                        "address": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        },
+                        "offset": {
+                          "oneOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -4294967295,
+                              "maximum": 4294967295
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "preLaunchCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed launch commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postLaunchCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed launch commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "preAttachCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed attach commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postAttachCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed attach commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "preResetCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands before managed reset commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "postResetCommands": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Explicit single-line GDB console commands after managed reset commands. Launch/attach hooks run after connection; failures terminate startup."
+              },
+              "serverGroup": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+                "description": "Experimental shared OpenOCD group. Requires numberOfProcessors >= 2. Start the first core, then attach other cores with matching physical settings; stop all members before resetting."
               }
             }
           }

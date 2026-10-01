@@ -2040,6 +2040,9 @@ window.EmberProbeMessages.connect(window, {
     liveCompositeSample: function (m) {
         onCompositeSamples(m.samples || []);
     },
+    debugSessionChanged: function () {
+        clearHistory();
+    },
     liveStatus: function (m) {
         var fresh = window.EmberProbeRuntime.liveState({ running: running }, m).fresh;
         document.body.classList.toggle("debug-stale", !fresh);

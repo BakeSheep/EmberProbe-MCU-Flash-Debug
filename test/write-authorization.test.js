@@ -71,6 +71,11 @@ function makePlan(overrides = {}) {
         () => auth.authorize(makePlan({ bytes: [0, 0, 128, 63], value: 1 }), { confirmationId: changedValue }),
         (error) => error.code === "WRITE_CONFIRMATION_INVALID"
     );
+    const core0 = makePlan({ connection: { ...plan.connection, numberOfProcessors: 2, targetProcessor: 0 } });
+    const core1 = makePlan({ connection: { ...core0.connection, targetProcessor: 1 } });
+    const changedCore = auth.authorize(core0).response.confirmationId;
+    assert.notStrictEqual(fingerprintWritePlan(core0), fingerprintWritePlan(core1));
+    assert.throws(() => auth.authorize(core1, { confirmationId: changedCore }), { code: "WRITE_CONFIRMATION_INVALID" });
 
     const expired = auth.authorize(plan).response.confirmationId;
     now += 5001;

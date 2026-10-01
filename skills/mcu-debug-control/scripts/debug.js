@@ -4,6 +4,7 @@ const { call, writeDiagnostic } = require("../../_emberprobe/agent-client");
 
 const SIMPLE_ACTIONS = new Map([
     ["--status", ["debug.status", null]],
+    ["--select", ["debug.select", null]],
     ["--start", ["debug.start", null]],
     ["--pause", ["debug.control", "pause"]],
     ["--continue", ["debug.control", "continue"]],
@@ -23,6 +24,9 @@ const BREAKPOINT_ACTIONS = new Map([
 const VALUE_OPTIONS = new Set([
     "--workspace",
     "--thread",
+    "--session",
+    "--group",
+    "--core",
     "--source",
     "--line",
     "--column",
@@ -45,6 +49,7 @@ function args(argv) {
     }
     if (out.actions.length !== 1) throw new Error("Choose exactly one debug or breakpoint action");
     validateThreadOption(out, out.actions[0]);
+    validateSelection(out, out.actions[0]);
     return out;
 }
 
@@ -56,14 +61,35 @@ function validateThreadOption(opt, selected) {
         throw new Error("--thread must be a positive integer");
 }
 
+function validateSelection(opt, selected) {
+    const hasSelection = opt.session !== undefined || opt.group !== undefined || opt.core !== undefined;
+    if (selected.key !== "--select") {
+        if (hasSelection) throw new Error("--session, --group and --core require --select");
+        return;
+    }
+    if (!opt.session && !opt.group) throw new Error("--select requires --session or --group");
+    if (opt.core !== undefined && (!Number.isInteger(Number(opt.core)) || Number(opt.core) < 0))
+        throw new Error("--core must be a zero-based integer");
+}
+
 function request(opt) {
     const selected = opt.actions[0];
     validateThreadOption(opt, selected);
+    validateSelection(opt, selected);
     if (selected.kind === "simple") {
         const [method, action] = SIMPLE_ACTIONS.get(selected.key);
         return {
             method,
-            params: action ? { action, threadId: opt.thread === undefined ? undefined : Number(opt.thread) } : {}
+            params:
+                method === "debug.select"
+                    ? {
+                          sessionId: opt.session,
+                          serverGroup: opt.group,
+                          targetProcessor: opt.core === undefined ? undefined : Number(opt.core)
+                      }
+                    : action
+                      ? { action, threadId: opt.thread === undefined ? undefined : Number(opt.thread) }
+                      : {}
         };
     }
     const action = BREAKPOINT_ACTIONS.get(selected.key);
