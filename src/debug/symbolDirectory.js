@@ -32,7 +32,7 @@ function debugSymbols(result) {
                 type: item.type,
                 file,
                 isStatic,
-                expression: isStatic ? qualified(file, name) : name
+                expression: isStatic ? qualified(file, name) : `::${name}`
             });
             if (entries.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
         }
@@ -56,7 +56,7 @@ function nmSymbols(output) {
             isStatic,
             address: `0x${match[1]}`,
             size: parseInt(match[2], 16),
-            expression: isStatic ? qualified(file, name) : name
+            expression: isStatic ? qualified(file, name) : `::${name}`
         });
         if (entries.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
     }

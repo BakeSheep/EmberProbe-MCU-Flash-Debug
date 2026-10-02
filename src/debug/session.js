@@ -2,6 +2,8 @@
 
 const path = require("path");
 const fs = require("fs");
+const { performance } = require("perf_hooks");
+const { AsyncLocalStorage } = require("async_hooks");
 const {
     DebugSession,
     InitializedEvent,
@@ -46,6 +48,12 @@ class EmberDebugSession extends DebugSession {
         this.nextHandle = 1;
         this.variablesByName = new Map();
         this.varObjects = new Set();
+        this.pendingVarCleanup = [];
+        this.varCleanupScheduled = false;
+        this.varCleanupRunning = false;
+        this.varCleanupWaitingForStop = false;
+        this.controlPending = false;
+        this.hoverEvaluations = new Map();
         this.variableStore = new DebugVariables(this);
         this.symbolDirectory = new SymbolDirectory(this);
         this.debugImages = new DebugImages(this);
@@ -54,6 +62,17 @@ class EmberDebugSession extends DebugSession {
         this.nextBreakpoint = 1;
         this.entryBreakpoint = null;
         this.queue = Promise.resolve();
+        this.requests = [];
+        this.activeRequest = null;
+        this.requestLoop = false;
+        this.requestContext = new AsyncLocalStorage();
+        const command = this.mi.command.bind(this.mi);
+        this.mi.command = (...args) => {
+            if (!["-exec-interrupt --all", "-gdb-exit"].includes(args[0])) this.checkRequest();
+            const task = this.requestContext.getStore();
+            if (task) task.miCount++;
+            return command(...args);
+        };
         this.internalStop = null;
         this.stopWaiters = new Set();
         this.mi.on("output", (text) => {
@@ -72,9 +91,18 @@ class EmberDebugSession extends DebugSession {
     shutdown() {
         if (this.shuttingDown) return;
         this.shuttingDown = true;
+        this.pendingVarCleanup.length = 0;
         void this.mi.stop().finally(() => super.shutdown());
     }
     dispatchRequest(request) {
+        const read =
+            ["threads", "stackTrace", "scopes", "variables", "readMemory", "emberprobe.rtosSnapshot"].includes(
+                request.command
+            ) ||
+            (request.command === "evaluate" && request.arguments?.context === "hover");
+        const control = ["continue", "next", "stepIn", "stepOut", "restart"].includes(request.command);
+        const task = { read, cancelled: false, execute: null, miCount: 0 };
+        const queuedAt = performance.now();
         const response = {
             seq: 0,
             type: "response",
@@ -82,28 +110,82 @@ class EmberDebugSession extends DebugSession {
             command: request.command,
             success: true
         };
-        const execute = async () => {
-            try {
-                response.body = await this.handle(request.command, request.arguments || {});
-                this.sendResponse(response);
-                if (["disconnect", "terminate"].includes(request.command)) {
-                    this.end();
-                    this.shutdown();
+        const execute = () =>
+            this.requestContext.run(task, async () => {
+                const startedAt = performance.now();
+                try {
+                    if (task.cancelled)
+                        throw new Error("Debug read cancelled by execution control; refresh after stopping");
+                    response.body = await this.handle(request.command, request.arguments || {});
+                    if (task.cancelled)
+                        throw new Error("Debug read cancelled by execution control; refresh after stopping");
+                    this.sendResponse(response);
+                    if (["disconnect", "terminate"].includes(request.command)) {
+                        this.end();
+                        this.shutdown();
+                    }
+                    if (request.command === "launch" || request.command === "attach")
+                        this.sendEvent(new InitializedEvent());
+                } catch (error) {
+                    this.sendErrorResponse(response, { id: 1, format: error.message, showUser: !task.cancelled });
+                    if (["launch", "attach", "configurationDone"].includes(request.command)) await this.close();
+                } finally {
+                    if (this.config.performanceTrace) {
+                        const timing = {
+                            command: request.command,
+                            queueMs: Math.round(startedAt - queuedAt),
+                            durationMs: Math.round(performance.now() - startedAt),
+                            miCommands: task.miCount,
+                            cancelled: task.cancelled
+                        };
+                        this.sendEvent(
+                            new OutputEvent(`[EmberProbe performance] ${JSON.stringify(timing)}\n`, "console")
+                        );
+                    }
                 }
-                if (request.command === "launch" || request.command === "attach")
-                    this.sendEvent(new InitializedEvent());
-            } catch (error) {
-                this.sendErrorResponse(response, { id: 1, format: error.message, showUser: true });
-                if (["launch", "attach", "configurationDone"].includes(request.command)) await this.close();
+            });
+        // Interrupt does not touch frame context and must not wait for an unrelated read.
+        if (["disconnect", "terminate"].includes(request.command) || (request.command === "pause" && this.running)) {
+            const urgent = execute();
+            this.queue = Promise.all([this.queue, urgent]).then(() => {});
+            return;
+        }
+        task.execute = execute;
+        if (control) {
+            let index = this.requests.length;
+            while (index > 0 && this.requests[index - 1].read) index--;
+            for (let i = index; i < this.requests.length; i++) this.requests[i].cancelled = true;
+            this.requests.splice(index, 0, task);
+            if (index === 0 && this.activeRequest?.read) this.activeRequest.cancelled = true;
+        } else this.requests.push(task);
+        if (!this.requestLoop) {
+            this.requestLoop = true;
+            const loop = Promise.resolve().then(() => this.drainRequests());
+            this.queue = Promise.all([this.queue, loop]).then(() => {});
+        }
+    }
+    checkRequest() {
+        if ((this.requestContext.getStore() || this.activeRequest)?.cancelled)
+            throw new Error("Debug read cancelled by execution control; refresh after stopping");
+    }
+    async drainRequests() {
+        try {
+            while (this.requests.length) {
+                this.activeRequest = this.requests.shift();
+                await this.activeRequest.execute();
+                this.activeRequest = null;
             }
-        };
-        // A blocked MI operation must not prevent the client from terminating it.
-        if (["disconnect", "terminate"].includes(request.command)) void execute();
-        else this.queue = this.queue.then(execute, execute);
+        } finally {
+            this.activeRequest = null;
+            this.requestLoop = false;
+            this.scheduleVariableCleanup([]);
+        }
     }
     end() {
         if (this.ended) return;
         this.ended = true;
+        this.pendingVarCleanup.length = 0;
+        this.hoverEvaluations.clear();
         this.variableStore.reset();
         this.handles.clear();
         this.sendEvent(new TerminatedEvent());
@@ -118,6 +200,10 @@ class EmberDebugSession extends DebugSession {
         if (record.class === "running") {
             this.running = true;
             this.selectedFrame = undefined;
+            this.hoverEvaluations.clear();
+            const names = [...this.varObjects];
+            this.varObjects.clear();
+            this.scheduleVariableCleanup(names);
             this.variableStore.reset();
             this.handles.clear();
             this.variablesByName.clear();
@@ -125,6 +211,11 @@ class EmberDebugSession extends DebugSession {
         }
         if (record.class !== "stopped") return;
         this.running = false;
+        if (this.varCleanupWaitingForStop) {
+            this.varCleanupWaitingForStop = false;
+            this.scheduleVariableCleanup([]);
+        }
+        this.hoverEvaluations.clear();
         const stopped = this.confirmThread(record.data["thread-id"]);
         if (stopped) this.thread = stopped;
         const reason = record.data.reason || "pause";
@@ -152,6 +243,7 @@ class EmberDebugSession extends DebugSession {
     // GDB reports RTOS task lifecycle here. =thread-selected is deliberately ignored: it changes
     // when the user browses another task in the call stack, which is not a stop notification.
     onAsyncThreadRecord(record) {
+        if (record.class === "thread-selected") this.selectedFrame = undefined;
         if (!this.rtosAware) return;
         const id = Number(record.data.id);
         if (!Number.isInteger(id) || id < 1) return;
@@ -169,6 +261,7 @@ class EmberDebugSession extends DebugSession {
     }
     forgetThread(id) {
         if (!this.threads.delete(id)) return;
+        this.hoverEvaluations.clear();
         this.variableStore.invalidateThread(id);
         if (this.selectedFrame?.thread === id) this.selectedFrame = undefined;
         // Dropping the stopped task is what stops a later command from reusing the task GDB last
@@ -251,25 +344,71 @@ class EmberDebugSession extends DebugSession {
         const generation = this.variableStore.snapshot(frame);
         await this.ensureThread(frame.thread);
         this.variableStore.check(generation);
-        await this.mi.command(`-thread-select ${frame.thread}`);
-        this.variableStore.check(generation);
-        await this.mi.command(`-stack-select-frame ${frame.level}`);
-        this.variableStore.check(generation);
+        const sameFrame = this.selectedFrame?.thread === frame.thread && this.selectedFrame?.level === frame.level;
+        if (!sameFrame) {
+            await this.mi.command(`-thread-select ${frame.thread}`);
+            this.variableStore.check(generation);
+            await this.mi.command(`-stack-select-frame ${frame.level}`);
+            this.variableStore.check(generation);
+        }
         this.selectedFrame = frame;
         return frame;
     }
-    async clearVariables() {
+    scheduleVariableCleanup(names) {
+        if (this.ended) return;
+        this.pendingVarCleanup.push(...names);
+        if (!this.pendingVarCleanup.length) return;
+        if (this.varCleanupScheduled || this.varCleanupRunning) return;
+        this.varCleanupScheduled = true;
+        setImmediate(() => {
+            this.varCleanupScheduled = false;
+            void this.drainVariableCleanup();
+        });
+    }
+    async drainVariableCleanup() {
+        if (this.varCleanupRunning || this.ended) return;
+        if (this.running || this.controlPending || this.requestLoop) {
+            this.varCleanupWaitingForStop = true;
+            return;
+        }
+        this.varCleanupRunning = true;
+        try {
+            while (this.pendingVarCleanup.length && !this.ended) {
+                if (this.running || this.controlPending || this.requestLoop) {
+                    this.varCleanupWaitingForStop = true;
+                    break;
+                }
+                const name = this.pendingVarCleanup.shift();
+                try {
+                    await this.mi.command(`-var-delete ${quote(name)}`);
+                } catch {
+                    /* GDB can invalidate objects itself. */
+                }
+                await new Promise((resolve) => setImmediate(resolve));
+            }
+        } finally {
+            this.varCleanupRunning = false;
+        }
+    }
+    async clearVariables({ defer = false } = {}) {
+        const names = [...this.varObjects];
         this.variableStore.reset();
-        for (const name of this.varObjects) {
+        this.varObjects.clear();
+        this.handles.clear();
+        this.variablesByName.clear();
+        this.hoverEvaluations.clear();
+        this.selectedFrame = undefined;
+        if (defer) {
+            this.scheduleVariableCleanup(names);
+            return;
+        }
+        for (const name of names) {
             try {
                 await this.mi.command(`-var-delete ${quote(name)}`);
             } catch {
                 /* GDB can invalidate objects itself. */
             }
         }
-        this.varObjects.clear();
-        this.handles.clear();
-        this.variablesByName.clear();
     }
     async enter() {
         if (this.entryBreakpoint) {
@@ -347,14 +486,30 @@ class EmberDebugSession extends DebugSession {
         const updated = new Map();
         const results = [];
         const resume = this.running;
+        const requested = args.breakpoints || [];
+        const wanted = new Set(
+            requested.map((bp) => JSON.stringify([functions ? bp.name : bp.line, bp.condition || ""]))
+        );
+        const noOp =
+            requested.every(
+                (bp) =>
+                    !bp.hitCondition &&
+                    !bp.logMessage &&
+                    (functions
+                        ? typeof bp.name === "string" && bp.name.length > 0
+                        : Number.isInteger(bp.line) && bp.line > 0)
+            ) &&
+            wanted.size === old.size &&
+            [...old.keys()].every((identity) => wanted.has(identity));
+        if (noOp)
+            return {
+                breakpoints: requested.map(
+                    (bp) => old.get(JSON.stringify([functions ? bp.name : bp.line, bp.condition || ""]))?.dap
+                )
+            };
         this.internalStop = resume ? { interrupted: false } : null;
         try {
             if (resume) await this.interrupt();
-            const wanted = new Set(
-                (args.breakpoints || []).map((bp) =>
-                    JSON.stringify([functions ? bp.name : bp.line, bp.condition || ""])
-                )
-            );
             for (const [identity, item] of old) {
                 if (!wanted.has(identity)) {
                     await this.mi.command(`-break-delete ${item.number}`);
@@ -483,6 +638,7 @@ class EmberDebugSession extends DebugSession {
         return item;
     }
     invalidateVariables() {
+        this.hoverEvaluations.clear();
         if (this.clientCapabilities.supportsInvalidatedEvent)
             this.sendEvent(new Event("invalidated", { areas: ["stacks", "variables"] }));
     }
@@ -491,20 +647,48 @@ class EmberDebugSession extends DebugSession {
         if (typeof args.expression !== "string" || !args.expression.trim() || args.expression.length > 16384)
             throw new Error("Provide a nonempty expression of at most 16384 characters");
         if (args.context === "hover") safePath(args.expression);
+        else this.hoverEvaluations.clear();
         const frame = args.frameId ? await this.selectFrame(args.frameId) : this.selectedFrame;
+        const expression = args.expression.trim();
+        const hoverKey = args.context === "hover" && frame ? `${frame.thread}:${frame.level}:${expression}` : null;
+        if (hoverKey) {
+            const cached = this.hoverEvaluations.get(hoverKey);
+            if (cached) {
+                try {
+                    const generation = this.variableStore.snapshot(frame);
+                    this.variableStore.check(generation);
+                    const result = await this.mi.command(`-var-evaluate-expression ${quote(cached.item.name)}`);
+                    this.variableStore.check(generation);
+                    cached.item.value = result.value ?? cached.item.value;
+                    const { name: _name, value, ...metadata } = this.variable(cached.item);
+                    return { result: value, ...metadata };
+                } catch {
+                    this.hoverEvaluations.delete(hoverKey);
+                    this.paused();
+                    this.checkRequest();
+                }
+            }
+        }
         if (frame && !args.frameId) {
             const generation = this.variableStore.snapshot(frame);
             await this.ensureThread(frame.thread);
             this.variableStore.check(generation);
-            await this.mi.command(`-thread-select ${frame.thread}`);
-            this.variableStore.check(generation);
-            await this.mi.command(`-stack-select-frame ${frame.level}`);
-            this.variableStore.check(generation);
+            if (this.selectedFrame?.thread !== frame.thread || this.selectedFrame?.level !== frame.level) {
+                await this.mi.command(`-thread-select ${frame.thread}`);
+                this.variableStore.check(generation);
+                await this.mi.command(`-stack-select-frame ${frame.level}`);
+                this.variableStore.check(generation);
+                this.selectedFrame = frame;
+            }
         }
-        const item = await this.createVariable(args.expression, frame);
+        const context = frame ? this.variableStore.stl.context(frame) : undefined;
+        if (context && frame) context.frameKey = `${frame.thread}:${frame.level}`;
+        const item = await this.createVariable(expression, frame);
         const node = this.variableStore.nodes.get(item.name);
-        await this.variableStore.stl.prepare(node);
-        await this.variableStore.metadata(node);
+        await this.variableStore.stl.prepare(node, context);
+        await this.variableStore.metadata(node, context);
+        if (hoverKey && !node.stl && !Number(node.item.numchild) && node.item.dynamic !== "1")
+            this.hoverEvaluations.set(hoverKey, node);
         const { name: _name, value, ...metadata } = this.variable(item);
         return { result: value, ...metadata };
     }
@@ -523,7 +707,7 @@ class EmberDebugSession extends DebugSession {
         await this.mi.command(`-var-assign ${quote(root.item.name)} ${quote(args.value)}`);
         this.variableStore.check(generation);
         const frame = root.frame;
-        await this.clearVariables();
+        await this.clearVariables({ defer: true });
         this.selectedFrame = frame;
         const refreshed = await this.evaluate({ expression: args.expression });
         this.invalidateVariables();
@@ -563,6 +747,7 @@ class EmberDebugSession extends DebugSession {
                 return this.setBreakpoints(args, true);
             case "threads": {
                 const result = await this.mi.command("-thread-info");
+                this.checkRequest();
                 const threads = threadList(result);
                 // The client re-reads the list after every stop, so this is also the point where a
                 // task that vanished without a =thread-exited record gets pruned.
@@ -577,6 +762,7 @@ class EmberDebugSession extends DebugSession {
             case "stackTrace": {
                 this.paused();
                 const thread = Number(args.threadId);
+                const generation = this.variableStore.snapshot({ thread });
                 if (!Number.isInteger(thread) || thread < 1) throw new Error("Invalid thread");
                 const start = args.startFrame ?? 0;
                 const levels = args.levels || 20;
@@ -590,8 +776,12 @@ class EmberDebugSession extends DebugSession {
                 )
                     throw new Error("Stack paging requires a nonnegative start and levels <= 1000");
                 await this.ensureThread(thread);
+                this.variableStore.check(generation);
+                this.selectedFrame = undefined;
                 await this.mi.command(`-thread-select ${thread}`);
+                this.variableStore.check(generation);
                 const result = await this.mi.command(`-stack-list-frames ${start} ${start + levels - 1}`);
+                this.variableStore.check(generation);
                 const frames = (result.stack || []).map((entry) => entry.frame || entry);
                 return {
                     ...(frames.length < levels ? { totalFrames: start + frames.length } : {}),
@@ -636,7 +826,7 @@ class EmberDebugSession extends DebugSession {
             case "evaluate":
                 return this.evaluate(args);
             case "emberprobe.rtosSnapshot":
-                return new FreeRtosSnapshot(this).snapshot();
+                return new FreeRtosSnapshot(this).snapshot(args);
             case "setExpression":
                 return this.setExpression(args);
             case "setVariable": {
@@ -658,22 +848,42 @@ class EmberDebugSession extends DebugSession {
                 // --thread is atomic, unlike -thread-select followed by the command, which would act
                 // on whatever task the user last browsed. Never combine it with --all.
                 const thread = await this.ensureThread(args.threadId);
-                await this.clearVariables();
-                const operation = { continue: "continue", next: "next", stepIn: "step", stepOut: "finish" }[command];
-                await this.execute(`-exec-${operation}${thread === null ? "" : ` --thread ${thread}`}`);
+                this.controlPending = true;
+                try {
+                    await this.clearVariables({ defer: true });
+                    const operation = { continue: "continue", next: "next", stepIn: "step", stepOut: "finish" }[
+                        command
+                    ];
+                    await this.execute(`-exec-${operation}${thread === null ? "" : ` --thread ${thread}`}`);
+                } finally {
+                    this.controlPending = false;
+                    if (!this.running && this.varCleanupWaitingForStop) {
+                        this.varCleanupWaitingForStop = false;
+                        void this.drainVariableCleanup();
+                    }
+                }
                 return command === "continue" ? { allThreadsContinued: true } : {};
             }
             case "restart":
                 if (this.config.serverGroup)
                     throw new Error("Shared serverGroup restart is unsupported; stop all cores before resetting");
                 await this.interrupt();
-                await this.clearVariables();
-                await this.debugImages.hooks("preResetCommands");
-                await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
-                await this.debugImages.hooks("postResetCommands");
-                // A reset destroys every TCB, so the confirmed task list has to be rebuilt.
-                if (this.rtosAware) await this.seedThreads();
-                await this.enter();
+                this.controlPending = true;
+                try {
+                    await this.clearVariables({ defer: true });
+                    await this.debugImages.hooks("preResetCommands");
+                    await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+                    await this.debugImages.hooks("postResetCommands");
+                    // A reset destroys every TCB, so the confirmed task list has to be rebuilt.
+                    if (this.rtosAware) await this.seedThreads();
+                    await this.enter();
+                } finally {
+                    this.controlPending = false;
+                    if (!this.running && this.varCleanupWaitingForStop) {
+                        this.varCleanupWaitingForStop = false;
+                        void this.drainVariableCleanup();
+                    }
+                }
                 return {};
             case "disconnect":
             case "terminate":
@@ -696,7 +906,9 @@ class EmberDebugSession extends DebugSession {
                 throw new Error("Memory read limit is 65536 bytes");
             if (address + BigInt(args.count) > 0x100000000n) throw new Error("Memory range overflow");
             if (!args.count) return { address: location, data: "" };
+            const generation = this.variableStore.snapshot();
             const result = await this.mi.command(`-data-read-memory-bytes ${location} ${args.count}`);
+            this.variableStore.check(generation);
             let cursor = address;
             let hex = "";
             for (const block of result.memory || []) {
@@ -717,7 +929,8 @@ class EmberDebugSession extends DebugSession {
             throw new Error("Memory write limit exceeded");
         if (bytes.length) {
             await this.mi.command(`-data-write-memory-bytes ${location} ${bytes.toString("hex")}`);
-            await this.clearVariables();
+            await this.clearVariables({ defer: true });
+            this.invalidateVariables();
         }
         return { bytesWritten: bytes.length, offset: 0 };
     }

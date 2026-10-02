@@ -3972,7 +3972,9 @@ class MainViewProvider {
                     this._rtosViewService ||= new RtosViewService(this._debugBridge);
                     const identity = this._rtosViewService.status();
                     try {
-                        webviewView.webview.postMessage(await this._rtosViewService.refresh());
+                        webviewView.webview.postMessage(
+                            await this._rtosViewService.refresh(message.includeStackUsage !== false)
+                        );
                     } catch (error) {
                         webviewView.webview.postMessage({ ...identity, type: "rtosError", message: error.message });
                     }

@@ -89,6 +89,7 @@ const { loadProvider } = require("./helpers/load-provider");
         view.assertHealthy();
         const section = view.document.getElementById("peripheralSection");
         assert(section);
+        section.open = true;
         assert.strictEqual(
             view.document.getElementById("svdSelect").closest("#otherConfig"),
             view.document.getElementById("otherConfig")
@@ -200,6 +201,15 @@ const { loadProvider } = require("./helpers/load-provider");
         assert.strictEqual(view.document.getElementById("peripheralRefresh").disabled, true);
         assert.strictEqual(view.document.querySelector(".peripheral-register .peripheral-editor-input").disabled, true);
         assert.strictEqual(view.document.querySelector(".peripheral-register .peripheral-step").disabled, true);
+        section.open = false;
+        const readCount = view.messages.filter((message) => message.type === "peripheralReadRequest").length;
+        view.send({ type: "peripheralDebugStatus", state: "paused", epoch: 3, canRead: true, canWrite: true });
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        assert.strictEqual(
+            view.messages.filter((message) => message.type === "peripheralReadRequest").length,
+            readCount,
+            "cached expanded groups do not trigger hardware reads in a collapsed section"
+        );
         view.send({ type: "svdStatus", state: "idle" });
         assert.strictEqual(view.document.getElementById("peripheralTree").textContent, "");
         assert.strictEqual(view.document.getElementById("peripheralFilter").disabled, true);

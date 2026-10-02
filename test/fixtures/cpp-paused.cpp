@@ -71,11 +71,14 @@ using VectorAlias = std::vector<int>;
 VectorAlias aliasNumbers = {31, 32};
 std::optional<std::vector<int>> nestedOptional = std::vector<int>{51, 52};
 
-extern "C" __attribute__((noinline)) void checkpoint() {
+int reviewCounter = 100;
+struct ReviewPair { int x; };
+extern "C" __attribute__((noinline)) void checkpoint(ReviewPair p = {22}, int reviewCounter = 7) {
     asm volatile("" ::: "memory");
 }
 
 int main() {
+    ReviewPair p = {11};
     { auto owner = std::make_shared<int>(9); expiredWeak = owner; }
     for (int index = 0; index < 260; ++index) dequeValues[index] = index;
     dequeValues.pop_front();

@@ -163,21 +163,30 @@ class DebugControlService {
     async listBreakpoints() {
         const session = this.debugBridge.activeSession;
         const breakpoints = [];
-        for (const breakpoint of this.vscode.debug.breakpoints || []) {
-            const item = describeBreakpoint(breakpoint);
-            if (item.type === "unknown") continue;
-            if (session?.getDebugProtocolBreakpoint) {
-                try {
-                    const dap = await session.getDebugProtocolBreakpoint(breakpoint);
-                    item.verified = dap?.verified ?? null;
-                    if (dap?.message) item.message = dap.message;
-                    if (Number.isInteger(dap?.line)) item.actualLine = dap.line;
-                } catch {
-                    item.verified = null;
-                }
-            }
-            breakpoints.push(item);
+        const known = (this.vscode.debug.breakpoints || [])
+            .map((breakpoint) => ({
+                breakpoint,
+                item: describeBreakpoint(breakpoint)
+            }))
+            .filter(({ item }) => item.type !== "unknown");
+        // Bound host IPC pressure while preserving the user's breakpoint order.
+        for (let offset = 0; offset < known.length; offset += 8) {
+            await Promise.all(
+                known.slice(offset, offset + 8).map(async ({ breakpoint, item }) => {
+                    if (session?.getDebugProtocolBreakpoint) {
+                        try {
+                            const dap = await session.getDebugProtocolBreakpoint(breakpoint);
+                            item.verified = dap?.verified ?? null;
+                            if (dap?.message) item.message = dap.message;
+                            if (Number.isInteger(dap?.line)) item.actualLine = dap.line;
+                        } catch {
+                            item.verified = null;
+                        }
+                    }
+                })
+            );
         }
+        breakpoints.push(...known.map(({ item }) => item));
         return { status: this.status(), breakpoints };
     }
 

@@ -635,12 +635,84 @@ class SvdPeripheralService {
         };
     }
 
+    async _readRegisters(model, registers, guard = this._guard(), tolerateErrors = false) {
+        const ordered = [...new Map(registers.map((register) => [register.path, register])).values()].sort(
+            (left, right) => left.address - right.address
+        );
+        const values = new Map();
+        for (const register of ordered) assertReadable(register);
+        for (let index = 0; index < ordered.length;) {
+            const group = [ordered[index++]];
+            while (index < ordered.length) {
+                const previous = group[group.length - 1];
+                const next = ordered[index];
+                const contiguous = next.address === previous.address + previous.bytes;
+                const withinLimit = next.address + next.bytes - group[0].address <= 4096;
+                if (
+                    !contiguous ||
+                    !withinLimit ||
+                    next.bytes !== previous.bytes ||
+                    next.address % next.bytes !== 0 ||
+                    next.path.split(".")[0] !== previous.path.split(".")[0]
+                )
+                    break;
+                group.push(next);
+                index++;
+            }
+            guard();
+            const expected = group[group.length - 1].address + group[group.length - 1].bytes - group[0].address;
+            let bytes;
+            try {
+                bytes = await this.debugBridge.readPausedMemory(group[0].address, expected);
+                guard();
+                if (bytes.length !== expected) throw new Error("Incomplete peripheral register read");
+            } catch (error) {
+                guard();
+                if (!tolerateErrors) throw error;
+                for (const register of group) {
+                    try {
+                        if (group.length === 1) throw error;
+                        values.set(register.path, await this._readRegister(model, register, guard));
+                    } catch (failure) {
+                        guard();
+                        values.set(register.path, {
+                            path: register.path,
+                            error: failure.message,
+                            code: failure.code || "PERIPHERAL_READ_FAILED"
+                        });
+                    }
+                }
+                continue;
+            }
+            for (const register of group) {
+                const offset = register.address - group[0].address;
+                const slice = bytes.subarray(offset, offset + register.bytes);
+                const value = decodeInteger(slice, model.svd.endian);
+                values.set(register.path, {
+                    path: register.path,
+                    address: register.addressText,
+                    size: register.size,
+                    access: register.access,
+                    value: hex(value, register.size),
+                    valueText: value.toString(10),
+                    fields: register.fields.map((field) => decodedField(value, field)),
+                    _value: value,
+                    _bytes: slice
+                });
+            }
+        }
+        return values;
+    }
+
     async readForView(targets) {
         const model = await this.model();
         const guard = this._guard();
         const cached = new Map();
+        const targetRegisters = new Map();
         const registers = [];
-        for (const target of [...new Set(targets)]) {
+        const errors = new Map();
+        const requested = [...new Set(targets)];
+        for (const target of requested) {
             guard();
             try {
                 const { register, field } = resolveTarget(model, target);
@@ -648,13 +720,12 @@ class SvdPeripheralService {
                     throw Object.assign(new Error(`Field is write-only: ${field.path}`), {
                         code: "PERIPHERAL_READ_NOT_ALLOWED"
                     });
+                assertReadable(register);
                 if (!cached.has(register.path)) {
-                    const value = await this._readRegister(model, register, guard);
-                    delete value._value;
-                    delete value._bytes;
-                    cached.set(register.path, value);
+                    cached.set(register.path, register);
+                    registers.push(register);
                 }
-                registers.push(cached.get(register.path));
+                targetRegisters.set(target, register);
             } catch (error) {
                 guard();
                 if (
@@ -666,11 +737,24 @@ class SvdPeripheralService {
                     ].includes(error.code)
                 )
                     throw error;
-                registers.push({ path: target, error: error.message, code: error.code || "PERIPHERAL_READ_FAILED" });
+                errors.set(target, {
+                    path: target,
+                    error: error.message,
+                    code: error.code || "PERIPHERAL_READ_FAILED"
+                });
             }
             guard();
         }
-        return { session: this.debugBridge.agentStatus(), registers };
+        const values = await this._readRegisters(model, registers, guard, true);
+        const output = requested.map((target) => {
+            if (errors.has(target)) return errors.get(target);
+            const register = targetRegisters.get(target);
+            const value = values.get(register.path);
+            delete value._value;
+            delete value._bytes;
+            return value;
+        });
+        return { session: this.debugBridge.agentStatus(), registers: output };
     }
 
     async read(params = {}) {
@@ -701,9 +785,10 @@ class SvdPeripheralService {
         }
         if (!unique.size)
             throw Object.assign(new Error("No peripheral targets supplied"), { code: "NO_PERIPHERAL_TARGETS" });
+        const values = await this._readRegisters(model, [...unique.values()], guard);
         const registers = [];
         for (const register of unique.values()) {
-            const decoded = await this._readRegister(model, register, guard);
+            const decoded = values.get(register.path);
             delete decoded._value;
             delete decoded._bytes;
             registers.push(decoded);

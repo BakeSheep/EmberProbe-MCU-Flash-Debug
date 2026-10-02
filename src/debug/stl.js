@@ -184,10 +184,17 @@ class StlDisplay {
             context.generation.threadGeneration = snapshot.threadGeneration;
         }
         const frameKey = `${node.frame.thread}:${node.frame.level}`;
-        if (context.frameKey === frameKey) return;
+        if (
+            this.session.selectedFrame?.thread === node.frame.thread &&
+            this.session.selectedFrame?.level === node.frame.level
+        ) {
+            context.frameKey = frameKey;
+            return;
+        }
         if (this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
         await this.command(`-thread-select ${node.frame.thread}`, context);
         await this.command(`-stack-select-frame ${node.frame.level}`, context);
+        this.session.selectedFrame = node.frame;
         context.frameKey = frameKey;
     }
     async evaluate(expression, context) {

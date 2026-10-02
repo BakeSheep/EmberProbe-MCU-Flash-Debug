@@ -18,16 +18,16 @@ class RtosViewService {
             sessions: status.sessions || []
         };
     }
-    async refresh() {
+    async refresh(includeStackUsage = true) {
         const session = this.bridge.assertUniqueSession();
         const epoch = this.bridge.stopEpoch;
         if (session.type !== "emberprobe")
             throw new Error("RTOS task snapshots require the native EmberProbe debugger");
         if (!this.bridge.paused || this.bridge.transitionKind)
             throw new Error("Pause the debugger to refresh RTOS tasks");
-        const key = `${session.id}:${epoch}`;
+        const key = `${session.id}:${epoch}:${includeStackUsage ? "stack" : "tasks"}`;
         if (this.pending?.key === key) return this.pending.promise;
-        const promise = session.customRequest("emberprobe.rtosSnapshot", {}).then((value) => {
+        const promise = session.customRequest("emberprobe.rtosSnapshot", { includeStackUsage }).then((value) => {
             if (
                 session !== this.bridge.activeSession ||
                 !this.bridge.paused ||

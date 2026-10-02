@@ -876,13 +876,31 @@ class DebugSessionBridge {
         const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
         try {
             const before = await this.read(plan, session);
+            const writes = [];
             for (const item of items) {
+                const previous = writes[writes.length - 1];
+                if (
+                    previous &&
+                    Number(previous.address) % 4 === 0 &&
+                    previous.bytes.length % 4 === 0 &&
+                    Number(item.address) === Number(previous.address) + previous.bytes.length &&
+                    item.bytes.length % 4 === 0 &&
+                    previous.bytes.length + item.bytes.length <= 4096
+                ) {
+                    previous.bytes = Buffer.concat([Buffer.from(previous.bytes), Buffer.from(item.bytes)]);
+                    previous.name += ", " + item.name;
+                } else writes.push({ ...item });
+            }
+            for (const item of writes) {
                 if (epoch !== this.epoch || !this.canWrite)
                     throw new Error("Target continued while a DAP write was in progress");
                 const address = Number(item.address);
                 const alignedStart = Math.floor(address / 4) * 4;
                 const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
-                const alignedBytes = await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
+                const alignedBytes =
+                    address === alignedStart && item.bytes.length === alignedEnd - alignedStart
+                        ? Uint8Array.from(item.bytes)
+                        : await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
                 if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
                     throw new Error("Target state changed before the DAP write could start");
                 if (alignedBytes.length !== alignedEnd - alignedStart)

@@ -99,6 +99,33 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         adapter.threads.add(1);
         await stopAt("-exec-run");
 
+        const contextFrames = (await adapter.handle("stackTrace", { threadId: 1, levels: 2 })).stackFrames;
+        const contextScopes = (await adapter.handle("scopes", { frameId: contextFrames[0].id })).scopes;
+        const contextDirectory = await adapter.symbolDirectory.variables("globals");
+        const counterIndex = contextDirectory.findIndex((item) => item.name === "reviewCounter");
+        assert(counterIndex >= 0);
+        const counter = (await expand(contextScopes[1], { start: counterIndex, count: 1 }))[0];
+        assert.strictEqual(counter.value, "100", "Globals must bypass the same-named parameter");
+        await adapter.handle("setVariable", {
+            variablesReference: contextScopes[1].variablesReference,
+            name: counter.name,
+            value: "101"
+        });
+        assert.strictEqual((await evaluate("::reviewCounter")).result, "101");
+        assert.strictEqual((await evaluate("reviewCounter")).result, "7", "global edits must not write the parameter");
+        for (const mode of ["builtin", "raw"]) {
+            adapter.config.prettyPrintingMode = mode;
+            const local = await adapter.handle("evaluate", { frameId: contextFrames[0].id, expression: "p" });
+            const expected = await mi.command('-data-evaluate-expression "(unsigned long long)&p.x"');
+            await adapter.selectFrame(contextFrames[1].id);
+            const fields = await classMembers(local);
+            const member = fields.find((item) => item.name === "x");
+            assert.strictEqual(member.value, "22");
+            assert.strictEqual(BigInt(member.memoryReference), BigInt(expected.value), `${mode}: owning-frame address`);
+        }
+        delete adapter.config.prettyPrintingMode;
+        await adapter.selectFrame(contextFrames[0].id);
+
         const classes = await classMembers(await evaluate("classObject"));
         const repeated = classes.filter((item) => item.name === "repeated");
         assert.deepStrictEqual(repeated.map((item) => item.value).sort(), ["11", "21", "31"]);
@@ -374,7 +401,7 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
             (item) => item.name === "shortText"
         );
         assert.strictEqual(globals.length, 1);
-        assert.strictEqual(globals[0].evaluateName, "shortText");
+        assert.strictEqual(globals[0].evaluateName, "::shortText");
         assert.match(globals[0].memoryReference, /^0x[\da-f]+$/i);
         const statics = await expand(scopes[2]);
         assert.strictEqual(statics.find((item) => item.name === "scopeCounter")?.value, "13");

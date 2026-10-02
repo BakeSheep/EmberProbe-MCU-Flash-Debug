@@ -92,6 +92,21 @@ const chipRead = document.getElementById("chipRead"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
+for (const id of ["mcuConfigSection", "chipInfoSection", "liveValuesSection", "variableBrowser"]) {
+    const section = document.getElementById(id);
+    if (!section) continue;
+    if (typeof uiState.sections?.[id] === "boolean") section.open = uiState.sections[id];
+    const saveSection = () => {
+        uiState.sections ||= {};
+        uiState.sections[id] = section.open;
+        api?.setState?.(uiState);
+    };
+    section.addEventListener("toggle", saveSection);
+    // Save summary clicks immediately: a view may be hidden before the queued toggle event fires.
+    section.querySelector(":scope > summary")?.addEventListener("click", () => {
+        queueMicrotask(saveSection);
+    });
+}
 let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
@@ -622,6 +637,19 @@ function stepFor(item) {
     const v = Math.abs(Math.trunc(Number(item.value) || 0));
     return v < 100 ? 1 : Math.pow(10, Math.floor(Math.log10(v)) - 1);
 }
+function addWriteStep(value, delta, type) {
+    const result = value + delta;
+    if (!Number.isFinite(result)) return value;
+    if (!isFloat(type)) return result;
+    const step = Math.abs(delta);
+    // Steps are decimal powers. Snap only representation noise near that decimal grid,
+    // including f32 values decoded into a JavaScript double, without erasing off-grid values.
+    const ticks = Math.round(result / step);
+    const snapped = Number(`${ticks}e${Math.round(Math.log10(step))}`);
+    const epsilon = type === "f32" ? 2 ** -23 : Number.EPSILON;
+    const tolerance = Math.min(step / 4, Math.max(Math.abs(value), step) * epsilon);
+    return Number.isFinite(snapped) && Math.abs(result - snapped) <= tolerance ? snapped : result;
+}
 function inWriteList(name) {
     return writeList.some((w) => w.name === name);
 }
@@ -758,7 +786,7 @@ function sendWrite(item, immediate) {
 function setBound(item, key, v) {
     if (item.isBoolean) return;
     if (!Number.isFinite(v)) return;
-    if (item.type !== "f32") v = Math.round(v);
+    if (!isFloat(item.type)) v = Math.round(v);
     if (key === "min") item.min = Math.min(v, Number(item.max));
     else item.max = Math.max(v, Number(item.min));
 }
@@ -767,7 +795,11 @@ function bindBound(el, item, key, sync) {
         "wheel",
         (e) => {
             e.preventDefault();
-            setBound(item, key, (Number(item[key]) || 0) + (e.deltaY < 0 ? stepFor(item) : -stepFor(item)));
+            setBound(
+                item,
+                key,
+                addWriteStep(Number(item[key]) || 0, e.deltaY < 0 ? stepFor(item) : -stepFor(item), item.type)
+            );
             sync();
             saveWriteList();
         },
@@ -912,6 +944,7 @@ function buildWriteCard(item) {
             sendWrite(item, immediate);
         };
         const commitInput = () => {
+            if (input.value.trim() === fmt(item.value)) return;
             const raw = Number(input.value.trim());
             if (!Number.isFinite(raw)) {
                 input.value = fmt(item.value);
@@ -939,24 +972,32 @@ function buildWriteCard(item) {
             (e) => {
                 if (!liveCanWrite) return;
                 e.preventDefault();
-                setValue((Number(item.value) || 0) + (e.deltaY < 0 ? stepFor(item) : -stepFor(item)), false);
+                const value = inputValue();
+                setValue(
+                    addWriteStep(
+                        value,
+                        e.deltaY < 0 ? stepFor({ ...item, value }) : -stepFor({ ...item, value }),
+                        item.type
+                    ),
+                    false
+                );
             },
             { passive: false }
         );
         const inputValue = () => {
             const text = input.value.trim();
-            // An emptied field means "no edit yet", not zero; step from the last known value.
-            if (!text) return Number(item.value) || 0;
+            // Empty or unchanged display text keeps the full precision of the last known value.
+            if (!text || text === fmt(item.value)) return Number(item.value) || 0;
             const value = Number(text);
             return Number.isFinite(value) ? value : Number(item.value) || 0;
         };
         minus.onclick = () => {
             const value = inputValue();
-            setValue(value - stepFor({ ...item, value }), true);
+            setValue(addWriteStep(value, -stepFor({ ...item, value }), item.type), true);
         };
         plus.onclick = () => {
             const value = inputValue();
-            setValue(value + stepFor({ ...item, value }), true);
+            setValue(addWriteStep(value, stepFor({ ...item, value }), item.type), true);
         };
         slider.addEventListener("input", () => {
             const v = item.isBoolean
@@ -1528,6 +1569,7 @@ function attachResizeHandle(handle, box, stateKey) {
     });
 }
 attachResizeHandle(document.getElementById("varResizeHandle"), availableBox, "variableHeight");
+attachResizeHandle(document.getElementById("rtosResizeHandle"), document.getElementById("rtosTableWrap"), "rtosHeight");
 attachResizeHandle(
     document.getElementById("peripheralResizeHandle"),
     document.getElementById("peripheralTree"),

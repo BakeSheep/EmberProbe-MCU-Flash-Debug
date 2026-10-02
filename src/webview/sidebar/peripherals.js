@@ -80,6 +80,12 @@
             drafts: new Map()
         };
         let rendering = false;
+        let refreshTimer;
+        function deferRefresh() {
+            clearTimeout(refreshTimer);
+            if (!section.open || !state.debug.canRead) return;
+            refreshTimer = setTimeout(refreshExpanded, 150);
+        }
         function save() {
             uiState.peripheralExpanded = [...state.expanded].slice(0, 100);
             uiState.peripheralFormat = state.mode;
@@ -101,13 +107,13 @@
             state.pending.add(name);
             request("peripheralRegistersRequest", { name });
         }
-        function requestReads(targets) {
-            if (!state.debug.canRead || !api) return;
+        function requestReads(targets, automatic = false) {
+            if ((automatic && !section.open) || !state.debug.canRead || !api) return;
             for (let offset = 0; offset < targets.length; offset += 32)
                 request("peripheralReadRequest", { targets: targets.slice(offset, offset + 32) });
         }
         function refreshExpanded() {
-            if (!state.debug.canRead) return;
+            if (!section.open || !state.debug.canRead) return;
             const targets = [];
             for (const [name, registers] of state.children) {
                 if (!state.expanded.has(name)) continue;
@@ -116,7 +122,7 @@
                         targets.push(register.path);
                 }
             }
-            requestReads([...new Set(targets)]);
+            requestReads([...new Set(targets)], true);
         }
         function button(className, label, title, onClick) {
             const element = document.createElement("button");
@@ -373,7 +379,7 @@
             state.pending.delete(message.name);
             state.children.set(message.name, message.registers || []);
             render();
-            if (state.expanded.has(message.name) && state.debug.canRead)
+            if (section.open && state.expanded.has(message.name) && state.debug.canRead)
                 requestReads(
                     (message.registers || [])
                         .filter(safeToRead)
@@ -419,7 +425,8 @@
             state.debug = message;
             if (oldEpoch !== message.epoch) state.drafts.clear();
             render();
-            if (message.canRead && (!wasPaused || oldEpoch !== message.epoch)) refreshExpanded();
+            if (!message.canRead || oldEpoch !== message.epoch) clearTimeout(refreshTimer);
+            if (message.canRead && (!wasPaused || oldEpoch !== message.epoch)) deferRefresh();
         }
         function onError(message) {
             if (message.operation === "peripheralRegistersRequest") state.pending.clear();
@@ -467,7 +474,9 @@
             render();
         };
         section.addEventListener("toggle", () => {
+            clearTimeout(refreshTimer);
             if (section.open && state.svdPath && !state.catalog) requestCatalog();
+            if (section.open) refreshExpanded();
         });
         render();
         return { render, onCatalog, onRegisters, onRead, onWrite, onDebug, onError, onSvdStatus, requestCatalog };

@@ -118,6 +118,16 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
 }
 
 (async () => {
+    {
+        const { session, commands } = fixture();
+        const result = await new FreeRtosSnapshot(session).snapshot({ includeStackUsage: false });
+        assert.strictEqual(result.tasks[1].stack.totalBytes, 32, "cheap stack bounds stay available");
+        assert.strictEqual(result.tasks[1].stack.fillEstimate, undefined);
+        assert(
+            !commands.some((command) => /^-data-read-memory-bytes 0x2000[56]000 /.test(command)),
+            "automatic snapshot never scans stack fill"
+        );
+    }
     for (const shift of [0, 4]) {
         const { session, commands } = fixture({ shift });
         const result = await new FreeRtosSnapshot(session).snapshot();

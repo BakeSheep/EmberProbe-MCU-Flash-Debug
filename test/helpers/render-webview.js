@@ -1,7 +1,8 @@
 "use strict";
 const { JSDOM, VirtualConsole } = require("jsdom");
 const assert = require("assert");
-function render(html) {
+function render(html, initialState = {}) {
+    let uiState = JSON.parse(JSON.stringify(initialState));
     const messages = [],
         errors = [];
     const virtualConsole = new VirtualConsole();
@@ -15,8 +16,10 @@ function render(html) {
         beforeParse(window) {
             window.acquireVsCodeApi = () => ({
                 postMessage: (message) => messages.push(JSON.parse(JSON.stringify(message))),
-                getState: () => ({}),
-                setState: () => {}
+                getState: () => JSON.parse(JSON.stringify(uiState)),
+                setState: (state) => {
+                    uiState = JSON.parse(JSON.stringify(state));
+                }
             });
             window.ResizeObserver = class {
                 observe() {}
@@ -42,6 +45,7 @@ function render(html) {
         window: dom.window,
         document: dom.window.document,
         messages,
+        getState: () => JSON.parse(JSON.stringify(uiState)),
         send(message) {
             dom.window.dispatchEvent(new dom.window.MessageEvent("message", { data: message }));
             assert.deepStrictEqual(errors, []);

@@ -74,7 +74,7 @@ function setup() {
         entries.filter((entry) => entry.isStatic).map((entry) => entry.expression),
         ["'C:/src/a.cpp'::counter", "'C:/src/b.cpp'::counter"]
     );
-    assert(entries.some((entry) => entry.expression === "app::text"));
+    assert(entries.some((entry) => entry.expression === "::app::text"));
     assert.strictEqual(safePath("'C:/src/a.cpp'::counter"), "'C:/src/a.cpp'::counter");
     assert.throws(() => safePath("'C:/src/a.cpp'::danger()"), /side-effect/);
     assert.throws(() => safePath("global0++"), /side-effect/);
@@ -82,7 +82,7 @@ function setup() {
         "20000000 00000004 b counter\tC:/src/a.cpp:3\n20000004 00000004 b orphan\n20000008 00000004 B app::text[abi:cxx11]\n"
     );
     assert.strictEqual(fallback.length, 2);
-    assert.strictEqual(fallback[1].expression, "app::text");
+    assert.strictEqual(fallback[1].expression, "::app::text");
     assert.strictEqual(nmSymbols("20AB0000 00000004 u inlineValue")[0].isStatic, false);
     assert.strictEqual(nmSymbols("20AB0000 00000004 v weakObject")[0].isStatic, false);
     let calls = 0;
@@ -127,7 +127,7 @@ function setup() {
     const globalRef = scopes[1].variablesReference;
     const first = (await adapter.handle("variables", { variablesReference: globalRef })).variables;
     assert.strictEqual(first.length, 101);
-    assert.strictEqual(first[0].evaluateName, "app::text");
+    assert.strictEqual(first[0].evaluateName, "::app::text");
     assert.strictEqual(first[0].memoryReference, "0x20000000");
     assert.strictEqual(mi.commands.filter((command) => command.startsWith("-var-create")).length, 100);
     const next = (await adapter.handle("variables", { variablesReference: first.at(-1).variablesReference })).variables;

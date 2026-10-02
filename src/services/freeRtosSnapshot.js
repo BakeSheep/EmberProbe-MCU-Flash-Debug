@@ -17,7 +17,8 @@ class FreeRtosSnapshot {
     constructor(session) {
         this.session = session;
     }
-    async snapshot() {
+    async snapshot(options = {}) {
+        const includeStackUsage = options.includeStackUsage === undefined ? true : options.includeStackUsage === true;
         this.session.paused();
         const generation = this.session.variableStore.snapshot();
         const result = { kernel: { name: "FreeRTOS", supported: false }, tasks: [], partial: false, diagnostics: [] };
@@ -179,6 +180,7 @@ class FreeRtosSnapshot {
                     if (base && end >= base && end % 4 === 0 && base % 4 === 0 && end - base < 16 * 1024 * 1024) {
                         const total = end - base + 4;
                         task.stack.totalBytes = total;
+                        if (!includeStackUsage) return;
                         const scan = Math.min(total, LIMITS.stack);
                         // FreeRTOS Cortex-M stacks grow down; upstream's fill byte is 0xa5.
                         const fill = await this.read(base, scan, context);

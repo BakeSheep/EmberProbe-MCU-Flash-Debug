@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 优化调试暂停与单步响应：暂停中断绕过只读请求排队，执行控制取消过时刷新；延后变量对象清理，复用帧上下文和标量悬停结果，跳过无变化断点更新。合并安全连续外设读取及相邻对齐内存写入；自动 RTOS/外设刷新延后，RTOS 面板展开时每次暂停自动扫描栈填充。支持通过 launch/attach 的 performanceTrace 查看请求耗时与 MI 命令数。
+- Improve pause and stepping responsiveness with urgent interrupts, cancellable stale reads, deferred varobj cleanup, frame/scalar-hover reuse and no-op breakpoint updates. Batch safe contiguous peripheral reads and adjacent aligned memory writes; defer automatic panels and scan RTOS stack fill at every stop while the panel is expanded. Add optional launch/attach performanceTrace diagnostics.
+
+- 修复 Globals 被同名局部变量遮蔽导致读取或赋值错误、切换栈帧后成员地址指向其他对象，以及写内存后调试视图未刷新而继续使用失效引用。
+- Fix globals resolving to shadowing locals, member addresses using the wrong stack frame, and stale debug views after memory writes.
+
 - 实时值与成员值支持点击复制，复制失败会明确提示而不再静默忽略；修复写入一个变量后自调度采样链断裂、查看列表永久停更；清空写入框后点击加减按钮从上一个值继续步进而不是从 0 开始。
 - Click a live or member value to copy it, with clipboard failures now reported instead of silently ignored; fix the self-rescheduling sampling chain breaking after a write, which froze the watch list until sampling restarted; step from the last value instead of zero when the write field has been emptied.
 

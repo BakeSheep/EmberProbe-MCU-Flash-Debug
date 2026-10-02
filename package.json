@@ -278,6 +278,11 @@
         "configurationAttributes": {
           "launch": {
             "properties": {
+              "performanceTrace": {
+                "type": "boolean",
+                "default": false,
+                "description": "Log native DAP queue time, duration and MI command counts without expression contents."
+              },
               "servertype": {
                 "type": "string",
                 "enum": [
@@ -577,6 +582,11 @@
           },
           "attach": {
             "properties": {
+              "performanceTrace": {
+                "type": "boolean",
+                "default": false,
+                "description": "Log native DAP queue time, duration and MI command counts without expression contents."
+              },
               "servertype": {
                 "type": "string",
                 "enum": [

@@ -81,6 +81,7 @@ class DebugVariables {
         return { generation: this.generation, thread, threadGeneration: this.threadGenerations.get(thread) || 0 };
     }
     check(snapshot) {
+        this.session.checkRequest?.();
         this.session.paused();
         if (
             snapshot.generation !== this.generation ||
@@ -153,7 +154,7 @@ class DebugVariables {
         if (node.memoryReference) variable.memoryReference = node.memoryReference;
         return variable;
     }
-    async metadata(node) {
+    async metadata(node, context = this.stl.context(node.frame)) {
         if (node.metadataReady || !node.item.name || node.unavailable || visibilityGroup(node.item)) return;
         const generation = this.snapshot(node.frame);
         try {
@@ -166,6 +167,8 @@ class DebugVariables {
             }
             if (node.expression) {
                 const expression = safePath(node.expression);
+                // Varobjs retain their frame, but expression evaluation uses GDB's current frame.
+                await this.stl.bindFrame(node, context);
                 const result = await this.session.mi.command(
                     `-data-evaluate-expression ${quote(`(unsigned long long)&(${expression})`)}`
                 );
@@ -239,6 +242,7 @@ class DebugVariables {
     async scopeItems(handle, range, generation, context = this.stl.context(handle.frame)) {
         const frame = await this.session.selectFrame(handle.frameId);
         this.check(generation);
+        context.frameKey = `${frame.thread}:${frame.level}`;
         if (!handle.locals) {
             if (["globals", "statics"].includes(handle.scopeKind)) {
                 handle.locals = await this.session.symbolDirectory.variables(handle.scopeKind, frame.file);
@@ -277,7 +281,7 @@ class DebugVariables {
             }
             nodes.push(node);
             await this.stl.prepare(node, context);
-            await this.metadata(node);
+            await this.metadata(node, context);
         }
         return { nodes, more: range.from + nodes.length < handle.locals.length };
     }
@@ -358,7 +362,8 @@ class DebugVariables {
         }
         if (parent.kind === "entry") {
             if (filter === "indexed") return { variables: [] };
-            for (const node of parent.nodes.slice(range.from, range.from + range.size)) await this.metadata(node);
+            for (const node of parent.nodes.slice(range.from, range.from + range.size))
+                await this.metadata(node, context);
             const variables = parent.nodes.slice(range.from, range.from + range.size).map((node, index) => {
                 const label = range.from + index === 0 ? "key" : "value";
                 this.remember(args.variablesReference, label, node);
@@ -397,7 +402,7 @@ class DebugVariables {
             }
         } else {
             for (const node of result.nodes) {
-                await this.metadata(node);
+                await this.metadata(node, context);
                 const variable = this.present(node);
                 this.remember(args.variablesReference, variable.name, node);
                 if (parent.ref && parent.ref !== args.variablesReference)
@@ -549,7 +554,7 @@ class DebugVariables {
         const result = await this.session.mi.command(`-data-list-register-values x ${number}`);
         this.check(generation);
         const value = (result["register-values"] || []).find((item) => Number(item.number) === number)?.value;
-        await this.session.clearVariables();
+        await this.session.clearVariables({ defer: true });
         return { value: value ?? evaluated.value, variablesReference: 0 };
     }
 }

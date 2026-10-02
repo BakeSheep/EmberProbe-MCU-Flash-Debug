@@ -160,6 +160,17 @@ const delay = (ms) => clock.advance(ms);
         assert.strictEqual(tx.before.length, 1);
         assert.strictEqual(tx.after.length, 1);
         assert(requests.some((item) => item.command === "writeMemory"));
+        requests.length = 0;
+        await bridge.writeAndVerify([
+            { name: "a", address: 0x20000000, bytes: Uint8Array.from([9, 9, 9, 9]) },
+            { name: "b", address: 0x20000004, bytes: Uint8Array.from([8, 8, 8, 8]) }
+        ]);
+        assert.deepStrictEqual(
+            requests.map((item) => item.command),
+            ["readMemory", "writeMemory", "readMemory"],
+            "adjacent aligned writes share one write and retain before/after verification"
+        );
+        assert.strictEqual(Buffer.from(requests[1].args.data, "base64").length, 8);
 
         // A state change during the aligned read must prevent any subsequent writeMemory request.
         for (const change of ["continued", "session-replaced", "epoch-changed"]) {
