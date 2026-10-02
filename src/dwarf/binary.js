@@ -9,7 +9,9 @@ const REQUIRED_DWARF_SECTIONS = new Set([
     ".debug_abbrev",
     ".debug_str",
     ".debug_line_str",
-    ".debug_str_offsets"
+    ".debug_str_offsets",
+    ".debug_types",
+    ".debug_addr"
 ]);
 function readULEB(buf, cur) {
     let result = 0,
@@ -173,7 +175,7 @@ function debugSectionData(buf, entry, name, budget) {
     }
     return data;
 }
-function readSections(buf, diagnostics = []) {
+function readSections(buf, diagnostics = [], sharedBudget) {
     const map = new Map();
     let header, entries;
     try {
@@ -185,16 +187,24 @@ function readSections(buf, diagnostics = []) {
     }
     const names = elfFormat.readSectionNames(buf, entries, header.shstrndx);
     // 解压预算在同一个 ELF 的所有调试节之间共享，而非每节独立。
-    const budget = { decoded: 0, max: MAX_DWARF_SECTION_BYTES };
+    const budget = sharedBudget || { decoded: 0, max: MAX_DWARF_SECTION_BYTES };
     for (let i = 0; i < entries.length; i++) {
         const originalName = names[i];
         if (!originalName) continue;
         if (!originalName.startsWith(".debug_") && !originalName.startsWith(".zdebug_")) continue;
-        const name = originalName.startsWith(".zdebug_") ? `.debug_${originalName.slice(8)}` : originalName;
+        const name = (originalName.startsWith(".zdebug_") ? `.debug_${originalName.slice(8)}` : originalName).replace(
+            /\.dwo$/,
+            ""
+        );
         if (!REQUIRED_DWARF_SECTIONS.has(name)) continue;
         try {
             const data = debugSectionData(buf, entries[i], originalName, budget);
-            map.set(name, { data, size: data.length });
+            const previous = map.get(name);
+            const combined =
+                previous && [".debug_info", ".debug_types"].includes(name)
+                    ? Buffer.concat([previous.data, data])
+                    : data;
+            map.set(name, { data: combined, size: combined.length });
         } catch (error) {
             // 解压预算耗尽属于内存安全问题，必须中止整个解析而非仅跳过单节。
             if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;

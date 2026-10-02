@@ -100,6 +100,23 @@ async function run() {
         });
         assert(started);
         await wait(() => session && stopped > 0);
+        await wait(() => provider._debugBridge.paused);
+        const inspect = (params) => provider._handleAgentCall("debug.inspect", params);
+        const agentThreads = await inspect({ action: "threads" });
+        const agentStack = await inspect({ action: "stack", threadId: agentThreads.threads[0].id });
+        const agentScopes = await inspect({ action: "scopes", frame: agentStack.stackFrames[0].frame });
+        const locals = agentScopes.scopes.find((scope) => scope.name === "Locals & Arguments");
+        const agentLocals = await inspect({ action: "variables", reference: locals.reference });
+        const agentVector = agentLocals.variables.find((variable) => variable.name === "numbers");
+        assert.match(agentVector.value, /vector length 205/);
+        const agentPage = await inspect({
+            action: "variables",
+            reference: agentVector.reference,
+            start: 100,
+            count: 2
+        });
+        assert.strictEqual(agentPage.variables[0].name, "[100]");
+        assert.strictEqual(agentPage.variables.length, 2);
         const threads = await session.customRequest("threads", {});
         assert.strictEqual(threads.threads[0].id, 1);
         const stack = await session.customRequest("stackTrace", { threadId: 1 });
@@ -133,6 +150,9 @@ async function run() {
             count: 1
         });
         assert.strictEqual(refreshed.variables[0].value, "77");
+        await assert.rejects(inspect({ action: "variables", reference: agentVector.reference }), {
+            code: "DEBUG_INSPECTION_STALE"
+        });
         const beforeContinue = stopped;
         await session.customRequest("continue", { threadId: 1 });
         await wait(() => stopped > beforeContinue);

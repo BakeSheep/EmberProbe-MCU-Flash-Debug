@@ -1,11 +1,21 @@
 ---
 name: mcu-debug-control
-description: Control the current workspace debugger session and manage source-line or function breakpoints through EmberProbe. Use when the user asks to start or stop debugging, inspect debug state, pause, continue, step over/in/out, restart, or add, remove, enable, disable, or list breakpoints.
+description: Control the workspace debugger, manage source-line or function breakpoints, and inspect paused C/C++ task stacks, scopes, classes and STL objects through EmberProbe. Use for debugging controls, breakpoints, or frame-specific variable inspection.
 ---
 
 # MCU Debug Control
 
 Use `scripts/debug.js` from this skill directory. It uses VS Code's debugger APIs and never reads or edits `launch.json`.
+
+For paused C/C++ threads, stacks, scopes and object expansion, use `scripts/inspect.js` and
+read [references/paused-inspection.md](references/paused-inspection.md). For RTOS task states,
+priorities and stack fill estimates, use `mcu-rtos`. Inspection requires the native EmberProbe
+adapter; existing execution controls continue to support integrated Cortex-Debug sessions.
+
+C++ breakpoints accept `.cpp` source lines or a quoted, fully qualified function signature
+(for example `--function "app::Worker::run(int)"`). Prefer source lines when overloads or
+inlining make a function breakpoint ambiguous. A listed breakpoint is not proof that it
+has been verified at a firmware address; report adapter verification when available.
 
 ## Before you run
 

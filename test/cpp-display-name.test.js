@@ -82,6 +82,7 @@ function minimalElf() {
         provider._elfService = {
             load: async () => ({
                 elf: { path: tmp, sha256: "x", size: 92, mtimeMs: 1 },
+                memory: require("../src/elfSymbols").parseElfSections(minimalElf()),
                 functions: [{ name: "_ZN2ns4funcEv", displayName: "ns::func", address: 0x08000100, size: 16 }],
                 symbols: [{ name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", address: 0x20000020, size: 4 }],
                 warnings: []

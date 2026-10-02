@@ -55,7 +55,8 @@ var watch = [],
     sampleTimes = [],
     samplingOrigin = null,
     dirty = true,
-    lastDraw = 0;
+    lastDraw = 0,
+    runtimeBodies = Object.create(null);
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
     impWarnings = [],
@@ -227,12 +228,16 @@ function addSymbol(sym, resolved = false) {
         })
     )
         return;
-    if (!resolved && impVersion && (!impTypesReady || (sym.isComposite && !sym.compositeLayout))) {
+    if (
+        !resolved &&
+        impVersion &&
+        (!impTypesReady || (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout))
+    ) {
         post({ type: "resolveVariable", name: sym.name, version: impVersion });
         return;
     }
     if (sym.isComposite) {
-        if (!sym.compositeLayout) {
+        if (!sym.compositeLayout && !sym.runtimeLayout) {
             setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error");
             return;
         }
@@ -247,7 +252,8 @@ function addSymbol(sym, resolved = false) {
                 size: Number(sym.size) || 4,
                 type: "",
                 isComposite: true,
-                compositeLayout: lay
+                compositeLayout: sym.compositeLayout || null,
+                ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
             });
             expanded[sym.name] = true;
             renderVars();
@@ -458,7 +464,7 @@ function onSamples(samples) {
     dirty = true;
 }
 function isCompositeItem(it) {
-    return !!(it && it.isComposite && it.compositeLayout);
+    return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
 }
 function defW(ty) {
     return ty === "u8" || ty === "i8"
@@ -585,6 +591,30 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
         if (total > end) appendNote(container, t("lw.arrayMore", { n: total - end }));
     }
 }
+function renderRuntimeTreeInto(container, tree, path) {
+    if (!tree) return;
+    if (tree.members)
+        tree.members.forEach(function (member) {
+            var childPath = member.name ? path + "." + member.name : path;
+            if (member.members || member.elements) renderRuntimeTreeInto(container, member, childPath);
+            else if (Object.prototype.hasOwnProperty.call(member, "value"))
+                renderLeafInto(
+                    container,
+                    member.name || "value",
+                    member.typeName || member.type || "",
+                    childPath,
+                    member.type,
+                    member.address
+                );
+        });
+    else if (tree.elements)
+        tree.elements.forEach(function (element) {
+            renderRuntimeTreeInto(container, element, path + "[" + element.index + "]");
+        });
+    else if (Object.prototype.hasOwnProperty.call(tree, "value"))
+        renderLeafInto(container, "value", tree.typeName || tree.type || "", path, tree.type, tree.address);
+    if (tree.unavailable) appendNote(container, tree.unavailable);
+}
 function appendNote(container, text) {
     var n = document.createElement("div");
     n.className = "comp-note";
@@ -629,7 +659,11 @@ function renderCompositeCard(item, idx, box) {
         saveUi();
         dirty = true;
     };
-    renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
+    if (item.runtimeLayout) {
+        runtimeBodies[item.name] = body;
+        renderRuntimeTreeInto(body, latest[item.name], item.name);
+        if (!body.childNodes.length) appendNote(body, t("lw.waitSamples"));
+    } else renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
     if (controls) controls.decorate(card, item.name);
     content.append(head, body);
     card.append(rm, content);
@@ -711,7 +745,14 @@ function collectLeaves(layout, name, baseAddr) {
 }
 function onCompositeSamples(samples) {
     (samples || []).forEach(function (s) {
-        if (s && s.name) latest[s.name] = s.tree;
+        if (s && s.name) {
+            latest[s.name] = s.tree;
+            var body = runtimeBodies[s.name];
+            if (body) {
+                body.textContent = "";
+                renderRuntimeTreeInto(body, s.tree, s.name);
+            }
+        }
     });
     scheduleValueRefresh();
     dirty = true;
@@ -882,7 +923,7 @@ function renderImport() {
                 leafRows -= ownLeafRows;
                 ownLeafRows = 0;
                 kids.textContent = "";
-                if (!s.compositeLayout) {
+                if (!s.compositeLayout && !s.runtimeLayout) {
                     kids.textContent = s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout");
                     return;
                 }
@@ -920,7 +961,7 @@ function renderImport() {
             };
             if (impExpanded[s.name]) {
                 populate();
-                if (!s.compositeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
+                if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
                     impLayoutPending.add(s.name);
                     post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
                 }
@@ -934,7 +975,7 @@ function renderImport() {
                 impExpanded[s.name] = open;
                 if (open) {
                     populate();
-                    if (!s.compositeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
+                    if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
                         impLayoutPending.add(s.name);
                         post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
                     }
@@ -949,10 +990,11 @@ function renderImport() {
         } else {
             var row2 = document.createElement("label");
             row2.className = "imp-row";
-            if (s.isComposite && !s.compositeLayout) row2.title = s.unsupportedReason || t("lw.compositeNoLayout");
+            if (s.isComposite && !s.compositeLayout && !s.runtimeLayout)
+                row2.title = s.unsupportedReason || t("lw.compositeNoLayout");
             var cb2 = document.createElement("input");
             cb2.type = "checkbox";
-            cb2.disabled = !!(s.isComposite && !s.compositeLayout);
+            cb2.disabled = !!(s.isComposite && !s.compositeLayout && !s.runtimeLayout);
             cb2.dataset.idx = String(gi);
             var nm2 = document.createElement("span");
             nm2.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);

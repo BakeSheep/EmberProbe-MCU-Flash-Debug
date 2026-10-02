@@ -17,6 +17,7 @@ const { createFixture } = require("./helpers/service-fixture");
             cleanPath: (value) => value,
             t: (key) => key,
             elfSymbols: {
+                parseElfSections: () => ({ sections: [], programHeaders: [] }),
                 parseElfSymbols: () => ({ symbols: [{ name: "counter", size: 4 }], warnings: [] }),
                 defaultType: () => "u32"
             },
@@ -46,6 +47,7 @@ const { createFixture } = require("./helpers/service-fixture");
             cleanPath: (value) => value,
             t: (key) => key,
             elfSymbols: {
+                parseElfSections: () => ({ sections: [], programHeaders: [] }),
                 parseElfSymbols: () => ({ symbols: [{ name: "wide", size: 8 }], warnings: [] }),
                 defaultType: (size) => (size === 8 ? "u64" : "u32")
             },
@@ -63,6 +65,7 @@ const { createFixture } = require("./helpers/service-fixture");
             cleanPath: (value) => value,
             t: (key) => key,
             elfSymbols: {
+                parseElfSections: () => ({ sections: [], programHeaders: [] }),
                 parseElfSymbols: () => ({ symbols: [{ name: "sensor", size: 4 }], warnings: [] }),
                 defaultType: () => "u32"
             },
@@ -99,7 +102,11 @@ const { createFixture } = require("./helpers/service-fixture");
             crypto: require("crypto"),
             cleanPath: (value) => value,
             t: (key) => key,
-            elfSymbols: { parseElfSymbols: () => ({ symbols: [], warnings: [] }), defaultType: () => "u32" },
+            elfSymbols: {
+                parseElfSections: () => ({ sections: [], programHeaders: [] }),
+                parseElfSymbols: () => ({ symbols: [], warnings: [] }),
+                defaultType: () => "u32"
+            },
             dwarf: { parseDwarf: () => ({ types: new Map(), layouts: new Map() }) }
         });
         assert.throws(() => oversized.read(), { code: "ELF_TOO_LARGE" }, "超过体积上限的 ELF 必须被拒绝");

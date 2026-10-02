@@ -13,6 +13,7 @@ const { clampInteger } = require("./validation");
 const { scheduleSamplingTick } = require("./samplingClock");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
+const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
@@ -1095,6 +1096,37 @@ class ManagedOpenOcdSession {
     async _readItems(items, t, guard = null) {
         const samples = [];
         let ok = 0;
+        const fixedItems = items.filter((entry) => !entry.runtimeLayout);
+        const runtimeBudget = {
+            bytes: fixedItems.reduce((total, entry) => total + entry.size, 0),
+            commands: compileReadBatches(fixedItems).reduce((total, batch) => total + batch.length, 0),
+            deadline: guard?.deadline || Date.now() + MAX_DEBUG_CYCLE_MS
+        };
+        for (const item of items.filter((entry) => entry.runtimeLayout)) {
+            this._assertReadGuard(guard);
+            try {
+                const runtimeTree = await new RuntimeObjectReader(
+                    item,
+                    (address, size) => this._readMemoryBytes(address, size),
+                    () => this._assertReadGuard(guard),
+                    runtimeBudget
+                ).sample();
+                samples.push({ name: item.name, runtimeTree, t });
+                ok++;
+            } catch (error) {
+                this._assertReadGuard(guard);
+                if (!error.code?.startsWith("LIVE_")) throw error;
+                samples.push({
+                    name: item.name,
+                    bytes: null,
+                    diagnostic: { code: error.code || "LIVE_LAYOUT_UNSUPPORTED", message: error.message },
+                    t
+                });
+                this._lastReadError = error.message;
+                ok++;
+            }
+        }
+        items = items.filter((entry) => !entry.runtimeLayout);
         const batches =
             items === this.watch && this._compiledBatches?.length ? this._compiledBatches : compileReadBatches(items);
         const assembled = new Map();

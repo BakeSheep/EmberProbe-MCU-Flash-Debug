@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 增加 DWARF4/5 type unit、split DWARF、DWARF64、外部地址表及 64 位引用的安全解析；缺失或不匹配 `.dwo` 时不再把 C++ 对象猜成整数，并按 companion 文件身份刷新缓存。实时采样新增受预算限制的 libstdc++ 容器、引用／指针链、虚成员地址与已验证 RTTI 动态类型读取；动态对象只读，失败清除旧值并报告诊断。
+- Add bounded DWARF4/5 type-unit, split-DWARF, DWARF64, external-address-table and 64-bit-reference parsing; missing or mismatched `.dwo` companions no longer turn C++ objects into guessed integers, and companion identity invalidates caches. Live sampling now resolves bounded libstdc++ containers, references/pointer chains, virtual-member addresses and verified RTTI dynamic types; dynamic objects are read-only and failed samples clear stale values with diagnostics.
+
+- 调试 skills 新增暂停 C/C++ 线程、调用栈、作用域与对象分页读取，使用绑定会话和暂停代次的句柄；新增 `mcu-rtos`，复用只读 FreeRTOS 任务快照与栈填充估算，补充 C++ 实时读取和 RTOS 支持边界。
+- Add paused C/C++ thread, stack, scope and paged object inspection with session/stop-scoped handles; add `mcu-rtos` using read-only FreeRTOS snapshots and stack fill estimates, and document C++ live-read and RTOS support limits.
+
 - 优化调试暂停与单步响应：暂停中断绕过只读请求排队，执行控制取消过时刷新；延后变量对象清理，复用帧上下文和标量悬停结果，跳过无变化断点更新。合并安全连续外设读取及相邻对齐内存写入；自动 RTOS/外设刷新延后，RTOS 面板展开时每次暂停自动扫描栈填充。支持通过 launch/attach 的 performanceTrace 查看请求耗时与 MI 命令数。
 - Improve pause and stepping responsiveness with urgent interrupts, cancellable stale reads, deferred varobj cleanup, frame/scalar-hover reuse and no-op breakpoint updates. Batch safe contiguous peripheral reads and adjacent aligned memory writes; defer automatic panels and scan RTOS stack fill at every stop while the panel is expanded. Add optional launch/attach performanceTrace diagnostics.
 

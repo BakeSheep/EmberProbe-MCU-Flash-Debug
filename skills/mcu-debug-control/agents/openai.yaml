@@ -1,4 +1,4 @@
 interface:
   display_name: "MCU Debug Control"
-  short_description: "Control debugger sessions and breakpoints"
-  default_prompt: "Use $mcu-debug-control to inspect or control the current debugger session and manage the requested breakpoints."
+  short_description: "Control debugging and inspect paused C++ objects"
+  default_prompt: "Use $mcu-debug-control to inspect the selected paused C/C++ session or control debugging and manage the requested breakpoints."

@@ -9,15 +9,16 @@ const {
     bindVariableSymbols
 } = require("./dwarf/types");
 const { parseElfSymbols } = require("./elfSymbols");
+const { createRuntimeLayoutResolver } = require("./dwarf/runtimeTypes");
 // 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
 // 外层（extension.js）仍按 ELF SHA-256 缓存最终结果；两层缓存职责不同。
 const _parseCache = new WeakMap();
 
-function _parseDwarfCached(buffer) {
+function _parseDwarfCached(buffer, options = {}) {
     const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    let parsed = _parseCache.get(buf);
+    let parsed = options.filePath ? undefined : _parseCache.get(buf);
     if (parsed === undefined) {
-        parsed = _parseDwarfInternal(buf);
+        parsed = _parseDwarfInternal(buf, options);
         let symbols = [];
         try {
             symbols = parseElfSymbols(buf).symbols;
@@ -25,7 +26,7 @@ function _parseDwarfCached(buffer) {
             // Synthetic or stripped DWARF can still be inspected without a symbol table.
         }
         parsed = bindVariableSymbols(parsed, symbols);
-        _parseCache.set(buf, parsed);
+        if (!options.filePath) _parseCache.set(buf, parsed);
     }
     return parsed;
 }
@@ -46,11 +47,11 @@ function parseCompositeLayout(buffer) {
         return new Map();
     }
 }
-function parseDwarf(buffer) {
+function parseDwarf(buffer, options = {}) {
     try {
         // 先统一为一个 Buffer 对象，避免 Uint8Array 输入在两个视图入口各包装一次。
         const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-        const parsed = _parseDwarfCached(buf);
+        const parsed = _parseDwarfCached(buf, options);
         if (!parsed)
             return {
                 types: new Map(),
@@ -69,7 +70,25 @@ function parseDwarf(buffer) {
                     message: error.message
                 });
             });
-            return { types, layouts, displayNames: buildDisplayNames(parsed), diagnostics };
+            const resolveRuntime = options.runtime
+                ? createRuntimeLayoutResolver(parsed, parseElfSymbols(buf).symbols)
+                : null;
+            for (const variable of options.runtime ? parsed.variables : []) {
+                const name = variable.linkageName || variable.name;
+                const runtimeLayout = resolveRuntime(name);
+                if (runtimeLayout)
+                    layouts.set(name, {
+                        ...(layouts.get(name) || { kind: "class", byteSize: 4, members: [] }),
+                        runtimeLayout
+                    });
+            }
+            return {
+                types,
+                layouts,
+                displayNames: buildDisplayNames(parsed),
+                diagnostics,
+                companions: parsed.companions
+            };
         } catch (error) {
             return {
                 types,

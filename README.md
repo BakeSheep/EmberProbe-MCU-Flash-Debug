@@ -56,7 +56,7 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - launch.json 可配置 `symbolFiles`（首项为主符号镜像，支持 offset／textaddress／sections）和 `loadFiles`（ELF／HEX 的 offset、BIN 的显式 address）。未配置时使用 executable，空数组不加载对应内容；内置 attach 流程不下载。多镜像作用域需要匹配工具链的 nm；同名变量无法确认镜像身份时不可赋值。离线 ELF 分析与侧栏运行采样仍使用主选中 ELF。
 - `preLaunchCommands`／`postLaunchCommands`、`preAttachCommands`／`postAttachCommands`、`preResetCommands`／`postResetCommands` 接受显式单行 GDB console 命令；launch／attach hooks 在连接后的默认操作前后执行，reset hooks 在复位前后执行。启动 hook 失败会清理会话；自定义命令按用户配置执行。
 
-目标矩阵是 GCC 14/15、libstdc++、C++17/20、DWARF 4/5 的小端 ARM32 和主机64位布局。内置展示支持短/长及嵌入 NUL 的 `string`、`vector`、`array`、`pair/tuple`、`list/forward_list/deque`、`map/multimap/set/multiset` 及对应 unordered 变体、`unique_ptr/shared_ptr/weak_ptr`、`optional/variant`，包括空对象、嵌套对象与分页；set 键、`vector<bool>` 位元素仅可读，expired weak_ptr 不访问已释放对象。字符串摘要最多读取 256 字节，完整字符可分页访问。未知布局、旧字符串 ABI、libc++、`_GLIBCXX_DEBUG` 和 fancy pointer 的内置展示回退原始字段，可通过显式 gdb printer 扩展。运行采样中的 STL、虚基类／动态布局及任意指针链尚不支持。
+目标矩阵是 GCC 14/15、libstdc++、C++17/20、DWARF 4/5 的小端 ARM32 和主机64位布局。内置展示支持短/长及嵌入 NUL 的 `string`、`vector`、`array`、`pair/tuple`、`list/forward_list/deque`、`map/multimap/set/multiset` 及对应 unordered 变体、`unique_ptr/shared_ptr/weak_ptr`、`optional/variant`，包括空对象、嵌套对象与分页；set 键、`vector<bool>` 位元素仅可读，expired weak_ptr 不访问已释放对象。字符串摘要最多读取 256 字节，完整字符可分页访问。运行采样也支持这些常见 libstdc++ 布局、引用／指针链、虚成员地址和已验证的 Itanium 动态类型；每个对象每周期最多 4096 字节、32 次读取、1 秒和 256 个节点。未知布局、旧字符串 ABI、libc++、`_GLIBCXX_DEBUG`、fancy pointer、异常 vtable 或不完整类型信息会保留原始字段或给出明确不可用诊断。
 
 新增普通类展示已通过 Windows GCC 14.2／GDB 16.2 的 C++17／20 × DWARF 4／5 验证。`node test/gdb/debug-images.test.js` 使用 `IMAGE_CXX`、`IMAGE_GDB`、`IMAGE_NM`、`IMAGE_OBJCOPY` 指定 ARM 工具链，在内存 RSP 服务中验证 ELF／HEX／BIN 与主镜像 RTOS 布局；本机 ARM 14.3.1 通过，未连接板卡。新下载流程和 FreeRTOS 任务表仍待实板验收，详细预算及差异见 [补齐计划](docs/RTOS-CPP-PARITY-PLAN.md)。
 
@@ -71,9 +71,11 @@ EmberProbe提供以下skills。
 - `mcu-chip-info`：按 `identity`、`debug`、`runtime` 分组或指定字段读取芯片信息。
 - `mcu-config`：读取或修改 ELF、调试器、MCU、SVD、OpenOCD 和采样参数。
 - `mcu-fault-analyzer`：读取并解码 Cortex-M 故障寄存器，并使用当前 ELF 对 PC/LR 进行符号化。
-- `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、段布局和大符号。
+- `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、各内存区域容量百分比、段布局和大符号；优先读取对应 `.map`，也支持 linker script。
 - `mcu-peripheral-debug`：解析工作区 SVD，查询、读取和解码外设寄存器/位域。
 - `mcu-debug-control`：启动、停止和控制 调试会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
+- `mcu-debug-control` 的 `inspect.js`：读取暂停原生会话的任务调用栈、作用域及 C++ 类/STL 对象，支持分页展开与失效句柄保护。
+- `mcu-rtos`：读取暂停 FreeRTOS 任务状态、优先级与栈填充估算，并检查指定任务的调用栈及 C/C++ 局部变量；结构化快照暂限单核小端 Cortex-M ARM32。
 - `mcu-cubemx`：在 Windows / Linux 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。
 
 ## 开发与构建

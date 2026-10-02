@@ -20,9 +20,13 @@ For failure handling, retry limits, cross-skill routing, and result scoping, rea
 ```bash
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace>
 node <skill-dir>/scripts/analyze-elf.js --workspace <workspace> --top 30
+node <skill-dir>/scripts/analyze-elf.js --workspace <workspace> --map build/firmware.map
+node <skill-dir>/scripts/analyze-elf.js --workspace <workspace> --linker-script STM32H750.ld
 ```
 
-`--top` limits the largest-symbol ranking (default 20, max 100).
+`--top` limits the largest-symbol ranking (default 20, max 100). `--map` and
+`--linker-script` select the layout source explicitly; without them the extension
+uses the ELF-adjacent `.map` or the unique workspace linker script.
 
 ## Interpreting the result
 
@@ -31,10 +35,18 @@ The JSON on stdout contains:
 - `flash`: total bytes and per-section list of everything programmed to Flash (`.isr_vector`, `.text`, `.rodata`, plus the load copy of `.data`), addresses are LMAs.
 - `ram`: total bytes and per-section list of runtime RAM usage (`.data`, `.bss`, etc.), addresses are VMAs. `.data` legitimately appears in both lists.
 - `topSymbols`: largest functions and objects with `kind`, `section`, `size`, `address`.
+- `regions`: every region declared by the selected `.map` or `.ld`, including zero-use
+  regions such as H750's `RAM_D2`, `RAM_D3`, and `ITCMRAM`. Each entry has `origin`,
+  `capacity`, `used`, `sectionBytes`, `percent`, and section details. `used` is the
+  high-water span from the region origin and includes linker reservations and gaps;
+  `sectionBytes` is the de-duplicated section-range total.
+- `source` and `diagnostics`: the layout file used and actionable messages for an
+  ambiguous source, stale map, unmapped section, or unsupported linker expression.
 
 Report totals in human units (KiB) and highlight the top consumers. To compute a Flash utilization percentage, combine `flash.total` with the chip's `flashSize` from the mcu-chip-info skill — do not guess the chip capacity from the ELF.
 
-Note: static RAM only. Heap and stack usage are runtime properties and are not included; mention that when the user asks about "free RAM".
+Note: the report includes linker-reserved heap/stack sections when they are present in
+the ELF. It does not measure runtime heap/stack peaks or free RAM.
 
 ## Failure diagnostics
 

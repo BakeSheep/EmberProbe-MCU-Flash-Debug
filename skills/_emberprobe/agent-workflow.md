@@ -40,7 +40,7 @@ evidence that hardware is disconnected.
 ## Retry policy
 
 - **Read-only calls** (`config.get`, `chip.read`, `fault.read`, `elf.analyze`, `peripherals.list`,
-  `peripherals.read`, `debug.status`, `debug.breakpoints.list`, `variables.read`,
+  `peripherals.read`, `debug.status`, `debug.inspect`, `rtos.status`, `rtos.snapshot`, `debug.breakpoints.list`, `variables.read`,
   `variables.sample`, `variables.exportCsv`): if preconditions are unchanged, retry **at most once**.
   If it fails again, stop and report the diagnostic.
 - **State-changing calls** (`config.set`, `debug.start`, `debug.control`,
@@ -58,7 +58,8 @@ evidence that hardware is disconnected.
 - Route by need: configuration via `mcu-config`; STM32 `.ioc` changes and initialization generation via `mcu-cubemx`; firmware footprint via `mcu-elf-analyze`
   (static, no hardware, but still needs the Bridge to read the selected ELF); live identity via
   `mcu-chip-info`; crash diagnosis via `mcu-fault-analyzer`; variables via `mcu-variables`;
-  registers via `mcu-peripheral-debug`; session control via `mcu-debug-control`; flashing via `mcu-flash`.
+  registers via `mcu-peripheral-debug`; session control and paused C/C++ object inspection via
+  `mcu-debug-control`; RTOS task metadata via `mcu-rtos`; flashing via `mcu-flash`.
 - Distinguish **no hardware dependency** from **no Bridge dependency**. Some reads need no probe
   (ELF analysis, `peripherals.list`, `config.get`) but every skill still needs the Bridge to be
   reachable; a Bridge failure is an extension/activation problem, not a wiring problem.

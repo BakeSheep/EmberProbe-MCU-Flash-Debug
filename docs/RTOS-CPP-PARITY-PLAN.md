@@ -15,7 +15,7 @@
 | 变量作用域 | Locals 与 Arguments | locals、globals、文件 statics、registers | 四作用域、懒加载、分页及准确的文件身份 |
 | 表达式修改及悬浮 | 有 evaluate 和 setVariable；未声明完整对应能力 | setExpression、hover、变量元数据 | 增加 setExpression、hover 能力、可靠路径和地址 |
 | STL 展示 | JS 内置解码常用 libstdc++ 类型 | GDB Python printers 与 varobj 的动态孩子 | builtin、gdb、raw 三模式，显式加载和降级 |
-| 普通 C++ 类 | 暂停时依赖 GDB 原始孩子；运行采样依赖 DWARF | 暂停时依赖 GDB 的类型、继承和动态对象解析 | 改进分组、匿名及重名成员；不把动态布局带入运行采样 |
+| 普通 C++ 类 | 暂停时依赖 GDB 原始孩子；运行采样依赖 DWARF | 暂停时依赖 GDB 的类型、继承和动态对象解析 | 改进分组、匿名及重名成员；运行采样只接受已验证的动态布局 |
 | 多镜像 | 单一 executable | symbolFiles、loadFiles、重定位及段地址 | 镜像身份、符号目录及下载生命周期一致管理 |
 | server 与多核 | 扩展启动 OpenOCD，适配器只拥有 GDB；单目标 | 多 server controller、多核和 chained session | 抽象生命周期、OpenOCD 多核分组与其他后端；原生 SEGGER 已取消 |
 
@@ -43,7 +43,7 @@
 - 增加 prettyPrintingMode：builtin、gdb、raw，默认 builtin。配置优先级为 launch、workspace、默认；未设置新字段时，旧 enablePrettyPrinting=false 映射 raw。弃用的 prettyPrinterPath 继续忽略。
 - prettyPrinterFiles 只执行用户明确配置的脚本。gdb 模式检查 Python 能力，显式加载并启用 printers；初始化失败诊断后回退 builtin；单对象迭代失败回退 raw。所有模式关闭自动加载和 inferior function calls。
 - 内置展示补 list、forward_list、deque、set、multiset、multimap、unordered_set、unordered_multiset、unordered_multimap 和 weak_ptr。保留分页、节点、字段、深度、字节及时间预算。Python 内部读内存无法完全由 JS 预算控制，需明确记录这一边界。
-- 普通类保留可靠的成员路径，改进可见性组、匿名成员和重名成员。虚基类及动态对象由暂停 GDB 解析；运行中的 DWARF 采样明确不支持动态／虚基类布局。libc++、旧 ABI、debug STL 和 fancy pointer 优先通过可选 GDB printers 支持。
+- 普通类保留可靠的成员路径，改进可见性组、匿名成员和重名成员。暂停 GDB 解析完整动态对象及虚基类；运行中的 DWARF 采样仅解析带验证 vtable、成员表达式和内存范围的动态对象，超出预算或无法验证时返回诊断。libc++、旧 ABI、debug STL 和 fancy pointer 优先通过可选 GDB printers 支持。
 - 增加 symbolFiles、loadFiles，支持镜像偏移、text 地址及段地址。ELF／HEX／BIN 下载要求对应格式所需地址；未设置 loadFiles 使用默认 executable，空数组表示不下载；attach 永不下载。
 - 符号目录保留镜像身份；RTOS 明确主符号镜像并校验。离线分析和侧栏采样仍围绕主选中 ELF，其边界写入文档。
 - 增加显式 pre／post launch、attach、reset GDB hooks；校验和日志区分阶段，错误进入既有清理流程。

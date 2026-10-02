@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "shared": [
     "agent-client.js",
+    "debug-inspection-client.js",
     "agent-workflow.md",
     "file-identity.js",
     "flash-common.js",
@@ -69,7 +70,7 @@
     },
     {
       "name": "mcu-variables",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "runtime": true,
       "required": [
         "SKILL.md",
@@ -113,9 +114,21 @@
     },
     {
       "name": "mcu-debug-control",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/debug.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/debug.js",
+        "scripts/inspect.js",
+        "references/paused-inspection.md",
+        "agents/openai.yaml"
+      ]
+    },
+    {
+      "name": "mcu-rtos",
+      "version": "1.0.0",
+      "runtime": true,
+      "required": ["SKILL.md", "scripts/rtos.js", "agents/openai.yaml"]
     },
     {
       "name": "mcu-cubemx",

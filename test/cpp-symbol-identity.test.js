@@ -208,6 +208,7 @@ function makeService(symbols, functions, dwarfResult) {
         cleanPath: (v) => v,
         t: (key) => key,
         elfSymbols: {
+            parseElfSections: () => ({ sections: [], programHeaders: [] }),
             parseElfSymbols: () => ({ symbols, functions, warnings: [] }),
             defaultType: (size) => (size === 8 ? "u64" : "u32")
         },

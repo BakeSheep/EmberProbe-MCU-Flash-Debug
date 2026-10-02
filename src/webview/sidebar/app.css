@@ -82,3 +82,49 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     .chip-stat{min-width:0;width:100%;box-sizing:border-box}
     .chip-v{min-width:0;max-width:100%}
 }
+
+.memory-actions { display: flex; gap: 6px; padding: 8px 12px; }
+.memory-body { padding: 0 12px 12px; font-size: 12px; }
+.memory-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 6px 0; font-variant-numeric: tabular-nums; }
+.memory-source { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
+.memory-note { color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.5; margin: 8px 0 12px; }
+.memory-estimate, .memory-warnings { color: var(--vscode-editorWarning-foreground, #cca700); }
+.memory-warnings { padding-left: 16px; font-size: 11px; line-height: 1.5; }
+.memory-region { padding: 10px 0; border-top: 1px solid var(--vscode-widget-border, #454545); }
+.memory-region-head { display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+.memory-region-size { margin: 5px 0; color: var(--vscode-descriptionForeground); }
+.memory-region progress { display: block; width: 100%; height: 5px; border: 0; border-radius: 3px; overflow: hidden; accent-color: var(--vscode-progressBar-background, #0e70c0); background: var(--vscode-input-background); }
+.memory-region progress::-webkit-progress-bar { background: var(--vscode-input-background); }
+.memory-region progress::-webkit-progress-value { background: var(--vscode-progressBar-background, #0e70c0); }
+.memory-region.overflow progress::-webkit-progress-value { background: var(--vscode-errorForeground, #f14c4c); }
+.memory-region.overflow .memory-region-head > span { color: var(--vscode-errorForeground, #f14c4c); }
+.memory-details { margin-top: 8px; border: 0; }
+.memory-details > summary { padding: 4px 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.memory-table-wrap { overflow-x: auto; }
+.memory-table-wrap table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.memory-table-wrap th, .memory-table-wrap td { padding: 4px 6px; text-align: left; white-space: nowrap; }
+.memory-table-wrap th { color: var(--vscode-descriptionForeground); font-weight: 500; }
+.memory-table-wrap td { border-top: 1px solid var(--vscode-widget-border, #454545); }
+.flash-debug-card{margin:8px 10px 10px;padding:10px;border:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border));border-radius:5px;background:var(--vscode-editor-background)}.flash-debug-card .primary-actions{padding:0;margin:0 0 9px}.memory-inline{padding-top:8px;border-top:1px solid var(--vscode-widget-border,transparent);border-bottom:0}.memory-label{margin:0 0 5px;color:var(--vscode-descriptionForeground);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}.memory-inline .memory-body{padding:0;font-size:11px}.memory-inline .memory-source,.memory-inline .memory-note,.memory-inline .memory-warnings,.memory-inline .memory-details{display:none}.memory-inline .memory-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:0 0 7px}.memory-inline .memory-summary>span{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 7px;border:1px solid var(--vscode-widget-border,transparent);border-radius:4px;background:var(--vscode-editor-background)}.memory-inline .memory-summary strong{font:700 10px var(--vscode-editor-font-family)}.memory-inline .memory-summary>span{font:600 11px var(--vscode-editor-font-family)}.memory-inline .memory-region{padding:5px 0;margin:0;border-top:1px solid var(--vscode-widget-border,transparent)}.memory-inline .memory-region-head{display:flex;justify-content:space-between;gap:8px}.memory-inline .memory-region-head>span{display:block;font:600 10px var(--vscode-editor-font-family)}.memory-inline .memory-region-head strong{font:700 10px var(--vscode-editor-font-family);color:var(--vscode-foreground)}.memory-inline .memory-region-size{display:block;margin:3px 0;color:var(--vscode-descriptionForeground);font:10px var(--vscode-editor-font-family)}.memory-inline .memory-region progress{display:block;width:100%;height:4px;border:0;border-radius:2px;background:var(--vscode-input-background)}.memory-inline .memory-region progress::-webkit-progress-bar{background:var(--vscode-input-background)}.memory-inline .memory-region progress::-webkit-progress-value{background:var(--vscode-progressBar-background,#0e70c0)}.memory-inline .memory-region.overflow progress::-webkit-progress-value{background:var(--vscode-errorForeground,#f14c4c)}.memory-inline .empty{padding:3px 0;text-align:left;font-size:10px}.memory-inline .memory-actions{display:none}
+
+.flash-debug-card{margin:6px 9px 8px;padding:8px}
+.flash-debug-card .primary-actions{gap:6px;margin-bottom:6px}
+.flash-debug-card .action{height:29px}
+.memory-inline{padding-top:6px}
+.memory-label{margin-bottom:4px}
+.memory-inline .memory-summary{gap:4px;margin-bottom:5px}
+.memory-inline .memory-summary>span{padding:4px 6px}
+.memory-inline .memory-region{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;column-gap:8px;min-height:28px;padding:4px 7px;overflow:hidden}
+.memory-inline .memory-region-head{display:contents}
+.memory-inline .memory-region-head strong{position:relative;z-index:1;grid-column:1;grid-row:1}
+.memory-inline .memory-region-head>span{position:relative;z-index:1;grid-column:3;grid-row:1}
+.memory-inline .memory-region-size{position:relative;z-index:1;grid-column:2;grid-row:1;margin:0;white-space:nowrap}
+.memory-inline .memory-region progress{position:absolute;z-index:0;inset:0;width:100%;height:100%;opacity:.9;border-radius:0;background:transparent}
+.memory-inline .memory-region progress::-webkit-progress-bar{background:color-mix(in srgb,var(--vscode-sideBarSectionHeader-background) 84%,transparent)}
+.memory-inline .memory-region progress::-webkit-progress-value{background:color-mix(in srgb,var(--vscode-progressBar-background,#0e70c0) 22%,transparent)}
+.memory-inline .memory-region.overflow progress::-webkit-progress-value{background:color-mix(in srgb,var(--vscode-errorForeground,#f14c4c) 22%,transparent)}
+.tree>.skill-row{margin:5px 9px 7px;min-height:46px;padding:4px 8px;border:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border));border-radius:5px;background:var(--vscode-editor-background)}
+.skill-tree{padding-bottom:0}
+.tree>.skill-row{width:auto;box-sizing:border-box;margin:3px 9px 0}
+.flash-debug-card{margin-top:2px}
+.memory-inline>.memory-label{height:20px;margin:0 0 4px;padding:0 2px;background:transparent;text-transform:none;letter-spacing:0;cursor:pointer;user-select:none}

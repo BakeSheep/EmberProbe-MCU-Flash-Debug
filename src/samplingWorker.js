@@ -27,7 +27,16 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         { ...options, isolated: false },
         {
             onSample(samples, t) {
-                queuedBytes += samples.reduce((n, s) => n + (s.bytes?.length || 0) + s.name.length * 2 + 64, 0);
+                queuedBytes += samples.reduce(
+                    (n, s) =>
+                        n +
+                        (s.bytes?.length || 0) +
+                        s.name.length * 2 +
+                        64 +
+                        (s.runtimeTree ? Buffer.byteLength(JSON.stringify(s.runtimeTree)) : 0) +
+                        (s.diagnostic ? Buffer.byteLength(JSON.stringify(s.diagnostic)) : 0),
+                    0
+                );
                 queued.push({ samples, t, generation });
                 if (queuedBytes > 16 * 1024 * 1024 || queued.length > 4096) {
                     session.setSamplingEnabled(false);

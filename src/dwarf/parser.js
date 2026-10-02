@@ -44,10 +44,11 @@ const {
 const { readSections, parseAbbrev, readULEB } = require("./binary");
 const { cstr } = require("./binary");
 const { createFormReader } = require("./forms");
-function _parseDwarfInternal(buffer) {
+function _parseDwarfInternal(buffer, options = {}) {
     const elf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const diagnostics = [];
-    const sections = readSections(elf, diagnostics);
+    const sectionBudget = { decoded: 0, max: 32 * 1024 * 1024 };
+    const sections = readSections(elf, diagnostics, sectionBudget);
     const info = sections.get(".debug_info");
     const abbrevSec = sections.get(".debug_abbrev");
     if (!info || !abbrevSec)
@@ -60,16 +61,15 @@ function _parseDwarfInternal(buffer) {
                 { code: "DWARF_MISSING", stage: "sections", message: "Required DWARF sections are unavailable" }
             ]
         };
-    const str = sections.get(".debug_str");
-    const lineStr = sections.get(".debug_line_str");
-    const strOffsets = sections.get(".debug_str_offsets");
-    const buf = info.data;
-
-    const resolveStrx = (index, base) => {
+    let str, lineStr, strOffsets;
+    const resolveStrx = (index, base, width = 4, strings = { str, strOffsets }) => {
+        const { str, strOffsets } = strings;
         if (!strOffsets || !str) return "";
-        const entryOff = (base || 8) + index * 4;
-        if (entryOff + 4 > strOffsets.size) return "";
-        return cstr(str.data, strOffsets.data.readUInt32LE(entryOff));
+        const entryOff = base + index * width;
+        if (!Number.isSafeInteger(entryOff) || entryOff < 0 || entryOff + width > strOffsets.size) return "";
+        const value =
+            width === 8 ? strOffsets.data.readBigUInt64LE(entryOff) : BigInt(strOffsets.data.readUInt32LE(entryOff));
+        return value <= BigInt(Number.MAX_SAFE_INTEGER) ? cstr(str.data, Number(value)) : "";
     };
 
     // 读取单个属性值并推进游标
@@ -79,8 +79,13 @@ function _parseDwarfInternal(buffer) {
     const parentOf = new Map(); // 子 DIE 偏移 → 父 DIE 偏移（构造 C++ 限定名用）
     const variableOffsets = []; // 所有变量 DIE；跨 CU 的 origin 继承需在完整解析后处理
     const subprogramOffsets = []; // 所有子程序 DIE（函数显示名用）
-    const infoStart = 0,
-        infoEnd = info.size;
+    const signatures = new Map();
+    const units = [];
+    const inputs = [{ sections, filePath: options.filePath, parent: null }];
+    let sectionBase = 0;
+    let externalBytes = 0;
+    const loaded = new Set();
+    const companions = [];
     // §2：缩写缓存改为有界 LRU，并以全局预算约束跨 CU 的缩写/属性总量。
     // abbrevOff 是文件可控的 u32，旧实现以它为键无界缓存，N 个不同偏移
     // 就能让 N 份完整缩写表同时存活，直至扩展宿主 OOM。
@@ -103,194 +108,391 @@ function _parseDwarfInternal(buffer) {
     // 而 dies/childrenMap/variableOffsets 从不重置，因此预算只约束单个 CU。
     const MAX_DIES_TOTAL = 2000000;
     let totalDies = 0;
-    let p = infoStart;
-    while (p + 4 <= infoEnd) {
-        const cuStart = p;
-        const unitLength = buf.readUInt32LE(p);
-        p += 4;
-        if (unitLength === 0xffffffff || unitLength === 0) {
-            diagnostics.push({
-                code: "DWARF_UNSUPPORTED",
-                stage: "header",
-                offset: cuStart,
-                message: "Unsupported DWARF unit length"
-            });
-            break;
-        }
-        const cuEnd = Math.min(cuStart + 4 + unitLength, infoEnd);
-        const cuBuffer = buf.subarray(0, cuEnd);
-        const readFormValue = createFormReader({ buf: cuBuffer, str, lineStr });
-        try {
-            const version = buf.readUInt16LE(p);
-            p += 2;
-            let addrSize, abbrevOff;
-            if (version >= 5) {
-                p += 1;
-                addrSize = buf[p];
-                p += 1;
-                abbrevOff = buf.readUInt32LE(p);
+    for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
+        const input = inputs[inputIndex];
+        str = input.sections.get(".debug_str");
+        lineStr = input.sections.get(".debug_line_str");
+        strOffsets = input.sections.get(".debug_str_offsets");
+        for (const sectionName of [".debug_info", ".debug_types"]) {
+            const section = input.sections.get(sectionName);
+            if (!section) continue;
+            const buf = section.data;
+            const infoEnd = section.size;
+            const abbrevSec = input.sections.get(".debug_abbrev");
+            if (!abbrevSec) continue;
+            abbrevCache.clear();
+            let p = 0;
+            while (p + 4 <= infoEnd) {
+                const cuStart = p;
+                let unitLength = buf.readUInt32LE(p);
                 p += 4;
-            } else {
-                abbrevOff = buf.readUInt32LE(p);
-                p += 4;
-                addrSize = buf[p];
-                p += 1;
-            }
-            if (cuStart + 4 + unitLength > infoEnd || p > cuEnd) throw new Error("Truncated DWARF unit");
-            let abbrev = abbrevCacheGet(abbrevOff);
-            if (!abbrev) {
-                abbrev = parseAbbrev(abbrevSec.data, abbrevOff, abbrevBudget);
-                abbrevCacheSet(abbrevOff, abbrev);
-            }
-            const cuRel = cuStart - infoStart;
-            let strOffsetsBase = 8;
-            const cur = { p };
-            try {
-                const parentStack = []; // { offset, dieOff } — 有子项的 DIE 栈，用于构建 childrenMap
-                while (cur.p < cuEnd) {
-                    if (++totalDies > MAX_DIES_TOTAL)
-                        throw Object.assign(new Error("DWARF DIE budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
-                    const dieOff = cur.p - infoStart;
-                    const code = readULEB(cuBuffer, cur);
-                    if (code === 0) {
-                        // 兄弟链结束标记：弹出当前父级
-                        if (parentStack.length) parentStack.pop();
-                        continue;
+                let offsetSize = 4;
+                if (unitLength === 0xffffffff) {
+                    if (p + 8 > infoEnd) {
+                        diagnostics.push({
+                            code: "DWARF_CU_INVALID",
+                            stage: "header",
+                            offset: cuStart,
+                            message: "Truncated DWARF64 header"
+                        });
+                        break;
                     }
-                    const ab = abbrev.get(code);
-                    if (!ab) throw new Error("unknown abbrev code");
-                    // 记录父子关系
-                    if (parentStack.length) {
-                        const parent = parentStack[parentStack.length - 1];
-                        let siblings = childrenMap.get(parent.dieOff);
-                        if (!siblings) {
-                            siblings = [];
-                            childrenMap.set(parent.dieOff, siblings);
-                        }
-                        siblings.push(dieOff);
-                        parentOf.set(dieOff, parent.dieOff);
-                    }
-                    const rec = { tag: ab.tag };
-                    for (const attr of ab.attrs) {
-                        const v = readFormValue(cur, attr.form, { addrSize, cuRel, implicit: attr.implicit });
-                        switch (attr.at) {
-                            case DW_AT_name:
-                                if (v && v.str !== undefined) rec.name = v.str;
-                                else if (v && v.strx !== undefined) rec.strx = v.strx;
-                                break;
-                            case DW_AT_linkage_name:
-                                if (v && v.str !== undefined) rec.linkageName = v.str;
-                                else if (v && v.strx !== undefined) rec.linkageStrx = v.strx;
-                                break;
-                            case DW_AT_virtuality:
-                                if (typeof v === "number") rec.virtuality = v;
-                                break;
-                            case DW_AT_type:
-                                if (v && v.ref !== undefined) rec.typeRef = v.ref;
-                                break;
-                            case DW_AT_abstract_origin:
-                                if (v && v.ref !== undefined) rec.abstractOriginRef = v.ref;
-                                break;
-                            case DW_AT_specification:
-                                if (v && v.ref !== undefined) rec.specificationRef = v.ref;
-                                break;
-                            case DW_AT_byte_size:
-                                if (typeof v === "number") rec.byteSize = v;
-                                break;
-                            case DW_AT_encoding:
-                                if (typeof v === "number") rec.encoding = v;
-                                break;
-                            case DW_AT_location:
-                                if (v && v.block && v.block.length >= 1) {
-                                    rec.hasAddr = v.block[0] === 0x03 || v.block[0] === 0xa1;
-                                    if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5)
-                                        rec.address = v.block.readUInt32LE(1);
-                                } else if (typeof v === "number") rec.hasAddr = v === 0x03 || v === 0xa1;
-                                break;
-                            case DW_AT_declaration:
-                                rec.isDecl = !!v;
-                                break;
-                            case DW_AT_str_offsets_base:
-                                if (typeof v === "number") strOffsetsBase = v;
-                                break;
-                            case DW_AT_data_member_location:
-                                if (typeof v === "number") {
-                                    rec.memberOffset = v;
-                                } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
-                                    // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
-                                    // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
-                                    let bp = 1;
-                                    let val = 0,
-                                        sh = 0,
-                                        b2;
-                                    do {
-                                        if (bp >= v.block.length) break;
-                                        b2 = v.block[bp++];
-                                        val += (b2 & 0x7f) * Math.pow(2, sh);
-                                        sh += 7;
-                                    } while (b2 & 0x80);
-                                    if (
-                                        bp === v.block.length &&
-                                        !(b2 & 0x80) &&
-                                        Number.isSafeInteger(val) &&
-                                        sh <= 56
-                                    ) {
-                                        rec.memberOffset = val;
-                                    }
-                                }
-                                if (!Number.isSafeInteger(rec.memberOffset) || rec.memberOffset < 0) {
-                                    delete rec.memberOffset;
-                                    rec.memberLocationUnsupported = true;
-                                }
-                                break;
-                            case DW_AT_bit_size:
-                                if (typeof v === "number") rec.bitSize = v;
-                                break;
-                            case DW_AT_bit_offset:
-                                if (typeof v === "number") rec.bitOffset = v;
-                                break;
-                            case DW_AT_data_bit_offset:
-                                if (typeof v === "number") rec.dataBitOffset = v;
-                                break;
-                            case DW_AT_count:
-                                if (typeof v === "number") rec.subrangeCount = v;
-                                break;
-                            case DW_AT_upper_bound:
-                                if (typeof v === "number") rec.subrangeUpperBound = v;
-                                break;
-                        }
-                    }
-                    rec.base = strOffsetsBase;
-                    dies.set(dieOff, rec);
-                    if (rec.tag === DW_TAG_variable) variableOffsets.push(dieOff);
-                    if (rec.tag === DW_TAG_subprogram) subprogramOffsets.push(dieOff);
-                    // 有子项的 DIE 入栈
-                    if (ab.hasChildren) {
-                        parentStack.push({ offset: dieOff, dieOff });
-                    }
+                    const length64 = buf.readBigUInt64LE(p);
+                    p += 8;
+                    if (length64 > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF64 unit");
+                    unitLength = Number(length64);
+                    offsetSize = 8;
                 }
-            } catch (e) {
-                // 全局预算耗尽必须中止整个解析，而不是吞掉后继续下一个 CU 累积内存。
-                if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
+                const headerSize = offsetSize === 8 ? 12 : 4;
+                if (unitLength === 0) {
+                    diagnostics.push({
+                        code: "DWARF_UNSUPPORTED",
+                        stage: "header",
+                        offset: cuStart,
+                        message: "Unsupported DWARF unit length"
+                    });
+                    break;
+                }
+                const cuEnd = Math.min(cuStart + headerSize + unitLength, infoEnd);
+                const cuBuffer = buf.subarray(0, cuEnd);
+                const readFormValue = createFormReader({ buf: cuBuffer, str, lineStr });
+                try {
+                    const version = buf.readUInt16LE(p);
+                    p += 2;
+                    if (![2, 3, 4, 5].includes(version)) throw new Error("Unsupported DWARF version " + version);
+                    const readOffset = () => {
+                        const value = offsetSize === 8 ? buf.readBigUInt64LE(p) : BigInt(buf.readUInt32LE(p));
+                        p += offsetSize;
+                        if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF offset");
+                        return Number(value);
+                    };
+                    let addrSize,
+                        abbrevOff,
+                        unitType = sectionName === ".debug_types" ? 2 : 1;
+                    if (version >= 5) {
+                        unitType = buf[p++];
+                        addrSize = buf[p];
+                        p += 1;
+                        abbrevOff = readOffset();
+                    } else {
+                        abbrevOff = readOffset();
+                        addrSize = buf[p];
+                        p += 1;
+                    }
+                    const unit = {
+                        sectionBase,
+                        cuStart,
+                        version,
+                        offsetSize,
+                        input,
+                        strings: { str, strOffsets },
+                        addrSize
+                    };
+                    unit.isType = [2, 6].includes(unitType);
+                    if ([2, 6].includes(unitType)) {
+                        const signature = buf.subarray(p, p + 8).toString("hex");
+                        p += 8;
+                        const target = sectionBase + cuStart + readOffset();
+                        if (signatures.has(signature) && signatures.get(signature) !== target) {
+                            // Identical type units can occur in multiple split files; the signature is their identity.
+                            unit.duplicateSignature = signature;
+                        } else signatures.set(signature, target);
+                    } else if ([4, 5].includes(unitType)) {
+                        unit.dwoId = buf.readBigUInt64LE(p).toString();
+                        p += 8;
+                    } else if (![1, 3].includes(unitType)) throw new Error("Unsupported DWARF unit type " + unitType);
+                    if (cuStart + headerSize + unitLength > infoEnd || p > cuEnd)
+                        throw new Error("Truncated DWARF unit");
+                    unit.addrBase = input.parent?.addrBase || 0;
+                    unit.addresses = input.sections.get(".debug_addr") || input.parent?.addresses;
+                    units.push(unit);
+                    let abbrev = abbrevCacheGet(abbrevOff);
+                    if (!abbrev) {
+                        abbrev = parseAbbrev(abbrevSec.data, abbrevOff, abbrevBudget);
+                        abbrevCacheSet(abbrevOff, abbrev);
+                    }
+                    const cuRel = sectionBase + cuStart;
+                    let strOffsetsBase = input.parent && version < 5 ? 0 : offsetSize === 8 ? 16 : 8;
+                    const cur = { p };
+                    try {
+                        const parentStack = []; // { offset, dieOff } — 有子项的 DIE 栈，用于构建 childrenMap
+                        while (cur.p < cuEnd) {
+                            if (++totalDies > MAX_DIES_TOTAL)
+                                throw Object.assign(new Error("DWARF DIE budget exceeded"), {
+                                    code: "DWARF_BUDGET_EXCEEDED"
+                                });
+                            const dieOff = sectionBase + cur.p;
+                            const code = readULEB(cuBuffer, cur);
+                            if (code === 0) {
+                                // 兄弟链结束标记：弹出当前父级
+                                if (parentStack.length) parentStack.pop();
+                                continue;
+                            }
+                            const ab = abbrev.get(code);
+                            if (!ab) throw new Error("unknown abbrev code");
+                            // 记录父子关系
+                            if (parentStack.length) {
+                                const parent = parentStack[parentStack.length - 1];
+                                let siblings = childrenMap.get(parent.dieOff);
+                                if (!siblings) {
+                                    siblings = [];
+                                    childrenMap.set(parent.dieOff, siblings);
+                                }
+                                siblings.push(dieOff);
+                                parentOf.set(dieOff, parent.dieOff);
+                            }
+                            const rec = { tag: ab.tag, unit };
+                            for (const attr of ab.attrs) {
+                                const raw = readFormValue(cur, attr.form, {
+                                    addrSize,
+                                    cuRel,
+                                    sectionBase,
+                                    offsetSize,
+                                    implicit: attr.implicit
+                                });
+                                const v =
+                                    raw?.integer64 && BigInt(raw.integer64) <= BigInt(Number.MAX_SAFE_INTEGER)
+                                        ? Number(raw.integer64)
+                                        : raw;
+                                switch (attr.at) {
+                                    case 0x1b: // DW_AT_comp_dir
+                                        unit.compDir = v?.str;
+                                        break;
+                                    case 0x76: // DW_AT_dwo_name
+                                    case 0x2130: // DW_AT_GNU_dwo_name
+                                        if (v?.str !== undefined) unit.dwoName = v.str;
+                                        else if (v?.strx !== undefined) unit.dwoNameIndex = v.strx;
+                                        break;
+                                    case 0x2131: // DW_AT_GNU_dwo_id
+                                        unit.dwoId = raw?.integer64;
+                                        break;
+                                    case 0x73: // DW_AT_addr_base
+                                    case 0x2133: // DW_AT_GNU_addr_base
+                                        unit.addrBase = v;
+                                        break;
+                                    case 0x1c: // DW_AT_const_value (template argument)
+                                        rec.constantValue = v;
+                                        break;
+                                    case DW_AT_name:
+                                        if (v && v.str !== undefined) rec.name = v.str;
+                                        else if (v && v.strx !== undefined) rec.strx = v.strx;
+                                        break;
+                                    case DW_AT_linkage_name:
+                                        if (v && v.str !== undefined) rec.linkageName = v.str;
+                                        else if (v && v.strx !== undefined) rec.linkageStrx = v.strx;
+                                        break;
+                                    case DW_AT_virtuality:
+                                        if (typeof v === "number") rec.virtuality = v;
+                                        break;
+                                    case DW_AT_type:
+                                        if (v && v.ref !== undefined) rec.typeRef = v.ref;
+                                        else if (v?.signature) rec.typeSignature = v.signature;
+                                        break;
+                                    case 0x69: // DW_AT_signature: a declaration redirects to its type unit.
+                                        rec.definitionSignature = v?.signature;
+                                        break;
+                                    case DW_AT_abstract_origin:
+                                        if (v && v.ref !== undefined) rec.abstractOriginRef = v.ref;
+                                        break;
+                                    case DW_AT_specification:
+                                        if (v && v.ref !== undefined) rec.specificationRef = v.ref;
+                                        break;
+                                    case DW_AT_byte_size:
+                                        if (typeof v === "number") rec.byteSize = v;
+                                        break;
+                                    case DW_AT_encoding:
+                                        if (typeof v === "number") rec.encoding = v;
+                                        break;
+                                    case DW_AT_location:
+                                        if (v && v.block && v.block.length >= 1) {
+                                            rec.hasAddr = [0x03, 0xa1, 0xfb].includes(v.block[0]);
+                                            if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5)
+                                                rec.address = v.block.readUInt32LE(1);
+                                            else if ([0xa1, 0xfb].includes(v.block[0])) {
+                                                const cursor = { p: 1 };
+                                                rec.addressIndex = readULEB(v.block, cursor);
+                                                if (cursor.p !== v.block.length) rec.hasAddr = false;
+                                            }
+                                        }
+                                        break;
+                                    case DW_AT_declaration:
+                                        rec.isDecl = !!v;
+                                        break;
+                                    case DW_AT_str_offsets_base:
+                                        if (typeof v === "number") strOffsetsBase = v;
+                                        break;
+                                    case DW_AT_data_member_location:
+                                        if (v?.block) rec.memberExpression = Array.from(v.block);
+                                        if (typeof v === "number") {
+                                            rec.memberOffset = v;
+                                        } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
+                                            // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
+                                            // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
+                                            let bp = 1;
+                                            let val = 0,
+                                                sh = 0,
+                                                b2;
+                                            do {
+                                                if (bp >= v.block.length) break;
+                                                b2 = v.block[bp++];
+                                                val += (b2 & 0x7f) * Math.pow(2, sh);
+                                                sh += 7;
+                                            } while (b2 & 0x80);
+                                            if (
+                                                bp === v.block.length &&
+                                                !(b2 & 0x80) &&
+                                                Number.isSafeInteger(val) &&
+                                                sh <= 56
+                                            ) {
+                                                rec.memberOffset = val;
+                                            }
+                                        }
+                                        if (!Number.isSafeInteger(rec.memberOffset) || rec.memberOffset < 0) {
+                                            delete rec.memberOffset;
+                                            rec.memberLocationUnsupported = true;
+                                        }
+                                        break;
+                                    case DW_AT_bit_size:
+                                        if (typeof v === "number") rec.bitSize = v;
+                                        break;
+                                    case DW_AT_bit_offset:
+                                        if (typeof v === "number") rec.bitOffset = v;
+                                        break;
+                                    case DW_AT_data_bit_offset:
+                                        if (typeof v === "number") rec.dataBitOffset = v;
+                                        break;
+                                    case DW_AT_count:
+                                        if (typeof v === "number") rec.subrangeCount = v;
+                                        break;
+                                    case DW_AT_upper_bound:
+                                        if (typeof v === "number") rec.subrangeUpperBound = v;
+                                        break;
+                                }
+                            }
+                            rec.base = strOffsetsBase;
+                            unit.strBase = strOffsetsBase;
+                            dies.set(dieOff, rec);
+                            if (rec.tag === DW_TAG_variable) variableOffsets.push(dieOff);
+                            if (rec.tag === DW_TAG_subprogram) subprogramOffsets.push(dieOff);
+                            // 有子项的 DIE 入栈
+                            if (ab.hasChildren) {
+                                parentStack.push({ offset: dieOff, dieOff });
+                            }
+                        }
+                    } catch (e) {
+                        // 全局预算耗尽必须中止整个解析，而不是吞掉后继续下一个 CU 累积内存。
+                        if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
+                        diagnostics.push({
+                            code: /unknown DWARF form/.test(e.message) ? "DWARF_UNSUPPORTED" : "DWARF_CU_INVALID",
+                            stage: "attributes",
+                            offset: p,
+                            message: e.message
+                        });
+                    }
+                } catch (e) {
+                    if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
+                    diagnostics.push({ code: "DWARF_CU_INVALID", stage: "header", offset: p, message: e.message });
+                }
+                p = cuEnd;
+            }
+            sectionBase += infoEnd + 1;
+        }
+        for (const unit of units.filter(
+            (entry) => entry.input === input && (entry.dwoName || entry.dwoNameIndex !== undefined)
+        )) {
+            unit.dwoName ||= resolveStrx(unit.dwoNameIndex, unit.strBase, unit.offsetSize, unit.strings);
+            if (!options.filePath) {
                 diagnostics.push({
-                    code: /unknown DWARF form/.test(e.message) ? "DWARF_UNSUPPORTED" : "DWARF_CU_INVALID",
-                    stage: "attributes",
-                    offset: p,
-                    message: e.message
+                    code: "DWARF_COMPANION_MISSING",
+                    stage: "sections",
+                    message: "Split DWARF requires the ELF path and its matching .dwo file"
+                });
+                continue;
+            }
+            try {
+                if (inputs.length >= 33) throw new Error("Split DWARF companion count exceeds 32");
+                const companion = require("./files").readCompanion(
+                    unit,
+                    options.filePath,
+                    64 * 1024 * 1024 - externalBytes
+                );
+                if (loaded.has(companion.path)) continue;
+                loaded.add(companion.path);
+                companions.push(companion.identity);
+                externalBytes += companion.buffer.length;
+                inputs.push({
+                    sections: readSections(companion.buffer, diagnostics, sectionBudget),
+                    filePath: companion.path,
+                    parent: unit
+                });
+            } catch (error) {
+                if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
+                if (error.paths) companions.push(...error.paths);
+                diagnostics.push({
+                    code: error.code || "DWARF_COMPANION_MISSING",
+                    stage: "sections",
+                    message: error.message
                 });
             }
-        } catch (e) {
-            if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
-            diagnostics.push({ code: "DWARF_CU_INVALID", stage: "header", offset: p, message: e.message });
         }
-        p = cuEnd;
     }
 
+    for (const input of inputs.filter((entry) => entry.parent)) {
+        input.valid = units.some(
+            (unit) => unit.input === input && !unit.isType && unit.dwoId && unit.dwoId === input.parent.dwoId
+        );
+        if (!input.valid)
+            diagnostics.push({
+                code: "DWARF_COMPANION_MISMATCH",
+                stage: "sections",
+                message: "Split DWARF compilation-unit identity does not match its ELF"
+            });
+    }
     // 统一解析 strx 名称
+    for (const [key, d] of dies) if (d.unit.input.parent && !d.unit.input.valid) dies.delete(key);
     for (const d of dies.values()) {
-        if (d.name === undefined && d.strx !== undefined) d.name = resolveStrx(d.strx, d.base);
+        if (d.typeSignature) d.typeRef = signatures.get(d.typeSignature);
+        if (d.typeSignature && d.typeRef === undefined)
+            diagnostics.push({
+                code: "DWARF_TYPE_UNRESOLVED",
+                stage: "types",
+                message: "DWARF type signature is unavailable"
+            });
+        if (d.definitionSignature) {
+            const definitionRef = signatures.get(d.definitionSignature);
+            if (dies.has(definitionRef)) {
+                d.tag = DW_TAG_typedef;
+                d.typeRef = definitionRef;
+                delete d.isDecl;
+            } else
+                diagnostics.push({
+                    code: "DWARF_TYPE_UNRESOLVED",
+                    stage: "types",
+                    message: "DWARF type signature is unavailable"
+                });
+        }
+        if (d.addressIndex !== undefined) {
+            const off = d.unit.addrBase + d.addressIndex * d.unit.addrSize;
+            const addresses = d.unit.addresses?.data;
+            if (
+                addresses &&
+                d.unit.addrSize === 4 &&
+                Number.isSafeInteger(off) &&
+                off >= 0 &&
+                off + 4 <= addresses.length
+            )
+                d.address = addresses.readUInt32LE(off);
+            else
+                diagnostics.push({
+                    code: "DWARF_ADDRESS_UNRESOLVED",
+                    stage: "attributes",
+                    message: "Split DWARF address index is unavailable"
+                });
+        }
+        if (d.name === undefined && d.strx !== undefined)
+            d.name = resolveStrx(d.strx, d.base, d.unit.offsetSize, d.unit.strings);
         if (d.linkageName === undefined && d.linkageStrx !== undefined)
-            d.linkageName = resolveStrx(d.linkageStrx, d.base);
+            d.linkageName = resolveStrx(d.linkageStrx, d.base, d.unit.offsetSize, d.unit.strings);
     }
 
     // 作用域链（namespace/class/struct/union 祖先）构造 C++ 限定名；遇到 CU 根自然终止。
@@ -323,6 +525,9 @@ function _parseDwarfInternal(buffer) {
         }
         return parts.length ? parts.join("::") + "::" + name : name;
     };
+    for (const [off, die] of dies) {
+        if (SCOPE_TAGS.has(die.tag) && die.name) die.qualifiedTypeName = buildQualifiedName(off, die.name);
+    }
 
     // LTO 常把地址留在具体变量 DIE，而把名称和类型放进 abstract_origin/specification。
     // 所有 CU 都完成后再继承，才能正确解析 DW_FORM_ref_addr 的跨 CU 引用。
@@ -351,9 +556,9 @@ function _parseDwarfInternal(buffer) {
     const variables = [];
     for (const dieOff of variableOffsets) {
         const concrete = dies.get(dieOff);
-        if (!concrete?.hasAddr) continue;
+        if (!concrete?.hasAddr || concrete.invalidUnit) continue;
         const identity = resolveVariableIdentity(dieOff);
-        if (!identity.name || identity.typeRef === undefined) continue;
+        if (!identity.name) continue;
         variables.push({
             ...concrete,
             name: identity.name,
@@ -375,6 +580,6 @@ function _parseDwarfInternal(buffer) {
         });
     }
 
-    return { dies, childrenMap, parentOf, resolveStrx, variables, subprograms, diagnostics };
+    return { dies, childrenMap, parentOf, resolveStrx, variables, subprograms, diagnostics, companions };
 }
 module.exports = { parseDwarfInternal: _parseDwarfInternal };

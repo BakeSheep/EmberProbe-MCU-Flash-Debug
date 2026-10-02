@@ -1,6 +1,6 @@
 ---
 name: mcu-variables
-description: Read, monitor, trend, export, or explicitly modify MCU variables resolved from ELF and DWARF data. Use for live values, structs, arrays, runtime trends, CSV history, requested variable tuning, or starting and stopping shared sidebar sampling.
+description: Read, monitor, trend, export, or explicitly modify MCU variables resolved from ELF and DWARF. Use for C/C++ globals and supported runtime object paths, scalar trends, CSV history, requested variable tuning, or shared sampling. Use paused debug inspection for frame-local variables.
 ---
 
 # MCU Variables
@@ -16,6 +16,10 @@ description: Read, monitor, trend, export, or explicitly modify MCU variables re
 For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
 
 Choose the narrowest operation that satisfies the request:
+
+For frame-local C++ values and GDB's class/STL summaries and paged expansion, use
+`mcu-debug-control`'s paused inspection workflow. This skill reads ELF/DWARF globals and
+their supported runtime layouts; it does not substitute for task/frame-local GDB inspection.
 
 - For listing, reading, sampling, trending, chart integration, or CSV export, read [references/reading.md](references/reading.md) and use `scripts/read.js`.
 - For starting, stopping, or querying persistent sidebar/chart sampling, read the sampling controls in [references/reading.md](references/reading.md) and use `scripts/sampling.js`.

@@ -52,7 +52,8 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     writeLastAt = Object.create(null),
     latestWriteSeq = Object.create(null),
     writeSeq = 0,
-    writeFbTimer = null;
+    writeFbTimer = null,
+    runtimeBodies = Object.create(null);
 function shiftSliderBounds(min, max, current, next) {
     const lo = Number(min),
         hi = Number(max),
@@ -92,7 +93,16 @@ const chipRead = document.getElementById("chipRead"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
-for (const id of ["mcuConfigSection", "chipInfoSection", "liveValuesSection", "variableBrowser"]) {
+const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
+const mcuConfigSection = document.getElementById("mcuConfigSection");
+const memoryAnalysisSection = document.getElementById("memoryAnalysisSection");
+for (const id of [
+    "mcuConfigSection",
+    "memoryAnalysisSection",
+    "chipInfoSection",
+    "liveValuesSection",
+    "variableBrowser"
+]) {
     const section = document.getElementById(id);
     if (!section) continue;
     if (typeof uiState.sections?.[id] === "boolean") section.open = uiState.sections[id];
@@ -121,6 +131,21 @@ function setProbeDriverBusy(busy) {
     });
     liveToggle.disabled = busy;
     document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
+}
+function configurationIncomplete() {
+    if (!mcuConfigSection) return false;
+    return ["mcu-vscode.selectElf", "mcu-vscode.selectDebugger", "mcu-vscode.selectMcuCore"].some((command) => {
+        const row = mcuConfigSection.querySelector(`[data-command="${command}"]`);
+        const value = row?.querySelector("small");
+        return !value || value.dataset.i18n === "common.notSelected" || !value.textContent.trim();
+    });
+}
+function revealIncompleteConfiguration() {
+    if (!configurationIncomplete() || !mcuConfigSection || mcuConfigSection.open) return;
+    mcuConfigSection.open = true;
+    uiState.sections ||= {};
+    uiState.sections.mcuConfigSection = true;
+    api?.setState?.(uiState);
 }
 if (otherConfig) {
     otherConfig.open = !!(uiState && uiState.otherConfigOpen);
@@ -194,6 +219,7 @@ function rerenderDynamic() {
     svdStatus(lastSvd);
     peripheralView?.render();
     rtosView?.render();
+    memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
     applyStatus();
@@ -413,7 +439,8 @@ function renderAvailable() {
                 size: Number(sym.size) || 4,
                 type: "",
                 isComposite: true,
-                compositeLayout: sym.compositeLayout
+                compositeLayout: sym.compositeLayout || null,
+                ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
             };
             wrap.append(
                 arrow,
@@ -422,7 +449,11 @@ function renderAvailable() {
                     !availableTypesReady || !!sym.layoutError,
                     sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
                     () => {
-                        if (sideWatch.some((item) => item.name === sym.name) || sym.compositeLayout) {
+                        if (
+                            sideWatch.some((item) => item.name === sym.name) ||
+                            sym.compositeLayout ||
+                            sym.runtimeLayout
+                        ) {
                             sbToggle(compEntry);
                         } else if (!availableLayoutPending.has(sym.name)) {
                             availableAddPending.add(sym.name);
@@ -449,7 +480,7 @@ function renderAvailable() {
                 leafRows -= ownLeafRows;
                 ownLeafRows = 0;
                 kids.textContent = "";
-                if (!sym.compositeLayout) {
+                if (!sym.compositeLayout && !sym.runtimeLayout) {
                     const note = document.createElement("div");
                     note.className = "sb-note";
                     note.textContent = sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout");
@@ -507,7 +538,12 @@ function renderAvailable() {
                 kids.classList.toggle("open", avExpanded[sym.name]);
                 if (avExpanded[sym.name]) {
                     populate();
-                    if (!sym.compositeLayout && !sym.layoutError && !availableLayoutPending.has(sym.name)) {
+                    if (
+                        !sym.compositeLayout &&
+                        !sym.runtimeLayout &&
+                        !sym.layoutError &&
+                        !availableLayoutPending.has(sym.name)
+                    ) {
                         availableLayoutPending.add(sym.name);
                         api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: availableVersion });
                     }
@@ -519,7 +555,7 @@ function renderAvailable() {
             };
             arrow.onclick = toggle;
             nm.onclick = (event) => {
-                if (!sym.compositeLayout) return toggle(event);
+                if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
                 sbToggle({
                     name: sym.name,
                     displayName: sym.displayName || sym.name,
@@ -527,11 +563,12 @@ function renderAvailable() {
                     size: Number(sym.size) || 4,
                     type: "",
                     isComposite: true,
-                    compositeLayout: sym.compositeLayout
+                    compositeLayout: sym.compositeLayout || null,
+                    ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
                 });
             };
         } else {
-            const noLayout = sym.isComposite && !sym.compositeLayout;
+            const noLayout = sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout;
             const b = document.createElement("div");
             b.className = "available-row" + (noLayout ? " off" : "");
             const already = selected.has(sym.name);
@@ -585,7 +622,7 @@ function renderAvailable() {
     }
 }
 function sbIsComposite(it) {
-    return !!(it && it.isComposite && it.compositeLayout);
+    return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
 }
 // 写入列表：与查看列表共用 ELF 变量栏添加；拖动时最多 10 Hz 连续写入，结果由 writeResult 反馈
 const WRITE_INTERVAL_MS = 100;
@@ -1167,6 +1204,28 @@ function sbRenderLayout(container, layout, path) {
         if (total > shown) sbNote(container, t("lw.arrayMore", { n: total - shown }));
     }
 }
+function sbRenderRuntimeTree(container, tree, path) {
+    if (!tree) return;
+    if (tree.members) {
+        tree.members.forEach((member) => {
+            const childPath = member.name ? path + "." + member.name : path;
+            if (member.members || member.elements) sbRenderRuntimeTree(container, member, childPath);
+            else if (Object.prototype.hasOwnProperty.call(member, "value"))
+                sbRenderLeaf(
+                    container,
+                    member.name || "value",
+                    member.typeName || member.type || "",
+                    childPath,
+                    member.type
+                );
+        });
+    } else if (tree.elements) {
+        tree.elements.forEach((element) => sbRenderRuntimeTree(container, element, path + "[" + element.index + "]"));
+    } else if (Object.prototype.hasOwnProperty.call(tree, "value")) {
+        sbRenderLeaf(container, "value", tree.typeName || tree.type || "", path, tree.type);
+    }
+    if (tree.unavailable) sbNote(container, tree.unavailable);
+}
 function sbRenderNest(container, layout, fieldName, path) {
     const wrap = document.createElement("div");
     const head = document.createElement("div");
@@ -1233,14 +1292,25 @@ function sbRenderComposite(item) {
         arrow.classList.toggle("open", sbExpanded[item.name]);
         saveSbUi();
     };
-    sbRenderLayout(body, lay, item.name);
+    if (item.runtimeLayout) {
+        runtimeBodies[item.name] = body;
+        sbRenderRuntimeTree(body, latest[item.name], item.name);
+        if (!body.childNodes.length) sbNote(body, t("lw.waitSamples"));
+    } else sbRenderLayout(body, lay, item.name);
     row.append(head, body);
     liveBox.appendChild(row);
     sbUpdateComposite(item.name);
 }
 function sbOnComposite(samples) {
     (samples || []).forEach((s) => {
-        if (s && s.name) latest[s.name] = s.tree;
+        if (s && s.name) {
+            latest[s.name] = s.tree;
+            const body = runtimeBodies[s.name];
+            if (body) {
+                body.textContent = "";
+                sbRenderRuntimeTree(body, s.tree, s.name);
+            }
+        }
     });
     scheduleValueRefresh();
 }
@@ -1350,6 +1420,10 @@ if (skillToggle)
         api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" });
     };
 function progress(m) {
+    if (m?.cmd === "mcu-vscode.download" || m?.stage) {
+        setStat(m.level === "error" ? "error" : m.level === "success" ? "ready" : "", m.key || "", m.params, m.message);
+        return;
+    }
     setStat(m.level === "error" ? "error" : m.level === "success" ? "ready" : "", m.key || "", m.params, m.message);
     logEvents.push({ level: m.level, key: m.key, params: m.params, message: m.message });
     while (logEvents.length > 6) logEvents.shift();
@@ -1462,6 +1536,7 @@ function renderChip(info) {
 if (chipRead)
     chipRead.onclick = () => {
         if (!api) return setStat("error", "sb.extNotConnected");
+        revealIncompleteConfiguration();
         chipStatus({ state: "reading" });
         api.postMessage({ type: "readChipInfo" });
     };
@@ -1490,6 +1565,7 @@ document.querySelectorAll("[data-command]").forEach(
     (b) =>
         (b.onclick = () => {
             if (!api) return setStat("error", "sb.extNotConnected");
+            revealIncompleteConfiguration();
             if (b.dataset.command === "mcu-vscode.download") {
                 log.textContent = "";
                 logEvents = [];
@@ -1500,11 +1576,15 @@ document.querySelectorAll("[data-command]").forEach(
 );
 liveToggle.onclick = () => {
     if (api) {
+        revealIncompleteConfiguration();
         liveToggle.disabled = true;
         api.postMessage({ type: "liveToggle" });
         setTimeout(() => (liveToggle.disabled = probeDriverBusy), 500);
     }
 };
+for (const id of ["peripheralRefresh", "peripheralFormat", "rtosRefresh"]) {
+    document.getElementById(id)?.addEventListener("click", revealIncompleteConfiguration);
+}
 document.getElementById("openocdInstall").onclick = () =>
     api && api.postMessage({ type: "openocdAction", action: "install" });
 document.getElementById("openocdSelect").onclick = () =>
@@ -1577,6 +1657,9 @@ attachResizeHandle(
 );
 document.getElementById("githubLink").onclick = () => api?.postMessage({ type: "openGitHub" });
 window.EmberProbeMessages.connect(window, {
+    memoryAnalysis: function (m) {
+        memoryView?.receive(m);
+    },
     initSuccess: function (m) {
         setStat("ready", "sb.ready");
     },

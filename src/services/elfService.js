@@ -1,6 +1,7 @@
 "use strict";
 const { Worker } = require("worker_threads");
 const { isCppRuntimeSymbol, isItaniumMangled } = require("../elfSymbols");
+const { companionsUnchanged } = require("../dwarf/files");
 
 // §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
 // autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
@@ -66,14 +67,22 @@ class ElfService {
         for (const symbol of result.symbols) {
             const info = types.get(symbol.name);
             const looksCpp = isItaniumMangled(symbol.name);
-            const unresolvedCpp = looksCpp && (!info || info.kind === "unknown");
+            const unresolvedCpp =
+                (looksCpp || result.typeMetadataIncomplete || info?.kind === "unknown") &&
+                (!info || info.kind === "unknown");
             symbol.displayName = displayNames.get(symbol.name) || symbol.displayName || symbol.name;
             symbol.qualifiedName = symbol.displayName;
             symbol.typeName = info?.typeName || "";
             const layout = layouts.get(symbol.name);
-            const hasLayout = !!layout && !info?.ambiguous;
+            const hasLayout = !!layout && !info?.ambiguous && info?.kind !== "scalar";
+            if (layout?.runtimeLayout) symbol.runtimeLayout = layout.runtimeLayout;
             symbol.cppTypeUnavailable = !!info?.ambiguous || unresolvedCpp;
             const knownKind = info?.kind && info.kind !== "unknown";
+            symbol.hasRuntimeLayout =
+                !!knownKind &&
+                (info.isReference ||
+                    /\*\s*$/.test(symbol.typeName) ||
+                    ["struct", "class", "union", "array"].includes(info.kind));
             symbol.isComposite =
                 !!info?.ambiguous ||
                 hasLayout ||
@@ -151,7 +160,8 @@ class ElfService {
         if (
             this.loadIdentity?.path === elfPath &&
             this.loadIdentity.mtimeMs === stat.mtimeMs &&
-            this.loadIdentity.size === stat.size
+            this.loadIdentity.size === stat.size &&
+            companionsUnchanged(this.cache?.companions, this.fs)
         )
             return this.symbolsPromise || Promise.resolve(this.cache);
         this.invalidate();
@@ -216,6 +226,7 @@ class ElfService {
             switch (message.type) {
                 case "metadata":
                     result.elf = message.elf;
+                    result.memory = message.memory;
                     result.warnings.push(...message.warnings);
                     this.onChange("metadata", result);
                     break;
@@ -267,7 +278,10 @@ class ElfService {
                     break;
                 }
                 case "dwarfReady":
+                    result.companions = message.companions || [];
                     result.diagnostics.push(...message.diagnostics);
+                    result.typeMetadataIncomplete = message.diagnostics.some((entry) => entry.code !== "DWARF_MISSING");
+                    this._enrich(result, types);
                     this._recordCppDiagnostics(result, types);
                     result.workerHeapUsed = message.heapUsed;
                     result.warnings.push(...message.diagnostics.map((d) => `${d.code}: ${d.message}`));
@@ -327,6 +341,7 @@ class ElfService {
                     if (generation !== this.generation) return reject(new Error("ELF changed"));
                     if (layout) {
                         symbol.compositeLayout = layout;
+                        symbol.runtimeLayout = layout.runtimeLayout;
                         symbol.unsupportedReason = "";
                     }
                     resolve(layout);
@@ -345,7 +360,8 @@ class ElfService {
                 if (
                     this.cache.elf.path === currentPath &&
                     this.cache.elf.mtimeMs === stat.mtimeMs &&
-                    this.cache.elf.size === stat.size
+                    this.cache.elf.size === stat.size &&
+                    companionsUnchanged(this.cache.companions, this.fs)
                 )
                     return this.cache;
                 this.invalidate();
@@ -379,7 +395,8 @@ class ElfService {
             if (
                 this.cache?.elfPath === elfPath &&
                 this.cache.mtimeMs === before.mtimeMs &&
-                this.cache.size === before.size
+                this.cache.size === before.size &&
+                companionsUnchanged(this.cache.result.companions, this.fs)
             )
                 return this.cache.result;
             buffer = this.fs.readFileSync(elfPath);
@@ -399,12 +416,20 @@ class ElfService {
         }
 
         const sha256 = this.crypto.createHash("sha256").update(buffer).digest("hex");
-        if (this.cache?.elfPath === elfPath && this.cache.sha256 === sha256) return this.cache.result;
+        if (
+            this.cache?.elfPath === elfPath &&
+            this.cache.sha256 === sha256 &&
+            companionsUnchanged(this.cache.result.companions, this.fs)
+        )
+            return this.cache.result;
 
         const result = this.elfSymbols.parseElfSymbols(buffer);
+        result.memory = this.elfSymbols.parseElfSections(buffer);
         result.symbols = result.symbols.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
         result.elf = { path: elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256 };
-        const parsed = this.dwarf.parseDwarf(buffer);
+        const parsed = this.dwarf.parseDwarf(buffer, { filePath: elfPath, runtime: true });
+        result.typeMetadataIncomplete = parsed?.diagnostics?.some((entry) => entry.code !== "DWARF_MISSING");
+        result.companions = parsed?.companions || [];
         result.diagnostics = parsed?.diagnostics || [];
         for (const diagnostic of result.diagnostics) result.warnings.push(`${diagnostic.code}: ${diagnostic.message}`);
         const typeMap = parsed?.types || null;

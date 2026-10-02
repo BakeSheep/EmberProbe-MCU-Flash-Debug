@@ -73,6 +73,7 @@ jobs:
       - run: node test/gdb/debug-images.test.js
         env:
           IMAGE_GDB: gdb-multiarch
+      - run: node test/gdb/runtime-objects.test.js --fixtures
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

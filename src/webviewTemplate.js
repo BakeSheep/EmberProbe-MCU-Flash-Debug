@@ -28,6 +28,7 @@ function loadRendererPrelude(area) {
             ...(area === "sidebar"
                 ? [
                       loadWebviewAsset("sidebar", "chipView.js"),
+                      loadWebviewAsset("sidebar", "memoryView.js"),
                       loadWebviewAsset("sidebar", "peripherals.js"),
                       loadWebviewAsset("sidebar", "rtos.js")
                   ]

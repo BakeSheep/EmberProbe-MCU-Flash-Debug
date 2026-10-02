@@ -60,6 +60,7 @@ class DebugSessionBridge {
         this.stopReason = "";
         this.threadId = null;
         this.stopEpoch = 0;
+        this.inspectionEpoch = 0;
         this.stateWaiters = new Set();
         this.epoch = 0;
         this.timer = null;
@@ -339,6 +340,7 @@ class DebugSessionBridge {
         this.sessionContexts?.get(session.id)?.handleRequest(session, message);
         if (!this.sessions.has(session.id)) return;
         if (this.sessionContexts && this.activeSession?.id !== session.id) return;
+        if (["setVariable", "setExpression", "writeMemory"].includes(message.command)) this.inspectionEpoch += 1;
         const transitions = {
             next: "step",
             stepIn: "step",
@@ -427,6 +429,7 @@ class DebugSessionBridge {
             return;
         }
         if (message.type !== "event") return;
+        if (message.event === "invalidated" || message.event === "thread") this.inspectionEpoch += 1;
         if (message.event === "stopped") {
             const transition = this.transitionKind;
             this.transitionKind = "";
@@ -805,7 +808,45 @@ class DebugSessionBridge {
         if (session !== this.activeSession || !this.paused || this.transitionKind)
             throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
         const samples = [];
-        for (const group of mergeReadPlan(items)) {
+        const guard = () => {
+            if (
+                session !== this.activeSession ||
+                !this.paused ||
+                this.transitionKind ||
+                (expectedEpoch !== null && expectedEpoch !== this.epoch)
+            )
+                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+        };
+        const fixed = items.filter((item) => !item.runtimeLayout);
+        const groups = mergeReadPlan(fixed);
+        const budget = {
+            bytes: groups.reduce((sum, group) => sum + group.size, 0),
+            commands: groups.length,
+            deadline: Date.now() + 1000
+        };
+        for (const item of items.filter((entry) => entry.runtimeLayout)) {
+            guard();
+            try {
+                const { RuntimeObjectReader } = require("./runtimeObjectReader");
+                const reader = new RuntimeObjectReader(
+                    item,
+                    (address, size) => this._readBlock(session, address, size),
+                    guard,
+                    budget
+                );
+                samples.push({ name: item.name, runtimeTree: await reader.sample() });
+            } catch (error) {
+                if (!error.code?.startsWith("LIVE_")) throw error;
+                samples.push({
+                    name: item.name,
+                    bytes: null,
+                    diagnostic: { code: error.code, message: error.message }
+                });
+            }
+        }
+        for (const group of groups) {
             if (expectedEpoch !== null && expectedEpoch !== this.epoch)
                 throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
                     code: "DEBUG_STATE_CHANGED"

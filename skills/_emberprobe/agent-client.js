@@ -389,6 +389,42 @@ const DIAGNOSTICS = {
         ["先运行 --status 确认状态，再决定是否发送新操作；不要并发或自动重试。"],
         true
     ],
+    DEBUG_INSPECTION_STALE: [
+        "debug_state",
+        "暂停上下文已变化，旧帧或变量句柄不可复用。",
+        ["读取当前状态，并在暂停后重新列出线程、调用栈和作用域。"],
+        false
+    ],
+    DEBUG_INSPECTION_INVALID: [
+        "debug_configuration",
+        "检查动作或分页参数无效。",
+        ["使用 threads/stack/scopes/variables，分页数量限制为 1–100。"],
+        false
+    ],
+    DEBUG_INSPECTION_UNSUPPORTED: [
+        "debug_capability",
+        "暂停对象检查和 RTOS 结构化快照需要原生 EmberProbe 调试器。",
+        ["检查所选会话的调试器类型；不自动切换或重启会话。"],
+        false
+    ],
+    DEBUG_TASK_EXITED: [
+        "debug_state",
+        "请求的任务已不在当前线程列表中。",
+        ["重新读取线程列表并明确选择任务，不能用 TCB 地址代替线程 ID。"],
+        false
+    ],
+    DEBUG_STATE_TRANSITION: [
+        "debug_state",
+        "调试执行控制正在进行。",
+        ["等待控制操作完成，读取状态后再检查暂停数据。"],
+        false
+    ],
+    DEBUG_INSPECTION_LIMIT: [
+        "debug_state",
+        "本次暂停的对象检查句柄已达到上限。",
+        ["报告已读取的范围；下一次暂停后只展开必要对象。"],
+        false
+    ],
     BREAKPOINT_PATH_OUTSIDE_WORKSPACE: [
         "debug_safety",
         "源码断点路径超出了当前工作区。",
@@ -417,6 +453,9 @@ const READ_ONLY_METHODS = new Set([
     "probe.list",
     "elf.analyze",
     "debug.status",
+    "debug.inspect",
+    "rtos.status",
+    "rtos.snapshot",
     "debug.breakpoints.list",
     "peripherals.list"
 ]);

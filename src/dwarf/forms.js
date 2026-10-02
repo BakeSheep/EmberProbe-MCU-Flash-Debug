@@ -2,6 +2,12 @@
 const { readULEB, readSLEB, readAddr, cstr } = require("./binary");
 function createFormReader({ buf, str, lineStr }) {
     let depth = 0;
+    function offset(cur, width = 4) {
+        const value = width === 8 ? buf.readBigUInt64LE(cur.p) : BigInt(buf.readUInt32LE(cur.p));
+        cur.p += width;
+        if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("DWARF offset exceeds the safe integer range");
+        return Number(value);
+    }
     return function readForm(cur, form, ctx) {
         if (++depth > 32) {
             depth--;
@@ -45,8 +51,9 @@ function createFormReader({ buf, str, lineStr }) {
                     return v;
                 }
                 case 0x07: {
+                    const value = buf.readBigUInt64LE(cur.p);
                     cur.p += 8;
-                    return 0;
+                    return { integer64: value.toString() };
                 } // data8
                 case 0x08: {
                     const end = buf.indexOf(0, cur.p);
@@ -82,16 +89,13 @@ function createFormReader({ buf, str, lineStr }) {
                 case 0x0d:
                     return readSLEB(buf, cur);
                 case 0x0e: {
-                    const off = buf.readUInt32LE(cur.p);
-                    cur.p += 4;
+                    const off = offset(cur, ctx.offsetSize);
                     return { str: str ? cstr(str.data, off) : "" };
                 }
                 case 0x0f:
                     return readULEB(buf, cur);
                 case 0x10: {
-                    const off = buf.readUInt32LE(cur.p);
-                    cur.p += 4;
-                    return { ref: off };
+                    return { ref: (ctx.sectionBase || 0) + offset(cur, ctx.offsetSize) };
                 } // ref_addr（节内偏移）
                 case 0x11: {
                     const v = buf[cur.p];
@@ -109,9 +113,7 @@ function createFormReader({ buf, str, lineStr }) {
                     return { ref: ctx.cuRel + v };
                 }
                 case 0x14: {
-                    const lo = buf.readUInt32LE(cur.p);
-                    cur.p += 8;
-                    return { ref: ctx.cuRel + lo };
+                    return { ref: ctx.cuRel + offset(cur, 8) };
                 }
                 case 0x15: {
                     const v = readULEB(buf, cur);
@@ -122,9 +124,7 @@ function createFormReader({ buf, str, lineStr }) {
                     return readForm(cur, f, ctx);
                 } // indirect
                 case 0x17: {
-                    const v = buf.readUInt32LE(cur.p);
-                    cur.p += 4;
-                    return v;
+                    return offset(cur, ctx.offsetSize);
                 } // sec_offset
                 case 0x18: {
                     const n = readULEB(buf, cur);
@@ -137,8 +137,7 @@ function createFormReader({ buf, str, lineStr }) {
                 case 0x1a:
                     return { strx: readULEB(buf, cur) };
                 case 0x1b: {
-                    readULEB(buf, cur);
-                    return 0;
+                    return { addrx: readULEB(buf, cur) };
                 } // addrx
                 case 0x1c: {
                     cur.p += 4;
@@ -154,13 +153,13 @@ function createFormReader({ buf, str, lineStr }) {
                     return { block: b };
                 }
                 case 0x1f: {
-                    const off = buf.readUInt32LE(cur.p);
-                    cur.p += 4;
+                    const off = offset(cur, ctx.offsetSize);
                     return { str: lineStr ? cstr(lineStr.data, off) : "" };
                 }
                 case 0x20: {
+                    const signature = buf.subarray(cur.p, cur.p + 8).toString("hex");
                     cur.p += 8;
-                    return 0;
+                    return { signature };
                 }
                 case 0x21:
                     return ctx.implicit !== undefined ? ctx.implicit : 0; // implicit_const
@@ -197,28 +196,31 @@ function createFormReader({ buf, str, lineStr }) {
                     return { strx: v };
                 }
                 case 0x29: {
-                    cur.p += 1;
-                    return 0;
+                    const addrx = buf[cur.p++];
+                    return { addrx };
                 }
                 case 0x2a: {
+                    const addrx = buf.readUInt16LE(cur.p);
                     cur.p += 2;
-                    return 0;
+                    return { addrx };
                 }
                 case 0x2b: {
+                    const addrx = buf.readUIntLE(cur.p, 3);
                     cur.p += 3;
-                    return 0;
+                    return { addrx };
                 }
                 case 0x2c: {
+                    const addrx = buf.readUInt32LE(cur.p);
                     cur.p += 4;
-                    return 0;
+                    return { addrx };
                 }
                 // GNU split-dwarf 扩展 form：按已知长度推进游标即可，值本身不可用
                 // （split-dwarf 的完整信息在 .dwo 文件中，本解析器不消费）。
                 // 若在此抛错会中止整个 CU，导致后续所有变量丢失 DWARF 布局。
                 case 0x1f01:
-                    return readULEB(buf, cur); // GNU_addr_index
+                    return { addrx: readULEB(buf, cur) }; // GNU_addr_index
                 case 0x1f02:
-                    return readULEB(buf, cur); // GNU_str_index
+                    return { strx: readULEB(buf, cur) }; // GNU_str_index
                 case 0x1f03: {
                     cur.p += 4;
                     return { ref: 0 };

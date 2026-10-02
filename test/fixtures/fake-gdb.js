@@ -33,6 +33,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (command === "-thread-info") body = ',threads=[{id="1",name="Cortex-M"}]';
     if (command.startsWith("-stack-list-frames"))
         body = ',stack=[frame={level="0",func="main",line="12",file="main.c",addr="0x08000000"}]';
+    if (command === "-stack-list-variables --simple-values")
+        body = ',variables=[{name="counter",type="int",value="3"},{name="numbers",type="std::vector<int>"}]';
     if (command.startsWith("-var-create")) body = ',name="var1",value="3",numchild="0",type="int"';
     if (command.startsWith("-var-create") && command.endsWith('"numbers"'))
         body = ',name="numbers",value="{...}",numchild="1",type="std::vector<int, std::allocator<int> >"';

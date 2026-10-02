@@ -3,8 +3,9 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const { parentPort, workerData, isMainThread } = require("worker_threads");
-const { parseElfSymbols } = require("./elfSymbols");
+const { parseElfSymbols, parseElfSections } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
+const { createRuntimeLayoutResolver } = require("./dwarf/runtimeTypes");
 const {
     buildVariableTypes,
     buildDisplayNames,
@@ -27,6 +28,7 @@ async function sendChunks(port, kind, entries, acks) {
 
 async function run(port, filePath) {
     let resolveLayout;
+    let resolveRuntime;
     let symbolNames;
     const acks = new Map();
     port.on("message", (message) => {
@@ -41,7 +43,9 @@ async function run(port, filePath) {
                 port.postMessage({ type: "layoutResult", id: message.id, name: message.name, layout: null });
                 return;
             }
-            const layout = resolveLayout(message.name);
+            let layout = resolveLayout(message.name);
+            const runtimeLayout = resolveRuntime(message.name);
+            if (runtimeLayout) layout = { ...(layout || { kind: "class", byteSize: 4, members: [] }), runtimeLayout };
             if (layout && Buffer.byteLength(JSON.stringify(layout)) > 4 * 1024 * 1024) {
                 throw Object.assign(new Error("DWARF layout response budget exceeded"), {
                     code: "DWARF_BUDGET_EXCEEDED"
@@ -73,20 +77,23 @@ async function run(port, filePath) {
         port.postMessage({
             type: "metadata",
             elf: { path: filePath, mtimeMs: before.mtimeMs, size: before.size, sha256 },
+            memory: parseElfSections(buffer),
             warnings: result.warnings,
             symbolCount: result.symbols.length
         });
         await sendChunks(port, "symbols", result.symbols, acks);
         await sendChunks(port, "functions", result.functions, acks);
         try {
-            const parsed = bindVariableSymbols(parseDwarfInternal(buffer), result.symbols);
+            const parsed = bindVariableSymbols(parseDwarfInternal(buffer, { filePath }), result.symbols);
             const types = buildVariableTypes(parsed);
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);
             resolveLayout = createCompositeLayoutResolver(parsed);
+            resolveRuntime = createRuntimeLayoutResolver(parsed, result.symbols);
             port.postMessage({
                 type: "dwarfReady",
                 diagnostics: parsed.diagnostics,
+                companions: parsed.companions,
                 heapUsed: process.memoryUsage().heapUsed
             });
         } catch (error) {

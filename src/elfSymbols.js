@@ -372,7 +372,7 @@ function parseMemberPath(pathStr) {
         } else if (depth === 0 && ch === "." && /^\.\d+(?=\.|\[|$)/.test(str.slice(i))) {
             // GCC C function statics retain their numeric ELF suffix in the base.
             i += str.slice(i).match(/^\.\d+/)[0].length - 1;
-        } else if (depth === 0 && (ch === "." || ch === "[")) {
+        } else if (depth === 0 && (ch === "." || ch === "[" || str.slice(i, i + 2) === "->")) {
             baseEnd = i;
             break;
         } else if (depth === 0 && !/[\w:]/.test(ch)) {
@@ -386,6 +386,14 @@ function parseMemberPath(pathStr) {
     const segments = [];
     let pos = 0;
     while (pos < rest.length) {
+        if (rest.slice(pos, pos + 2) === "->") {
+            segments.push({ kind: "dereference" });
+            const nameMatch = rest.slice(pos + 2).match(/^[A-Za-z_]\w*/);
+            if (!nameMatch) return null;
+            segments.push({ kind: "member", name: nameMatch[0] });
+            pos += 2 + nameMatch[0].length;
+            continue;
+        }
         if (rest[pos] === ".") {
             pos++;
             // 成员名允许 @baseN 基类段、? 匿名段、或标准标识符。

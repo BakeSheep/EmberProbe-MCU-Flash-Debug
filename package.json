@@ -261,6 +261,19 @@
           "default": "",
           "description": "Deprecated and ignored: STL display is implemented inside EmberProbe.",
           "deprecationMessage": "Use prettyPrinterFiles with prettyPrintingMode=gdb for explicit Python scripts."
+        },
+        "emberprobe.memory.regionKinds": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "flash",
+              "ram",
+              "other"
+            ]
+          },
+          "markdownDescription": "Override memory region types by their exact linker names, e.g. {\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}. Capacities come from the project .map or .ld file."
         }
       }
     },

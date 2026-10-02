@@ -1,8 +1,10 @@
 "use strict";
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
+const { AgentDebugInspection } = require("./agentDebugInspection");
 
 function createAgentRoutes(host, probes = listProbes) {
     const listProbes = probes;
+    let inspection;
     return {
         "config.get": () => host._configurationSnapshot(),
         "probe.list": () => listProbes(),
@@ -43,6 +45,18 @@ function createAgentRoutes(host, probes = listProbes) {
             return host._svdPeripheralService.write(params || {});
         },
         "debug.status": () => host._debugControlService.status(),
+        "debug.inspect": (params) => {
+            inspection ||= new AgentDebugInspection(host._debugBridge);
+            return inspection.inspect(params || {});
+        },
+        "rtos.status": () => host._rtosViewService.status(),
+        "rtos.snapshot": (params) => {
+            if (params?.includeStackUsage !== undefined && typeof params.includeStackUsage !== "boolean")
+                throw Object.assign(new Error("includeStackUsage must be boolean"), {
+                    code: "DEBUG_INSPECTION_INVALID"
+                });
+            return host._rtosViewService.refresh(params?.includeStackUsage !== false);
+        },
         "debug.select": (params) => host._selectDebugSession(params || {}),
         "debug.start": () => host._debugControlService.start(),
         "debug.control": (params) => host._debugControlService.control(params || {}),

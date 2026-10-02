@@ -1,0 +1,4 @@
+interface:
+  display_name: "MCU RTOS Inspection"
+  short_description: "Inspect paused RTOS tasks, stacks and C++ locals"
+  default_prompt: "Use $mcu-rtos to inspect the selected paused session's tasks and investigate the requested task's stack and variables."

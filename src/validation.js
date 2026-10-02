@@ -2,6 +2,7 @@
 
 const { SUPPORTED_TYPES, typeByteLength, parseMemberPath, expandCompositeLeaves } = require("./elfSymbols");
 const { variableDisplayName } = require("./webview/runtime");
+const { runtimeWatchEntry } = require("./services/runtimeWatch");
 
 function cleanWindowsPath(value) {
     if (!value) return "";
@@ -50,6 +51,14 @@ function normalizeWatchList(items, symbols) {
     for (const item of items) {
         if (!item || typeof item.name !== "string" || seen.has(item.name)) continue;
         const symbol = byName.get(item.name);
+        const path = parseMemberPath(item.name);
+        const runtimeSymbol = symbol || (path && byName.get(path.base));
+        const runtime = runtimeSymbol && runtimeWatchEntry(item.name, runtimeSymbol, path?.segments || []);
+        if (runtime) {
+            seen.add(item.name);
+            result.push(runtime);
+            continue;
+        }
         if (!symbol) {
             // 非直接符号：尝试按复合变量成员/元素路径解析为标量叶子
             const leaf = resolveLeafPath(item.name, byName, supported);

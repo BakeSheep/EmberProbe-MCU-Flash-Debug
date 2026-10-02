@@ -43,6 +43,7 @@ const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
 const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
+const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
 const { ChipInfoService } = require("./services/chipInfoService");
@@ -851,7 +852,7 @@ class MainViewProvider {
                     },
                     (event) => {
                         // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
-                        const message = { type: "openocdProgress", ...event };
+                        const message = { type: "openocdProgress", cmd: "mcu-vscode.download", ...event };
                         this._recentProgress.push(message);
                         if (this._recentProgress.length > 6) this._recentProgress.shift();
                         this._webviewView?.webview.postMessage(message);
@@ -1075,6 +1076,15 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Variable not found in current ELF: ${rawName}`), {
                     code: "VARIABLE_NOT_FOUND"
                 });
+            const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
+                rawName,
+                symbol,
+                parsed?.segments || []
+            );
+            if (runtime) {
+                appendResolved(runtime);
+                continue;
+            }
             if (symbol.isComposite) {
                 if (!symbol.compositeLayout)
                     throw Object.assign(new Error(`Composite variable has no DWARF layout: ${rawName}`), {
@@ -1175,6 +1185,15 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Variable not found in current ELF: ${req.name}`), {
                     code: "VARIABLE_NOT_FOUND"
                 });
+            const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
+                req.name,
+                symbol,
+                parsed?.segments || []
+            );
+            if (runtime) {
+                compositePlan.push({ ...runtime, requestedName: req.name });
+                continue;
+            }
             if (symbol.isComposite) {
                 if (!symbol.compositeLayout) {
                     // 缺布局时不能把完整路径丢进标量解析器，否则会得到误导性的 VARIABLE_NOT_FOUND
@@ -1232,8 +1251,16 @@ class MainViewProvider {
         if (compositePlan) {
             for (const comp of compositePlan) {
                 const sample = byName.get(comp.name);
-                const fullTree = sample?.bytes ? elfSymbols.decodeComposite(sample.bytes, comp.compositeLayout) : null;
-                const node = fullTree ? elfSymbols.navigateCompositeTree(fullTree, comp.pathSpec) : null;
+                const fullTree = comp.runtimeLayout
+                    ? sample?.runtimeTree
+                    : sample?.bytes
+                      ? elfSymbols.decodeComposite(sample.bytes, comp.compositeLayout)
+                      : null;
+                const node = comp.runtimeLayout
+                    ? fullTree
+                    : fullTree
+                      ? elfSymbols.navigateCompositeTree(fullTree, comp.pathSpec)
+                      : null;
                 const baseAddr = comp.address >>> 0;
                 const addrHex = (off) => `0x${((baseAddr + (off || 0)) >>> 0).toString(16).toUpperCase()}`;
                 if (elfSymbols.isScalarLeafNode(node)) {
@@ -1243,14 +1270,15 @@ class MainViewProvider {
                         value: node.value,
                         valueText: node.valueText ?? null,
                         type: node.type,
-                        address: addrHex(node.offset)
+                        address: comp.runtimeLayout ? addrHex(node.address - baseAddr) : addrHex(node.offset)
                     };
                 } else {
                     values[comp.requestedName] = {
                         requestedName: comp.requestedName,
                         tree: node,
                         type: "composite",
-                        address: addrHex(node && node.offset)
+                        address: addrHex(node && node.offset),
+                        ...(sample?.diagnostic ? { diagnostic: sample.diagnostic } : {})
                     };
                 }
             }
@@ -1289,7 +1317,9 @@ class MainViewProvider {
         for (const comp of compositePlan) {
             if (!seenRead.has(comp.name)) {
                 seenRead.add(comp.name);
-                readItems.push({ name: comp.name, address: comp.address, size: comp.size });
+                readItems.push(
+                    comp.runtimeLayout ? { ...comp } : { name: comp.name, address: comp.address, size: comp.size }
+                );
             }
         }
 
@@ -1304,7 +1334,13 @@ class MainViewProvider {
                         throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
                             code: "AGENT_READ_CANCELLED"
                         });
-                    result.push(this._decodeAgentSample(plan, await session.readOnce(readItems), compositePlan));
+                    result.push(
+                        this._decodeAgentSample(
+                            plan,
+                            await session.readOnce(this._runtimeReadRanges(readItems, elfResult)),
+                            compositePlan
+                        )
+                    );
                     if (temporary && syncStatus)
                         this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
                     if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs);
@@ -1329,8 +1365,10 @@ class MainViewProvider {
     _runtimeRamPlan(items, strict = false) {
         const elfResult = this.readElfSymbols();
         if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
-            const parsed = elfSymbols.parseElfSections(fs.readFileSync(elfResult.elf.path));
-            this._runtimeRamCache = { sha256: elfResult.elf.sha256, sections: parsed.sections };
+            this._runtimeRamCache = {
+                sha256: elfResult.elf.sha256,
+                sections: Array.isArray(elfResult.memory?.sections) ? elfResult.memory.sections : []
+            };
         }
         const result = filterRuntimeRamPlan(items, this._runtimeRamCache.sections);
         if (strict && result.denied.length) {
@@ -2059,6 +2097,13 @@ class MainViewProvider {
             const symbol = byName.get(baseName);
             let target;
             if (symbol && symbol.isComposite) {
+                if (symbol.runtimeLayout)
+                    throw Object.assign(
+                        new Error(`Writing C++ runtime container or dynamic member is not supported: ${req.name}`),
+                        {
+                            code: "WRITE_NOT_ALLOWED"
+                        }
+                    );
                 if (!symbol.compositeLayout)
                     throw Object.assign(new Error(`Composite variable has no DWARF layout: ${req.name}`), {
                         code: "UNSUPPORTED_VARIABLE"
@@ -2327,92 +2372,21 @@ class MainViewProvider {
             this._chipInfoLease?.release();
         }
     }
-    // 纯静态分析当前 ELF 的 Flash/RAM 占用与最大符号，不占探针
-    async _analyzeElf(params) {
-        const elfResult = await this._elfService.load();
-        let buffer;
-        try {
-            buffer = fs.readFileSync(elfResult.elf.path);
-        } catch (e) {
-            throw Object.assign(new Error(`Cannot read ELF: ${elfResult.elf.path}`), {
-                code: "ELF_READ_FAILED",
-                details: { cause: e.message }
+    // Agent and sidebar share one memory analysis backend.
+    _getMemoryAnalysisController() {
+        if (!this._memoryAnalysisController) {
+            this._memoryAnalysisController = new MemoryAnalysisController({
+                vscode,
+                elfService: this._elfService,
+                fs,
+                context: this._context || { workspaceState: { get: (_key, fallback) => fallback } },
+                post: (message) => this._webviewView?.webview.postMessage(message)
             });
         }
-        const { sections, programHeaders } = elfSymbols.parseElfSections(buffer);
-        const SHF_WRITE = 1,
-            SHF_ALLOC = 2,
-            SHT_NOBITS = 8,
-            PT_LOAD = 1;
-        const hex = (v) => `0x${(v >>> 0).toString(16).toUpperCase()}`;
-        // 用 PT_LOAD 段把 VMA 映射到 LMA（.data 在 Flash 中的装载副本）
-        const lmaFor = (s) => {
-            for (const ph of programHeaders) {
-                if (ph.type !== PT_LOAD) continue;
-                if (s.addr >= ph.vaddr && s.addr + s.size <= ph.vaddr + Math.max(ph.filesz, ph.memsz)) {
-                    return (ph.paddr + (s.addr - ph.vaddr)) >>> 0;
-                }
-            }
-            return s.addr;
-        };
-        const flashSections = [],
-            ramSections = [];
-        let flashTotal = 0,
-            ramTotal = 0;
-        for (const s of sections) {
-            if (!(s.flags & SHF_ALLOC) || !s.size) continue;
-            if (s.type !== SHT_NOBITS) {
-                // 有文件内容的装载节占 Flash（按 LMA）：.isr_vector/.text/.rodata/.data 等
-                flashSections.push({ name: s.name, address: hex(lmaFor(s)), size: s.size });
-                flashTotal += s.size;
-            }
-            if (s.flags & SHF_WRITE) {
-                // 运行期占 RAM 的可写节（按 VMA）：.data/.bss/.noinit 等
-                ramSections.push({ name: s.name, address: hex(s.addr), size: s.size });
-                ramTotal += s.size;
-            }
-        }
-        const sectionOf = (address) => {
-            const hit = sections.find(
-                (s) => s.flags & SHF_ALLOC && s.size && address >= s.addr && address < s.addr + s.size
-            );
-            return hit ? hit.name : "";
-        };
-        const top = validation.clampInteger(params.top, 20, 1, 100);
-        const topSymbols = [
-            ...(elfResult.functions || []).map((f) => ({
-                name: f.name,
-                displayName: f.displayName || f.name,
-                kind: "function",
-                size: f.size,
-                address: f.address
-            })),
-            ...elfResult.symbols.map((s) => ({
-                name: s.name,
-                displayName: s.displayName || s.name,
-                kind: "object",
-                size: s.size,
-                address: s.address
-            }))
-        ]
-            .filter((s) => s.size > 0)
-            .sort((a, b) => b.size - a.size)
-            .slice(0, top)
-            .map((s) => ({
-                name: s.name,
-                displayName: s.displayName || s.name,
-                kind: s.kind,
-                section: sectionOf(s.address),
-                size: s.size,
-                address: hex(s.address)
-            }));
-        return {
-            elf: elfResult.elf,
-            flash: { total: flashTotal, sections: flashSections },
-            ram: { total: ramTotal, sections: ramSections },
-            topSymbols,
-            warnings: elfResult.warnings || []
-        };
+        return this._memoryAnalysisController;
+    }
+    async _analyzeElf(params = {}) {
+        return this._getMemoryAnalysisController().service.analyze(params);
     }
     async _handleAgentCall(method, params) {
         return this._agentService.call(method, params);
@@ -2745,6 +2719,7 @@ class MainViewProvider {
     }
     async _refreshElfBindings() {
         this._invalidateElfState();
+        this._memoryAnalysisController?.refresh();
         try {
             if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
                 const result = await this._elfService.ready();
@@ -2766,7 +2741,17 @@ class MainViewProvider {
         });
     }
     async _saveWatchList(key, items) {
-        await this._watchLists.save(key, items);
+        // Runtime recipes are derived from the current ELF and can contain thousands of
+        // type nodes. Persist the user identity/path only; the next ELF rebind regenerates
+        // the verified recipe and prevents stale addresses/layouts in workspace state.
+        const persisted = (Array.isArray(items) ? items : []).map((item) => {
+            if (!item?.runtimeLayout) return item;
+            const { runtimeLayout, runtimeRanges, compositeLayout, ...identity } = item;
+            return compositeLayout?.runtimeLayout
+                ? { ...identity, compositeLayout: (({ runtimeLayout: ignored, ...layout }) => layout)(compositeLayout) }
+                : { ...identity, ...(compositeLayout ? { compositeLayout } : {}) };
+        });
+        await this._watchLists.save(key, persisted);
         this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
         for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
         await this._refreshSamplingPlan();
@@ -2784,13 +2769,16 @@ class MainViewProvider {
             const parsed = elfSymbols.parseMemberPath(name);
             const base = parsed ? parsed.base : name;
             const symbol = byName.get(base);
-            if (!symbol?.isComposite || symbol.compositeLayout) continue;
+            if ((!symbol?.isComposite && !symbol?.hasRuntimeLayout) || symbol.compositeLayout) continue;
             await this._elfService.layout(base);
         }
         return result;
     }
     _elfVersion(result) {
-        return result?.elf?.sha256 || "";
+        const sha256 = result?.elf?.sha256 || "";
+        return result?.companions?.length
+            ? sha256 + ":" + result.companions.map((entry) => entry.sha256 || "missing").join(":")
+            : sha256;
     }
     _sendElfSnapshot(post, listType) {
         const result = this._elfService?.cache;
@@ -2825,6 +2813,7 @@ class MainViewProvider {
                 typeName: symbol.typeName,
                 watchType: symbol.watchType,
                 isComposite: symbol.isComposite,
+                hasRuntimeLayout: symbol.hasRuntimeLayout,
                 unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
                 ...(symbol.isBoolean ? { isBoolean: true } : {}),
@@ -2869,7 +2858,7 @@ class MainViewProvider {
         const byName = new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
         for (const name of names) {
             const symbol = byName.get(name);
-            if (!symbol?.isComposite) continue;
+            if (!symbol?.isComposite && !symbol?.hasRuntimeLayout) continue;
             try {
                 await this._elfService.layout(name);
             } catch (error) {
@@ -3017,7 +3006,27 @@ class MainViewProvider {
         } catch (e) {
             /* ELF 不可用时忽略写入列表 */
         }
-        return buildActiveReadPlan(lists, elfSymbols);
+        const plan = buildActiveReadPlan(lists, elfSymbols);
+        return this._runtimeReadRanges(plan);
+    }
+    _runtimeReadRanges(plan, result = this.readElfSymbols()) {
+        if (!plan.some((item) => item.runtimeLayout)) return plan;
+        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== result.elf.sha256) {
+            const sections = Array.isArray(result.memory?.sections) ? result.memory.sections : [];
+            this._runtimeRamCache = { sha256: result.elf.sha256, sections };
+        }
+        const ranges = this._runtimeRamCache.sections
+            .filter(
+                (section) =>
+                    section.flags & 2 &&
+                    Number.isSafeInteger(section.addr) &&
+                    Number.isSafeInteger(section.size) &&
+                    section.addr > 0 &&
+                    section.size > 0 &&
+                    section.addr + section.size <= 0x100000000
+            )
+            .map((section) => ({ start: section.addr, end: section.addr + section.size }));
+        return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
     }
     // 各消费者对每个变量的观察类型，用于把同一份原始字节按各自类型解码后分别推送。
     _consumerTypes() {
@@ -3770,6 +3779,7 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     shutdown() {
+        this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();
         if (this._shutdownPromise) return this._shutdownPromise;
@@ -3938,7 +3948,24 @@ class MainViewProvider {
                     }
                     break;
                 }
+                case "memoryRefresh":
+                    await this._getMemoryAnalysisController().refresh();
+                    break;
+                case "memorySelectSource":
+                    try {
+                        await this._getMemoryAnalysisController().selectSource();
+                    } catch (error) {
+                        webviewView.webview.postMessage({
+                            type: "memoryAnalysis",
+                            state: "error",
+                            key: "memory.failed",
+                            message: error.message,
+                            code: error.code
+                        });
+                    }
+                    break;
                 case "initCheck": {
+                    this._getMemoryAnalysisController().refresh();
                     this._sidebarReady = true;
                     // Webview初始化检查，直接返回成功（无需依赖commands接口）
                     webviewView.webview.postMessage({ type: "initSuccess" });

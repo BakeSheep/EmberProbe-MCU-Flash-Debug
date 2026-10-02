@@ -47,6 +47,8 @@ const { AgentService } = require("../src/services/agentService");
         "peripherals.read": "_svdPeripheralService.read",
         "peripherals.write": "_svdPeripheralService.write",
         "debug.status": "_debugControlService.status",
+        "rtos.status": "_rtosViewService.status",
+        "rtos.snapshot": "_rtosViewService.refresh",
         "debug.start": "_debugControlService.start",
         "debug.control": "_debugControlService.control",
         "debug.select": "_selectDebugSession",
@@ -75,7 +77,7 @@ const { AgentService } = require("../src/services/agentService");
     assert.strictEqual(calls.at(-1).method, "_cubemxService.check");
     assert.deepStrictEqual(
         new Set(bridge.methods()),
-        new Set([...Object.keys(expected), "probe.list", "chip.read", "cubemx.check"])
+        new Set([...Object.keys(expected), "probe.list", "chip.read", "cubemx.check", "debug.inspect"])
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({

@@ -6,6 +6,10 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
     const byName = new Map();
     const add = (item) => {
         if (!item?.name) return;
+        if (item.runtimeLayout) {
+            byName.set(item.name, { ...item });
+            return;
+        }
         if (item.isComposite && item.compositeLayout) {
             const sym = { name: item.name, address: item.address, size: item.size };
             const leaves = elfSymbols.expandCompositeLeaves(sym, item.compositeLayout, null);
@@ -67,7 +71,24 @@ function filterRuntimeRamPlan(items, sections) {
             Number.isSafeInteger(end) &&
             end <= 0x100000000 &&
             ranges.some((range) => address >= range.start && end <= range.end);
-        (valid ? allowed : denied).push(item);
+        (valid ? allowed : denied).push(
+            item.runtimeLayout
+                ? {
+                      ...item,
+                      runtimeRanges: sections
+                          .filter(
+                              (section) =>
+                                  section.flags & SHF_ALLOC &&
+                                  Number.isSafeInteger(section.addr) &&
+                                  Number.isSafeInteger(section.size) &&
+                                  section.addr > 0 &&
+                                  section.size > 0 &&
+                                  section.addr + section.size <= 0x100000000
+                          )
+                          .map((section) => ({ start: section.addr, end: section.addr + section.size }))
+                  }
+                : item
+        );
     }
     return { allowed, denied, ranges };
 }
@@ -107,6 +128,42 @@ class LiveWatchService {
         const compositeSamples = [];
         const latest = latestSamples || new Map();
         for (const sample of samples || []) {
+            if (sample.diagnostic) {
+                const decoded = compositeMap?.has(sample.name)
+                    ? {
+                          name: sample.name,
+                          tree: { kind: "class", members: [], partial: true, unavailable: sample.diagnostic.message },
+                          diagnostic: sample.diagnostic,
+                          t: time
+                      }
+                    : {
+                          name: sample.name,
+                          value: null,
+                          valueText: "<unavailable: " + sample.diagnostic.message + ">",
+                          diagnostic: sample.diagnostic,
+                          t: time
+                      };
+                (decoded.tree ? compositeSamples : scalarSamples).push(decoded);
+                latest.set(sample.name, decoded);
+                continue;
+            }
+            if (sample.runtimeTree) {
+                if (sample.runtimeTree.kind === "scalar") {
+                    const decoded = {
+                        name: sample.name,
+                        value: sample.runtimeTree.value,
+                        valueText: sample.runtimeTree.valueText,
+                        t: time
+                    };
+                    scalarSamples.push(decoded);
+                    latest.set(sample.name, decoded);
+                } else {
+                    const decoded = { name: sample.name, tree: sample.runtimeTree, t: time };
+                    compositeSamples.push(decoded);
+                    latest.set(sample.name, decoded);
+                }
+                continue;
+            }
             const composite = compositeMap?.get(sample.name);
             if (composite) {
                 const tree = sample.bytes ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout) : null;
