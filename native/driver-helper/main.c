@@ -73,7 +73,7 @@ static int verified_libwdi_handle(const wchar_t *path, HANDLE *locked) {
         if (!CryptHashData(hash, bytes, count, 0)) goto done;
     if (!read_ok) goto done;
     if (!CryptGetHashParam(hash, HP_HASHVAL, digest, &length, 0) || length != sizeof(digest)) goto done;
-    for (i = 0; i < 32; ++i) sprintf(actual + 2 * i, "%02x", digest[i]);
+    for (i = 0; i < 32; ++i) snprintf(actual + 2 * i, sizeof(actual) - 2 * i, "%02x", digest[i]);
     actual[64] = 0;
     result = _stricmp(actual, EMBERPROBE_LIBWDI_SHA256) == 0;
 done:
