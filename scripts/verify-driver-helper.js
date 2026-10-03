@@ -32,6 +32,8 @@ async function verifyVsix(file, expected) {
         zip.on("error", reject);
         zip.on("end", resolve);
         zip.on("entry", (entry) => {
+            if (path.isAbsolute(entry.fileName) || entry.fileName.split("/").includes(".."))
+                return zip.readEntry();
             const name = entry.fileName.replace(/^extension\/resources\/driver-helper\/win32-x64\//, "");
             if (!expected.has(name) || name === entry.fileName) return zip.readEntry();
             zip.openReadStream(entry, (error, stream) => {
