@@ -18,8 +18,6 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 
 ## Requirements
 
-Native debugging currently uses `servertype=openocd`; `serverpath` overrides the executable. Experimental core selection accepts `numberOfProcessors`, zero-based `targetProcessor` and optional `targetName`. The count must match OpenOCD's `target names`, and the name must match the selected index before RTOS configuration. Each target gets a distinct GDB port; only one core session starts at a time, with shared server groups still pending. Multicore configurations disable running Tcl sampling; pause the selected core for DAP reads. This does not establish another core's state or a coherent snapshot. Hardware-independent regressions pass; board acceptance remains pending.
-
 - Visual Studio Code 1.85 or later
 - OpenOCD
 - ARM GDB toolchain (required for debugging); existing Cortex-Debug configurations remain supported
@@ -40,27 +38,6 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 - CSV sources: keep using the full sampling archive, or select live retained samples or the frozen snapshot (the default when frozen). By default, the live buffer retains at least 60 seconds at the target frequency; an explicit `emberprobe.maxSamples` setting takes precedence. Readings do not bridge data gaps; 64-bit integer readouts preserve exact decimal text.
 
 - Sampling isolation: OpenOCD transport and the sampling clock run in a worker thread so extension-host stalls from builds or synchronous ELF parsing do not stop acquisition. Hz uses acquisition timestamps. Target resets, debugger pauses, probe contention and resource exhaustion can still affect reads.
-
-## C++ Objects While Paused
-
-Experimental shared OpenOCD: set matching `serverGroup` and `numberOfProcessors` in `launch.json`, with a distinct `targetProcessor` per core. Start the first core, wait for initialization, then attach the others without automatic downloads or resets. Select a session in the RTOS panel or through Agent `debug.select`. Groups disable restart and running Tcl sampling; the probe is released after the final member exits and server shutdown is confirmed. Sidebar variables require the selected ELF to match the active core. See [configuration and validation limits](docs/SHARED-DEBUG-GROUPS.md).
-
-The built-in JavaScript STL display reads ordinary GDB types, fields and memory for VS Code variables, watches and hovers. No Python, additional toolchain or firmware changes are required. An explicitly selected GDB is retained. Automatic script loading and inferior function calls are disabled for the session.
-
-- `emberprobe.prettyPrintingMode` selects `builtin` (default), `gdb` or `raw`; launch/attach overrides workspace configuration. When no new mode is explicitly configured, legacy `enablePrettyPrinting=false` selects raw.
-- GDB mode requires Python and loads only explicitly listed `prettyPrinterFiles`, resolved relative to debug cwd. Missing Python or initialization failure falls back to builtin; individual printer failures disable that object's visualizer and show raw fields. Scripts execute inside GDB; their internal reads cannot be fully bounded by the JavaScript byte budget.
-- `prettyPrinterPath` is deprecated and ignored, with a migration diagnosis for existing nonempty settings.
-- Pages default to 100 elements plus `More…`; explicit `count` is limited to 1000. Built-in layout reads have 64 KiB, 4096-node and 15-second budgets. Load preceding container pages sequentially when a distant jump exceeds the traversal budget.
-- Maps expose `[index] → key/value`. Keys, container summaries and synthetic nodes are read-only. Values require GDB editability checks. Execution changes invalidate handles; container element assignments invalidate affected child handles.
-- Ordinary classes retain public/protected/private groups and base hierarchy. Visibility groups cannot be assigned wholesale; anonymous groups use stable position labels. Paused GDB resolves RTTI and virtual bases; reference paths retain base members' actual storage.
-- launch.json accepts `symbolFiles` (first image is primary; offset/textaddress/sections) and `loadFiles` (ELF/HEX offsets; explicit BIN address). Omitted lists use executable; empty lists load nothing. Managed attach never downloads. Multiple-image scopes require matching nm; unresolved image identity disables assignment. Offline ELF analysis and sidebar live sampling still use the selected primary ELF.
-- `preLaunchCommands`/`postLaunchCommands`, `preAttachCommands`/`postAttachCommands` and `preResetCommands`/`postResetCommands` run explicit single-line GDB console commands around the managed operations. Launch/attach hooks run after connection; reset hooks surround reset. Startup hook failures clean up the session; custom commands execute as configured.
-
-The target matrix is GCC 14/15, libstdc++, C++17/20 and DWARF 4/5 on little-endian ARM32 and 64-bit hosts. Built-in types include short/long/embedded-NUL `string`, `vector`, `array`, `pair/tuple`, `list/forward_list/deque`, `map/multimap/set/multiset` and their unordered variants, `unique_ptr/shared_ptr/weak_ptr`, and `optional/variant`, including empty and nested objects. Set keys and `vector<bool>` elements are read-only; expired weak owners never dereference released objects. String summaries read up to 256 bytes; characters are paged. Live sampling supports these common libstdc++ layouts, references/pointer chains, verified virtual-member addresses and verified Itanium dynamic types, with per-object limits of 4096 bytes, 32 reads, one second and 256 nodes per cycle. Unknown layouts, the old string ABI, libc++, `_GLIBCXX_DEBUG`, fancy pointers, unverified vtables or incomplete type information retain raw fields or report an explicit unavailable diagnostic.
-
-New class presentation passes Windows GCC 14.2/GDB 16.2 across C++17/20 × DWARF 4/5. `node test/gdb/debug-images.test.js` accepts `IMAGE_CXX`, `IMAGE_GDB`, `IMAGE_NM` and `IMAGE_OBJCOPY` for an ARM toolchain and tests ELF/HEX/BIN transfers and primary RTOS layouts against an in-memory RSP server. Local ARM 14.3.1 passes without a board. New download flows and the FreeRTOS task table still require real-board acceptance; see [the parity plan](docs/RTOS-CPP-PARITY-PLAN.md) for budgets and limits.
-
-Local GCC 14.2/libstdc++ and GDB 16.2 pass native regressions without Python printers. ARM32 protocol fixtures validate fields and addresses. H750_RTOS_CPP_Test with the STM32 GCC 14.3.1 ordinary GDB passes real DAP summaries and expansion for `string/vector<float>/unique_ptr<Sensor>`, including FreeRTOS mode with eight tasks; the user project was not modified. Repository fixtures cover other types and large pages; the board run does not establish the entire type matrix on ARM hardware. Linux CI defines GCC 14/15 × C++17/20 × DWARF 4/5; that Linux matrix has not been run locally. Set `CPP_GDB`, `CPP_CXX`, optional `CPP_STANDARD=17/20` and `CPP_DWARF=4/5`, then run `node test/gdb/cpp-paused.test.js`. Normal tests require no compiler or hardware. See [test/hil/README.md](test/hil/README.md) for the read-only board acceptance runner and prerequisites.
 
 ## Agent Skills
 

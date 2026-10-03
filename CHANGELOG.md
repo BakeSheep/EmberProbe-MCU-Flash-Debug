@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 无前缀的侧栏观测变量字号从 13px 调整为 14px，变量名与类型标签垂直居中；精简中英文 README 并清理过期开发文档。
+- Increase unqualified sidebar watch names from 13px to 14px and vertically center names with type badges; simplify both READMEs and remove outdated development documents.
+
 - 修复未选择侧栏 ELF 时空观察列表中断调试会话注册、暂停状态无法同步的问题；补齐 ARM 容器布局 CI 测试的标准库头文件依赖。
 - Fix debug session registration and paused-state tracking with an empty watch list and no sidebar ELF; install standard-library headers required by ARM container-layout CI tests.
 
