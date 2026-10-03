@@ -69,7 +69,10 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi binutils-arm-none-eabi gdb-multiarch
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          gcc-arm-none-eabi binutils-arm-none-eabi gdb-multiarch
+          libstdc++-arm-none-eabi-dev libnewlib-dev
       - run: node test/gdb/debug-images.test.js
         env:
           IMAGE_GDB: gdb-multiarch

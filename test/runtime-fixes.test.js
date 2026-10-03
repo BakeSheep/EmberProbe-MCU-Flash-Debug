@@ -56,6 +56,18 @@ const { normalizeWatchList } = require("../src/validation");
     const Provider = loadProvider();
     const provider = Object.create(Provider.prototype);
     provider._runtimeRamCache = null;
+    provider.readElfSymbols = () => {
+        throw new Error("No ELF selected");
+    };
+    const emptyPlan = [];
+    const scalarPlan = [{ name: "counter", address: 0x20000000, size: 4, type: "u32" }];
+    assert.strictEqual(provider._runtimeReadRanges(emptyPlan), emptyPlan);
+    assert.strictEqual(provider._runtimeReadRanges(scalarPlan), scalarPlan);
+    assert.throws(
+        () => provider._runtimeReadRanges([{ name: "values", runtimeLayout: { root: 1 } }]),
+        /No ELF selected/,
+        "runtime objects must still require verified ELF memory ranges"
+    );
     provider.readElfSymbols = () => ({
         elf: { sha256: "verified-elf", path: "C:\\does-not-exist\\firmware.elf" },
         memory: {

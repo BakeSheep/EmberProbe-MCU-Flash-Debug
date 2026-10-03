@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复未选择侧栏 ELF 时空观察列表中断调试会话注册、暂停状态无法同步的问题；补齐 ARM 容器布局 CI 测试的标准库头文件依赖。
+- Fix debug session registration and paused-state tracking with an empty watch list and no sidebar ELF; install standard-library headers required by ARM container-layout CI tests.
+
 - 修正侧栏与图表选择器的运行时成员提示：已列出的成员可单独观察，固定数组无需先添加整个变量；动态容器尚无元素时才提示先采样。
 - Clarify individual runtime member selection in sidebar and chart pickers: fixed array elements need no whole-variable watch; request container sampling only when no elements are listed yet.
 

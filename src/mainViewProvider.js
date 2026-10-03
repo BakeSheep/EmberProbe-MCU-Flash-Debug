@@ -3042,8 +3042,9 @@ class MainViewProvider {
         const plan = buildActiveReadPlan(lists, elfSymbols);
         return this._runtimeReadRanges(plan);
     }
-    _runtimeReadRanges(plan, result = this.readElfSymbols()) {
+    _runtimeReadRanges(plan, result) {
         if (!plan.some((item) => item.runtimeLayout)) return plan;
+        result ??= this.readElfSymbols();
         if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== result.elf.sha256) {
             const sections = Array.isArray(result.memory?.sections) ? result.memory.sections : [];
             this._runtimeRamCache = { sha256: result.elf.sha256, sections };
