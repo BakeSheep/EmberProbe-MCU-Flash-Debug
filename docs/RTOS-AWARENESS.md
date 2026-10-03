@@ -61,9 +61,9 @@ OpenOCD 通过 GDB 对已加载 ELF 的符号查询来解析内核结构，因�
 
 ## Task snapshots and boundaries / 任务快照与边界
 
-The workspace implementation adds an experimental FreeRTOS task panel with paused, bounded reads, filtering, sorting and stale labels after resume. Optional stack fill estimates require verified bounds and layout; they are not a measurement of current live SP. The panel does not yet have board acceptance. A task deleted while you are browsing its stack surfaces as `DEBUG_TASK_EXITED` on the next control action. Crashed-task analysis remains outside the implementation; see [the parity plan](RTOS-CPP-PARITY-PLAN.md) for budgets and evidence.
+The workspace implementation adds an experimental FreeRTOS task panel with paused, bounded reads, filtering, sorting and stale labels after resume. Optional stack fill estimates require verified bounds and layout; they are not a measurement of current live SP. The panel does not yet have board acceptance. A task deleted while you are browsing its stack surfaces as `DEBUG_TASK_EXITED` on the next control action. Crashed-task analysis remains outside the implementation.
 
-工作区实现已增加实验性 FreeRTOS 任务面板，仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP；任务面板尚无实板验收。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现；预算与证据详见[补齐计划](RTOS-CPP-PARITY-PLAN.md)。
+工作区实现已增加实验性 FreeRTOS 任务面板，仅做有界暂停读取，支持过滤、排序和运行后旧快照标记。可选栈填充估算必须先确认边界与布局，不代表实时 SP；任务面板尚无实板验收。浏览某任务栈时它被删除，会在下一次控制操作时以 `DEBUG_TASK_EXITED` 显现。崩溃任务分析仍未实现。
 
 The initial stop at `main` commonly precedes task creation and scheduler startup. When a null current TCB is corroborated by `xSchedulerRunning`, or by the task count where that static was optimized out, the panel shows a startup hint rather than traversing zero-initialized lists. When neither kernel static survives compilation the two cases cannot be told apart, so the panel reports the state as undeterminable instead of guessing. Continue past startup and pause again to inspect tasks. Optional `pxEndOfStack` and `ulRunTimeCounter` depend on firmware configuration; absent members omit the corresponding statistics. Initialized-list corruption and failed reads still produce partial diagnostics. This follows [FreeRTOS task-list initialization](https://github.com/FreeRTOS/FreeRTOS-Kernel/blob/V10.6.2/tasks.c).
 
