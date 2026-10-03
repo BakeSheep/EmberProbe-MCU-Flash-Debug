@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-03
+
 - 无前缀的侧栏观测变量字号从 13px 调整为 14px，变量名与类型标签垂直居中；精简中英文 README 并清理过期开发文档。
 - Increase unqualified sidebar watch names from 13px to 14px and vertically center names with type badges; simplify both READMEs and remove outdated development documents.
 

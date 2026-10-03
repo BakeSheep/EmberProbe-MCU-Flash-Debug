@@ -13,7 +13,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - ELF flashing: flash the ELF file and run it in one click.
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
-- Built-in debugging: breakpoints, stepping, stack frames, locals/globals/file statics/registers, expression assignment and memory access without Cortex-Debug; optional RTOS awareness (FreeRTOS and others) lists tasks in the call stack and steps a chosen task. The experimental FreeRTOS sidebar reads paused task snapshots and labels retained results after resume. See [RTOS awareness](docs/RTOS-AWARENESS.md) and [the parity plan and verification limits](docs/RTOS-CPP-PARITY-PLAN.md).
+- Built-in debugging: breakpoints, stepping, stack frames, locals/globals/file statics/registers, expression assignment and memory access without Cortex-Debug.
 - Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements
@@ -65,7 +65,7 @@ npm run test:e2e
 npm run package
 ```
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.7.14`.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.8.0`.
 
 ## Project Structure
 
