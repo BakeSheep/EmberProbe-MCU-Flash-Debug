@@ -340,6 +340,7 @@ function sbToggle(entry) {
 function renderValues() {
     liveBox.textContent = "";
     compCells = Object.create(null);
+    runtimeBodies = Object.create(null);
     document.getElementById("watchCount").textContent = String(
         sideWatch.filter((it) => !sbIsLeafChild(it.name)).length
     );
@@ -394,6 +395,8 @@ function renderValues() {
         liveBox.appendChild(row);
     });
 }
+const AVAILABLE_VARIABLE_LIMIT = 500;
+const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
 function renderAvailable() {
     availableBox.textContent = "";
     document.getElementById("allCount").textContent = String(available.length);
@@ -409,7 +412,7 @@ function renderAvailable() {
     const matching = available.filter(
         (s) => !query || s.name.toLowerCase().includes(query) || (s.displayName || "").toLowerCase().includes(query)
     );
-    const list = matching.slice(0, 100);
+    const list = matching.slice(0, AVAILABLE_VARIABLE_LIMIT);
     let leafRows = 0;
     if (!list.length) {
         const e = document.createElement("div");
@@ -440,7 +443,7 @@ function renderAvailable() {
                 type: "",
                 isComposite: true,
                 compositeLayout: sym.compositeLayout || null,
-                ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
+                ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
             };
             wrap.append(
                 arrow,
@@ -487,8 +490,20 @@ function renderAvailable() {
                     kids.appendChild(note);
                     return;
                 }
-                const leaves = sbCollectLeaves(sym.compositeLayout, sym.name, sym.address);
-                const shownLeaves = Math.min(leaves.length, 200 - list.length - leafRows);
+                const runtime = EmberProbeRuntime.runtimeSelection(sym, latest[sym.name]);
+                const leaves = runtime?.entries || sbCollectLeaves(sym.compositeLayout, sym.name, sym.address);
+                if (runtime)
+                    sbNote(
+                        kids,
+                        t(
+                            runtime.sampled
+                                ? "lw.runtimeMembersReadOnly"
+                                : runtime.entries.length
+                                  ? "lw.runtimeMembersSelectable"
+                                  : "lw.runtimeMembersHint"
+                        )
+                    );
+                const shownLeaves = Math.min(leaves.length, Math.max(0, AVAILABLE_ROW_LIMIT - list.length - leafRows));
                 leaves.slice(0, shownLeaves).forEach((lf) => {
                     const lb = document.createElement("div");
                     lb.className = "available-row leaf";
@@ -504,7 +519,16 @@ function renderAvailable() {
                         ...(Number.isInteger(lf.bitSize) ? { bitSize: lf.bitSize, bitOffset: lf.bitOffset } : {}),
                         ...(lf.isConst ? { isConst: true } : {}),
                         ...(lf.isReference ? { isReference: true } : {}),
-                        ...(lf.isMemberPointer ? { isMemberPointer: true } : {})
+                        ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
+                        ...(lf.runtimeLayout
+                            ? {
+                                  runtimeLayout: lf.runtimeLayout,
+                                  runtimeSegments: lf.runtimeSegments,
+                                  ...(lf.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
+                                  compositeLayout: lf.compositeLayout,
+                                  isComposite: lf.isComposite
+                              }
+                            : {})
                     };
                     cell.appendChild(mkWriteBtn(leafEntry));
                     cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
@@ -514,7 +538,7 @@ function renderAvailable() {
                     cell.appendChild(ln);
                     const lty = document.createElement("span");
                     lty.className = "available-type";
-                    lty.textContent = lf.type;
+                    lty.textContent = lf.type || (lf.isComposite ? t("lw.compositeType") : "");
                     lb.append(cell, lty);
                     lb.onclick = () => sbToggle(leafEntry);
                     kids.appendChild(lb);
@@ -564,7 +588,9 @@ function renderAvailable() {
                     type: "",
                     isComposite: true,
                     compositeLayout: sym.compositeLayout || null,
-                    ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
+                    ...(EmberProbeRuntime.runtimeGraph(sym)
+                        ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) }
+                        : {})
                 });
             };
         } else {
@@ -705,7 +731,12 @@ function mkAvBtn(cls, glyph, on, disabled, titleTxt, handler) {
     return b;
 }
 function mkWriteBtn(entry, disabled, reason) {
-    disabled ||= !!entry.isConst || !!entry.isReference || !!entry.isMemberPointer || Number.isInteger(entry.bitSize);
+    disabled ||=
+        !!entry.runtimeLayout ||
+        !!entry.isConst ||
+        !!entry.isReference ||
+        !!entry.isMemberPointer ||
+        Number.isInteger(entry.bitSize);
     const on = !disabled && inWriteList(entry.name);
     return mkAvBtn(
         "av-write",
@@ -1155,7 +1186,7 @@ function sbNote(container, txt) {
     n.textContent = txt;
     container.appendChild(n);
 }
-function sbRenderLeaf(container, label, typeName, path, watchType) {
+function sbRenderLeaf(container, label, typeName, path, watchType, node) {
     const row = document.createElement("div");
     row.className = "sb-mrow";
     const nm = document.createElement("span");
@@ -1167,7 +1198,7 @@ function sbRenderLeaf(container, label, typeName, path, watchType) {
     ty.textContent = typeName || watchType;
     const val = document.createElement("span");
     val.className = "sb-mval";
-    val.textContent = "\u2014";
+    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText) : "\u2014");
     val.title = t("common.copy");
     val.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -1216,15 +1247,27 @@ function sbRenderRuntimeTree(container, tree, path) {
                     member.name || "value",
                     member.typeName || member.type || "",
                     childPath,
-                    member.type
+                    member.type,
+                    member
                 );
         });
     } else if (tree.elements) {
         tree.elements.forEach((element) => sbRenderRuntimeTree(container, element, path + "[" + element.index + "]"));
     } else if (Object.prototype.hasOwnProperty.call(tree, "value")) {
-        sbRenderLeaf(container, "value", tree.typeName || tree.type || "", path, tree.type);
+        sbRenderLeaf(container, "value", tree.typeName || tree.type || "", path, tree.type, tree);
     }
     if (tree.unavailable) sbNote(container, tree.unavailable);
+}
+function sbRenderRuntimeBody(body, tree, name) {
+    const shape = EmberProbeRuntime.runtimeTreeShape(tree);
+    if (body.dataset.runtimeShape === shape) return;
+    for (const path of Object.keys(compCells)) {
+        if (body.contains(compCells[path])) delete compCells[path];
+    }
+    body.textContent = "";
+    body.dataset.runtimeShape = shape;
+    sbRenderRuntimeTree(body, tree, name);
+    if (!body.childNodes.length) sbNote(body, t("lw.waitSamples"));
 }
 function sbRenderNest(container, layout, fieldName, path) {
     const wrap = document.createElement("div");
@@ -1294,24 +1337,28 @@ function sbRenderComposite(item) {
     };
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
-        sbRenderRuntimeTree(body, latest[item.name], item.name);
-        if (!body.childNodes.length) sbNote(body, t("lw.waitSamples"));
+        sbRenderRuntimeBody(body, latest[item.name], item.name);
     } else sbRenderLayout(body, lay, item.name);
     row.append(head, body);
     liveBox.appendChild(row);
     sbUpdateComposite(item.name);
 }
 function sbOnComposite(samples) {
+    let refreshAvailable = false;
     (samples || []).forEach((s) => {
         if (s && s.name) {
+            if (
+                avExpanded[s.name] &&
+                EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+                EmberProbeRuntime.runtimeSelection(availableByName.get(s.name), s.tree)
+            )
+                refreshAvailable = true;
             latest[s.name] = s.tree;
             const body = runtimeBodies[s.name];
-            if (body) {
-                body.textContent = "";
-                sbRenderRuntimeTree(body, s.tree, s.name);
-            }
+            if (body) sbRenderRuntimeBody(body, s.tree, s.name);
         }
     });
+    if (refreshAvailable) renderAvailable();
     scheduleValueRefresh();
 }
 function updateValues(samples) {
@@ -1362,7 +1409,9 @@ function syncWriteValues() {
             if (text != null) c.setVal(text);
             return;
         }
-        let v = Number(latest[item.name]);
+        const sampled = latest[item.name];
+        if (sampled === null || sampled === undefined) return;
+        let v = Number(sampled);
         if (!Number.isFinite(v)) return;
         if (!isFloat(item.type)) v = Math.round(v);
         c.setVal(v);
@@ -1396,10 +1445,15 @@ function liveStatus(m) {
 function openocdStatus(m) {
     m = m || {};
     lastOpenocd = m;
+    uiState.sidebarStatus ||= {};
+    const { state, key, params, message, canInstall } = m;
+    uiState.sidebarStatus.openocd = { state, key, params, message, canInstall };
+    api?.setState?.(uiState);
     const k = m.state || "checking",
         busy = k === "checking" || k === "installing";
     openocdCard.className = "openocd-card " + (k === "incompatible" ? "error" : k);
     openocdCard.style.display = k === "ready" ? "none" : "";
+    openocdCard.hidden = k === "ready";
     openocdMessage.textContent = msgText(m) || t("oc.checking");
     openocdInstall.style.display = m.canInstall === false ? "none" : "";
     openocdCard.querySelectorAll("button").forEach((b) => (b.disabled = busy));
@@ -1409,6 +1463,14 @@ function renderSkillStatus(m) {
     const el = document.getElementById("skillStatus");
     if (!el) return;
     const workspace = lastSkill?.scopes?.workspace;
+    uiState.sidebarStatus ||= {};
+    uiState.sidebarStatus.skill = {
+        state: lastSkill.state,
+        busy: !!lastSkill.busy,
+        scopes: workspace ? { workspace: { state: workspace.state } } : {}
+    };
+    api?.setState?.(uiState);
+    el.classList.toggle("status-ready", !!workspace || lastSkill.state !== "checking");
     el.setAttribute("aria-checked", String(!!workspace && workspace.state !== "notInstalled"));
     el.disabled = !workspace || !!lastSkill.busy;
 }
@@ -1416,6 +1478,7 @@ const skillToggle = document.getElementById("skillStatus");
 if (skillToggle)
     skillToggle.onclick = () => {
         if (skillToggle.disabled || !api) return;
+        skillToggle.classList.add("animate");
         skillToggle.disabled = true;
         api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" });
     };
@@ -1782,6 +1845,7 @@ window.EmberProbeMessages.connect(window, {
         if (!symbol) return;
         if (m.layout) {
             symbol.compositeLayout = m.layout;
+            symbol.runtimeLayout = m.layout.runtimeLayout || null;
             symbol.unsupportedReason = "";
             symbol.layoutError = "";
         } else {
@@ -1795,7 +1859,8 @@ window.EmberProbeMessages.connect(window, {
                 size: Number(symbol.size) || 4,
                 type: "",
                 isComposite: true,
-                compositeLayout: m.layout
+                compositeLayout: m.layout,
+                ...(m.layout.runtimeLayout ? { runtimeLayout: m.layout.runtimeLayout } : {})
             });
         renderAvailable();
     },
@@ -1868,6 +1933,8 @@ window.EmberProbeMessages.connect(window, {
     }
 });
 updateLangToggle();
+if (uiState.sidebarStatus?.openocd) openocdStatus(uiState.sidebarStatus.openocd);
+renderSkillStatus(uiState.sidebarStatus?.skill || lastSkill);
 if (langToggle) langToggle.onclick = () => setLang(LANG === "zh" ? "en" : "zh", true);
 if (api) api.postMessage({ type: "initCheck" });
 else setStat("error", "sb.apiUnavailable");

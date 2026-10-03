@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修正侧栏与图表选择器的运行时成员提示：已列出的成员可单独观察，固定数组无需先添加整个变量；动态容器尚无元素时才提示先采样。
+- Clarify individual runtime member selection in sidebar and chart pickers: fixed array elements need no whole-variable watch; request container sampling only when no elements are listed yet.
+
+- ELF 全部变量与图表导入列表的顶层显示上限从 100 提升至 500，展开成员后的总行数限制为 1000，并修复成员预算耗尽时的负数截取与计数问题。
+- Raise the sidebar ELF and chart import lists from 100 to 500 top-level variables, cap expanded rows at 1000, and prevent negative member budgets from breaking truncation and counts.
+
+- 保留普通数组成员的切片／全选路径；支持结构体、继承类和 C 数组中的嵌套 STL 语义展开及采样，容器旁的普通指针仅显示地址，不自动追踪。
+- Preserve slice/all paths for ordinary array members; support semantic STL selection and sampling inside structs, inherited classes and C arrays while keeping unrelated raw pointers as address values.
+
+- 侧栏与图表导入按容器语义展开 STL 成员，智能指针显示 `value`，动态容器在采样后显示当前元素；修复按需加载丢失运行时布局、内部存储路径回退为标量观察及只读成员误显示可写，成员变化时保留图表导入勾选。
+- Show semantic STL members in sidebar and chart import, including smart-pointer `value` and sampled dynamic elements; preserve lazy runtime layouts and import selections, reject raw storage fallback paths, and disable writes to runtime members.
+
 - 增加 DWARF4/5 type unit、split DWARF、DWARF64、外部地址表及 64 位引用的安全解析；缺失或不匹配 `.dwo` 时不再把 C++ 对象猜成整数，并按 companion 文件身份刷新缓存。实时采样新增受预算限制的 libstdc++ 容器、引用／指针链、虚成员地址与已验证 RTTI 动态类型读取；动态对象只读，失败清除旧值并报告诊断。
 - Add bounded DWARF4/5 type-unit, split-DWARF, DWARF64, external-address-table and 64-bit-reference parsing; missing or mismatched `.dwo` companions no longer turn C++ objects into guessed integers, and companion identity invalidates caches. Live sampling now resolves bounded libstdc++ containers, references/pointer chains, virtual-member addresses and verified RTTI dynamic types; dynamic objects are read-only and failed samples clear stale values with diagnostics.
 

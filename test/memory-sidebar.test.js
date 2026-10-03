@@ -143,7 +143,21 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         await failing.refresh();
         assert.strictEqual(posted.at(-1).key, "memory.selectElf");
         dom = render(getModernWebviewContent({}, "zh"), { sections: { memoryAnalysisSection: false } });
-        assert.strictEqual(dom.document.getElementById("memoryAnalysisSection").open, false);
+        const section = dom.document.getElementById("memoryAnalysisSection");
+        assert.strictEqual(section.open, false);
+        const card = dom.document.getElementById("flashDebugSection");
+        assert.deepStrictEqual(
+            [...card.children].map((child) => child.className),
+            ["primary-actions", "foot", "memory-inline"]
+        );
+        assert.strictEqual(card.querySelector(".foot #statusText")?.id, "statusText");
+        const refresh = dom.document.getElementById("memoryRefresh");
+        assert.strictEqual(refresh.closest("summary"), section.querySelector("summary"));
+        assert.strictEqual(dom.window.getComputedStyle(refresh).borderRadius, "4px");
+        for (const id of ["watchCount", "writeCount", "allCount"]) {
+            const style = dom.window.getComputedStyle(dom.document.getElementById(id));
+            assert.strictEqual(style.borderRadius, "4px");
+        }
         dom.send({ type: "memoryAnalysis", state: "loading", requestId: 5 });
         assert.strictEqual(dom.document.getElementById("memoryRefresh").disabled, true);
         dom.send({ type: "memoryAnalysis", state: "ready", requestId: 5, result: sidebar });
@@ -152,10 +166,32 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         assert.ok(body.textContent.includes("42.15%"));
         assert.ok(body.textContent.includes("51.16%"));
         assert.ok(body.textContent.includes("0.00%"));
+        const summary = body.querySelector(".memory-summary");
+        const details = body.querySelector("details");
+        details.open = true;
+        details.dispatchEvent(new dom.window.Event("toggle"));
+        dom.send({ type: "memoryAnalysis", state: "loading", requestId: 5 });
+        assert.strictEqual(body.querySelector(".memory-summary"), summary, "refresh retains completed content nodes");
+        assert.strictEqual(body.querySelector("details"), details, "refresh retains expanded details");
+        assert.strictEqual(details.open, true);
+        assert.strictEqual(body.getAttribute("aria-busy"), "true");
+        assert.ok(body.querySelector('[role="status"]').textContent.includes("正在加载"));
+        dom.send({ type: "setLang", lang: "en" });
+        assert.ok(body.textContent.includes("Section details"), "retained results follow language changes");
+        assert.ok(body.querySelector('[role="status"]').textContent.includes("Loading"));
+        dom.send({ type: "memoryAnalysis", state: "ready", requestId: 5, result: sidebar });
+        assert.strictEqual(body.querySelector(".memory-refresh-status"), null);
+        assert.strictEqual(body.getAttribute("aria-busy"), "false");
+        assert.strictEqual(body.querySelector("details").open, true);
+        assert.strictEqual(dom.document.getElementById("memoryRefresh").disabled, false);
         dom.send({ type: "memoryAnalysis", state: "error", requestId: 4, message: "old" });
         assert.strictEqual(body.querySelectorAll(".memory-region").length, 6);
         dom.document.getElementById("memoryRefresh").click();
         assert.strictEqual(dom.messages.at(-1).type, "memoryRefresh");
+        assert.strictEqual(section.open, false, "refresh does not toggle the memory section");
+        section.open = true;
+        refresh.click();
+        assert.strictEqual(section.open, true, "refresh keeps an expanded memory section open");
         dom.document.getElementById("memorySelectSource").click();
         assert.strictEqual(dom.messages.at(-1).type, "memorySelectSource");
         dom.send({ type: "setLang", lang: "en" });
@@ -172,6 +208,9 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
             key: "memory.selectElf"
         });
         assert.ok(body.textContent.includes("Select an ELF"));
+        dom.send({ type: "memoryAnalysis", state: "loading", requestId: 8 });
+        assert.strictEqual(body.querySelector(".memory-summary"), null, "missing ELF clears the retained result");
+        assert.ok(body.textContent.includes("Loading"));
         assert.deepStrictEqual(args(["--map", "app.map", "--linker-script", "chip.ld", "--top", "30"]), {
             map: "app.map",
             "linker-script": "chip.ld",

@@ -253,7 +253,9 @@ function addSymbol(sym, resolved = false) {
                 type: "",
                 isComposite: true,
                 compositeLayout: sym.compositeLayout || null,
-                ...(sym.runtimeLayout ? { runtimeLayout: sym.runtimeLayout } : {})
+                ...(sym.runtimeSegments ? { runtimeSegments: sym.runtimeSegments } : {}),
+                ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
+                ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
             });
             expanded[sym.name] = true;
             renderVars();
@@ -261,7 +263,7 @@ function addSymbol(sym, resolved = false) {
             saveUi();
             dirty = true;
         };
-        if (lay.kind === "array" && (Number(lay.totalElements) || 0) > MAX_ARR_SHOWN)
+        if (lay?.kind === "array" && (Number(lay.totalElements) || 0) > MAX_ARR_SHOWN)
             showArraySelectDialog(sym, addComp);
         else addComp(null);
         return;
@@ -271,7 +273,14 @@ function addSymbol(sym, resolved = false) {
         displayName: sym.displayName || sym.name,
         address: Number(sym.address) || 0,
         size: Number(sym.size) || 4,
-        type: sym.watchType || defType(sym.size || 4)
+        type: sym.type || sym.watchType || defType(sym.size || 4),
+        ...(EmberProbeRuntime.runtimeGraph(sym)
+            ? {
+                  runtimeLayout: EmberProbeRuntime.runtimeGraph(sym),
+                  runtimeSegments: sym.runtimeSegments || [],
+                  ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {})
+              }
+            : {})
     });
     ensureBuf(sym.name);
     renderVars();
@@ -328,6 +337,7 @@ function renderVars() {
     box.textContent = "";
     valueCells = Object.create(null);
     compCells = Object.create(null);
+    runtimeBodies = Object.create(null);
     $("count").textContent = String(
         watch.filter(function (it) {
             return !isLeafChild(it.name);
@@ -497,7 +507,7 @@ function updateCompositeValues(name) {
         if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
     });
 }
-function renderLeafInto(container, label, typeName, path, watchType, address) {
+function renderLeafInto(container, label, typeName, path, watchType, address, node) {
     var row = document.createElement("div");
     row.className = "member-row";
     var wi = watch.findIndex(function (w) {
@@ -518,7 +528,7 @@ function renderLeafInto(container, label, typeName, path, watchType, address) {
     nm.title = path;
     var val = document.createElement("span");
     val.className = "member-value";
-    val.textContent = "\u2014";
+    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText) : "\u2014");
     val.title = t("common.copy");
     val.addEventListener("click", function (event) {
         event.stopPropagation();
@@ -604,7 +614,8 @@ function renderRuntimeTreeInto(container, tree, path) {
                     member.typeName || member.type || "",
                     childPath,
                     member.type,
-                    member.address
+                    member.address,
+                    member
                 );
         });
     else if (tree.elements)
@@ -612,8 +623,19 @@ function renderRuntimeTreeInto(container, tree, path) {
             renderRuntimeTreeInto(container, element, path + "[" + element.index + "]");
         });
     else if (Object.prototype.hasOwnProperty.call(tree, "value"))
-        renderLeafInto(container, "value", tree.typeName || tree.type || "", path, tree.type, tree.address);
+        renderLeafInto(container, "value", tree.typeName || tree.type || "", path, tree.type, tree.address, tree);
     if (tree.unavailable) appendNote(container, tree.unavailable);
+}
+function renderRuntimeBody(body, tree, name) {
+    var shape = EmberProbeRuntime.runtimeTreeShape(tree);
+    if (body.dataset.runtimeShape === shape) return;
+    Object.keys(compCells).forEach(function (path) {
+        if (body.contains(compCells[path])) delete compCells[path];
+    });
+    body.textContent = "";
+    body.dataset.runtimeShape = shape;
+    renderRuntimeTreeInto(body, tree, name);
+    if (!body.childNodes.length) appendNote(body, t("lw.waitSamples"));
 }
 function appendNote(container, text) {
     var n = document.createElement("div");
@@ -661,8 +683,7 @@ function renderCompositeCard(item, idx, box) {
     };
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
-        renderRuntimeTreeInto(body, latest[item.name], item.name);
-        if (!body.childNodes.length) appendNote(body, t("lw.waitSamples"));
+        renderRuntimeBody(body, latest[item.name], item.name);
     } else renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
     if (controls) controls.decorate(card, item.name);
     content.append(head, body);
@@ -744,16 +765,23 @@ function collectLeaves(layout, name, baseAddr) {
     return out;
 }
 function onCompositeSamples(samples) {
+    var refreshImport = false;
     (samples || []).forEach(function (s) {
+        if (!s || !s.name) return;
+        if (
+            impExpanded[s.name] &&
+            !$("overlay").classList.contains("hidden") &&
+            EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+            EmberProbeRuntime.runtimeSelection(impSymbolByName.get(s.name), s.tree)
+        )
+            refreshImport = true;
         if (s && s.name) {
             latest[s.name] = s.tree;
             var body = runtimeBodies[s.name];
-            if (body) {
-                body.textContent = "";
-                renderRuntimeTreeInto(body, s.tree, s.name);
-            }
+            if (body) renderRuntimeBody(body, s.tree, s.name);
         }
     });
+    if (refreshImport && !$("overlay").classList.contains("hidden")) renderImport();
     scheduleValueRefresh();
     dirty = true;
 }
@@ -875,14 +903,19 @@ function clearHistory() {
     resetChartView();
     dirty = true;
 }
+const IMPORT_VARIABLE_LIMIT = 500;
+const IMPORT_ROW_LIMIT = IMPORT_VARIABLE_LIMIT * 2;
 function renderImport() {
     var f = ($("impFilter").value || "").toLowerCase(),
         box = $("impList");
+    var checkedNames = new Set(
+        Array.from(box.querySelectorAll("input:checked"), (cb) => cb.dataset.leafPath || cb.dataset.symbolName)
+    );
     box.textContent = "";
     var matched = allSymbols.filter(function (s) {
             return !f || s.name.toLowerCase().indexOf(f) >= 0 || (s.displayName || "").toLowerCase().indexOf(f) >= 0;
         }),
-        shown = matched.slice(0, 100),
+        shown = matched.slice(0, IMPORT_VARIABLE_LIMIT),
         leafRows = 0;
     shown.forEach(function (s) {
         var gi = impIndexByName.get(s.name);
@@ -892,6 +925,8 @@ function renderImport() {
             var cb = document.createElement("input");
             cb.type = "checkbox";
             cb.dataset.idx = String(gi);
+            cb.dataset.symbolName = s.name;
+            cb.checked = checkedNames.has(s.name);
             cb.title = t("lw.compositeExpandable");
             var nmWrap = document.createElement("span");
             nmWrap.className = "imp-name-wrap";
@@ -927,22 +962,36 @@ function renderImport() {
                     kids.textContent = s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout");
                     return;
                 }
-                var leaves = collectLeaves(s.compositeLayout, s.name, s.address);
-                var shownLeaves = Math.min(leaves.length, 200 - shown.length - leafRows);
+                var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
+                var leaves = runtime?.entries || collectLeaves(s.compositeLayout, s.name, s.address);
+                if (runtime)
+                    appendNote(
+                        kids,
+                        t(
+                            runtime.sampled
+                                ? "lw.runtimeMembersReadOnly"
+                                : runtime.entries.length
+                                  ? "lw.runtimeMembersSelectable"
+                                  : "lw.runtimeMembersHint"
+                        )
+                    );
+                var shownLeaves = Math.min(leaves.length, Math.max(0, IMPORT_ROW_LIMIT - shown.length - leafRows));
                 leaves.slice(0, shownLeaves).forEach(function (lf) {
                     var lr = document.createElement("label");
                     lr.className = "imp-row leaf";
                     var lcb = document.createElement("input");
                     lcb.type = "checkbox";
                     lcb.dataset.leafPath = lf.path;
+                    lcb.checked = checkedNames.has(lf.path);
                     lcb.dataset.leafAddr = String(lf.address);
                     lcb.dataset.leafType = lf.type;
+                    if (lf.runtimeLayout) lcb.runtimeEntry = lf;
                     var ln = document.createElement("span");
                     ln.className = "imp-leaf-name";
                     ln.textContent = lf.label;
                     var lty = document.createElement("span");
                     lty.className = "ty";
-                    lty.textContent = lf.type;
+                    lty.textContent = lf.type || (lf.isComposite ? t("lw.compositeType") : "");
                     var la = document.createElement("span");
                     la.className = "address";
                     la.textContent = fmtAddr(lf.address);
@@ -996,6 +1045,8 @@ function renderImport() {
             cb2.type = "checkbox";
             cb2.disabled = !!(s.isComposite && !s.compositeLayout && !s.runtimeLayout);
             cb2.dataset.idx = String(gi);
+            cb2.dataset.symbolName = s.name;
+            cb2.checked = checkedNames.has(s.name);
             var nm2 = document.createElement("span");
             nm2.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);
             if (s.displayName && s.displayName !== s.name) nm2.title = s.name;
@@ -1084,7 +1135,9 @@ function importSelected() {
         });
     var changed = false;
     leafCbs.forEach(function (cb) {
-        if (addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType)) changed = true;
+        if (cb.runtimeEntry) addSymbol(cb.runtimeEntry, true);
+        else if (addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType))
+            changed = true;
     });
     syms.forEach(function (s) {
         addSymbol(s);
@@ -2064,6 +2117,7 @@ window.EmberProbeMessages.connect(window, {
         if (!symbol) return;
         if (m.layout) {
             symbol.compositeLayout = m.layout;
+            symbol.runtimeLayout = m.layout.runtimeLayout || null;
             symbol.layoutError = "";
         } else {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");

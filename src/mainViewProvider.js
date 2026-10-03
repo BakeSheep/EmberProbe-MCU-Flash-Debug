@@ -813,8 +813,11 @@ class MainViewProvider {
             }
             // 先同步释放 liveWatch lease，再立即占用 download lease；真正的进程退出
             // Promise 在占用 lease 后等待，避免快速双击同时越过 _downloadRunning 检查。
+            const resumeSampling = !!this._samplingIntent && !!(this._liveWatchRunning || this._liveSession);
             const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
-            this._downloadLease = this._probeCoordinator.acquire("download");
+            const downloadLease = this._probeCoordinator.acquire("download");
+            this._downloadLease = downloadLease;
+            let downloaded = false;
             this._recentProgress = [];
             try {
                 if (liveStopped) await liveStopped;
@@ -859,6 +862,7 @@ class MainViewProvider {
                     }
                 );
                 if (!this._downloadLease?.released) await this._probeConnectionService.recordSuccess(connection);
+                downloaded = true;
                 vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
                 return true;
             } catch (err) {
@@ -867,7 +871,27 @@ class MainViewProvider {
                 vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             } finally {
-                this._downloadLease?.release();
+                let refreshed = false;
+                try {
+                    if (downloaded) {
+                        await this._refreshElfBindings();
+                        refreshed = true;
+                    }
+                } catch (error) {
+                    this._postLive({ type: "liveError", key: error.i18nKey, message: error.message });
+                    vscode.window.showWarningMessage(this._t("msg.downloadRefreshFailed", { error: error.message }));
+                } finally {
+                    downloadLease.release();
+                }
+                if (resumeSampling && refreshed) {
+                    try {
+                        await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
+                    } catch (error) {
+                        vscode.window.showWarningMessage(
+                            this._t("msg.downloadSamplingFailed", { error: error.message })
+                        );
+                    }
+                }
             }
         };
     }
@@ -1085,6 +1109,10 @@ class MainViewProvider {
                 appendResolved(runtime);
                 continue;
             }
+            if (require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
+                throw Object.assign(new Error(`Invalid runtime member path: ${rawName}`), {
+                    code: "INVALID_VARIABLE_PATH"
+                });
             if (symbol.isComposite) {
                 if (!symbol.compositeLayout)
                     throw Object.assign(new Error(`Composite variable has no DWARF layout: ${rawName}`), {
@@ -1194,6 +1222,10 @@ class MainViewProvider {
                 compositePlan.push({ ...runtime, requestedName: req.name });
                 continue;
             }
+            if (require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
+                throw Object.assign(new Error(`Invalid runtime member path: ${req.name}`), {
+                    code: "INVALID_VARIABLE_PATH"
+                });
             if (symbol.isComposite) {
                 if (!symbol.compositeLayout) {
                     // 缺布局时不能把完整路径丢进标量解析器，否则会得到误导性的 VARIABLE_NOT_FOUND
@@ -2097,7 +2129,7 @@ class MainViewProvider {
             const symbol = byName.get(baseName);
             let target;
             if (symbol && symbol.isComposite) {
-                if (symbol.runtimeLayout)
+                if (symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout)
                     throw Object.assign(
                         new Error(`Writing C++ runtime container or dynamic member is not supported: ${req.name}`),
                         {
@@ -2719,7 +2751,7 @@ class MainViewProvider {
     }
     async _refreshElfBindings() {
         this._invalidateElfState();
-        this._memoryAnalysisController?.refresh();
+        const memoryRefresh = this._memoryAnalysisController?.refresh();
         try {
             if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
                 const result = await this._elfService.ready();
@@ -2729,6 +2761,7 @@ class MainViewProvider {
         } finally {
             await this._refreshSamplingPlan();
         }
+        await memoryRefresh;
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
         for (const entry of this._livePanels.values()) {
             this._syncGraphTarget(entry);
@@ -3404,7 +3437,13 @@ class MainViewProvider {
             }
             return;
         }
-        if (this._samplingIntent && active.length && !this._debugStarting && !this._debugCommandPending)
+        if (
+            this._samplingIntent &&
+            active.length &&
+            !this._downloadRunning &&
+            !this._debugStarting &&
+            !this._debugCommandPending
+        )
             await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
         else if (this._samplingIntent && !active.length) this._postConsumerStatuses({ key: "live.needVar" });
     }
@@ -4164,7 +4203,21 @@ class MainViewProvider {
             }
         });
         const sidebarWebview = webviewView.webview;
+        const visibilityListener = webviewView.onDidChangeVisibility?.(() => {
+            if (!webviewView.visible) return;
+            // Retained documents do not initialize again. Replay environment changes missed while hidden.
+            sidebarWebview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
+            if (this._skillStatusService.lastStatus)
+                sidebarWebview.postMessage({
+                    type: "skillStatus",
+                    ...this._skillStatusService.lastStatus,
+                    busy: !!this._skillStatusService.busy
+                });
+            this.refreshOpenOcdStatus(false);
+            this.refreshSkillStatus().catch((error) => console.error("Agent Skills 状态检查失败：", error.message));
+        });
         webviewView.onDidDispose(() => {
+            visibilityListener?.dispose();
             this._webviewRenders?.delete(sidebarWebview);
             if (this._webviewView === webviewView) {
                 this._webviewView = null;

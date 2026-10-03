@@ -27,7 +27,7 @@ for (const listType of ["availableVariables", "variablesList"]) {
 
 const sidebar = render(getModernWebviewContent({}, "en"));
 try {
-    const symbols = Array.from({ length: 500 }, (_, index) => ({
+    const symbols = Array.from({ length: 600 }, (_, index) => ({
         name: `v${index}`,
         address: 0x20000000 + index * 16,
         size: 12,
@@ -36,23 +36,23 @@ try {
     }));
     sidebar.send({ type: "availableVariablesReset", version: "first" });
     sidebar.send({ type: "availableVariablesChunk", version: "first", symbols });
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.comp").length, 100);
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.comp").length, 500);
     const search = sidebar.document.getElementById("varSearch");
-    search.value = "v499";
+    search.value = "v599";
     search.dispatchEvent(new sidebar.window.Event("input"));
     assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.comp").length, 1);
     assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 0);
     sidebar.document.querySelector("#availableVars .av-arrow").click();
     assert.deepStrictEqual(sidebar.messages.at(-1), {
         type: "resolveCompositeLayout",
-        name: "v499",
+        name: "v599",
         version: "first"
     });
     const layout = {
         kind: "struct",
         typeName: "struct S",
-        byteSize: 1000,
-        members: Array.from({ length: 250 }, (_, index) => ({
+        byteSize: 4800,
+        members: Array.from({ length: 1200 }, (_, index) => ({
             name: `field${index}`,
             offset: index * 4,
             byteSize: 4,
@@ -60,12 +60,23 @@ try {
             kind: "scalar"
         }))
     };
-    sidebar.send({ type: "compositeLayoutResult", name: "v499", version: "stale", layout });
+    sidebar.send({ type: "compositeLayoutResult", name: "v599", version: "stale", layout });
     assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 0);
-    sidebar.send({ type: "compositeLayoutResult", name: "v499", version: "first", layout });
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 199);
-    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 200);
+    sidebar.send({ type: "compositeLayoutResult", name: "v599", version: "first", layout });
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row.leaf").length, 999);
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 1000);
     search.value = "";
+    search.dispatchEvent(new sidebar.window.Event("input"));
+    sidebar.document.querySelector("#availableVars .av-arrow").click();
+    sidebar.send({ type: "compositeLayoutResult", name: "v0", version: "first", layout });
+    sidebar.document.querySelectorAll("#availableVars .av-arrow")[1].click();
+    sidebar.send({ type: "compositeLayoutResult", name: "v1", version: "first", layout });
+    assert.strictEqual(sidebar.document.querySelectorAll("#availableVars .available-row").length, 1000);
+    assert.strictEqual(
+        sidebar.document.querySelectorAll("#availableVars .av-children")[1].querySelectorAll(".leaf").length,
+        0,
+        "an exhausted member budget must not render extra members"
+    );
     sidebar.send({ type: "availableVariablesReset", version: "typedef" });
     sidebar.send({
         type: "availableVariablesChunk",
@@ -120,7 +131,7 @@ console.log("ELF progressive sidebar and lazy member rendering tests passed");
 
 const graph = render(getLiveWatchContent({}, "en"));
 try {
-    const symbols = Array.from({ length: 500 }, (_, index) => ({
+    const symbols = Array.from({ length: 600 }, (_, index) => ({
         name: `g${index}`,
         address: 0x20000000 + index * 16,
         size: 12,
@@ -131,7 +142,7 @@ try {
     graph.send({ type: "variablesListChunk", version: "graph-first", symbols });
     graph.document.getElementById("import").click();
     graph.send({ type: "variablesListDone", version: "graph-first" });
-    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 100);
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 500);
     graph.document.querySelector("#impList .imp-arrow").click();
     assert.deepStrictEqual(graph.messages.at(-1), {
         type: "resolveCompositeLayout",
@@ -146,7 +157,7 @@ try {
         version: "graph-first",
         layout: {
             kind: "struct",
-            members: Array.from({ length: 250 }, (_, index) => ({
+            members: Array.from({ length: 1200 }, (_, index) => ({
                 name: `field${index}`,
                 offset: index * 4,
                 byteSize: 4,
@@ -155,7 +166,28 @@ try {
             }))
         }
     });
-    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 200);
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row").length, 1000);
+    const arrows = graph.document.querySelectorAll("#impList .imp-arrow");
+    arrows[1].click();
+    graph.send({
+        type: "compositeLayoutResult",
+        name: "g1",
+        version: "graph-first",
+        layout: {
+            kind: "struct",
+            members: [{ name: "value", offset: 0, byteSize: 4, watchType: "u32" }]
+        }
+    });
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row.leaf").length, 500);
+    assert.strictEqual(
+        graph.document.querySelectorAll("#impList .imp-children")[1].querySelectorAll(".leaf").length,
+        0
+    );
+    graph.document.querySelector("#impList .imp-arrow").click();
+    const secondArrow = graph.document.querySelectorAll("#impList .imp-arrow")[1];
+    secondArrow.click();
+    secondArrow.click();
+    assert.strictEqual(graph.document.querySelectorAll("#impList .imp-row.leaf").length, 1);
     graph.send({ type: "variablesListReset", version: "graph-typedef" });
     graph.send({
         type: "variablesListChunk",

@@ -1,7 +1,7 @@
 "use strict";
 
 const { SUPPORTED_TYPES, typeByteLength, parseMemberPath, expandCompositeLeaves } = require("./elfSymbols");
-const { variableDisplayName } = require("./webview/runtime");
+const { variableDisplayName, requiresRuntimePath } = require("./webview/runtime");
 const { runtimeWatchEntry } = require("./services/runtimeWatch");
 
 function cleanWindowsPath(value) {
@@ -59,6 +59,7 @@ function normalizeWatchList(items, symbols) {
             result.push(runtime);
             continue;
         }
+        if (runtimeSymbol && requiresRuntimePath(runtimeSymbol, path?.segments || [])) continue;
         if (!symbol) {
             // 非直接符号：尝试按复合变量成员/元素路径解析为标量叶子
             const leaf = resolveLeafPath(item.name, byName, supported);

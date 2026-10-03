@@ -511,19 +511,31 @@ class RuntimeObjectReader {
                 object = { address: object.address + segment.index * this.size(current.target), type: current.target };
             else throw failure("LIVE_MEMBER_MISSING", "Runtime path is not a single typed member");
         }
-        if (this.type(object.type).kind === "reference") object = await this.dereference(object);
+        if (this.type(object.type).kind === "reference" && !this.item.runtimeStaticPointers)
+            object = await this.dereference(object);
         return object;
     }
-    async tree(object, depth = 0, ancestors = new Set()) {
+    async tree(object, depth = 0, ancestors = new Set(), followPointers = !this.item.runtimeStaticPointers) {
         if (depth > 12 || ++this.nodes > 256)
             throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object expansion budget exceeded");
         const key = object.type + ":" + object.address;
         if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
         const next = new Set(ancestors).add(key);
         let type = this.type(object.type);
+        if (!followPointers && ["pointer", "reference"].includes(type.kind)) {
+            const address = await this.pointer(object);
+            return {
+                kind: "scalar",
+                type: "u32",
+                typeName: type.typeName || "pointer",
+                address: object.address,
+                value: address,
+                valueText: `0x${address.toString(16)}`
+            };
+        }
         if (type.kind === "reference") {
             try {
-                return this.tree(await this.dereference(object), depth + 1, next);
+                return this.tree(await this.dereference(object), depth + 1, next, followPointers);
             } catch (error) {
                 if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
                 const address = await this.pointer(object);
@@ -548,7 +560,7 @@ class RuntimeObjectReader {
                     valueText: "nullptr"
                 };
             try {
-                const value = await this.tree(await this.dereference(object), depth + 1, next);
+                const value = await this.tree(await this.dereference(object), depth + 1, next, followPointers);
                 return {
                     kind: "class",
                     typeName: type.typeName + " *",
@@ -577,7 +589,7 @@ class RuntimeObjectReader {
                 values.push({
                     index,
                     name: storage.labels?.[index] || "value",
-                    ...(await this.tree(await storage.at(index), depth + 1, next))
+                    ...(await this.tree(await storage.at(index), depth + 1, next, true))
                 });
             return storage.named || storage.labels
                 ? { kind: "class", typeName: type.typeName, members: values, partial: count < storage.count }
@@ -597,7 +609,8 @@ class RuntimeObjectReader {
                     ...(await this.tree(
                         { address: object.address + index * this.size(type.target), type: type.target },
                         depth + 1,
-                        next
+                        next,
+                        followPointers
                     ))
                 });
             return {
@@ -614,7 +627,7 @@ class RuntimeObjectReader {
                 if (field.name.startsWith("_vptr")) continue;
                 members.push({
                     name: field.name,
-                    ...(await this.tree(await this.member(object, field), depth + 1, next))
+                    ...(await this.tree(await this.member(object, field), depth + 1, next, followPointers))
                 });
             }
             return { kind: type.kind, typeName: type.typeName, members };

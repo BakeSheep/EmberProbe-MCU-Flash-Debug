@@ -148,14 +148,20 @@
         const refresh = document.getElementById("memoryRefresh");
         const select = document.getElementById("memorySelectSource");
         let last = { state: "idle" },
+            completedResult = null,
             requestId = -1;
-        refresh.onclick = () => api?.postMessage({ type: "memoryRefresh" });
+        refresh.onclick = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            api?.postMessage({ type: "memoryRefresh" });
+        };
         select.onclick = () => api?.postMessage({ type: "memorySelectSource" });
-        function repaint() {
+        function repaint(preserve = false) {
             refresh.disabled = last.state === "loading";
             select.disabled = last.state === "loading";
             body.setAttribute("aria-busy", String(last.state === "loading"));
-            if (last.state !== "ready") {
+            const result = last.state === "ready" ? last.result : last.state === "loading" ? completedResult : null;
+            if (!result) {
                 body.textContent =
                     t(last.state === "loading" ? "memory.loading" : last.key || "memory.selectElf") +
                     (last.state === "error" && last.code !== "ELF_NOT_CONFIGURED" && last.message
@@ -163,16 +169,26 @@
                         : "");
                 return;
             }
-            body.innerHTML = render(last.result, t);
-            const key = last.result.elf.path;
-            for (const details of body.querySelectorAll("details")) {
-                const id = key + ":" + (details.dataset.region || "symbols");
-                details.open = !!uiState.memoryExpanded?.[id];
-                details.addEventListener("toggle", () => {
-                    uiState.memoryExpanded ||= {};
-                    uiState.memoryExpanded[id] = details.open;
-                    api?.setState?.(uiState);
-                });
+            if (!preserve || !body.querySelector(".memory-summary")) {
+                body.innerHTML = render(result, t);
+                const key = result.elf.path;
+                for (const details of body.querySelectorAll("details")) {
+                    const id = key + ":" + (details.dataset.region || "symbols");
+                    details.open = !!uiState.memoryExpanded?.[id];
+                    details.addEventListener("toggle", () => {
+                        uiState.memoryExpanded ||= {};
+                        uiState.memoryExpanded[id] = details.open;
+                        api?.setState?.(uiState);
+                    });
+                }
+            }
+            body.querySelector(".memory-refresh-status")?.remove();
+            if (last.state === "loading") {
+                const status = document.createElement("p");
+                status.className = "memory-note memory-refresh-status";
+                status.setAttribute("role", "status");
+                status.textContent = t("memory.loading");
+                body.append(status);
             }
         }
         return {
@@ -181,7 +197,9 @@
                 if (message.requestId != null && message.requestId < requestId) return;
                 if (message.requestId != null) requestId = message.requestId;
                 last = message;
-                repaint();
+                if (message.state === "ready") completedResult = message.result;
+                else if (message.state !== "loading") completedResult = null;
+                repaint(message.state === "loading");
             }
         };
     }

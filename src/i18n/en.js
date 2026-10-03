@@ -122,6 +122,12 @@ module.exports = Object.freeze({
     "lw.cursorB": "B",
     "lw.allHidden": "All curves are hidden; sampling and history are retained",
     "lw.waitSamples": "Waiting for samples",
+    "lw.runtimeMembersHint":
+        "Add this container and start sampling, then select current elements individually. Direct writes are unavailable.",
+    "lw.runtimeMembersSelectable": "Add individual members below to watch them. Direct writes are unavailable.",
+    "lw.runtimeMembersReadOnly":
+        "Add individual members below to watch them; elements reflect the latest sample. Direct writes are unavailable.",
+    "lw.compositeType": "object",
     "lw.rangeEmpty": "No samples in this time range",
     "lw.fitTime": "View retained samples",
     "lw.frozenNew": "Variable absent from snapshot; resume live to display",
@@ -539,6 +545,9 @@ module.exports = Object.freeze({
     "msg.chipBusyForDownload": "Reading chip info; please download later",
     "msg.debugBusyForDownload": "The debugger is using the probe; end debugging before downloading",
     "msg.downloadSuccess": "Firmware downloaded and verified",
+    "msg.downloadRefreshFailed":
+        "Firmware flashed, but ELF variables and memory information could not refresh: {error}",
+    "msg.downloadSamplingFailed": "Firmware flashed, but sampling could not restart automatically: {error}",
     "msg.downloadFailed": "Firmware download failed: {error}",
     "msg.commandNotRegistered": "Command {cmd} is not registered",
     "msg.unknownError": "Unknown error",

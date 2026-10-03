@@ -16,7 +16,9 @@ function activate(context) {
     activeProvider = provider;
 
     const subscriptions = [
-        vscode.window.registerWebviewViewProvider("mcu-vscode.mainView", provider),
+        vscode.window.registerWebviewViewProvider("mcu-vscode.mainView", provider, {
+            webviewOptions: { retainContextWhenHidden: true }
+        }),
         vscode.commands.registerCommand("mcu-vscode.folderDebug", resource => provider.commandHandlers["mcu-vscode.debug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),
         vscode.commands.registerCommand("mcu-vscode.openLiveWatch", () => provider.commandHandlers["mcu-vscode.openLiveWatch"]()),
