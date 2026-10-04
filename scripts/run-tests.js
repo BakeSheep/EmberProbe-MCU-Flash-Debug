@@ -3,8 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawn, spawnSync } = require("child_process");
+const { testsForGroup } = require("./test-groups");
 const root = path.resolve(__dirname, "..");
-const RELEASE_TESTS = new Set(["release-consistency.test.js"]);
 
 function discover(directory, recursive = false) {
     return fs
@@ -75,7 +75,7 @@ async function runFile(file, options = {}) {
             });
             const capture = (stream, chunk) => {
                 log.push(chunk.toString());
-                stream.write(chunk);
+                if (options.stream !== false) stream.write(chunk);
             };
             child.stdout.on("data", (chunk) => capture(process.stdout, chunk));
             child.stderr.on("data", (chunk) => capture(process.stderr, chunk));
@@ -99,19 +99,67 @@ async function runFile(file, options = {}) {
     } finally {
         fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
-    if (options.reportDir)
-        fs.writeFileSync(path.join(options.reportDir, relative.replace(/[^a-zA-Z0-9.-]/g, "_") + ".log"), log.join(""));
+    const output = log.join("");
+    if (options.reportDir && (options.keepLogs || result.code !== 0))
+        fs.writeFileSync(path.join(options.reportDir, relative.replace(/[^a-zA-Z0-9.-]/g, "_") + ".log"), output);
+    if (options.stream === false && output) process.stdout.write(output);
     console.log(
         (result.code ? "FAIL " : "PASS ") + relative + " (" + result.durationMs + "ms, exit " + result.code + ")"
     );
-    return result;
+    return { ...result, output };
+}
+
+function optionValue(args, name) {
+    const index = args.indexOf(name);
+    return index === -1 ? undefined : args[index + 1];
+}
+
+function parseJobs(args) {
+    if (args.includes("--jobs") && optionValue(args, "--jobs") === undefined)
+        throw new Error("--jobs requires a value");
+    const value = optionValue(args, "--jobs");
+    if (value === undefined)
+        return Math.min(4, typeof os.availableParallelism === "function" ? os.availableParallelism() : 4);
+    const jobs = Number(value);
+    if (!Number.isInteger(jobs) || jobs < 1) throw new Error("--jobs must be a positive integer");
+    return jobs;
+}
+
+async function runFiles(files, options = {}) {
+    const jobs = Math.max(1, Math.min(options.jobs || 1, files.length || 1));
+    if (jobs === 1) {
+        const results = [];
+        for (const file of files) results.push(await runFile(file, options));
+        return results;
+    }
+    const results = new Array(files.length);
+    let next = 0;
+    async function worker() {
+        while (true) {
+            const index = next++;
+            if (index >= files.length) return;
+            results[index] = await runFile(files[index], { ...options, stream: false });
+        }
+    }
+    await Promise.all(Array.from({ length: jobs }, () => worker()));
+    return results;
 }
 
 async function main(args = process.argv.slice(2)) {
     const syntaxOnly = args.includes("--syntax");
     const releaseOnly = args.includes("--release");
-    const testsOnly = args.includes("--tests") || args.includes("--quality") || releaseOnly;
-    const reportDir = path.join(root, "test-results", syntaxOnly ? "syntax" : releaseOnly ? "release" : "tests");
+    const requestedGroup = optionValue(args, "--group");
+    if (args.includes("--group") && requestedGroup === undefined) throw new Error("--group requires a value");
+    const group = requestedGroup || (releaseOnly ? "release" : "core");
+    // Validate names before deriving or clearing any report path.
+    const testFiles = testsForGroup(root, group);
+    if (releaseOnly && group !== "release") throw new Error("--release cannot select a different test group");
+    const testsOnly = args.includes("--tests") || args.includes("--quality") || releaseOnly || requestedGroup;
+    const reportName = syntaxOnly ? "syntax" : releaseOnly ? "release" : group === "core" ? "tests" : "tests-" + group;
+    const reportDir = path.join(root, "test-results", reportName);
+    const jobs = parseJobs(args);
+    const keepLogs = args.includes("--keep-logs");
+    fs.rmSync(reportDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     fs.mkdirSync(reportDir, { recursive: true });
     const metadata = {
         platform: process.platform,
@@ -119,6 +167,8 @@ async function main(args = process.argv.slice(2)) {
         os: os.release(),
         node: process.version,
         npm: process.env.npm_config_user_agent || "direct node invocation",
+        group,
+        jobs,
         sha:
             process.env.GITHUB_SHA ||
             spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout?.trim()
@@ -126,19 +176,21 @@ async function main(args = process.argv.slice(2)) {
     console.log(JSON.stringify(metadata));
     const results = [];
     if (!testsOnly) {
-        for (const file of ["src", "skills", "scripts"].flatMap((dir) => discover(path.join(root, dir), true)))
-            results.push(await runFile(file, { syntax: true, reportDir }));
+        results.push(
+            ...(await runFiles(
+                ["src", "skills", "scripts"].flatMap((dir) => discover(path.join(root, dir), true)),
+                { syntax: true, reportDir, jobs, keepLogs }
+            ))
+        );
     }
     if (!syntaxOnly) {
-        for (const file of discover(path.join(root, "test")).filter(
-            (file) => file.endsWith(".test.js") && RELEASE_TESTS.has(path.basename(file)) === releaseOnly
-        ))
-            results.push(await runFile(file, { reportDir }));
+        results.push(...(await runFiles(testFiles, { reportDir, jobs, keepLogs })));
     }
     const failed = results.filter((result) => result.code !== 0);
+    const reportResults = results.map(({ output, ...result }) => result);
     fs.writeFileSync(
         path.join(reportDir, "summary.json"),
-        JSON.stringify({ metadata, results, failed: failed.length }, null, 2)
+        JSON.stringify({ metadata, results: reportResults, failed: failed.length }, null, 2)
     );
     console.log(results.length + " files checked; " + failed.length + " failed");
     process.exitCode = failed.length ? 1 : 0;
@@ -149,4 +201,4 @@ if (require.main === module)
         console.error(error);
         process.exitCode = 1;
     });
-module.exports = { discover, runFile, main };
+module.exports = { discover, main, optionValue, parseJobs, runFile, runFiles };

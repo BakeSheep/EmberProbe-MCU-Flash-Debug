@@ -5,6 +5,7 @@
 // 这里用程序化构造的最小 ELF32 验证全局预算会及时以 DWARF_BUDGET_EXCEEDED 中止。
 const assert = require("assert");
 const { parseDwarfInternal } = require("../src/dwarf/parser");
+const { buildDwarfElf: buildElf } = require("./helpers/elf-fixture");
 
 function uleb(v) {
     const out = [];
@@ -15,55 +16,6 @@ function uleb(v) {
         out.push(b);
     } while (v);
     return out;
-}
-
-// 构造 ELF32 LE，仅含 .debug_info / .debug_abbrev / .shstrtab 三节。
-function buildElf(infoData, abbrevData) {
-    const names = ["", ".debug_info", ".debug_abbrev", ".shstrtab"];
-    const shBytes = [];
-    const nameOff = {};
-    for (const nm of names) {
-        nameOff[nm] = shBytes.length;
-        for (const c of Buffer.from(nm, "latin1")) shBytes.push(c);
-        shBytes.push(0);
-    }
-    const shstrtab = Buffer.from(shBytes);
-    const infoOff = 52;
-    const abbrevOff = infoOff + infoData.length;
-    const shstrOff = abbrevOff + abbrevData.length;
-    const shoff = (shstrOff + shstrtab.length + 3) & ~3;
-    const shnum = 4;
-    const buf = Buffer.alloc(shoff + shnum * 40);
-    buf[0] = 0x7f;
-    buf[1] = 0x45;
-    buf[2] = 0x4c;
-    buf[3] = 0x46;
-    buf[4] = 1; // ELFCLASS32
-    buf[5] = 1; // ELFDATA2LSB
-    buf[6] = 1; // EV_CURRENT
-    buf.writeUInt16LE(2, 16); // e_type = ET_EXEC
-    buf.writeUInt16LE(0x28, 18); // e_machine = ARM
-    buf.writeUInt32LE(1, 20); // e_version
-    buf.writeUInt32LE(shoff, 32); // e_shoff
-    buf.writeUInt16LE(52, 40); // e_ehsize
-    buf.writeUInt16LE(40, 46); // e_shentsize
-    buf.writeUInt16LE(shnum, 48); // e_shnum
-    buf.writeUInt16LE(3, 50); // e_shstrndx
-    infoData.copy(buf, infoOff);
-    abbrevData.copy(buf, abbrevOff);
-    shstrtab.copy(buf, shstrOff);
-    const sh = (i) => shoff + i * 40;
-    const section = (i, name, type, offset, size) => {
-        buf.writeUInt32LE(nameOff[name], sh(i) + 0);
-        buf.writeUInt32LE(type, sh(i) + 4);
-        buf.writeUInt32LE(0, sh(i) + 8);
-        buf.writeUInt32LE(offset, sh(i) + 16);
-        buf.writeUInt32LE(size, sh(i) + 20);
-    };
-    section(1, ".debug_info", 1, infoOff, infoData.length);
-    section(2, ".debug_abbrev", 1, abbrevOff, abbrevData.length);
-    section(3, ".shstrtab", 3, shstrOff, shstrtab.length);
-    return buf;
 }
 
 // 一个含 count 个零属性缩写的表；返回 { bytes, size }。code 从 1 递增。

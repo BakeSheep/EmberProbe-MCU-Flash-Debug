@@ -8,20 +8,24 @@ Windows J-Link 驱动功能在本版随未签名的 helper 与 libwdi DLL 发布
 
 ## 发布稳定版本
 
-以下示例发布 `0.5.0`：
+先将功能改动合入 `master`，并在 `CHANGELOG.md` 的 `## [Unreleased]` 下记录用户可见变化；该节必须非空。以下示例发布 `0.8.1`，执行时替换版本号与日期：
 
 ```powershell
-npm run release:prepare -- 0.5.0 --date 2026-07-31
+npm run release:prepare -- 0.8.1 --date 2026-10-04
+node scripts/validate-release.js v0.8.1
 npm run check
 npm run quality
 git add package.json package-lock.json README.md README_EN.md CHANGELOG.md
-git commit -m "chore: prepare v0.5.0"
-git tag -a v0.5.0 -m "EmberProbe v0.5.0"
+git commit -m "Release EmberProbe v0.8.1"
+git tag -a v0.8.1 -m "EmberProbe v0.8.1"
 git push origin master
-git push origin v0.5.0
+git push origin v0.8.1
+gh run watch
 ```
 
-标签必须严格使用 `vX.Y.Z`，并与 `package.json`、lock 文件、README 和 Changelog 一致。预发布标签（例如 `v0.5.0-beta.1`）会被拒绝，避免意外覆盖稳定渠道。
+`release:prepare` 同步 `package.json`、`package-lock.json`、`README.md`、`README_EN.md` 和 `CHANGELOG.md`。确认验证与质量检查通过后，发布提交仅包含这五个文件；创建标签前检查暂存区，避免夹带其他改动。两个 push 都须成功，再用 `gh run watch` 选择对应 Release 工作流并等待完成。
+
+标签必须严格使用 `vX.Y.Z`，并与五个文件的版本引用一致。预发布标签（例如 `v0.8.1-beta.1`）会被拒绝，避免意外覆盖稳定渠道。发布时不要在本地运行 `npm run package`；CI 构建并上传正式 VSIX，本地打包仅用于开发验证。
 
 工作流依次执行：
 
@@ -30,9 +34,19 @@ git push origin v0.5.0
 3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
 4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
 
+## 发布说明
+
+工作流成功发布后，用 `gh release view <上一版标签>` 阅读上一版说明，将新版本的自动生成说明替换为同样简洁的双语摘要：先写中文编号章节 `新增` / `优化` / `修复`，再写英文 `Added` / `Improved` / `Fixed`，每项一行。将完整文本保存到 UTF-8 文件 `release-notes.md`，再执行：
+
+```powershell
+gh release edit v0.8.1 --notes-file "release-notes.md"
+```
+
 ## 失败与重试
 
 如果创建 Release、上传附件或公开草稿失败，在 GitHub **Actions → Release → Run workflow** 中输入原标签重跑。
+
+也可使用 `gh workflow run release.yml -f tag=v0.8.1` 重试，再用 `gh run watch` 选择新触发的运行。执行时替换为原发布标签。
 
 工作流可安全处理常见重试场景：
 

@@ -2,9 +2,9 @@
 // 验证 DWARF 复合类型布局解析：结构体成员名/偏移/类型、数组维度与元素类型。
 // 程序化构造最小 ELF32 + DWARF v4 调试段（.debug_info/.debug_abbrev），无需外部工具链。
 const assert = require("assert");
-const zlib = require("zlib");
 const { parseDwarf, parseCompositeLayout, parseDwarfVariableTypes, _debugSectionData } = require("../src/dwarf");
 const { decodeComposite, expandCompositeLeaves, parseMemberPath } = require("../src/elfSymbols");
+const { buildDwarfElf: dwarfElf } = require("./helpers/elf-fixture");
 
 function str(s) {
     const b = [];
@@ -132,93 +132,7 @@ const abbrev = Buffer.from([
     0
 ]);
 
-// —— .shstrtab ——
-const names = ["", ".debug_info", ".debug_abbrev", ".shstrtab"];
-const nameOff = {};
-const shBytes = [];
-for (const nm of names) {
-    nameOff[nm] = shBytes.length;
-    for (const c of Buffer.from(nm, "latin1")) shBytes.push(c);
-    shBytes.push(0);
-}
-const shstrtab = Buffer.from(shBytes);
-
-// —— 组装 ELF32 LE ——
-const diOff = 52;
-const abOff = diOff + debugInfo.length;
-const shstrOff = abOff + abbrev.length;
-let shoff = shstrOff + shstrtab.length;
-shoff = (shoff + 3) & ~3;
-const shnum = 4;
-const buf = Buffer.alloc(shoff + shnum * 40);
-buf[0] = 0x7f;
-buf[1] = 0x45;
-buf[2] = 0x4c;
-buf[3] = 0x46;
-buf[4] = 1;
-buf[5] = 1;
-buf[6] = 1;
-buf.writeUInt16LE(2, 16);
-buf.writeUInt16LE(0x28, 18);
-buf.writeUInt32LE(1, 20);
-buf.writeUInt32LE(shoff, 32);
-buf.writeUInt16LE(52, 40);
-buf.writeUInt16LE(40, 46);
-buf.writeUInt16LE(shnum, 48);
-buf.writeUInt16LE(3, 50); // e_shstrndx = 3
-debugInfo.copy(buf, diOff);
-abbrev.copy(buf, abOff);
-shstrtab.copy(buf, shstrOff);
-const sh = (i) => shoff + i * 40;
-buf.writeUInt32LE(nameOff[".debug_info"], sh(1) + 0);
-buf.writeUInt32LE(1, sh(1) + 4);
-buf.writeUInt32LE(diOff, sh(1) + 16);
-buf.writeUInt32LE(debugInfo.length, sh(1) + 20);
-buf.writeUInt32LE(nameOff[".debug_abbrev"], sh(2) + 0);
-buf.writeUInt32LE(1, sh(2) + 4);
-buf.writeUInt32LE(abOff, sh(2) + 16);
-buf.writeUInt32LE(abbrev.length, sh(2) + 20);
-buf.writeUInt32LE(nameOff[".shstrtab"], sh(3) + 0);
-buf.writeUInt32LE(3, sh(3) + 4);
-buf.writeUInt32LE(shstrOff, sh(3) + 16);
-buf.writeUInt32LE(shstrtab.length, sh(3) + 20);
-
-function compressedElf32Section(data) {
-    const payload = zlib.deflateSync(data);
-    const section = Buffer.alloc(12 + payload.length);
-    section.writeUInt32LE(1, 0); // ELFCOMPRESS_ZLIB
-    section.writeUInt32LE(data.length, 4);
-    section.writeUInt32LE(1, 8);
-    payload.copy(section, 12);
-    return section;
-}
-
-function dwarfElf(infoData, abbrevData) {
-    const infoOffset = 52;
-    const abbrevOffset = infoOffset + infoData.length;
-    const namesOffset = abbrevOffset + abbrevData.length;
-    const sectionOffset = (namesOffset + shstrtab.length + 3) & ~3;
-    const result = Buffer.alloc(sectionOffset + 4 * 40);
-    buf.subarray(0, 52).copy(result);
-    result.writeUInt32LE(sectionOffset, 32);
-    infoData.copy(result, infoOffset);
-    abbrevData.copy(result, abbrevOffset);
-    shstrtab.copy(result, namesOffset);
-    const entry = (index) => sectionOffset + index * 40;
-    result.writeUInt32LE(nameOff[".debug_info"], entry(1));
-    result.writeUInt32LE(1, entry(1) + 4);
-    result.writeUInt32LE(infoOffset, entry(1) + 16);
-    result.writeUInt32LE(infoData.length, entry(1) + 20);
-    result.writeUInt32LE(nameOff[".debug_abbrev"], entry(2));
-    result.writeUInt32LE(1, entry(2) + 4);
-    result.writeUInt32LE(abbrevOffset, entry(2) + 16);
-    result.writeUInt32LE(abbrevData.length, entry(2) + 20);
-    result.writeUInt32LE(nameOff[".shstrtab"], entry(3));
-    result.writeUInt32LE(3, entry(3) + 4);
-    result.writeUInt32LE(namesOffset, entry(3) + 16);
-    result.writeUInt32LE(shstrtab.length, entry(3) + 20);
-    return result;
-}
+const buf = dwarfElf(debugInfo, abbrev);
 
 // ELFCOMPRESS_ZSTD（type=2）必须在扩展支持的 Node.js 20 上直接解压。
 // payload 是 zstd CLI 对 ASCII "DWARF-zstd-test" 的单帧输出；测试不依赖系统 zstd。
@@ -233,33 +147,7 @@ assert.strictEqual(
     "DWARF-zstd-test"
 );
 
-const compressedInfo = compressedElf32Section(debugInfo);
-const compressedAbbrev = compressedElf32Section(abbrev);
-const compressedInfoOff = 52;
-const compressedAbbrevOff = compressedInfoOff + compressedInfo.length;
-const compressedNamesOff = compressedAbbrevOff + compressedAbbrev.length;
-const compressedShoff = (compressedNamesOff + shstrtab.length + 3) & ~3;
-const compressedBuf = Buffer.alloc(compressedShoff + shnum * 40);
-buf.subarray(0, 52).copy(compressedBuf, 0);
-compressedBuf.writeUInt32LE(compressedShoff, 32);
-compressedInfo.copy(compressedBuf, compressedInfoOff);
-compressedAbbrev.copy(compressedBuf, compressedAbbrevOff);
-shstrtab.copy(compressedBuf, compressedNamesOff);
-const compressedSh = (i) => compressedShoff + i * 40;
-compressedBuf.writeUInt32LE(nameOff[".debug_info"], compressedSh(1));
-compressedBuf.writeUInt32LE(1, compressedSh(1) + 4);
-compressedBuf.writeUInt32LE(0x800, compressedSh(1) + 8); // SHF_COMPRESSED
-compressedBuf.writeUInt32LE(compressedInfoOff, compressedSh(1) + 16);
-compressedBuf.writeUInt32LE(compressedInfo.length, compressedSh(1) + 20);
-compressedBuf.writeUInt32LE(nameOff[".debug_abbrev"], compressedSh(2));
-compressedBuf.writeUInt32LE(1, compressedSh(2) + 4);
-compressedBuf.writeUInt32LE(0x800, compressedSh(2) + 8);
-compressedBuf.writeUInt32LE(compressedAbbrevOff, compressedSh(2) + 16);
-compressedBuf.writeUInt32LE(compressedAbbrev.length, compressedSh(2) + 20);
-compressedBuf.writeUInt32LE(nameOff[".shstrtab"], compressedSh(3));
-compressedBuf.writeUInt32LE(3, compressedSh(3) + 4);
-compressedBuf.writeUInt32LE(compressedNamesOff, compressedSh(3) + 16);
-compressedBuf.writeUInt32LE(shstrtab.length, compressedSh(3) + 20);
+const compressedBuf = dwarfElf(debugInfo, abbrev, { compress: true });
 
 // —— 断言：结构体布局 ——
 const layouts = parseCompositeLayout(buf);
@@ -439,42 +327,8 @@ const abbrev2 = Buffer.from([
     0, // variable
     0
 ]);
-const di2Off = 52;
-const ab2Off = di2Off + debugInfo2.length;
-const shstr2Off = ab2Off + abbrev2.length;
-const shoff2 = (shstr2Off + shstrtab.length + 3) & ~3;
-const buf2 = Buffer.alloc(shoff2 + 4 * 40);
-buf2[0] = 0x7f;
-buf2[1] = 0x45;
-buf2[2] = 0x4c;
-buf2[3] = 0x46;
-buf2[4] = 1;
-buf2[5] = 1;
-buf2[6] = 1;
-buf2.writeUInt16LE(2, 16);
-buf2.writeUInt16LE(0x28, 18);
-buf2.writeUInt32LE(1, 20);
-buf2.writeUInt32LE(shoff2, 32);
-buf2.writeUInt16LE(52, 40);
-buf2.writeUInt16LE(40, 46);
-buf2.writeUInt16LE(4, 48);
-buf2.writeUInt16LE(3, 50);
-debugInfo2.copy(buf2, di2Off);
-abbrev2.copy(buf2, ab2Off);
-shstrtab.copy(buf2, shstr2Off);
-const sh2 = (i) => shoff2 + i * 40;
-buf2.writeUInt32LE(nameOff[".debug_info"], sh2(1) + 0);
-buf2.writeUInt32LE(1, sh2(1) + 4);
-buf2.writeUInt32LE(di2Off, sh2(1) + 16);
-buf2.writeUInt32LE(debugInfo2.length, sh2(1) + 20);
-buf2.writeUInt32LE(nameOff[".debug_abbrev"], sh2(2) + 0);
-buf2.writeUInt32LE(1, sh2(2) + 4);
-buf2.writeUInt32LE(ab2Off, sh2(2) + 16);
-buf2.writeUInt32LE(abbrev2.length, sh2(2) + 20);
-buf2.writeUInt32LE(nameOff[".shstrtab"], sh2(3) + 0);
-buf2.writeUInt32LE(3, sh2(3) + 4);
-buf2.writeUInt32LE(shstr2Off, sh2(3) + 16);
-buf2.writeUInt32LE(shstrtab.length, sh2(3) + 20);
+const buf2 = dwarfElf(debugInfo2, abbrev2);
+
 const gnuVar = parseCompositeLayout(buf2).get("s");
 assert.ok(gnuVar, "GNU 扩展 form 出现在 CU 中时，后续变量的复合布局仍应被解析");
 assert.strictEqual(gnuVar.kind, "struct");
@@ -615,29 +469,7 @@ const ltoAbbrev = Buffer.from([
     0
 ]);
 const ltoDebugInfo = Buffer.from(ltoInfo);
-const ltoDiOff = 52;
-const ltoAbOff = ltoDiOff + ltoDebugInfo.length;
-const ltoShstrOff = ltoAbOff + ltoAbbrev.length;
-const ltoShoff = (ltoShstrOff + shstrtab.length + 3) & ~3;
-const ltoBuf = Buffer.alloc(ltoShoff + 4 * 40);
-buf.subarray(0, 52).copy(ltoBuf);
-ltoBuf.writeUInt32LE(ltoShoff, 32);
-ltoDebugInfo.copy(ltoBuf, ltoDiOff);
-ltoAbbrev.copy(ltoBuf, ltoAbOff);
-shstrtab.copy(ltoBuf, ltoShstrOff);
-const ltoSh = (i) => ltoShoff + i * 40;
-ltoBuf.writeUInt32LE(nameOff[".debug_info"], ltoSh(1));
-ltoBuf.writeUInt32LE(1, ltoSh(1) + 4);
-ltoBuf.writeUInt32LE(ltoDiOff, ltoSh(1) + 16);
-ltoBuf.writeUInt32LE(ltoDebugInfo.length, ltoSh(1) + 20);
-ltoBuf.writeUInt32LE(nameOff[".debug_abbrev"], ltoSh(2));
-ltoBuf.writeUInt32LE(1, ltoSh(2) + 4);
-ltoBuf.writeUInt32LE(ltoAbOff, ltoSh(2) + 16);
-ltoBuf.writeUInt32LE(ltoAbbrev.length, ltoSh(2) + 20);
-ltoBuf.writeUInt32LE(nameOff[".shstrtab"], ltoSh(3));
-ltoBuf.writeUInt32LE(3, ltoSh(3) + 4);
-ltoBuf.writeUInt32LE(ltoShstrOff, ltoSh(3) + 16);
-ltoBuf.writeUInt32LE(shstrtab.length, ltoSh(3) + 20);
+const ltoBuf = dwarfElf(ltoDebugInfo, ltoAbbrev);
 
 const ltoTypes = parseDwarfVariableTypes(ltoBuf);
 assert.strictEqual(ltoTypes.get("g_f32").watchType, "f32");
@@ -716,29 +548,7 @@ const mdAbbrev = Buffer.from([
     0, // variable
     0
 ]);
-const mdDiOff = 52;
-const mdAbOff = mdDiOff + mdDebugInfo.length;
-const mdShstrOff = mdAbOff + mdAbbrev.length;
-const mdShoff = (mdShstrOff + shstrtab.length + 3) & ~3;
-const mdBuf = Buffer.alloc(mdShoff + 4 * 40);
-buf.subarray(0, 52).copy(mdBuf);
-mdBuf.writeUInt32LE(mdShoff, 32);
-mdDebugInfo.copy(mdBuf, mdDiOff);
-mdAbbrev.copy(mdBuf, mdAbOff);
-shstrtab.copy(mdBuf, mdShstrOff);
-const mdSh = (i) => mdShoff + i * 40;
-mdBuf.writeUInt32LE(nameOff[".debug_info"], mdSh(1));
-mdBuf.writeUInt32LE(1, mdSh(1) + 4);
-mdBuf.writeUInt32LE(mdDiOff, mdSh(1) + 16);
-mdBuf.writeUInt32LE(mdDebugInfo.length, mdSh(1) + 20);
-mdBuf.writeUInt32LE(nameOff[".debug_abbrev"], mdSh(2));
-mdBuf.writeUInt32LE(1, mdSh(2) + 4);
-mdBuf.writeUInt32LE(mdAbOff, mdSh(2) + 16);
-mdBuf.writeUInt32LE(mdAbbrev.length, mdSh(2) + 20);
-mdBuf.writeUInt32LE(nameOff[".shstrtab"], mdSh(3));
-mdBuf.writeUInt32LE(3, mdSh(3) + 4);
-mdBuf.writeUInt32LE(mdShstrOff, mdSh(3) + 16);
-mdBuf.writeUInt32LE(shstrtab.length, mdSh(3) + 20);
+const mdBuf = dwarfElf(mdDebugInfo, mdAbbrev);
 
 const mdLayout = parseCompositeLayout(mdBuf).get("m");
 assert.ok(mdLayout, "多维数组 m 的布局应被解析");

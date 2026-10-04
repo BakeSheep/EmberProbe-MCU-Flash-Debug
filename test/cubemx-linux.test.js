@@ -11,6 +11,18 @@ const { snapshot, stageGeneration, normalizeGenerated, hash } = require("../src/
 const { runCubeMx } = require("../src/services/cubemxRunner");
 const { launchInstaller, inspectFirmware } = require("../src/services/cubemxFirmware");
 
+async function removeWithRetries(target) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            await fs.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+            return;
+        } catch (error) {
+            if (!/^(EPERM|EBUSY)$/.test(error.code || "") || attempt >= 5) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+        }
+    }
+}
+
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-linux-")));
     const write = async (file, content = "", mode = 0o644) => {
@@ -221,7 +233,7 @@ const { launchInstaller, inspectFirmware } = require("../src/services/cubemxFirm
         child.emit("close", 0);
         console.log("Linux CubeMX discovery, configuration, generation and firmware tests passed");
     } finally {
-        await fs.rm(root, { recursive: true, force: true });
+        await removeWithRetries(root);
     }
 })().catch((error) => {
     console.error(error);

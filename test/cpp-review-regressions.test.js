@@ -15,6 +15,7 @@ const { buildActiveReadPlan, LiveWatchService } = require("../src/services/liveW
 const { normalizeWatchList } = require("../src/validation");
 const { loadProvider } = require("./helpers/load-provider");
 const { parseDwarfInternal } = require("../src/dwarf/parser");
+const { buildDwarfElf } = require("./helpers/elf-fixture");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
@@ -27,28 +28,10 @@ function memberExpressionElf(expression) {
     ]);
     info.writeUInt32LE(info.length - 4);
     const abbrev = Buffer.from([1, 0x11, 1, 0, 0, 2, 0x0d, 0, 0x38, 0x18, 0, 0, 0]);
-    const names = Buffer.from("\0.debug_info\0.debug_abbrev\0.shstrtab\0");
-    const sections = [info, abbrev, names];
-    const tableOffset = 52 + sections.reduce((size, section) => size + section.length, 0);
-    const buffer = Buffer.alloc(tableOffset + 160);
-    buffer.write("\x7fELF");
-    buffer[4] = buffer[5] = buffer[6] = 1;
-    buffer.writeUInt32LE(tableOffset, 32);
-    buffer.writeUInt16LE(52, 40);
-    buffer.writeUInt16LE(40, 46);
-    buffer.writeUInt16LE(4, 48);
-    buffer.writeUInt16LE(3, 50);
-    let offset = 52;
-    sections.forEach((section, index) => {
-        section.copy(buffer, offset);
-        const header = tableOffset + (index + 1) * 40;
-        buffer.writeUInt32LE([1, 13, 27][index], header);
-        buffer.writeUInt32LE(index === 2 ? 3 : 1, header + 4);
-        buffer.writeUInt32LE(offset, header + 16);
-        buffer.writeUInt32LE(section.length, header + 20);
-        offset += section.length;
+    return buildDwarfElf(info, abbrev, {
+        machine: 0,
+        layout: { type: 0, version: 0, tableAlignment: 1 }
     });
-    return buffer;
 }
 assert.strictEqual(parseDwarfInternal(memberExpressionElf([0x23, 0])).dies.get(12).memberOffset, 0);
 assert.strictEqual(parseDwarfInternal(memberExpressionElf([0x23, 0x80, 1])).dies.get(12).memberOffset, 128);

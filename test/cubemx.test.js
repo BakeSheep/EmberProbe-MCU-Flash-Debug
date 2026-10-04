@@ -347,6 +347,28 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
                 return child;
             };
         assert((await runCubeMx(tool, runnerDir, "demo.ioc", { spawn: spawn("ok") })).log.includes("successfully"));
+        const scriptPath = path.join(runnerDir, ".emberprobe-cubemx-script.txt");
+        await assert.rejects(fs.stat(scriptPath), { code: "ENOENT" }, "generation must await script cleanup");
+        for (const errorFirst of [true, false]) {
+            const completion = runCubeMx(tool, runnerDir, "demo.ioc", {
+                spawn: () => {
+                    const child = new EventEmitter();
+                    child.stdout = new EventEmitter();
+                    child.stderr = new EventEmitter();
+                    child.kill = () => {};
+                    setImmediate(() => {
+                        child.stdout.emit("data", Buffer.from("generated successfully"));
+                        if (errorFirst) child.emit("error", new Error("start failed"));
+                        child.emit("close", 0);
+                        if (!errorFirst) child.emit("error", new Error("late error"));
+                    });
+                    return child;
+                }
+            });
+            if (errorFirst) await rejects(() => completion, "CUBEMX_START_FAILED");
+            else await completion;
+            await assert.rejects(fs.stat(scriptPath), { code: "ENOENT" });
+        }
         const notice = "log4j user configuration file not found: C:\\Users\\ASUS/.stm32cubemx/log4j2.xml";
         const fallback = "Configure log4j with default settings from jar:file:/D:/software/CubeMX/";
         const cliLines = [

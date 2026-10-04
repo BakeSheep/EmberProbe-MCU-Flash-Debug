@@ -65,6 +65,8 @@ npm run test:e2e
 npm run package
 ```
 
+普通测试由 `scripts/test-groups.js` 显式分组：`npm run test:fast` 运行纯逻辑测试，`npm run test:integration` 运行文件系统、服务和异步集成测试；`npm run test:unit` 仍运行两组全部测试。默认最多并发 4 个独立子进程，排查问题可用 `npm run test:unit -- --jobs 1`，或加 `--keep-logs` 保留成功日志。结果汇总写入 `test-results/`；GDB、E2E、HIL 和发布一致性测试保持独立入口。
+
 准备新版本时运行 `npm run release:prepare -- <version> --date YYYY-MM-DD`，脚本会同步版本元数据、README 和 Changelog。推送匹配版本的 `vX.Y.Z` 标签后，Release 工作流会自动创建 GitHub Release 并上传 VSIX；发布及重试方式见 [docs/RELEASING.md](docs/RELEASING.md)。真机测试接入方式见 [test/hil/README.md](test/hil/README.md)。当前扩展版本为 `0.8.0`。
 
 ## 项目结构

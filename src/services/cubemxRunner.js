@@ -28,6 +28,7 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
     return new Promise((resolve, reject) => {
         const monitor = createLogMonitor({ logPath });
         let stopped = "";
+        let completed = false;
         const command = cubeMxCommand(tool, "-q", script);
         const child = (options.spawn || spawn)(command.command, command.args, {
             cwd: path.dirname(tool.executable),
@@ -42,20 +43,28 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         const cancel = () => stop("CUBEMX_CANCELLED");
         const timer = setTimeout(() => stop("CUBEMX_TIMEOUT"), options.timeoutMs || 300000);
         options.signal?.addEventListener("abort", cancel, { once: true });
-        const cleanup = () => {
+        const cleanup = async () => {
             clearTimeout(timer);
             options.signal?.removeEventListener("abort", cancel);
-            fs.unlink(script).catch(() => {});
+            try {
+                await fs.unlink(script);
+            } catch {
+                // The generated script may already have been removed by a failed run.
+            }
         };
         child.stdout.on("data", monitor.stdout);
         child.stderr.on("data", monitor.stderr);
-        child.once("error", (error) => {
-            cleanup();
+        child.once("error", async (error) => {
+            if (completed) return;
+            completed = true;
+            await cleanup();
             monitor.finish();
             reject(failure("CUBEMX_START_FAILED", error.message, { stage, logPath }));
         });
-        child.once("close", (code) => {
-            cleanup();
+        child.once("close", async (code) => {
+            if (completed) return;
+            completed = true;
+            await cleanup();
             const { log, confirmed, failureLine, diagnostic, generatedFiles, warnings, warningSummary } =
                 monitor.finish();
             const details = {

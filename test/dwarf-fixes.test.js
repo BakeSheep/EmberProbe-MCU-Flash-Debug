@@ -3,6 +3,7 @@
 const assert = require("assert");
 const c = require("../src/dwarf/constants");
 const { parseDwarfInternal } = require("../src/dwarf/parser");
+const { buildDwarfElf } = require("./helpers/elf-fixture");
 const {
     buildVariableTypes,
     buildCompositeLayouts,
@@ -118,42 +119,8 @@ const { validateComposite } = require("../src/compositeValidation");
         0
     ]);
 
-    const strBytes = Buffer.from("\0.debug_info\0.debug_abbrev\0.shstrtab\0");
     const debugInfo = Buffer.from(di);
-    const diOff = 52;
-    const abOff = diOff + debugInfo.length;
-    const shstrOff = abOff + abbrev.length;
-    const shoff = shstrOff + strBytes.length;
-
-    const elf = Buffer.alloc(shoff + 4 * 40);
-    elf.write("\x7fELF", 0);
-    elf[4] = 1; // 32-bit
-    elf[5] = 1; // little endian
-    elf[6] = 1; // version
-    elf.writeUInt16LE(2, 16); // ET_EXEC
-    elf.writeUInt16LE(0x28, 18); // ARM
-    elf.writeUInt32LE(1, 20);
-    elf.writeUInt32LE(shoff, 32);
-    elf.writeUInt16LE(52, 40);
-    elf.writeUInt16LE(40, 46);
-    elf.writeUInt16LE(4, 48);
-    elf.writeUInt16LE(3, 50); // shstrndx = 3
-
-    debugInfo.copy(elf, diOff);
-    abbrev.copy(elf, abOff);
-    strBytes.copy(elf, shstrOff);
-
-    function writeShdr(idx, nameOff, type, offset, size) {
-        const o = shoff + idx * 40;
-        elf.writeUInt32LE(nameOff, o);
-        elf.writeUInt32LE(type, o + 4);
-        elf.writeUInt32LE(offset, o + 16);
-        elf.writeUInt32LE(size, o + 20);
-    }
-    writeShdr(0, 0, 0, 0, 0);
-    writeShdr(1, 1, 1, diOff, debugInfo.length); // .debug_info
-    writeShdr(2, 13, 1, abOff, abbrev.length); // .debug_abbrev
-    writeShdr(3, 27, 3, shstrOff, strBytes.length); // .shstrtab
+    const elf = buildDwarfElf(debugInfo, abbrev, { layout: { tableAlignment: 1 } });
 
     const parsedElf = parseDwarfInternal(elf);
     const inheritanceDie = parsedElf.dies.get(14);

@@ -46,12 +46,38 @@ jobs:
         env:
           CPP_DWARF: ${{ matrix.dwarf }}
           CPP_STANDARD: ${{ matrix.standard }}
-      - run: node test/gdb/printer-modes.test.js
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: cpp-gdb-${{ matrix.gcc }}-${{ matrix.standard }}-dwarf-${{ matrix.dwarf }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+  gdb-printer-modes:
+    name: GDB pretty-printer modes
+    runs-on: ubuntu-latest
+    container:
+      image: gcc:14
+      options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: apt-get update && apt-get install -y gdb
+      - run: node test/gdb/printer-modes.test.js
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gdb-printer-modes
           path: test-results/
           if-no-files-found: warn
           retention-days: 14
