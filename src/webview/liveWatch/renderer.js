@@ -11,6 +11,73 @@ function retainedSampleLimit(frequencyHz, intervalMs) {
     return Math.min(HISTORY_MAX_POINTS, Math.ceil(HISTORY_WINDOW_MS / ms) + 1);
 }
 var MAXPTS = retainedSampleLimit(CFG.frequencyHz, CFG.intervalMs);
+var remoteHistory = {
+    status: null,
+    liveStatus: null,
+    series: [],
+    snapshotId: null,
+    nextId: 0,
+    inFlight: null,
+    pending: null,
+    desiredKey: null,
+    cachedKey: null,
+    operation: null,
+    exportRequest: null,
+    lastRequest: -Infinity
+};
+function requestChartViewport(range, width) {
+    if (!CFG.backendHistory || !range || !remoteHistory.status || historyClearPending) return;
+    var names = watch
+        .filter(function (item) {
+            return !hidden[item.name] && !isCompositeItem(item);
+        })
+        .map(function (item) {
+            return item.name;
+        });
+    var key = JSON.stringify([
+        historyRevision,
+        remoteHistory.status.revision,
+        remoteHistory.snapshotId,
+        names,
+        watch.map(function (item) {
+            return [item.name, item.type, item.address, item.bitOffset, item.bitSize];
+        }),
+        range,
+        width
+    ]);
+    remoteHistory.desiredKey = key;
+    if (key === remoteHistory.cachedKey) return;
+    remoteHistory.pending = {
+        key: key,
+        range: { ...range },
+        width: width,
+        names: names,
+        snapshotId: remoteHistory.snapshotId
+    };
+    dispatchChartViewport();
+}
+function dispatchChartViewport() {
+    if (remoteHistory.inFlight || !remoteHistory.pending) return;
+    var elapsed = performance.now() - remoteHistory.lastRequest;
+    if (elapsed < 80) {
+        dirty = true;
+        return;
+    }
+    var request = remoteHistory.pending;
+    remoteHistory.pending = null;
+    request.requestId = ++remoteHistory.nextId;
+    remoteHistory.inFlight = request;
+    remoteHistory.lastRequest = performance.now();
+    post({
+        type: "chartViewport",
+        names: request.names,
+        range: request.range,
+        width: request.width,
+        snapshotId: request.snapshotId,
+        requestId: request.requestId,
+        historyRevision: historyRevision
+    });
+}
 function retainedPoints(arr) {
     return arr.slice(arr.retainedStart || 0);
 }
@@ -155,6 +222,8 @@ function setDisplayedValue(cell, value) {
     if (cell.title !== value) cell.title = value;
 }
 var buildCsv = window.__BUILD_CSV__;
+var historyRevision = 0,
+    historyClearPending = false;
 function defType(size) {
     return window.EmberProbeRuntime.defaultType(size);
 }
@@ -444,8 +513,9 @@ var valueRefreshTimer = null;
 var lastValueRefresh = 0;
 function scheduleValueRefresh() {
     if (valueRefreshTimer !== null) return;
+    var interval = CFG.backendHistory ? 50 : 100;
     var elapsed = Date.now() - lastValueRefresh;
-    if (elapsed >= 100) {
+    if (elapsed >= interval) {
         lastValueRefresh = Date.now();
         updateValues();
         return;
@@ -454,9 +524,10 @@ function scheduleValueRefresh() {
         valueRefreshTimer = null;
         lastValueRefresh = Date.now();
         updateValues();
-    }, 100 - elapsed);
+    }, interval - elapsed);
 }
 function onSamples(samples) {
+    if (historyClearPending) return;
     if (!frozen) invalidateSeries();
     var now = Date.now();
     // Measure acquisition timestamps, not delayed Webview message delivery.
@@ -786,6 +857,7 @@ function collectLeaves(layout, name, baseAddr) {
     return out;
 }
 function onCompositeSamples(samples) {
+    if (historyClearPending) return;
     var refreshImport = false;
     (samples || []).forEach(function (s) {
         if (!s || !s.name) return;
@@ -906,9 +978,22 @@ function stop() {
     setStatusKey("lw.stopping");
     updateRun();
 }
-function clearHistory() {
+function clearHistory(clearArchive = true) {
+    historyRevision++;
+    historyClearPending = clearArchive;
+    if (CFG.backendHistory) {
+        remoteHistory.status = remoteHistory.liveStatus = null;
+        remoteHistory.series = [];
+        remoteHistory.inFlight = remoteHistory.pending = remoteHistory.operation = remoteHistory.exportRequest = null;
+        remoteHistory.cachedKey = remoteHistory.desiredKey = remoteHistory.snapshotId = null;
+    }
+    archiveExportInfo = null;
+    exportCandidates = [];
+    hideExport();
+    if (clearArchive) post({ type: "clearSamplingHistory", historyRevision: historyRevision });
     Analysis.resume(analysis);
     frozen = false;
+    $("freeze").textContent = t("lw.freeze");
     invalidateSeries();
     Object.keys(data).forEach(function (n) {
         data[n] = [];
@@ -1320,10 +1405,25 @@ sourceSelect.onchange = function () {
     exportSource = sourceSelect.value;
     if (exportSource === "archive") {
         if (archiveExportInfo) showArchiveExport(archiveExportInfo);
-        else post({ type: "samplingArchiveInfo", openExport: true });
+        else post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
     } else showLocalExport();
 };
 function showLocalExport() {
+    if (CFG.backendHistory) {
+        var requestId = ++remoteHistory.nextId;
+        remoteHistory.exportRequest = {
+            requestId: requestId,
+            source: exportSource,
+            snapshotId: remoteHistory.snapshotId
+        };
+        post({
+            type: "chartExportInfo",
+            requestId: requestId,
+            historyRevision: historyRevision,
+            snapshotId: exportSource === "snapshot" ? remoteHistory.snapshotId : null
+        });
+        return;
+    }
     var buffers = exportSource === "snapshot" ? analysis.snapshot || {} : data;
     buffers = Object.fromEntries(
         Object.entries(buffers).map(function (entry) {
@@ -1362,9 +1462,11 @@ function showLocalExport() {
 function showExport() {
     exportSource = frozen ? "snapshot" : "archive";
     sourceSelect.value = exportSource;
-    sourceSelect.querySelector('option[value="snapshot"]').disabled = !analysis.snapshot;
+    sourceSelect.querySelector('option[value="snapshot"]').disabled = CFG.backendHistory
+        ? !remoteHistory.snapshotId
+        : !analysis.snapshot;
     if (exportSource === "snapshot") showLocalExport();
-    else post({ type: "samplingArchiveInfo", openExport: true });
+    else post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
 }
 function showArchiveExport(info) {
     var names = Array.isArray(info && info.variables) ? info.variables : [],
@@ -1422,6 +1524,22 @@ function applyExport() {
         return;
     }
     if (exportSource !== "archive") {
+        if (CFG.backendHistory) {
+            post({
+                type: "exportCsv",
+                source: exportSource,
+                backendHistory: true,
+                historyRevision: historyRevision,
+                snapshotId: exportSource === "snapshot" ? remoteHistory.snapshotId : null,
+                names: selected.map(function (c) {
+                    return c.name;
+                }),
+                fromMs: opts.from,
+                toMs: opts.to
+            });
+            hideExport();
+            return;
+        }
         post({
             type: "exportCsv",
             source: exportSource,
@@ -1455,6 +1573,11 @@ var VP = window.EmberChartViewport,
     canvas = $("chart"),
     ctx = canvas.getContext("2d"),
     chartStage = $("chartStage");
+var historyLoading = document.createElement("div");
+historyLoading.className = "chart-history-loading";
+historyLoading.setAttribute("role", "status");
+historyLoading.hidden = true;
+chartStage.appendChild(historyLoading);
 var chartState = {
     bounds: null,
     x: null,
@@ -1488,6 +1611,12 @@ function resetChartView() {
 }
 function freezeChart() {
     syncTimeBounds();
+    if (CFG.backendHistory) {
+        if (remoteHistory.operation || frozen) return;
+        remoteHistory.operation = ++remoteHistory.nextId;
+        post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
+        return;
+    }
     // Auto retention can exceed the new rate's point target while preserving earlier high-rate history.
     var buffers = Object.fromEntries(
         Object.entries(data).map(function (entry) {
@@ -1502,6 +1631,14 @@ function freezeChart() {
     chartState.fastDirty = true;
 }
 function resumeChart() {
+    $("freeze").textContent = t("lw.freeze");
+    if (CFG.backendHistory) {
+        remoteHistory.operation = null;
+        remoteHistory.snapshotId = null;
+        remoteHistory.status = remoteHistory.liveStatus;
+        remoteHistory.cachedKey = null;
+        post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
+    }
     Analysis.resume(analysis);
     frozen = false;
     invalidateSeries();
@@ -1661,14 +1798,27 @@ canvas.addEventListener("click", function (e) {
         return;
     if (Inspection.hit(chartState.curveGeometry.value, point).length) freezeChart();
 });
-function chartData() {
+function chartData(range, width) {
+    if (CFG.backendHistory) {
+        requestChartViewport(range, width);
+        return remoteHistory.series.flatMap(function (part) {
+            var idx = watch.findIndex(function (item) {
+                return item.name === part.name;
+            });
+            return idx < 0 || hidden[part.name]
+                ? []
+                : [{ item: part.item || watch[idx], idx: idx, arr: part.arr, visibleCount: part.visibleCount }];
+        });
+    }
     var key = JSON.stringify([
         dataRevision,
         !!analysis.snapshot,
         watch.map(function (w) {
             return w.name;
         }),
-        hidden
+        hidden,
+        range,
+        width
     ]);
     if (seriesCache && seriesCache.key === key) return seriesCache.series;
     var series = [];
@@ -1676,6 +1826,12 @@ function chartData() {
         if (hidden[item.name]) return;
         var arr = plotBuffers()[item.name] || [],
             segment = [];
+        if (range && width) {
+            Inspection.visibleSegments(arr, range, width).forEach(function (part) {
+                series.push({ item: item, idx: idx, arr: part.arr, visibleCount: part.visibleCount });
+            });
+            return;
+        }
         function flush() {
             if (segment.length) {
                 series.push({ item: item, idx: idx, arr: segment });
@@ -1693,6 +1849,7 @@ function chartData() {
     return series;
 }
 function retainedTimeBounds() {
+    if (CFG.backendHistory) return remoteHistory.status && remoteHistory.status.bounds;
     if (boundsCache) return boundsCache;
     var lo = Infinity,
         hi = -Infinity;
@@ -1854,8 +2011,8 @@ function draw(now) {
     dirty = false;
     chartState.fastDirty = false;
     if (!canvas.clientWidth || !canvas.clientHeight) return;
-    var series = chartData(),
-        hasBounds = syncTimeBounds();
+    var hasBounds = syncTimeBounds(),
+        series = chartData(chartState.x, canvas.clientWidth);
     refreshChartTimeline();
     chartState.selectedName = chartState.hoverName;
     window.EmberProbeChart.paint({
@@ -1878,6 +2035,26 @@ function draw(now) {
         t
     });
     updateChartEmpty(series, hasBounds);
+    historyLoading.textContent = t("lw.historyLoading");
+    historyLoading.hidden =
+        !CFG.backendHistory ||
+        !hasBounds ||
+        !(
+            remoteHistory.operation ||
+            (remoteHistory.desiredKey !== remoteHistory.cachedKey &&
+                watch.some(function (item) {
+                    return (
+                        !hidden[item.name] &&
+                        !isCompositeItem(item) &&
+                        !series.some(function (part) {
+                            return part.item.name === item.name;
+                        })
+                    );
+                }))
+        );
+    if (CFG.backendHistory && hasBounds && remoteHistory.desiredKey !== remoteHistory.cachedKey && !series.length) {
+        $("chartEmpty").textContent = t("lw.historyLoading");
+    }
     if (controls) controls.refresh(series);
 }
 function chartRegion(x, y) {
@@ -2236,7 +2413,7 @@ window.EmberProbeMessages.connect(window, {
         onCompositeSamples(m.samples || []);
     },
     debugSessionChanged: function () {
-        clearHistory();
+        clearHistory(false);
     },
     liveStatus: function (m) {
         var fresh = window.EmberProbeRuntime.liveState({ running: running }, m).fresh;
@@ -2339,7 +2516,9 @@ $("impFilterClear").onclick = function () {
 };
 $("impCancel").onclick = hideImport;
 $("impAdd").onclick = importSelected;
-$("clear").onclick = clearHistory;
+$("clear").onclick = function () {
+    clearHistory();
+};
 $("export").onclick = function () {
     var names = [],
         bufs = [];
@@ -2400,10 +2579,89 @@ $("exportToRange").oninput = function () {
 };
 window.EmberProbeMessages.connect(window, {
     samplingArchiveInfo: function (m) {
+        if ((m.historyRevision ?? 0) !== historyRevision) return;
+        if (historyClearPending) return;
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
         archiveExportInfo = m;
         if (m.openExport && exportSource === "archive") showArchiveExport(m);
+    },
+    chartValues: function (m) {
+        if (!CFG.backendHistory || historyClearPending) return;
+        (m.samples || []).forEach(function (sample) {
+            latest[sample.name] = sample.value;
+            latestText[sample.name] = sample.valueText ?? null;
+        });
+        scheduleValueRefresh();
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
+    },
+    chartHistoryStatus: function (m) {
+        if (!CFG.backendHistory || historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
+        remoteHistory.liveStatus = m;
+        if (!frozen) {
+            remoteHistory.status = m;
+            dirty = true;
+        }
+        if (samplingOrigin === null && m.bounds) samplingOrigin = m.bounds.min;
+    },
+    chartViewportResult: function (m) {
+        var request = remoteHistory.inFlight;
+        if (!request || request.requestId !== m.requestId) return;
+        remoteHistory.inFlight = null;
+        if (
+            m.historyRevision === historyRevision &&
+            request.key === remoteHistory.desiredKey &&
+            (m.snapshotId || null) === remoteHistory.snapshotId
+        ) {
+            if (m.error) {
+                setStatusMsg({ message: m.error }, "error");
+                remoteHistory.cachedKey = request.key;
+            } else {
+                remoteHistory.series = m.series || [];
+                remoteHistory.cachedKey = request.key;
+            }
+            dirty = true;
+        }
+        if (remoteHistory.pending && remoteHistory.pending.key === remoteHistory.cachedKey)
+            remoteHistory.pending = null;
+        dispatchChartViewport();
+    },
+    chartFreezeResult: function (m) {
+        if (m.historyRevision !== historyRevision || m.requestId !== remoteHistory.operation) return;
+        remoteHistory.operation = null;
+        if (m.error) {
+            setStatusMsg({ message: m.error }, "error");
+            return;
+        }
+        remoteHistory.snapshotId = m.snapshotId;
+        remoteHistory.status = m;
+        remoteHistory.cachedKey = null;
+        frozen = true;
+        $("freeze").textContent = t("lw.resume");
+        chartState.follow = false;
+        dirty = true;
+        chartState.fastDirty = true;
+        renderVars();
+    },
+    chartExportInfoResult: function (m) {
+        var request = remoteHistory.exportRequest;
+        if (
+            !request ||
+            request.requestId !== m.requestId ||
+            m.historyRevision !== historyRevision ||
+            request.source !== exportSource ||
+            (request.source === "snapshot" && request.snapshotId !== remoteHistory.snapshotId)
+        )
+            return;
+        remoteHistory.exportRequest = null;
+        if (m.error) {
+            setStatusMsg({ message: m.error }, "error");
+            return;
+        }
+        showArchiveExport({ variables: m.variables, firstTimestampMs: m.bounds?.min, lastTimestampMs: m.bounds?.max });
+    },
+    samplingHistoryCleared: function (m) {
+        if (m.historyRevision === historyRevision) historyClearPending = false;
     },
     exportCsvResult: function (m) {
         if (m.ok) {
@@ -2480,6 +2738,6 @@ if (_lt)
     _lt.onclick = function () {
         setLang(LANG === "zh" ? "en" : "zh", true);
     };
-post({ type: "samplingArchiveInfo" });
+post({ type: "samplingArchiveInfo", historyRevision: historyRevision });
 post({ type: "ready" });
 requestAnimationFrame(loop);

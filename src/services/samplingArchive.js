@@ -93,6 +93,7 @@ class SamplingArchive {
         this.lastTimestampMs = null;
         this.variables = new Set();
         this.scopes = new Map();
+        this.generations = new Map();
         this.handle = null;
         this.drainPromise = null;
         this.exportPromise = null;
@@ -127,6 +128,12 @@ class SamplingArchive {
         };
     }
 
+    clear(scope = "") {
+        // Logical reset isolates this consumer without disrupting other panels or active disk writes.
+        this.generations.set(scope, (this.generations.get(scope) || 0) + 1);
+        this.scopes.delete(scope);
+    }
+
     append(samples, timestampMs, scope = "") {
         if (this.closed || this.failed || this.limitReached) return false;
         const values = Object.create(null);
@@ -137,7 +144,21 @@ class SamplingArchive {
         }
         if (!Object.keys(values).length) return false;
         const timestamp = Number(timestampMs) || Date.now();
-        const line = Buffer.from(`${JSON.stringify({ t: timestamp, v: values, scope })}\n`);
+        const generation = this.generations.get(scope) || 0;
+        const identities = Object.fromEntries(
+            (Array.isArray(samples) ? samples : [])
+                .filter((sample) => sample?.historyIdentity)
+                .map((sample) => [sample.name, sample.historyIdentity])
+        );
+        const line = Buffer.from(
+            `${JSON.stringify({
+                t: timestamp,
+                v: values,
+                scope,
+                generation: generation || undefined,
+                identities: Object.keys(identities).length ? identities : undefined
+            })}\n`
+        );
         if (this.writtenBytes + this.queuedBytes + line.length > this.maxBytes) {
             this.limitReached = true;
             this.onError(codedError("SAMPLING_ARCHIVE_FULL", "Sampling history reached its configured size limit"));
@@ -218,6 +239,12 @@ class SamplingArchive {
             throw error;
         }
     }
+    async historySource(scope) {
+        const generation = this.generations.get(scope) || 0;
+        const lastTimestampMs = this.status(scope).lastTimestampMs;
+        const cutoff = await this.flush();
+        return { scope, generation, lastTimestampMs, cutoff, dataPath: this.dataPath };
+    }
 
     exportCsv(request) {
         if (this.exportPromise) throw codedError("EXPORT_IN_PROGRESS", "A sampling history export is already running");
@@ -254,6 +281,7 @@ class SamplingArchive {
             throw codedError("EXPORT_PATH_INVALID", "A CSV output path is required");
         }
         const scope = request.scope || "";
+        const generation = this.generations.get(scope) || 0;
         const available = this.status(scope).variables;
         const requested = Array.isArray(request.names) && request.names.length ? request.names : available;
         const names = [...new Set(requested.map(String))].filter((name) => available.includes(name));
@@ -304,6 +332,7 @@ class SamplingArchive {
                 }
                 if (!Number.isFinite(record.t) || record.t < fromMs || record.t > toMs) continue;
                 if ((record.scope || "") !== scope) continue;
+                if ((record.generation || 0) !== generation) continue;
                 const values = record.v && typeof record.v === "object" ? record.v : {};
                 const csvRow = `${new Date(record.t).toISOString()},${names.map((name) => csvField(values[name])).join(",")}\r\n`;
                 outputBytes += Buffer.byteLength(csvRow);

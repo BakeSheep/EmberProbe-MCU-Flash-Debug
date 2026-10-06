@@ -52,6 +52,12 @@ const { loadProvider } = require("./helpers/load-provider");
     p._invalidateConsumerTypes = () => {};
     p._renderWebview = () => {};
     p._syncGraphTarget = () => {};
+    p._scalarWatchList = (key) => values.get(key) || [];
+    const clearedScopes = [];
+    p._samplingArchive = {
+        clear: (scope) => clearedScopes.push(scope),
+        status: () => ({ variables: [], rows: 0 })
+    };
     p.openLiveWatchPanel();
     p.openLiveWatchPanel();
     await panels[1].receive({ type: "ready", panelId: 2 });
@@ -79,6 +85,22 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.equal(panels[0].messages.at(-1).rowCount, 1);
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
+    const entry = p._livePanels.get(2);
+    entry.latestSamples.set("shared", { name: "shared", value: 99 });
+    entry._pendingScalars = [{ name: "shared", value: 99 }];
+    entry._pendingComposites = [{ name: "composite" }];
+    entry._batchTimer = setTimeout(() => assert.fail("cleared batch was delivered"), 1000);
+    await panels[1].receive({ type: "clearSamplingHistory", panelId: 2, historyRevision: 1 });
+    assert.deepStrictEqual(clearedScopes, ["mcu.watchList.2"]);
+    assert.equal(entry._batchTimer, null);
+    assert.equal(entry.latestSamples.size, 0, "reloading the panel must not replay cleared readings");
+    assert.deepStrictEqual(entry._pendingScalars, []);
+    assert.deepStrictEqual(entry._pendingComposites, []);
+    assert.deepStrictEqual(panels[1].messages.at(-1), { type: "samplingHistoryCleared", historyRevision: 1 });
+    await panels[1].receive({ type: "samplingArchiveInfo", panelId: 2, historyRevision: 1 });
+    assert.equal(panels[1].messages.at(-1).historyRevision, 1);
+    await panels[0].receive({ type: "clearSamplingHistory", panelId: 2, historyRevision: 2 });
+    assert.deepStrictEqual(clearedScopes, ["mcu.watchList.2"], "mismatched panel cannot clear history");
     values.set("mcu.sidebarWatchList", [
         { name: "shared", type: "u8" },
         { name: "sidebarOnly", type: "u32" }

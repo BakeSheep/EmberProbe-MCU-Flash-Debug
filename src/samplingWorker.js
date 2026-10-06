@@ -26,7 +26,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
     const session = makeSession(
         { ...options, isolated: false },
         {
-            onSample(samples, t) {
+            onSample(samples, t, consumers) {
                 queuedBytes += samples.reduce(
                     (n, s) =>
                         n +
@@ -37,7 +37,12 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                         (s.diagnostic ? Buffer.byteLength(JSON.stringify(s.diagnostic)) : 0),
                     0
                 );
-                queued.push({ samples, t, generation });
+                queued.push({
+                    samples,
+                    t,
+                    generation,
+                    consumers: consumers && { graphNames: consumers.graphNames, sidebarNames: consumers.sidebarNames }
+                });
                 if (queuedBytes > 16 * 1024 * 1024 || queued.length > 4096) {
                     session.setSamplingEnabled(false);
                     event("onError", [
@@ -73,6 +78,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     "start",
                     "stop",
                     "setWatch",
+                    "setSamplingPlan",
                     "setIntervalMs",
                     "setPauseReason",
                     "setSamplingEnabled",
@@ -85,7 +91,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                 ].includes(method)
             )
                 throw new Error("Unknown sampling operation");
-            if (method === "setSamplingEnabled") generation = message.generation;
+            if (["setSamplingEnabled", "setSamplingPlan"].includes(method)) generation = message.generation;
             const result = await session[method](...args);
             port.postMessage({ id, result, state: state() });
         } catch (error) {

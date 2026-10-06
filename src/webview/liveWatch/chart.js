@@ -197,15 +197,17 @@
                 const ranges = new Map();
                 series.forEach(function (s) {
                     var lo = Infinity,
-                        hi = -Infinity;
+                        hi = -Infinity,
+                        count = 0;
                     s.arr.forEach(function (p) {
                         if (p.v === null || p.t < chartState.x.min || p.t > chartState.x.max) return;
-                        total++;
+                        count++;
                         lo = Math.min(lo, p.v);
                         hi = Math.max(hi, p.v);
                         vMin = Math.min(vMin, p.v);
                         vMax = Math.max(vMax, p.v);
                     });
+                    total += s.visibleCount ?? count;
                     const previous = ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
                     ranges.set(s.item.name, { min: Math.min(previous.min, lo), max: Math.max(previous.max, hi) });
                 });

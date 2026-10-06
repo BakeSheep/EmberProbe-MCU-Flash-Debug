@@ -1,6 +1,9 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "lw.historyLoading": "Loading recorded history…",
+    "lw.targetFrequency": "Waveform target frequency",
+    "sb.samplingRate": "Sidebar target 20 Hz; actual {hz} Hz",
     "memory.title": "Memory usage",
     "memory.refresh": "Refresh",
     "memory.chooseSource": "Choose .map / .ld",

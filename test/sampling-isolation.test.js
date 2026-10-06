@@ -9,7 +9,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         errors = [];
     const session = new SamplingSession(
         { intervalMs: 20 },
-        { onSample: (samples, t) => ticks.push({ samples, t }), onError: (e) => errors.push(e) },
+        { onSample: (samples, t, consumers) => ticks.push({ samples, t, consumers }), onError: (e) => errors.push(e) },
         path.join(__dirname, "helpers/sampling-worker-fixture.js")
     );
     const plan = [{ name: "value", address: 0x20000000, size: 4 }];
@@ -46,6 +46,20 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         session.setSamplingEnabled(true);
         await wait(150);
         assert.ok(ticks.length > stoppedAt);
+        const beforePlan = ticks.length;
+        session.setSamplingPlan({
+            graphItems: [{ ...plan[0], name: "graph" }],
+            sidebarItems: plan,
+            graphIntervalMs: 1000
+        });
+        await wait(550);
+        const layered = ticks.slice(beforePlan).filter((tick) => tick.consumers);
+        assert.ok(layered.filter((tick) => tick.consumers.sidebarNames.includes("value")).length >= 5);
+        assert.strictEqual(
+            layered.filter((tick) => tick.consumers.graphNames.includes("graph")).length,
+            1,
+            "worker delivery preserves the plan generation and avoids graph points from sidebar ticks"
+        );
         assert.deepEqual(errors, []);
         await assert.rejects(session.request("invalid"), /Unknown sampling operation/);
         console.log(`Worker isolation: ${during.length} acquired ticks during ${end - begin} ms host stall`);

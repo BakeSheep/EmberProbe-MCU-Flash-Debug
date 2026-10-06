@@ -23,6 +23,20 @@
         var archive = [];
         var archiveLimit = Math.min(20000, Math.max(1, options.archiveLimit || 20000));
         var archiveTruncated = false;
+        var history = root.EmberProbeMockHistory ? new root.EmberProbeMockHistory.ChartHistoryStore() : null;
+        var historyRevision = 0,
+            historySignature = "",
+            snapshotId = null,
+            lastValues = 0,
+            lastStatus = 0;
+        function configureHistory() {
+            if (!history) return;
+            var signature = JSON.stringify(watchItems);
+            if (signature !== historySignature) {
+                history.configure("mock", watchItems);
+                historySignature = signature;
+            }
+        }
 
         function send(message) {
             if (stopped || !iframe.contentWindow) return;
@@ -98,7 +112,18 @@
                 return item.name;
             });
             var samples = simulator.scalarSamples(names, t);
-            send({ type: "liveSample", samples: samples, t: t });
+            if (history) {
+                configureHistory();
+                history.append("mock", samples, t);
+                if (t - lastStatus >= 80) {
+                    send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+                    lastStatus = t;
+                }
+                if (t - lastValues >= 50) {
+                    send({ type: "chartValues", samples: samples, t: t });
+                    lastValues = t;
+                }
+            } else send({ type: "liveSample", samples: samples, t: t });
             var composite = names
                 .map(function (name) {
                     return simulator.compositeSample(name, t);
@@ -194,6 +219,9 @@
         }
 
         function sendReady() {
+            configureHistory();
+            if (history)
+                send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
             send({ type: "seriesStyles", styles: styles });
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
@@ -212,6 +240,47 @@
 
         function handle(message) {
             switch (message.type) {
+                case "chartViewport":
+                case "chartFreeze":
+                case "chartResume":
+                case "chartExportInfo": {
+                    if (!history || message.historyRevision !== historyRevision) break;
+                    configureHistory();
+                    try {
+                        var result;
+                        if (message.type === "chartViewport")
+                            result = history.viewport(
+                                "mock",
+                                message.names,
+                                message.range,
+                                message.width,
+                                message.snapshotId
+                            );
+                        else if (message.type === "chartFreeze") {
+                            result = history.freeze("mock");
+                            snapshotId = result.snapshotId;
+                        } else if (message.type === "chartResume") {
+                            history.resume("mock");
+                            snapshotId = null;
+                            result = {};
+                        } else result = history.status("mock", message.snapshotId);
+                        send({
+                            type: message.type + "Result",
+                            ...result,
+                            requestId: message.requestId,
+                            historyRevision: historyRevision,
+                            snapshotId: result.snapshotId || message.snapshotId
+                        });
+                    } catch (error) {
+                        send({
+                            type: message.type + "Result",
+                            error: error.message,
+                            requestId: message.requestId,
+                            historyRevision: historyRevision
+                        });
+                    }
+                    break;
+                }
                 case "ready":
                     initialized = true;
                     sendReady();
@@ -286,31 +355,52 @@
                     break;
                 }
                 case "samplingArchiveInfo":
-                    send(archiveInfo(message.openExport));
+                    send(Object.assign(archiveInfo(message.openExport), { historyRevision: message.historyRevision }));
+                    break;
+                case "clearSamplingHistory":
+                    archive = [];
+                    archiveTruncated = false;
+                    historyRevision = message.historyRevision;
+                    if (history) history.clear("mock");
+                    snapshotId = null;
+                    send({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
                     break;
                 case "exportCsv": {
                     var csv = message.csv;
                     var names = Array.isArray(message.names) ? message.names : [];
                     if (typeof csv !== "string") {
-                        var available = archiveInfo(false).variables;
-                        names = Array.from(new Set(names)).filter(function (name) {
-                            return available.indexOf(name) >= 0;
-                        });
-                        var buffers = names.map(function (name) {
-                            return archive.flatMap(function (row) {
-                                return row.samples
-                                    .filter(function (sample) {
-                                        return sample.name === name;
-                                    })
-                                    .map(function (sample) {
-                                        return { t: row.t, v: sample.value };
-                                    });
+                        if (history && message.backendHistory) {
+                            var source = history._source("mock", message.source === "snapshot" ? snapshotId : null);
+                            csv = root.EmberProbeMockCsv.buildCsv(
+                                names.map(displayName),
+                                names.map(function (name) {
+                                    return source.series.has(name)
+                                        ? Array.from(history.points(source.series.get(name)))
+                                        : [];
+                                }),
+                                { from: message.fromMs, to: message.toMs }
+                            );
+                        } else {
+                            var available = archiveInfo(false).variables;
+                            names = Array.from(new Set(names)).filter(function (name) {
+                                return available.indexOf(name) >= 0;
                             });
-                        });
-                        csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
-                            from: message.fromMs,
-                            to: message.toMs
-                        });
+                            var buffers = names.map(function (name) {
+                                return archive.flatMap(function (row) {
+                                    return row.samples
+                                        .filter(function (sample) {
+                                            return sample.name === name;
+                                        })
+                                        .map(function (sample) {
+                                            return { t: row.t, v: sample.value };
+                                        });
+                                });
+                            });
+                            csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
+                                from: message.fromMs,
+                                to: message.toMs
+                            });
+                        }
                     }
                     var rows = root.EmberProbeMockCsv.csvDataRowCount(csv);
                     var ok = rows > 0 && triggerDownload(csv);

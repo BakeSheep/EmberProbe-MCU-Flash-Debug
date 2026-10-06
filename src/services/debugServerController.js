@@ -122,6 +122,13 @@ class OpenOcdDebugController {
     setIntervalMs(value) {
         this.runtime?.setIntervalMs(value);
     }
+    setSamplingPlan(plan) {
+        if ((plan.graphItems.length || plan.sidebarItems.length) && !this.capabilities.runtimeRead)
+            throw Object.assign(new Error("Multicore runtime sampling requires explicit target routing"), {
+                code: "DEBUG_RUNTIME_READ_UNSUPPORTED"
+            });
+        this.runtime?.setSamplingPlan(plan);
+    }
     setPauseReason(reason) {
         this.runtime?.setPauseReason(reason);
     }

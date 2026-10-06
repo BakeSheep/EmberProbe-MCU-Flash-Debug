@@ -29,7 +29,7 @@ class SamplingSession {
                 try {
                     for (const batch of message.batch)
                         if (batch.generation === this.generation && this.deliveryEnabled && !this.stopping)
-                            this.handlers.onSample?.(batch.samples, batch.t);
+                            this.handlers.onSample?.(batch.samples, batch.t, batch.consumers);
                 } finally {
                     this.worker.postMessage({ ack: true });
                 }
@@ -87,6 +87,14 @@ class SamplingSession {
     setWatch(items) {
         if (this.mode === "debug") require("./liveWatch").validateManagedReadPlan(items);
         this.notify("setWatch", [items]);
+    }
+    setSamplingPlan(plan) {
+        if (this.mode === "debug") {
+            const { MultiRatePlan } = require("./services/multiRatePlan");
+            require("./liveWatch").validateManagedReadPlan(new MultiRatePlan(plan).items);
+        }
+        this.generation++;
+        this.notify("setSamplingPlan", [plan]);
     }
     setIntervalMs(value) {
         this.options.intervalMs = clampInteger(value, 100, 5, 10000);

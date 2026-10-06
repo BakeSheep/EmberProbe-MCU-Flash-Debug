@@ -14,7 +14,7 @@ const { getLiveWatchContent } = require("../../src/liveWatchView");
 const scenarios = [3, 10].flatMap((channels) =>
     [200, 600, 1800].map((seconds) => ({ channels, seconds, periodMs: 33 }))
 );
-scenarios.push(...[200, 600].map((seconds) => ({ channels: 3, seconds, periodMs: 5 })));
+scenarios.push(...[200, 600, 1200, 1800].map((seconds) => ({ channels: 3, seconds, periodMs: 5 })));
 
 function runScenario(w, scenario, collectHeap) {
     const doc = w.document;

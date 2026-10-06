@@ -1,6 +1,9 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "lw.historyLoading": "正在加载已记录的历史…",
+    "lw.targetFrequency": "波形目标频率",
+    "sb.samplingRate": "侧栏目标 20 Hz；实际 {hz} Hz",
     "memory.title": "内存占用",
     "memory.refresh": "刷新",
     "memory.chooseSource": "选择 .map / .ld",

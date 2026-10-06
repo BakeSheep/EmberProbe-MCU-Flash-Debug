@@ -384,7 +384,14 @@ function shellHtml() {
         .replace(/src="(?:sidebar|livewatch)\.(?:zh|en)\.html"/g, 'src="about:blank"')
         .replace(/<script src="([^"]+)"><\/script>/g, (_match, name) => {
             const directory = name.startsWith("shell") ? "shell" : "mock";
-            const source = assets[name] || fs.readFileSync(path.join(mockup, directory, name), "utf8");
+            const source =
+                name === "chart-history.js"
+                    ? "(function(root){" +
+                      fs
+                          .readFileSync(path.join(mockup, "../src/services/chartHistoryStore.js"), "utf8")
+                          .replace("module.exports =", "root.EmberProbeMockHistory =") +
+                      "})(window);"
+                    : assets[name] || fs.readFileSync(path.join(mockup, directory, name), "utf8");
             return `<script>${source}</script>`;
         });
 }

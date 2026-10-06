@@ -95,6 +95,7 @@ function buildLiveWatch(lang) {
             {
                 maxSamples: 2000,
                 autoMaxSamples: true,
+                backendHistory: true,
                 frequencyHz: 30,
                 panelId: 1
             },
@@ -113,6 +114,10 @@ function copyFile(from, to) {
 function main() {
     fs.rmSync(dist, { recursive: true, force: true });
     fs.mkdirSync(dist, { recursive: true });
+    const historySource = fs
+        .readFileSync(path.join(root, "../src/services/chartHistoryStore.js"), "utf8")
+        .replace("module.exports =", "root.EmberProbeMockHistory =");
+    fs.writeFileSync(path.join(dist, "chart-history.js"), "(function(root) {\n" + historySource + "\n})(window);\n");
     fs.writeFileSync(
         path.join(dist, "csv.js"),
         "window.EmberProbeMockCsv = { buildCsv: " +

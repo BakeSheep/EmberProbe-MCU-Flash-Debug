@@ -58,6 +58,15 @@ const elfBuild = esbuild.build({
     format: "cjs",
     target: "node20"
 });
+const chartHistoryBuild = esbuild.build({
+    absWorkingDir: __dirname,
+    entryPoints: [path.join(__dirname, "src", "chartHistoryWorker.js")],
+    bundle: true,
+    outfile: path.join(__dirname, "dist", "chartHistoryWorker.js"),
+    platform: "node",
+    format: "cjs",
+    target: "node20"
+});
 const svdBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "svdWorker.js")],
@@ -119,6 +128,7 @@ function writeBuildInfo() {
 Promise.all([
     extensionBuild,
     samplingBuild,
+    chartHistoryBuild,
     elfBuild,
     svdBuild,
     debugBuild,

@@ -137,6 +137,31 @@ async function main() {
         assert.strictEqual(full.rows, 3);
         assert.match(fs.readFileSync(fullCsv, "utf8"), /04:00:01\.000Z,3/);
 
+        // Clearing one panel invalidates both written and queued rows, even with equal timestamps.
+        archive.append([{ name: "old", value: 99 }], 1000, "panel-a");
+        await archive.flush();
+        archive.append([{ name: "old", value: 98 }], 1000, "panel-a");
+        archive.append([{ name: "other", value: 97 }], 1000, "panel-b");
+        archive.clear("panel-a");
+        assert.equal(archive.status("panel-a").rows, 0);
+        assert.deepStrictEqual(archive.status("panel-a").variables, []);
+        await assert.rejects(
+            archive.exportCsv({ scope: "panel-a", outputPath: fullCsv }),
+            (error) => error.code === "CSV_EXPORT_EMPTY"
+        );
+        archive.append([{ name: "old", value: 7 }], 1000, "panel-a");
+        const clearedCsv = path.join(temporaryRoot, "cleared.csv");
+        const afterClear = await archive.exportCsv({ scope: "panel-a", outputPath: clearedCsv });
+        assert.equal(afterClear.rows, 1);
+        assert.equal(fs.readFileSync(clearedCsv, "utf8"), "\uFEFFtime,old\r\n1970-01-01T00:00:01.000Z,7\r\n");
+        const other = await archive.readCsv({ scope: "panel-b" });
+        assert.equal(other.rows, 1);
+        assert.ok(other.csv.includes(",97\r\n"));
+        archive.clear("panel-a");
+        archive.append([{ name: "new", value: 8 }], 2000, "panel-a");
+        assert.deepStrictEqual(archive.status("panel-a").variables, ["new"]);
+        assert.equal((await archive.readCsv({ scope: "panel-a" })).rows, 1);
+
         // A torn final line (for example after process interruption) is ignored, preserving prior complete rows.
         await archive.flush();
         fs.appendFileSync(archive.dataPath, '{"t":10000,"v":');
@@ -159,7 +184,7 @@ async function main() {
             path.join(__dirname, "..", "src", "webview", "liveWatch", "renderer.js"),
             "utf8"
         );
-        assert.match(rendererSource, /post\(\{\s*type:\s*["']samplingArchiveInfo["']\s*\}\)/);
+        assert.match(rendererSource, /post\(\{\s*type:\s*["']samplingArchiveInfo["'],\s*historyRevision:/);
         assert.match(rendererSource, /firstTimestampMs/);
         assert.match(rendererSource, /lastTimestampMs/);
         assert.match(rendererSource, /chartState\.bounds\.min\s*-\s*origin/);

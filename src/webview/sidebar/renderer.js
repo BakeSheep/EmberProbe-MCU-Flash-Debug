@@ -1502,6 +1502,7 @@ function liveStatus(m) {
         "live-state " +
         (m.error ? "err" : debugRunning || debugReading ? "busy" : liveCanRead ? "on" : liveRunning ? "busy" : "");
     liveLabel.textContent = msgText(m) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
+    liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
     if (wasRunning !== liveRunning || wasWrite !== liveCanWrite || wasFresh !== liveSnapshotReady) renderWrites();
 }
 function openocdStatus(m) {

@@ -236,6 +236,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.draw(500);
         assert.equal(w.chartState.autoY, false);
         w.clearHistory();
+        graph.send({ type: "samplingHistoryCleared", historyRevision: w.historyRevision });
         graph.send({ type: "liveSample", samples: [{ name: "b", value: 1, t: 1000 }] });
         graph.send({ type: "liveSample", samples: [{ name: "b", value: 2, t: 1100 }] });
         assert.equal(
@@ -245,6 +246,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         );
         w.clearHistory();
         assert.equal(w.analysis.snapshot, null);
+        graph.send({ type: "samplingHistoryCleared", historyRevision: w.historyRevision });
         w.draw(600);
         assert.ok(doc.getElementById("chartEmpty").textContent.includes("Waiting"));
         graph.send({ type: "watchList", items: [] });

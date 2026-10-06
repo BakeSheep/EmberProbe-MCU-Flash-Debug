@@ -98,7 +98,8 @@ function fixture() {
     assert.strictEqual(started.canRead, true);
     assert.strictEqual(started.intervalMs, 250);
     assert.strictEqual(sidebar.at(-1).running, started.running);
-    assert.deepStrictEqual(sidebar, chart, "sidebar and chart receive identical shared status and interval changes");
+    assert.strictEqual(sidebar.at(-1).frequencyHz, 20, "sidebar target is independent of the waveform target");
+    assert.strictEqual(chart.at(-1).frequencyHz, 4);
     const session = p._liveSession;
     await p._controlAgentSampling("start");
     assert.strictEqual(p._liveSession, session, "repeated start reuses the connection");
@@ -117,7 +118,7 @@ function fixture() {
     assert.strictEqual(userSession.stopped, true, "stop response waits for connection cleanup");
     assert.strictEqual(stopped.running, false);
     assert.strictEqual(sidebar.at(-1).running, false);
-    assert.deepStrictEqual(sidebar, chart);
+    assert.strictEqual(sidebar.at(-1).intentEnabled, chart.at(-1).intentEnabled);
     await p._controlAgentSampling("stop");
 
     const busy = p._probeCoordinator.acquire("download");

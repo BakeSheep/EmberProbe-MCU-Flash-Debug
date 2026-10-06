@@ -146,14 +146,22 @@
           "default": 30,
           "minimum": 0.1,
           "maximum": 200,
-          "description": "实时变量目标采样频率（Hz），默认 30Hz；实际频率受探针吞吐能力自适应调控"
+          "description": "波形窗口目标采样频率（Hz），默认 30Hz；插件侧栏固定目标 20Hz，实际频率受探针吞吐能力调控"
         },
         "emberprobe.maxSamples": {
           "type": "number",
           "default": 2000,
           "minimum": 100,
           "maximum": 360001,
-          "description": "实时曲线默认按时间保留最近 30 分钟（适配采样率变化）；显式设置后额外限制每通道点数，历史仍不超过 30 分钟"
+          "deprecationMessage": "此设置已弃用，波形历史统一保留最近 30 分钟；原配置值不会被删除。",
+          "description": "已弃用；不再限制波形历史点数"
+        },
+        "emberprobe.chartHistoryMaxMiB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 64,
+          "maximum": 4096,
+          "description": "波形历史内存预算（MiB），包含冻结历史；耗尽时暂停全局采样并保留磁盘归档"
         },
         "emberprobe.samplingArchiveMaxMiB": {
           "type": "number",
@@ -933,6 +941,7 @@
     "dist/extension.js",
     "dist/buildInfo.json",
     "dist/samplingWorker.js",
+    "dist/chartHistoryWorker.js",
     "dist/sampling-timer/**/*",
     "dist/elfWorker.js",
     "dist/webview/**/*",

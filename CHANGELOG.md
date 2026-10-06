@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 分离波形目标频率与侧栏固定 20 Hz 消费者；隐藏曲线继续归档，后台历史 Worker 保留最近 30 分钟。按需生成视口数据，冻结与保留数据 CSV 使用原始样本；内存预算或历史 Worker 故障暂停采样，并支持从当前清空代次的磁盘归档恢复。
+- Separate waveform-target sampling from fixed 20 Hz sidebar consumers; archive silent curves and retain 30 minutes in a history worker. Generate viewport data on demand, export original retained/frozen samples, pause on memory or history-worker failures, and rebuild the current clear generation from disk archives.
+
+- 修复波形“清空历史”后默认 CSV 导出仍包含旧归档数据的问题，按窗口与调试会话隔离清空，并丢弃过期采样批次和归档回复。优化长时间高频采样绘图：二分定位可见区间，在创建绘图对象前按像素保留首尾与极值，保留断点、精确整数和原始 CSV 数据。
+- Fix stale archive data in default CSV exports after Clear History, isolate clears by panel and debug session, and discard pending sample batches and stale archive replies. Optimize long high-rate captures by locating the visible interval with binary search and retaining per-pixel endpoints and extrema before allocating drawing geometry, while preserving gaps, exact integers and raw CSV samples.
+
 ## [0.8.0] - 2026-10-03
 
 - 无前缀的侧栏观测变量字号从 13px 调整为 14px，变量名与类型标签垂直居中；精简中英文 README 并清理过期开发文档。
@@ -176,12 +182,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 修复 CubeMX 警告掩盖错误、已完成请求误去重、清单保存失败状态丢失和完整日志截断；快检仅跟踪可识别的生成文件，深检支持取消通知，并增加显式真实 CubeMX 检查入口。
 
 - CubeMX 生成与诊断全流程升级（P0/P1）：
-  - **日志判定与布局诊断**：在 `cubemxLog` 中按语义与严重级别分类日志，移除任意 `not found` 即失败的规则；`ERROR/FATAL`、异常堆栈、缺失依赖及迁移要求仍阻断执行；普通警告作为 WARN 记录；成功判定仍严格要求零退出码、生成命令完成与产物新鲜度检查；布局错误返回预期根目录、候选目录及失败原因；stdout/stderr 流式写入磁盘并在失败时保留。
-  - **操作记录与写回状态**：新增 `cubemx.start` 与 `cubemx.status` 异步操作记录，支持按 ID 或当前工程查询；源工程状态固定为 `unchanged / committed / rolledBack / recoveryRequired / unknown`，写入前的工程变化按 `unchanged` 报告而非回滚；写回与读回校验完成后标记 `committed`，失败诊断（首个关键信息、警告摘要、日志路径）随记录持久化；扩展重启后未完成记录标记为中断并使用专用中断错误码；CLI 在发起请求前把请求 ID 持久化到工作区 `.emberprobe-cubemx-audit/`，未确认请求重跑自动去重，已完成请求重新执行时创建新操作；新增按操作 ID 取消。
-  - **快速一致性检查与深检**：新增 `cubemx.check`，支持 `quick` 和 `deep` 模式；成功生成后保存生成清单；快检对比当前 IOC 与清单，不要求 CubeMX 可用，对包含完整唯一 `USER CODE` 的源码分别比较生成区与用户区并报告改动的块名，用户区修改不作为初始化漂移；深检作为可查询的后台操作执行（CLI 内部轮询，超时可按操作 ID 查询），在隔离副本中生成并对比当前工程，列出不再再生成的遗留文件（`staleCandidates`，仅提示），失败时保留 CubeMX 日志；不修改源工程且不覆盖历史清单。
-  - **最小候选变更**：支持 `--changes-file` 与显式键删除 `--deletions`；校验已声明 IP/Pin 集合的计数、连续索引与重复项；差异摘要按 IP、引脚、时钟、元数据分类。
-  - **精简输出与兼容接口**：`cubemx.inspect` 支持摘要、属性前缀过滤（`--prefix`）与全量模式（`--full`）；`cubemx.prepare` 默认返回精简变更摘要与验证层级，全量差异保存为本地 JSON；Bridge capabilities 增加新方法，CLI 遇到不支持的方法时提示升级。
-  - **Skills 规则优化**：`mcu-cubemx` 采用 start → status 异步轮询与超时查询流程；共享工作流增加症状诊断顺序与“观察事实／假设／下一项验证”规范；修正 `mcu-fault-analyzer` 中 Thread 状态与功能正常的表述，明确重生成后的重新构建与烧录要求。
+    - **日志判定与布局诊断**：在 `cubemxLog` 中按语义与严重级别分类日志，移除任意 `not found` 即失败的规则；`ERROR/FATAL`、异常堆栈、缺失依赖及迁移要求仍阻断执行；普通警告作为 WARN 记录；成功判定仍严格要求零退出码、生成命令完成与产物新鲜度检查；布局错误返回预期根目录、候选目录及失败原因；stdout/stderr 流式写入磁盘并在失败时保留。
+    - **操作记录与写回状态**：新增 `cubemx.start` 与 `cubemx.status` 异步操作记录，支持按 ID 或当前工程查询；源工程状态固定为 `unchanged / committed / rolledBack / recoveryRequired / unknown`，写入前的工程变化按 `unchanged` 报告而非回滚；写回与读回校验完成后标记 `committed`，失败诊断（首个关键信息、警告摘要、日志路径）随记录持久化；扩展重启后未完成记录标记为中断并使用专用中断错误码；CLI 在发起请求前把请求 ID 持久化到工作区 `.emberprobe-cubemx-audit/`，未确认请求重跑自动去重，已完成请求重新执行时创建新操作；新增按操作 ID 取消。
+    - **快速一致性检查与深检**：新增 `cubemx.check`，支持 `quick` 和 `deep` 模式；成功生成后保存生成清单；快检对比当前 IOC 与清单，不要求 CubeMX 可用，对包含完整唯一 `USER CODE` 的源码分别比较生成区与用户区并报告改动的块名，用户区修改不作为初始化漂移；深检作为可查询的后台操作执行（CLI 内部轮询，超时可按操作 ID 查询），在隔离副本中生成并对比当前工程，列出不再再生成的遗留文件（`staleCandidates`，仅提示），失败时保留 CubeMX 日志；不修改源工程且不覆盖历史清单。
+    - **最小候选变更**：支持 `--changes-file` 与显式键删除 `--deletions`；校验已声明 IP/Pin 集合的计数、连续索引与重复项；差异摘要按 IP、引脚、时钟、元数据分类。
+    - **精简输出与兼容接口**：`cubemx.inspect` 支持摘要、属性前缀过滤（`--prefix`）与全量模式（`--full`）；`cubemx.prepare` 默认返回精简变更摘要与验证层级，全量差异保存为本地 JSON；Bridge capabilities 增加新方法，CLI 遇到不支持的方法时提示升级。
+    - **Skills 规则优化**：`mcu-cubemx` 采用 start → status 异步轮询与超时查询流程；共享工作流增加症状诊断顺序与“观察事实／假设／下一项验证”规范；修正 `mcu-fault-analyzer` 中 Thread 状态与功能正常的表述，明确重生成后的重新构建与烧录要求。
 
 - 根据 STM32 target 和可选 `.ioc` 检查 CubeMX 固件包，缺包时提供原生交互安装入口；其他配置统一显示“可选”。
 

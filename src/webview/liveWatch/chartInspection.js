@@ -13,6 +13,85 @@
         }
         return lo;
     }
+    function visibleSegments(arr, range, width) {
+        const start = arr.retainedStart || 0;
+        function bound(time, inclusive) {
+            let lo = start,
+                hi = arr.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >>> 1;
+                if (arr[mid].t < time || (inclusive && arr[mid].t === time)) lo = mid + 1;
+                else hi = mid;
+            }
+            return lo;
+        }
+        const from = Math.max(start, bound(range.min, false) - 1),
+            to = Math.min(arr.length, bound(range.max, true) + 1),
+            scale = width / Math.max(1, range.max - range.min),
+            finite = Number.isFinite,
+            floor = Math.floor;
+        const result = [];
+        let points = [],
+            count = 0,
+            column = null,
+            first = 0,
+            last = 0,
+            min = 0,
+            max = 0;
+        function compare(a, b) {
+            const x = arr[a],
+                y = arr[b];
+            // Equal approximate Numbers can conceal one-unit changes in u64/i64 samples.
+            if (
+                x.v === y.v &&
+                !Number.isSafeInteger(x.v) &&
+                /^-?\d+$/.test(x.valueText) &&
+                /^-?\d+$/.test(y.valueText)
+            ) {
+                const exactX = BigInt(x.valueText),
+                    exactY = BigInt(y.valueText);
+                return exactX < exactY ? -1 : exactX > exactY ? 1 : 0;
+            }
+            return x.v - y.v;
+        }
+        function flushColumn() {
+            if (column === null) return;
+            let previous = -1;
+            for (const index of [first, min, max, last].sort((a, b) => a - b)) {
+                if (index !== previous) points.push(arr[index]);
+                previous = index;
+            }
+            column = null;
+        }
+        function flushSegment() {
+            flushColumn();
+            if (points.length) result.push({ arr: points, visibleCount: count });
+            points = [];
+            count = 0;
+        }
+        // Reduce raw references before allocating canvas geometry. Each pixel keeps first/last
+        // and both extrema; failed samples split segments, and CSV retains every original point.
+        for (let i = from; i < to; i++) {
+            const p = arr[i];
+            if (!p || !finite(p.v) || !finite(p.t)) {
+                flushSegment();
+                continue;
+            }
+            if (p.t >= range.min && p.t <= range.max) count++;
+            const next = floor((p.t - range.min) * scale);
+            if (column !== next) {
+                flushColumn();
+                column = next;
+                first = min = max = i;
+            } else {
+                if (compare(i, min) < 0) min = i;
+                if (compare(i, max) > 0) max = i;
+            }
+            last = i;
+        }
+        flushSegment();
+        return result;
+    }
     function nearest(arr, time) {
         if (!arr.length || time < arr[0].t || time > arr[arr.length - 1].t) return null;
         const i = lowerBound(arr, time);
@@ -101,5 +180,5 @@
         }
         return Number.isFinite(result) ? result : time;
     }
-    return { lowerBound, nearest, read, delta, distance, hit, adjacent, envelope };
+    return { lowerBound, nearest, read, delta, distance, hit, adjacent, envelope, visibleSegments };
 });

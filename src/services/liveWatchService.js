@@ -128,20 +128,22 @@ class LiveWatchService {
         const compositeSamples = [];
         const latest = latestSamples || new Map();
         for (const sample of samples || []) {
+            if (!typeMap?.has(sample.name) && !compositeMap?.has(sample.name)) continue;
+            const sampleTime = Number.isFinite(sample.t) ? sample.t : time;
             if (sample.diagnostic) {
                 const decoded = compositeMap?.has(sample.name)
                     ? {
                           name: sample.name,
                           tree: { kind: "class", members: [], partial: true, unavailable: sample.diagnostic.message },
                           diagnostic: sample.diagnostic,
-                          t: time
+                          t: sampleTime
                       }
                     : {
                           name: sample.name,
                           value: null,
                           valueText: "<unavailable: " + sample.diagnostic.message + ">",
                           diagnostic: sample.diagnostic,
-                          t: time
+                          t: sampleTime
                       };
                 (decoded.tree ? compositeSamples : scalarSamples).push(decoded);
                 latest.set(sample.name, decoded);
@@ -153,12 +155,12 @@ class LiveWatchService {
                         name: sample.name,
                         value: sample.runtimeTree.value,
                         valueText: sample.runtimeTree.valueText,
-                        t: time
+                        t: sampleTime
                     };
                     scalarSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 } else {
-                    const decoded = { name: sample.name, tree: sample.runtimeTree, t: time };
+                    const decoded = { name: sample.name, tree: sample.runtimeTree, t: sampleTime };
                     compositeSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 }
@@ -168,7 +170,7 @@ class LiveWatchService {
             if (composite) {
                 const tree = sample.bytes ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout) : null;
                 if (tree) {
-                    const decoded = { name: sample.name, tree, t: time };
+                    const decoded = { name: sample.name, tree, t: sampleTime };
                     compositeSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 }
@@ -194,7 +196,7 @@ class LiveWatchService {
                     : sample.bytes
                       ? this.elfSymbols.decodeValueText(sample.bytes, type)
                       : null,
-                t: time
+                t: sampleTime
             };
             scalarSamples.push(decoded);
             latest.set(sample.name, decoded);

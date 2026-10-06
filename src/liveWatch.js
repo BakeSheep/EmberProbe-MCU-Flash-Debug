@@ -14,6 +14,7 @@ const { scheduleSamplingTick } = require("./samplingClock");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
+const { MultiRatePlan } = require("./services/multiRatePlan");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
@@ -279,6 +280,7 @@ class ManagedOpenOcdSession {
     }
 
     setWatch(list) {
+        this.ratePlan = null;
         const next = Array.isArray(list) ? list.slice() : [];
         if (this.mode === "debug") validateManagedReadPlan(next);
         this.watch = next;
@@ -297,6 +299,24 @@ class ManagedOpenOcdSession {
     }
 
     setIntervalMs(ms) {
+        if (this.ratePlan) {
+            this.ratePlan.graphIntervalMs = clampInteger(ms, 33, 5, 10000);
+            return this._setClockInterval(this.ratePlan.intervalMs);
+        }
+        return this._setClockInterval(ms);
+    }
+
+    setSamplingPlan(plan) {
+        const ratePlan = new MultiRatePlan(plan);
+        this.sampleEpoch++;
+        this.setWatch(ratePlan.items);
+        this.ratePlan = ratePlan;
+        this._setClockInterval(ratePlan.intervalMs === Infinity ? 50 : ratePlan.intervalMs);
+        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed && !this.timer)
+            this._scheduleNext(0);
+    }
+
+    _setClockInterval(ms) {
         const interval = clampInteger(ms, 100, 5, 10000);
         if (interval === this.targetIntervalMs) return;
         this.options.intervalMs = interval;
@@ -329,6 +349,12 @@ class ManagedOpenOcdSession {
         if (this.samplingEnabled) {
             this._pauseReason = null;
             this._warmUp();
+            if (this.ratePlan) {
+                this.ratePlan.nextGraph = this.ratePlan.nextSidebar = 0;
+                this.ratePlan.latest.clear();
+                this.ratePlan.graphTicks = [];
+                this.ratePlan.sidebarTicks = [];
+            }
             this._scheduleNext(0);
         } else {
             this._releaseTimerResolution();
@@ -367,11 +393,13 @@ class ManagedOpenOcdSession {
 
     stats() {
         const p95 = this._computeP95Duration();
-        const actualHz = this._computeActualHz();
+        const consumers = this.ratePlan?.stats();
+        const actualHz = consumers ? consumers.graphHz : this._computeActualHz();
         return {
             targetIntervalMs: this.targetIntervalMs,
             effectiveIntervalMs: this.effectiveIntervalMs,
             actualHz,
+            consumers,
             p95DurationMs: Number(p95.toFixed(2)),
             missedDeadlines: this._missedDeadlines,
             pauseReason: this._pauseReason
@@ -1368,14 +1396,18 @@ class ManagedOpenOcdSession {
         const epoch = this.sampleEpoch;
         const startNs = process.hrtime.bigint();
         const t = Date.now();
+        const clockMs = Number(startNs / 1000000n);
+        const due = this.ratePlan?.due(clockMs, this.effectiveIntervalMs);
+        const items = due ? due.items : this.watch;
         let readSuccess = false;
         try {
             const guard =
                 this.mode === "debug" ? { epoch, requireSampling: true, deadline: t + MAX_DEBUG_CYCLE_MS } : null;
-            const { samples, ok } = await this._readItems(this.watch, t, guard);
+            const { samples, ok } = items.length ? await this._readItems(items, t, guard) : { samples: [], ok: 0 };
             if (epoch !== this.sampleEpoch || !this.samplingEnabled) return;
-            if (this.handlers.onSample) this.handlers.onSample(samples, t);
-            if (ok === this.watch.length) {
+            const delivered = due ? this.ratePlan.deliver(samples, t, due) : samples;
+            if (this.handlers.onSample) this.handlers.onSample(delivered, t, due);
+            if (ok === items.length) {
                 readSuccess = true;
                 if (this._sampleErrorActive) {
                     // One successful memory read does not prove target polling recovered.
@@ -1403,7 +1435,9 @@ class ManagedOpenOcdSession {
             const durationMs = Number(process.hrtime.bigint() - startNs) / 1e6;
             this._recordCycle(durationMs, readSuccess, t);
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
-                const nextDelay = Math.max(0, Math.round(this.effectiveIntervalMs - durationMs));
+                const nextDelay = this.ratePlan
+                    ? this.ratePlan.delay(Number(process.hrtime.bigint() / 1000000n))
+                    : Math.max(0, Math.round(this.effectiveIntervalMs - durationMs));
                 this._scheduleNext(nextDelay);
             }
         }
