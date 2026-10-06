@@ -14,6 +14,7 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 - Live variable watch: non-intrusively reads Cortex-M RAM while the target runs; the sidebar offers a standalone value list, and multiple chart panels can keep independent watch lists and history buffers.
 - Live variable write: changes memory in real time while the target runs, offering slider, input box, and mouse wheel for value changes, with automatic read-back after each change.
 - Built-in debugging: breakpoints, stepping, stack frames, locals/globals/file statics/registers, expression assignment and memory access without Cortex-Debug.
+- [Experimental external GDB server attach](docs/EXTERNAL-GDB-SERVER.md): opt in through native VS Code settings and an explicit F5 configuration; existing debug entry points keep using OpenOCD.
 - Optionally installs nine Agent Skills covering firmware programming and verification, live variable reads and writes, SVD peripheral debugging, debug session/breakpoint control, chip and fault inspection, ELF analysis, and configuration synchronization.
 
 ## Requirements

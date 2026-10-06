@@ -20,6 +20,7 @@ var remoteHistory = {
     inFlight: null,
     pending: null,
     desiredKey: null,
+    desiredViewKey: null,
     cachedKey: null,
     operation: null,
     exportRequest: null,
@@ -34,21 +35,39 @@ function requestChartViewport(range, width) {
         .map(function (item) {
             return item.name;
         });
-    var key = JSON.stringify([
+    // Automatic following advances the range without changing the user's viewport choice.
+    var viewRange =
+        chartState.follow && chartState.x === range && !chartState.endpointDrag
+            ? [
+                  "follow",
+                  $("timeWindow").value,
+                  chartState.startPinned,
+                  $("timeWindow").value === "custom" && !chartState.startPinned ? range.max - range.min : null
+              ]
+            : range;
+    var viewKey = JSON.stringify([
         historyRevision,
-        remoteHistory.status.revision,
         remoteHistory.snapshotId,
         names,
         watch.map(function (item) {
             return [item.name, item.type, item.address, item.bitOffset, item.bitSize];
         }),
-        range,
+        viewRange,
         width
     ]);
+    var key = JSON.stringify([viewKey, remoteHistory.status.revision, range]);
     remoteHistory.desiredKey = key;
+    remoteHistory.desiredViewKey = viewKey;
+    if (!names.length) {
+        remoteHistory.pending = null;
+        remoteHistory.series = [];
+        remoteHistory.cachedKey = key;
+        return;
+    }
     if (key === remoteHistory.cachedKey) return;
     remoteHistory.pending = {
         key: key,
+        viewKey: viewKey,
         range: { ...range },
         width: width,
         names: names,
@@ -144,14 +163,15 @@ var watch = [],
     runtimeBodies = Object.create(null);
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
-    impWarnings = [],
     impVersion = "",
     impTypesReady = true,
     impExpanded = Object.create(null),
     impLayoutPending = new Set(),
     impSymbolByName = new Map(),
     impIndexByName = new Map(),
-    impTypeChunks = 0;
+    impTypeChunks = 0,
+    impSearchTimer = null,
+    impSearchQuery = "";
 var saved = api && api.getState ? api.getState() : null,
     sideWidth = (saved && Number(saved.sideWidth)) || 260,
     sideCollapsed = !!(saved && saved.sideCollapsed),
@@ -642,7 +662,7 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     });
     compCells[path] = val;
     var toggle = createCurveToggle(sw, nm, function () {
-        toggleLeafInChart(path, address, watchType);
+        toggleLeafInChart(path, address, watchType, node);
     });
     row.append(toggle, val);
     container.appendChild(row);
@@ -682,7 +702,7 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
             if (m.compositeLayout && !m.name) renderLayoutInto(container, m.compositeLayout, cp, baseAddr, off, null);
             else if (m.compositeLayout) renderNestInto(container, m.compositeLayout, m.name, cp, baseAddr, off);
             else if (m.watchType)
-                renderLeafInto(container, m.name, m.typeName || m.watchType, cp, m.watchType, baseAddr + off);
+                renderLeafInto(container, m.name, m.typeName || m.watchType, cp, m.watchType, baseAddr + off, m);
         });
         if (!ms.length) appendNote(container, t("lw.compositeNoLayout"));
     } else if (layout.kind === "array") {
@@ -809,18 +829,24 @@ function isLeafChild(name) {
         return w.name === b && isCompositeItem(w);
     });
 }
-function addLeafWatch(path, address, watchType) {
+function addLeafWatch(path, address, watchType, node) {
     if (
         watch.some(function (w) {
             return w.name === path;
         })
     )
         return false;
-    watch.push({ name: path, address: Number(address) >>> 0, size: defW(watchType), type: watchType });
+    watch.push({
+        name: path,
+        address: Number(address) >>> 0,
+        size: defW(watchType),
+        type: watchType,
+        ...(node && Number.isInteger(node.bitSize) ? { bitSize: node.bitSize, bitOffset: node.bitOffset } : {})
+    });
     ensureBuf(path);
     return true;
 }
-function toggleLeafInChart(path, address, watchType) {
+function toggleLeafInChart(path, address, watchType, node) {
     var i = watch.findIndex(function (w) {
         return w.name === path;
     });
@@ -828,7 +854,7 @@ function toggleLeafInChart(path, address, watchType) {
         toggleCurve(path);
         return;
     } else {
-        addLeafWatch(path, address, watchType);
+        addLeafWatch(path, address, watchType, node);
     }
     renderVars();
     saveWatch();
@@ -836,13 +862,14 @@ function toggleLeafInChart(path, address, watchType) {
 }
 function collectLeaves(layout, name, baseAddr) {
     var out = [];
-    (function walk(lyt, path, off) {
-        if (!lyt) return;
+    (function walk(lyt, path, off, depth = 0) {
+        if (!lyt || depth > 12 || out.length >= 1000) return;
         if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             (lyt.members || []).forEach(function (m) {
+                if (out.length >= 1000) return;
                 var cp = m.name ? path + "." + m.name : path,
                     mo = off + (Number(m.offset) || 0);
-                if (m.compositeLayout) walk(m.compositeLayout, cp, mo);
+                if (m.compositeLayout) walk(m.compositeLayout, cp, mo, depth + 1);
                 else if (m.watchType)
                     out.push({
                         path: cp,
@@ -856,10 +883,10 @@ function collectLeaves(layout, name, baseAddr) {
                 total = Number(lyt.totalElements) || 0,
                 es = Number(et.byteSize) || 0,
                 end = Math.min(total, MAX_ARR_SHOWN);
-            for (var i = 0; i < end; i++) {
+            for (var i = 0; i < end && out.length < 1000; i++) {
                 var cp = path + "[" + i + "]",
                     eo = off + i * es;
-                if (et.compositeLayout) walk(et.compositeLayout, cp, eo);
+                if (et.compositeLayout) walk(et.compositeLayout, cp, eo, depth + 1);
                 else if (et.watchType)
                     out.push({
                         path: cp,
@@ -875,10 +902,11 @@ function collectLeaves(layout, name, baseAddr) {
 function onCompositeSamples(samples) {
     if (historyClearPending) return;
     var refreshImport = false;
+    var searching = !!$("impFilter").value.trim();
     (samples || []).forEach(function (s) {
         if (!s || !s.name) return;
         if (
-            impExpanded[s.name] &&
+            (impExpanded[s.name] || searching) &&
             !$("overlay").classList.contains("hidden") &&
             EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
             EmberProbeRuntime.runtimeSelection(impSymbolByName.get(s.name), s.tree)
@@ -1002,6 +1030,7 @@ function clearHistory(clearArchive = true) {
         remoteHistory.series = [];
         remoteHistory.inFlight = remoteHistory.pending = remoteHistory.operation = remoteHistory.exportRequest = null;
         remoteHistory.cachedKey = remoteHistory.desiredKey = remoteHistory.snapshotId = null;
+        remoteHistory.desiredViewKey = null;
     }
     archiveExportInfo = null;
     exportCandidates = [];
@@ -1027,21 +1056,63 @@ function clearHistory(clearArchive = true) {
 }
 const IMPORT_VARIABLE_LIMIT = 500;
 const IMPORT_ROW_LIMIT = IMPORT_VARIABLE_LIMIT * 2;
+function needsImportLayout(symbol) {
+    return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
+}
+function cancelImportMemberSearch() {
+    clearTimeout(impSearchTimer);
+    impSearchTimer = null;
+}
+function scheduleImportMemberSearch(query) {
+    if (query !== impSearchQuery || !query || !impTypesReady) {
+        cancelImportMemberSearch();
+        impSearchQuery = query;
+    }
+    if (!query || !impTypesReady || !api || impSearchTimer !== null) return;
+    impSearchTimer = setTimeout(function () {
+        impSearchTimer = null;
+        if ($("overlay").classList.contains("hidden")) return;
+        var slots = Math.max(0, 4 - impLayoutPending.size);
+        allSymbols
+            .filter(function (symbol) {
+                return needsImportLayout(symbol) && !impLayoutPending.has(symbol.name);
+            })
+            .slice(0, slots)
+            .forEach(function (symbol) {
+                impLayoutPending.add(symbol.name);
+                post({ type: "resolveCompositeLayout", name: symbol.name, version: impVersion });
+            });
+    }, 180);
+}
 function renderImport() {
-    var f = ($("impFilter").value || "").toLowerCase(),
+    var f = ($("impFilter").value || "").trim().toLowerCase(),
         box = $("impList");
     var checkedNames = new Set(
         Array.from(box.querySelectorAll("input:checked"), (cb) => cb.dataset.leafPath || cb.dataset.symbolName)
     );
     box.textContent = "";
+    scheduleImportMemberSearch(f);
+    var memberMatches = new Map();
     var matched = allSymbols.filter(function (s) {
-            return !f || s.name.toLowerCase().indexOf(f) >= 0 || displayNameFor(s).toLowerCase().indexOf(f) >= 0;
+            if (!f || s.name.toLowerCase().includes(f) || displayNameFor(s).toLowerCase().includes(f)) return true;
+            if (!s.isComposite) return false;
+            var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
+            var leaves = runtime?.entries || collectLeaves(s.compositeLayout, s.name, s.address);
+            var matches = leaves.filter(function (leaf) {
+                return (
+                    leaf.path.toLowerCase().includes(f) || displayNameFor({ name: leaf.path }).toLowerCase().includes(f)
+                );
+            });
+            if (!matches.length) return false;
+            memberMatches.set(s.name, matches);
+            return true;
         }),
         shown = matched.slice(0, IMPORT_VARIABLE_LIMIT),
         leafRows = 0;
     shown.forEach(function (s) {
         var gi = impIndexByName.get(s.name);
         if (s.isComposite) {
+            var open = !!impExpanded[s.name] || memberMatches.has(s.name);
             var row = document.createElement("div");
             row.className = "imp-row";
             var cb = document.createElement("input");
@@ -1055,7 +1126,7 @@ function renderImport() {
             var arrow = document.createElement("span");
             arrow.className = "imp-arrow";
             arrow.textContent = "\u25B6";
-            if (impExpanded[s.name]) arrow.classList.add("open");
+            if (open) arrow.classList.add("open");
             var nm = document.createElement("span");
             nm.className = "imp-name";
             nm.textContent = "\u25c7 " + displayNameFor(s);
@@ -1074,7 +1145,7 @@ function renderImport() {
             box.appendChild(row);
             var kids = document.createElement("div");
             kids.className = "imp-children";
-            if (impExpanded[s.name]) kids.classList.add("open");
+            if (open) kids.classList.add("open");
             var ownLeafRows = 0;
             var populate = function () {
                 leafRows -= ownLeafRows;
@@ -1085,7 +1156,10 @@ function renderImport() {
                     return;
                 }
                 var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
-                var leaves = runtime?.entries || collectLeaves(s.compositeLayout, s.name, s.address);
+                var leaves =
+                    memberMatches.get(s.name) ||
+                    runtime?.entries ||
+                    collectLeaves(s.compositeLayout, s.name, s.address);
                 if (runtime)
                     appendNote(
                         kids,
@@ -1131,7 +1205,7 @@ function renderImport() {
                     kids.appendChild(note);
                 }
             };
-            if (impExpanded[s.name]) {
+            if (open) {
                 populate();
                 if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
                     impLayoutPending.add(s.name);
@@ -1186,24 +1260,34 @@ function renderImport() {
             box.appendChild(row2);
         }
     });
+    if (!shown.length) {
+        var empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent =
+            f && (!impTypesReady || allSymbols.some(needsImportLayout))
+                ? t("sb.searchingMembers")
+                : allSymbols.length
+                  ? t("sb.noMatch")
+                  : t("sb.noImportable");
+        box.appendChild(empty);
+    }
     $("impCount").textContent =
         t("lw.totalVars", { n: allSymbols.length }) +
         (matched.length > shown.length ? t("lw.showingFirst", { n: shown.length }) : "");
 }
-function showImport(symbols, warnings) {
+function showImport(symbols) {
     allSymbols = symbols || [];
     impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
-    impWarnings = warnings || [];
     openImport();
 }
 function openImport() {
     $("impFilter").value = "";
-    $("impWarn").textContent = impWarnings && impWarnings.length ? impWarnings.join("；") : "";
     renderImport();
     $("overlay").classList.remove("hidden");
 }
 function hideImport() {
     $("overlay").classList.add("hidden");
+    cancelImportMemberSearch();
 }
 var autocompleteMatches = [],
     autocompleteIndex = -1;
@@ -2056,6 +2140,9 @@ function draw(now) {
     historyLoading.hidden =
         !CFG.backendHistory ||
         !hasBounds ||
+        !watch.some(function (item) {
+            return !hidden[item.name] && !isCompositeItem(item);
+        }) ||
         !(
             remoteHistory.operation ||
             (remoteHistory.desiredKey !== remoteHistory.cachedKey &&
@@ -2069,7 +2156,7 @@ function draw(now) {
                     );
                 }))
         );
-    if (CFG.backendHistory && hasBounds && remoteHistory.desiredKey !== remoteHistory.cachedKey && !series.length) {
+    if (!historyLoading.hidden && !series.length) {
         $("chartEmpty").textContent = t("lw.historyLoading");
     }
     if (controls) controls.refresh(series);
@@ -2338,14 +2425,12 @@ window.EmberProbeMessages.connect(window, {
         impTypesReady = true;
         impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
         impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
-        impWarnings = m.warnings || [];
         renderVars();
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();
         } else {
             if (!$("overlay").classList.contains("hidden")) {
-                $("impWarn").textContent = impWarnings.join("；");
                 renderImport();
                 $("impList")
                     .querySelectorAll("input")
@@ -2358,6 +2443,7 @@ window.EmberProbeMessages.connect(window, {
         }
     },
     variablesListReset: function (m) {
+        cancelImportMemberSearch();
         impVersion = m.version || "";
         impTypesReady = false;
         allSymbols = [];
@@ -2366,7 +2452,6 @@ window.EmberProbeMessages.connect(window, {
         impIndexByName.clear();
         impTypeChunks = 0;
         impLayoutPending.clear();
-        impWarnings = m.warnings || [];
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     variablesListChunk: function (m) {
@@ -2385,7 +2470,6 @@ window.EmberProbeMessages.connect(window, {
     },
     variablesListDone: function (m) {
         if (m.version && m.version !== impVersion) return;
-        impWarnings = m.warnings || impWarnings;
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();
@@ -2427,6 +2511,7 @@ window.EmberProbeMessages.connect(window, {
         onSamples(m.samples || []);
     },
     liveCompositeSample: function (m) {
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
         onCompositeSamples(m.samples || []);
     },
     debugSessionChanged: function () {
@@ -2595,6 +2680,12 @@ $("exportToRange").oninput = function () {
     updateExportTimeline("to");
 };
 window.EmberProbeMessages.connect(window, {
+    chartHistoryReady: function (m) {
+        if (historyClearPending || !Number.isSafeInteger(m.historyRevision) || m.historyRevision < 0) return;
+        clearHistory(false);
+        historyRevision = m.historyRevision;
+        post({ type: "samplingArchiveInfo", historyRevision: historyRevision });
+    },
     samplingArchiveInfo: function (m) {
         if ((m.historyRevision ?? 0) !== historyRevision) return;
         if (historyClearPending) return;
@@ -2627,7 +2718,7 @@ window.EmberProbeMessages.connect(window, {
         remoteHistory.inFlight = null;
         if (
             m.historyRevision === historyRevision &&
-            request.key === remoteHistory.desiredKey &&
+            request.viewKey === remoteHistory.desiredViewKey &&
             (m.snapshotId || null) === remoteHistory.snapshotId
         ) {
             if (m.error) {

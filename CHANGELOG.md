@@ -6,6 +6,27 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 精简中文 README，聚焦重点功能，并要求 Agent 仅在用户明确要求时修改 README。
+- Simplify the Chinese README around key capabilities and require an explicit user request for Agent edits to it.
+
+- 移除 ELF 变量列表中的 `CPP_TYPE_UNRESOLVED` 汇总提示，并移除波形导入中的整个 ELF 解析提示区域；保留内部诊断和未知 C++ 类型不可观测的处理。
+- Remove `CPP_TYPE_UNRESOLVED` notices from ELF variable lists and the entire ELF parsing-notice area from waveform imports, while retaining internal diagnostics and unavailable-type restrictions.
+
+- 静态复合波形变量从开始采样时记录全部可观察标量成员，后开启成员曲线可恢复完整保留历史；冻结与导出包含未绘图成员，同批父变量与成员采样不重复归档，并保留位域身份。
+- Record observable scalar members of fixed composite waveform variables from the first acquisition. Later curve activation restores retained history; frozen snapshots and exports include unplotted members, with duplicate parent/member records removed and bitfield identity preserved.
+
+- 波形变量导入搜索同步侧边栏的子成员匹配与父项自动展开，支持嵌套成员、数组及已采样运行时成员；分批解析懒加载布局，清除搜索后恢复手动展开状态。
+- Match child members and automatically expand their parents in waveform variable imports, following sidebar search behavior. Support nested, array and sampled runtime members, resolve lazy layouts in bounded batches, and restore manual expansion after clearing the search.
+
+- 修复未选择任何绘图曲线时空图提示与历史加载提示闪烁；仅采样复合变量时同步实测频率，避免采样正常却持续显示 0.0 Hz。
+- Fix flickering between empty-chart and history-loading messages when no curves are selected. Forward the measured frequency for composite-only sampling so active sampling does not remain at 0.0 Hz.
+
+- 修复持续采样时波形视口响应被反复丢弃、清空历史后重载面板无法恢复历史，以及提高波形采样频率后仍等待旧周期的问题；保留手动视口变化和历史清空的旧响应隔离。
+- Fix repeated viewport-response rejection during continuous sampling, restore retained history after reloading a cleared chart, and apply waveform frequency increases without waiting for the old period. Preserve stale-response isolation for manual viewport changes and history clears.
+
+- 新增默认关闭的实验性外部 GDB server attach，通过 VS Code 原生设置和显式 F5 配置启用；保留会话与写入边界，退出后须停止外部服务器并关闭实验开关再恢复硬件操作。现有 OpenOCD 调试入口不变。
+- Add opt-in experimental external GDB server attach through native VS Code settings and an explicit F5 configuration. Preserve session/write boundaries and retain the probe hold until the external server is stopped and the setting disabled; existing OpenOCD debug entry points stay unchanged.
+
 - 波形导入变量窗口与变量搜索结果顶部增加采样提醒，说明此波形图所选变量均以选定频率采样。
 - Add a sampling reminder above waveform variable imports and search results: all selected variables use the selected sampling frequency.
 

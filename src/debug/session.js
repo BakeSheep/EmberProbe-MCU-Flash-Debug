@@ -22,6 +22,7 @@ const { safePath } = require("./stl");
 const { normalizeDebugImages, DebugImages } = require("../services/debugImages");
 const { normalizeDebugServerOptions } = require("../services/debugConfiguration");
 const { initializePrettyPrinting } = require("../services/prettyPrinting");
+const { normalizeExternalTarget } = require("../services/externalDebugService");
 
 // GDB reports a single thread as a bare tuple rather than a one-element list, so -thread-info can
 // yield either shape depending on the build and the number of tasks.
@@ -84,6 +85,12 @@ class EmberDebugSession extends DebugSession {
             this.stopWaiters.clear();
             if (this.disconnecting) return;
             if (!this.ended) this.sendEvent(new OutputEvent(`${error.message}\n`, "stderr"));
+            if (this.config.servertype === "external") {
+                void this.close()
+                    .catch(() => {})
+                    .finally(() => this.shutdown());
+                return;
+            }
             this.end();
             this.shutdown();
         });
@@ -92,7 +99,27 @@ class EmberDebugSession extends DebugSession {
         if (this.shuttingDown) return;
         this.shuttingDown = true;
         this.pendingVarCleanup.length = 0;
-        void this.mi.stop().finally(() => super.shutdown());
+        const closing = this.config.servertype === "external" ? this.closeExternal() : this.mi.stop();
+        void closing.catch(() => {}).finally(() => super.shutdown());
+    }
+    get threadAware() {
+        return this.rtosAware || this.config.servertype === "external";
+    }
+    closeExternal() {
+        if (this.externalClosing) return this.externalClosing;
+        this.disconnecting = true;
+        this.externalClosing = (async () => {
+            try {
+                if (!this.mi.closed && this.mi.process) await this.mi.command("-target-disconnect", 2000);
+            } catch {
+                // Still terminate our GDB, never the external server or its target.
+            }
+            await this.mi.stop();
+            const confirmed = await this.mi.waitForExit();
+            if (!confirmed) throw new Error("Local GDB exit could not be confirmed; external probe hold retained");
+            this.sendEvent(new Event("emberprobe.externalGdbProcess", { exited: true }));
+        })();
+        return this.externalClosing;
     }
     dispatchRequest(request) {
         const read =
@@ -191,6 +218,14 @@ class EmberDebugSession extends DebugSession {
         this.sendEvent(new TerminatedEvent());
     }
     async close() {
+        if (this.config.servertype === "external") {
+            try {
+                await this.closeExternal();
+            } finally {
+                this.end();
+            }
+            return;
+        }
         this.end();
         await this.mi.stop();
     }
@@ -244,7 +279,7 @@ class EmberDebugSession extends DebugSession {
     // when the user browses another task in the call stack, which is not a stop notification.
     onAsyncThreadRecord(record) {
         if (record.class === "thread-selected") this.selectedFrame = undefined;
-        if (!this.rtosAware) return;
+        if (!this.threadAware) return;
         const id = Number(record.data.id);
         if (!Number.isInteger(id) || id < 1) return;
         if (record.class === "thread-created") {
@@ -294,7 +329,7 @@ class EmberDebugSession extends DebugSession {
     }
     // Returns the task to pin, or null to keep the unpinned command form used without an RTOS.
     async ensureThread(requested) {
-        if (!this.rtosAware) return null;
+        if (!this.threadAware) return null;
         const thread = Number(requested);
         if (!Number.isInteger(thread) || thread < 1)
             throw Object.assign(new Error(`A positive integer thread ID is required, got: ${requested}`), {
@@ -435,43 +470,66 @@ class EmberDebugSession extends DebugSession {
     }
     async launch(args, attach) {
         if (this.ready || this.ended) throw new Error("Debug session has already started or ended");
+        if (args.servertype === "external") this.config = { servertype: "external" };
         if (!args.executable || !fs.statSync(args.executable).isFile())
             throw new Error("A valid ELF executable is required");
-        if (!args.gdbPath || !/^127\.0\.0\.1:\d+$/.test(args.gdbTarget || ""))
+        const external = args.servertype === "external";
+        if (external) {
+            normalizeExternalTarget(args.gdbTarget);
+            if (!attach || !["remote", "extended-remote"].includes(args.__emberprobeExternalMode))
+                throw new Error("Invalid external GDB attach connection");
+        }
+        if (!args.gdbPath || (!external && !/^127\.0\.0\.1:\d+$/.test(args.gdbTarget || "")))
             throw new Error("Missing managed GDB connection");
         this.config = {
             ...args,
-            ...normalizeDebugServerOptions(args),
+            ...normalizeDebugServerOptions({ ...args, request: attach ? "attach" : "launch" }, true),
             ...normalizeDebugImages(args, args.cwd || path.dirname(args.executable)),
             runToEntryPoint: args.runToEntryPoint ?? "main",
             attach
         };
         this.symbolDirectory.reset();
-        if (this.config.serverGroup)
+        if (this.config.serverGroup || external)
             this.sendEvent(new Event("capabilities", { capabilities: { supportsRestartRequest: false } }));
         const rtos = typeof args.rtos === "string" ? args.rtos.trim() : "";
         this.config.rtos = rtos;
         this.rtosAware = rtos !== "" && rtos !== "none";
         this.mi.start(args.gdbPath, args.cwd || path.dirname(args.executable));
+        if (external) this.sendEvent(new Event("emberprobe.externalGdbProcess", { pid: this.mi.process?.pid }));
         await this.mi.command("-gdb-set mi-async on");
+        if (external) await this.mi.command("-gdb-set non-stop off");
         await this.mi.command("-gdb-set pagination off");
         await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
         await this.debugImages.symbols();
-        await this.mi.command(`-target-select extended-remote ${args.gdbTarget}`);
+        await this.mi.command(
+            `-target-select ${external ? args.__emberprobeExternalMode : "extended-remote"} ${args.gdbTarget}`
+        );
         await this.debugImages.hooks(attach ? "preAttachCommands" : "preLaunchCommands");
-        if (attach) {
+        if (!external && attach) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor halt")}`);
-        } else {
+        } else if (!external) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
             await this.debugImages.download();
             // Reload the reset vector after downloading a different firmware.
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
         }
         await this.debugImages.hooks(attach ? "postAttachCommands" : "postLaunchCommands");
+        if (external) {
+            const threads = threadList(await this.mi.command("-thread-info"));
+            if (!threads.length || threads.some((thread) => !["stopped", "running"].includes(thread.state)))
+                throw new Error("External GDB did not confirm the target's thread state");
+            this.running = threads.some((thread) => thread.state === "running");
+            if (this.running) {
+                await this.interrupt();
+                const stopped = threadList(await this.mi.command("-thread-info"));
+                if (!stopped.length || stopped.some((thread) => thread.state !== "stopped"))
+                    throw new Error("External GDB target did not stop");
+            }
+        }
         await this.debugImages.verifyRtosPrimary();
         // Only report task ids GDB has actually confirmed. Without an RTOS that is just thread 1,
         // which keeps the single-thread command stream byte-identical to a non-RTOS session.
-        if (this.rtosAware) await this.seedThreads();
+        if (this.threadAware) await this.seedThreads();
         else this.threads.add(1);
         this.running = false;
         this.ready = true;
@@ -619,7 +677,7 @@ class EmberDebugSession extends DebugSession {
     async createVariable(expression, frame) {
         // Pin the varobj to its task and frame so a later -var-list-children / -var-assign cannot
         // follow GDB's selected thread once the user browses a different task in the call stack.
-        const context = this.rtosAware && frame ? `--thread ${frame.thread} --frame ${frame.level} ` : "";
+        const context = this.threadAware && frame ? `--thread ${frame.thread} --frame ${frame.level} ` : "";
         const ownerFrame = frame || this.selectedFrame || { thread: this.thread, level: 0 };
         const generation = this.variableStore.snapshot(ownerFrame);
         const { result: item, failure } = await this.variableStore.printerOperation(
@@ -751,7 +809,7 @@ class EmberDebugSession extends DebugSession {
                 const threads = threadList(result);
                 // The client re-reads the list after every stop, so this is also the point where a
                 // task that vanished without a =thread-exited record gets pruned.
-                if (this.rtosAware) this.recalibrate(threads.map((t) => t.id));
+                if (this.threadAware) this.recalibrate(threads.map((t) => t.id));
                 return {
                     threads: threads.map((t) => ({
                         id: Number(t.id),
@@ -865,6 +923,7 @@ class EmberDebugSession extends DebugSession {
                 return command === "continue" ? { allThreadsContinued: true } : {};
             }
             case "restart":
+                if (this.config.servertype === "external") throw new Error("External GDB restart is unsupported");
                 if (this.config.serverGroup)
                     throw new Error("Shared serverGroup restart is unsupported; stop all cores before resetting");
                 await this.interrupt();
@@ -888,7 +947,8 @@ class EmberDebugSession extends DebugSession {
             case "disconnect":
             case "terminate":
                 this.disconnecting = true;
-                await this.mi.stop();
+                if (this.config.servertype === "external") await this.closeExternal();
+                else await this.mi.stop();
                 return {};
             default:
                 throw new Error(`Unsupported debug request: ${command}`);

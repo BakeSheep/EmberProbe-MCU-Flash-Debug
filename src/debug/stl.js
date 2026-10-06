@@ -178,7 +178,7 @@ class StlDisplay {
     }
     async bindFrame(node, context) {
         if (!node.frame) return;
-        if (this.session.rtosAware && context.generation.thread === undefined) {
+        if ((this.session.threadAware ?? this.session.rtosAware) && context.generation.thread === undefined) {
             const snapshot = this.store.snapshot(node.frame);
             context.generation.thread = snapshot.thread;
             context.generation.threadGeneration = snapshot.threadGeneration;
@@ -191,7 +191,7 @@ class StlDisplay {
             context.frameKey = frameKey;
             return;
         }
-        if (this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
+        if (this.session.threadAware ?? this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
         await this.command(`-thread-select ${node.frame.thread}`, context);
         await this.command(`-stack-select-frame ${node.frame.level}`, context);
         this.session.selectedFrame = node.frame;

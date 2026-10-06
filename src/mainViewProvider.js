@@ -4,6 +4,7 @@ const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debug
 const { SharedDebugGroup } = require("./services/sharedDebugGroup");
 const { resolvePrettyPrinting, configuredPrettyPrintingMode } = require("./services/prettyPrinting");
 const { normalizeDebugImages } = require("./services/debugImages");
+const { ExternalDebugService, resolveExternalSettings } = require("./services/externalDebugService");
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainViewProvider = void 0;
 const vscode = require("vscode");
@@ -57,6 +58,7 @@ const { serializeError } = require("./services/errorEnvelope");
 const {
     LiveWatchService,
     buildActiveReadPlan,
+    buildChartHistoryItems,
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,
@@ -122,6 +124,12 @@ class MainViewProvider {
         const savedLang = context.globalState.get("emberprobe.lang");
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
         this._probeCoordinator = new ProbeCoordinator();
+        this._externalDebug = new ExternalDebugService({
+            state: context.workspaceState,
+            coordinator: this._probeCoordinator,
+            settings: (folder) => vscode.workspace.getConfiguration("emberprobe", vscode.Uri.file(folder))
+        });
+        void this._externalDebug.releaseIfDisabled().catch(console.error);
         this._recentProgress = [];
         this._liveSession = null;
         this._managedDebugServer = null;
@@ -621,6 +629,9 @@ class MainViewProvider {
             let startAccepted = false;
             let ownsPending = false;
             try {
+                if (configuration?.servertype === "external")
+                    throw new Error("Use an explicit F5 external attach configuration");
+                this._externalDebug?.assertPhysicalAvailable();
                 if (this._agentReadRunning) {
                     vscode.window.showWarningMessage(this._t("msg.agentReadBusy"));
                     return false;
@@ -942,6 +953,7 @@ class MainViewProvider {
             });
     }
     _assertProbeDriverIdle() {
+        this._externalDebug?.assertPhysicalAvailable();
         if (this._probeDriverSwitching)
             throw Object.assign(new Error("J-Link USB driver change is still in progress"), {
                 code: "PROBE_DRIVER_BUSY"
@@ -968,14 +980,15 @@ class MainViewProvider {
     _sessionWriteConnection(session) {
         this._assertWriteSessionCurrent(session);
         if (session === this._debugBridge) {
-            if (this._managedDebugServer?.options && !this._managedDebugGroup)
+            if (this._managedDebugServer?.options && !this._managedDebugGroup && !this._externalDebug?.active)
                 return writeConnectionIdentity(this._managedDebugServer.options);
             const active = this._debugBridge.activeSession;
             if (!active) this._debugBridge.assertUniqueSession();
             return writeConnectionIdentity({
                 kind: "dap",
                 sessionId: active.id,
-                workspace: active.workspaceFolder?.uri?.fsPath || ""
+                workspace: active.workspaceFolder?.uri?.fsPath || "",
+                ...(active.configuration?.servertype === "external" ? { stopEpoch: this._debugBridge.stopEpoch } : {})
             });
         }
         return writeConnectionIdentity(session.options);
@@ -1602,14 +1615,16 @@ class MainViewProvider {
         if (!group) lease?.release();
     }
     _armDebugStartupWatchdog() {
-        const version = this._managedDebugToken
-            ? ""
-            : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
+        const version =
+            this._managedDebugToken || this._externalDebug?.active
+                ? ""
+                : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
         return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
             this._recoverDebugStartupTimeout()
         );
     }
     _matchesManagedDebugSession(session) {
+        if (this._externalDebug?.matches(session)) return true;
         if (this._managedDebugGroup) return !!this._managedDebugGroup.match(session);
         return !!(
             session &&
@@ -1792,6 +1807,19 @@ class MainViewProvider {
         );
     }
     async _handleDebugStartupFailure(session, message) {
+        if (this._externalDebug?.active) {
+            const externalSession = this._findManagedDebugSession(session);
+            if (externalSession) {
+                await Promise.race([
+                    Promise.resolve(vscode.debug.stopDebugging(externalSession)).catch(() => {}),
+                    new Promise((resolve) => setTimeout(resolve, 2000))
+                ]);
+                this._debugBridge.detach(externalSession);
+            }
+            this._clearDebugStartupWatchdog({ kind: "failed" });
+            await this._externalDebug.finish(externalSession);
+            return;
+        }
         if (this._debugStartupFailureCleanedUp) return;
         this._debugStartupFailureCleanedUp = true;
         const targetSession = this._findManagedDebugSession(session);
@@ -1831,7 +1859,7 @@ class MainViewProvider {
         this._clearDebugStartupWatchdog({ kind: "failed" });
     }
     async _recoverDebugStartupTimeout() {
-        const ownDebug = !!this._managedDebugToken;
+        const ownDebug = !!this._managedDebugToken || !!this._externalDebug?.active;
         const session = this._findManagedDebugSession();
         const timeoutMs = this._debugLifecycle?.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
         this._postConsumerStatuses(
@@ -1853,7 +1881,8 @@ class MainViewProvider {
         await this._handleDebugStartupFailure(session, timeoutMessage);
     }
     _assertGroupedReadElf() {
-        if (!this._managedDebugGroup) return;
+        if (!this._managedDebugGroup && this._debugBridge.activeSession?.configuration?.servertype !== "external")
+            return;
         const session = this._debugBridge.assertUniqueSession();
         const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const sessionElf = session.configuration?.executable;
@@ -2608,10 +2637,21 @@ class MainViewProvider {
                                 .map((key) => this._context.workspaceState.get(key) || [])
                         );
                         post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
+                        post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
                         this._syncGraphTarget(entry);
                         if (this._liveSession) {
                             const active = this._activeReadPlan();
                             if (active.length) this._applySamplingPlan(this._liveSession, active);
+                        }
+                        if (this._chartHistory) {
+                            const scope = this._debugSamplingScope(watchKey);
+                            const revision = entry.historyRevision || 0;
+                            const status = await this._chartHistory.request("status", [scope]);
+                            if (
+                                scope === this._debugSamplingScope(watchKey) &&
+                                revision === (entry.historyRevision || 0)
+                            )
+                                post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
                         }
                         break;
                     case "setSeriesStyle": {
@@ -3222,7 +3262,7 @@ class MainViewProvider {
     _configureChartHistory(entry, acquisitionTime = Date.now()) {
         if (!this._chartHistory) return;
         const scope = this._debugSamplingScope(entry.watchKey);
-        const items = this._scalarWatchList(entry.watchKey);
+        const items = buildChartHistoryItems(this._scalarWatchList(entry.watchKey), elfSymbols);
         const identity = (item) => JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
         const previous = new Map(
             (entry.historyScope === scope ? entry.historyItems || [] : []).map((item) => [item.name, item])
@@ -3373,7 +3413,13 @@ class MainViewProvider {
                             t,
                             actualHz: this._samplingStatus().actualHz
                         });
-                    if (composites.length) entry.post({ type: "liveCompositeSample", samples: composites, t });
+                    if (composites.length)
+                        entry.post({
+                            type: "liveCompositeSample",
+                            samples: composites,
+                            t,
+                            actualHz: this._samplingStatus().actualHz
+                        });
                 }, 50);
             return;
         }
@@ -3493,10 +3539,12 @@ class MainViewProvider {
         const graphSamples = graphNames ? samples.filter((sample) => graphNames.has(sample.name)) : samples;
         for (const entry of this._livePanels.values()) {
             if (!entry.historySignature) this._configureChartHistory(entry, t);
-            const decoded = this._liveWatchService.decodeConsumerSamples(
+            const currentSamples =
                 entry.historyClearedAt === undefined
                     ? graphSamples
-                    : graphSamples.filter((sample) => (sample.t ?? t) > entry.historyClearedAt),
+                    : graphSamples.filter((sample) => (sample.t ?? t) > entry.historyClearedAt);
+            const decoded = this._liveWatchService.decodeConsumerSamples(
+                currentSamples,
                 t,
                 types.graphs.get(entry.watchKey),
                 this._compositeMap(entry.watchKey),
@@ -3506,10 +3554,22 @@ class MainViewProvider {
                 this._postWebviewBatch(entry, decoded.scalarSamples, decoded.compositeSamples, t);
             }
             // Keep every panel's decoding and type changes separate in exported history.
-            const graphTypes = types.graphs.get(entry.watchKey);
-            if (decoded.scalarSamples.length && this._chartHistory)
+            const recorded = entry.historyItems
+                ? this._liveWatchService.decodeHistorySamples(
+                      currentSamples,
+                      t,
+                      entry.historyItems,
+                      decoded.scalarSamples
+                  )
+                : decoded.scalarSamples;
+            const graphTypes = new Map(
+                entry.historyItems
+                    ? entry.historyItems.map((item) => [item.name, item.type])
+                    : types.graphs.get(entry.watchKey)
+            );
+            if (recorded.length && this._chartHistory)
                 this._chartHistory
-                    .request("append", [this._debugSamplingScope(entry.watchKey), decoded.scalarSamples, t])
+                    .request("append", [this._debugSamplingScope(entry.watchKey), recorded, t])
                     .catch((error) => {
                         if (error.code === "CHART_HISTORY_FULL") {
                             this.stopLiveWatch();
@@ -3517,7 +3577,7 @@ class MainViewProvider {
                         } else this._chartHistory.fail(error);
                     });
             this._samplingArchive.append(
-                decoded.scalarSamples.map((sample) => {
+                recorded.map((sample) => {
                     const spec = graphTypes.get(sample.name);
                     const type = typeof spec === "string" ? spec : spec.type;
                     const historyIdentity = entry.historyIdentities?.get(sample.name);
@@ -3710,6 +3770,7 @@ class MainViewProvider {
             }
             return;
         }
+        if (this._externalDebug?.held) return;
         if (
             this._samplingIntent &&
             active.length &&
@@ -3728,6 +3789,13 @@ class MainViewProvider {
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
     async startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
+        if (this._externalDebug?.active && this._debugBridge.hasSession) {
+            this._samplingIntent = true;
+            this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
+            this._postConsumerStatuses(this._debugBridge.status());
+            return;
+        }
+        this._externalDebug?.assertPhysicalAvailable();
         if (this._chartHistory) {
             const maxBytes =
                 validation.clampInteger(
@@ -3964,6 +4032,87 @@ class MainViewProvider {
     stopLiveWatchIfRunning() {
         if (this._liveWatchRunning) this.stopLiveWatch({ preserveIntent: true });
     }
+    async externalDebugSettingsChanged() {
+        await this._externalDebug.releaseIfDisabled();
+    }
+    async prepareExternalDebug(folder, config) {
+        if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
+        const connection = resolveExternalSettings(vscode.workspace.getConfiguration("emberprobe", folder.uri));
+        if (
+            this._debugCommandPending ||
+            this._debugStarting ||
+            this._managedDebugServer ||
+            this._debugBridge.hasAnySession
+        )
+            throw Object.assign(new Error("Stop the active debug session before external attach"), {
+                code: "PROBE_BUSY"
+            });
+        if (this._probeDriverSwitching)
+            throw Object.assign(new Error("Wait for the driver operation before external attach"), {
+                code: "PROBE_DRIVER_BUSY"
+            });
+        this._debugCommandPending = true;
+        let reserved = false;
+        try {
+            const { validateDebugConfiguration } = require("./services/debugConfiguration");
+            const validated = validateDebugConfiguration(
+                {
+                    ...config,
+                    executable: config.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath)
+                },
+                folder
+            );
+            if (!validated.executable) throw new Error("A valid ELF executable is required");
+            const tools = await ensureDebugTools(
+                vscode,
+                folder,
+                this._context.workspaceState,
+                (key) => this._t(key),
+                undefined,
+                validated
+            );
+            if (!tools) return undefined;
+            const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
+            const pretty = resolvePrettyPrinting(
+                validated,
+                {
+                    enablePrettyPrinting: own.get("enablePrettyPrinting", true),
+                    prettyPrintingMode: configuredPrettyPrintingMode(own),
+                    prettyPrinterFiles: own.get("prettyPrinterFiles", [])
+                },
+                validated.cwd || folder.uri.fsPath
+            );
+            const svd = await this._svdManager.currentPath(folder);
+            const rtos = resolveRtos(validated, own.get("rtos", ""));
+            if (!own.get("experimental.externalGdb.enabled", false))
+                throw new Error("External GDB was disabled during startup");
+            const stoppedAgent = this.stopAgentReadIfRunning();
+            if (stoppedAgent) await stoppedAgent;
+            if (this._liveWatchRunning || this._liveSession) await this.stopLiveWatch({ preserveIntent: true });
+            this._debugBridge.setWorkspace(folder);
+            // Freeze settings read at entry. No probe detection or extra TCP readiness connection.
+            const reservation = await this._externalDebug.reserve(folder.uri.fsPath, connection);
+            reserved = true;
+            const result = {
+                ...validated,
+                ...tools,
+                ...pretty,
+                cwd: validated.cwd || folder.uri.fsPath,
+                gdbTarget: reservation.gdbTarget,
+                __emberprobeExternalMode: reservation.mode,
+                __emberprobeManagedToken: reservation.token,
+                rtos,
+                ...(svd ? { svdFile: svd } : {})
+            };
+            this._armDebugStartupWatchdog();
+            return result;
+        } catch (error) {
+            if (reserved) await this._externalDebug.finish();
+            throw error;
+        } finally {
+            this._debugCommandPending = false;
+        }
+    }
     async prepareForCortexDebug(folder, config) {
         this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
@@ -3999,6 +4148,7 @@ class MainViewProvider {
     handleDebugSessionStart(session) {
         if (!session || !isSupportedDebugSession(session)) return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
+        this._externalDebug?.bind(session);
         const grouped = this._managedDebugGroup?.bind(session);
         if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
             this._debugLifecycle.session = session;
@@ -4020,6 +4170,7 @@ class MainViewProvider {
         this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {
+        void this._externalDebug?.message(session, message).catch(console.error);
         if (this._managedDebugGroup?.match(session)) {
             this._managedDebugGroup.message(session, message);
             this._debugBridge.handleMessage(session, message);
@@ -4029,10 +4180,15 @@ class MainViewProvider {
         if (message?.type === "response" && ["launch", "attach"].includes(message.command) && matches) {
             if (!message.success) {
                 const errorMsg = message.message || message.body?.error?.format;
-                this._reportDebugStartupFailure(errorMsg);
+                if (session.configuration?.servertype === "external")
+                    this._clearDebugStartupWatchdog({ kind: "failed" });
+                else this._reportDebugStartupFailure(errorMsg);
             } else {
                 this._debugLifecycle?.markLaunchResponse(session, matches, true);
-                if (!this._terminatedDebugSessionIds.has(session.id)) {
+                if (
+                    !this._terminatedDebugSessionIds.has(session.id) &&
+                    session.configuration?.servertype !== "external"
+                ) {
                     void this._probeConnectionService.recordSuccess(this._managedDebugServer?.options);
                 }
             }
@@ -4041,12 +4197,21 @@ class MainViewProvider {
         this._debugBridge.handleMessage(session, message);
     }
     handleDebugAdapterRequest(session, message) {
+        void this._externalDebug?.request(session, message).catch(console.error);
         this._debugBridge.handleRequest(session, message);
     }
     async handleDebugSessionTerminate(session) {
         if (!session || !isSupportedDebugSession(session)) return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._terminatedDebugSessionIds.add(session.id);
+        if (this._externalDebug?.matches(session)) {
+            this._clearDebugStartupWatchdog({ kind: "terminated" });
+            this._debugBridge.detach(session);
+            await this._externalDebug.finish(session);
+            this._samplingIntent = false;
+            this._debugBridge.setIntent(false);
+            return;
+        }
         const group = this._managedDebugGroup;
         const member = group?.match(session);
         if (member) {
@@ -4081,6 +4246,7 @@ class MainViewProvider {
     }
     async restoreSamplingAfterDebug() {
         if (this._shutdownPromise) return;
+        if (this._externalDebug?.held) return;
         if (this._managedDebugGroup?.members.size) return;
         if (this._debugBridge.hasAnySession) {
             this._postConsumerStatuses(this._debugBridge.status());
@@ -4125,7 +4291,10 @@ class MainViewProvider {
                     await this._failGroupedCore(token, "Extension is shutting down");
             }
             const managedSession = this._debugBridge.activeSession;
-            if (managedSession && managedSession.id === this._managedDebugSessionId) {
+            if (
+                managedSession &&
+                (managedSession.id === this._managedDebugSessionId || this._externalDebug?.matches(managedSession))
+            ) {
                 try {
                     await vscode.debug.stopDebugging(managedSession);
                 } catch {

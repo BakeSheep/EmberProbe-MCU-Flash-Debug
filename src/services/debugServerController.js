@@ -33,6 +33,10 @@ async function allocateDebugPorts(count, excluded = []) {
 
 class OpenOcdDebugController {
     constructor(vscode, options, handlers = {}, dependencies = {}) {
+        if (options.servertype === "external")
+            throw Object.assign(new Error("OpenOCD controller cannot manage an external GDB server"), {
+                code: "DEBUG_SERVER_UNSUPPORTED"
+            });
         this.options = { ...options, ...normalizeDebugServerOptions(options), mode: "debug" };
         if (Array.isArray(this.options.gdbPorts)) this.options.gdbPorts = Object.freeze([...this.options.gdbPorts]);
         this.handlers = handlers;

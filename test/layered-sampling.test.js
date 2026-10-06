@@ -37,6 +37,41 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         assert.ok(sharedReads >= graphTicks);
         assert.strictEqual(plan.items.find((entry) => entry.name === "shared").size, 8);
     }
+    for (const nextInterval of [5, 1000]) {
+        const changing = new ManagedOpenOcdSession(null, {}, {});
+        changing.setSamplingPlan({
+            graphItems: [item("graph")],
+            sidebarItems: [item("sidebar")],
+            graphIntervalMs: 10000
+        });
+        changing.ratePlan.due(1000, 50);
+        const sidebarDeadline = changing.ratePlan.nextSidebar;
+        changing.setIntervalMs(nextInterval);
+        assert.deepStrictEqual(
+            changing.ratePlan.due(1001, changing.targetIntervalMs).graphNames,
+            ["graph"],
+            "a higher graph frequency takes effect before the old ten-second deadline"
+        );
+        assert.strictEqual(
+            changing.ratePlan.nextSidebar,
+            sidebarDeadline,
+            "changing graph frequency preserves the sidebar deadline"
+        );
+        const graphDeadline = changing.ratePlan.nextGraph;
+        changing.setIntervalMs(nextInterval);
+        assert.strictEqual(
+            changing.ratePlan.nextGraph,
+            graphDeadline,
+            "setting the same frequency preserves an active deadline"
+        );
+        changing.setIntervalMs(10000);
+        changing.ratePlan.due(2000, changing.targetIntervalMs);
+        assert.deepStrictEqual(
+            changing.ratePlan.due(2001, changing.targetIntervalMs).graphNames,
+            [],
+            "lowering frequency uses the new long interval"
+        );
+    }
     const session = new ManagedOpenOcdSession(null, { intervalMs: 5 }, {});
     session.setSamplingPlan({ sidebarItems: [item("sidebar")], graphIntervalMs: 5 });
     session.setIntervalMs(10000);

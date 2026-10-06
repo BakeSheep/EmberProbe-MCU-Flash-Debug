@@ -10,7 +10,8 @@ function writeConnectionIdentity(connection) {
         return {
             kind: "dap",
             sessionId: String(connection.sessionId || ""),
-            workspace: String(connection.workspace || "")
+            workspace: String(connection.workspace || ""),
+            ...(connection.stopEpoch === undefined ? {} : { stopEpoch: connection.stopEpoch })
         };
     }
     return { kind: "openocd", ...connectionIdentity(connection), ...normalizeTargetSelection(connection) };
@@ -20,7 +21,9 @@ function connectionFingerprint(plan) {
     const identity = writeConnectionIdentity(plan?.connection);
     if (
         !identity ||
-        (identity.kind === "dap" ? !identity.sessionId : !("probe" in identity) || !identity.probe || !identity.target)
+        (identity.kind === "dap"
+            ? !("sessionId" in identity) || !identity.sessionId
+            : !("probe" in identity) || !identity.probe || !identity.target)
     )
         return "";
     return JSON.stringify(identity);

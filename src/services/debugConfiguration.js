@@ -5,6 +5,7 @@ const path = require("path");
 const { normalizeRtos, normalizeTargetSelection } = require("../../skills/_emberprobe/openocd-launch");
 const { resolvePrettyPrinting } = require("./prettyPrinting");
 const { normalizeDebugImages } = require("./debugImages");
+const { normalizeExternalConfiguration } = require("./externalDebugService");
 
 function isSupportedDebugSession(session) {
     return ["emberprobe", "cortex-debug"].includes(session?.type);
@@ -18,8 +19,10 @@ function resolveRtos(launch, configured) {
     return normalizeRtos(explicit ? launch.rtos : configured);
 }
 
-function normalizeDebugServerOptions(config = {}) {
+/** @returns {{servertype: string, serverpath?: string, serverGroup?: string, numberOfProcessors?: number, targetProcessor?: number, targetName?: string}} */
+function normalizeDebugServerOptions(config = {}, internal = false) {
     const servertype = config.servertype ?? "openocd";
+    if (servertype === "external") return normalizeExternalConfiguration(config, internal);
     if (servertype !== "openocd")
         throw Object.assign(new Error(`Unsupported EmberProbe server: ${servertype}`), {
             code: "DEBUG_SERVER_UNSUPPORTED"
@@ -88,7 +91,7 @@ function validateDebugConfiguration(config, folder) {
             Object.values(result.sourceFileMap).some((value) => typeof value !== "string"))
     )
         throw new Error("sourceFileMap must map source prefixes to local paths");
-    delete result.gdbTarget;
+    if (result.servertype !== "external") delete result.gdbTarget;
     delete result.__emberprobeManagedToken;
     return result;
 }

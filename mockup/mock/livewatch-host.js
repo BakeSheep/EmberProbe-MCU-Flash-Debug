@@ -33,7 +33,19 @@
             if (!history) return;
             var signature = JSON.stringify(watchItems);
             if (signature !== historySignature) {
-                history.configure("mock", watchItems);
+                var items = new Map();
+                watchItems.forEach(function (item) {
+                    if (!item.isComposite || !item.compositeLayout) return;
+                    iframe.contentWindow
+                        .collectLeaves(item.compositeLayout, item.name, Number(item.address))
+                        .forEach(function (leaf) {
+                            items.set(leaf.path, { name: leaf.path, address: leaf.address, type: leaf.type });
+                        });
+                });
+                watchItems.forEach(function (item) {
+                    if (!item.isComposite) items.set(item.name, item);
+                });
+                history.configure("mock", Array.from(items.values()));
                 historySignature = signature;
             }
         }
@@ -114,7 +126,6 @@
             var samples = simulator.scalarSamples(names, t);
             if (history) {
                 configureHistory();
-                history.append("mock", samples, t);
                 if (t - lastStatus >= 80) {
                     send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
                     lastStatus = t;
@@ -132,7 +143,13 @@
             if (composite.length) send({ type: "liveCompositeSample", samples: composite, t: t });
             var archivedSamples = samples.slice();
             function flatten(node, name) {
-                if (node.value !== undefined) archivedSamples.push({ name: name, value: node.value, t: t });
+                if (
+                    node.value !== undefined &&
+                    !archivedSamples.some(function (sample) {
+                        return sample.name === name;
+                    })
+                )
+                    archivedSamples.push({ name: name, value: node.value, valueText: node.valueText, t: t });
                 (node.members || []).forEach(function (member) {
                     flatten(member, name + "." + member.name);
                 });
@@ -143,6 +160,7 @@
             composite.forEach(function (sample) {
                 flatten(sample.tree, sample.name);
             });
+            if (history) history.append("mock", archivedSamples, t);
             if (archivedSamples.length) archive.push({ t: t, samples: archivedSamples });
             if (archive.length > archiveLimit) {
                 archive.splice(0, archive.length - archiveLimit);

@@ -45,8 +45,7 @@ for (const name of [
 for (const name of [...cLookalikes, "counter", "Idle_Stack.2", "v0_2.1"])
     assert(!elf.isItaniumMangled(name), `not Itanium-mangled ${name}`);
 
-// Diagnostics ship to the webview wholesale, so a firmware linking many C++ objects without debug
-// info must not be able to flood the channel; the overflow is reported, not silently dropped.
+// Keep bounded internal diagnostics, without flooding UI warnings for ordinary unresolved types.
 {
     const capped = new ElfService({ t: (key, params) => (params ? `${key} ${JSON.stringify(params)}` : key) });
     const result = { symbols: [], diagnostics: [], warnings: [] };
@@ -58,7 +57,30 @@ for (const name of [...cLookalikes, "counter", "Idle_Stack.2", "v0_2.1"])
     const truncated = result.diagnostics.filter((d) => d.code === "CPP_DIAGNOSTICS_TRUNCATED");
     assert.strictEqual(truncated.length, 1);
     assert.match(truncated[0].message, /"count":70/);
-    assert.strictEqual(result.warnings.length, 51);
+    assert.deepStrictEqual(result.warnings, [], "unresolved types and their overflow stay out of UI warnings");
+}
+{
+    const service = new ElfService({ t: (key, params) => `${key} ${JSON.stringify(params)}` });
+    const result = {
+        symbols: [
+            { name: "_ZN12_GLOBAL__N_1L13__new_handlerE" },
+            { name: "_ZSt14in_place_indexILj0EE" },
+            { name: "_ZSt7nothrow" },
+            { name: "_Z3amb" }
+        ],
+        diagnostics: [],
+        warnings: []
+    };
+    service._recordCppDiagnostics(result, new Map([["_Z3amb", { ambiguous: true }]]));
+    assert.strictEqual(result.diagnostics.length, 4);
+    assert.strictEqual(result.warnings.length, 1);
+    assert.match(result.warnings[0], /^CPP_SYMBOL_AMBIGUOUS:/, "preserve other binding warnings");
+    const overflow = { symbols: [], diagnostics: [], warnings: [] };
+    for (let index = 0; index < 55; index++) overflow.symbols.push({ name: `_ZN3app${index}7missingE` });
+    overflow.symbols.push({ name: "_Z3amb" });
+    service._recordCppDiagnostics(overflow, new Map([["_Z3amb", { ambiguous: true }]]));
+    assert.strictEqual(overflow.warnings.length, 1, "report overflow for actionable binding warnings");
+    assert.match(overflow.warnings[0], /"count":1/, "UI overflow excludes hidden unresolved types");
 }
 
 // Only an unambiguous static address may bind compiler-suffixed C symbols.
@@ -201,6 +223,10 @@ function fixture() {
                 assert(unresolved.cppTypeUnavailable);
                 assert.strictEqual(unresolved.watchType, "", "missing debug types must not become writable scalars");
                 assert.strictEqual(result.diagnostics.filter((d) => d.code === "CPP_TYPE_UNRESOLVED").length, 1);
+                assert(
+                    !result.warnings.some((warning) => warning.startsWith("CPP_TYPE_UNRESOLVED:")),
+                    "sync and worker warnings omit unresolved-type notices"
+                );
                 for (const name of cLookalikes) {
                     const cGlobal = result.symbols.find((s) => s.name === name);
                     assert(!cGlobal.isComposite, `${name} is a C global, not an unresolved C++ object`);

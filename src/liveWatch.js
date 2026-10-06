@@ -299,7 +299,11 @@ class ManagedOpenOcdSession {
 
     setIntervalMs(ms) {
         if (this.ratePlan) {
-            this.ratePlan.graphIntervalMs = clampInteger(ms, 33, 5, 10000);
+            const interval = clampInteger(ms, 33, 5, 10000);
+            if (interval !== this.ratePlan.graphIntervalMs) {
+                this.ratePlan.graphIntervalMs = interval;
+                this.ratePlan.nextGraph = 0;
+            }
             return this._setClockInterval(this.ratePlan.intervalMs);
         }
         return this._setClockInterval(ms);

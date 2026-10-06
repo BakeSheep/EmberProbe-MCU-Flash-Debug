@@ -7,7 +7,8 @@ const PROBE_OPERATIONS = Object.freeze([
     "chipInfo",
     "agentRead",
     "debugStart",
-    "debugServer"
+    "debugServer",
+    "externalDebug"
 ]);
 
 class ProbeCoordinator {

@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
+const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
 (async () => {
     const panels = [],
         writes = [],
@@ -101,6 +102,56 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.equal(panels[1].messages.at(-1).historyRevision, 1);
     await panels[0].receive({ type: "clearSamplingHistory", panelId: 2, historyRevision: 2 });
     assert.deepStrictEqual(clearedScopes, ["mcu.watchList.2"], "mismatched panel cannot clear history");
+    const history = new ChartHistoryStore();
+    const historyRequests = [];
+    p._chartHistory = {
+        request: async (method, args) => {
+            historyRequests.push(method);
+            return history[method](...args);
+        },
+        fail: assert.fail
+    };
+    p._syncGraphTarget = P.prototype._syncGraphTarget;
+    p._samplingStatus = () => ({ running: false });
+    p.readElfSymbols = () => ({ symbols: [] });
+    p._configureChartHistory(entry);
+    history.append(entry.watchKey, [{ name: "shared", value: 7, t: 2000 }], 2000);
+    await panels[1].receive({ type: "ready", panelId: 2 });
+    const status = panels[1].messages.at(-1);
+    assert.strictEqual(status.type, "chartHistoryStatus");
+    assert.strictEqual(status.historyRevision, 1, "reloaded webviews receive the host's clear generation");
+    assert.deepStrictEqual(status.variables, ["shared"]);
+    assert.strictEqual(
+        historyRequests.filter((method) => method === "configure").length,
+        1,
+        "ready preserves configured history"
+    );
+    assert.strictEqual(
+        historyRequests.at(-1),
+        "status",
+        "ready resends history even when configuration is unchanged and sampling stopped"
+    );
+    const handshakeIndex = panels[1].messages.findLastIndex((message) => message.type === "chartHistoryReady");
+    assert.ok(handshakeIndex < panels[1].messages.length - 1);
+    assert.strictEqual(panels[1].messages[handshakeIndex].historyRevision, 1);
+    let finishStatus;
+    p._chartHistory.request = () =>
+        new Promise((resolve) => {
+            finishStatus = resolve;
+        });
+    const reloading = panels[1].receive({ type: "ready", panelId: 2 });
+    await Promise.resolve();
+    entry.historyRevision++;
+    const messageCount = panels[1].messages.length;
+    finishStatus(status);
+    await reloading;
+    assert.strictEqual(
+        panels[1].messages.length,
+        messageCount,
+        "a clear during ready invalidates the pending history response"
+    );
+    p._chartHistory = null;
+    p._syncGraphTarget = () => {};
     values.set("mcu.sidebarWatchList", [
         { name: "shared", type: "u8" },
         { name: "sidebarOnly", type: "u32" }
@@ -133,6 +184,13 @@ const { loadProvider } = require("./helpers/load-provider");
     await panels[1].receive({ type: "importSidebarWatch", panelId: 2, items: values.get("mcu.watchList.2") });
     assert.deepStrictEqual(saved, ["mcu.watchList.2"], "importing twice must not duplicate or resave watches");
     assert.deepStrictEqual(panels[1].messages.at(-1), { type: "sidebarImportResult", added: 0, sourceCount: 2 });
+    p._chartHistory = {};
+    p._samplingStatus = () => ({ actualHz: 30.3 });
+    p._postWebviewBatch(entry, [], [{ name: "sensor", tree: { kind: "struct", members: [] }, t: 2000 }], 2000);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    const compositeBatch = panels[1].messages.at(-1);
+    assert.strictEqual(compositeBatch.type, "liveCompositeSample");
+    assert.strictEqual(compositeBatch.actualHz, 30.3, "host forwards acquisition rate even when no scalar is plotted");
     console.log("Chart host migration, multi-panel styles and snapshot export tests passed");
 })().catch((error) => {
     console.error(error);

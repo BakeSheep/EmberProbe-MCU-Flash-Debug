@@ -47,6 +47,8 @@ The normal runner defaults to at most four test processes; use `npm run test:uni
 
 ## Working Scope and Completion
 
+Do not modify `README.md` unless the user explicitly requests changes to that file. Keep it focused on key capabilities; place detailed usage, implementation, and development documentation in `docs/` or the relevant skill documentation.
+
 Preserve existing uncommitted work. Continue the requested change through implementation, relevant validation, and necessary documentation updates; fix failures caused by the change. Report the resulting behavior, checks performed, and any unavailable toolchain or unverified platform/hardware. A development change does not by itself authorize HIL, driver switching, firmware programming, or publishing a release.
 
 ## Commit & Pull Request Guidelines

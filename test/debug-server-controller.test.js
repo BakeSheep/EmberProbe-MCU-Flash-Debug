@@ -86,7 +86,7 @@ function fixture(options = {}, overrides = {}) {
         assert.throws(() => buildOpenOcdTargetArgs({ numberOfProcessors: 2 }, ports), {
             code: "OPENOCD_TARGET_PORT_INVALID"
         });
-    for (const servertype of ["jlink", "external", "other", null, 1]) {
+    for (const servertype of ["jlink", "other", null, 1]) {
         if (servertype === null) continue; // absent/null retain the default
         assert.throws(() => normalizeDebugServerOptions({ servertype }), { code: "DEBUG_SERVER_UNSUPPORTED" });
         assert.throws(

@@ -30,7 +30,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         );
     }
     if (command.startsWith("-break-insert")) body = `,bkpt={number="${++breakpoint}",addr="0x08000000",line="12"}`;
-    if (command === "-thread-info") body = ',threads=[{id="1",name="Cortex-M"}]';
+    if (command === "-thread-info") body = ',threads=[{id="1",name="Cortex-M",state="stopped"}],current-thread-id="1"';
     if (command.startsWith("-stack-list-frames"))
         body = ',stack=[frame={level="0",func="main",line="12",file="main.c",addr="0x08000000"}]';
     if (command === "-stack-list-variables --simple-values")

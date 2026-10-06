@@ -98,6 +98,7 @@ class MiClient extends EventEmitter {
         this.decoder = new StringDecoder("utf8");
         this.closed = false;
         this.process = null;
+        this.exited = false;
     }
     start(executable, cwd) {
         this.process = this.spawn(executable, ["--interpreter=mi2", "--quiet", "--nx"], {
@@ -110,7 +111,10 @@ class MiClient extends EventEmitter {
         this.process.stderr.on("data", (chunk) => this.emit("output", String(chunk)));
         this.process.stdin.on("error", (error) => this.fail(error));
         this.process.on("error", (error) => this.fail(error));
-        this.process.on("exit", () => this.fail(new Error("GDB exited")));
+        this.process.on("exit", () => {
+            this.exited = true;
+            this.fail(new Error("GDB exited"));
+        });
     }
     feed(chunk) {
         this.buffer += chunk;
@@ -170,6 +174,20 @@ class MiClient extends EventEmitter {
             /* Escalate to process termination below. */
         }
         this.fail(new Error("Debug session ended"));
+    }
+    waitForExit(timeoutMs = 2000) {
+        if (!this.process || !this.process.pid || this.exited || this.process.exitCode !== null)
+            return Promise.resolve(true);
+        return new Promise((resolve) => {
+            const finish = (confirmed) => {
+                clearTimeout(timer);
+                this.process.removeListener("exit", onExit);
+                resolve(confirmed);
+            };
+            const onExit = () => finish(true);
+            const timer = setTimeout(() => finish(false), timeoutMs);
+            this.process.once("exit", onExit);
+        });
     }
 }
 

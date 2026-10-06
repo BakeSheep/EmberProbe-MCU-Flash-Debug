@@ -35,6 +35,24 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
     return Array.from(byName.values());
 }
 
+// A fixed composite is already read as a whole. Keep its scalar leaves in history
+// before they are selected for drawing, without adding hardware reads.
+function buildChartHistoryItems(items, elfSymbols) {
+    const byName = new Map();
+    for (const item of items || []) {
+        if (!item.isComposite || !item.compositeLayout || item.runtimeLayout) continue;
+        for (const leaf of elfSymbols.expandCompositeLeaves(item, item.compositeLayout, null))
+            byName.set(leaf.path, { ...leaf, name: leaf.path, parentName: item.name, parentAddress: item.address });
+    }
+    for (const item of items || []) {
+        if (item.isComposite) continue;
+        const leaf = byName.get(item.name);
+        const same = leaf && ["type", "address", "bitOffset", "bitSize"].every((key) => leaf[key] === item[key]);
+        byName.set(item.name, same ? { ...leaf, ...item } : item);
+    }
+    return [...byName.values()];
+}
+
 function filterRuntimeRamPlan(items, sections) {
     const SHF_WRITE = 1;
     const SHF_ALLOC = 2;
@@ -123,6 +141,43 @@ class LiveWatchService {
         this.latestSidebarSamples = new Map();
     }
 
+    decodeHistorySamples(samples, time, items, decodedScalars = []) {
+        const raw = new Map(samples.map((sample) => [sample.name, sample]));
+        const decoded = new Map(decodedScalars.map((sample) => [sample.name, sample]));
+        const result = [];
+        const selected = [];
+        const types = new Map();
+        for (const item of items) {
+            if (decoded.has(item.name)) {
+                result.push(decoded.get(item.name));
+                continue;
+            }
+            let sample = raw.get(item.name);
+            if (!sample && item.parentName) {
+                const parent = raw.get(item.parentName);
+                if (parent) {
+                    const offset = item.address - item.parentAddress;
+                    const width = Number.isInteger(item.bitSize)
+                        ? Math.ceil((Number(item.bitOffset) + item.bitSize) / 8)
+                        : this.elfSymbols.typeByteLength(item.type);
+                    sample = {
+                        name: item.name,
+                        t: parent.t,
+                        diagnostic: parent.diagnostic,
+                        bytes:
+                            parent.bytes && offset >= 0 && offset + width <= parent.bytes.length
+                                ? parent.bytes.slice(offset, offset + width)
+                                : null
+                    };
+                }
+            }
+            if (!sample) continue;
+            selected.push(sample);
+            types.set(item.name, Number.isInteger(item.bitSize) ? item : item.type);
+        }
+        return result.concat(this.decodeConsumerSamples(selected, time, types, null).scalarSamples);
+    }
+
     decodeConsumerSamples(samples, time, typeMap, compositeMap, latestSamples) {
         const scalarSamples = [];
         const compositeSamples = [];
@@ -208,6 +263,7 @@ class LiveWatchService {
 module.exports = {
     LiveWatchService,
     buildActiveReadPlan,
+    buildChartHistoryItems,
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,

@@ -77,7 +77,7 @@ class DebugVariables {
         );
     }
     snapshot(frame) {
-        const thread = this.session.rtosAware ? frame?.thread : undefined;
+        const thread = (this.session.threadAware ?? this.session.rtosAware) ? frame?.thread : undefined;
         return { generation: this.generation, thread, threadGeneration: this.threadGenerations.get(thread) || 0 };
     }
     check(snapshot) {
@@ -356,7 +356,7 @@ class DebugVariables {
             if (filter === "indexed") return { variables: [] };
             return this.registers(parent, range, generation);
         }
-        if (parent.frame && this.session.rtosAware) {
+        if (parent.frame && (this.session.threadAware ?? this.session.rtosAware)) {
             await this.session.ensureThread(parent.frame.thread);
             this.check(generation);
         }
@@ -436,7 +436,8 @@ class DebugVariables {
         if (node?.readOnly || node?.stl || visibilityGroup(node?.item || {})) throw new Error("Variable is read only");
         if (!node?.item.name || this.nodes.get(node.item.name) !== node)
             throw new Error("Variable is unavailable, ambiguous, or has not been expanded");
-        if (node.frame && this.session.rtosAware) await this.session.ensureThread(node.frame.thread);
+        if (node.frame && (this.session.threadAware ?? this.session.rtosAware))
+            await this.session.ensureThread(node.frame.thread);
         this.check(generation);
         if (
             !/^(?:(?:unsigned|signed|long|short|const|volatile)\s+)*(?:int|char|bool|float|double|long|short|unsigned|signed)\b/.test(

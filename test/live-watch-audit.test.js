@@ -38,7 +38,8 @@ const elf = require("../src/elfSymbols");
         };
         p._syncGraphTarget(entry);
         assert.equal(graph.document.querySelectorAll("#impList input").length, 0);
-        assert.equal(graph.document.getElementById("impWarn").textContent, "ELF unavailable");
+        assert.equal(graph.document.getElementById("impWarn"), null, "ELF import has no parsing-notice area");
+        assert.ok(!graph.document.getElementById("overlay").textContent.includes("ELF unavailable"));
 
         // Exercise the member button, host normalization and actual scalar decoding, including bitfields.
         const symbol = {

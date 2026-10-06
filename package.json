@@ -284,6 +284,28 @@
             ]
           },
           "markdownDescription": "Override memory region types by their exact linker names, e.g. {\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}. Capacities come from the project .map or .ld file."
+        },
+        "emberprobe.experimental.externalGdb.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "markdownDescription": "Experimental: allow explicit EmberProbe external attach configurations. After use, stop the external server and disable this setting to release the probe hold. Existing debug buttons continue to use OpenOCD."
+        },
+        "emberprobe.experimental.externalGdb.target": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Experimental external GDB TCP target: host:port or [IPv6]:port. Required for explicit external attach; the server must already be running."
+        },
+        "emberprobe.experimental.externalGdb.connectionMode": {
+          "type": "string",
+          "enum": [
+            "remote",
+            "extended-remote"
+          ],
+          "default": "extended-remote",
+          "scope": "resource",
+          "description": "Experimental external GDB connection mode. Read at attach startup; changing it does not redirect an active session."
         }
       }
     },
@@ -613,9 +635,10 @@
               "servertype": {
                 "type": "string",
                 "enum": [
-                  "openocd"
+                  "openocd",
+                  "external"
                 ],
-                "description": "Managed debug server backend."
+                "description": "Debug backend. Experimental external attach requires native VS Code settings and an already running TCP server."
               },
               "serverpath": {
                 "type": "string",
@@ -952,6 +975,7 @@
     "skills/**/*",
     "README.md",
     "README_EN.md",
+    "docs/EXTERNAL-GDB-SERVER.md",
     "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

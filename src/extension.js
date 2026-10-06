@@ -31,6 +31,7 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
             if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.connectionConfigurationChanged();
             if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
@@ -59,6 +60,7 @@ function activate(context) {
                 if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
                 if (provider._matchesManagedDebugSession({ configuration: config })) return config;
                 const validated = validateDebugConfiguration(config, folder);
+                if (validated.servertype === "external") return provider.prepareExternalDebug(folder, validated);
                 return await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated) || undefined;
             }
         }),

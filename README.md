@@ -1,6 +1,6 @@
 # EmberProbe
 
-EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD，提供固件烧录、目标自动识别与实时变量观测。
+EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VSCode 扩展，集成固件烧录、断点调试、实时变量观测与 Agent 辅助开发。
 
 > [English documentation](README_EN.md)
 
@@ -8,13 +8,23 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 
 ## 功能特性
 
-- 自动检测工作区中最新的 ELF 文件与 MCU 目标。
-- 芯片信息读取：通过 OpenOCD 非侵入式读取芯片内核、Device ID、Flash 容量、UID、调试链路与运行状态。
-- ELF文件烧录：一键烧录ELF文件并运行。
-- 实时变量观测：在目标运行时非侵入式读取 Cortex-M 内存；侧边栏提供独立数值列表，可同时打开多个拥有独立观察列表和历史缓冲的实时图表面板。
-- 实时变量写入：在目标运行时实时更改内存，提供滑条、输入框、鼠标滚轮多种值更改方式，更改后自动回读。
-- 内置断点调试：无需 Cortex-Debug，支持断点、单步、调用栈、Locals／Globals／文件 Statics／Registers、表达式赋值及内存读写。
-- 可选安装九个 Agent Skills，覆盖固件编程与校验、实时变量读写、SVD 外设调试、调试会话/断点控制、芯片和故障信息读取、ELF 分析，以及配置同步。
+- **自动识别**：检测工作区中最新的 ELF 文件与 MCU 目标。
+- **固件烧录**：一键烧录 ELF 文件并运行，支持固件校验。
+- **芯片信息**：查看芯片身份、存储容量与运行状态。
+- **实时变量观测**：在目标运行时查看变量数值与波形，支持多图表、历史查看和 CSV 导出。
+- **实时变量写入**：在目标运行时调整变量值，并自动回读校验。
+- **内置断点调试**：支持断点、单步、调用栈、变量与寄存器查看，以及内存读写。
+- **Agent 辅助开发**：提供可选安装的 Agent Skills，辅助完成固件开发、调试与分析。
+
+## Agent Skills
+
+| 重点功能 | Skill |
+| --- | --- |
+| 固件烧录与变量读写 | `mcu-flash`、`mcu-variables` |
+| 芯片信息与故障分析 | `mcu-chip-info`、`mcu-fault-analyzer` |
+| ELF 与外设分析 | `mcu-elf-analyze`、`mcu-peripheral-debug` |
+| 断点与 FreeRTOS 调试 | `mcu-debug-control`、`mcu-rtos` |
+| 配置管理与 CubeMX 代码生成 | `mcu-config`、`mcu-cubemx` |
 
 ## 环境要求
 
@@ -22,65 +32,15 @@ EmberProbe 是一款面向 Cortex-M 开发的 VS Code 扩展。它基于 OpenOCD
 - OpenOCD
 - ARM GDB 工具链（断点调试必需）
 
-## 实时变量观测
+当前扩展版本为 `0.8.0`。
 
-侧边栏列出当前 ELF 的所有全局/静态变量；点击变量可将其加入独立数值列表。
+## 更多文档
 
-- 类型支持：标量优先使用 DWARF 类型信息，支持 `u8/i8/u16/i16/u32/i32/f32/u64/i64/f64`；结构体、联合体和数组可展开并选择标量叶子成员。
-- 64 位精度：`u64/i64` 图表在 ±2^53 外使用 Number 近似值；侧边栏、CSV 和 Agent 结果优先使用精确十进制 `valueText`。
-- CSV 导出：采样开始后可随时按变量和时间范围流式导出采样数据。
-- 实时写入：侧边栏可把具有可靠 DWARF 类型且位于 ELF 可写段的标量加入写入列表；写入只在采样会话运行时启用，并在每次写入后回读校验。
-
-- 曲线识别：颜色和线型按完整变量名保存到工作区，多面板共享；点击色块仅隐藏/显示（结构体成员同样保留采样和历史）。右键变量卡片设置数据类型、改色、改线型、仅看此项或移除监视；“恢复显示组合”回到聚焦前的选择。
-- 曲线读数：悬停仅显示颜色竖条和实际值；点击曲线与顶部“冻结图表”使用同一快照逻辑，冻结后移动鼠标仍可读取其他位置和曲线。
-- 显示与坐标：左侧“当前数值”下可显示全部/隐藏全部；顶部“自动 Y 轴”控制自动缩放，手动缩放后保持范围。左侧全高色条切换显隐，隐藏为灰色；右侧 × 移除变量。
-- 冻结：后台采样和当前值继续更新，顶部“恢复实时”释放快照并回到最新。新添加变量在恢复实时后显示，清空历史同时清除快照。
-- 导出来源：默认使用“完整采样归档”，另可选择“实时保留数据”或“冻结快照”；冻结时默认导出快照。“清空历史”同时清除当前窗口、当前调试会话的快照及归档导出历史，后续导出仅包含清空后采集的数据，其他窗口不受影响。旧归档记录在扩展退出时删除，清空不会重置归档磁盘容量预算。
-- 分层采样：波形窗口所有观察变量（含隐藏曲线）按波形目标频率采样并归档；仅在插件侧栏或写入卡片中的变量固定目标 20 Hz，不记录历史。全局暂停同时停止两组，实际频率受探针吞吐能力限制。
-- 后台历史：独立 Worker 保留最近 30 分钟原始数据，`emberprobe.maxSamples` 已弃用。隐藏后重新显示曲线会恢复当前视口的完整历史，“全部”查看整个保留范围。Webview 只请求像素极值和断点，CSV 从原始历史生成并保留 64 位精度。内存预算 `emberprobe.chartHistoryMaxMiB` 默认 512 MiB（含冻结引用），耗尽时暂停采样并保留磁盘归档；详见 [分层采样说明](docs/LAYERED-SAMPLING.md)。
-
-- 采样隔离：OpenOCD 连接和采样时钟运行在独立工作线程，避免构建或同步 ELF 解析阻塞扩展宿主时中断采集；显示 Hz 使用采集时间而非消息到达时间。目标复位、调试暂停、探针占用和系统资源耗尽仍可能影响实际读取。
-
-## Agent Skills
-
-EmberProbe提供以下skills。
-
-- `mcu-flash`：检测并烧录最新 ELF，或独立校验片上 Flash。
-- `mcu-variables`：单次读取、分析趋势、导出图表历史 CSV。
-- `mcu-chip-info`：按 `identity`、`debug`、`runtime` 分组或指定字段读取芯片信息。
-- `mcu-config`：读取或修改 ELF、调试器、MCU、SVD、OpenOCD 和采样参数。
-- `mcu-fault-analyzer`：读取并解码 Cortex-M 故障寄存器，并使用当前 ELF 对 PC/LR 进行符号化。
-- `mcu-elf-analyze`：离线分析当前 ELF 的 Flash/RAM 占用、各内存区域容量百分比、段布局和大符号；优先读取对应 `.map`，也支持 linker script。
-- `mcu-peripheral-debug`：解析工作区 SVD，查询、读取和解码外设寄存器/位域。
-- `mcu-debug-control`：启动、停止和控制 调试会话，支持暂停/继续/单步/重启以及源码行和函数断点管理。
-- `mcu-debug-control` 的 `inspect.js`：读取暂停原生会话的任务调用栈、作用域及 C++ 类/STL 对象，支持分页展开与失效句柄保护。
-- `mcu-rtos`：读取暂停 FreeRTOS 任务状态、优先级与栈填充估算，并检查指定任务的调用栈及 C/C++ 局部变量；结构化快照暂限单核小端 Cortex-M ARM32。
-- `mcu-cubemx`：在 Windows / Linux 上经两阶段授权修改已有 `.ioc` 并通过 CubeMX CLI 重新生成初始化代码，包含基线检查、用户代码保护与恢复副本。
-
-## 开发与构建
-
-```sh
-npm install
-npm run check
-npm run quality
-npm run test:e2e
-npm run package
-```
-
-普通测试由 `scripts/test-groups.js` 显式分组：`npm run test:fast` 运行纯逻辑测试，`npm run test:integration` 运行文件系统、服务和异步集成测试；`npm run test:unit` 仍运行两组全部测试。默认最多并发 4 个独立子进程，排查问题可用 `npm run test:unit -- --jobs 1`，或加 `--keep-logs` 保留成功日志。结果汇总写入 `test-results/`；GDB、E2E、HIL 和发布一致性测试保持独立入口。
-
-准备新版本时运行 `npm run release:prepare -- <version> --date YYYY-MM-DD`，脚本会同步版本元数据、README 和 Changelog。推送匹配版本的 `vX.Y.Z` 标签后，Release 工作流会自动创建 GitHub Release 并上传 VSIX；发布及重试方式见 [docs/RELEASING.md](docs/RELEASING.md)。真机测试接入方式见 [test/hil/README.md](test/hil/README.md)。当前扩展版本为 `0.8.0`。
-
-## 项目结构
-
-```text
-src/       扩展实现
-resources/ Windows x64 OpenOCD 包及其自带的许可证
-media/     商城与活动栏图标
-skills/    自带的 Agent Skills
-test/      单元测试与 OpenOCD Tcl-RPC 集成测试
-esbuild.js 单文件 VSIX 打包构建配置
-```
+- [Agent Skills](skills/)
+- [实时变量采样说明](docs/LAYERED-SAMPLING.md)
+- [FreeRTOS 调试说明](docs/RTOS-AWARENESS.md)
+- [CubeMX 代码生成说明](docs/CUBEMX-GENERATION.md)
+- [发布指南](docs/RELEASING.md)
 
 ## 许可证与归属
 

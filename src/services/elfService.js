@@ -9,7 +9,7 @@ const { companionsUnchanged } = require("../dwarf/files");
 const MAX_ELF_BYTES = 64 * 1024 * 1024;
 
 // 单个 ELF 的 C++ 绑定诊断上限。大型固件可能链接大量无调试信息的 C++ 目标文件，
-// 而 warnings 会整体下发到 webview，无上限会同时压垮诊断面板与消息通道。
+// 内部诊断仍有上限；普通类型缺失不进入整体下发到 webview 的 warnings。
 const MAX_CPP_DIAGNOSTICS = 50;
 
 class ElfService {
@@ -115,6 +115,7 @@ class ElfService {
     _recordCppDiagnostics(result, types) {
         let recorded = 0;
         let suppressed = 0;
+        let suppressedWarnings = 0;
         for (const symbol of result.symbols) {
             if (!isItaniumMangled(symbol.name)) continue;
             const info = types.get(symbol.name);
@@ -126,6 +127,7 @@ class ElfService {
             if (!code) continue;
             if (recorded >= MAX_CPP_DIAGNOSTICS) {
                 suppressed++;
+                if (code !== "CPP_TYPE_UNRESOLVED") suppressedWarnings++;
                 continue;
             }
             recorded++;
@@ -136,12 +138,15 @@ class ElfService {
                 }
             );
             result.diagnostics.push({ code, stage: "bind", message });
-            result.warnings.push(`${code}: ${message}`);
+            if (code !== "CPP_TYPE_UNRESOLVED") result.warnings.push(`${code}: ${message}`);
         }
         if (suppressed) {
             const message = this.t("diag.cppDiagnosticsTruncated", { count: suppressed });
             result.diagnostics.push({ code: "CPP_DIAGNOSTICS_TRUNCATED", stage: "bind", message });
-            result.warnings.push(`CPP_DIAGNOSTICS_TRUNCATED: ${message}`);
+            if (suppressedWarnings)
+                result.warnings.push(
+                    `CPP_DIAGNOSTICS_TRUNCATED: ${this.t("diag.cppDiagnosticsTruncated", { count: suppressedWarnings })}`
+                );
         }
     }
 
