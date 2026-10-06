@@ -34,12 +34,14 @@ try {
         frozen: false,
         lang: "en"
     };
+    let tooltipName = "";
     const controls = create({
         document: doc,
         t: (k) => k,
         change: (...args) => actions.push(args),
         get: () => state,
         fmtNum: String,
+        tooltipName: (name) => tooltipName || name,
         time: String,
         inspection: I
     });
@@ -50,7 +52,23 @@ try {
     controls.decorate(row, "a", swatch);
     controls.refresh(series);
     assert.equal(doc.getElementById("curveTooltip").textContent, "a: 1.5");
+    tooltipName = ".value_";
+    controls.refresh(series);
+    assert.equal(
+        doc.getElementById("curveTooltip").textContent,
+        ".value_: 1.5",
+        "metadata updates refresh unchanged hits"
+    );
+    tooltipName = "";
+    controls.refresh(series);
     assert.ok(row.classList.contains("curve-emphasis"));
+    state.chart.pointer = null;
+    controls.refresh(series);
+    assert.ok(!row.classList.contains("curve-emphasis"), "cached plot hits require an active plot pointer");
+    state.chart.hoverName = "a";
+    controls.refresh(series);
+    assert.ok(row.classList.contains("curve-emphasis"), "card hover still highlights its series");
+    state.chart.hoverName = null;
     row.dispatchEvent(new dom.window.Event("pointerenter"));
     row.dispatchEvent(new dom.window.Event("pointerleave"));
     row.dispatchEvent(new dom.window.MouseEvent("contextmenu", { bubbles: true }));

@@ -9,6 +9,7 @@ Thumbs.db
 coverage/
 .cache/
 test-results/
+output/
 .zcode/
 .workbuddy-ai/
 promo/

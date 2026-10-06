@@ -30,13 +30,16 @@
         const lookup = (key) =>
             typeof symbols?.get === "function" ? symbols.get(key) : symbols?.find((symbol) => symbol.name === key);
         const direct = lookup(name);
-        if (direct?.displayName) return direct.displayName;
+        // Initial ELF chunks use the raw linkage name as a placeholder. They must not replace
+        // a readable name already attached to a saved/runtime watch entry while DWARF loads.
+        if (direct?.displayName && direct.displayName !== name) return direct.displayName;
         const baseName = variableBaseName(name);
         const base = lookup(baseName);
-        if (baseName !== name && base?.displayName) return base.displayName + name.slice(baseName.length);
+        if (baseName !== name && base?.displayName && base.displayName !== baseName)
+            return base.displayName + name.slice(baseName.length);
         return item.displayName || name;
     }
-    function renderVariableName(element, name, rawName = name) {
+    function variableNameParts(name) {
         let depth = 0;
         let split = 0;
         for (let index = 0; index < name.length; index++) {
@@ -45,18 +48,29 @@
             else if (!depth && name[index] === ".") split = index + 1;
             else if (!depth && name.slice(index, index + 2) === "::") split = ++index + 1;
         }
+        return split > 0 && split < name.length
+            ? { prefix: name.slice(0, split), leaf: name.slice(split) }
+            : { prefix: "", leaf: name };
+    }
+    function shortVariableName(name) {
+        const parts = variableNameParts(name);
+        return (parts.prefix ? "." : "") + parts.leaf;
+    }
+    function renderVariableName(element, name, rawName = name) {
+        const parts = variableNameParts(name);
         element.textContent = "";
-        element.classList.toggle("qualified-name", split > 0 && split < name.length);
-        if (split > 0 && split < name.length) {
+        element.classList.toggle("qualified-name", !!parts.prefix);
+        if (parts.prefix) {
             const prefix = element.ownerDocument.createElement("span");
             prefix.className = "variable-name-prefix";
-            prefix.textContent = name.slice(0, split);
+            prefix.textContent = parts.prefix;
             const leaf = element.ownerDocument.createElement("span");
             leaf.className = "variable-name-leaf";
-            leaf.textContent = name.slice(split);
+            leaf.textContent = parts.leaf;
             element.append(prefix, leaf);
         } else element.textContent = name;
-        element.title = name === rawName ? name : `${name}\n${rawName}`;
+        element.title = name;
+        element.dataset.rawName = rawName;
         element.setAttribute("aria-label", name);
     }
     function translate(tables, language, key, params) {
@@ -169,6 +183,7 @@
         const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
         if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
         if (!type || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType)) return null;
+        const displayName = variableDisplayName({ name }, [symbol]);
         return {
             name,
             address: symbol.address,
@@ -179,7 +194,7 @@
             runtimeLayout: graph,
             runtimeSegments: segments,
             ...(hasContainers && !enteredContainer ? { runtimeStaticPointers: true } : {}),
-            ...(symbol.displayName && symbol.name === name ? { displayName: symbol.displayName } : {})
+            ...(displayName !== name ? { displayName } : {})
         };
     }
     function runtimeGraph(symbol) {
@@ -339,6 +354,8 @@
         defaultType,
         variableBaseName,
         variableDisplayName,
+        variableNameParts,
+        shortVariableName,
         renderVariableName,
         translate,
         runtimeWatchEntry,

@@ -125,6 +125,24 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
             ]
         });
         w.draw(100);
+        assert.equal(doc.querySelector(".top .bar"), null, "the redundant chart title row is removed");
+        assert.equal(doc.getElementById("sideToggle").previousElementSibling, doc.getElementById("dot"));
+        assert.ok(doc.querySelector(".toolbar #langToggle"), "language selection remains available");
+        const sideToggle = doc.getElementById("sideToggle");
+        assert.equal(sideToggle.getAttribute("aria-expanded"), "true");
+        sideToggle.click();
+        assert.equal(sideToggle.getAttribute("aria-expanded"), "false");
+        assert.ok(doc.getElementById("layout").classList.contains("side-collapsed"));
+        assert.equal(sideToggle.getAttribute("aria-label"), sideToggle.title);
+        sideToggle.click();
+        assert.equal(sideToggle.getAttribute("aria-expanded"), "true");
+        assert.equal(doc.querySelector(".chart-overview-head"), null);
+        assert.equal(
+            doc.getElementById("chartAxisStart").closest("#chartTimeline"),
+            doc.getElementById("chartTimeline")
+        );
+        assert.equal(doc.getElementById("chartAxisStart").textContent, "00:00");
+        assert.equal(doc.getElementById("chartAxisEnd").textContent, "00:01");
         for (const id of [
             "endNames",
             "compareValues",
@@ -161,6 +179,20 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.draw(350);
         assert.equal(doc.getElementById("curveTooltip").textContent, "b: 4", "frozen hover can inspect another series");
         w.resumeChart();
+        const card = doc.querySelector('[data-series-name="b"]');
+        w.chartState.pointer = { x: otherPoint.x, y: otherPoint.y };
+        w.chartState.hits = [{ name: "b", point: { t: 2000, v: 4 } }];
+        card.dispatchEvent(new w.Event("pointerenter"));
+        assert.equal(w.chartState.pointer, null, "card hover discards the previous plot pointer");
+        assert.equal(w.chartState.hits.length, 0);
+        w.draw(360);
+        assert.ok(card.classList.contains("curve-emphasis"));
+        card.dispatchEvent(new w.Event("pointerleave"));
+        w.draw(370);
+        assert.equal(doc.querySelector(".curve-emphasis"), null);
+        graph.send({ type: "liveSample", samples: [{ name: "b", value: 5, t: 2100 }] });
+        w.draw(470);
+        assert.equal(doc.querySelector(".curve-emphasis"), null, "new samples cannot restore stale card hover");
         const oldColor = w.colorFor("b"),
             count = graph.messages.length;
         doc.querySelector(".swatch").click();
@@ -187,7 +219,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.freezeChart();
         for (let i = 0; i < 105; i++)
             graph.send({ type: "liveSample", samples: [{ name: "a", value: i, t: 3000 + i }] });
-        assert.ok(w.data.a.length <= 100 && w.data.a.length >= 95);
+        assert.equal(w.retainedPoints(w.data.a).length, 100);
         assert.equal(w.latest.a, 104);
         assert.equal(w.analysis.snapshot.a.length, 2);
         assert.equal(w.chartData().find((s) => s.item.name === "a").arr[0].v, 1);
@@ -271,6 +303,82 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         graph.assertHealthy();
     } finally {
         graph.close();
+    }
+    const timeline = render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en"));
+    try {
+        const w = timeline.window;
+        const doc = timeline.document;
+        const from = doc.getElementById("chartFromRange");
+        const to = doc.getElementById("chartToRange");
+        Object.defineProperty(doc.getElementById("chartTimeline"), "clientWidth", { value: 500 });
+        timeline.send({ type: "watchList", items: [{ name: "tick", address: 0x20000000, type: "u32", size: 4 }] });
+        const origin = 1000000;
+        const sample = (time) =>
+            timeline.send({ type: "liveSample", samples: [{ name: "tick", value: time, t: origin + time }] });
+        const sync = () => {
+            w.syncTimeBounds();
+            w.refreshChartTimeline();
+        };
+        // jsdom does not dispatch pointer events to onpointer* properties like Chromium does.
+        const pointer = (element, type) => element["on" + type]({ button: 0, currentTarget: element });
+        const input = (element, value) => {
+            element.value = String(value);
+            element.dispatchEvent(new w.Event("input"));
+        };
+        sample(0);
+        sample(70000);
+        sync();
+        assert.equal(w.chartState.follow, true);
+        pointer(from, "pointerdown");
+        sample(71000);
+        sync();
+        assert.equal(w.chartState.x.min - origin, 40000, "the preset must not move the left edge during its drag");
+        assert.equal(w.chartState.x.max - origin, 71000);
+        input(from, 20000);
+        sample(72000);
+        sync();
+        assert.equal(w.chartState.x.min - origin, 20000);
+        assert.equal(w.chartState.x.max - origin, 72000, "resizing the left edge preserves right-edge attachment");
+        assert.equal(w.chartState.follow, true);
+        sample(73000);
+        pointer(from, "pointercancel");
+        assert.equal(w.chartState.endpointDrag, null);
+        assert.equal(w.chartState.x.max - origin, 73000, "release includes samples not drawn yet");
+        sample(74000);
+        sync();
+        assert.equal(w.chartState.x.min - origin, 21000, "normal following preserves the resized width after release");
+        assert.equal(w.chartState.x.max - origin, 74000);
+        pointer(to, "pointerdown");
+        input(to, 60000);
+        assert.equal(w.chartState.follow, false, "moving the right edge away detaches it");
+        sample(75000);
+        sync();
+        assert.equal(w.chartState.x.max - origin, 60000, "historical ranges must not start following on their own");
+        input(to, 74500);
+        assert.equal(w.chartState.x.max - origin, 75000, "the right edge snaps within tolerance");
+        sample(76000);
+        pointer(to, "lostpointercapture");
+        assert.equal(w.chartState.endpointDrag, null);
+        assert.equal(w.chartState.follow, true);
+        assert.equal(
+            w.chartState.x.min - origin,
+            21000,
+            "re-attaching the right edge keeps the left edge fixed during resizing"
+        );
+        assert.equal(w.chartState.x.max - origin, 76000);
+        sync();
+        input(from, 80000);
+        assert.equal(w.chartState.x.max - w.chartState.x.min, 1, "endpoints cannot cross");
+        input(from, 0);
+        assert.equal(w.chartState.startPinned, true);
+        sample(77000);
+        sync();
+        assert.equal(w.chartState.x.min - origin, 0);
+        assert.equal(w.chartState.x.max - origin, 77000, "both attached edges retain the full range");
+        assert.equal(doc.getElementById("chartAxisEnd").textContent, "01:17");
+        timeline.assertHealthy();
+    } finally {
+        timeline.close();
     }
     console.log("Chart identity, inspection, snapshot and interaction tests passed");
 })().catch((error) => {

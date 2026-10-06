@@ -151,7 +151,9 @@
         "emberprobe.maxSamples": {
           "type": "number",
           "default": 2000,
-          "description": "实时曲线每个通道保留的最大采样点数"
+          "minimum": 100,
+          "maximum": 360001,
+          "description": "实时曲线默认按时间保留最近 30 分钟（适配采样率变化）；显式设置后额外限制每通道点数，历史仍不超过 30 分钟"
         },
         "emberprobe.samplingArchiveMaxMiB": {
           "type": "number",

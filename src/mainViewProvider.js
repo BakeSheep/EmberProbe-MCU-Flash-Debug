@@ -27,6 +27,7 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
+const { variableDisplayName } = require("./webview/runtime");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
@@ -2674,15 +2675,24 @@ class MainViewProvider {
                     case "setFrequency":
                         await this._saveLiveFrequency(message.frequencyHz);
                         break;
-                    case "samplingArchiveInfo":
+                    case "samplingArchiveInfo": {
+                        const history = this._samplingArchive.status(this._debugSamplingScope(watchKey));
                         post({
                             type: "samplingArchiveInfo",
                             openExport: message.openExport === true,
-                            ...this._samplingArchive.status(this._debugSamplingScope(watchKey))
+                            ...history,
+                            displayNames: Object.fromEntries(this._displayNamesForSeries(watchKey, history.variables))
                         });
                         break;
+                    }
                     case "exportCsv": {
                         const archiveScope = this._debugSamplingScope(watchKey);
+                        const displayNames = this._displayNamesForSeries(
+                            watchKey,
+                            Array.isArray(message.names) && message.names.length
+                                ? message.names
+                                : this._samplingArchive.status(archiveScope).variables
+                        );
                         const stamp = new Date(),
                             pad = (n) => String(n).padStart(2, "0");
                         const name = `emberprobe-live-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.csv`;
@@ -2712,6 +2722,7 @@ class MainViewProvider {
                                     scope: archiveScope,
                                     outputPath: target.fsPath,
                                     names: message.names,
+                                    displayNames,
                                     fromMs: message.fromMs,
                                     toMs: message.toMs
                                 });
@@ -2930,6 +2941,27 @@ class MainViewProvider {
     _scalarWatchList(key) {
         return this._watchLists.read(key);
     }
+    _displayNamesForSeries(watchKey, names) {
+        const watched = new Map((this._scalarWatchList(watchKey) || []).map((item) => [item.name, item]));
+        let symbols = new Map();
+        try {
+            symbols = buildSymbolNameIndex(this.readElfSymbols().symbols);
+        } catch {
+            // Cached watch labels are still available if ELF metadata is loading or unavailable.
+        }
+        const lookup = {
+            get: (name) => {
+                const symbol = symbols.get(name);
+                return symbol?.displayName && symbol.displayName !== symbol.name ? symbol : watched.get(name) || symbol;
+            }
+        };
+        return new Map(
+            (Array.isArray(names) ? names : []).map((value) => {
+                const name = String(value);
+                return [name, variableDisplayName(watched.get(name) || { name }, lookup)];
+            })
+        );
+    }
     // 侧边栏观察项附带 displayName（C++ 限定名）供展示；数据索引仍按原始 item.name。
     _watchListWithDisplayNames(key) {
         const items = this._scalarWatchList(key);
@@ -2942,11 +2974,9 @@ class MainViewProvider {
         }
         if (!byName) return items;
         return items.map((item) => {
-            if (!item || item.displayName || !item.name) return item;
-            const sym = byName.get(item.name);
-            if (sym && sym.displayName && sym.displayName !== sym.name)
-                return { ...item, displayName: sym.displayName };
-            return item;
+            if (!item || !item.name) return item;
+            const displayName = variableDisplayName(item, byName);
+            return displayName !== item.name && displayName !== item.displayName ? { ...item, displayName } : item;
         });
     }
     async _rebindWatchLists(symbols) {

@@ -135,3 +135,10 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .memory-refresh{display:inline-flex;align-items:center;justify-content:center;flex:none;margin-left:auto;min-width:24px;height:16px;padding:0 6px;border:1px solid var(--vscode-widget-border,var(--vscode-panel-border,#454545));border-radius:4px;font-size:12px;line-height:1}
 .memory-refresh:disabled{opacity:.5;cursor:default}
 .memory-refresh:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}
+
+/* Live variables: match the waveform sidebar's UI and data fonts. */
+#liveValuesSection {
+    --vscode-font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --vscode-editor-font-family: "Cascadia Mono", Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+    font-family: var(--vscode-font-family);
+}

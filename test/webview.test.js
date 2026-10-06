@@ -159,7 +159,7 @@ try {
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
     assert.ok(!graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
-    assert.strictEqual(graph.window.MAXPTS, 12257, "200 Hz retains at least a full 60-second chart window");
+    assert.strictEqual(graph.window.MAXPTS, 360001, "200 Hz retains a full 30-minute chart window");
     graph.send({
         type: "liveStatus",
         running: true,
@@ -175,7 +175,7 @@ try {
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
     graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
-    assert.strictEqual(graph.window.MAXPTS, 2076, "retention follows the real 33 ms period, not the nominal 30 Hz");
+    assert.strictEqual(graph.window.MAXPTS, 54547, "retention follows the real 33 ms period, not the nominal 30 Hz");
     assert.strictEqual(graph.document.getElementById("frequency").value, "30");
     graph.document.getElementById("frequency").value = "45";
     graph.document.getElementById("frequency").onchange();
@@ -185,3 +185,222 @@ try {
     graph.close();
 }
 console.log("Webview DOM and message behavior tests passed");
+
+const autocomplete = render(getLiveWatchContent({}, "en"));
+try {
+    const doc = autocomplete.document;
+    const input = doc.getElementById("addName");
+    const symbols = ["alpha", "beta", "gamma"].map((name, index) => ({
+        name: "_raw_" + name,
+        displayName: "ns::" + name,
+        address: 0x20000000 + index * 4,
+        size: 4,
+        watchType: "u32"
+    }));
+    const type = (text) => {
+        input.value = text;
+        input.dispatchEvent(new autocomplete.window.Event("input"));
+    };
+    const key = (value, options = {}) =>
+        input.dispatchEvent(
+            new autocomplete.window.KeyboardEvent("keydown", { key: value, cancelable: true, ...options })
+        );
+    const selected = () => doc.getElementById(input.getAttribute("aria-activedescendant"))?.textContent;
+    autocomplete.send({ type: "variablesList", symbols });
+    type("ns::");
+    assert.equal(input.getAttribute("aria-expanded"), "true");
+    key("ArrowDown");
+    assert.ok(selected().includes("alpha"));
+    key("ArrowDown");
+    assert.ok(selected().includes("beta"));
+    key("ArrowUp");
+    assert.ok(selected().includes("alpha"));
+    key("ArrowUp");
+    assert.ok(selected().includes("gamma"), "up wraps from the first result to the last");
+    key("ArrowDown");
+    assert.ok(selected().includes("alpha"), "down wraps back to the first result");
+    key("ArrowDown");
+    key("Enter", { isComposing: true });
+    assert.equal(doc.querySelectorAll(".var-card").length, 0, "IME confirmation must not add a variable");
+    key("Enter");
+    assert.equal(autocomplete.messages.at(-1).type, "saveWatch");
+    assert.equal(autocomplete.messages.at(-1).items[0].name, "_raw_beta", "use the selected canonical symbol");
+    assert.equal(input.value, "");
+    assert.equal(input.getAttribute("aria-expanded"), "false");
+    assert.equal(input.hasAttribute("aria-activedescendant"), false);
+    type("ns::");
+    key("ArrowDown");
+    type("gamma");
+    assert.equal(input.hasAttribute("aria-activedescendant"), false, "a new query clears the prior selection");
+    key("ArrowUp");
+    assert.ok(selected().includes("gamma"));
+    key("Escape");
+    assert.equal(input.getAttribute("aria-expanded"), "false");
+    key("Enter");
+    assert.equal(autocomplete.messages.at(-1).name, "gamma", "Escape discards the selected suggestion");
+    assert.equal(autocomplete.messages.at(-1).type, "resolveVariable");
+    type("missing");
+    key("ArrowDown");
+    assert.equal(input.getAttribute("aria-expanded"), "false");
+    key("Enter");
+    assert.equal(autocomplete.messages.at(-1).name, "missing", "free-text resolution remains available");
+    type("ns::");
+    key("ArrowDown");
+    autocomplete.send({ type: "variablesListReset", version: "replacement-elf" });
+    assert.equal(input.getAttribute("aria-expanded"), "false", "ELF changes invalidate selected suggestions");
+    assert.equal(input.hasAttribute("aria-activedescendant"), false);
+    autocomplete.assertHealthy();
+} finally {
+    autocomplete.close();
+}
+console.log("Live-watch keyboard autocomplete tests passed");
+
+(async () => {
+    const layout = {
+        kind: "class",
+        members: [
+            {
+                name: "settings",
+                offset: 4,
+                compositeLayout: {
+                    kind: "struct",
+                    members: [{ name: "gain", offset: 8, byteSize: 4, watchType: "f32", isConst: true }]
+                }
+            },
+            {
+                name: "samples",
+                offset: 16,
+                compositeLayout: {
+                    kind: "array",
+                    totalElements: 3,
+                    elementType: { byteSize: 4, watchType: "u32" }
+                }
+            }
+        ]
+    };
+    const symbol = {
+        name: "raw_device",
+        displayName: "ns::device",
+        address: 0x20000000,
+        size: 28,
+        isComposite: true,
+        compositeLayout: layout
+    };
+    for (const language of ["zh", "en"]) {
+        const view = render(getModernWebviewContent({}, language));
+        try {
+            const doc = view.document;
+            const search = (text) => {
+                doc.getElementById("varSearch").value = text;
+                doc.getElementById("varSearch").dispatchEvent(new view.window.Event("input"));
+            };
+            view.send({ type: "availableVariables", symbols: [symbol, { name: "other", watchType: "u32" }] });
+            assert.equal(doc.querySelectorAll(".av-children.open").length, 0);
+            search("GAIN");
+            assert.equal(doc.querySelectorAll(".available-row.comp").length, 1);
+            assert.equal(doc.querySelectorAll(".av-children.open").length, 1, "member matches open their parent");
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".settings.gain");
+            assert.equal(doc.querySelector(".av-leaf-name").title, "ns::device.settings.gain");
+            assert.ok(doc.querySelector(".available-row.leaf .av-write").disabled, "const remains read-only");
+            doc.querySelector(".available-row.leaf .av-watch").click();
+            const saved = view.messages.findLast((m) => m.type === "saveSidebarWatch").items[0];
+            assert.equal(saved.name, "raw_device.settings.gain", "keep canonical member identity");
+            assert.equal(saved.address, 0x2000000c);
+            assert.equal(saved.isConst, true);
+            search("ns::device.samples[2]");
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".samples[2]");
+            search("missing");
+            assert.equal(doc.querySelector(".available-row"), null);
+            search("");
+            assert.equal(doc.querySelectorAll(".av-children.open").length, 0, "search expansion is temporary");
+            doc.querySelector(".av-arrow").click();
+            search("gain");
+            doc.getElementById("varSearchClear").click();
+            assert.equal(doc.querySelectorAll(".av-children.open").length, 1, "preserve manual expansion");
+            view.send({
+                type: "availableVariables",
+                symbols: [
+                    {
+                        ...symbol,
+                        compositeLayout: null,
+                        runtimeLayout: {
+                            root: 2,
+                            types: [
+                                { kind: "scalar", watchType: "f32", byteSize: 4 },
+                                { kind: "class", stl: "vector", args: [0], byteSize: 12 },
+                                { kind: "class", fields: [{ name: "telemetry", type: 1, offset: 0 }] }
+                            ]
+                        }
+                    }
+                ]
+            });
+            search("telemetry[2]");
+            assert.equal(doc.querySelector(".av-leaf-name"), null);
+            view.send({
+                type: "liveCompositeSample",
+                samples: [
+                    {
+                        name: symbol.name,
+                        tree: {
+                            kind: "class",
+                            members: [
+                                {
+                                    name: "telemetry",
+                                    kind: "array",
+                                    elements: [{ index: 2, kind: "scalar", type: "f32", value: 7 }]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            });
+            assert.equal(doc.querySelector(".av-leaf-name").textContent, ".telemetry[2]");
+            assert.ok(doc.querySelector(".av-children.open"), "new sampled members update active search results");
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
+    const lazy = render(getModernWebviewContent({}, "en"));
+    try {
+        const doc = lazy.document;
+        const search = (text) => {
+            doc.getElementById("varSearch").value = text;
+            doc.getElementById("varSearch").dispatchEvent(new lazy.window.Event("input"));
+        };
+        const requests = () => lazy.messages.filter((m) => m.type === "resolveCompositeLayout");
+        lazy.send({ type: "availableVariablesReset", version: "elf-1" });
+        lazy.send({
+            type: "availableVariablesChunk",
+            version: "elf-1",
+            symbols: Array.from({ length: 6 }, (_, i) => ({ ...symbol, name: "device" + i, compositeLayout: null }))
+        });
+        search("gain");
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        assert.equal(requests().length, 0, "wait for ELF types to finish loading");
+        lazy.send({ type: "availableTypesDone", version: "elf-1" });
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        assert.equal(requests().length, 4, "bound concurrent metadata requests");
+        lazy.send({ type: "compositeLayoutResult", name: "device0", version: "stale-elf", layout });
+        assert.equal(doc.querySelector(".av-leaf-name"), null, "ignore stale ELF results");
+        lazy.send({ type: "compositeLayoutResult", name: "device0", version: "elf-1", layout });
+        assert.equal(doc.querySelector(".av-leaf-name").textContent, ".settings.gain");
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        assert.equal(requests().length, 5, "continue searching remaining composites as slots become free");
+        search("");
+        lazy.send({ type: "compositeLayoutResult", name: "device1", version: "elf-1", error: "Unavailable type" });
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        assert.equal(requests().length, 5, "clearing the query stops further requests");
+        search("gain");
+        lazy.send({ type: "availableVariablesReset", version: "elf-2" });
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        assert.equal(requests().length, 5, "ELF replacement cancels queued search work");
+        lazy.assertHealthy();
+    } finally {
+        lazy.close();
+    }
+    console.log("Sidebar recursive member search and lazy layout tests passed");
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

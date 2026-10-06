@@ -1,16 +1,34 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
-var RETENTION_TRIM_CHUNK = 256;
+var HISTORY_WINDOW_MS = 30 * 60 * 1000;
+var HISTORY_MAX_POINTS = HISTORY_WINDOW_MS / 5 + 1;
+var RETENTION_TRIM_CHUNK = 4096;
 function retainedSampleLimit(frequencyHz, intervalMs) {
     if (!CFG.autoMaxSamples) return CFG.maxSamples;
-    // The clock period is round(1000 / hz), so the effective rate can exceed the nominal one.
-    // Sizing the buffer from the nominal Hz under-retains at 731 of the 2000 selectable values.
-    // The extra chunk + 1 keeps the worst case (trim firing one point over the limit) above 60 s.
-    var ms = Number(intervalMs) > 0 ? Number(intervalMs) : 1000 / Number(frequencyHz);
-    var needed = Math.ceil(60000 / ms);
-    return Math.min(20000, Math.max(CFG.maxSamples, needed + RETENTION_TRIM_CHUNK + 1));
+    // Use the actual rounded clock period, including when the host omits intervalMs.
+    var ms = Number(intervalMs) > 0 ? Number(intervalMs) : Math.round(1000 / Number(frequencyHz));
+    ms = Math.min(10000, Math.max(5, ms || 33));
+    return Math.min(HISTORY_MAX_POINTS, Math.ceil(HISTORY_WINDOW_MS / ms) + 1);
 }
 var MAXPTS = retainedSampleLimit(CFG.frequencyHz, CFG.intervalMs);
+function retainedPoints(arr) {
+    return arr.slice(arr.retainedStart || 0);
+}
+function trimHistory(arr, cutoff) {
+    var start = arr.retainedStart || 0,
+        limit = CFG.autoMaxSamples ? HISTORY_MAX_POINTS : MAXPTS,
+        countStart = Math.max(start, arr.length - limit);
+    // Release expired objects immediately; move the remaining references only once per chunk.
+    // A frequency reduction must not discard high-rate samples still inside the time window.
+    while (start < arr.length && (start < countStart || arr[start].t < cutoff)) {
+        arr[start++] = undefined;
+    }
+    if (start >= RETENTION_TRIM_CHUNK || start * 2 >= arr.length) {
+        arr.splice(0, start);
+        start = 0;
+    }
+    arr.retainedStart = start;
+}
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
@@ -168,6 +186,8 @@ function renderStatus() {
     var txt = statusMsg.key ? t(statusMsg.key, statusMsg.params) : statusMsg.message != null ? statusMsg.message : "";
     $("status").textContent = txt;
     $("dot").className = "status-dot " + (statusMsg.kind === "error" ? "err" : running ? "on" : "");
+    $("dot").title = txt;
+    $("dot").setAttribute("aria-label", txt);
 }
 function setStatusKey(key, params, kind) {
     statusMsg = { key: key, params: params, kind: kind || "" };
@@ -217,7 +237,24 @@ function updateRun() {
     b.textContent = starting ? t("lw.starting") : running ? t("lw.stopSampling") : t("lw.startSampling");
 }
 function displayNameFor(item) {
-    return EmberProbeRuntime.variableDisplayName(item, impSymbolByName);
+    return EmberProbeRuntime.variableDisplayName(item, {
+        get: function (name) {
+            var symbol = impSymbolByName.get(name);
+            if (symbol && symbol.displayName && symbol.displayName !== symbol.name) return symbol;
+            return (
+                watch.find(function (entry) {
+                    return entry.name === name;
+                }) || symbol
+            );
+        }
+    });
+}
+function curveDisplayName(name) {
+    return displayNameFor(
+        watch.find(function (item) {
+            return item.name === name;
+        }) || { name: name }
+    );
 }
 function addSymbol(sym, resolved = false) {
     if (
@@ -247,7 +284,7 @@ function addSymbol(sym, resolved = false) {
             else delete dispSpec[sym.name];
             watch.push({
                 name: sym.name,
-                displayName: sym.displayName || sym.name,
+                displayName: displayNameFor(sym),
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: "",
@@ -270,7 +307,7 @@ function addSymbol(sym, resolved = false) {
     }
     watch.push({
         name: sym.name,
-        displayName: sym.displayName || sym.name,
+        displayName: displayNameFor(sym),
         address: Number(sym.address) || 0,
         size: Number(sym.size) || 4,
         type: sym.type || sym.watchType || defType(sym.size || 4),
@@ -329,6 +366,7 @@ function removeVar(name) {
 }
 function renderVars() {
     invalidateSeries();
+    dirty = true;
     if (analysis.focused)
         watch.forEach(function (w) {
             hidden[w.name] = w.name !== analysis.focused;
@@ -386,7 +424,7 @@ function renderVars() {
         rm.className = "remove";
         rm.textContent = "×";
         rm.title = t("lw.removeVar");
-        rm.setAttribute("aria-label", t("lw.removeVarName", { name: item.name }));
+        rm.setAttribute("aria-label", t("lw.removeVarName", { name: displayNameFor(item) }));
         rm.onclick = function () {
             removeVar(item.name);
         };
@@ -432,7 +470,9 @@ function onSamples(samples) {
             sampleTimes.push(st);
         }
     });
-    while (sampleTimes.length > 1 && sampleTimes[0] < tick - 3000) sampleTimes.shift();
+    var expiredTicks = 0;
+    while (expiredTicks < sampleTimes.length - 1 && sampleTimes[expiredTicks] < tick - 3000) expiredTicks++;
+    if (expiredTicks) sampleTimes.splice(0, expiredTicks);
     var elapsed = sampleTimes.length > 1 ? tick - sampleTimes[0] : 0;
     $("rate").textContent = (elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0).toFixed(1) + " Hz";
     (samples || []).forEach(function (s) {
@@ -444,31 +484,11 @@ function onSamples(samples) {
         ensureBuf(s.name);
         var arr = data[s.name];
         arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
-        if (arr.length > MAXPTS) {
-            // Trim in chunks so high-rate sampling does not shift the whole buffer on every point.
-            // RETENTION_TRIM_CHUNK is the ceiling retainedSampleLimit compensates for; raising it
-            // here without raising it there breaks the 60-second guarantee.
-            var remove = Math.max(
-                arr.length - MAXPTS,
-                Math.min(RETENTION_TRIM_CHUNK, Math.max(1, Math.floor(MAXPTS / 20)))
-            );
-            if (CFG.autoMaxSamples) {
-                // A lower rate needs fewer future points, but the preceding minute may still contain
-                // high-rate samples. Keep the point at or just before the window boundary as well.
-                var cutoff = time - 60000,
-                    low = 0,
-                    high = arr.length;
-                while (low < high) {
-                    var mid = Math.floor((low + high) / 2);
-                    if (arr[mid].t <= cutoff) low = mid + 1;
-                    else high = mid;
-                }
-                remove = Math.min(remove, Math.max(0, low - 1));
-                // Preserve the existing hard bound even for an unexpectedly oversized input stream.
-                remove = Math.max(remove, arr.length - 20000);
-            }
-            if (remove > 0) arr.splice(0, remove);
-        }
+        trimHistory(arr, time - HISTORY_WINDOW_MS);
+    });
+    Object.keys(data).forEach(function (name) {
+        // Also expire a channel that stopped producing samples while other channels keep running.
+        trimHistory(data[name], tick - HISTORY_WINDOW_MS);
     });
     scheduleValueRefresh();
     dirty = true;
@@ -525,7 +545,8 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     var nm = document.createElement("span");
     nm.className = "member-name";
     nm.textContent = label;
-    nm.title = path;
+    nm.title = curveDisplayName(path);
+    nm.setAttribute("aria-label", nm.title);
     var val = document.createElement("span");
     val.className = "member-value";
     setDisplayedValue(val, node ? fmtExact(node.value, node.valueText) : "\u2014");
@@ -650,7 +671,7 @@ function renderCompositeCard(item, idx, box) {
     rm.className = "remove";
     rm.textContent = "×";
     rm.title = t("lw.removeVar");
-    rm.setAttribute("aria-label", t("lw.removeVarName", { name: item.name }));
+    rm.setAttribute("aria-label", t("lw.removeVarName", { name: displayNameFor(item) }));
     rm.onclick = function (e) {
         e.stopPropagation();
         removeVar(item.name);
@@ -793,7 +814,7 @@ function showArraySelectDialog(sym, cb) {
     var panel = document.createElement("div");
     panel.className = "array-panel";
     var h = document.createElement("h4");
-    h.textContent = t("lw.arraySelectTitle") + " \u00b7 " + sym.name + "[" + total + "]";
+    h.textContent = t("lw.arraySelectTitle") + " \u00b7 " + displayNameFor(sym) + "[" + total + "]";
     panel.appendChild(h);
     function opt(mode, label, extra) {
         var l = document.createElement("label");
@@ -913,7 +934,7 @@ function renderImport() {
     );
     box.textContent = "";
     var matched = allSymbols.filter(function (s) {
-            return !f || s.name.toLowerCase().indexOf(f) >= 0 || (s.displayName || "").toLowerCase().indexOf(f) >= 0;
+            return !f || s.name.toLowerCase().indexOf(f) >= 0 || displayNameFor(s).toLowerCase().indexOf(f) >= 0;
         }),
         shown = matched.slice(0, IMPORT_VARIABLE_LIMIT),
         leafRows = 0;
@@ -936,8 +957,8 @@ function renderImport() {
             if (impExpanded[s.name]) arrow.classList.add("open");
             var nm = document.createElement("span");
             nm.className = "imp-name";
-            nm.textContent = "\u25c7 " + (s.displayName || s.name);
-            if (s.displayName && s.displayName !== s.name) nm.title = s.name;
+            nm.textContent = "\u25c7 " + displayNameFor(s);
+            nm.title = displayNameFor(s);
             nmWrap.append(arrow, nm);
             var ty = document.createElement("span");
             ty.className = "ty";
@@ -989,6 +1010,7 @@ function renderImport() {
                     var ln = document.createElement("span");
                     ln.className = "imp-leaf-name";
                     ln.textContent = lf.label;
+                    ln.title = displayNameFor(lf.runtimeLayout ? lf : { name: lf.path });
                     var lty = document.createElement("span");
                     lty.className = "ty";
                     lty.textContent = lf.type || (lf.isComposite ? t("lw.compositeType") : "");
@@ -1048,8 +1070,8 @@ function renderImport() {
             cb2.dataset.symbolName = s.name;
             cb2.checked = checkedNames.has(s.name);
             var nm2 = document.createElement("span");
-            nm2.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);
-            if (s.displayName && s.displayName !== s.name) nm2.title = s.name;
+            nm2.textContent = (s.isComposite ? "\u25c7 " : "") + displayNameFor(s);
+            nm2.title = displayNameFor(s);
             var ty2 = document.createElement("span");
             ty2.className = "ty";
             ty2.textContent = s.typeName || s.watchType || defType(s.size);
@@ -1082,10 +1104,38 @@ function openImport() {
 function hideImport() {
     $("overlay").classList.add("hidden");
 }
+var autocompleteMatches = [],
+    autocompleteIndex = -1;
+function hideAutocomplete() {
+    $("acDrop").classList.remove("open");
+    $("addName").setAttribute("aria-expanded", "false");
+    $("addName").removeAttribute("aria-activedescendant");
+    autocompleteMatches = [];
+    autocompleteIndex = -1;
+}
+function selectAutocomplete(index) {
+    autocompleteIndex = index;
+    var rows = $("acDrop").children;
+    for (var i = 0; i < rows.length; i++) {
+        rows[i].classList.toggle("active", i === index);
+        rows[i].setAttribute("aria-selected", String(i === index));
+    }
+    var row = rows[index];
+    if (row) {
+        $("addName").setAttribute("aria-activedescendant", row.id);
+        if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+    }
+}
+function acceptAutocomplete(symbol) {
+    addSymbol(symbol);
+    $("addName").value = "";
+    hideAutocomplete();
+}
 function renderAutocomplete() {
     var drop = $("acDrop");
     if (!drop) return;
     var q = ($("addName").value || "").trim().toLowerCase();
+    hideAutocomplete();
     drop.textContent = "";
     if (!q) {
         drop.classList.remove("open");
@@ -1093,33 +1143,36 @@ function renderAutocomplete() {
     }
     var matches = allSymbols
         .filter(function (s) {
-            return s.name.toLowerCase().indexOf(q) >= 0 || (s.displayName || "").toLowerCase().indexOf(q) >= 0;
+            return s.name.toLowerCase().indexOf(q) >= 0 || displayNameFor(s).toLowerCase().indexOf(q) >= 0;
         })
         .slice(0, 12);
     if (!matches.length) {
         drop.classList.remove("open");
         return;
     }
-    matches.forEach(function (s) {
+    autocompleteMatches = matches;
+    matches.forEach(function (s, index) {
         var it = document.createElement("div");
         it.className = "ac-item";
+        it.id = "ac-option-" + index;
+        it.setAttribute("role", "option");
+        it.setAttribute("aria-selected", "false");
         var nm = document.createElement("span");
         nm.className = "ac-name";
-        nm.textContent = (s.isComposite ? "\u25c7 " : "") + (s.displayName || s.name);
-        if (s.displayName && s.displayName !== s.name) nm.title = s.name;
+        nm.textContent = (s.isComposite ? "\u25c7 " : "") + displayNameFor(s);
+        nm.title = displayNameFor(s);
         var ty = document.createElement("span");
         ty.className = "ac-type";
         ty.textContent = s.typeName || s.watchType || defType(s.size);
         it.append(nm, ty);
         it.onmousedown = function (e) {
             e.preventDefault();
-            addSymbol(s);
-            $("addName").value = "";
-            drop.classList.remove("open");
+            acceptAutocomplete(s);
         };
         drop.appendChild(it);
     });
     drop.classList.add("open");
+    $("addName").setAttribute("aria-expanded", "true");
 }
 function importSelected() {
     var leafCbs = [],
@@ -1272,19 +1325,34 @@ sourceSelect.onchange = function () {
 };
 function showLocalExport() {
     var buffers = exportSource === "snapshot" ? analysis.snapshot || {} : data;
+    buffers = Object.fromEntries(
+        Object.entries(buffers).map(function (entry) {
+            return [entry[0], retainedPoints(entry[1])];
+        })
+    );
     var names = Object.keys(buffers).filter(function (name) {
         return buffers[name].some(function (p) {
             return Number.isFinite(p.v);
         });
     });
     var points = names.map(function (name) {
-        return { name: name, buffer: buffers[name] };
+        return { name: name, displayName: curveDisplayName(name), buffer: buffers[name] };
     });
     var bounds = exportBounds(points);
-    showArchiveExport({ variables: names, firstTimestampMs: bounds.from, lastTimestampMs: bounds.to });
+    showArchiveExport({
+        variables: names,
+        displayNames: Object.fromEntries(
+            points.map(function (item) {
+                return [item.name, item.displayName];
+            })
+        ),
+        firstTimestampMs: bounds.from,
+        lastTimestampMs: bounds.to
+    });
     exportCandidates = points.map(function (item) {
         return {
             name: item.name,
+            displayName: item.displayName,
             buffer: item.buffer.map(function (p) {
                 return { ...p };
             })
@@ -1311,7 +1379,12 @@ function showArchiveExport(info) {
         return;
     }
     exportCandidates = names.map(function (name) {
-        return { name: name, buffer: [{ t: first }, { t: last }] };
+        var displayName =
+            info.displayNames &&
+            Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
+            typeof info.displayNames[name] === "string" &&
+            info.displayNames[name];
+        return { name: name, displayName: displayName || curveDisplayName(name), buffer: [{ t: first }, { t: last }] };
     });
     exportOpenedAt = last;
     var box = $("exportSeries");
@@ -1326,7 +1399,7 @@ function showArchiveExport(info) {
         cb.onchange = function () {
             setupExportTimeline(selectedExportCandidates());
         };
-        name.textContent = item.name;
+        name.textContent = name.title = item.displayName;
         label.append(cb, name);
         box.appendChild(label);
     });
@@ -1357,7 +1430,7 @@ function applyExport() {
             }),
             csv: buildCsv(
                 selected.map(function (c) {
-                    return c.name;
+                    return c.displayName || curveDisplayName(c.name);
                 }),
                 selected.map(function (c) {
                     return c.buffer;
@@ -1416,7 +1489,12 @@ function resetChartView() {
 function freezeChart() {
     syncTimeBounds();
     // Auto retention can exceed the new rate's point target while preserving earlier high-rate history.
-    Analysis.freeze(analysis, data, CFG.autoMaxSamples ? 20000 : MAXPTS);
+    var buffers = Object.fromEntries(
+        Object.entries(data).map(function (entry) {
+            return [entry[0], retainedPoints(entry[1])];
+        })
+    );
+    Analysis.freeze(analysis, buffers, CFG.autoMaxSamples ? HISTORY_MAX_POINTS : MAXPTS);
     frozen = true;
     chartState.follow = false;
     invalidateSeries();
@@ -1516,7 +1594,11 @@ function chartAction(action, value) {
         renderVars();
         saveUi();
     }
-    if (action === "hover") chartState.hoverName = value;
+    if (action === "hover") {
+        chartState.hoverName = value;
+        chartState.pointer = null;
+        chartState.hits = [];
+    }
     if (action === "style") {
         seriesStyles[value.name] = value.style;
         post({ type: "setSeriesStyle", ...value });
@@ -1546,6 +1628,10 @@ controls = window.EmberProbeChartControls.create({
     document: document,
     t: t,
     fmtNum: fmtNum,
+    displayName: curveDisplayName,
+    tooltipName: function (name) {
+        return EmberProbeRuntime.shortVariableName(curveDisplayName(name));
+    },
     time: formatChartTime,
     inspection: Inspection,
     change: chartAction,
@@ -1596,10 +1682,11 @@ function chartData() {
                 segment = [];
             }
         }
-        arr.forEach(function (point) {
+        for (var i = arr.retainedStart || 0; i < arr.length; i++) {
+            var point = arr[i];
             if (point && Number.isFinite(point.v) && Number.isFinite(point.t)) segment.push(point);
             else flush();
-        });
+        }
         flush();
     });
     seriesCache = { key: key, series: series };
@@ -1610,13 +1697,13 @@ function retainedTimeBounds() {
     var lo = Infinity,
         hi = -Infinity;
     watch.forEach(function (item) {
-        (plotBuffers()[item.name] || []).forEach(function (p) {
-            var tt = Number(p && p.t);
-            if (Number.isFinite(tt)) {
-                lo = Math.min(lo, tt);
-                hi = Math.max(hi, tt);
-            }
-        });
+        var arr = plotBuffers()[item.name] || [],
+            first = arr[arr.retainedStart || 0],
+            last = arr[arr.length - 1];
+        if (first && last) {
+            lo = Math.min(lo, first.t);
+            hi = Math.max(hi, last.t);
+        }
     });
     if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
     boundsCache = { min: lo, max: Math.max(lo + 1, hi) };
@@ -1696,7 +1783,10 @@ function syncTimeBounds() {
     if (!chartState.x) {
         applyWindowPreset(windowPreset);
     } else if (changed && chartState.follow) {
-        if ($("timeWindow").value !== "custom") applyWindowPreset(windowPreset);
+        // While resizing, keep the chosen left edge fixed and only advance the attached right edge.
+        if (chartState.endpointDrag)
+            chartState.x = VP.updateEndpoint(chartState.x, "max", next.max, next, minimumXSpan());
+        else if ($("timeWindow").value !== "custom") applyWindowPreset(windowPreset);
         else if (chartState.startPinned) chartState.x = { min: next.min, max: next.max };
         else chartState.x = VP.followEnd(chartState.x, previous, next, minimumXSpan());
     } else if (changed) chartState.x = VP.clamp(chartState.x, next, minimumXSpan());
@@ -1733,7 +1823,8 @@ function refreshChartTimeline() {
     if (!chartState.bounds || !chartState.x) {
         overview.classList.add("disabled");
         from.disabled = to.disabled = true;
-        $("chartTimelineSelection").textContent = "—";
+        overview.removeAttribute("title");
+        $("chartAxisStart").textContent = $("chartAxisEnd").textContent = "00:00";
         return;
     }
     overview.classList.remove("disabled");
@@ -1751,7 +1842,7 @@ function refreshChartTimeline() {
     $("chartRangeFill").style.width = percent.width + "%";
     $("chartAxisStart").textContent = formatElapsed(chartState.bounds.min - origin);
     $("chartAxisEnd").textContent = formatElapsed(chartState.bounds.max - origin);
-    $("chartTimelineSelection").textContent = t("lw.chartSelectedRange", {
+    overview.title = t("lw.chartSelectedRange", {
         from: formatElapsed(chartState.x.min - origin),
         to: formatElapsed(chartState.x.max - origin)
     });
@@ -1909,26 +2000,30 @@ function updateTimelineEndpoint(edge) {
     if (edge === "max" && chartState.bounds.max - chartState.x.max <= tolerance)
         chartState.x.max = chartState.bounds.max;
     chartState.startPinned = chartState.x.min === chartState.bounds.min;
-    chartState.follow = !chartState.endpointDrag && chartState.x.max === chartState.bounds.max;
+    chartState.follow = chartState.x.max === chartState.bounds.max;
     setWindowCustom();
     chartState.fastDirty = true;
     dirty = true;
 }
-function beginTimelineEndpoint(edge) {
+function beginTimelineEndpoint(edge, event) {
+    if (!chartState.bounds || !chartState.x || (event && event.button !== 0)) return;
     chartState.endpointDrag = edge;
-    chartState.follow = false;
+    if (event && Number.isFinite(event.pointerId) && event.currentTarget.setPointerCapture)
+        event.currentTarget.setPointerCapture(event.pointerId);
 }
 function endTimelineEndpoint() {
+    // Include samples delivered between the last input event and releasing the handle.
+    syncTimeBounds();
     chartState.endpointDrag = null;
     chartState.follow = !!(chartState.x && chartState.bounds && chartState.x.max === chartState.bounds.max);
     chartState.fastDirty = true;
     dirty = true;
 }
-$("chartFromRange").onpointerdown = function () {
-    beginTimelineEndpoint("min");
+$("chartFromRange").onpointerdown = function (event) {
+    beginTimelineEndpoint("min", event);
 };
-$("chartToRange").onpointerdown = function () {
-    beginTimelineEndpoint("max");
+$("chartToRange").onpointerdown = function (event) {
+    beginTimelineEndpoint("max", event);
 };
 $("chartFromRange").oninput = function () {
     updateTimelineEndpoint("min");
@@ -1938,9 +2033,14 @@ $("chartToRange").oninput = function () {
 };
 $("chartFromRange").onpointerup =
     $("chartFromRange").onpointercancel =
+    $("chartFromRange").onlostpointercapture =
     $("chartFromRange").onchange =
         endTimelineEndpoint;
-$("chartToRange").onpointerup = $("chartToRange").onpointercancel = $("chartToRange").onchange = endTimelineEndpoint;
+$("chartToRange").onpointerup =
+    $("chartToRange").onpointercancel =
+    $("chartToRange").onlostpointercapture =
+    $("chartToRange").onchange =
+        endTimelineEndpoint;
 $("chartRangeFill").addEventListener("pointerdown", function (e) {
     if (!chartState.bounds || !chartState.x) return;
     e.preventDefault();
@@ -2067,6 +2167,7 @@ window.EmberProbeMessages.connect(window, {
         impVersion = m.version || "";
         impTypesReady = false;
         allSymbols = [];
+        hideAutocomplete();
         impSymbolByName.clear();
         impIndexByName.clear();
         impTypeChunks = 0;
@@ -2195,8 +2296,7 @@ $("addBtn").onclick = function () {
     if (sym) addSymbol(sym);
     else post({ type: "resolveVariable", name: n, version: impVersion });
     $("addName").value = "";
-    var d = $("acDrop");
-    if (d) d.classList.remove("open");
+    hideAutocomplete();
 };
 $("addName").oninput = function () {
     if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
@@ -2204,15 +2304,31 @@ $("addName").oninput = function () {
 };
 $("addName").onblur = function () {
     setTimeout(function () {
-        var d = $("acDrop");
-        if (d) d.classList.remove("open");
+        if (document.activeElement !== $("addName")) hideAutocomplete();
     }, 150);
 };
 $("addName").onkeydown = function (e) {
-    if (e.key === "Enter") $("addBtn").click();
-    else if (e.key === "Escape") {
-        var d = $("acDrop");
-        if (d) d.classList.remove("open");
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!$("acDrop").classList.contains("open")) renderAutocomplete();
+        if (!autocompleteMatches.length) return;
+        e.preventDefault();
+        var length = autocompleteMatches.length;
+        selectAutocomplete(
+            autocompleteIndex < 0
+                ? e.key === "ArrowDown"
+                    ? 0
+                    : length - 1
+                : (autocompleteIndex + (e.key === "ArrowDown" ? 1 : -1) + length) % length
+        );
+    } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (autocompleteIndex >= 0 && $("acDrop").classList.contains("open"))
+            acceptAutocomplete(autocompleteMatches[autocompleteIndex]);
+        else $("addBtn").click();
+    } else if (e.key === "Escape") {
+        e.preventDefault();
+        hideAutocomplete();
     }
 };
 $("impFilter").oninput = renderImport;
@@ -2238,7 +2354,7 @@ $("export").onclick = function () {
         setStatusKey("lw.noDataToExport", null, "error");
         return;
     }
-    post({ type: "exportCsv", csv: buildCsv(names, bufs) });
+    post({ type: "exportCsv", csv: buildCsv(names.map(curveDisplayName), bufs) });
 };
 $("freeze").onclick = function () {
     if (frozen) resumeChart();
@@ -2306,6 +2422,9 @@ var layout = $("layout"),
 function applySideLayout() {
     layout.style.setProperty("--side-width", sideWidth + "px");
     layout.classList.toggle("side-collapsed", sideCollapsed);
+    sideToggle.setAttribute("aria-expanded", String(!sideCollapsed));
+    sideToggle.setAttribute("aria-controls", "vars");
+    sideToggle.setAttribute("aria-label", sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane"));
     sideToggle.textContent = (sideCollapsed ? "› " : "‹ ") + t("lw.valuePane");
     sideToggle.title = sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane");
     dirty = true;
@@ -2349,6 +2468,10 @@ applySideLayout();
 new ResizeObserver(function () {
     dirty = true;
 }).observe($("chartWrap"));
+// VS Code updates body classes when its theme changes. Repaint frozen charts too.
+new MutationObserver(function () {
+    dirty = true;
+}).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 updateRun();
 updateLangToggle();
 if (norm) $("norm").classList.remove("ghost");

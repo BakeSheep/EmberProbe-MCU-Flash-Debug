@@ -33,6 +33,8 @@ let sideWatch = [],
     availableLayoutPending = new Set(),
     availableAddPending = new Set(),
     availableTypeChunks = 0,
+    availableSearchTimer = null,
+    availableSearchQuery = "",
     latest = Object.create(null),
     latestText = Object.create(null),
     liveRunning = false,
@@ -257,6 +259,19 @@ function saveWriteList() {
 function sbBaseNameOf(n) {
     return EmberProbeRuntime.variableBaseName(String(n));
 }
+function sbDisplayName(item) {
+    return EmberProbeRuntime.variableDisplayName(item, {
+        get: (name) => {
+            const symbol = availableByName.get(name);
+            if (symbol?.displayName && symbol.displayName !== symbol.name) return symbol;
+            return (
+                sideWatch.find((entry) => entry.name === name) ||
+                writeList.find((entry) => entry.name === name) ||
+                symbol
+            );
+        }
+    });
+}
 function sbIsLeafChild(name) {
     const b = sbBaseNameOf(name);
     if (b === name) return false;
@@ -264,14 +279,15 @@ function sbIsLeafChild(name) {
 }
 function sbCollectLeaves(layout, name, baseAddr) {
     const out = [];
-    (function walk(lyt, path, off, isConst = false) {
-        if (!lyt) return;
+    (function walk(lyt, path, off, isConst = false, depth = 0) {
+        if (!lyt || depth > 12 || out.length >= 1000) return;
         isConst ||= !!lyt.isConst;
         if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
             (lyt.members || []).forEach((m) => {
+                if (out.length >= 1000) return;
                 const cp = m.name ? path + "." + m.name : path,
                     mo = off + (Number(m.offset) || 0);
-                if (m.compositeLayout) walk(m.compositeLayout, cp, mo, isConst || !!m.isConst);
+                if (m.compositeLayout) walk(m.compositeLayout, cp, mo, isConst || !!m.isConst, depth + 1);
                 else if (m.watchType)
                     out.push({
                         path: cp,
@@ -291,10 +307,10 @@ function sbCollectLeaves(layout, name, baseAddr) {
                 total = Number(lyt.totalElements) || 0,
                 es = Number(et.byteSize) || 0,
                 end = Math.min(total, 16);
-            for (let i = 0; i < end; i++) {
+            for (let i = 0; i < end && out.length < 1000; i++) {
                 const cp = path + "[" + i + "]",
                     eo = off + i * es;
-                if (et.compositeLayout) walk(et.compositeLayout, cp, eo, isConst || !!et.isConst);
+                if (et.compositeLayout) walk(et.compositeLayout, cp, eo, isConst || !!et.isConst, depth + 1);
                 else if (et.watchType)
                     out.push({
                         path: cp,
@@ -361,11 +377,7 @@ function renderValues() {
         row.className = "value-row";
         const n = document.createElement("span");
         n.className = "value-name";
-        EmberProbeRuntime.renderVariableName(
-            n,
-            EmberProbeRuntime.variableDisplayName(item, availableByName),
-            item.name
-        );
+        EmberProbeRuntime.renderVariableName(n, sbDisplayName(item), item.name);
         const val = document.createElement("span");
         val.className = "value-number";
         val.dataset.valueName = item.name;
@@ -397,6 +409,28 @@ function renderValues() {
 }
 const AVAILABLE_VARIABLE_LIMIT = 500;
 const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
+function needsAvailableLayout(symbol) {
+    return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
+}
+function scheduleAvailableMemberSearch(query) {
+    if (query !== availableSearchQuery || !query || !availableTypesReady) {
+        clearTimeout(availableSearchTimer);
+        availableSearchTimer = null;
+        availableSearchQuery = query;
+    }
+    if (!query || !availableTypesReady || !api || availableSearchTimer !== null) return;
+    availableSearchTimer = setTimeout(() => {
+        availableSearchTimer = null;
+        const slots = Math.max(0, 4 - availableLayoutPending.size);
+        available
+            .filter((symbol) => needsAvailableLayout(symbol) && !availableLayoutPending.has(symbol.name))
+            .slice(0, slots)
+            .forEach((symbol) => {
+                availableLayoutPending.add(symbol.name);
+                api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: availableVersion });
+            });
+    }, 180);
+}
 function renderAvailable() {
     availableBox.textContent = "";
     document.getElementById("allCount").textContent = String(available.length);
@@ -408,36 +442,57 @@ function renderAvailable() {
         return;
     }
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
+    scheduleAvailableMemberSearch(query);
     const selected = new Set(sideWatch.map((w) => w.name));
-    const matching = available.filter(
-        (s) => !query || s.name.toLowerCase().includes(query) || (s.displayName || "").toLowerCase().includes(query)
-    );
+    const nameMatches = (symbol) =>
+        symbol.name.toLowerCase().includes(query) || sbDisplayName(symbol).toLowerCase().includes(query);
+    const memberMatches = new Map();
+    const matching = available.filter((symbol) => {
+        if (!query || nameMatches(symbol)) return true;
+        if (!symbol.isComposite) return false;
+        const runtime = EmberProbeRuntime.runtimeSelection(symbol, latest[symbol.name]);
+        const leaves = runtime?.entries || sbCollectLeaves(symbol.compositeLayout, symbol.name, symbol.address);
+        const matches = leaves.filter(
+            (leaf) =>
+                leaf.path.toLowerCase().includes(query) ||
+                sbDisplayName({ name: leaf.path }).toLowerCase().includes(query)
+        );
+        if (!matches.length) return false;
+        memberMatches.set(symbol.name, matches);
+        return true;
+    });
     const list = matching.slice(0, AVAILABLE_VARIABLE_LIMIT);
     let leafRows = 0;
     if (!list.length) {
         const e = document.createElement("div");
         e.className = "empty";
-        e.textContent = available.length ? t("sb.noMatch") : t("sb.noImportable");
+        e.textContent =
+            query && (!availableTypesReady || available.some(needsAvailableLayout))
+                ? t("sb.searchingMembers")
+                : available.length
+                  ? t("sb.noMatch")
+                  : t("sb.noImportable");
         availableBox.appendChild(e);
         return;
     }
     list.forEach((sym) => {
         if (sym.isComposite) {
+            let open = !!avExpanded[sym.name] || memberMatches.has(sym.name);
             const row = document.createElement("div");
             row.className = "available-row comp";
             const wrap = document.createElement("span");
             wrap.className = "av-name-wrap";
             const arrow = document.createElement("span");
-            arrow.className = "av-arrow" + (avExpanded[sym.name] ? " open" : "");
+            arrow.className = "av-arrow" + (open ? " open" : "");
             arrow.textContent = "\u25B6";
             const nm = document.createElement("span");
             nm.className = "available-name";
             const on = selected.has(sym.name);
-            EmberProbeRuntime.renderVariableName(nm, sym.displayName || sym.name, sym.name);
+            EmberProbeRuntime.renderVariableName(nm, sbDisplayName(sym), sym.name);
             nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole"));
             const compEntry = {
                 name: sym.name,
-                displayName: sym.displayName || sym.name,
+                displayName: sbDisplayName(sym),
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: "",
@@ -477,7 +532,7 @@ function renderAvailable() {
             row.append(wrap, ty);
             availableBox.appendChild(row);
             const kids = document.createElement("div");
-            kids.className = "av-children" + (avExpanded[sym.name] ? " open" : "");
+            kids.className = "av-children" + (open ? " open" : "");
             let ownLeafRows = 0;
             const populate = () => {
                 leafRows -= ownLeafRows;
@@ -491,7 +546,10 @@ function renderAvailable() {
                     return;
                 }
                 const runtime = EmberProbeRuntime.runtimeSelection(sym, latest[sym.name]);
-                const leaves = runtime?.entries || sbCollectLeaves(sym.compositeLayout, sym.name, sym.address);
+                const leaves =
+                    memberMatches.get(sym.name) ||
+                    runtime?.entries ||
+                    sbCollectLeaves(sym.compositeLayout, sym.name, sym.address);
                 if (runtime)
                     sbNote(
                         kids,
@@ -511,7 +569,7 @@ function renderAvailable() {
                     cell.className = "av-name-cell";
                     const leafEntry = {
                         name: lf.path,
-                        displayName: (sym.displayName || sym.name) + lf.path.slice(sym.name.length),
+                        displayName: sbDisplayName({ name: lf.path, displayName: lf.displayName }),
                         address: lf.address,
                         size: lf.size || LEAF_W[lf.type] || 4,
                         type: lf.type,
@@ -535,6 +593,7 @@ function renderAvailable() {
                     const ln = document.createElement("span");
                     ln.className = "av-leaf-name";
                     ln.textContent = lf.label;
+                    ln.title = leafEntry.displayName;
                     cell.appendChild(ln);
                     const lty = document.createElement("span");
                     lty.className = "available-type";
@@ -552,15 +611,16 @@ function renderAvailable() {
                     kids.appendChild(note);
                 }
             };
-            if (avExpanded[sym.name]) populate();
+            if (open) populate();
             availableBox.appendChild(kids);
             const toggle = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                avExpanded[sym.name] = !avExpanded[sym.name];
-                arrow.classList.toggle("open", avExpanded[sym.name]);
-                kids.classList.toggle("open", avExpanded[sym.name]);
-                if (avExpanded[sym.name]) {
+                open = !open;
+                avExpanded[sym.name] = open;
+                arrow.classList.toggle("open", open);
+                kids.classList.toggle("open", open);
+                if (open) {
                     populate();
                     if (
                         !sym.compositeLayout &&
@@ -582,7 +642,7 @@ function renderAvailable() {
                 if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
                 sbToggle({
                     name: sym.name,
-                    displayName: sym.displayName || sym.name,
+                    displayName: sbDisplayName(sym),
                     address: Number(sym.address) || 0,
                     size: Number(sym.size) || 4,
                     type: "",
@@ -607,7 +667,7 @@ function renderAvailable() {
             cell.className = "av-name-cell";
             const entry = {
                 name: sym.name,
-                displayName: sym.displayName || sym.name,
+                displayName: sbDisplayName(sym),
                 address: Number(sym.address) || 0,
                 size: Number(sym.size) || 4,
                 type: sym.watchType,
@@ -630,7 +690,7 @@ function renderAvailable() {
             );
             const n = document.createElement("span");
             n.className = "available-name";
-            EmberProbeRuntime.renderVariableName(n, sym.displayName || sym.name, sym.name);
+            EmberProbeRuntime.renderVariableName(n, sbDisplayName(sym), sym.name);
             cell.appendChild(n);
             const ty = document.createElement("span");
             ty.className = "available-type";
@@ -906,7 +966,7 @@ function buildWriteCard(item) {
     top.className = "write-top";
     const nm = document.createElement("span");
     nm.className = "value-name";
-    EmberProbeRuntime.renderVariableName(nm, EmberProbeRuntime.variableDisplayName(item, availableByName), item.name);
+    EmberProbeRuntime.renderVariableName(nm, sbDisplayName(item), item.name);
     const dot = document.createElement("span");
     dot.className = "write-dot";
     const nmWrap = document.createElement("span");
@@ -1192,7 +1252,8 @@ function sbRenderLeaf(container, label, typeName, path, watchType, node) {
     const nm = document.createElement("span");
     nm.className = "sb-mname";
     nm.textContent = label;
-    nm.title = path;
+    nm.title = sbDisplayName({ name: path });
+    nm.setAttribute("aria-label", nm.title);
     const ty = document.createElement("span");
     ty.className = "sb-mtype";
     ty.textContent = typeName || watchType;
@@ -1307,7 +1368,7 @@ function sbRenderComposite(item) {
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
-    EmberProbeRuntime.renderVariableName(nm, EmberProbeRuntime.variableDisplayName(item, availableByName), item.name);
+    EmberProbeRuntime.renderVariableName(nm, sbDisplayName(item), item.name);
     const lay = item.compositeLayout || {};
     const ty = document.createElement("span");
     ty.className = "sb-comp-type";
@@ -1345,10 +1406,11 @@ function sbRenderComposite(item) {
 }
 function sbOnComposite(samples) {
     let refreshAvailable = false;
+    const searching = !!document.getElementById("varSearch").value.trim();
     (samples || []).forEach((s) => {
         if (s && s.name) {
             if (
-                avExpanded[s.name] &&
+                (avExpanded[s.name] || searching) &&
                 EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
                 EmberProbeRuntime.runtimeSelection(availableByName.get(s.name), s.tree)
             )

@@ -281,7 +281,13 @@ class SamplingArchive {
             codedError("CSV_EXPORT_TOO_LARGE", "CSV result exceeds 64 MiB; use the chart's archive export");
         try {
             output = await fsp.open(temporaryPath, "wx", 0o600);
-            const header = `\uFEFFtime,${names.map(csvHeaderField).join(",")}\r\n`;
+            // Display labels affect only the header; archived values stay keyed by ELF identity.
+            const header = `\uFEFFtime,${names
+                .map((name) => {
+                    const label = request.displayNames?.get(name);
+                    return csvHeaderField(typeof label === "string" && label ? label : name);
+                })
+                .join(",")}\r\n`;
             let outputBytes = Buffer.byteLength(header);
             if (outputBytes > maxOutputBytes) throw tooLarge();
             await output.write(header);

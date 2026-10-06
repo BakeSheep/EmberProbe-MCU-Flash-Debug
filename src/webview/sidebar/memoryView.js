@@ -108,9 +108,9 @@
             .map(
                 (symbol) =>
                     '<tr><td title="' +
-                    esc(symbol.name) +
+                    esc(symbol.displayName || symbol.name) +
                     '">' +
-                    esc(symbol.displayName) +
+                    esc(symbol.displayName || symbol.name) +
                     "</td><td>" +
                     esc(symbol.section) +
                     "</td><td>" +

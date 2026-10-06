@@ -95,6 +95,35 @@ async function main() {
             '\uFEFFtime,"sensor,x",Tick\r\n1970-01-01T00:00:01.000Z,2.5,1\r\n'
         );
 
+        const labelledCsv = path.join(temporaryRoot, "labelled.csv");
+        await archive.exportCsv({
+            outputPath: labelledCsv,
+            names: ["sensor,x", "Tick"],
+            displayNames: new Map([
+                ["sensor,x", "pwr.data_.bus_voltage_v"],
+                ["Tick", 'app::Holder<int, 2>::count"']
+            ]),
+            fromMs: 1000,
+            toMs: 3000
+        });
+        assert.strictEqual(
+            fs.readFileSync(labelledCsv, "utf8"),
+            '\uFEFFtime,pwr.data_.bus_voltage_v,"app::Holder<int, 2>::count"""\r\n1970-01-01T00:00:01.000Z,2.5,1\r\n',
+            "readable headers preserve raw-key value lookup, column order and CSV escaping"
+        );
+        await archive.exportCsv({
+            outputPath: labelledCsv,
+            names: ["Tick", "sensor,x"],
+            displayNames: new Map([["Tick", "=unsafe"]]),
+            fromMs: 1000,
+            toMs: 3000
+        });
+        assert.strictEqual(
+            fs.readFileSync(labelledCsv, "utf8"),
+            '\uFEFFtime,\'=unsafe,"sensor,x"\r\n1970-01-01T00:00:01.000Z,1,2.5\r\n',
+            "display headers retain formula protection and missing-label fallback"
+        );
+
         // Export does not finish the archive: subsequent samples remain appendable and later exports include them.
         archive.append(
             [

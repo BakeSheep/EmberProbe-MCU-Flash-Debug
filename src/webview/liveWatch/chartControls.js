@@ -51,7 +51,7 @@
         function openMenu(name, anchor, point) {
             menu.textContent = "";
             const title = doc.createElement("strong");
-            title.textContent = name;
+            title.textContent = env.displayName ? env.displayName(name) : name;
             menu.append(title);
             button(
                 "seriesOnly",
@@ -160,7 +160,8 @@
                 const state = get(),
                     off = !!state.hidden[name];
                 swatch.setAttribute("aria-pressed", String(!off));
-                swatch.setAttribute("aria-label", name + ": " + t(off ? "lw.showCurve" : "lw.hideCurve"));
+                const displayName = env.displayName ? env.displayName(name) : name;
+                swatch.setAttribute("aria-label", displayName + ": " + t(off ? "lw.showCurve" : "lw.hideCurve"));
                 swatch.textContent = "";
                 swatch.style.background = off ? "#808080" : state.style(name).color;
                 swatch.style.borderStyle = state.style(name).line === "solid" ? "solid" : "dashed";
@@ -187,18 +188,20 @@
             );
             $("freeze").textContent = t(s.frozen ? "lw.resume" : "lw.freeze");
             const hits = c.hits || [];
-            const key = JSON.stringify([hits, hits.map((h) => s.style(h.name)), s.lang]);
+            const labels = hits.map((hit) => (env.tooltipName ? env.tooltipName(hit.name) : hit.name));
+            const key = JSON.stringify([hits, labels, hits.map((h) => s.style(h.name)), s.lang]);
             tooltip.classList.toggle("hidden", !hits.length);
 
             if (key !== tooltipKey) {
                 tooltipKey = key;
                 tooltip.textContent = "";
-                hits.forEach((hit) => {
+                hits.forEach((hit, index) => {
                     const row = doc.createElement("div");
                     row.className = "curve-hit";
                     row.style.borderLeftColor = s.style(hit.name).color;
-                    row.textContent = hit.name + ": " + value(hit.point);
-                    row.setAttribute("aria-label", hit.name + ": " + value(hit.point));
+                    row.textContent = labels[index] + ": " + value(hit.point);
+                    row.setAttribute("aria-label", labels[index] + ": " + value(hit.point));
+                    row.dataset.rawName = hit.name;
                     tooltip.append(row);
                 });
             }
@@ -207,7 +210,7 @@
                 Math.max(4, Math.min($("chartStage").clientWidth - tooltip.offsetWidth - 4, p.x + 16)) + "px";
             tooltip.style.top =
                 Math.max(4, Math.min($("chartStage").clientHeight - tooltip.offsetHeight - 4, p.y + 16)) + "px";
-            const selected = c.hoverName || hits[0]?.name;
+            const selected = c.hoverName || (c.pointer ? hits[0]?.name : null);
             doc.querySelectorAll("[data-series-name]").forEach((el) =>
                 el.classList.toggle("curve-emphasis", el.dataset.seriesName === selected)
             );
