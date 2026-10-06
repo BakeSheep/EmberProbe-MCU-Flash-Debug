@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-06
+
 - 精简中文 README，聚焦重点功能，并要求 Agent 仅在用户明确要求时修改 README。
 - Simplify the Chinese README around key capabilities and require an explicit user request for Agent edits to it.
 
