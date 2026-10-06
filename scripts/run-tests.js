@@ -178,7 +178,13 @@ async function main(args = process.argv.slice(2)) {
     if (!testsOnly) {
         results.push(
             ...(await runFiles(
-                ["src", "skills", "scripts"].flatMap((dir) => discover(path.join(root, dir), true)),
+                ["src", "skills", "scripts"]
+                    .flatMap((dir) => discover(path.join(root, dir), true))
+                    .concat(
+                        discover(path.join(root, "mockup"), true).filter(
+                            (file) => !file.startsWith(path.join(root, "mockup", "dist") + path.sep)
+                        )
+                    ),
                 { syntax: true, reportDir, jobs, keepLogs }
             ))
         );

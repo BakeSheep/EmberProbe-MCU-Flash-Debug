@@ -1,0 +1,40 @@
+@font-face {
+    font-family: seti;
+    src: url(seti.woff) format("woff");
+    font-display: block;
+}
+.seti-icon {
+    font: normal 22px/16px seti;
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    text-align: center;
+}
+.seti-c::before {
+    content: "\E00C";
+    color: #519aba;
+}
+:root[data-mock-theme="light"] .seti-c::before {
+    color: #498ba7;
+}
+.seti-h::before {
+    content: "\E00C";
+    color: #a074c4;
+}
+:root[data-mock-theme="light"] .seti-h::before {
+    color: #9068b0;
+}
+.seti-md::before {
+    content: "\E060";
+    color: #519aba;
+}
+:root[data-mock-theme="light"] .seti-md::before {
+    color: #498ba7;
+}
+.seti-json::before {
+    content: "\E055";
+    color: #cbcb41;
+}
+:root[data-mock-theme="light"] .seti-json::before {
+    color: #b7b73b;
+}

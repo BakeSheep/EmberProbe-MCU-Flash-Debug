@@ -101,6 +101,7 @@ const TEST_GROUPS = Object.freeze({
         "live-watch-service.test.js",
         "memory-analysis.test.js",
         "memory-sidebar.test.js",
+        "mockup.test.js",
         "new-skills.test.js",
         "openocd-checker.test.js",
         "openocd-compatibility.test.js",

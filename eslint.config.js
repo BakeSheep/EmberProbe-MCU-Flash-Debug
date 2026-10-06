@@ -2,10 +2,18 @@
 
 module.exports = [
     {
-        ignores: ["dist/**", "node_modules/**", ".vscode-test/**", "coverage/**", "resources/**", ".claude/**"]
+        ignores: [
+            "dist/**",
+            "mockup/dist/**",
+            "node_modules/**",
+            ".vscode-test/**",
+            "coverage/**",
+            "resources/**",
+            ".claude/**"
+        ]
     },
     {
-        files: ["src/**/*.js", "skills/**/*.js", "scripts/**/*.js", "test/**/*.js"],
+        files: ["src/**/*.js", "skills/**/*.js", "scripts/**/*.js", "test/**/*.js", "mockup/**/*.js"],
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: "commonjs"

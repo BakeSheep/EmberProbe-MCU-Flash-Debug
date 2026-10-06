@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>EmberProbe · VS Code 界面复刻</title>
+        <script src="theme.js"></script>
+        <link rel="stylesheet" href="codicon.css" />
+        <link rel="stylesheet" href="seti.css" />
+        <link rel="stylesheet" href="theme.css" />
+        <link rel="stylesheet" href="shell.css" />
+        <link rel="stylesheet" href="reference.css" />
+    </head>
+    <body>
+        <div id="workbench">
+            <header id="titlebar">
+                <div class="titlebar-left">
+                    <div class="app-icon" title="Visual Studio Code">
+                        <img src="vscode-logo.svg" alt="Visual Studio Code" />
+                    </div>
+                    <nav class="menubar" id="menubar">
+                        <button type="button">文件</button>
+                        <button type="button">编辑</button>
+                        <button type="button">选择</button>
+                        <button type="button">查看</button>
+                        <button type="button">转到</button>
+                        <button type="button">运行</button>
+                        <button type="button">终端</button>
+                        <button type="button">帮助</button>
+                    </nav>
+                </div>
+                <div class="titlebar-center">
+                    <button type="button" id="navigateBack" class="title-action" title="后退">
+                        <span class="codicon codicon-arrow-left" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="navigateForward" class="title-action" title="前进">
+                        <span class="codicon codicon-arrow-right" aria-hidden="true"></span>
+                    </button>
+                    <button
+                        type="button"
+                        id="commandCenter"
+                        class="command-center"
+                        title="搜索或运行命令 (Ctrl+Shift+P)"
+                    >
+                        <span>EmberProbeDemo</span>
+                    </button>
+                </div>
+                <div class="titlebar-right">
+                    <button type="button" class="title-action" id="toggleSidebar" title="切换主侧边栏 (Ctrl+B)">
+                        <span class="codicon codicon-layout-sidebar-left" aria-hidden="true"></span>
+                    </button>
+                    <button
+                        type="button"
+                        class="title-action"
+                        id="customizeLayout"
+                        title="自定义布局"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                    >
+                        <span class="codicon codicon-layout" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="title-action" id="togglePanel" title="切换面板 (Ctrl+J)">
+                        <span class="codicon codicon-layout-panel" aria-hidden="true"></span>
+                    </button>
+                    <button
+                        type="button"
+                        class="title-action"
+                        id="toggleSecondarySidebar"
+                        title="切换辅助侧边栏"
+                        aria-controls="auxiliarybar"
+                        aria-expanded="false"
+                    >
+                        <span class="codicon codicon-layout-sidebar-right" aria-hidden="true"></span>
+                    </button>
+                    <div class="window-controls">
+                        <button type="button" class="wc" title="最小化">
+                            <span class="codicon codicon-chrome-minimize" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="wc" title="最大化">
+                            <span class="codicon codicon-chrome-maximize" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="wc close" title="关闭">
+                            <span class="codicon codicon-chrome-close" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <div id="workbench-body">
+                <nav id="activitybar">
+                    <div class="activity-top">
+                        <button
+                            type="button"
+                            class="activity-item"
+                            data-view="explorer"
+                            title="资源管理器 (Ctrl+Shift+E)"
+                        >
+                            <span class="codicon codicon-files" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="activity-item" data-view="search" title="搜索 (Ctrl+Shift+F)">
+                            <span class="codicon codicon-search" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="activity-item" data-view="scm" title="源代码管理 (Ctrl+Shift+G)">
+                            <span class="codicon codicon-source-control" aria-hidden="true"></span>
+                            <span class="badge">4</span>
+                        </button>
+                        <button type="button" class="activity-item" data-view="debug" title="运行和调试 (Ctrl+Shift+D)">
+                            <span class="codicon codicon-debug-alt" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="activity-item" data-view="extensions" title="扩展 (Ctrl+Shift+X)">
+                            <span class="codicon codicon-extensions" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="activity-item active" data-view="emberprobe" title="EmberProbe">
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                <g
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="1.8"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                >
+                                    <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+                                    <path
+                                        d="M9 3.5v3M15 3.5v3M9 17.5v3M15 17.5v3M3.5 9h3M3.5 15h3M17.5 9h3M17.5 15h3"
+                                    />
+                                </g>
+                                <path
+                                    fill="currentColor"
+                                    d="M14.8 11.2c.45 1.38 1.07 2 2.45 2.45-1.38.45-2 1.07-2.45 2.45-.45-1.38-1.07-2-2.45-2.45 1.38-.45 2-1.07 2.45-2.45Z"
+                                />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="activity-bottom">
+                        <button type="button" class="activity-item" data-view="accounts" title="账户">
+                            <span class="codicon codicon-account" aria-hidden="true"></span>
+                        </button>
+                        <button type="button" class="activity-item" id="manageButton" title="管理">
+                            <span class="codicon codicon-settings-gear" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </nav>
+
+                <aside id="sidebar">
+                    <div id="sidebar-views">
+                        <section class="view" data-view="explorer" hidden>
+                            <header class="view-header">
+                                <span>资源管理器</span>
+                                <span class="view-actions">
+                                    <button type="button" title="新建文件">
+                                        <span class="codicon codicon-new-file" aria-hidden="true"></span>
+                                    </button>
+                                    <button type="button" title="新建文件夹">
+                                        <span class="codicon codicon-new-folder" aria-hidden="true"></span>
+                                    </button>
+                                    <button type="button" title="刷新">
+                                        <span class="codicon codicon-refresh" aria-hidden="true"></span>
+                                    </button>
+                                    <button type="button" title="全部折叠">
+                                        <span class="codicon codicon-collapse-all" aria-hidden="true"></span>
+                                    </button>
+                                </span>
+                            </header>
+                            <div class="view-body">
+                                <div class="section-header" data-collapse="explorer-files">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    EMBERPROBEDEMO
+                                </div>
+                                <div class="tree" id="explorerTree"></div>
+                                <div class="section-header" data-collapse="explorer-outline">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    大纲
+                                </div>
+                                <div class="tree outline-tree" id="outlineTree"></div>
+                                <div class="section-header" data-collapse="explorer-timeline">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    时间线
+                                </div>
+                                <div class="timeline" id="timelineList"></div>
+                            </div>
+                        </section>
+
+                        <section class="view" data-view="search" hidden>
+                            <header class="view-header">
+                                <span>搜索</span>
+                                <span class="view-actions"
+                                    ><button type="button" title="刷新">
+                                        <span class="codicon codicon-refresh" aria-hidden="true"></span></button
+                                    ><button type="button" title="全部折叠">
+                                        <span class="codicon codicon-collapse-all" aria-hidden="true"></span></button
+                                ></span>
+                            </header>
+                            <div class="view-body">
+                                <div class="search-box">
+                                    <input id="searchInput" value="g_motor" spellcheck="false" /><button
+                                        type="button"
+                                        title="替换"
+                                    >
+                                        <span class="codicon codicon-replace" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                                <div class="search-meta" id="searchMeta">3 个文件中有 6 个结果</div>
+                                <div id="searchResults"></div>
+                            </div>
+                        </section>
+
+                        <section class="view" data-view="scm" hidden>
+                            <header class="view-header">
+                                <span>源代码管理</span>
+                                <span class="view-actions"
+                                    ><button type="button" title="刷新">
+                                        <span class="codicon codicon-refresh" aria-hidden="true"></span></button
+                                    ><button type="button" title="更多操作">
+                                        <span class="codicon codicon-more" aria-hidden="true"></span></button
+                                ></span>
+                            </header>
+                            <div class="view-body">
+                                <textarea
+                                    id="scmMessage"
+                                    class="scm-input"
+                                    rows="2"
+                                    placeholder="消息（按 Ctrl+Enter 提交）"
+                                ></textarea>
+                                <button type="button" class="scm-commit" id="scmCommit">
+                                    <span class="codicon codicon-check" aria-hidden="true"></span> 提交
+                                </button>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    更改 <span class="count-badge">4</span>
+                                </div>
+                                <div class="tree" id="scmChanges"></div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    图表
+                                </div>
+                                <div class="scm-graph" id="scmGraph"></div>
+                            </div>
+                        </section>
+
+                        <section class="view" data-view="debug" hidden>
+                            <header class="view-header">
+                                <span>运行和调试</span>
+                                <span class="view-actions"
+                                    ><button type="button" title="更多操作">
+                                        <span class="codicon codicon-more" aria-hidden="true"></span></button
+                                ></span>
+                            </header>
+                            <div class="view-body">
+                                <div class="debug-config-row">
+                                    <span class="debug-config-name">EmberProbe (J-Link)</span>
+                                    <button
+                                        type="button"
+                                        class="debug-start"
+                                        id="debugStartButton"
+                                        title="开始调试 (F5)"
+                                    >
+                                        <span class="codicon codicon-debug-start" aria-hidden="true"></span>
+                                    </button>
+                                    <button type="button" title="打开 launch.json">
+                                        <span class="codicon codicon-settings-gear" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    变量
+                                    <span class="section-actions"
+                                        ><button type="button" title="刷新">
+                                            <span class="codicon codicon-refresh" aria-hidden="true"></span></button
+                                    ></span>
+                                </div>
+                                <div class="tree debug-tree" id="debugVariables"></div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    监视
+                                    <span class="section-actions"
+                                        ><button type="button" title="添加">
+                                            <span class="codicon codicon-add" aria-hidden="true"></span></button
+                                    ></span>
+                                </div>
+                                <div class="tree debug-tree" id="debugWatch"></div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    调用堆栈
+                                </div>
+                                <div class="tree" id="debugCallStack"></div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    断点
+                                    <span class="section-actions"
+                                        ><button type="button" title="添加">
+                                            <span class="codicon codicon-add" aria-hidden="true"></span></button
+                                        ><button type="button" title="禁用断点">
+                                            <span
+                                                class="codicon codicon-circle-slash"
+                                                aria-hidden="true"
+                                            ></span></button
+                                    ></span>
+                                </div>
+                                <div class="tree" id="debugBreakpoints"></div>
+                            </div>
+                        </section>
+
+                        <section class="view" data-view="extensions" hidden>
+                            <header class="view-header">
+                                <span>扩展</span>
+                                <span class="view-actions"
+                                    ><button type="button" title="刷新">
+                                        <span class="codicon codicon-refresh" aria-hidden="true"></span></button
+                                ></span>
+                            </header>
+                            <div class="view-body">
+                                <div class="search-box">
+                                    <input value="emberprobe" spellcheck="false" /><button type="button">
+                                        <span class="codicon codicon-close" aria-hidden="true"></span>
+                                    </button>
+                                </div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    已安装 <span class="count-badge">1</span>
+                                </div>
+                                <div class="extension-card">
+                                    <div class="extension-icon">EP</div>
+                                    <div class="extension-copy">
+                                        <div class="extension-name">EmberProbe MCU Flash &amp; Debug</div>
+                                        <div class="extension-desc">
+                                            STM32 烧录、DAP 调试、实时变量采样、SVD 外设查看与 FreeRTOS 任务分析
+                                        </div>
+                                        <div class="extension-meta">
+                                            <span>BakeSheep</span><span>1.2M</span><span>★★★★★</span>
+                                        </div>
+                                        <div class="extension-actions">
+                                            <button type="button" class="mini-button">禁用</button>
+                                            <button type="button" class="mini-button">卸载</button>
+                                            <button type="button" class="mini-button">切换版本</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="section-header">
+                                    <span class="chevron"
+                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
+                                    ></span>
+                                    推荐
+                                </div>
+                                <div class="extension-card compact">
+                                    <div class="extension-icon cpp">C+</div>
+                                    <div class="extension-copy">
+                                        <div class="extension-name">C/C++</div>
+                                        <div class="extension-desc">IntelliSense、调试与代码浏览</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="view active" data-view="emberprobe">
+                            <header class="view-header">
+                                <span>EmberProbe: Flash &amp; Debug</span>
+                                <span class="view-actions"
+                                    ><button type="button" title="更多操作">
+                                        <span class="codicon codicon-more" aria-hidden="true"></span></button
+                                ></span>
+                            </header>
+                            <div class="view-body plugin-frame-wrap">
+                                <iframe id="sidebarFrame" src="sidebar.zh.html" title="EmberProbe 侧边栏"></iframe>
+                            </div>
+                        </section>
+                    </div>
+                    <div id="sidebar-resizer" title="拖动调整宽度"></div>
+                </aside>
+
+                <main id="main-column">
+                    <div id="editor-area">
+                        <div id="tabs">
+                            <div class="tab-list" id="tabList"></div>
+                            <div class="tab-actions">
+                                <button type="button" title="拆分编辑器">
+                                    <span class="codicon codicon-split-horizontal" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" title="更多操作">
+                                    <span class="codicon codicon-more" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="editor-body">
+                            <div class="editor-pane active" data-pane="file">
+                                <div id="breadcrumbs"></div>
+                                <div id="editor-scroll">
+                                    <div id="gutter"></div>
+                                    <div id="code-wrap"><pre id="code"></pre></div>
+                                    <div id="minimap"></div>
+                                </div>
+                            </div>
+                            <div class="editor-pane" data-pane="livewatch">
+                                <iframe id="livewatchFrame" src="livewatch.zh.html" title="实时变量查看"></iframe>
+                            </div>
+                            <div class="editor-pane" data-pane="markdown">
+                                <div id="markdown-body" class="markdown-body"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="panel" class="collapsed">
+                        <div id="panel-resizer"></div>
+                        <div id="panel-header">
+                            <div class="panel-tabs">
+                                <button type="button" data-panel="problems">
+                                    问题 <span class="count-badge" id="problemCount">2</span>
+                                </button>
+                                <button type="button" data-panel="output">输出</button>
+                                <button type="button" data-panel="debug-console">调试控制台</button>
+                                <button type="button" data-panel="terminal" class="active">终端</button>
+                            </div>
+                            <div class="panel-actions">
+                                <button type="button" title="新建终端">
+                                    <span class="codicon codicon-add" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" title="拆分终端">
+                                    <span class="codicon codicon-split-horizontal" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" title="最大化面板">
+                                    <span class="codicon codicon-chevron-up" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" id="panelClose" title="关闭面板">
+                                    <span class="codicon codicon-close" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="panel-body">
+                            <div class="panel-pane" data-panel-pane="problems">
+                                <div class="panel-pane-header">检测到 2 个问题（0 个错误，2 个警告）</div>
+                                <div id="problemsList"></div>
+                            </div>
+                            <div class="panel-pane" data-panel-pane="output">
+                                <div class="panel-pane-header">
+                                    <select>
+                                        <option>EmberProbe 芯片诊断</option>
+                                        <option>EmberProbe</option>
+                                        <option>任务</option>
+                                    </select>
+                                </div>
+                                <pre id="outputBody" class="terminal-body"></pre>
+                            </div>
+                            <div class="panel-pane" data-panel-pane="debug-console">
+                                <pre id="debugConsoleBody" class="terminal-body"></pre>
+                                <div class="terminal-input-line">
+                                    <span class="prompt">&gt;</span><span class="terminal-cursor"></span>
+                                </div>
+                            </div>
+                            <div class="panel-pane active" data-panel-pane="terminal">
+                                <pre id="terminalBody" class="terminal-body"></pre>
+                                <div class="terminal-input-line">
+                                    <span class="prompt">➜</span
+                                    ><span class="cmd">openocd -f interface/jlink.cfg -f target/stm32f4x.cfg</span
+                                    ><span class="terminal-cursor"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+                <aside id="auxiliarybar" hidden>
+                    <header class="view-header">辅助侧边栏</header>
+                    <div class="auxiliary-empty">没有打开的视图。</div>
+                </aside>
+            </div>
+
+            <div id="debug-toolbar" class="hidden">
+                <span class="debug-drag" title="拖动调试工具栏"
+                    ><span class="codicon codicon-gripper" aria-hidden="true"></span
+                ></span>
+                <button type="button" id="dbgContinue" title="继续 (F5)">
+                    <span class="codicon codicon-debug-continue" aria-hidden="true"></span>
+                </button>
+                <button type="button" id="dbgStepOver" title="单步跳过 (F10)">
+                    <span class="codicon codicon-debug-step-over" aria-hidden="true"></span>
+                </button>
+                <button type="button" id="dbgStepInto" title="单步调试 (F11)">
+                    <span class="codicon codicon-debug-step-into" aria-hidden="true"></span>
+                </button>
+                <button type="button" id="dbgStepOut" title="单步跳出 (Shift+F11)">
+                    <span class="codicon codicon-debug-step-out" aria-hidden="true"></span>
+                </button>
+                <button type="button" id="dbgRestart" title="重启 (Ctrl+Shift+F5)">
+                    <span class="codicon codicon-debug-restart" aria-hidden="true"></span>
+                </button>
+                <button type="button" id="dbgStop" title="停止 (Shift+F5)">
+                    <span class="codicon codicon-debug-stop" aria-hidden="true"></span>
+                </button>
+                <span class="debug-label" id="debugToolbarLabel">ControlTask · main.c:87</span>
+            </div>
+
+            <footer id="statusbar">
+                <div class="status-left">
+                    <button type="button" class="status-item remote" title="打开远程窗口">
+                        <span class="codicon codicon-remote" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="status-item" title="当前分支">
+                        <span class="codicon codicon-git-branch" aria-hidden="true"></span> main*
+                    </button>
+                    <button type="button" class="status-item" title="同步更改">
+                        <span class="codicon codicon-sync" aria-hidden="true"></span> 2<span
+                            class="codicon codicon-arrow-down"
+                            aria-hidden="true"
+                        ></span>
+                        1<span class="codicon codicon-arrow-up" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="status-item" id="problemStatus" title="问题">
+                        <span class="codicon codicon-error" aria-hidden="true"></span> 0
+                        <span class="codicon codicon-warning" aria-hidden="true"></span> 2
+                    </button>
+                </div>
+                <div class="status-right">
+                    <button
+                        type="button"
+                        class="status-item emberprobe"
+                        id="emberprobeStatus"
+                        title="EmberProbe 会话状态"
+                    >
+                        EmberProbe: 已暂停
+                    </button>
+                    <button type="button" class="status-item" id="cursorStatus">Ln 103, Col 12</button>
+                    <button type="button" class="status-item">空格: 4</button>
+                    <button type="button" class="status-item">UTF-8</button>
+                    <button type="button" class="status-item">CRLF</button>
+                    <button type="button" class="status-item">C</button>
+                    <button type="button" class="status-item" title="通知">
+                        <span class="codicon codicon-bell" aria-hidden="true"></span>
+                    </button>
+                </div>
+            </footer>
+        </div>
+
+        <div id="command-palette" class="overlay hidden">
+            <div class="palette">
+                <div class="palette-input-wrap">
+                    <span class="palette-prefix">&gt;</span>
+                    <input id="paletteInput" spellcheck="false" placeholder="输入命令名称" />
+                </div>
+                <div class="palette-list" id="paletteList"></div>
+            </div>
+        </div>
+
+        <div id="layout-menu" role="menu" aria-label="自定义布局" hidden>
+            <button type="button" role="menuitemcheckbox" data-layout="sidebar">
+                <span class="codicon codicon-check" aria-hidden="true"></span>主侧边栏
+            </button>
+            <button type="button" role="menuitemcheckbox" data-layout="panel">
+                <span class="codicon codicon-check" aria-hidden="true"></span>面板
+            </button>
+            <button type="button" role="menuitemcheckbox" data-layout="auxiliary">
+                <span class="codicon codicon-check" aria-hidden="true"></span>辅助侧边栏
+            </button>
+        </div>
+        <div id="theme-menu" role="menu" aria-label="颜色主题" hidden>
+            <div class="theme-menu-title">颜色主题</div>
+            <button type="button" id="themeDark" role="menuitemradio" data-theme="dark">
+                <span class="codicon codicon-check" aria-hidden="true"></span>深色现代 · Dark Modern
+            </button>
+            <button type="button" id="themeLight" role="menuitemradio" data-theme="light">
+                <span class="codicon codicon-check" aria-hidden="true"></span>浅色现代 · Light Modern
+            </button>
+        </div>
+        <div id="toasts"></div>
+
+        <script src="csv.js"></script>
+        <script src="sidebar-data.js"></script>
+        <script src="livewatch-data.js"></script>
+        <script src="sidebar-host.js"></script>
+        <script src="livewatch-host.js"></script>
+        <script src="shell-data.js"></script>
+        <script src="shell.js"></script>
+    </body>
+</html>

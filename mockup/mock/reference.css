@@ -1,0 +1,294 @@
+/* Workspace appearance measured from the supplied real workbench screenshot.
+ * Only native VS Code and EmberProbe UI are reproduced; no third-party chrome.
+ */
+:root[data-mock-theme="light"] {
+    --vscode-foreground: #333333;
+    --vscode-descriptionForeground: #777777;
+    --vscode-titleBar-activeBackground: #fafafd;
+    --vscode-titleBar-activeForeground: #666666;
+    --vscode-titleBar-border: transparent;
+    --vscode-sideBar-background: #fafafd;
+    --vscode-sideBar-foreground: #333333;
+    --vscode-sideBar-border: #e8e8ec;
+    --vscode-sideBarSectionHeader-background: #fafafd;
+    --vscode-sideBarSectionHeader-foreground: #333333;
+    --vscode-sideBarSectionHeader-border: #efeff2;
+    --vscode-activityBar-background: #fafafd;
+    --vscode-activityBar-border: #e8e8ec;
+    --vscode-activityBar-foreground: #555555;
+    --vscode-activityBar-inactiveForeground: #777777;
+    --vscode-activityBar-activeBackground: #d6d6d6;
+    --vscode-statusBar-background: #fafafd;
+    --vscode-statusBar-foreground: #777777;
+    --vscode-statusBar-border: transparent;
+    --vscode-statusBarItem-remoteBackground: transparent;
+    --vscode-statusBarItem-remoteForeground: #777777;
+    --vscode-editorGroupHeader-tabsBackground: #ebebeb;
+    --vscode-tab-activeBackground: #ffffff;
+    --vscode-tab-activeForeground: #333333;
+    --vscode-tab-inactiveBackground: #ebebeb;
+    --vscode-tab-inactiveForeground: #777777;
+    --vscode-tab-border: transparent;
+    --vscode-tab-activeBorderTop: transparent;
+    --vscode-widget-border: #e8e8ec;
+    --vscode-badge-background: #0069c9;
+    --vscode-badge-foreground: #ffffff;
+    --vscode-panel-border: #efeff2;
+    --vscode-input-background: #ffffff;
+    --vscode-input-border: #e4e4e7;
+    --vscode-button-background: #0069c9;
+    --vscode-button-border: #e4e4e7;
+    --vscode-button-secondaryBackground: #ffffff;
+    --vscode-button-secondaryForeground: #333333;
+    --vscode-button-secondaryHoverBackground: #f0f0f3;
+    --vscode-symbolIcon-numberForeground: #333333;
+    --vscode-scrollbarSlider-background: #888888;
+    --vscode-scrollbarSlider-hoverBackground: #777777;
+}
+
+/* The screenshot uses a compact title bar and rounded workbench containers. */
+#titlebar {
+    position: relative;
+    border: 0;
+}
+.titlebar-left,
+.window-controls {
+    display: none;
+}
+.titlebar-center {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: min(660px, 62%);
+}
+.titlebar-center .title-action {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+}
+.command-center {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    max-width: none;
+    margin: 0;
+    justify-content: flex-start;
+    padding: 0 10px;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--vscode-descriptionForeground);
+}
+.titlebar-right {
+    padding-right: 4px;
+    gap: 2px;
+}
+.titlebar-right .title-action {
+    width: 24px;
+}
+#workbench-body {
+    padding: 0 4px;
+}
+#activitybar {
+    width: 44px;
+    flex-basis: 44px;
+    border: 1px solid var(--vscode-sideBar-border);
+    border-radius: 8px 0 0 8px;
+}
+.activity-item {
+    width: 42px;
+    height: 44px;
+}
+.activity-item.active::before {
+    inset: 6px 5px;
+    width: auto;
+    border-radius: 5px;
+    background: var(--vscode-activityBar-activeBackground, var(--vscode-list-inactiveSelectionBackground));
+    z-index: 0;
+}
+.activity-item > svg,
+.activity-item > .codicon {
+    position: relative;
+    z-index: 1;
+}
+#sidebar {
+    width: var(--sidebar-width, 320px);
+    border: 1px solid var(--vscode-sideBar-border);
+    border-left: 0;
+    border-radius: 0 8px 8px 0;
+}
+.view-header {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: none;
+    padding-left: 12px;
+}
+[data-view="emberprobe"] > .view-header .view-actions {
+    visibility: hidden;
+}
+[data-view="emberprobe"] > .view-header:hover .view-actions {
+    visibility: visible;
+}
+.plugin-frame-wrap {
+    border-radius: 0 0 8px 0;
+    overflow: hidden;
+}
+#main-column {
+    margin-left: 4px;
+    border: 1px solid var(--vscode-sideBar-border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+#tabs {
+    border-bottom: 0;
+}
+.tab-list {
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.tab {
+    flex-shrink: 0;
+    font-size: 13px;
+    padding: 0 12px;
+    gap: 5px;
+}
+.tab.active {
+    border-radius: 5px 5px 0 0;
+}
+.tab.active::before {
+    display: none;
+}
+.tab.git-modified .tab-label,
+.tab .git-decoration {
+    color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+.tab .git-decoration {
+    margin-left: 2px;
+}
+.tab.git-modified:not(.active):not(:hover) .tab-close {
+    display: none;
+}
+#statusbar {
+    border: 0;
+}
+.status-item.remote {
+    background: transparent;
+    color: inherit;
+}
+body:not(.file-editor) #cursorStatus,
+body:not(.file-editor) .status-right > .status-item:not(.emberprobe):not(:last-child) {
+    display: none;
+}
+#auxiliarybar {
+    width: 260px;
+    margin-left: 4px;
+    border: 1px solid var(--vscode-sideBar-border);
+    border-radius: 8px;
+    background: var(--vscode-sideBar-background);
+}
+#auxiliarybar[hidden] {
+    display: none;
+}
+.auxiliary-empty {
+    padding: 12px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+}
+#layout-menu {
+    position: fixed;
+    top: 35px;
+    right: 8px;
+    z-index: 90;
+    width: 220px;
+    padding: 5px;
+    border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+    border-radius: 5px;
+    background: var(--vscode-menu-background, var(--vscode-editor-background));
+    box-shadow: 0 4px 12px var(--vscode-widget-shadow);
+}
+#layout-menu[hidden] {
+    display: none;
+}
+#layout-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 5px;
+    border-radius: 3px;
+    text-align: left;
+}
+#layout-menu button:hover,
+#layout-menu button:focus-visible {
+    outline: none;
+    color: var(--vscode-menu-selectionForeground);
+    background: var(--vscode-menu-selectionBackground);
+}
+#layout-menu [aria-checked="false"] .codicon-check {
+    visibility: hidden;
+}
+@media (max-width: 700px) {
+    .titlebar-center {
+        left: 8px;
+        transform: none;
+        width: calc(100% - 122px);
+    }
+    #auxiliarybar {
+        width: 180px;
+    }
+    .status-right .emberprobe {
+        max-width: 200px;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+}
+
+/* The embedded pages keep the extension's own renderers and spacing. */
+body[data-mock-page="livewatch"] .bar .hint {
+    margin-left: 0;
+}
+body[data-mock-page="livewatch"] .bar #langToggle {
+    margin-left: auto;
+}
+body[data-mock-page="livewatch"] .top {
+    margin: 0 14px;
+}
+body[data-mock-page="livewatch"] .bar {
+    padding: 9px 0;
+}
+body[data-mock-page="livewatch"] .toolbar {
+    padding: 12px 0 9px;
+}
+body[data-mock-page="livewatch"] .group {
+    border: 0;
+    padding-right: 0;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    max-width: 100%;
+}
+body[data-mock-page="livewatch"] .toolbar button {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+body[data-mock-page="livewatch"] .side-head {
+    padding-top: 10px;
+}
+:root[data-mock-theme="light"] body[data-mock-page="sidebar"] .primary-actions .action.secondary {
+    background: #ebebeb;
+}
+body[data-mock-page="livewatch"] .chart-pane {
+    padding-left: 12px;
+}
+:root[data-mock-theme="light"] body[data-mock-page="livewatch"] #langToggle {
+    border: 1px solid var(--vscode-focusBorder);
+    border-radius: 11px;
+    background: #fafafd;
+}
+:root[data-mock-theme="light"] body[data-mock-page="livewatch"] button.ghost {
+    background: #ffffff;
+}
+:root[data-mock-theme="light"] body[data-mock-page="livewatch"] #run {
+    border-color: var(--vscode-button-background);
+}
