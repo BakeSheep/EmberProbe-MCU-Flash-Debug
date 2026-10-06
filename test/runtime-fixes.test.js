@@ -46,7 +46,7 @@ const { normalizeWatchList } = require("../src/validation");
         graph.send({ type: "liveCompositeSample", samples: [runtimeSample] });
         const cell = graph.document.querySelector('.member-name[title="values.value"]');
         assert.ok(cell, "live watch should render runtime members when a static layout is also present");
-        assert.strictEqual(cell.parentElement.querySelector(".member-value").textContent, "42");
+        assert.strictEqual(cell.closest(".member-row").querySelector(".member-value").textContent, "42");
         assert.strictEqual(graph.document.querySelector('.member-name[title="values.staticField"]'), null);
         graph.assertHealthy();
     } finally {

@@ -1,6 +1,7 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "lw.samplingSelectionHint": "All variables selected for this waveform will be sampled at the selected frequency.",
     "lw.historyLoading": "Loading recorded history…",
     "lw.targetFrequency": "Waveform target frequency",
     "sb.samplingRate": "Sidebar target 20 Hz; actual {hz} Hz",

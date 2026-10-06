@@ -1,6 +1,7 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "lw.samplingSelectionHint": "此波形图所选变量都将以选定频率采样",
     "lw.historyLoading": "正在加载已记录的历史…",
     "lw.targetFrequency": "波形目标频率",
     "sb.samplingRate": "侧栏目标 20 Hz；实际 {hz} Hz",

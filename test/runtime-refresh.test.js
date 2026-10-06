@@ -57,7 +57,7 @@ for (const [label, html, listType, selector] of [
         view.send(sample(array(element(42))));
         const cell = view.document.querySelector(selector);
         assert.strictEqual(cell.textContent, "42", `${label}: first runtime sample is populated immediately`);
-        const button = view.document.querySelector(".member-swatch");
+        const button = view.document.querySelector(".member-row .curve-toggle");
         button?.focus();
 
         // The host delivers scalars first, then composites; neither may blank valid rows.
@@ -93,7 +93,7 @@ for (const [label, html, listType, selector] of [
         assert.notStrictEqual(view.document.querySelector(selector), beforeMove);
         assert.strictEqual(view.document.querySelector(selector).textContent, "49");
         if (button) {
-            view.document.querySelector(".member-swatch").click();
+            view.document.querySelector(".member-row .curve-toggle").click();
             const saved = view.messages.findLast((message) => message.type === "saveWatch");
             assert.strictEqual(saved.items.find((item) => item.name === "values[0]").address, 0x20000200);
         }

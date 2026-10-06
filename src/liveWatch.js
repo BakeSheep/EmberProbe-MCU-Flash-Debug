@@ -57,11 +57,9 @@ function parseMemoryValues(text) {
 }
 
 function parseMemoryElements(text, widthBits) {
-    if (!text) return [];
+    if (!text || ![8, 16, 32].includes(widthBits)) return [];
     const max = widthBits === 32 ? 0xffffffff : widthBits === 16 ? 0xffff : 0xff;
-    const cleaned = String(text)
-        .replace(/\x1a/g, " ")
-        .replace(/(^|\s)(0x)?[0-9a-fA-F]+:/g, " ");
+    const cleaned = String(text).replace(/(^|\s)(0x)?[0-9a-fA-F]+:/g, " ");
     const out = [];
     for (const tok of cleaned.trim().split(/\s+/)) {
         if (!tok) continue;
@@ -69,9 +67,10 @@ function parseMemoryElements(text, widthBits) {
         if (/^0x[0-9a-fA-F]+$/i.test(tok)) n = parseInt(tok, 16);
         else if (/^[0-9a-fA-F]*[a-f][0-9a-fA-F]*$/i.test(tok)) n = parseInt(tok, 16);
         else if (/^-?[0-9]+$/.test(tok)) n = parseInt(tok, 10);
-        else continue;
+        else return [];
         if (Number.isInteger(n) && n < 0 && n >= -(2 ** (widthBits - 1))) n += 2 ** widthBits;
-        if (Number.isInteger(n) && n >= 0 && n <= max) out.push(n >>> 0);
+        if (!Number.isInteger(n) || n < 0 || n > max) return [];
+        out.push(n >>> 0);
     }
     return out;
 }
@@ -804,8 +803,10 @@ class ManagedOpenOcdSession {
     }
 
     _setupSocket() {
-        this.socket.setNoDelay(true);
-        this.socket.on("data", (chunk) => {
+        const socket = this.socket;
+        socket.setNoDelay(true);
+        socket.on("data", (chunk) => {
+            if (socket !== this.socket || this.connectionFailed || this.stopped) return;
             this.pending += chunk.toString("latin1");
             let idx;
             while ((idx = this.pending.indexOf(SUB)) >= 0) {
@@ -813,6 +814,7 @@ class ManagedOpenOcdSession {
                 this.pending = this.pending.slice(idx + 1);
                 const q = this.queue.shift();
                 if (q) q.resolve(resp);
+                if (socket !== this.socket || this.connectionFailed || this.stopped) return;
             }
             // 失控流兜底：若缓冲累积超过 1MB 仍未出现分帧符，说明响应流异常，丢弃并重置连接，避免无限增长
             if (this.pending.length > 1048576) {
@@ -820,9 +822,11 @@ class ManagedOpenOcdSession {
                 this._abortConnection(new Error("OpenOCD 响应流异常：未收到分帧符"));
             }
         });
-        this.socket.on("error", (e) => this._abortConnection(e));
-        this.socket.on("close", () => {
-            if (!this.stopped) this._abortConnection(new Error("Tcl 连接已关闭"));
+        socket.on("error", (e) => {
+            if (socket === this.socket) this._abortConnection(e);
+        });
+        socket.on("close", () => {
+            if (socket === this.socket && !this.stopped) this._abortConnection(new Error("Tcl 连接已关闭"));
         });
     }
 
@@ -947,11 +951,19 @@ class ManagedOpenOcdSession {
         return new Promise((resolve, reject) => {
             if (!this.socket || this.socket.destroyed) return reject(new Error("socket 未连接"));
             const entry = {};
+            const deadline = Date.now() + 2000;
             const timer = setTimeout(() => {
                 if (this.queue.includes(entry)) this._abortConnection(new Error("OpenOCD 响应超时，采样连接已重置"));
             }, 2000);
             entry.resolve = (v) => {
                 clearTimeout(timer);
+                // A wake-up or busy event loop may dispatch data before the overdue timeout callback.
+                if (Date.now() >= deadline) {
+                    const error = new Error("OpenOCD 响应超时，采样连接已重置");
+                    reject(error);
+                    this._abortConnection(error);
+                    return;
+                }
                 resolve(v);
             };
             entry.reject = (e) => {
@@ -1041,13 +1053,13 @@ class ManagedOpenOcdSession {
             } else throw error;
         }
         const values = parseMemoryElements(resp, shape.widthBits);
-        if (values.length < shape.count) {
+        if (values.length !== shape.count) {
             this._lastReadError = String(resp || "")
                 .trim()
                 .slice(0, 200);
             return null;
         }
-        return elementsToBytes(values.slice(0, shape.count), shape.elementBytes).slice(0, count);
+        return elementsToBytes(values, shape.elementBytes);
     }
 
     _assertReadGuard(guard) {
@@ -1108,13 +1120,10 @@ class ManagedOpenOcdSession {
             const g = batch[i];
             const line = lines[i];
             const values = parseMemoryElements(line, g.shape.widthBits);
-            if (values.length < g.shape.count) {
+            if (values.length !== g.shape.count) {
                 result.push(null);
             } else {
-                const bytes = elementsToBytes(values.slice(0, g.shape.count), g.shape.elementBytes).slice(
-                    0,
-                    g.byteCount
-                );
+                const bytes = elementsToBytes(values, g.shape.elementBytes);
                 result.push(bytes.length === g.byteCount ? bytes : null);
             }
         }
@@ -1204,10 +1213,17 @@ class ManagedOpenOcdSession {
         }
         for (const [g, result] of assembled) {
             const bytes = !result.failed && result.received === g.byteCount ? result.bytes : null;
-            if (!bytes) this._lastReadError = "batch memory read returned incomplete data";
+            if (!bytes) this._lastReadError = "memory read returned invalid or incomplete data";
             for (const v of g.vars) {
                 const off = v.address - g.start;
-                samples.push({ name: v.name, bytes: bytes ? bytes.slice(off, off + v.size) : null, t });
+                samples.push({
+                    name: v.name,
+                    bytes: bytes ? bytes.slice(off, off + v.size) : null,
+                    ...(!bytes && {
+                        diagnostic: { code: "OPENOCD_MEMORY_RESPONSE_ERROR", message: this._lastReadError }
+                    }),
+                    t
+                });
                 if (bytes) ok++;
             }
         }

@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 波形导入变量窗口与变量搜索结果顶部增加采样提醒，说明此波形图所选变量均以选定频率采样。
+- Add a sampling reminder above waveform variable imports and search results: all selected variables use the selected sampling frequency.
+
+- 波形侧栏与树状成员统一使用留有边距的圆角长条色块；显隐按钮覆盖色块和变量名，移除树状成员绘图提示；数值列按内容分配宽度，避免留空时提前省略变量名。
+- Use inset rounded color bars for waveform sidebar variables and tree members; extend visibility buttons through the variable name and remove the tree plotting hint. Size value columns to their content so spare space remains available to variable names.
+
+- 实时采样严格校验内存响应的每个数值与元素数量，异常时清除旧标量／对象值并报告不可用；拒绝闲置／睡眠后超时回调执行前到达的过期响应，隔离旧 socket 事件，避免影响新连接。
+- Validate every memory response element and its exact count; clear stale scalar/object values on malformed reads. Reject overdue responses even before delayed timeout callbacks run after idle/sleep, and isolate old socket events from replacement connections.
+
 - 分离波形目标频率与侧栏固定 20 Hz 消费者；隐藏曲线继续归档，后台历史 Worker 保留最近 30 分钟。按需生成视口数据，冻结与保留数据 CSV 使用原始样本；内存预算或历史 Worker 故障暂停采样，并支持从当前清空代次的磁盘归档恢复。
 - Separate waveform-target sampling from fixed 20 Hz sidebar consumers; archive silent curves and retain 30 minutes in a history worker. Generate viewport data on demand, export original retained/frozen samples, pause on memory or history-worker failures, and rebuild the current clear generation from disk archives.
 

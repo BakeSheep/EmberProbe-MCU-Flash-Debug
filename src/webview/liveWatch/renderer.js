@@ -433,6 +433,24 @@ function removeVar(name) {
     saveUi();
     dirty = true;
 }
+function createCurveToggle(swatch, content, onClick) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "curve-toggle";
+    button.title = swatch.title;
+    button.setAttribute("aria-label", swatch.getAttribute("aria-label") || content.title + ": " + swatch.title);
+    button.setAttribute(
+        "aria-pressed",
+        swatch.getAttribute("aria-pressed") || String(!swatch.classList.contains("off"))
+    );
+    swatch.setAttribute("aria-hidden", "true");
+    button.onclick = function (event) {
+        event.stopPropagation();
+        onClick();
+    };
+    button.append(swatch, content);
+    return button;
+}
 function renderVars() {
     invalidateSeries();
     dirty = true;
@@ -465,16 +483,13 @@ function renderVars() {
         if (isLeafChild(item.name)) return;
         var card = document.createElement("div");
         card.className = "var-card";
-        var sw = document.createElement("button");
+        var sw = document.createElement("span");
         sw.className = "swatch" + (hidden[item.name] ? " off" : "");
         sw.style.background = colorFor(idx);
         sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
-        sw.onclick = function () {
-            toggleCurve(item.name);
-        };
-        var main = document.createElement("div");
+        var main = document.createElement("span");
         main.className = "var-main";
-        var name = document.createElement("div");
+        var name = document.createElement("span");
         name.className = "var-name";
         EmberProbeRuntime.renderVariableName(name, displayNameFor(item), item.name);
         name.title += " \u00b7 " + fmtAddr(item.address);
@@ -497,7 +512,10 @@ function renderVars() {
         rm.onclick = function () {
             removeVar(item.name);
         };
-        card.append(sw, main, val, rm);
+        var toggle = createCurveToggle(sw, main, function () {
+            toggleCurve(item.name);
+        });
+        card.append(toggle, val, rm);
         box.appendChild(card);
     });
 }
@@ -604,15 +622,11 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     var wi = watch.findIndex(function (w) {
         return w.name === path;
     });
-    var sw = document.createElement("button");
+    var sw = document.createElement("span");
     sw.className = "member-swatch" + (wi < 0 || hidden[path] ? " off" : "");
     if (wi >= 0) sw.style.background = colorFor(wi);
     sw.title = wi >= 0 ? t(hidden[path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
     if (controls && wi >= 0) controls.decorate(row, path, sw);
-    sw.onclick = function (e) {
-        e.stopPropagation();
-        toggleLeafInChart(path, address, watchType);
-    };
     var nm = document.createElement("span");
     nm.className = "member-name";
     nm.textContent = label;
@@ -627,7 +641,10 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
         if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
     });
     compCells[path] = val;
-    row.append(sw, nm, val);
+    var toggle = createCurveToggle(sw, nm, function () {
+        toggleLeafInChart(path, address, watchType);
+    });
+    row.append(toggle, val);
     container.appendChild(row);
 }
 function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
@@ -765,7 +782,6 @@ function renderCompositeCard(item, idx, box) {
     head.append(arrow, nm, sz);
     var body = document.createElement("div");
     body.className = "comp-body";
-    appendNote(body, t("lw.plotMembersHint"));
     head.onclick = function () {
         expanded[item.name] = !expanded[item.name];
         card.classList.toggle("open", expanded[item.name]);
@@ -1200,7 +1216,7 @@ function hideAutocomplete() {
 }
 function selectAutocomplete(index) {
     autocompleteIndex = index;
-    var rows = $("acDrop").children;
+    var rows = $("acResults").children;
     for (var i = 0; i < rows.length; i++) {
         rows[i].classList.toggle("active", i === index);
         rows[i].setAttribute("aria-selected", String(i === index));
@@ -1221,7 +1237,8 @@ function renderAutocomplete() {
     if (!drop) return;
     var q = ($("addName").value || "").trim().toLowerCase();
     hideAutocomplete();
-    drop.textContent = "";
+    var results = $("acResults");
+    results.textContent = "";
     if (!q) {
         drop.classList.remove("open");
         return;
@@ -1254,7 +1271,7 @@ function renderAutocomplete() {
             e.preventDefault();
             acceptAutocomplete(s);
         };
-        drop.appendChild(it);
+        results.appendChild(it);
     });
     drop.classList.add("open");
     $("addName").setAttribute("aria-expanded", "true");

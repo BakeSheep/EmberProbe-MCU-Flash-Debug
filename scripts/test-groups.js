@@ -102,6 +102,7 @@ const TEST_GROUPS = Object.freeze({
         "live-watch-audit.test.js",
         "live-watch-disconnect.test.js",
         "live-watch-integration.test.js",
+        "live-watch-response.test.js",
         "live-watch-service.test.js",
         "memory-analysis.test.js",
         "memory-sidebar.test.js",
