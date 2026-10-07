@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复内置调试器在继续／单步／运行到入口时的状态竞争，安全处理调用栈末尾分页，并在退出时取消旧请求，避免预期的状态变化弹出错误；保留真实调试故障提示与读取预算。
+- Fix built-in debugger execution-state races during continue, stepping and run-to-entry; handle end-of-stack pages safely and cancel pending requests on shutdown, while preserving genuine errors and bounded reads.
+
 - 从 ELF/DWARF 直接解析 C/C++ 枚举成员，在侧栏和 Live Watch 显示名称与数值，支持别名、复合成员、数组和运行时对象；修复旧 DWARF 负值解码和枚举指针宽度，保留精确 64 位数值与未知编码的只读保护。
 - Decode C/C++ enum members directly from ELF/DWARF and display names with values in the sidebar and Live Watch, including aliases, composite members, arrays and runtime objects. Fix legacy DWARF signed reads and enum pointer widths while preserving exact 64-bit values and read-only protection for inferred encodings.
 

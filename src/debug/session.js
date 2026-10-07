@@ -38,6 +38,7 @@ class EmberDebugSession extends DebugSession {
         super();
         this.mi = options.mi || new MiClient();
         this.running = false;
+        this.executionEpoch = 0;
         this.ready = false;
         this.ended = false;
         this.config = {};
@@ -64,12 +65,14 @@ class EmberDebugSession extends DebugSession {
         this.entryBreakpoint = null;
         this.queue = Promise.resolve();
         this.requests = [];
+        this.pendingRequests = new Set();
         this.activeRequest = null;
         this.requestLoop = false;
         this.requestContext = new AsyncLocalStorage();
         const command = this.mi.command.bind(this.mi);
         this.mi.command = (...args) => {
-            if (!["-exec-interrupt --all", "-gdb-exit"].includes(args[0])) this.checkRequest();
+            const cleanup = args[0] === "-gdb-exit" || (args[0] === "-target-disconnect" && this.disconnecting);
+            if (!cleanup) this.checkRequest();
             const task = this.requestContext.getStore();
             if (task) task.miCount++;
             return command(...args);
@@ -107,7 +110,7 @@ class EmberDebugSession extends DebugSession {
     }
     closeExternal() {
         if (this.externalClosing) return this.externalClosing;
-        this.disconnecting = true;
+        this.beginDisconnect();
         this.externalClosing = (async () => {
             try {
                 if (!this.mi.closed && this.mi.process) await this.mi.command("-target-disconnect", 2000);
@@ -128,7 +131,16 @@ class EmberDebugSession extends DebugSession {
             ) ||
             (request.command === "evaluate" && request.arguments?.context === "hover");
         const control = ["continue", "next", "stepIn", "stepOut", "restart"].includes(request.command);
-        const task = { read, cancelled: false, execute: null, miCount: 0 };
+        const terminating = ["disconnect", "terminate"].includes(request.command);
+        const task = {
+            read,
+            terminating,
+            metadata: request.command === "initialize",
+            cancelled: !terminating && request.command !== "initialize" && !!(this.disconnecting || this.ended),
+            execute: null,
+            miCount: 0
+        };
+        this.pendingRequests.add(task);
         const queuedAt = performance.now();
         const response = {
             seq: 0,
@@ -140,7 +152,9 @@ class EmberDebugSession extends DebugSession {
         const execute = () =>
             this.requestContext.run(task, async () => {
                 const startedAt = performance.now();
+                const epoch = this.executionEpoch;
                 try {
+                    if (read && request.command !== "threads" && this.running) task.cancelled = true;
                     if (task.cancelled)
                         throw new Error("Debug read cancelled by execution control; refresh after stopping");
                     response.body = await this.handle(request.command, request.arguments || {});
@@ -154,9 +168,12 @@ class EmberDebugSession extends DebugSession {
                     if (request.command === "launch" || request.command === "attach")
                         this.sendEvent(new InitializedEvent());
                 } catch (error) {
-                    this.sendErrorResponse(response, { id: 1, format: error.message, showUser: !task.cancelled });
-                    if (["launch", "attach", "configurationDone"].includes(request.command)) await this.close();
+                    const stale = task.cancelled || (read && epoch !== this.executionEpoch);
+                    this.sendErrorResponse(response, { id: 1, format: error.message, showUser: !stale });
+                    if (!this.disconnecting && ["launch", "attach", "configurationDone"].includes(request.command))
+                        await this.close();
                 } finally {
+                    this.pendingRequests.delete(task);
                     if (this.config.performanceTrace) {
                         const timing = {
                             command: request.command,
@@ -172,7 +189,8 @@ class EmberDebugSession extends DebugSession {
                 }
             });
         // Interrupt does not touch frame context and must not wait for an unrelated read.
-        if (["disconnect", "terminate"].includes(request.command) || (request.command === "pause" && this.running)) {
+        if (terminating || (request.command === "pause" && this.running)) {
+            if (terminating) this.beginDisconnect();
             const urgent = execute();
             this.queue = Promise.all([this.queue, urgent]).then(() => {});
             return;
@@ -192,8 +210,22 @@ class EmberDebugSession extends DebugSession {
         }
     }
     checkRequest() {
+        if (this.disconnecting || this.ended) throw new Error("Debug session ended");
         if ((this.requestContext.getStore() || this.activeRequest)?.cancelled)
             throw new Error("Debug read cancelled by execution control; refresh after stopping");
+    }
+    beginDisconnect() {
+        if (!this.disconnecting) {
+            this.disconnecting = true;
+            this.executionEpoch++;
+            this.pendingVarCleanup.length = 0;
+            this.hoverEvaluations.clear();
+            this.variableStore.reset();
+            this.handles.clear();
+        }
+        // Capabilities are local metadata. Even a pipelined initialize/disconnect handshake
+        // must receive its initialize response; target operations are cancelled immediately.
+        for (const task of this.pendingRequests) if (!task.terminating && !task.metadata) task.cancelled = true;
     }
     async drainRequests() {
         try {
@@ -210,6 +242,7 @@ class EmberDebugSession extends DebugSession {
     }
     end() {
         if (this.ended) return;
+        this.beginDisconnect();
         this.ended = true;
         this.pendingVarCleanup.length = 0;
         this.hoverEvaluations.clear();
@@ -218,6 +251,7 @@ class EmberDebugSession extends DebugSession {
         this.sendEvent(new TerminatedEvent());
     }
     async close() {
+        this.beginDisconnect();
         if (this.config.servertype === "external") {
             try {
                 await this.closeExternal();
@@ -230,9 +264,11 @@ class EmberDebugSession extends DebugSession {
         await this.mi.stop();
     }
     onRecord(record) {
+        if (this.disconnecting || this.ended) return;
         if (record.kind === "=") return this.onAsyncThreadRecord(record);
         if (record.kind !== "*") return;
         if (record.class === "running") {
+            this.executionEpoch++;
             this.running = true;
             this.selectedFrame = undefined;
             this.hoverEvaluations.clear();
@@ -245,6 +281,7 @@ class EmberDebugSession extends DebugSession {
             if (this.ready) this.sendEvent(new ContinuedEvent(this.stopThreadId(), true));
         }
         if (record.class !== "stopped") return;
+        this.executionEpoch++;
         this.running = false;
         if (this.varCleanupWaitingForStop) {
             this.varCleanupWaitingForStop = false;
@@ -350,6 +387,7 @@ class EmberDebugSession extends DebugSession {
         return id;
     }
     paused() {
+        this.checkRequest();
         if (this.running || !this.ready) throw new Error("Target must be paused");
     }
     reference(id, kind) {
@@ -619,9 +657,17 @@ class EmberDebugSession extends DebugSession {
         }
     }
     async execute(command) {
+        this.checkRequest();
+        const epoch = ++this.executionEpoch;
+        const wasRunning = this.running;
+        // ^running may arrive before *running. Block stopped reads before the MI write, and
+        // never overwrite a fast stop (or a newer running event) when this command settles.
+        this.running = true;
+        await this.clearVariables({ defer: true });
         try {
             return await this.mi.command(command);
         } catch (error) {
+            if (epoch === this.executionEpoch) this.running = wasRunning;
             if (/breakpoint|hardware resource/i.test(error.message)) {
                 for (const group of this.breakpoints.values())
                     for (const item of group.values()) {
@@ -838,7 +884,23 @@ class EmberDebugSession extends DebugSession {
                 this.selectedFrame = undefined;
                 await this.mi.command(`-thread-select ${thread}`);
                 this.variableStore.check(generation);
-                const result = await this.mi.command(`-stack-list-frames ${start} ${start + levels - 1}`);
+                let result;
+                try {
+                    result = await this.mi.command(`-stack-list-frames ${start} ${start + levels - 1}`);
+                } catch (error) {
+                    this.variableStore.check(generation);
+                    if (start === 0 || !/^-?stack-list-frames: Not enough frames in stack\.$/.test(error.message))
+                        throw error;
+                    // A full page does not establish the total depth. GDB errors when the next
+                    // page starts past the end; confirm that boundary within a traversal budget.
+                    const limit = Math.min(start + 1, 1000);
+                    const info = await this.mi.command(`-stack-info-depth ${limit}`);
+                    this.variableStore.check(generation);
+                    if (!/^\d+$/.test(info.depth || "")) throw error;
+                    const depth = Number(info.depth);
+                    if (!Number.isSafeInteger(depth) || depth < 0 || depth >= limit || depth > start) throw error;
+                    return { stackFrames: [], totalFrames: depth };
+                }
                 this.variableStore.check(generation);
                 const frames = (result.stack || []).map((entry) => entry.frame || entry);
                 return {
@@ -908,7 +970,6 @@ class EmberDebugSession extends DebugSession {
                 const thread = await this.ensureThread(args.threadId);
                 this.controlPending = true;
                 try {
-                    await this.clearVariables({ defer: true });
                     const operation = { continue: "continue", next: "next", stepIn: "step", stepOut: "finish" }[
                         command
                     ];
@@ -946,7 +1007,7 @@ class EmberDebugSession extends DebugSession {
                 return {};
             case "disconnect":
             case "terminate":
-                this.disconnecting = true;
+                this.beginDisconnect();
                 if (this.config.servertype === "external") await this.closeExternal();
                 else await this.mi.stop();
                 return {};

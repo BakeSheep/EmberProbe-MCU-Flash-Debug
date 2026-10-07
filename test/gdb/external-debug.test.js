@@ -54,6 +54,15 @@ const { RspMemory } = require("./rsp-memory");
                 assert(events.some((event) => event.event === "stopped" && event.body.threadId === 1));
                 assert.strictEqual(target.writes.length, writtenBefore, "attach never downloads firmware");
                 assert.strictEqual((await session.handle("threads", {})).threads.length, 1);
+                const stack = await session.handle("stackTrace", { threadId: 1, levels: 1 });
+                assert.strictEqual(stack.stackFrames.length, 1);
+                const depth = Number((await session.mi.command("-stack-info-depth 1000")).depth);
+                assert(depth > 0 && depth < 1000, "the memory fixture has a bounded stack");
+                assert.deepStrictEqual(
+                    await session.handle("stackTrace", { threadId: 1, startFrame: depth, levels: 1 }),
+                    { stackFrames: [], totalFrames: depth },
+                    "real GDB's end-of-stack error becomes an empty DAP page"
+                );
                 await session.handle("writeMemory", { memoryReference: "0x20000000", data: "AQIDBA==" });
                 const bytes = await session.handle("readMemory", { memoryReference: "0x20000000", count: 4 });
                 assert.strictEqual(bytes.data, "AQIDBA==");

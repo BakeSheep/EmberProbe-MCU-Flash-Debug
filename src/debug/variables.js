@@ -78,13 +78,19 @@ class DebugVariables {
     }
     snapshot(frame) {
         const thread = (this.session.threadAware ?? this.session.rtosAware) ? frame?.thread : undefined;
-        return { generation: this.generation, thread, threadGeneration: this.threadGenerations.get(thread) || 0 };
+        return {
+            generation: this.generation,
+            executionEpoch: this.session.executionEpoch,
+            thread,
+            threadGeneration: this.threadGenerations.get(thread) || 0
+        };
     }
     check(snapshot) {
         this.session.checkRequest?.();
         this.session.paused();
         if (
             snapshot.generation !== this.generation ||
+            snapshot.executionEpoch !== this.session.executionEpoch ||
             snapshot.threadGeneration !== (this.threadGenerations.get(snapshot.thread) || 0)
         )
             throw new Error("Stale debug variable operation; refresh after stopping");
