@@ -106,6 +106,7 @@ jobs:
         env:
           IMAGE_GDB: gdb-multiarch
       - run: node test/gdb/runtime-objects.test.js --fixtures
+      - run: node test/gdb/enum-variables.test.js
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

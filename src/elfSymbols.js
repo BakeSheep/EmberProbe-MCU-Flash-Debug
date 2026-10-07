@@ -62,7 +62,7 @@ function resolveVariableRequests(symbols, requests) {
                 code: "DUPLICATE_VARIABLE"
             });
         seen.add(symbol.name);
-        const type = request.type || symbol.watchType || defaultType(symbol.size);
+        const type = request.type || symbol.watchType || (symbol.isEnum ? "" : defaultType(symbol.size));
         if (!SUPPORTED_TYPES.includes(type))
             throw Object.assign(new Error(`Unsupported type for ${symbol.name}: ${type}`), {
                 code: "UNSUPPORTED_VARIABLE_TYPE"
@@ -223,6 +223,27 @@ function decodeValueText(bytes, type) {
         if (value === -Infinity) return "-Infinity";
     }
     return null;
+}
+
+// Keep numeric/exact values intact for charts, CSV and write inputs.
+const enumNames = new WeakMap();
+function enumValueText(decoded, enumInfo) {
+    if (!enumInfo || decoded.value == null) return null;
+    const value = decoded.valueText ?? (Number.isSafeInteger(decoded.value) ? String(decoded.value) : null);
+    if (value === null) return null;
+    let names = enumNames.get(enumInfo);
+    if (!names) {
+        names = new Map();
+        for (const entry of enumInfo.entries || []) {
+            const prefix = entry.name.lastIndexOf("::");
+            const label = prefix < 0 ? entry.name : "." + entry.name.slice(prefix + 2);
+            const previous = names.get(entry.value);
+            names.set(entry.value, previous ? previous + " / " + label : label);
+        }
+        enumNames.set(enumInfo, names);
+    }
+    const name = names.get(value);
+    return name ? `${name}(${value})` : null;
 }
 
 // 解析 ELF32 符号表，返回 { symbols: [{name,address,size}], warnings: [] }
@@ -449,6 +470,8 @@ function findMemberRoute(node, name, nested, depth = 0) {
 
 function leafFlags(member, isConst) {
     return {
+        ...(member.enumInfo ? { enumInfo: member.enumInfo } : {}),
+        ...(member.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
         ...(member.isBoolean ? { isBoolean: true } : {}),
         ...(member.isConst || isConst ? { isConst: true } : {}),
         ...(member.isReference ? { isReference: true } : {}),
@@ -694,6 +717,7 @@ function decodeComposite(bytes, layout) {
                         name: m.name,
                         offset: mOff,
                         ...decoded,
+                        ...(m.enumInfo ? { enumText: enumValueText(decoded, m.enumInfo) } : {}),
                         type: m.watchType,
                         typeName: m.typeName || "",
                         ...(Number.isInteger(m.bitSize) ? { bitSize: m.bitSize, bitOffset: m.bitOffset } : {})
@@ -715,11 +739,15 @@ function decodeComposite(bytes, layout) {
                 } else if (elemType.watchType) {
                     const width = typeByteLength(elemType.watchType);
                     const raw = eOff >= 0 && eOff + width <= src.length ? src.subarray(eOff, eOff + width) : null;
+                    const decoded = {
+                        value: decodeScalar(eOff, elemType.watchType),
+                        valueText: decodeValueText(raw, elemType.watchType)
+                    };
                     elements.push({
                         index: i,
                         offset: eOff,
-                        value: decodeScalar(eOff, elemType.watchType),
-                        valueText: decodeValueText(raw, elemType.watchType),
+                        ...decoded,
+                        ...(elemType.enumInfo ? { enumText: enumValueText(decoded, elemType.enumInfo) } : {}),
                         type: elemType.watchType
                     });
                 }
@@ -812,6 +840,7 @@ module.exports = {
     nearestFunction,
     decodeValue,
     decodeValueText,
+    enumValueText,
     decodeBitfieldValue,
     encodeValue,
     decodeComposite,

@@ -37,6 +37,7 @@ function resolveLeafPath(name, byName, supported) {
         address: leaf.address >>> 0,
         size: Number(leaf.size) || typeByteLength(leaf.type),
         type: leaf.type,
+        ...(leaf.enumInfo ? { enumInfo: leaf.enumInfo } : {}),
         ...(leaf.isBoolean ? { isBoolean: true } : {}),
         ...(Number.isInteger(leaf.bitSize) ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset } : {})
     };
@@ -86,7 +87,7 @@ function normalizeWatchList(items, symbols) {
             });
             continue;
         }
-        const type = supported.has(item.type) ? item.type : symbol.watchType;
+        const type = symbol.isEnum ? symbol.watchType : supported.has(item.type) ? item.type : symbol.watchType;
         if (!supported.has(type) || typeByteLength(type) > Number(symbol.size)) continue;
         seen.add(item.name);
         result.push({
@@ -95,6 +96,7 @@ function normalizeWatchList(items, symbols) {
             address: Number(symbol.address) >>> 0,
             size: Number(symbol.size) >>> 0,
             type,
+            ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
             ...(symbol.isBoolean ? { isBoolean: true } : {}),
             ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {})
         });

@@ -146,6 +146,7 @@ var watch = [],
     data = Object.create(null),
     latest = Object.create(null),
     latestText = Object.create(null),
+    latestEnum = Object.create(null),
     valueCells = Object.create(null),
     hidden = Object.create(null),
     expanded = Object.create(null),
@@ -234,7 +235,8 @@ function fmtNum(v) {
     var a = Math.abs(v);
     return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
 }
-function fmtExact(v, valueText) {
+function fmtExact(v, valueText, enumText) {
+    if (enumText) return String(enumText);
     return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
 }
 function setDisplayedValue(cell, value) {
@@ -442,6 +444,7 @@ function removeVar(name) {
         delete data[w.name];
         delete latest[w.name];
         delete latestText[w.name];
+        delete latestEnum[w.name];
         delete hidden[w.name];
     });
     Object.keys(expanded).forEach(function (path) {
@@ -515,7 +518,7 @@ function renderVars() {
         name.title += " \u00b7 " + fmtAddr(item.address);
         var val = document.createElement("div");
         val.className = "var-value";
-        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name], latestEnum[item.name]));
         val.title = t("common.copy");
         val.addEventListener("click", function (event) {
             event.stopPropagation();
@@ -541,7 +544,7 @@ function renderVars() {
 }
 function updateValues() {
     Object.keys(valueCells).forEach(function (n) {
-        setDisplayedValue(valueCells[n], fmtExact(latest[n], latestText[n]));
+        setDisplayedValue(valueCells[n], fmtExact(latest[n], latestText[n], latestEnum[n]));
     });
     watch.forEach(function (it) {
         if (isCompositeItem(it)) updateCompositeValues(it.name);
@@ -589,6 +592,7 @@ function onSamples(samples) {
         if (samplingOrigin === null) samplingOrigin = time;
         latest[s.name] = s.value;
         latestText[s.name] = s.valueText ?? null;
+        latestEnum[s.name] = s.enumText ?? null;
         // Preserve failed samples as breaks rather than drawing across a gap.
         ensureBuf(s.name);
         var arr = data[s.name];
@@ -633,7 +637,7 @@ function updateCompositeValues(name) {
     if (!tree) return;
     walkTreeLeaves(tree, name, function (path, node) {
         var cell = compCells[path];
-        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText, node.enumText));
     });
 }
 function renderLeafInto(container, label, typeName, path, watchType, address, node) {
@@ -654,7 +658,7 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     nm.setAttribute("aria-label", nm.title);
     var val = document.createElement("span");
     val.className = "member-value";
-    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText) : "\u2014");
+    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText, node.enumText) : "\u2014");
     val.title = t("common.copy");
     val.addEventListener("click", function (event) {
         event.stopPropagation();
@@ -1046,6 +1050,7 @@ function clearHistory(clearArchive = true) {
     Object.keys(latest).forEach(function (n) {
         latest[n] = null;
         latestText[n] = null;
+        latestEnum[n] = null;
     });
     sampleTimes = [];
     samplingOrigin = null;
@@ -1851,6 +1856,7 @@ function chartAction(action, value) {
             data[item.name] = [];
             latest[item.name] = null;
             latestText[item.name] = null;
+            latestEnum[item.name] = null;
             Analysis.remove(analysis, [item.name]);
             invalidateSeries();
             updateValues();
@@ -2395,12 +2401,14 @@ window.EmberProbeMessages.connect(window, {
             delete data[name];
             delete latest[name];
             delete latestText[name];
+            delete latestEnum[name];
         });
         watch = incoming;
         if (m.resetValues) {
             watch.forEach(function (item) {
                 delete latest[item.name];
                 delete latestText[item.name];
+                delete latestEnum[item.name];
             });
         }
         Object.keys(hidden).forEach(function (n) {
@@ -2699,6 +2707,7 @@ window.EmberProbeMessages.connect(window, {
         (m.samples || []).forEach(function (sample) {
             latest[sample.name] = sample.value;
             latestText[sample.name] = sample.valueText ?? null;
+            latestEnum[sample.name] = sample.enumText ?? null;
         });
         scheduleValueRefresh();
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = m.actualHz.toFixed(1) + " Hz";

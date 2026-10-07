@@ -92,9 +92,21 @@ class ElfService {
                       /\[\]$/.test(symbol.typeName) ||
                       unresolvedCpp ||
                       (!info && ![1, 2, 4, 8].includes(Number(symbol.size))));
-            symbol.watchType = symbol.isComposite ? "" : info?.watchType || this.elfSymbols.defaultType(symbol.size);
+            symbol.watchType = symbol.isComposite
+                ? ""
+                : info?.isEnum
+                  ? info.watchType
+                  : info?.watchType || this.elfSymbols.defaultType(symbol.size);
             symbol.hasDwarfWriteType =
-                !symbol.isComposite && !!info?.watchType && !info.isReference && !info.isMemberPointer && !info.isConst;
+                !symbol.isComposite &&
+                !!info?.watchType &&
+                !info.isReference &&
+                !info.isMemberPointer &&
+                !info.isConst &&
+                !info.enumEncodingInferred;
+            if (info?.enumInfo) symbol.enumInfo = info.enumInfo;
+            if (info?.isEnum) symbol.isEnum = true;
+            if (info?.enumEncodingInferred) symbol.enumEncodingInferred = true;
             if (info?.isBoolean) symbol.isBoolean = true;
             if (info?.isConst) symbol.isConst = true;
             if (info?.isReference) symbol.isReference = true;

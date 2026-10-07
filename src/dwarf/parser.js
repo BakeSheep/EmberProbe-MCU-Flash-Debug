@@ -4,6 +4,7 @@ const {
     DW_TAG_structure_type,
     DW_TAG_union_type,
     DW_TAG_enumeration_type,
+    DW_TAG_enumerator,
     DW_TAG_pointer_type,
     DW_TAG_typedef,
     DW_TAG_base_type,
@@ -248,10 +249,13 @@ function _parseDwarfInternal(buffer, options = {}) {
                                     cuRel,
                                     sectionBase,
                                     offsetSize,
+                                    exactInteger: attr.at === 0x1c,
                                     implicit: attr.implicit
                                 });
                                 const v =
-                                    raw?.integer64 && BigInt(raw.integer64) <= BigInt(Number.MAX_SAFE_INTEGER)
+                                    raw?.integer64 &&
+                                    BigInt(raw.integer64) >= BigInt(Number.MIN_SAFE_INTEGER) &&
+                                    BigInt(raw.integer64) <= BigInt(Number.MAX_SAFE_INTEGER)
                                         ? Number(raw.integer64)
                                         : raw;
                                 switch (attr.at) {
@@ -270,7 +274,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                                     case 0x2133: // DW_AT_GNU_addr_base
                                         unit.addrBase = v;
                                         break;
-                                    case 0x1c: // DW_AT_const_value (template argument)
+                                    case 0x1c: // DW_AT_const_value (enumerator or template argument)
                                         rec.constantValue = v;
                                         break;
                                     case DW_AT_name:
@@ -302,6 +306,9 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         break;
                                     case DW_AT_encoding:
                                         if (typeof v === "number") rec.encoding = v;
+                                        break;
+                                    case 0x6d: // DW_AT_enum_class
+                                        rec.enumClass = !!v;
                                         break;
                                     case DW_AT_location:
                                         if (v && v.block && v.block.length >= 1) {
@@ -526,7 +533,16 @@ function _parseDwarfInternal(buffer, options = {}) {
         return parts.length ? parts.join("::") + "::" + name : name;
     };
     for (const [off, die] of dies) {
-        if (SCOPE_TAGS.has(die.tag) && die.name) die.qualifiedTypeName = buildQualifiedName(off, die.name);
+        if ((SCOPE_TAGS.has(die.tag) || die.tag === DW_TAG_enumeration_type) && die.name)
+            die.qualifiedTypeName = buildQualifiedName(off, die.name);
+    }
+    for (const [off, die] of dies) {
+        if (die.tag !== DW_TAG_enumerator || !die.name) continue;
+        const parent = dies.get(parentOf.get(off));
+        die.qualifiedName =
+            parent?.enumClass && parent.qualifiedTypeName
+                ? parent.qualifiedTypeName + "::" + die.name
+                : buildQualifiedName(off, die.name);
     }
 
     // LTO 常把地址留在具体变量 DIE，而把名称和类型放进 abstract_origin/specification。
