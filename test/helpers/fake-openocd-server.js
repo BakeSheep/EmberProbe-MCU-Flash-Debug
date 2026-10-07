@@ -37,7 +37,7 @@ class FakeOpenOcdServer {
             socket.on("close", () => this.sockets.delete(socket));
             // Closing a client may reset the transport; other errors must fail the test.
             socket.on("error", (error) => {
-                if (!["ECONNRESET", "EPIPE"].includes(error.code)) throw error;
+                if (!["ECONNRESET", "ECONNABORTED", "EPIPE"].includes(error.code)) throw error;
             });
             socket.on("data", (chunk) => {
                 pending += chunk;

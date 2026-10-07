@@ -7,6 +7,13 @@ const { CpuOpenOcdServer } = require("./helpers/cpu-openocd-server");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { loadProvider } = require("./helpers/load-provider");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(predicate, message) {
+    const deadline = Date.now() + 5000;
+    while (!predicate()) {
+        assert(Date.now() < deadline, message);
+        await wait(10);
+    }
+}
 
 (async () => {
     const source = new CpuOpenOcdServer();
@@ -24,9 +31,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         try {
             await session.start();
             await session.setCpuLoadPlan(source.plan);
-            await wait(1150);
-            assert(
-                events.some((result) => result.windowMs > 900 && result.acquiredSamples > 0),
+            await waitFor(
+                () => events.some((result) => result.windowMs > 900 && result.acquiredSamples > 0),
                 mode + " CPU with empty watch list"
             );
             assert.strictEqual(events.at(-1).capabilities.core, mode === "standalone" ? "Cortex-M7" : "Cortex-M0");
@@ -39,27 +45,23 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                 graphIntervalMs: 20
             });
             session.setSamplingEnabled(true);
-            await wait(150);
-            assert(variables.length > 0);
+            await waitFor(() => variables.length > 0, mode + " variable sampling starts");
             const cpuCount = events.length;
             session.setSamplingEnabled(false);
-            await wait(1050);
-            assert(events.length > cpuCount, "stopping variables leaves CPU alive");
+            await waitFor(() => events.length > cpuCount, "stopping variables leaves CPU alive");
             session.setSamplingEnabled(true);
             await session.setCpuLoadPlan(null);
-            await wait(80);
             const variableCount = variables.length,
                 stoppedCpu = events.length;
+            await waitFor(() => variables.length > variableCount, "stopping CPU leaves variables alive");
             await wait(180);
-            assert(variables.length > variableCount, "stopping CPU leaves variables alive");
             assert.strictEqual(events.length, stoppedCpu);
             await session.setCpuLoadPlan({ ...source.plan, generation: 2 });
             await session.setCpuLoadPaused("debug-control");
             await session.waitForIdle();
             assert.strictEqual(events.at(-1).state, "paused");
             await session.setCpuLoadPaused(null);
-            await wait(1080);
-            assert(events.at(-1).runGeneration > 1);
+            await waitFor(() => events.at(-1)?.runGeneration > 1, "resuming CPU starts a new run generation");
         } finally {
             await session.stop();
         }
@@ -72,7 +74,13 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         native.socket = await server.connect();
         native._setupSocket();
         native.setCpuLoadPlan(server.plan);
-        await wait(80);
+        await waitFor(
+            () =>
+                server.commands.some(
+                    (command) => command.includes("stm32h7x.cpu0 read_memory") && command.includes("curstate")
+                ),
+            "native CPU sampler acquires a memory sample"
+        );
         native.setCpuLoadPaused("control");
         await native.waitForIdle();
         const before = server.commands.length;
@@ -93,8 +101,12 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         try {
             writing.socket = await server.connect();
             writing._setupSocket();
+            const beforeStart = server.commands.length;
             writing.setCpuLoadPlan(server.plan);
-            await wait(40);
+            await waitFor(
+                () => server.commands.slice(beforeStart).some((command) => command.includes("curstate")),
+                "standalone CPU sampler starts"
+            );
             server.readLatencyMs = 5;
             const beginWrite = server.commands.length;
             await writing.writeAndVerify([{ name: "value", address: 0x20000200, bytes: [9, 8, 7, 6] }]);
@@ -147,8 +159,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         await service.reconcile();
         assert.strictEqual(plans.at(-1).identity.image, "changed");
         image = "periodic-change";
-        await wait(1100);
-        assert.strictEqual(plans.at(-1).identity.image, image, "integrity check rebuilds a changed image");
+        await waitFor(() => plans.at(-1)?.identity.image === image, "integrity check rebuilds a changed image");
         const current = plans.at(-1);
         service.accept(runtime, {
             state: "checking",
@@ -156,8 +167,10 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             generation: current.generation,
             identity: current.identity
         });
-        await wait(0);
-        assert(plans.at(-1).generation > current.generation, "observed target restart resolves metadata again");
+        await waitFor(
+            () => plans.at(-1)?.generation > current.generation,
+            "observed target restart resolves metadata again"
+        );
         await service.selectIdle("verified-key");
         await assert.rejects(service.selectIdle("x".repeat(100)), /active/);
     } finally {
@@ -175,7 +188,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         post() {}
     });
     const pending = racing.start();
-    await wait(0);
+    await waitFor(() => !!resolvePlan, "CPU metadata request starts before stop");
     await racing.stop();
     resolvePlan(source.plan);
     await pending;
