@@ -41,6 +41,7 @@ function activate(context) {
             }
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+            await provider._cpuLoadService.stop("workspace-changed").catch(() => {});
             await provider.stopAgentBridge().catch(() => {});
             provider.refreshSkillStatus(true).catch(console.error);
         }),
@@ -51,8 +52,14 @@ function activate(context) {
         },
         vscode.debug.registerDebugConfigurationProvider("cortex-debug", {
             async resolveDebugConfiguration(folder, config) {
-                await provider.prepareForCortexDebug(folder, config);
-                return config;
+                const generation = provider.beginForeignDebug();
+                try {
+                    await provider.prepareForCortexDebug(folder, config);
+                    return provider.isForeignDebugCurrent(generation) ? config : undefined;
+                } catch (error) {
+                    if (provider.isForeignDebugCurrent(generation)) provider.finishForeignDebug();
+                    throw error;
+                }
             }
         }),
         vscode.debug.registerDebugConfigurationProvider("emberprobe", {

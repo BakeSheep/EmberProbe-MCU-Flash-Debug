@@ -1,117 +1,179 @@
 "use strict";
 
 const { METRIC } = require("./cpuLoadModel");
+const { serializeError } = require("./errorEnvelope");
 
-// Host-side intent and identity owner. Only the sampling worker touches the target.
+// A measurement owns one physical lease and one standalone worker through confirmed exit.
 class CpuLoadService {
     constructor(options) {
         this.options = options;
         this.intent = false;
         this.generation = 0;
-        this.connections = new WeakMap();
-        this.nextConnection = 0;
         this.latest = { state: "stopped" };
+        /** @type {{ supported: boolean, reason?: { code?: string, i18nKey: string, message?: string } }} */
+        this.support = { supported: false, reason: { code: "CPU_CHECKING", i18nKey: "cpu.checkingSupport" } };
     }
     status() {
-        return { type: "cpuLoad", metric: METRIC, experimental: true, ...this.latest, intentEnabled: this.intent };
+        const blockedReason = this.options.blocked?.() || (!this.support.supported ? this.support.reason : null);
+        return {
+            type: "cpuLoad",
+            metric: METRIC,
+            experimental: true,
+            ...this.latest,
+            intentEnabled: this.intent,
+            ownsProbe: !!this.run,
+            canStart: !this.run && !blockedReason,
+            canStop: !!this.run && !this.stopping,
+            blockedReason
+        };
     }
-    publish(result) {
+    publish(result = this.latest) {
         this.latest = result;
         this.options.post(this.status());
     }
-    async start() {
-        this.intent = true;
-        await this.suspend("starting");
-        await this.reconcile(true);
-    }
-    async stop() {
-        this.intent = false;
-        await this.suspend("stopped");
-        await this.options.release?.();
-    }
-    suspend(reason) {
-        this.generation++;
-        clearInterval(this.integrityTimer);
-        this.integrityTimer = null;
-        const runtime = this.runtime;
-        this.runtime = null;
-        this.binding = null;
-        this.publish({
-            state: reason === "stopped" || !this.intent ? "stopped" : "paused",
-            reason: this.intent ? reason : undefined
-        });
-        return Promise.resolve(runtime?.setCpuLoadPlan(null)).catch(() => {});
-    }
-    async reconcile(connect = false) {
-        if (!this.intent) return;
-        if (this.pending) {
-            this.again = true;
-            return this.pending;
-        }
-        this.pending = this.bind(connect).finally(() => {
-            this.pending = null;
-            if (this.again) {
-                this.again = false;
-                void this.reconcile().catch(() => {});
-            }
-        });
-        return this.pending;
-    }
-    async bind(connect) {
-        let expected = this.generation;
+    async refreshSupport() {
+        const revision = (this.supportRevision = (this.supportRevision || 0) + 1);
+        this.support = { supported: false, reason: { code: "CPU_CHECKING", i18nKey: "cpu.checkingSupport" } };
+        this.publish();
         try {
-            const context = await this.options.context(connect);
-            if (!this.intent || expected !== this.generation) {
-                if (connect && !this.intent) await this.options.release?.();
-                return;
-            }
-            if (context.reason || !context.runtime) {
-                if (this.runtime) await this.suspend(context.reason || "disconnected");
-                else
-                    this.publish({
-                        state: context.unsupported ? "unavailable" : "paused",
-                        reason: context.reason || "disconnected"
-                    });
-                return;
-            }
-            const key = JSON.stringify(context.identity);
-            if (this.runtime === context.runtime && this.binding?.key === key) return;
-            await this.suspend("checking");
-            const generation = this.generation;
-            expected = generation;
+            await this.options.elf.cpuLoadPlan();
+            if (revision === this.supportRevision) this.support = { supported: true };
+        } catch (error) {
+            if (revision === this.supportRevision)
+                this.support = {
+                    supported: false,
+                    reason: { ...serializeError(error), i18nKey: "cpu.unsupportedProject" }
+                };
+        }
+        if (revision === this.supportRevision) this.publish();
+    }
+    start() {
+        if (this.stopping || (this.run && !this.intent))
+            return Promise.reject(Object.assign(new Error("CPU connection is still closing"), { code: "PROBE_BUSY" }));
+        if (this.run) return this.run.starting;
+        let lease;
+        try {
+            this.options.assertAvailable();
+            lease = this.options.coordinator.acquire("cpuLoad");
+        } catch (error) {
+            this.publish({ state: "stopped", diagnostic: serializeError(error) });
+            return Promise.reject(error);
+        }
+        const run = { lease, generation: ++this.generation, runtime: null };
+        this.run = run;
+        this.intent = true;
+        this.publish({ state: "checking" });
+        run.starting = this.begin(run);
+        return run.starting;
+    }
+    current(run) {
+        return this.run === run && this.intent && run.generation === this.generation;
+    }
+    async begin(run) {
+        let metadataReady = false;
+        try {
             const plan = await this.options.elf.cpuLoadPlan();
-            if (!this.intent || generation !== this.generation) return;
-            const current = await this.options.context(false);
-            if (current.runtime !== context.runtime || current.reason || JSON.stringify(current.identity) !== key)
-                return;
-            if (!this.connections.has(context.runtime)) this.connections.set(context.runtime, ++this.nextConnection);
-            const identity = {
-                ...context.identity,
-                connection: this.connections.get(context.runtime),
-                image: plan.image
+            if (!this.current(run)) return;
+            metadataReady = true;
+            this.support = { supported: true };
+            if (this.options.elf.read().elf.sha256 !== plan.image) throw new Error("ELF identity changed");
+            run.runtime = await this.options.create(
+                (result) => this.accept(run.runtime, result),
+                () => {
+                    if (this.current(run)) void this.stop("disconnected").catch(() => {});
+                },
+                () => this.current(run)
+            );
+            if (!this.current(run)) return;
+            if (!run.runtime) throw new Error("CPU connection was cancelled");
+            run.runtime.setSamplingEnabled(false);
+            await run.runtime.start();
+            if (!this.current(run)) return;
+            if (this.options.elf.read().elf.sha256 !== plan.image) throw new Error("ELF identity changed");
+            this.runtime = run.runtime;
+            this.binding = {
+                identity: {
+                    session: "cpu",
+                    connection: run.generation,
+                    image: plan.image,
+                    target: run.runtime.options?.target
+                }
             };
-            this.runtime = context.runtime;
-            this.binding = { key, identity, generation };
-            this.publish({ state: "checking", identity, generation });
-            await this.runtime.setCpuLoadPlan({ ...plan, identity, generation });
-            if (generation !== this.generation) return;
+            await run.runtime.setCpuLoadPlan({ ...plan, identity: this.binding.identity, generation: run.generation });
+            if (!this.current(run)) return;
             this.integrityTimer = setInterval(() => {
                 try {
-                    if (this.options.elf.read().elf.sha256 !== identity.image) throw new Error("ELF identity changed");
-                    void this.reconcile();
+                    if (this.options.elf.read().elf.sha256 !== plan.image) throw new Error("ELF identity changed");
                 } catch {
-                    void this.suspend("image-changed")
-                        .then(() => this.reconcile())
-                        .catch(() => {});
+                    void this.stop("image-changed").catch(() => {});
                 }
             }, 1000);
             this.integrityTimer.unref?.();
         } catch (error) {
-            if (this.intent && expected === this.generation) {
-                await this.suspend("unavailable");
-                this.publish({ state: "unavailable", reason: error.message });
+            if (this.current(run)) {
+                if (!metadataReady)
+                    this.support = {
+                        supported: false,
+                        reason: {
+                            ...serializeError(error),
+                            code: error.code || "CPU_LAYOUT_UNSUPPORTED",
+                            i18nKey: "cpu.unsupportedProject"
+                        }
+                    };
+                this.intent = false;
+                this.generation++;
+                this.publish({ state: "unavailable", reason: error.message, diagnostic: serializeError(error) });
+                await this.close(run);
+                this.publish();
+                throw error;
             }
         }
+    }
+    stop(reason = "stopped") {
+        this.intent = false;
+        this.generation++;
+        clearInterval(this.integrityTimer);
+        this.integrityTimer = null;
+        this.runtime = null;
+        this.binding = null;
+        if (this.stopping) return this.stopping;
+        const run = this.run;
+        if (!run) {
+            this.publish({ state: "stopped", reason: reason === "stopped" ? undefined : reason });
+            return Promise.resolve();
+        }
+        this.publish({ state: "stopping", reason });
+        this.stopping = (async () => {
+            await run.starting.catch(() => {});
+            await this.close(run);
+            this.publish({ state: "stopped", reason: reason === "stopped" ? undefined : reason });
+        })().finally(() => {
+            this.stopping = null;
+            this.publish();
+        });
+        this.publish();
+        return this.stopping;
+    }
+    async close(run) {
+        if (run.closing) return run.closing;
+        run.closing = (async () => {
+            if (run.runtime) {
+                await Promise.resolve(run.runtime.setCpuLoadPlan(null)).catch(() => {});
+                if ((await run.runtime.stop()) !== true) {
+                    const error = Object.assign(new Error("OpenOCD exit has not been confirmed"), {
+                        code: "CPU_EXIT_UNCONFIRMED",
+                        i18nKey: "cpu.exitUnconfirmed"
+                    });
+                    this.publish({ state: "unavailable", reason: error.message, diagnostic: serializeError(error) });
+                    throw error;
+                }
+            }
+            run.lease.release();
+            if (this.run === run) this.run = null;
+        })().finally(() => {
+            run.closing = null;
+        });
+        return run.closing;
     }
     accept(runtime, result) {
         if (
@@ -122,9 +184,23 @@ class CpuLoadService {
         )
             return false;
         this.publish(result);
-        if (result.needsMetadataRefresh) {
-            void this.suspend("runtime-revalidation")
-                .then(() => this.reconcile())
+        if (result.state === "unavailable") void this.stop(result.reason || "unavailable").catch(() => {});
+        else if (result.needsMetadataRefresh) {
+            const run = this.run;
+            const identity = this.binding.identity;
+            run.generation = ++this.generation;
+            this.publish({ state: "checking" });
+            void runtime
+                .setCpuLoadPlan(null)
+                .then(() => this.options.elf.cpuLoadPlan())
+                .then(async (plan) => {
+                    if (!this.current(run)) return;
+                    if (plan.image !== identity.image) throw new Error("ELF identity changed");
+                    await runtime.setCpuLoadPlan({ ...plan, identity, generation: run.generation });
+                })
+                .catch(() => {
+                    if (this.current(run)) return this.stop("image-changed");
+                })
                 .catch(() => {});
         }
         return true;

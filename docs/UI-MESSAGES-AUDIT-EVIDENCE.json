@@ -1,0 +1,218 @@
+{
+  "date": "2026-10-07",
+  "node": "v24.13.1",
+  "platform": "win32",
+  "hardwareOperations": false,
+  "checks": [
+    {
+      "id": "F1",
+      "observed": {
+        "popup": "SVD 下载/配置失败：AUDIT_NETWORK_FAILED",
+        "result": {
+          "type": "commandSuccess",
+          "cmd": "mcu-vscode.downloadOfficialSvd"
+        },
+        "status": "操作已完成"
+      }
+    },
+    {
+      "id": "F2",
+      "observed": {
+        "sidebarWarningVisible": false,
+        "graphWarningVisible": false
+      }
+    },
+    {
+      "id": "F3",
+      "observed": {
+        "errorOnlyInButtonTitle": true,
+        "oldTaskVisibleAfterContinue": true,
+        "staleLabelVisible": false
+      }
+    },
+    {
+      "id": "F4",
+      "observed": {
+        "raw": "ELF 超过 64 MiB 安全上限，已拒绝解析：firmware.elf",
+        "displayed": "ELF 超过  MiB 安全上限，已拒绝解析："
+      }
+    },
+    {
+      "id": "F5",
+      "observed": {
+        "code": "TCL_PORT_IN_USE",
+        "message": "OpenOCD Tcl 端口已被其他进程占用。",
+        "actions": [
+          "关闭残留的 OpenOCD 或其他调试会话后重试。",
+          "必要时在 EmberProbe 配置中更换 Tcl 端口。"
+        ]
+      }
+    },
+    {
+      "id": "F6",
+      "observed": {
+        "raw": "spawn audit.exe EACCES",
+        "displayed": "未检测到 OpenOCD"
+      }
+    },
+    {
+      "id": "dictionary",
+      "observed": {
+        "keys": 642,
+        "matchingKeysAndPlaceholders": true
+      }
+    },
+    {
+      "id": "wording-voltage",
+      "observed": {
+        "terminal": "参考电压异常（0.00 V），请核对供电、VTref 接线与探针测量能力",
+        "localized": "目标电压异常（0.00 V），目标板可能未供电"
+      }
+    }
+  ],
+  "finalCatalogScan": {
+    "utcTime": "2026-10-07T14:08:57.362Z",
+    "localized": 648,
+    "notificationCalls": 46,
+    "rawErrorCandidates": 888,
+    "matchingKeysAndPlaceholders": true,
+    "sourceHashes": {
+      "src/agentBridge.js": "86b9279946fc6bda19d5103a213a7655524517bd0078b146c260edbd4753fc48",
+      "src/autoDetect.js": "0f244bd8be88de0288f61e234071c160865d0d83e76a2ffff556f4e137ff7342",
+      "src/buildInfo.js": "66aa49908047a11bc5535bed4f52d90253a60bf04b96515802e003cf03ae5f0b",
+      "src/chartHistoryWorker.js": "fb63a39b8a59885e180c49ca87e54ef22c261eb9196dc8c261a3dde8d6e7a4ca",
+      "src/chip/parser.js": "50661e1793b8d343609c016691010ff502e26650ed678775a190a0ea70389ecd",
+      "src/chip/rules.js": "bd3f67acbde8dd13baa43b48726c4c94a68b7ed602ab8e338185ed8e5adfc2df",
+      "src/chipInfo.js": "b313b56d1bbe19170f00fe28f43d46e23fbd6179e2b390e49b9e9aac628d45ab",
+      "src/compositeValidation.js": "ba911125196f37c9751d4f087353a324bb7e27cd280471bb723001fbf14b50e1",
+      "src/confirmationStore.js": "5e2b5a33e7a02ecdf9baf5d310c28aa9f93f3904c471099118f5ac144a111fe6",
+      "src/cpuLoadView.js": "7f85e35fa7974616d0b77fd9d058eec07c66defb1bbaf7dd370ef5427b6719ca",
+      "src/cubemxAuthorization.js": "e89bbe02f126ef21b1f9fac55904e8e54c1693d0ae8b68173b11eae38922f140",
+      "src/debug/adapter.js": "1f347a19b690e9ea79a41e689015926be318b00b485e773e27b9569b7f25de84",
+      "src/debug/mi.js": "bbd8b207082d5975e8b016e3eadb78575a4ea730f85510dbd65dfe1fa7aa50aa",
+      "src/debug/session.js": "802a6e9d247d1470a3c401db6e08ef95be9fe2a4ad66e2e3e8a170674679a086",
+      "src/debug/stl.js": "e1794b9d4c4d5dc91446db88a317d7151c2810455c0b83e6766104718bea5785",
+      "src/debug/symbolDirectory.js": "69eeaebb4b02871dd7ac5635125e8c6a53bb7254641d2f339e63958abe1cccb6",
+      "src/debug/variables.js": "65e41c435aaca3e889b698ad1da4081b4d9d6b7ac0884509909a4dc0a18cc681",
+      "src/dwarf/binary.js": "04036eb1b0cc2d9a2a7e1b493d4ba8f080599acca188b4e69c81089815dd3e9c",
+      "src/dwarf/constants.js": "51a9395f793eb4afa32adcd27696ff9baf0197ad72c67782ee079037aec39288",
+      "src/dwarf/files.js": "6d500b41360713f61698161bcc81e1d835b7f5eb301609dda1512486efbf4c8d",
+      "src/dwarf/forms.js": "e5f42ded3f6dd5916cda94e5f3e853d14df408182fdc441298654c1b00678d1a",
+      "src/dwarf/parser.js": "71c5bfe49f27e991ab4ad9a18de6ede9400f964312f03bc9ee48aa7b6bb2d922",
+      "src/dwarf/runtimeTypes.js": "0a7c17b31c251ba386f9c57cd1f3f7d512a40fe2fba658d41e5bcf79f8e254d4",
+      "src/dwarf/types.js": "2207c6dc924fe1af6d8e85d8517e0ea85ca3d045f0ff0126a2d86c6bb13d7b5b",
+      "src/dwarf.js": "87af72a111fe74f24aa6331c78cf5c66c918d48958ac313ad7fe5b030d610ad1",
+      "src/elfFormat.js": "a11c309bc5db7c60b09e61db1aa8ef4464e866364f6e8a148a16e0bc3e8066ea",
+      "src/elfSymbols.js": "ee91023c3e9909ef59da6579e645081b9fec414502e4ce7914fd3a593aefcc72",
+      "src/elfWorker.js": "1e3dba61e1087617018ab562041919ebc190597dbf09db3bb1fe40439caf4f7c",
+      "src/extension.js": "31a437a78862f45bceb008e604c57132e5a00b888a8e1c8a279bbda243862fda",
+      "src/faultInfo.js": "76fd732a4ba4de358976e44f0c52a2a151eee5d54be4bc07ea970d30146a53d1",
+      "src/flashAuthorization.js": "e9e6af92157fe53203ffff14fb2d6f1f7f1469b310d98861e95a2f6a627675b2",
+      "src/i18n.js": "5ea336ed723640d90750a2710cfb98c09e9fbbc8f0386113a6b54641b69ee9b5",
+      "src/liveWatch.js": "eb3d41d69efff5c93f479aecde539343d200d601e75abfca3cc3085831f14e52",
+      "src/liveWatchView.js": "9b69787593857bdca1fcec9b8ca4e2d74f34c33390f5808c96b5f7101e14f0ec",
+      "src/mainViewProvider.js": "7dd35420e8a02356395455e11db153ae2909457863cda9b8365b8a3dfc6e3673",
+      "src/memoryAnalysis.js": "78be4f128ff76e4cb8c7a919a23059fce4a0e732abc12ab1113b8c02b77b79d4",
+      "src/memoryRegions.js": "38aba34b2272a65e9b550b695ec0071eed8bdddda2fc72160e612631008c88be",
+      "src/modernView.js": "775150ea344978d37d9faab172a53e8451310ea7e9108c6dac9e775cbc5a2fae",
+      "src/openocdChecker.js": "064672624483346dac0abe14307537237316b4256c4f1d5fe476df1484d58486",
+      "src/openocdInstaller.js": "2d86c2d051ed88e054c212ae5779346a40cfb3e1082a9f362a0daae3b6cec3ec",
+      "src/openocdRunner.js": "b920fc1119335eebe7e0e572409700097655118451f10d7f308b8d2a6ebef783",
+      "src/openocdScripts.js": "10f2ccb5d35d5f2d56727f68b944ece60fe1e72a636ce705d7c1a136ef9ae7c5",
+      "src/peripheralWriteAuthorization.js": "908eab865c6b522c962699ac5141f3a3bfb7515205ae808e2f838174e3d94987",
+      "src/probeCoordinator.js": "a3961c9e67cf149b4a6848b3ce521d2c6ffbffe854f3730a0017da03fc08a84d",
+      "src/samplingClock.js": "a33577ad1cce0e0f4557cf8169dcaa151853910c41470e8b679c9f8b9476d8d8",
+      "src/samplingFrequency.js": "c8a9b437bfce181772fcf01a9edad3cc119b185e20b45810944aeb41d4106d4f",
+      "src/samplingSession.js": "dee7bad94440ea5b03188d8416360442bd2f8f0f166ac1407d00b64112a4c413",
+      "src/samplingWorker.js": "01ddac3869d83b823233fc48c37e8541c83b51d9b7be601c191a984e1011b4d8",
+      "src/services/agentDebugInspection.js": "b66f70b911ec037b99a4544353a70e3cb9e15c06b231cce78ab466d1225221d6",
+      "src/services/agentFlashService.js": "5dc8049d40f778e35c89aaccce6bfbf79cf35d4fd986784023a4cbaac9a0b7c1",
+      "src/services/agentRoutes.js": "2a3fdd35bdca93c84dcc617f15bd6490638e900f0ea26853e86dc907c5b31d0f",
+      "src/services/agentService.js": "b45bb939e3c5fd9739bb76d0ea5594e2cd248550b32870fa9a6f58416d07b9bb",
+      "src/services/chartHistoryService.js": "ee8cd5e6317718df746937002078c5bf3074dd0a67fd00d1b77bcc665ea81bff",
+      "src/services/chartHistoryStore.js": "12099362ae1a9fa408c581d76fae03e04f21859de56a7dba8fc1f0cc8ef0aed3",
+      "src/services/chipInfoService.js": "88f0708cd104b4ab1627f0ed238a1cf021900a81a30b4c914db44dd4b4d944ea",
+      "src/services/configurationStore.js": "b033e0d8a12d53ad428842ce891104242604c97667f22e424d1dd6f1f8c6bf4f",
+      "src/services/cortexDebugPreflight.js": "e91ac5ab24bff8c20c9a52997358416e2e0dba1f1fbb200157b860bd335aab7f",
+      "src/services/cortexToolchainService.js": "bc122a0b93568310bec7f477df94a71afdce328d539c6a9e6d34dfd5c534acba",
+      "src/services/cpuLoadModel.js": "751ff241628dc1758eb0759302a4629d8585777ec5054bb87d4c6e9c75290a7a",
+      "src/services/cpuLoadSampler.js": "29aa3dfe7149808f6ce81bf4ad56555caa7b0b0cb03d1ddd332b559b74b1b8b8",
+      "src/services/cpuLoadService.js": "630d0ff8bacb20e302c8b65c9da2648988132e29129cd1f4436b016170a623ac",
+      "src/services/cubemxCandidate.js": "b8659b615917dfcde582830d3fbc39736d19be5e50912a975760a44209ef4eec",
+      "src/services/cubemxConfiguration.js": "030a437ae492df8a0fb33126c2cf8fcec08cc77e0d086f0556253601e5707e07",
+      "src/services/cubemxEnvironment.js": "85dbdcbf82721c743afe5353b9b2c20f186803216e4d6ddf52c32f3af8503ac0",
+      "src/services/cubemxFirmware.js": "7b49544b2647a5697a4f7e2b22063eab441da9f0d77e19bd29892dc01b765bd8",
+      "src/services/cubemxLog.js": "f9a3d59f868b93e4aef16a6b335013794e47c07caaef635fd20ceb0e84eb9d43",
+      "src/services/cubemxOperations.js": "dabad062bf1a608c7be0a6dd65c5c5abb45a2a4bb21349768e1630b2a8880f72",
+      "src/services/cubemxProject.js": "e93f0ce8d2fbe5d8a5ef2cdb848d36e798b82c5a64dfe19e71d4f77e607462ab",
+      "src/services/cubemxRunner.js": "d9f4d3f70d8243b22bf70d60441b52a1299a8ccdb7eb04cb0e0581ccbb44255f",
+      "src/services/cubemxService.js": "88e5a0c0e21c47b22026fc5e791329c42731ede3e2e0cd433e0ef1229b105cd3",
+      "src/services/debugConfiguration.js": "a97838594a9633bd2da172b0587b570bac31ea2ad69230a5d566dff57783e6ef",
+      "src/services/debugControlService.js": "fddc6e983f02e807650a9f2afcdc2ff60c6130b7b233305acaacf4a87177b147",
+      "src/services/debugImages.js": "f9859c4f516d7cb796a45820b26fe735a6c095011daecd602b86a5592790a179",
+      "src/services/debugLifecycle.js": "c8453519c7f7f81294acab46906b5ae4d439b2da29950cd7ea835feb64fce834",
+      "src/services/debugServerController.js": "e693a9f100bbbc048f013dbd9fdc015ff7238b76ace22e83f00844289f2da245",
+      "src/services/debugSessionBridge.js": "bf29c70437c6c49397b2fa95118986b6dca2cbb21c7bf6f0c76543a68c7873a8",
+      "src/services/deviceIdentityService.js": "06606b3b7ab6606f84a038ae244d1bb3bffc2195f3d4b10f6c73db0396779f14",
+      "src/services/elfService.js": "7b9581f72c96ddc20d61a47f9fe6083ad24485f16af57194de03df584c37632b",
+      "src/services/errorEnvelope.js": "d925cc42829deb340a7a434557cb92dc9628ffc8918523adecae1de6126b821f",
+      "src/services/externalDebugService.js": "523c00fc14e75b62d20055eec1e0796298d2e66cd4fa9d8b2b126cd301dc10f8",
+      "src/services/faultService.js": "4afa1088ccc3b43da16f81e4d416a99b0c16c3b8f0e616fedb6a457b31f34764",
+      "src/services/flashService.js": "4c1875c38fab21798cd51207b8bd233a3599e86f2fb774cb0d285a5e18a2dca1",
+      "src/services/freeRtosSnapshot.js": "355dc58e6388625ebc50f51a01b8a8ef553e46e63246f24ac6e9846786a40f01",
+      "src/services/javaProperties.js": "11398007a2e9ee4750ab3d9753c2a5f283d01de688805d400766fb275bb733f2",
+      "src/services/jlinkDriverChoice.js": "c302ed0d56ba971fd3874c6a399cc74fafb92ec5f7a3bb3475861c0e2da8e264",
+      "src/services/jlinkProbeReady.js": "a4ba89c04c720a3add56bb227a3329d83a4bea4172254fdf833b9684cd7a473a",
+      "src/services/liveWatchService.js": "a179ecddea34acad1428c184d1bd0da57f6e149e9e4c1e6f1076bee85129827d",
+      "src/services/memoryAnalysisController.js": "46a49c946365c9ab1cf73dc90c9b296ce7baa4424e328bfd5de8ddf50d136c52",
+      "src/services/memoryAnalysisService.js": "62261519f3c9d21656d99a5c67d5de53b2eb039e88b25cf767ec708f238c9d88",
+      "src/services/multiRatePlan.js": "ca4c803bfe2b541f2a23e966dc8efd09eddd3bf3d5cd34a62253ab7e2c3bf3fe",
+      "src/services/officialSvdService.js": "cbe873ce371267eed09449f817ed16257f46870f85dceffcb80964a2cb51a4a1",
+      "src/services/openocdExec.js": "1e552a2d31dd2c91c3af1112ee8d5da0500b61f9f15a7b108805ccffff925589",
+      "src/services/openocdStatusService.js": "57af9eec61da6cde27ab7b225e2a61d9317ae0f101b6769315d8eaa5a1e4932e",
+      "src/services/peripheralViewerIntegration.js": "336deac56480e7e9984762553966698e0ca3017cc77065d088605818e0a68f07",
+      "src/services/peripheralViewService.js": "04af609074ae86ecb7053eb265cbe9757881292b07087bb7b9b79fbcebe22046",
+      "src/services/prettyPrinting.js": "46502874b8608649c3141977c7f12c181924f26e078a74cb3bab4044c4b129bc",
+      "src/services/probeConnectionService.js": "f620d14b6964bb7c0686614e8ad6fadde907ec89e337c7b4e1e6abfeebb20162",
+      "src/services/probeDriverService.js": "ee72b1b2af2439882c13c18f1f5827238725deed075b473b344a9bc86a8e1ec6",
+      "src/services/rtosViewService.js": "ab5d094dc1f1177de42aca4108f17eb30f3739f230105202006acfa41daae8fc",
+      "src/services/runtimeObjectReader.js": "b85764b58d4f71159f7b18a4503bd94d0003572f6a3c156bd8255c9bde76bd33",
+      "src/services/runtimeWatch.js": "e156d8bb9560c4a1a23750be833f5f409e4fc73d0ed83442a49071b723b037b3",
+      "src/services/samplingArchive.js": "6dab56cb14dd9c1881546d947991fba45a9386249437e80dbc991499818b962e",
+      "src/services/samplingCoordinator.js": "9cdb0ad81670dd718fab9f3031a55dbe09891e9a8764c735a7cd4380a61b2d1c",
+      "src/services/seriesStyleStore.js": "0d2815fa0bd95d164f5ac658cf4ea097a5d12587bb14615be9197debfcae9177",
+      "src/services/sharedDebugGroup.js": "2404ab8ce8437552eed6377857509dc8c9e176df71a2733e75fc58e2bf8a85e9",
+      "src/services/skillStatusService.js": "8bdb95afb378b0795fd0efa4088b6c41121138561fd3dc76c1c9009b0603018e",
+      "src/services/svdDerivation.js": "321ef6237799dacaa717ae00390e8b3633e4ecbd4a1793e4d3a67ea2c53a8a38",
+      "src/services/svdLibraryService.js": "d234fd1f539517b081d6b4d051575537cefb46b36d1297fd581c67ce6a633552",
+      "src/services/svdManager.js": "b39edfd210e3f3dd0e2d65bcff01b92adfca64d6e2e35a4a0acec0f5933d1a8a",
+      "src/services/svdModelService.js": "24db74731c9700639ae10f3c2d70b8376d8b732a39119fe8c8653a0f3e1ff500",
+      "src/services/svdPeripheralService.js": "9c027f398f0d8a42de87c2a10c76c367a32dfdca08cd0f24c67815bddcf3e0bf",
+      "src/services/svdWriteConstraints.js": "a56d9105a8b26a6f88c902d312f8ed800ba90641d180080c3d896b688a583e61",
+      "src/services/targetCatalog.js": "42d0c7945db3b439a7eb1e0ebd4c766a49d9513387d0489112ae6436ecaf9a05",
+      "src/services/watchListStore.js": "9c279f32d6299003f4474ec6bfedd27d635ba19d29f515a918c5cb51d347fc62",
+      "src/skillInstaller.js": "44d129770d6cc48f41688592c9a2036d5122d383d06e73af94a962404cbefe3d",
+      "src/svdWorker.js": "7b5bc0bc3b45b59e88646e75c57b2faec74e3e7c0dcb6912cf54a9b984158adb",
+      "src/validation.js": "f34891304498959b051c32d53ca634c8b33922c9bb84efa2dc62fbcfcd76a871",
+      "src/webview/liveWatch/analysisState.js": "edc04d82e95fd9bad2fe1fc810c0e4417ec9d9a331d1d31e9d508d4cb7797e72",
+      "src/webview/liveWatch/chart.js": "790b37bb612a9bfee9d8b2e62aad25e4a01eb472809892977314ab6c29d80895",
+      "src/webview/liveWatch/chartControls.js": "ea88c09269f174d1e808a078a452b185f69010805f9927c46ddedcabc4c10ab8",
+      "src/webview/liveWatch/chartInspection.js": "4f8bacb0bfcaf949ecfbf0eb4eaebf3f14d1c0a57495f6525fd71d40cb17707b",
+      "src/webview/liveWatch/renderer.js": "92e876afedce3b396ad54ca0ef671ffa636f0344ad390ecb002c0915843d5db1",
+      "src/webview/liveWatch/seriesStyles.js": "7ff62882cc14e3f1f98eb93e29825c5989fb74862366725fca8ff93194b6d345",
+      "src/webview/liveWatch/viewport.js": "6e42d2b840348eba7771c07f7c575d5d579f59ed7017b3e4e7e3e081bdf458a2",
+      "src/webview/messages.js": "e39258fad83d78c2edf540efe15fe65f47086afcb332680cc2625db699e11da1",
+      "src/webview/runtime.js": "29191d07a502728b3acfa046e4f65267ee51662b26a6cbb565ce168cace40ca3",
+      "src/webview/sidebar/chipView.js": "5800370179ed34c6bc034ff6354507d3ab7017ca5ee0e051a0222c59aa239aee",
+      "src/webview/sidebar/cpuLoad.js": "54f6bd1965ad6eddddb341db9ea2440869838c67b17525bd24e93672766131ef",
+      "src/webview/sidebar/memoryView.js": "32d1f7c2c5643a9dda31a539a773370751104a90e605dc81e8fb6db81f6420be",
+      "src/webview/sidebar/peripherals.js": "4481336e6d2136bb52700b8960f36ba44a7cf58972d1d66a641302a126fd97d9",
+      "src/webview/sidebar/renderer.js": "25b1eac01664ad20dfa6d19a154b58254cf7b659c9d8bd41387cd32a68e87915",
+      "src/webview/sidebar/rtos.js": "18329a9566b22d6d8bf3176523b3a5b90ee8debe85d73ea157e85b5b30d07163",
+      "src/webviewAssets.js": "617ffacf0795f2ee3953d601491982dc9b39f5333088cb18e3b6ee36785d5e59",
+      "src/webviewTemplate.js": "932010e8a8c3ef247d0acb89adcd637cb2e630fe08237dce674285a1cf9bd39e",
+      "src/windowsTimerResolution.js": "c42725f1507aea1faed44b1454bc9194c57a5275076697a95e1aa4594dddc7b8",
+      "src/writeAuthorization.js": "9e7ee4c1bbfb0cbaeb06cecb40390f2275ae09bd641eb20eaf4efd269dddf562"
+    }
+  }
+}

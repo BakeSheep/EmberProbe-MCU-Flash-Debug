@@ -244,3 +244,26 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     outline: 1px solid var(--vscode-focusBorder, #0078d4);
     outline-offset: 2px;
 }
+
+.elf-diagnostics,
+.rtos-status {
+    padding: 8px;
+    margin: 6px 0;
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 120px;
+    overflow-y: auto;
+    border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
+    background: var(--vscode-textBlockQuote-background);
+}
+.elf-diagnostics[hidden] {
+    display: none;
+}
+.elf-error,
+.rtos-status.error {
+    color: var(--vscode-errorForeground, #f48771);
+}
+.rtos-stale .rtos-task-row {
+    opacity: 0.7;
+}

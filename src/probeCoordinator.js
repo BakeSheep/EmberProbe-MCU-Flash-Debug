@@ -8,12 +8,15 @@ const PROBE_OPERATIONS = Object.freeze([
     "agentRead",
     "debugStart",
     "debugServer",
-    "externalDebug"
+    "externalDebug",
+    "cpuLoad"
 ]);
 
 class ProbeCoordinator {
-    constructor() {
+    /** @param {(state: Record<string, boolean>) => void} [onChange] */
+    constructor(onChange = () => {}) {
         this._state = new Map(PROBE_OPERATIONS.map((name) => [name, null]));
+        this.onChange = onChange;
     }
 
     _validate(name) {
@@ -43,6 +46,7 @@ class ProbeCoordinator {
         if (this.anyActive()) throw this._busy(name);
         const lease = new ProbeLease(this, name);
         this._state.set(name, lease);
+        this.onChange(this.snapshot());
         return lease;
     }
 
@@ -58,6 +62,7 @@ class ProbeCoordinator {
         lease.released = true;
         const next = new ProbeLease(this, nextOperation);
         this._state.set(nextOperation, next);
+        this.onChange(this.snapshot());
         return next;
     }
 
@@ -69,6 +74,7 @@ class ProbeCoordinator {
         }
         this._state.set(lease.operation, null);
         lease.released = true;
+        this.onChange(this.snapshot());
         return true;
     }
 
@@ -99,6 +105,7 @@ class ProbeCoordinator {
             if (lease) lease.released = true;
             this._state.set(name, null);
         }
+        this.onChange(this.snapshot());
     }
 }
 

@@ -119,11 +119,19 @@ class ProbeDriverService {
     }
 
     async invoke(action, instanceId) {
+        let requiredPath = this.helperPath;
         try {
-            await fs.access(this.helperPath);
-            if (action === "install") await fs.access(path.join(path.dirname(this.helperPath), "libwdi.dll"));
-        } catch {
-            throw driverError("PROBE_DRIVER_HELPER_MISSING", "The signed Windows driver helper is not installed");
+            await fs.access(requiredPath);
+            if (action === "install") {
+                requiredPath = path.join(path.dirname(this.helperPath), "libwdi.dll");
+                await fs.access(requiredPath);
+            }
+        } catch (error) {
+            throw driverError(
+                "PROBE_DRIVER_HELPER_MISSING",
+                "Windows driver helper or required libwdi library is missing or inaccessible",
+                { path: requiredPath, cause: error.message }
+            );
         }
         return this.run(this.helperPath, action, instanceId);
     }

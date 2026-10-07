@@ -15,8 +15,9 @@ run(parentPort, { intervalMs: 20 }, (options, handlers) => {
     };
     const stop = session.stop.bind(session);
     session.stop = async () => {
-        await stop();
+        const closed = await stop();
         await server.stop();
+        return closed;
     };
     return session;
 });

@@ -111,7 +111,10 @@ const { create } = require("../src/webview/sidebar/rtos");
     assert.strictEqual(document.querySelectorAll(".rtos-task-details").length, 0);
     for (const kernelState of ["not-started", "no-tasks"]) {
         view.onSnapshot({ ...status, kernel: { state: kernelState }, tasks: [], partial: false });
-        assert.strictEqual(document.getElementById("rtosStatus"), null, "no status description below the filter");
+        assert.strictEqual(
+            document.getElementById("rtosStatus").textContent,
+            kernelState === "not-started" ? "rtos.notStarted" : "rtos.noTasks"
+        );
         assert.strictEqual(document.querySelectorAll("tbody tr").length, 0);
     }
     view.onSnapshot({ ...snapshot, partial: true, diagnostics: ["corrupt list"], kernel: { state: "running" } });

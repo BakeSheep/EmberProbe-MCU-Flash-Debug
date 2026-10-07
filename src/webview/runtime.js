@@ -332,6 +332,27 @@
                 : null;
         return JSON.stringify(shape(tree));
     }
+    function renderElfDiagnostics(element, warnings, error, label) {
+        if (!element) return;
+        const entries = Array.isArray(warnings)
+            ? [...new Set(warnings.filter((item) => typeof item === "string" && item.trim()))].slice(0, 64)
+            : [];
+        element.replaceChildren();
+        element.hidden = !error && !entries.length;
+        if (element.hidden) return;
+        const heading = element.ownerDocument.createElement("strong");
+        heading.textContent = label;
+        element.append(heading);
+        for (const [message, kind] of [
+            ...(error ? [[error, "error"]] : []),
+            ...entries.filter((message) => message !== error).map((message) => [message, "warning"])
+        ]) {
+            const line = element.ownerDocument.createElement("div");
+            line.className = "elf-" + kind;
+            line.textContent = String(message).slice(0, 2000);
+            element.append(line);
+        }
+    }
     function liveState(previous, message) {
         return {
             running:
@@ -363,6 +384,7 @@
         requiresRuntimePath,
         runtimeSelection,
         runtimeTreeShape,
-        liveState
+        liveState,
+        renderElfDiagnostics
     };
 });

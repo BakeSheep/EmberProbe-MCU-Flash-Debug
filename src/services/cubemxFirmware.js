@@ -163,7 +163,7 @@ class CubeMxFirmware {
         }
     }
     async install() {
-        if (this.opening) return;
+        if (this.opening) return false;
         this.opening = true;
         try {
             const original = JSON.stringify(this.config());
@@ -172,7 +172,7 @@ class CubeMxFirmware {
             if (!result || result.installed) {
                 if (this.error)
                     await this.vscode.window.showWarningMessage(this.t("cubemx.firmwareUnknown") + ": " + this.error);
-                return;
+                return result?.installed ? true : false;
             }
             let version = result.requiredVersion;
             if (!version && result.available.length) {
@@ -191,10 +191,11 @@ class CubeMxFirmware {
                     validateInput: (value) => (/^\d+\.\d+\.\d+$/.test(value) ? null : this.t("cubemx.firmwareVersion"))
                 });
             }
-            if (!version || original !== JSON.stringify(this.config())) return;
+            if (!version || original !== JSON.stringify(this.config())) return null;
             const tool = await this.installation(this.config().cubemxPath);
             await this.launch(tool, result.family, version, { closed: () => this.changed() });
             await this.vscode.window.showInformationMessage(this.t("cubemx.firmwareOpened"));
+            return true;
         } finally {
             this.opening = false;
             this.changed();

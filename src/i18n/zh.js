@@ -1,7 +1,17 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "common.diagnostics": "ELF 解析诊断",
+    "sb.commandCancelled": "操作已取消",
+    "oc.probeFailed": "OpenOCD 探测失败：{error}",
+    "oc.errPermission": "无法执行 OpenOCD：{path}；请检查执行权限与系统策略（{error}）",
     "cpu.title": "CPU负载",
+    "cpu.busy": "CPU 负载采样正在占用探针，请先停止采样。",
+    "cpu.probeBusy": "其他硬件操作正在进行，请先结束该操作。",
+    "cpu.checkingSupport": "正在检查当前 ELF 的 CPU 采样支持性。",
+    "cpu.unsupportedProject": "当前 ELF 不具备受支持的单核 FreeRTOS 内核符号或 DWARF。",
+    "cpu.exitUnconfirmed": "尚未确认 OpenOCD 退出，探针仍被占用；请重试停止。",
+    "cpu.state.stopping": "正在停止",
     "cpu.startHint": "开始 CPU 负载采样",
     "cpu.stopHint": "暂停 CPU 负载采样",
     "cpu.experimentalFeatures": "实验性功能",
@@ -543,7 +553,7 @@ module.exports = Object.freeze({
     "run.starting": "正在启动 OpenOCD",
     "run.adapterClock": "适配器时钟 {clock}",
     "run.voltage": "目标电压 {volts} V",
-    "run.voltageLow": "目标电压异常（{volts} V），目标板可能未供电",
+    "run.voltageLow": "参考电压异常（{volts} V），请核对供电、VTref 接线与探针测量能力",
     "run.deviceId": "器件 ID {id}",
     "run.chip": "识别芯片 {chip}",
     "run.flash": "Flash 容量 {size}",

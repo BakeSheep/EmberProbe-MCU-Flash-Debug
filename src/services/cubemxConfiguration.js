@@ -55,13 +55,13 @@ class CubeMxConfiguration {
                 await this.context.workspaceState.update("mcu.iocPath", selected.value);
                 this.changed();
             }
-            return;
+            return selected ? true : null;
         }
         const action = await v.window.showQuickPick([
             { label: this.t("cubemx.select"), action: "select" },
             { label: this.t("cubemx.clear"), action: "clear" }
         ]);
-        if (!action) return;
+        if (!action) return null;
         let value = "";
         if (action.action === "select") {
             const files = await v.window.showOpenDialog({
@@ -70,11 +70,12 @@ class CubeMxConfiguration {
                     ? { filters: { "CubeMX executable": ["exe"] } }
                     : {})
             });
-            if (!files?.[0]) return;
+            if (!files?.[0]) return null;
             value = (await installation(files[0].fsPath, { platform: this.platform || process.platform })).executable;
         }
         await v.workspace.getConfiguration("emberprobe").update("cubemxPath", value, v.ConfigurationTarget.Global);
         this.changed();
+        return true;
     }
     async iocCandidates() {
         const files = await this.vscode.workspace.findFiles(

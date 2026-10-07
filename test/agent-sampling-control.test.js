@@ -97,8 +97,12 @@ function fixture() {
     assert.strictEqual(started.running, true);
     assert.strictEqual(started.canRead, true);
     assert.strictEqual(started.intervalMs, 250);
-    assert.strictEqual(sidebar.at(-1).running, started.running);
-    assert.strictEqual(sidebar.at(-1).frequencyHz, 20, "sidebar target is independent of the waveform target");
+    assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).running, started.running);
+    assert.strictEqual(
+        sidebar.filter((message) => message.type === "liveStatus").at(-1).frequencyHz,
+        20,
+        "sidebar target is independent of the waveform target"
+    );
     assert.strictEqual(chart.at(-1).frequencyHz, 4);
     const session = p._liveSession;
     await p._controlAgentSampling("start");
@@ -117,8 +121,11 @@ function fixture() {
     const stopped = await p._controlAgentSampling("stop");
     assert.strictEqual(userSession.stopped, true, "stop response waits for connection cleanup");
     assert.strictEqual(stopped.running, false);
-    assert.strictEqual(sidebar.at(-1).running, false);
-    assert.strictEqual(sidebar.at(-1).intentEnabled, chart.at(-1).intentEnabled);
+    assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).running, false);
+    assert.strictEqual(
+        sidebar.filter((message) => message.type === "liveStatus").at(-1).intentEnabled,
+        chart.at(-1).intentEnabled
+    );
     await p._controlAgentSampling("stop");
 
     const busy = p._probeCoordinator.acquire("download");
@@ -127,7 +134,7 @@ function fixture() {
     busy.release();
     p._resolveOpenOcdPath = async () => null;
     await assert.rejects(p._controlAgentSampling("start"), { i18nKey: "live.notReady" });
-    assert.strictEqual(sidebar.at(-1).error, true);
+    assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).error, true);
     assert.strictEqual(p._liveStarting, false);
     await p._controlAgentSampling("stop");
 
@@ -136,8 +143,10 @@ function fixture() {
     p._resolveOpenOcdPath = () => new Promise((resolve) => (resolveExecutable = resolve));
     const pending = p._controlAgentSampling("start");
     assert.strictEqual((await p._controlAgentSampling("status")).starting, true);
-    await p._controlAgentSampling("stop");
+    const cancelling = p._controlAgentSampling("stop");
+    assert.strictEqual(p._liveStarting, true, "startup keeps its reservation until cancellation settles");
     resolveExecutable("fake-openocd");
+    await cancelling;
     assert.strictEqual((await pending).running, false);
     assert.strictEqual(p._liveWatchRunning, false);
 

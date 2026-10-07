@@ -19,6 +19,7 @@ const TEST_GROUPS = Object.freeze({
     integration: Object.freeze([
         "cpu-load-sampler.test.js",
         "cpu-load-integration.test.js",
+        "cpu-load-safety.test.js",
         "cpu-load-metadata.test.js",
         "cpu-load-view.test.js",
         "adaptive-sampling.test.js",
@@ -170,6 +171,7 @@ const TEST_GROUPS = Object.freeze({
         "webview-assets.test.js",
         "webview-render-order.test.js",
         "webview-runtime.test.js",
+        "ui-messages.test.js",
         "webview.test.js",
         "write-authorization.test.js",
         "write-connection.test.js",

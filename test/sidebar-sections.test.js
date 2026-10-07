@@ -37,7 +37,7 @@ try {
     const headers = [...view.document.querySelectorAll(".rtos-table th")].map((cell) => cell.textContent);
     assert.strictEqual(headers.length, 5);
     assert.ok(!headers.includes("TCB"));
-    assert.strictEqual(view.document.getElementById("rtosStatus"), null);
+    assert.match(view.document.getElementById("rtosStatus").textContent, /Pause/);
     view.assertHealthy();
 } finally {
     view.close();

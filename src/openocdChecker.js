@@ -93,6 +93,7 @@ function probeOpenOcd(executable) {
             });
             child.on("error", (error) => {
                 const isEnoent = error.code === "ENOENT";
+                const permissionDenied = ["EACCES", "EPERM"].includes(error.code);
                 const msg = isEnoent ? "找不到该可执行文件（请确认路径或将其加入 PATH）" : error.message;
                 done({
                     found: false,
@@ -100,7 +101,9 @@ function probeOpenOcd(executable) {
                     requested: target,
                     version: "",
                     error: msg,
-                    errorKey: isEnoent ? "oc.errNotFoundPath" : undefined
+                    errorKey: isEnoent ? "oc.errNotFoundPath" : permissionDenied ? "oc.errPermission" : undefined,
+                    errorParams: permissionDenied ? { path: resolved, error: error.message } : undefined,
+                    code: error.code
                 });
             });
             child.on("close", (code) => {
@@ -353,8 +356,8 @@ async function resolveOpenOcdStatus(executable, context, probedResult, report) {
     reportStatus(report, {
         state: "missing",
         canInstall: hasBundledArchive(context),
-        key: result.errorKey || "oc.missing",
-        params: result.errorParams,
+        key: result.errorKey || (result.error ? "oc.probeFailed" : "oc.missing"),
+        params: result.errorKey ? result.errorParams : { error: result.error },
         message: result.error || "未检测到 OpenOCD",
         result
     });

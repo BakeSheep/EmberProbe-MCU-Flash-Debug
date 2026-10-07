@@ -1,7 +1,17 @@
 "use strict";
 
 module.exports = Object.freeze({
+    "common.diagnostics": "ELF parsing diagnostics",
+    "sb.commandCancelled": "Operation cancelled",
+    "oc.probeFailed": "OpenOCD probe failed: {error}",
+    "oc.errPermission": "Cannot execute OpenOCD: {path}; check execution permissions and system policy ({error})",
     "cpu.title": "CPU load",
+    "cpu.busy": "CPU load sampling owns the probe. Stop it before another hardware operation.",
+    "cpu.probeBusy": "Another hardware operation is active. Finish it before CPU sampling.",
+    "cpu.checkingSupport": "Checking CPU sampling support in the selected ELF.",
+    "cpu.unsupportedProject": "The ELF lacks supported single-core FreeRTOS kernel symbols or DWARF.",
+    "cpu.exitUnconfirmed": "OpenOCD exit is unconfirmed. The probe remains reserved; retry Stop.",
+    "cpu.state.stopping": "Stopping",
     "cpu.startHint": "Start CPU load sampling",
     "cpu.stopHint": "Pause CPU load sampling",
     "cpu.experimentalFeatures": "Experimental features",
@@ -554,7 +564,8 @@ module.exports = Object.freeze({
     "run.starting": "Starting OpenOCD",
     "run.adapterClock": "Adapter clock {clock}",
     "run.voltage": "Target voltage {volts} V",
-    "run.voltageLow": "Abnormal target voltage ({volts} V); the board may be unpowered",
+    "run.voltageLow":
+        "Abnormal reference voltage ({volts} V); check power, VTref wiring and probe measurement capability",
     "run.deviceId": "Device ID {id}",
     "run.chip": "Detected chip {chip}",
     "run.flash": "Flash size {size}",

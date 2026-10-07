@@ -5,6 +5,7 @@ const summary = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../coverage/
 const modules = [
     "debugLifecycle.js",
     "samplingCoordinator.js",
+    "cpuLoadService.js",
     "watchListStore.js",
     "agentRoutes.js",
     "agentFlashService.js",

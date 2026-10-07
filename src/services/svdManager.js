@@ -211,7 +211,7 @@ class SvdManager {
             await this.library.bind(folder.uri, "");
             await this.context.workspaceState.update(this.cacheKeys.svdPath, undefined);
             this.onStatus({ state: "idle", key: "svd.notConfigured" });
-            return null;
+            return true;
         }
         await this.library.bind(folder.uri, selected.entry.hash);
         await this.context.workspaceState.update(this.cacheKeys.svdPath, selected.entry.path);
@@ -308,7 +308,7 @@ class SvdManager {
                                 this.t("svd.noOfficial", { device: identity.device || identity.family || "?" })
                             );
                         this.onStatus({ state: "idle", key: "svd.notConfigured" });
-                        return null;
+                        return candidates.length ? null : false;
                     }
                     if (abort.signal.aborted)
                         throw Object.assign(new Error("Download cancelled"), { code: "DOWNLOAD_CANCELLED" });
@@ -361,7 +361,10 @@ class SvdManager {
                 message: error.message,
                 canRetry: !cancelled
             });
-            if (!cancelled) this.vscode.window.showErrorMessage(this.t("svd.failedWith", { error: error.message }));
+            if (!cancelled) {
+                this.vscode.window.showErrorMessage(this.t("svd.failedWith", { error: error.message }));
+                throw error;
+            }
             return null;
         } finally {
             this.activeDownload = null;

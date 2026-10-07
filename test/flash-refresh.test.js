@@ -101,7 +101,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
             stop: async () => {
                 events.push("stop");
                 await Promise.resolve();
-                assert.strictEqual(provider._downloadRunning, true, "reserve the probe while it exits");
+                assert.strictEqual(provider._liveWatchRunning, true, "retain sampling ownership while it exits");
                 events.push("stopped");
             }
         };

@@ -6,17 +6,22 @@
 **CPU负载** 行只显示工作负载百分率和计算覆盖率，覆盖率保留圆角徽标，整行加圆角边框；
 右侧为负载数值，背景按有效负载百分率填充。进度条本身不控制采样，悬停可查看采样状态和失败原因。
 折叠“其他”不停止采样。
-无需增加固件统计代码或重编译；启动不会触发调试、暂停、继续、复位或下载。独立模式使用现有 OpenOCD 连接流程，
-内置调试模式复用托管 OpenOCD 服务和探针租约。CPU 和变量各自启停；清空变量列表不停止 CPU。
-停止最后一个独立采样消费者会释放连接。首版没有新增 Agent 控制命令。
+无需增加固件统计代码或重编译；启动不会触发调试、暂停、继续、复位或下载。
+CPU 使用专属独立 OpenOCD 连接和 `cpuLoad` 探针租约，从启动检查到确认退出均严格独占；
+与烧录、调试、变量采样、一次性硬件读写及驱动切换双向互斥，须先结束当前操作再启动下一项。
+启动前离线检查当前 ELF 的单核 FreeRTOS 符号和 DWARF，不支持的工程禁用启动，不建立硬件连接。
+退出未确认时保留租约和连接，并允许重试停止。首版没有新增 Agent 控制命令。
 
 This experimental monitor is off by default. Select the firmware ELF, probe and MCU, then expand **Other** in the
 flash/debug card. **Memory usage** comes first, with its refresh button beside the heading; **Experimental features**
 comes below, with a play/pause button to start or stop CPU sampling. Tab and Enter/Space also operate that button.
 The rounded **CPU load** bar shows only workload and calculation coverage, with a coverage badge and a background fill
 shared with the memory bars. Hover for status and errors. The bar itself is display-only. Folding Other does not stop sampling.
-It reads existing kernel state without firmware changes or execution control. Standalone sampling and managed
-debugging share the existing transport and probe ownership. CPU and variable consumers have independent controls.
+It reads existing kernel state without firmware changes or execution control. CPU sampling owns a dedicated standalone
+connection and probe lease through confirmed process exit. Flashing, debugging, variable sampling, hardware reads/writes
+and driver changes are mutually exclusive with CPU sampling in both directions. Finish the current operation first.
+FreeRTOS ELF/DWARF is checked offline before creating a connection; unsupported projects disable Start.
+Unconfirmed shutdown retains ownership and allows another Stop attempt.
 
 ## 指标口径
 
@@ -68,7 +73,7 @@ PCSR 只用于函数热点：先读能力和当前 Trace 配置，Trace 未启�
 读取 PC 时再次确认 TRCENA；不会写 TRCENA、DWT 或其他调试寄存器。无效 PC 不表示睡眠，也不破坏有效任务／异常分类。
 热点按函数地址索引定位，共享函数不归属于唯一任务；重叠／歧义函数范围不强行归因。
 
-CPU 与变量、一次性读取及写事务共享 Worker 内的 Tcl 队列和互斥。CPU 优先级低于到期变量读取，不积压补采。
+Worker 内仍保留 Tcl 队列互斥、到期变量优先和不积压补采的底层保护；CPU 的专属连接不对其他消费者开放。
 CPU 调度预算为滚动每秒 200 ms，且受整体 Tcl 占用预算约束（独立模式 70%、调试模式 40%）；
 控制器对读取成本进行平滑、对成本突增立即退让，预留 10% CPU 预算用于抖动和元数据刷新，
 并逐渐恢复速率。预算不足导致真正跳过的计划槽仍计入未知。
@@ -76,16 +81,19 @@ CPU 调度预算为滚动每秒 200 ms，且受整体 Tcl 占用预算约束（�
 
 ## 生命周期
 
-结果绑定连接、所选会话／目标、ELF SHA-256 和测量代次，变量事件格式保持不变。
-暂停、执行控制、会话切换、镜像失效、断连都会丢弃待采窗口和过期响应。正常继续后，监测意图仍开启则重新验证并开启新窗口。
+结果绑定专属连接、已验证目标、ELF SHA-256 和测量代次，变量事件格式保持不变。
+镜像或工作区变化、断连、能力失败和用户停止会清除监测意图，废弃窗口与过期响应，并关闭连接。
+被拒绝的启动不保留等待意图，不随烧录或调试结束自动恢复。可观测目标恢复时只在本次独占连接内重新验证窗口。
 主机每秒检查 ELF 服务身份；独立模式使用 OpenOCD 自身状态、调度器及任务身份异常识别可观测失效。
 外部快速复位可能在两次观测之间完成且身份没有变化，不能宣称已检测。ELF 身份表示选择的主机镜像，并非对目标 Flash 内容进行哈希验证。
-用户改变探针或下载等独占操作会释放采样连接；完成后可使用实验性功能标题右侧的播放按钮重新启动。
+CPU 占用期间拒绝修改探针连接配置；下载和调试不会自动停止 CPU 或接管其连接。
+停止响应等待启动取消和进程退出确认，尚未确认退出时其他操作继续被拒绝。
 
 ## 验证与后续实板验收
 
-普通测试覆盖分类、ISR/Idle、权重、丢槽、抖动、降频、读范围、DWARF 4/5、Worker 通道、消费者独立启停、
-暂停／继续、镜像及任务身份变化、过期响应和双语 UI。模拟数据与软件测试不能证明芯片支持、精度或时序零扰动。
+普通测试覆盖分类、ISR/Idle、权重、丢槽、抖动、降频、读范围、DWARF 4/5、Worker 通道、双向互斥、
+元数据先行、启动取消、退出失败保留租约、镜像及任务身份变化、过期响应和双语 UI。
+模拟数据与软件测试不能证明芯片支持、精度或时序零扰动。
 执行 `npm run check`、`npm run quality`、`npm run bundle`、`npm run test:e2e`；硬件测试须单独授权。
 
 2026-10-07 对 `F407_car` 的一次授权只读检查验证了 ELF 内核布局和运行状态：TCB 大小 100 字节，

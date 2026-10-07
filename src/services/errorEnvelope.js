@@ -49,4 +49,13 @@ function deserializeError(value) {
     return Object.assign(new Error(value?.message || "Unknown error"), serializeError(value));
 }
 
-module.exports = { serializeError, deserializeError };
+function toUiError(error) {
+    return {
+        key: error?.i18nKey,
+        params: error?.i18nParams,
+        message: String(error?.message || error || "Unknown error"),
+        diagnostic: serializeError(error)
+    };
+}
+
+module.exports = { serializeError, deserializeError, toUiError };

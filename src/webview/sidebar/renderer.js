@@ -45,6 +45,7 @@ let sideWatch = [],
     variableError = "",
     variableErrorKey = "",
     variableErrorParams = null,
+    variableWarnings = [],
     lastSkill = { state: "checking" },
     uiState = api && api.getState ? api.getState() || {} : {};
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
@@ -124,17 +125,20 @@ for (const id of [
 let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
+    cpuProbeOwned = false,
     confirmedProbeDriver = "";
 function setProbeDriverBusy(busy) {
     probeDriverBusy = busy;
-    if (jlinkDriverChoice) jlinkDriverChoice.disabled = busy;
+    const hardwareBusy = busy || cpuProbeOwned;
+    cpuLoadView?.setDriverBusy(busy);
+    if (jlinkDriverChoice) jlinkDriverChoice.disabled = hardwareBusy;
     if (jlinkDriverBusy) jlinkDriverBusy.hidden = !busy;
-    if (chipRead) chipRead.disabled = busy || lastChip.state === "reading";
+    if (chipRead) chipRead.disabled = hardwareBusy || lastChip.state === "reading";
     chipBody?.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = busy || lastChip.state === "reading";
+        button.disabled = hardwareBusy || lastChip.state === "reading";
     });
-    liveToggle.disabled = busy;
-    document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
+    liveToggle.disabled = hardwareBusy;
+    document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = hardwareBusy));
 }
 function configurationIncomplete() {
     if (!mcuConfigSection) return false;
@@ -439,6 +443,12 @@ function scheduleAvailableMemberSearch(query) {
     }, 180);
 }
 function renderAvailable() {
+    EmberProbeRuntime.renderElfDiagnostics(
+        document.getElementById("availableDiagnostics"),
+        variableWarnings,
+        "",
+        t("common.diagnostics")
+    );
     availableBox.textContent = "";
     document.getElementById("allCount").textContent = String(available.length);
     if (variableError) {
@@ -1581,13 +1591,13 @@ function chipStatus(m) {
     chipState.className =
         "chip-state " + (st === "error" ? "err" : st === "ready" ? "on" : st === "reading" ? "busy" : "");
     if (chipRead) {
-        chipRead.disabled = probeDriverBusy || st === "reading";
+        chipRead.disabled = probeDriverBusy || cpuProbeOwned || st === "reading";
         chipRead.textContent = st === "reading" ? t("sb.readingEllipsis") : chipHasData ? t("sb.reread") : t("sb.read");
     }
     chipLabel.textContent = m.key || m.message ? msgText(m) : chipStatusLabel(st);
     chipLabel.title = chipLabel.textContent;
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = probeDriverBusy || st === "reading";
+        button.disabled = probeDriverBusy || cpuProbeOwned || st === "reading";
     });
     chipBody.querySelector(".chip-action-error")?.remove();
     if (st === "error" && chipHasData) {
@@ -1664,7 +1674,7 @@ function renderChip(info) {
             })
     );
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = probeDriverBusy || lastChip.state === "reading";
+        button.disabled = probeDriverBusy || cpuProbeOwned || lastChip.state === "reading";
         button.onclick = () => {
             if (!api) return setStat("error", "sb.extNotConnected");
             chipStatus({ state: "reading", key: "chip.controlling" });
@@ -1719,7 +1729,7 @@ liveToggle.onclick = () => {
         revealIncompleteConfiguration();
         liveToggle.disabled = true;
         api.postMessage({ type: "liveToggle" });
-        setTimeout(() => (liveToggle.disabled = probeDriverBusy), 500);
+        setTimeout(() => setProbeDriverBusy(probeDriverBusy), 500);
     }
 };
 for (const id of ["peripheralRefresh", "peripheralFormat", "rtosRefresh"]) {
@@ -1833,13 +1843,16 @@ window.EmberProbeMessages.connect(window, {
         confirmedProbeDriver = m.driver;
         jlinkDriverChoice.hidden = m.driver !== "winusb" && m.driver !== "segger";
         if (!jlinkDriverChoice.hidden) jlinkDriverChoice.value = m.driver;
-        jlinkDriverChoice.disabled = probeDriverBusy;
+        jlinkDriverChoice.disabled = probeDriverBusy || cpuProbeOwned;
     },
     probeDriverSwitch: function (m) {
         setProbeDriverBusy(!!m.busy);
     },
     commandSuccess: function (m) {
         setStat("ready", "sb.commandDone");
+    },
+    commandCancelled: function () {
+        setStat("", "sb.commandCancelled");
     },
     commandError: function (m) {
         showProbeDiagnostic(m);
@@ -1866,6 +1879,7 @@ window.EmberProbeMessages.connect(window, {
         onWriteResult(m);
     },
     availableVariables: function (m) {
+        variableWarnings = m.warnings || [];
         available = (m.symbols || []).slice();
         availableTypesReady = true;
         availableByName = new Map(available.map((symbol) => [symbol.name, symbol]));
@@ -1877,6 +1891,7 @@ window.EmberProbeMessages.connect(window, {
         renderWrites();
     },
     availableVariablesReset: function (m) {
+        variableWarnings = m.warnings || [];
         availableVersion = m.version || "";
         availableTypesReady = false;
         available = [];
@@ -1885,6 +1900,8 @@ window.EmberProbeMessages.connect(window, {
         availableLayoutPending.clear();
         availableAddPending.clear();
         variableError = "";
+        variableErrorKey = "";
+        variableErrorParams = null;
         renderAvailable();
     },
     availableVariablesChunk: function (m) {
@@ -1896,6 +1913,7 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariablesDone: function (m) {
         if (m.version && m.version !== availableVersion) return;
+        if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
@@ -1911,6 +1929,7 @@ window.EmberProbeMessages.connect(window, {
     },
     availableTypesDone: function (m) {
         if (m.version !== availableVersion) return;
+        if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         availableTypesReady = true;
         renderAvailable();
         renderValues();
@@ -1977,7 +1996,13 @@ window.EmberProbeMessages.connect(window, {
         rtosView?.onDebug(m);
     },
     cpuLoad: function (m) {
+        cpuProbeOwned = !!m.ownsProbe;
         cpuLoadView?.onSummary(m);
+        setProbeDriverBusy(probeDriverBusy);
+    },
+    probeOperationStatus: function (m) {
+        cpuProbeOwned = !!m.operations?.cpuLoad;
+        setProbeDriverBusy(probeDriverBusy);
     },
     rtosSnapshot: function (m) {
         rtosView?.onSnapshot(m);

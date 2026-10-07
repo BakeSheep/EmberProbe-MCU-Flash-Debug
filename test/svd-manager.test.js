@@ -163,7 +163,7 @@ const SVD = Buffer.from(
     quickPicks.push((items) => items.find((item) => item.entry));
     assert((await manager.switchBinding(folder)).hash);
     quickPicks.push((items) => items.find((item) => item.action === "clear"));
-    assert.strictEqual(await manager.switchBinding(folder), null);
+    assert.strictEqual(await manager.switchBinding(folder), true);
     assert(statuses.some((status) => status.state === "idle"));
 
     quickPicks.push((items) => items.find((item) => item.action === "select"));
@@ -213,7 +213,7 @@ const SVD = Buffer.from(
             }
         }
     });
-    assert.strictEqual(await failing.downloadOfficial(folder), null);
+    await assert.rejects(failing.downloadOfficial(folder), { code: "TEST" });
     assert(statuses.some((status) => status.state === "error"));
 
     await fs.promises.rm(root, { recursive: true, force: true });

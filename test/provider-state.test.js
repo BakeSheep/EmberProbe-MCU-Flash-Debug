@@ -57,9 +57,10 @@ function deferred() {
     p._resolveOpenOcdPath = () => pathGate.promise;
     const cancelled = p.startLiveWatch();
     assert.strictEqual(p._probeCoordinator.firstActive(), "liveStart");
-    p.stopLiveWatch();
+    const stopping = p.stopLiveWatch();
     pathGate.resolve("fake-openocd");
     await cancelled;
+    await stopping;
     assert.strictEqual(sessions.length, 0);
     assert.strictEqual(p._probeCoordinator.anyActive(), false);
     p._resolveOpenOcdPath = async () => "fake-openocd";

@@ -13,9 +13,15 @@ run(parentPort, workerData, (options, handlers) => {
         session.setSamplingEnabled(false);
     };
     const stop = session.stop.bind(session);
+    let refuseStop = options.refuseFirstStop;
     session.stop = async () => {
-        await stop();
+        if (refuseStop) {
+            refuseStop = false;
+            return false;
+        }
+        const closed = await stop();
         await server.stop();
+        return closed;
     };
     return session;
 });

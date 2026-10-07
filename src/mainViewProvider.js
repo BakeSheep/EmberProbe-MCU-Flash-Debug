@@ -54,7 +54,7 @@ const { ProbeDriverService } = require("./services/probeDriverService");
 const { jlinkDriverChoice } = require("./services/jlinkDriverChoice");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
-const { serializeError } = require("./services/errorEnvelope");
+const { serializeError, toUiError } = require("./services/errorEnvelope");
 const {
     LiveWatchService,
     buildActiveReadPlan,
@@ -123,7 +123,7 @@ class MainViewProvider {
         // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
         const savedLang = context.globalState.get("emberprobe.lang");
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
-        this._probeCoordinator = new ProbeCoordinator();
+        this._probeCoordinator = new ProbeCoordinator(() => this._postProbeOperationStatus());
         this._externalDebug = new ExternalDebugService({
             state: context.workspaceState,
             coordinator: this._probeCoordinator,
@@ -182,16 +182,14 @@ class MainViewProvider {
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => {
                 this._syncDebugSampleContext();
-                void this._cpuLoadService?.reconcile();
+                this._postProbeOperationStatus();
                 this._postConsumerStatuses(status, !!status.error);
                 this._postPeripheralDebugStatus();
             },
             onError: (error) =>
                 this._postLive({
                     type: "liveError",
-                    key: error.i18nKey,
-                    message: error.message || String(error),
-                    diagnostic: serializeError(error)
+                    ...toUiError(error)
                 }),
             onTargetState: (event) => this._handleManagedTargetState(event),
             beforePausedRead: () => this._quiesceManagedRuntimeRead()
@@ -213,7 +211,7 @@ class MainViewProvider {
             onBackpressure: (paused) => this._setSamplingArchiveBackpressure(paused),
             onError: (error) => {
                 this.stopLiveWatch();
-                this._postLive({ type: "liveError", message: error.message });
+                this._postLive({ type: "liveError", ...toUiError(error) });
             }
         });
         this._chartHistory = new ChartHistoryService({
@@ -238,7 +236,7 @@ class MainViewProvider {
             },
             onError: (error) => {
                 this.stopLiveWatch();
-                this._postLive({ type: "liveError", message: error.message });
+                this._postLive({ type: "liveError", ...toUiError(error) });
             }
         });
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
@@ -318,11 +316,11 @@ class MainViewProvider {
         });
         this._cpuLoadService = new (require("./services/cpuLoadService").CpuLoadService)({
             elf: this._elfService,
-            context: (connect) => this._cpuLoadContext(connect),
-            post: (message) => this._webviewView?.webview.postMessage(message),
-            release: async () => {
-                if (!this._samplingIntent && this._liveSession) await this.stopLiveWatch();
-            }
+            coordinator: this._probeCoordinator,
+            assertAvailable: () => this._assertCpuAvailable(),
+            blocked: () => this._cpuLoadBlocked(),
+            create: (accept, disconnect, current) => this._createCpuRuntime(accept, disconnect, current),
+            post: (message) => this._webviewView?.webview.postMessage(message)
         });
         this._openOcdStatusService = new OpenOcdStatusService({
             vscode,
@@ -453,7 +451,11 @@ class MainViewProvider {
         return { folder, cwd: folder?.uri.fsPath };
     }
     _postPeripheralDebugStatus(post = (message) => this._webviewView?.webview.postMessage(message)) {
-        if (this._cpuLoadService) post(this._cpuLoadService.status());
+        if (this._cpuLoadService) {
+            post(this._cpuLoadService.status());
+            void this._cpuLoadService.refreshSupport();
+        }
+        this._postProbeOperationStatus();
         if (!this._debugBridge) return;
         this._rtosViewService ||= new RtosViewService(this._debugBridge);
         post(this._rtosViewService.status());
@@ -527,35 +529,26 @@ class MainViewProvider {
                 const elfFiles = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 100);
                 if (elfFiles.length === 0) {
                     vscode.window.showWarningMessage(this._t("msg.noElfFound"));
-                    return;
+                    return false;
                 }
-                const quickPick = vscode.window.createQuickPick();
-                quickPick.items = elfFiles.map((file) => {
+                const items = elfFiles.map((file) => {
                     const cleanPath = cleanWindowsPath(file.fsPath); // 替换file.path为file.fsPath，再清洗
                     return {
                         label: path.basename(cleanPath),
                         description: cleanPath
                     };
                 });
-                quickPick.placeholder = this._t("msg.searchElf");
-                quickPick.canSelectMany = false;
-                quickPick.onDidChangeSelection(async (selection) => {
-                    if (selection[0]) {
-                        const elfPath = selection[0].description;
-                        if (elfPath) {
-                            const finalPath = cleanWindowsPath(elfPath); // 二次清洗，双重保障
-                            await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
-                            await this._refreshElfBindings();
-                            vscode.window.showInformationMessage(
-                                this._t("msg.elfSelected", { name: path.basename(finalPath) })
-                            );
-                            this.updateView();
-                        }
-                        quickPick.dispose();
-                    }
+                const selected = await vscode.window.showQuickPick(items, {
+                    placeHolder: this._t("msg.searchElf"),
+                    matchOnDescription: true
                 });
-                quickPick.onDidHide(() => quickPick.dispose());
-                quickPick.show();
+                if (!selected) return null;
+                const finalPath = cleanWindowsPath(selected.description);
+                await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
+                await this._refreshElfBindings();
+                await this.updateView();
+                vscode.window.showInformationMessage(this._t("msg.elfSelected", { name: path.basename(finalPath) }));
+                return true;
             } catch (err) {
                 const errorMsg = err.message;
                 console.error("选择 ELF 文件失败：", errorMsg);
@@ -573,29 +566,20 @@ class MainViewProvider {
             // OpenOCD 尚未就绪时仍允许先完成手动配置，继续使用内置列表。
             const discovered = executable ? openocdScripts.discoverInterfaceConfigs(executable) : [];
             const debuggers = discovered.length ? discovered : DEBUGGER_LIST;
-            const quickPick = vscode.window.createQuickPick();
-            quickPick.items = debuggers.map((cfg) => ({ label: cfg }));
-            quickPick.placeholder = this._t("msg.searchDebugger");
-            quickPick.canSelectMany = false;
-            quickPick.onDidChangeSelection(async (selection) => {
-                if (selection[0]) {
-                    const debuggerCfg = selection[0].label;
-                    try {
-                        this._assertConnectionEditable({ debugger: debuggerCfg });
-                    } catch (error) {
-                        quickPick.dispose();
-                        vscode.window.showWarningMessage(error.message);
-                        return;
-                    }
-                    await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
-                    vscode.window.showInformationMessage(this._t("msg.debuggerSelected", { name: debuggerCfg }));
-                    await this.updateView();
-                    await this._refreshJlinkDriverChoice(true);
-                    quickPick.dispose();
+            const selected = await vscode.window.showQuickPick(
+                debuggers.map((cfg) => ({ label: cfg })),
+                {
+                    placeHolder: this._t("msg.searchDebugger")
                 }
-            });
-            quickPick.onDidHide(() => quickPick.dispose());
-            quickPick.show();
+            );
+            if (!selected) return null;
+            const debuggerCfg = selected.label;
+            this._assertConnectionEditable({ debugger: debuggerCfg });
+            await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
+            await this.updateView();
+            await this._refreshJlinkDriverChoice(true);
+            vscode.window.showInformationMessage(this._t("msg.debuggerSelected", { name: debuggerCfg }));
+            return true;
         };
         // 3. 选择 MCU 核心（无修改）
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
@@ -607,34 +591,26 @@ class MainViewProvider {
             // OpenOCD 尚未就绪时仍允许先完成手动配置，继续使用内置列表。
             const discovered = executable ? openocdScripts.discoverTargetConfigs(executable) : [];
             const targets = discovered.length ? discovered : MCU_CORE_LIST;
-            const quickPick = vscode.window.createQuickPick();
-            quickPick.items = targets.map((cfg) => ({ label: cfg }));
-            quickPick.placeholder = this._t("msg.searchMcu");
-            quickPick.canSelectMany = false;
-            quickPick.onDidChangeSelection(async (selection) => {
-                if (selection[0]) {
-                    const mcuCore = selection[0].label;
-                    try {
-                        this._assertConnectionEditable({ mcu: mcuCore });
-                    } catch (error) {
-                        quickPick.dispose();
-                        vscode.window.showWarningMessage(error.message);
-                        return;
-                    }
-                    await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
-                    vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: mcuCore }));
-                    this.updateView();
-                    quickPick.dispose();
+            const selected = await vscode.window.showQuickPick(
+                targets.map((cfg) => ({ label: cfg })),
+                {
+                    placeHolder: this._t("msg.searchMcu")
                 }
-            });
-            quickPick.onDidHide(() => quickPick.dispose());
-            quickPick.show();
+            );
+            if (!selected) return null;
+            const mcuCore = selected.label;
+            this._assertConnectionEditable({ mcu: mcuCore });
+            await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
+            await this.updateView();
+            vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: mcuCore }));
+            return true;
         };
         this.commandHandlers["mcu-vscode.downloadOfficialSvd"] = () => this._svdManager.downloadOfficial();
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
         // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
         this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration, interactive = true) => {
+            this._assertCpuIdle();
             let probePrepared = false;
             let startAccepted = false;
             let ownsPending = false;
@@ -651,6 +627,7 @@ class MainViewProvider {
                     return false;
                 }
                 this._debugCommandPending = true;
+                this._postProbeOperationStatus();
                 ownsPending = true;
                 this._debugStartupErrorReported = false;
                 this._debugStartupFailureCleanedUp = false;
@@ -833,11 +810,13 @@ class MainViewProvider {
                     if (this._debugStarting && !this._managedDebugServer) this._debugStartLease?.release();
                     if (!startAccepted) this._clearDebugStartupWatchdog();
                     this._debugCommandPending = false;
+                    this._postProbeOperationStatus();
                 }
             }
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers["mcu-vscode.download"] = async (resource) => {
+            this._assertCpuIdle();
             if (this._downloadRunning) {
                 vscode.window.showWarningMessage(this._t("msg.downloadBusy"));
                 return false;
@@ -862,16 +841,16 @@ class MainViewProvider {
                 vscode.window.showWarningMessage(this._t("msg.liveBusyForDownload"));
                 return false;
             }
-            // 先同步释放 liveWatch lease，再立即占用 download lease；真正的进程退出
-            // Promise 在占用 lease 后等待，避免快速双击同时越过 _downloadRunning 检查。
+            // Keep the live lease until process exit, then synchronously reserve download.
             const resumeSampling = !!this._samplingIntent && !!(this._liveWatchRunning || this._liveSession);
             const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
+            if (liveStopped) await liveStopped;
+            this._assertCpuIdle();
             const downloadLease = this._probeCoordinator.acquire("download");
             this._downloadLease = downloadLease;
             let downloaded = false;
             this._recentProgress = [];
             try {
-                if (liveStopped) await liveStopped;
                 const configuredExecutable = vscode.workspace
                     .getConfiguration("emberprobe")
                     .get("openocdPath", "openocd");
@@ -929,7 +908,7 @@ class MainViewProvider {
                         refreshed = true;
                     }
                 } catch (error) {
-                    this._postLive({ type: "liveError", key: error.i18nKey, message: error.message });
+                    this._postLive({ type: "liveError", ...toUiError(error) });
                     vscode.window.showWarningMessage(this._t("msg.downloadRefreshFailed", { error: error.message }));
                 } finally {
                     downloadLease.release();
@@ -953,7 +932,10 @@ class MainViewProvider {
     }
     _assertConnectionEditable(values) {
         const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
-        if (keys.some((key) => Object.hasOwn(values, key))) this._assertProbeDriverIdle();
+        if (keys.some((key) => Object.hasOwn(values, key))) {
+            this._assertCpuIdle();
+            this._assertProbeDriverIdle();
+        }
         if (
             keys.some((key) => Object.hasOwn(values, key)) &&
             (this._liveSession || this._managedDebugServer || this._agentReadSession || this._debugBridge.hasAnySession)
@@ -970,6 +952,7 @@ class MainViewProvider {
             });
     }
     connectionConfigurationChanged() {
+        if (this._cpuLoadService?.run) void this._cpuLoadService.stop("configuration-changed").catch(() => {});
         this._probeConnectionService.markConfigurationChanged([
             this._liveSession,
             this._managedDebugServer,
@@ -982,6 +965,7 @@ class MainViewProvider {
         );
     }
     _assertWriteSessionCurrent(session) {
+        this._assertCpuIdle();
         const physical =
             session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
         if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
@@ -1004,6 +988,7 @@ class MainViewProvider {
         return writeConnectionIdentity(session.options);
     }
     async _prepareWriteConnection() {
+        this._assertCpuIdle();
         this._assertGroupedReadElf();
         if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
         if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
@@ -1527,7 +1512,6 @@ class MainViewProvider {
                             void this._probeConnectionService.recordSuccess(server.options);
                     },
                     onSample: (samples, t, consumers) => this._handleRawSamples(samples, t, consumers),
-                    onCpuLoad: (result) => this._cpuLoadService?.accept(server, result),
                     onStatus: (status) => {
                         if (status?.key === "live.debugRuntimeSampling" || status?.key === "live.debugTclDegraded") {
                             this._postConsumerStatuses({
@@ -1548,14 +1532,14 @@ class MainViewProvider {
                     onError: (message) =>
                         this._postLive({
                             type: "liveError",
-                            message: message?.message || String(message),
-                            diagnostic: serializeError(message)
+                            ...toUiError(message)
                         }),
                     onDegraded: (error) =>
                         this._postConsumerStatuses(
                             {
                                 mode: "debug-running-degraded",
                                 key: error?.i18nKey || "live.debugTclDegraded",
+                                params: error?.i18nParams,
                                 source: "openocd",
                                 canRead: false,
                                 canWrite: false,
@@ -1566,16 +1550,16 @@ class MainViewProvider {
                             true
                         ),
                     onDisconnect: (error) => {
-                        if (this._managedDebugServer === server) void this._cpuLoadService?.suspend("disconnected");
                         if (this._managedDebugGroup && this._managedDebugServer === server)
                             void this._handleSharedServerExit(error).catch((failure) =>
-                                this._postLive({ type: "liveError", message: failure.message })
+                                this._postLive({ type: "liveError", ...toUiError(failure) })
                             );
                         if (this._debugLifecycle.pending) this._reportDebugStartupFailure(error.message);
                         this._postConsumerStatuses(
                             {
                                 mode: "debug-server-exited",
                                 key: error?.i18nKey || "live.serviceExited",
+                                params: error?.i18nParams,
                                 source: "none",
                                 canRead: false,
                                 canWrite: false,
@@ -1603,7 +1587,6 @@ class MainViewProvider {
         throw lastError || new Error("Unable to start managed OpenOCD");
     }
     async _stopManagedDebugServer() {
-        await this._cpuLoadService?.suspend("debug-server-transition");
         if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
@@ -1683,8 +1666,7 @@ class MainViewProvider {
                         this._failGroupedCore(token, message).catch((error) =>
                             this._postLive({
                                 type: "liveError",
-                                message: error.message,
-                                diagnostic: serializeError(error)
+                                ...toUiError(error)
                             })
                         )
                 });
@@ -1859,6 +1841,7 @@ class MainViewProvider {
                 this._debugServerLease?.release();
             }
             this._debugCommandPending = false;
+            this._postProbeOperationStatus();
         }
     }
     _reportDebugStartupFailure(message) {
@@ -1913,7 +1896,6 @@ class MainViewProvider {
             });
     }
     async _quiesceManagedRuntimeRead() {
-        await this._cpuLoadService?.suspend("debug-inspection");
         this._assertGroupedReadElf();
         const server = this._managedDebugServer;
         if (!server || server.capabilities?.runtimeRead === false) return;
@@ -1928,18 +1910,6 @@ class MainViewProvider {
     }
     _handleManagedTargetState(event) {
         if (!event?.session || !this._managedDebugSessionId || event.session.id !== this._managedDebugSessionId) return;
-        void this._cpuLoadService?.suspend(event.transition || event.state);
-        if (
-            this._cpuLoadService?.intent &&
-            event.state === "continued" &&
-            (!event.transition || event.transition === "continue")
-        ) {
-            const cpuEpoch = event.epoch;
-            setTimeout(() => {
-                if (this._debugBridge.stopEpoch === cpuEpoch && !this._debugBridge.paused)
-                    void this._cpuLoadService?.reconcile();
-            }, 150);
-        }
         if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
@@ -2007,6 +1977,7 @@ class MainViewProvider {
         }, 150);
     }
     async _withAgentProbe(handler, options = {}) {
+        this._assertCpuIdle();
         const syncStatus = !!options.syncStatus;
         const total = options.total || 0;
         // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
@@ -2095,7 +2066,7 @@ class MainViewProvider {
                         i18nKey: "live.notReady"
                     });
                 }
-                if (operationLease.released)
+                if (operationLease.released || this._agentReadCancelled)
                     throw Object.assign(new Error("Agent variable read was cancelled"), {
                         code: "AGENT_READ_CANCELLED"
                     });
@@ -2142,7 +2113,7 @@ class MainViewProvider {
             if (temporary) {
                 if (syncStatus) this._postAgentSampling(true, "live.agentStarting", { total });
                 await session.start();
-                if (operationLease.released || this._agentReadSession !== session)
+                if (operationLease.released || this._agentReadCancelled || this._agentReadSession !== session)
                     throw Object.assign(new Error("Agent variable read was cancelled"), {
                         code: "AGENT_READ_CANCELLED"
                     });
@@ -2152,11 +2123,7 @@ class MainViewProvider {
             return result;
         } finally {
             if (temporary) {
-                try {
-                    await session.stop();
-                } catch {
-                    /* ignore */
-                }
+                await this._confirmAgentExit(session);
                 if (this._agentReadSession === session) this._agentReadSession = null;
                 operationLease?.release();
                 if (this._agentReadLease === operationLease && this._agentReadDelayResolve)
@@ -2172,6 +2139,10 @@ class MainViewProvider {
                 if (this._agentReadLease === operationLease) this._agentReadCancelled = false;
             }
         }
+    }
+    async _confirmAgentExit(session) {
+        if ((await session.stop()) === false)
+            throw Object.assign(new Error("OpenOCD exit has not been confirmed"), { code: "PROBE_EXIT_UNCONFIRMED" });
     }
     async _readAgentVariables(params) {
         const result = await this._runAgentSamples(params, 1, 0, false);
@@ -2377,6 +2348,7 @@ class MainViewProvider {
     // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
+        this._assertCpuIdle();
         await this._prepareRequestedLayouts(params.values);
         const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
@@ -2416,6 +2388,7 @@ class MainViewProvider {
     // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
     // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
     async _writeUiVariable(name, value) {
+        this._assertCpuIdle();
         const dapSession = this._debugBridge.canWrite ? this._debugBridge : null;
         const session = dapSession || (this._liveWatchRunning ? this._liveSession : null);
         if (!session) {
@@ -2435,6 +2408,7 @@ class MainViewProvider {
         }
     }
     async _agentWritePermission(params) {
+        this._assertCpuIdle();
         const action = String(params?.action || "status");
         if (action === "status") {
             try {
@@ -2454,6 +2428,7 @@ class MainViewProvider {
     }
     // 读取并解码 Cortex-M 故障寄存器；与 chip.read 共用 _chipInfoRunning 互斥（一次性 OpenOCD 进程同一时刻只能有一个）
     async _readAgentFault() {
+        this._assertCpuIdle();
         const busy = (key, code) => {
             throw Object.assign(new Error(this._t(key)), { i18nKey: key, code });
         };
@@ -2714,7 +2689,7 @@ class MainViewProvider {
                                 try {
                                     await this._elfService.layout(found.name);
                                 } catch (error) {
-                                    post({ type: "liveError", message: error.message });
+                                    post({ type: "liveError", ...toUiError(error) });
                                     break;
                                 }
                             }
@@ -2926,13 +2901,13 @@ class MainViewProvider {
                         historyRevision: message.historyRevision,
                         error: error.message
                     });
-                post({ type: "liveError", key: error.i18nKey, params: error.i18nParams, message: error.message });
+                post({ type: "liveError", ...toUiError(error) });
             }
         });
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     _invalidateElfState() {
-        void this._cpuLoadService?.suspend("image-changed");
+        void this._cpuLoadService?.stop("image-changed").catch(() => {});
         this._elfService.invalidate();
         this._watchLists.invalidate();
         this._runtimeRamCache = null;
@@ -2950,7 +2925,7 @@ class MainViewProvider {
             }
         } finally {
             await this._refreshSamplingPlan();
-            await this._cpuLoadService?.reconcile();
+            await this._cpuLoadService?.refreshSupport();
         }
         await memoryRefresh;
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
@@ -3013,7 +2988,11 @@ class MainViewProvider {
             post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
         post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: result.warnings });
         if (result.dwarfReady)
-            post({ type: listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone", version });
+            post({
+                type: listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone",
+                version,
+                warnings: result.warnings
+            });
     }
     _onElfChange(phase, result, entries) {
         const version = this._elfVersion(result);
@@ -3028,8 +3007,14 @@ class MainViewProvider {
             sidebarPost({ type: "availableVariablesChunk", version, symbols: entries });
             for (const post of graphPosts) post({ type: "variablesListChunk", version, symbols: entries });
         } else if (phase === "symbolsDone") {
-            sidebarPost({ type: "availableVariablesDone", version, total: result.symbols.length });
-            for (const post of graphPosts) post({ type: "variablesListDone", version, total: result.symbols.length });
+            sidebarPost({
+                type: "availableVariablesDone",
+                version,
+                total: result.symbols.length,
+                warnings: result.warnings
+            });
+            for (const post of graphPosts)
+                post({ type: "variablesListDone", version, total: result.symbols.length, warnings: result.warnings });
         } else if (phase === "types") {
             const symbols = entries.map((symbol) => ({
                 name: symbol.name,
@@ -3050,8 +3035,9 @@ class MainViewProvider {
             sidebarPost({ type: "availableVariableTypes", version, symbols });
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
         } else if (phase === "dwarfReady") {
-            sidebarPost({ type: "availableTypesDone", version });
-            for (const post of graphPosts) post({ type: "variableTypesDone", version });
+            void this._cpuLoadService?.refreshSupport();
+            sidebarPost({ type: "availableTypesDone", version, warnings: result.warnings });
+            for (const post of graphPosts) post({ type: "variableTypesDone", version, warnings: result.warnings });
             this._elfRebindPromise = this._hydrateSelectedLayouts(result)
                 .then(() => this._rebindWatchLists(result.symbols))
                 .then(() => {
@@ -3067,7 +3053,13 @@ class MainViewProvider {
                 warnings: result.warnings,
                 error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
             });
-            for (const post of graphPosts) post({ type: "variablesListDone", version, warnings: result.warnings });
+            for (const post of graphPosts)
+                post({
+                    type: "variablesListDone",
+                    version,
+                    warnings: result.warnings,
+                    error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
+                });
         }
     }
     async _hydrateSelectedLayouts(result) {
@@ -3102,8 +3094,8 @@ class MainViewProvider {
     _postLive(message) {
         if (message.type === "liveError" && message.message && typeof message.message === "object")
             message = {
+                ...toUiError(message.message),
                 ...message,
-                diagnostic: serializeError(message.message),
                 message: message.message.message || String(message.message)
             };
         for (const entry of this._livePanels.values()) entry.post(message);
@@ -3185,13 +3177,15 @@ class MainViewProvider {
         const post = entry.post;
         if (!skipElf && this._elfService) {
             this._sendElfSnapshot(post, "variablesList");
-            this._elfService.load().catch((error) => post({ type: "variablesListDone", warnings: [error.message] }));
+            this._elfService
+                .load()
+                .catch((error) => post({ type: "variablesListDone", warnings: [error.message], error: error.message }));
         } else if (!skipElf && this.readElfSymbols) {
             try {
                 const result = this.readElfSymbols();
                 post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
             } catch (error) {
-                post({ type: "variablesList", symbols: [], warnings: [error.message] });
+                post({ type: "variablesList", symbols: [], warnings: [error.message], error: error.message });
             }
         }
         post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
@@ -3614,7 +3608,7 @@ class MainViewProvider {
                     .catch((error) => {
                         if (error.code === "CHART_HISTORY_FULL") {
                             this.stopLiveWatch();
-                            this._postLive({ type: "liveError", message: error.message });
+                            this._postLive({ type: "liveError", ...toUiError(error) });
                         } else this._chartHistory.fail(error);
                     });
             this._samplingArchive.append(
@@ -3805,10 +3799,7 @@ class MainViewProvider {
         }
         if (this._liveSession) {
             if (active.length) this._applySamplingPlan(this._liveSession, active);
-            else if (this._cpuLoadService?.intent) {
-                this._applySamplingPlan(this._liveSession, []);
-                this._liveSession.setSamplingEnabled(false);
-            } else {
+            else {
                 this.stopLiveWatch({ preserveIntent: true });
                 this._postConsumerStatuses({ key: "live.needVar" });
             }
@@ -3832,51 +3823,119 @@ class MainViewProvider {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    async _cpuLoadContext(connect = false) {
-        if (this._shutdownPromise) return { reason: "stopped" };
-        if (this._externalDebug?.held) return { reason: "external-gdb-unsupported", unsupported: true };
-        if (this._managedDebugGroup || this._managedDebugServer?.capabilities?.runtimeRead === false)
-            return { reason: "shared-or-multicore-unsupported", unsupported: true };
-        if (this._debugBridge.hasAnySession) {
-            const session = this._debugBridge.activeSession;
-            if (!session || !this._managedDebugServer?.ready || session.id !== this._managedDebugSessionId)
-                return { reason: "requires-emberprobe-managed-debug", unsupported: true };
-            if (this._debugBridge.paused || this._debugBridge.transitionKind || this._debugBridge.controlInFlight)
-                return { reason: "debug-paused-or-control" };
-            const selected = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-            const executable = session.configuration?.executable;
-            const normalize = (value) =>
-                value ? path.resolve(session.configuration?.cwd || ".", value).toLowerCase() : "";
-            if (!selected || normalize(selected) !== normalize(executable))
-                return { reason: "debug-elf-mismatch", unsupported: true };
-            return {
-                runtime: this._managedDebugServer,
-                identity: {
-                    session: session.id,
-                    target: session.configuration?.targetProcessor || 0,
-                    runEpoch: this._debugBridge.stopEpoch
-                }
-            };
-        }
-        if (
-            this._debugStarting ||
+    _assertCpuIdle() {
+        if (this._cpuLoadService?.run || this._probeCoordinator?.isActive("cpuLoad"))
+            throw Object.assign(new Error(this._t("cpu.busy")), {
+                code: "PROBE_BUSY",
+                activeOperation: "cpuLoad",
+                i18nKey: "cpu.busy",
+                retryable: true
+            });
+    }
+    _cpuLoadBlocked() {
+        let operation = this._probeCoordinator?.firstActive();
+        if (this._shutdownPromise) operation = "shutdown";
+        else if (
+            this._foreignDebugPending ||
             this._debugCommandPending ||
+            this._debugBridge?.hasAnySession ||
             isSupportedDebugSession(vscode.debug.activeDebugSession)
         )
-            return { reason: "debug-transition" };
-        if (
-            (!this._liveSession && (this._downloadRunning || this._chipInfoRunning || this._agentReadRunning)) ||
-            this._liveStarting ||
-            this._probeDriverSwitching
-        )
-            return { reason: "probe-busy" };
-        if (!this._liveSession && connect) await this.startLiveWatch(undefined, undefined, "cpu", true);
-        return {
-            runtime: this._liveSession,
-            identity: { session: "standalone", target: this._context.workspaceState.get(CACHE_KEYS.mcuCore) }
-        };
+            operation = "debug";
+        else if (this._probeDriverSwitching) operation = "driver";
+        else if (this._externalDebug?.held) operation = "externalDebug";
+        else if (this._samplingIntent || this._liveStartPromise || this._liveStopPromise) operation ||= "liveWatch";
+        else if (this._liveSession || this._agentReadSession || this._managedDebugServer) operation ||= "probe";
+        return operation ? { code: "PROBE_BUSY", activeOperation: operation, i18nKey: "cpu.probeBusy" } : null;
     }
-    async startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
+    _assertCpuAvailable() {
+        const blocked = this._cpuLoadBlocked();
+        if (blocked) throw Object.assign(new Error(this._t(blocked.i18nKey)), blocked);
+    }
+    beginForeignDebug() {
+        this._assertCpuIdle();
+        if (this._foreignDebugPending)
+            throw Object.assign(new Error("Debug startup is pending"), { code: "PROBE_BUSY" });
+        this._foreignDebugPending = true;
+        const generation = (this._foreignDebugGeneration = (this._foreignDebugGeneration || 0) + 1);
+        this._foreignDebugTimer = setTimeout(() => this.finishForeignDebug(), 30000);
+        this._foreignDebugTimer.unref?.();
+        this._postProbeOperationStatus();
+        return generation;
+    }
+    isForeignDebugCurrent(generation) {
+        return this._foreignDebugPending && this._foreignDebugGeneration === generation;
+    }
+    finishForeignDebug() {
+        clearTimeout(this._foreignDebugTimer);
+        this._foreignDebugTimer = null;
+        this._foreignDebugPending = false;
+        this._postProbeOperationStatus();
+    }
+    _postProbeOperationStatus() {
+        this._webviewView?.webview.postMessage({
+            type: "probeOperationStatus",
+            operations: this._probeCoordinator?.snapshot(),
+            debugPending: !!(this._debugCommandPending || this._foreignDebugPending)
+        });
+        this._cpuLoadService?.publish?.();
+    }
+    async _createCpuRuntime(accept, disconnect, current) {
+        const debuggerCfg =
+            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
+            (await this._probeConnectionService.resolveProbe());
+        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        if (!debuggerCfg || !mcuCore) throw new Error(this._t("live.needConfig"));
+        const cfg = vscode.workspace.getConfiguration("emberprobe");
+        const executable = await this._resolveOpenOcdPath(cfg.get("openocdPath", "openocd"));
+        if (!current()) return null;
+        if (!executable) throw new Error(this._t("live.notReady"));
+        const connection = await this._probeConnectionService.prepare(
+            { executable, probe: debuggerCfg, target: mcuCore },
+            true
+        );
+        if (!current()) return null;
+        const port = await this._resolveTclPort(cfg);
+        if (!current()) return null;
+        const { cwd } = this._commandContext();
+        const session = new liveWatch.LiveWatchSession(
+            vscode,
+            {
+                executable,
+                isolated: true,
+                transport: cfg.get("transport", "auto"),
+                probe: debuggerCfg,
+                target: mcuCore,
+                ...connection,
+                cwd,
+                port
+            },
+            {
+                onCpuLoad: accept,
+                onDisconnect: disconnect,
+                onConnectionConfirmed: () => {
+                    if (current()) void this._probeConnectionService.recordSuccess(session.options);
+                }
+            }
+        );
+        return session;
+    }
+    startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
+        this._assertCpuIdle();
+        if (this._liveStopPromise || this._liveStartPromise)
+            return Promise.reject(Object.assign(new Error(this._t("live.starting")), { code: "PROBE_BUSY" }));
+        const generation = (this._liveStartGeneration = (this._liveStartGeneration || 0) + 1);
+        this._liveStartPromise = this._startLiveWatch(items, intervalMs, consumer, interactive, generation).finally(
+            () => {
+                this._liveStartPromise = null;
+                this._postProbeOperationStatus();
+            }
+        );
+        this._postProbeOperationStatus();
+        return this._liveStartPromise;
+    }
+    async _startLiveWatch(items, intervalMs, consumer, interactive, generation) {
+        this._assertCpuIdle();
         if (this._externalDebug?.active && this._debugBridge.hasSession) {
             this._samplingIntent = true;
             this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
@@ -3924,7 +3983,7 @@ class MainViewProvider {
             await this._elfService.ready();
             await this._elfRebindPromise;
         }
-        if (consumer !== "cpu") {
+        {
             this._samplingIntent = true;
             this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
         }
@@ -3978,11 +4037,11 @@ class MainViewProvider {
             this._postConsumerStatuses(status);
             return;
         }
-        if (!activeItems.length && consumer !== "cpu") {
+        if (!activeItems.length) {
             this._postConsumerStatuses({ key: "live.needVar" });
             return;
         }
-        if (consumer !== "cpu") {
+        {
             this._liveConsumers.add("graph");
             this._liveConsumers.add("sidebar");
         }
@@ -3994,12 +4053,14 @@ class MainViewProvider {
         }
         const cfg = vscode.workspace.getConfiguration("emberprobe");
         const configuredExecutable = cfg.get("openocdPath", "openocd");
+        if (generation !== this._liveStartGeneration) return;
+        this._assertCpuIdle();
         const startingLease = this._probeCoordinator.acquire("liveStart");
         this._liveStartLease = startingLease;
         let session = null;
         try {
             const executable = await this._resolveOpenOcdPath(configuredExecutable);
-            if (startingLease.released) return;
+            if (startingLease.released || generation !== this._liveStartGeneration) return;
             if (!executable) throw Object.assign(new Error(this._t("live.notReady")), { i18nKey: "live.notReady" });
             const { cwd } = this._commandContext();
             session = new liveWatch.LiveWatchSession(
@@ -4033,7 +4094,6 @@ class MainViewProvider {
                     onSample: (samples, t, consumers) => {
                         if (this._liveSession === session) this._handleRawSamples(samples, t, consumers);
                     },
-                    onCpuLoad: (result) => this._cpuLoadService?.accept(session, result),
                     onStatus: (msg) => {
                         if (this._liveSession === session) this._postConsumerStatuses(msg);
                     },
@@ -4042,9 +4102,7 @@ class MainViewProvider {
                     },
                     onDisconnect: (err) => {
                         if (this._liveSession !== session) return;
-                        void this._cpuLoadService?.suspend("disconnected");
-                        this._liveSession = null;
-                        this._liveWatchLease?.release();
+                        void Promise.resolve(this.stopLiveWatch()).catch(() => {});
                         this._liveConsumers.clear();
                         this._postConsumerStatuses(
                             {
@@ -4058,28 +4116,24 @@ class MainViewProvider {
                     }
                 }
             );
-            if (startingLease.released) return;
+            this._liveSession = session;
+            if (generation !== this._liveStartGeneration) return;
             this._applySamplingPlan(session, this._activeReadPlan());
             this._liveSession = session;
             await session.start();
-            if (this._liveSession !== session || startingLease.released) {
-                await session.stop();
+            if (this._liveSession !== session || startingLease.released || generation !== this._liveStartGeneration)
                 return;
-            }
             session.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
             this._liveWatchLease = startingLease.transition("liveWatch");
             this._setLiveInterval(intervalMs ?? this._liveIntervalMs);
             this._postConsumerStatuses({ key: this._samplingIntent ? "sb.sampling" : "sb.stopped" });
-            void this._cpuLoadService?.reconcile();
         } catch (error) {
             if (session && this._liveSession === session) {
-                try {
-                    await session.stop();
-                } catch (e) {
-                    /* ignore */
+                const closed = await session.stop().catch(() => false);
+                if (closed !== false) {
+                    this._liveSession = null;
+                    if (this._liveWatchRunning) this._liveWatchLease?.release();
                 }
-                this._liveSession = null;
-                if (this._liveWatchRunning) this._liveWatchLease?.release();
             }
             this._liveConsumers.clear();
             this._postConsumerStatuses(
@@ -4093,44 +4147,50 @@ class MainViewProvider {
             );
             throw error;
         } finally {
-            startingLease.release();
+            if (!session || this._liveSession !== session) startingLease.release();
         }
     }
     stopLiveWatch(options = {}) {
-        if (options.variablesOnly && this._cpuLoadService?.intent) {
-            this._samplingIntent = false;
-            this._debugBridge.setIntent(false);
-            this._liveSession?.setSamplingEnabled(false);
-            this._managedDebugServer?.setSamplingEnabled(false);
-            this._postConsumerStatuses({ key: "sb.stopped" });
-            return;
-        }
-        void this._cpuLoadService?.suspend(options.preserveIntent ? "connection-transition" : "disconnected");
+        this._liveStartGeneration = (this._liveStartGeneration || 0) + 1;
         this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
-        let stopped = null;
         this._liveConsumers.clear();
-        this._liveStartLease?.release();
-        if (this._liveSession) {
-            try {
-                stopped = this._liveSession.stop();
-            } catch (e) {
-                /* ignore */
-            }
-            this._liveSession = null;
-        }
-        this._liveWatchLease?.release();
         if (!preserveIntent) {
             this._samplingIntent = false;
             this._debugBridge.setIntent(false);
-            if (this._managedDebugServer) this._managedDebugServer.setSamplingEnabled(false);
+            this._managedDebugServer?.setSamplingEnabled(false);
         }
+        this._liveSession?.setSamplingEnabled?.(false);
         this._postConsumerStatuses(
             preserveIntent && this._debugBridge.hasSession
                 ? this._debugBridge.status()
                 : { key: preserveIntent ? "live.restoring" : "sb.stopped" }
         );
-        return stopped;
+        if (this._liveStopPromise) return this._liveStopPromise;
+        const pending = this._liveStartPromise;
+        if (!pending && !this._liveSession) {
+            this._liveStartLease?.release();
+            this._liveWatchLease?.release();
+            return null;
+        }
+        this._liveStopPromise = (async () => {
+            if (pending) await pending.catch(() => {});
+            const session = this._liveSession;
+            if (session && (await session.stop()) === false)
+                throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
+                    code: "PROBE_EXIT_UNCONFIRMED",
+                    i18nKey: "cpu.exitUnconfirmed"
+                });
+            if (this._liveSession === session) this._liveSession = null;
+            this._liveStartLease?.release();
+            this._liveWatchLease?.release();
+            return true;
+        })().finally(() => {
+            this._liveStopPromise = null;
+            this._postProbeOperationStatus();
+        });
+        this._liveStopPromise.catch((error) => this._postLive?.({ type: "liveError", ...toUiError(error) }));
+        return this._liveStopPromise;
     }
     // 仅在采样进行中时停止；用于调试会话起止等外部事件触发的自动清理
     stopLiveWatchIfRunning() {
@@ -4140,6 +4200,7 @@ class MainViewProvider {
         await this._externalDebug.releaseIfDisabled();
     }
     async prepareExternalDebug(folder, config) {
+        this._assertCpuIdle();
         if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
         const connection = resolveExternalSettings(vscode.workspace.getConfiguration("emberprobe", folder.uri));
         if (
@@ -4156,6 +4217,7 @@ class MainViewProvider {
                 code: "PROBE_DRIVER_BUSY"
             });
         this._debugCommandPending = true;
+        this._postProbeOperationStatus();
         let reserved = false;
         try {
             const { validateDebugConfiguration } = require("./services/debugConfiguration");
@@ -4215,9 +4277,11 @@ class MainViewProvider {
             throw error;
         } finally {
             this._debugCommandPending = false;
+            this._postProbeOperationStatus();
         }
     }
     async prepareForCortexDebug(folder, config) {
+        this._assertCpuIdle();
         this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
         const token = config?.__emberprobeManagedToken;
@@ -4251,6 +4315,7 @@ class MainViewProvider {
     }
     handleDebugSessionStart(session) {
         if (!session || !isSupportedDebugSession(session)) return;
+        this.finishForeignDebug();
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._externalDebug?.bind(session);
         const grouped = this._managedDebugGroup?.bind(session);
@@ -4357,7 +4422,6 @@ class MainViewProvider {
             return;
         }
         if (this._managedDebugServer) await this._stopManagedDebugServer();
-        if (this._cpuLoadService?.intent) await this._cpuLoadService.reconcile(true);
         if (!this._samplingIntent) {
             this._postConsumerStatuses({ mode: "stopped", key: "sb.stopped", source: "none" });
             return;
@@ -4374,10 +4438,7 @@ class MainViewProvider {
         try {
             await this.startLiveWatch(undefined, this._liveIntervalMs, "restore");
         } catch (error) {
-            this._postConsumerStatuses(
-                { mode: "restore-failed", key: error.i18nKey, message: error.message, source: "none" },
-                true
-            );
+            this._postConsumerStatuses({ mode: "restore-failed", ...toUiError(error), source: "none" }, true);
         }
     }
     disposeDebugBridge() {
@@ -4385,15 +4446,13 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     shutdown() {
-        if (this._cpuLoadService) {
-            this._cpuLoadService.intent = false;
-            void this._cpuLoadService.suspend("stopped");
-        }
+        this.finishForeignDebug();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();
         if (this._shutdownPromise) return this._shutdownPromise;
         this._shutdownPromise = (async () => {
+            await this._cpuLoadService?.stop();
             this._clearDebugStartupWatchdog();
             if (this._managedDebugGroup) {
                 for (const token of [...this._managedDebugGroup.members.keys()])
@@ -4430,19 +4489,19 @@ class MainViewProvider {
     stopAgentReadIfRunning() {
         if (!this._agentReadRunning && !this._agentReadSession) return null;
         this._agentReadCancelled = true;
-        this._agentReadLease?.release();
         if (this._agentReadDelayResolve) this._agentReadDelayResolve();
-        let stopped = null;
-        if (this._agentReadSession) {
-            try {
-                stopped = this._agentReadSession.stop();
-            } catch {
-                /* ignore */
-            }
-            this._agentReadSession = null;
-        }
         this._postAgentSampling(false, "live.agentStopped");
-        return stopped;
+        const session = this._agentReadSession;
+        const lease = this._agentReadLease;
+        if (!session) return null;
+        return Promise.resolve(session.stop()).then((closed) => {
+            if (closed === false)
+                throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
+                    code: "PROBE_EXIT_UNCONFIRMED"
+                });
+            if (this._agentReadSession === session) this._agentReadSession = null;
+            lease?.release();
+        });
     }
     // 推送芯片信息状态与（可选的）结果到侧边栏
     _postChipInfo(status, info) {
@@ -4454,6 +4513,7 @@ class MainViewProvider {
     }
     // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
     async readChipInfoAction(forAgent = false) {
+        this._assertCpuIdle();
         return this._chipInfoService.read(forAgent);
     }
     // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
@@ -4527,6 +4587,10 @@ class MainViewProvider {
                         console.log("主进程接收命令：", cmd);
                         if (this.commandHandlers[cmd]) {
                             const result = await this.commandHandlers[cmd]();
+                            if (result === null) {
+                                webviewView.webview.postMessage({ type: "commandCancelled", cmd });
+                                break;
+                            }
                             if (result === false) {
                                 if (cmd !== "mcu-vscode.debug" || !this._debugStartupErrorReported)
                                     webviewView.webview.postMessage({
@@ -4678,7 +4742,7 @@ class MainViewProvider {
                     try {
                         await this._refreshElfBindings();
                     } catch (error) {
-                        this._postLive({ type: "liveError", key: error.i18nKey, message: error.message });
+                        this._postLive({ type: "liveError", ...toUiError(error) });
                     }
                     break;
                 }
@@ -4903,6 +4967,7 @@ class MainViewProvider {
     async _changeJlinkDriver(driver) {
         if (driver !== "winusb" && driver !== "segger")
             throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
+        this._assertCpuIdle();
         this._assertProbeDriverIdle();
         this._assertConnectionEditable({ probeSerial: true });
         if (this._probeCoordinator?.anyActive())

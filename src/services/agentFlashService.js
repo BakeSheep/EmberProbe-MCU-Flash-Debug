@@ -46,13 +46,19 @@ class AgentFlashService {
     }
 
     async authorize(params = {}) {
-        const request = this.request(params);
-        const elf = await inspectElf(params.elf);
-        this.assertDigest(elf.sha256, params.elfSha256);
-        this.request(request);
-        const connection = await this.prepare(request);
-        this.request(request);
-        return this.authorization.authorize({ ...this.identity(request, connection), elf }, params.confirmationId);
+        // Probe preflight participates in admission even before flash confirmation.
+        const lease = this.coordinator.acquire("agentRead");
+        try {
+            const request = this.request(params);
+            const elf = await inspectElf(params.elf);
+            this.assertDigest(elf.sha256, params.elfSha256);
+            this.request(request);
+            const connection = await this.prepare(request);
+            this.request(request);
+            return this.authorization.authorize({ ...this.identity(request, connection), elf }, params.confirmationId);
+        } finally {
+            lease.release();
+        }
     }
 
     assertDigest(actual, expected) {

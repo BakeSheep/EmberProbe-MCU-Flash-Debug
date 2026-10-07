@@ -11,6 +11,13 @@
             refresh = document.getElementById("rtosRefresh"),
             sessionPicker = document.getElementById("rtosSession");
         if (!section || !body || !filter || !sort || !refresh) return null;
+        const status = document.createElement("div");
+        status.id = "rtosStatus";
+        status.className = "rtos-status";
+        status.setAttribute("role", "status");
+        const table = body.closest("table");
+        if (table) table.before(status);
+        else section.append(status);
         const state = {
             debug: { state: "none", sessionId: "", stopEpoch: 0, supported: false },
             snapshot: uiState.rtosSnapshot || null,
@@ -20,7 +27,7 @@
         };
         uiState.rtosTaskDetails ||= {};
         section.open = !!uiState.rtosExpanded;
-        const key = (message) => `${message.sessionId}:${message.stopEpoch}`;
+        const key = (message) => `${message.sessionId}:${message.stopEpoch}:${message.inspectionEpoch || 0}`;
         const current = (message) => key(message) === key(state.debug);
         const canRead = () => state.debug.supported && state.debug.state === "paused";
         let refreshTimer;
@@ -63,6 +70,31 @@
             refresh.disabled = !canRead() || state.pending;
             refresh.title = state.error || t("rtos.refresh");
             body.title = state.snapshot?.diagnostics?.join("; ") || "";
+            const stale = state.snapshot && (!current(state.snapshot) || !canRead() || state.pending || state.error);
+            const statusKey = state.pending
+                ? "rtos.reading"
+                : stale
+                  ? "rtos.stale"
+                  : !canRead()
+                    ? "rtos.pause"
+                    : state.snapshot?.kernel?.state === "not-started"
+                      ? "rtos.notStarted"
+                      : state.snapshot?.kernel?.state === "no-tasks"
+                        ? "rtos.noTasks"
+                        : state.snapshot?.partial
+                          ? "rtos.partial"
+                          : state.snapshot
+                            ? "rtos.ready"
+                            : "rtos.pause";
+            status.textContent = [
+                state.error,
+                state.error && !state.snapshot ? "" : t(statusKey),
+                ...(state.snapshot?.diagnostics || [])
+            ]
+                .filter(Boolean)
+                .join("\n");
+            status.classList.toggle("error", !!state.error);
+            section.classList.toggle("rtos-stale", !!stale);
             const query = filter.value.toLowerCase();
             const tasks = (state.snapshot?.tasks || []).filter((task) =>
                 [task.name, task.state].some((value) => String(value).toLowerCase().includes(query))
@@ -178,6 +210,7 @@
             },
             onSnapshot(message) {
                 if (!current(message) || !canRead()) return;
+                state.error = "";
                 state.snapshot = message;
                 uiState.rtosSnapshot = message;
                 api?.setState?.(uiState);

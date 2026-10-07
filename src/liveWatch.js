@@ -1593,6 +1593,7 @@ class ManagedOpenOcdSession {
                     /* ignore */
                 }
             }
+            if (!closed) this._stopPromise = null;
             return closed;
         })();
         return this._stopPromise;

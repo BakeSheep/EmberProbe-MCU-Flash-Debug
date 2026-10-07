@@ -139,10 +139,31 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
         );
     }
     if (/address already in use|couldn't bind|can't bind|error .*binding/.test(text)) {
-        return make("TCL_PORT_IN_USE", "resource_conflict", "OpenOCD Tcl 端口已被其他进程占用。", [
-            "关闭残留的 OpenOCD 或其他调试会话后重试。",
-            "必要时在 EmberProbe 配置中更换 Tcl 端口。"
-        ]);
+        const bindingLines = retained.filter((line) =>
+            /address already in use|couldn't bind|can't bind|error .*binding/i.test(line)
+        );
+        const binding = bindingLines.find((line) => /\b(gdb|tcl|telnet)\b/i.test(line)) || bindingLines[0];
+        const service = binding.match(/\b(gdb|tcl|telnet)\b/i)?.[1]?.toLowerCase();
+        const label = { gdb: "GDB", tcl: "Tcl", telnet: "Telnet" }[service] || "服务";
+        const port = binding.match(/\bport\s+(\d+)/i)?.[1];
+        const diagnostic = make(
+            service ? `${service.toUpperCase()}_PORT_IN_USE` : "OPENOCD_PORT_IN_USE",
+            "resource_conflict",
+            `OpenOCD ${label}端口绑定失败，端口可能已被其他进程占用。`,
+            [
+                "关闭残留的 OpenOCD 或其他调试会话后重试。",
+                service ? `核对 ${label} 端口配置与实际占用该端口的进程。` : "核对日志中的端口和服务配置。"
+            ]
+        );
+        const reportedPort = port ? Number(port) : service === "tcl" ? details.port : undefined;
+        return {
+            ...diagnostic,
+            details: {
+                ...diagnostic.details,
+                ...(service ? { service } : {}),
+                port: reportedPort
+            }
+        };
     }
     // Probe/open failures must win over the generic 'init failed' that follows.
     if (

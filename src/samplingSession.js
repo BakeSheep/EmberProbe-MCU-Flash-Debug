@@ -19,7 +19,7 @@ class SamplingSession {
         });
         this.worker.on("message", (message) => {
             if (message.state) {
-                this.childPid = message.state.childPid;
+                if (message.state.childPid) this.childPid = message.state.childPid;
                 this.stopped = message.state.stopped;
                 this.pollingFailed = message.state.pollingFailed === true;
                 if (message.state.stats) this._latestStats = message.state.stats;
@@ -159,18 +159,39 @@ class SamplingSession {
         return (await this.request("waitForExit", args)).result;
     }
     stop(...args) {
-        if (this.exited) return Promise.resolve();
+        if (this.exited) return this.confirmChildExit();
         if (!this.stopping) {
             this.samplingEnabled = false;
             this.generation++;
             this.stopping = this.request("stop", args)
-                .then((response) => response.result)
-                .finally(async () => {
-                    this.stopped = true;
+                .then(async (response) => {
+                    if (response.result !== true) return false;
                     await this.worker.terminate();
+                    return this.confirmChildExit();
+                })
+                .catch(async (error) => {
+                    if (this.exited) return this.confirmChildExit();
+                    throw error;
+                })
+                .finally(() => {
+                    this.stopping = null;
                 });
         }
         return this.stopping;
+    }
+    async confirmChildExit() {
+        if (!this.childPid) return true;
+        const deadline = Date.now() + 1600;
+        do {
+            try {
+                process.kill(this.childPid, 0);
+            } catch (error) {
+                if (error.code === "ESRCH") return true;
+                return false;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        } while (Date.now() < deadline);
+        return false;
     }
 }
 module.exports = { SamplingSession };

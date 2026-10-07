@@ -165,6 +165,8 @@ var watch = [],
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
     impVersion = "",
+    impWarnings = [],
+    impError = "",
     impTypesReady = true,
     impExpanded = Object.create(null),
     impLayoutPending = new Set(),
@@ -307,6 +309,7 @@ function updateLangToggle() {
 }
 function rerenderLive() {
     applyI18n();
+    renderElfDiagnostics();
     renderVars();
     if (!$("overlay").classList.contains("hidden")) renderImport();
     updateRun();
@@ -1090,6 +1093,7 @@ function scheduleImportMemberSearch(query) {
     }, 180);
 }
 function renderImport() {
+    renderElfDiagnostics();
     var f = ($("impFilter").value || "").trim().toLowerCase(),
         box = $("impList");
     var checkedNames = new Set(
@@ -2364,6 +2368,10 @@ function loop(now) {
     draw(now);
     requestAnimationFrame(loop);
 }
+function renderElfDiagnostics() {
+    for (const id of ["elfDiagnostics", "importDiagnostics"])
+        EmberProbeRuntime.renderElfDiagnostics($(id), impWarnings, impError, t("common.diagnostics"));
+}
 window.EmberProbeMessages.connect(window, {
     sidebarImportResult: function (m) {
         setStatusKey(
@@ -2426,6 +2434,9 @@ window.EmberProbeMessages.connect(window, {
         dirty = true;
     },
     variablesList: function (m) {
+        impWarnings = m.warnings || [];
+        impError = m.error || "";
+        renderElfDiagnostics();
         var checked = Array.from($("impList").querySelectorAll("input:checked")).map(function (cb) {
             return cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
         });
@@ -2451,6 +2462,9 @@ window.EmberProbeMessages.connect(window, {
         }
     },
     variablesListReset: function (m) {
+        impWarnings = m.warnings || [];
+        impError = "";
+        renderElfDiagnostics();
         cancelImportMemberSearch();
         impVersion = m.version || "";
         impTypesReady = false;
@@ -2478,6 +2492,9 @@ window.EmberProbeMessages.connect(window, {
     },
     variablesListDone: function (m) {
         if (m.version && m.version !== impVersion) return;
+        if (Array.isArray(m.warnings)) impWarnings = m.warnings;
+        impError = m.error || "";
+        renderElfDiagnostics();
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();
@@ -2493,6 +2510,8 @@ window.EmberProbeMessages.connect(window, {
     },
     variableTypesDone: function (m) {
         if (m.version !== impVersion) return;
+        if (Array.isArray(m.warnings)) impWarnings = m.warnings;
+        renderElfDiagnostics();
         impTypesReady = true;
         renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();

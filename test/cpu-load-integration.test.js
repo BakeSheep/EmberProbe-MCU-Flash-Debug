@@ -2,10 +2,8 @@
 const assert = require("assert");
 const path = require("path");
 const { SamplingSession } = require("../src/samplingSession");
-const { CpuLoadService } = require("../src/services/cpuLoadService");
 const { CpuOpenOcdServer } = require("./helpers/cpu-openocd-server");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
-const { loadProvider } = require("./helpers/load-provider");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(predicate, message) {
     const deadline = Date.now() + 5000;
@@ -21,7 +19,7 @@ async function waitFor(predicate, message) {
         const events = [],
             variables = [];
         const session = new SamplingSession(
-            { mode, intervalMs: 20 },
+            { mode, intervalMs: 20, refuseFirstStop: mode === "standalone" },
             {
                 onCpuLoad: (result) => events.push(result),
                 onSample: (samples) => variables.push(samples)
@@ -63,7 +61,11 @@ async function waitFor(predicate, message) {
             await session.setCpuLoadPaused(null);
             await waitFor(() => events.at(-1)?.runGeneration > 1, "resuming CPU starts a new run generation");
         } finally {
-            await session.stop();
+            if (mode === "standalone") {
+                assert.strictEqual(await session.stop(), false, "unconfirmed exit must not terminate the worker");
+                assert(!session.exited);
+            }
+            assert.strictEqual(await session.stop(), true, "shutdown can be retried until confirmed");
         }
     }
     // Real Tcl framing and silent debug replies share exactly one socket with writes.
@@ -131,162 +133,7 @@ async function waitFor(predicate, message) {
         await server.stop();
     }
 
-    const sent = [],
-        plans = [];
-    let identity = { session: "standalone", runEpoch: 0 },
-        reason = null;
-    let image = "image";
-    const runtime = { setCpuLoadPlan: async (plan) => plans.push(plan), selectCpuIdleTask: async (key) => key };
-    const service = new CpuLoadService({
-        elf: { cpuLoadPlan: async () => ({ ...source.plan, image }), read: () => ({ elf: { sha256: image } }) },
-        context: async () => ({ runtime, identity, reason }),
-        post: (result) => sent.push(result)
-    });
-    try {
-        await service.start();
-        const first = plans.at(-1);
-        assert(service.accept(runtime, { state: "running", generation: first.generation, identity: first.identity }));
-        assert(!service.accept({}, { ...first, state: "running" }));
-        reason = "debug-paused";
-        await service.reconcile();
-        assert(!service.accept(runtime, { state: "running", generation: first.generation, identity: first.identity }));
-        reason = null;
-        identity = { session: "native", runEpoch: 1 };
-        await service.reconcile();
-        assert(plans.at(-1).generation > first.generation);
-        image = "changed";
-        await service.suspend("image-changed");
-        await service.reconcile();
-        assert.strictEqual(plans.at(-1).identity.image, "changed");
-        image = "periodic-change";
-        await waitFor(() => plans.at(-1)?.identity.image === image, "integrity check rebuilds a changed image");
-        const current = plans.at(-1);
-        service.accept(runtime, {
-            state: "checking",
-            needsMetadataRefresh: true,
-            generation: current.generation,
-            identity: current.identity
-        });
-        await waitFor(
-            () => plans.at(-1)?.generation > current.generation,
-            "observed target restart resolves metadata again"
-        );
-        await service.selectIdle("verified-key");
-        await assert.rejects(service.selectIdle("x".repeat(100)), /active/);
-    } finally {
-        await service.stop();
-    }
-    let resolvePlan;
-    const racing = new CpuLoadService({
-        elf: {
-            cpuLoadPlan: () =>
-                new Promise((resolve) => {
-                    resolvePlan = resolve;
-                })
-        },
-        context: async () => ({ runtime, identity }),
-        post() {}
-    });
-    const pending = racing.start();
-    await waitFor(() => !!resolvePlan, "CPU metadata request starts before stop");
-    await racing.stop();
-    resolvePlan(source.plan);
-    await pending;
-    assert.strictEqual(racing.runtime, null, "stop invalidates in-flight metadata");
-    const unsupported = new CpuLoadService({
-        elf: {},
-        context: async () => ({ reason: "unsupported", unsupported: true }),
-        post() {}
-    });
-    await unsupported.start();
-    assert.strictEqual(unsupported.status().state, "unavailable");
-    await unsupported.stop();
-    const badLayout = new CpuLoadService({
-        elf: {
-            cpuLoadPlan: async () => {
-                throw new Error("Missing DWARF");
-            }
-        },
-        context: async () => ({ runtime, identity }),
-        post() {}
-    });
-    await badLayout.start();
-    assert.strictEqual(badLayout.status().reason, "Missing DWARF");
-    await badLayout.stop();
-
-    const Provider = loadProvider({ debug: {}, workspace: {} });
-    const provider = Object.create(Provider.prototype);
-    provider._context = { workspaceState: { get: () => "firmware.elf" } };
-    provider._debugBridge = { hasAnySession: false, setIntent() {} };
-    provider._cpuLoadService = { intent: true };
-    provider._liveSession = runtime;
-    assert.strictEqual((await provider._cpuLoadContext()).runtime, runtime);
-    provider._externalDebug = { held: true };
-    assert((await provider._cpuLoadContext()).unsupported);
-    provider._externalDebug = null;
-    provider._managedDebugGroup = {};
-    assert((await provider._cpuLoadContext()).unsupported);
-    provider._managedDebugGroup = null;
-    provider._managedDebugServer = { ready: true, capabilities: { runtimeRead: true } };
-    provider._managedDebugSessionId = "native";
-    provider._debugBridge = {
-        hasAnySession: true,
-        activeSession: { id: "native", configuration: { executable: "firmware.elf" } },
-        stopEpoch: 3
-    };
-    assert.strictEqual((await provider._cpuLoadContext()).identity.runEpoch, 3);
-    provider._debugBridge.paused = true;
-    assert((await provider._cpuLoadContext()).reason);
-    // Exercise the complete standalone connection entry with no variable consumers.
-    let stopped = 0,
-        enabled = null;
-    class Runtime {
-        constructor(_host, options) {
-            this.options = options;
-        }
-        async start() {}
-        async stop() {
-            stopped++;
-        }
-        setSamplingEnabled(value) {
-            enabled = value;
-        }
-    }
-    const Standalone = loadProvider(
-        { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
-        { "./liveWatch": { LiveWatchSession: Runtime } }
-    );
-    const standalone = Object.create(Standalone.prototype);
-    Object.assign(standalone, {
-        _probeCoordinator: new (require("../src/probeCoordinator").ProbeCoordinator)(),
-        _samplingCoordinator: new (require("../src/services/samplingCoordinator").SamplingCoordinator)(),
-        _probeConnectionService: { prepare: async () => ({}) },
-        _context: { workspaceState: { get: () => "configured" } },
-        _debugBridge: { setIntent() {} },
-        _cpuLoadService: { intent: true, reconcile() {}, suspend() {} },
-        _samplingIntent: false,
-        _liveConsumers: new Set(),
-        _activeReadPlan: () => [],
-        _applySamplingPlan() {},
-        _setLiveInterval() {},
-        _postConsumerStatuses() {},
-        _commandContext: () => ({}),
-        _flushPendingWebviewSamples() {},
-        _resolveOpenOcdPath: async () => "fake",
-        _resolveTclPort: async () => 1234,
-        _t: (key) => key
-    });
-    await standalone.startLiveWatch(undefined, undefined, "cpu", true);
-    assert(standalone._liveSession);
-    assert.strictEqual(enabled, false, "CPU startup does not enable variable sampling");
-    assert.strictEqual(standalone._liveConsumers.size, 0);
-    standalone.stopLiveWatch({ variablesOnly: true });
-    assert.strictEqual(stopped, 0);
-    standalone._cpuLoadService.intent = false;
-    await standalone.stopLiveWatch();
-    assert.strictEqual(stopped, 1);
-    assert.strictEqual(standalone._probeCoordinator.anyActive(), false);
-    console.log("CPU worker isolation, independent consumers, transport and service lifecycle tests passed");
+    console.log("CPU worker transport, read safety and independent low-level consumers passed");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

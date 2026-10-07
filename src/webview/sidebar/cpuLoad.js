@@ -7,19 +7,26 @@
         const row = document.getElementById("cpuLoadRow");
         if (!row) return null;
         const el = (id) => document.getElementById(id);
-        let latest = { state: "stopped" };
+        let latest = { state: "stopped", canStart: false, canStop: false };
+        let driverBusy = false;
         const validPercent = (value) =>
             typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
         const pct = (value) => (validPercent(value) ? `${value.toFixed(1)}%` : "—");
         const toggle = el("cpuLoadToggle");
-        toggle.addEventListener("click", () =>
-            api?.postMessage({ type: latest.intentEnabled ? "cpuLoadStop" : "cpuLoadStart" })
-        );
+        toggle.addEventListener("click", () => {
+            if (toggle.disabled) return;
+            const stop = latest.ownsProbe || latest.intentEnabled;
+            toggle.disabled = true;
+            api?.postMessage({ type: stop ? "cpuLoadStop" : "cpuLoadStart" });
+        });
         function render() {
             row.dataset.state = latest.state;
             toggle.setAttribute("aria-pressed", String(!!latest.intentEnabled));
-            const action = t(latest.intentEnabled ? "cpu.stopHint" : "cpu.startHint");
-            toggle.title = action;
+            const stop = latest.ownsProbe || latest.intentEnabled;
+            toggle.disabled = driverBusy || !(stop ? latest.canStop : latest.canStart);
+            const action = t(stop ? "cpu.stopHint" : "cpu.startHint");
+            const blocked = !stop && latest.blockedReason;
+            toggle.title = blocked?.i18nKey ? t(blocked.i18nKey) : action;
             toggle.setAttribute("aria-label", action);
             const hasWindow = ["collecting", "running", "low-coverage"].includes(latest.state);
             const coverage = hasWindow ? pct(latest.coveragePercent) : "—";
@@ -35,6 +42,8 @@
             row.dataset.available = String(available);
             const notes = [t(`cpu.state.${latest.state}`)];
             if (latest.error || latest.reason) notes.push(latest.error || latest.reason);
+            if (latest.diagnostic?.i18nKey) notes.push(t(latest.diagnostic.i18nKey));
+            if (blocked?.i18nKey) notes.push(t(blocked.i18nKey));
             if (latest.state === "low-coverage") notes.push(t("cpu.lowCoverageNote"));
             if (hasWindow && latest.workloadPercent === null) notes.push(t("cpu.idleUnconfirmed"));
             row.title = notes.join("\n");
@@ -46,6 +55,10 @@
         render();
         return {
             render,
+            setDriverBusy(busy) {
+                driverBusy = busy;
+                render();
+            },
             onSummary(message) {
                 latest = message;
                 render();

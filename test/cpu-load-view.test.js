@@ -39,6 +39,8 @@ for (const lang of ["zh", "en"]) {
         const row = el("cpuLoadRow");
         const toggle = el("cpuLoadToggle");
         assert.strictEqual(toggle.getAttribute("aria-pressed"), "false");
+        assert(toggle.disabled, "support must be established by the host before enabling Start");
+        page.send({ type: "cpuLoad", state: "stopped", canStart: true, canStop: false, ownsProbe: false });
         assert(toggle.title.includes(t(lang, "cpu.startHint")));
         assert.strictEqual(el("cpuWorkload").textContent, "—");
         assert.strictEqual(el("cpuCoverage").textContent, "—");
@@ -54,6 +56,9 @@ for (const lang of ["zh", "en"]) {
             type: "cpuLoad",
             state: "collecting",
             intentEnabled: true,
+            ownsProbe: true,
+            canStart: false,
+            canStop: true,
             windowMs: 1000,
             actualHz: 160,
             coveragePercent: 100,
@@ -108,7 +113,14 @@ for (const lang of ["zh", "en"]) {
         assert.strictEqual(el("cpuWorkload").textContent, "0.0%", "zero workload is a valid estimate");
         assert.strictEqual(row.dataset.available, "true");
         for (const state of ["paused", "unavailable", "stopped"]) {
-            page.send({ ...sample, state, reason: "<script>missing()</script>", intentEnabled: state !== "stopped" });
+            page.send({
+                ...sample,
+                state,
+                reason: "<script>missing()</script>",
+                intentEnabled: state !== "stopped",
+                ownsProbe: state !== "stopped",
+                canStart: state === "stopped"
+            });
             assert.strictEqual(el("cpuWorkload").textContent, "—");
             assert.strictEqual(el("cpuCoverage").textContent, "—", "inactive states clear previous window");
             assert.strictEqual(el("cpuLoadProgress").value, 0);
@@ -117,6 +129,32 @@ for (const lang of ["zh", "en"]) {
             toggle.click();
             assert.strictEqual(page.messages.at(-1).type, state === "stopped" ? "cpuLoadStart" : "cpuLoadStop");
         }
+        page.send({
+            type: "cpuLoad",
+            state: "stopped",
+            canStart: false,
+            canStop: false,
+            blockedReason: { code: "CPU_LAYOUT_UNSUPPORTED", i18nKey: "cpu.unsupportedProject" }
+        });
+        assert(toggle.disabled);
+        assert(toggle.title.includes(t(lang, "cpu.unsupportedProject")));
+        const blockedMessages = page.messages.length;
+        toggle.click();
+        assert.strictEqual(page.messages.length, blockedMessages);
+        page.send({ ...sample, state: "running" });
+        const download = page.document.querySelector('[data-command="mcu-vscode.download"]');
+        assert(download.disabled);
+        assert(el("liveToggle").disabled);
+        page.send({ type: "probeDriverSwitch", busy: false });
+        page.send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+        assert(download.disabled, "driver and chip renders cannot undo CPU exclusion");
+        assert(el("chipRead").disabled);
+        assert(!toggle.disabled, "Stop remains accessible to the CPU owner");
+        page.send({ ...sample, state: "stopping", intentEnabled: false, canStop: false });
+        assert(toggle.disabled);
+        assert(download.disabled);
+        page.send({ type: "cpuLoad", state: "stopped", ownsProbe: false, canStart: true, canStop: false });
+        assert(!download.disabled);
     } finally {
         page.close();
     }

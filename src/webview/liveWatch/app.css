@@ -897,6 +897,24 @@ input[type="number"]::-webkit-outer-spin-button {
 .array-overlay.hidden {
     display: none;
 }
+
+.elf-diagnostics {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 100px;
+    overflow-y: auto;
+    border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
+    background: var(--vscode-textBlockQuote-background);
+}
+.elf-diagnostics[hidden] {
+    display: none;
+}
+.elf-error {
+    color: var(--vscode-errorForeground, #f48771);
+}
 .array-panel {
     min-width: 280px;
     max-width: 92vw;

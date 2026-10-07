@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- CPU 负载采样改为严格独占探针，在连接前校验 FreeRTOS ELF/DWARF；修复失败后残留意图和提前释放探针的问题，退出未确认时允许重试停止。
+- Make CPU load sampling exclusive across hardware operations, validate FreeRTOS ELF/DWARF before connecting, clear failed startup intent and retain probe ownership until confirmed shutdown, with Stop retries.
+
 - 修复内置调试器在继续／单步／运行到入口时的状态竞争，安全处理调用栈末尾分页，并在退出时取消旧请求，避免预期的状态变化弹出错误；保留真实调试故障提示与读取预算。
 - Fix built-in debugger execution-state races during continue, stepping and run-to-entry; handle end-of-stack pages safely and cancel pending requests on shutdown, while preserving genuine errors and bounded reads.
 
