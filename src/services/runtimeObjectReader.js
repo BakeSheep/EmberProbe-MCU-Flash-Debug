@@ -639,7 +639,14 @@ class RuntimeObjectReader {
         const decoded = bits
             ? elf.decodeBitfieldValue(bytes, type.watchType, object.field.bitOffset || 0, bits)
             : { value: elf.decodeValue(bytes, type.watchType), valueText: elf.decodeValueText(bytes, type.watchType) };
-        return { kind: "scalar", type: type.watchType, typeName: type.typeName, address: object.address, ...decoded };
+        return {
+            kind: "scalar",
+            type: type.watchType,
+            typeName: type.typeName,
+            address: object.address,
+            ...decoded,
+            ...(type.enumInfo ? { enumText: elf.enumValueText(decoded, type.enumInfo) } : {})
+        };
     }
     async sample() {
         const object = await this.select(

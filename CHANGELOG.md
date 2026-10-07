@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 从 ELF/DWARF 直接解析 C/C++ 枚举成员，在侧栏和 Live Watch 显示名称与数值，支持别名、复合成员、数组和运行时对象；修复旧 DWARF 负值解码和枚举指针宽度，保留精确 64 位数值与未知编码的只读保护。
+- Decode C/C++ enum members directly from ELF/DWARF and display names with values in the sidebar and Live Watch, including aliases, composite members, arrays and runtime objects. Fix legacy DWARF signed reads and enum pointer widths while preserving exact 64-bit values and read-only protection for inferred encodings.
+
 ## [0.8.1] - 2026-10-06
 
 - 精简中文 README，聚焦重点功能，并要求 Agent 仅在用户明确要求时修改 README。

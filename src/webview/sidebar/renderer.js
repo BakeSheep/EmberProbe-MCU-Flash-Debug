@@ -37,6 +37,7 @@ let sideWatch = [],
     availableSearchQuery = "",
     latest = Object.create(null),
     latestText = Object.create(null),
+    latestEnum = Object.create(null),
     liveRunning = false,
     liveCanRead = false,
     liveCanWrite = false,
@@ -245,7 +246,8 @@ function fmt(v) {
     const a = Math.abs(v);
     return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
 }
-function fmtExact(value, valueText) {
+function fmtExact(value, valueText, enumText) {
+    if (enumText) return String(enumText);
     return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
 }
 function setDisplayedValue(cell, value) {
@@ -297,6 +299,7 @@ function sbCollectLeaves(layout, name, baseAddr) {
                         address: (baseAddr + mo) >>> 0,
                         size: Number(m.byteSize) || LEAF_W[m.watchType],
                         type: m.watchType,
+                        ...(m.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
                         ...(m.isBoolean ? { isBoolean: true } : {}),
                         ...(Number.isInteger(m.bitSize) ? { bitSize: m.bitSize, bitOffset: m.bitOffset } : {}),
                         ...(m.isConst || isConst ? { isConst: true } : {}),
@@ -320,6 +323,7 @@ function sbCollectLeaves(layout, name, baseAddr) {
                         address: (baseAddr + eo) >>> 0,
                         size: es,
                         type: et.watchType,
+                        ...(et.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
                         ...(et.isBoolean ? { isBoolean: true } : {}),
                         ...(et.isConst || isConst ? { isConst: true } : {}),
                         ...(et.isReference ? { isReference: true } : {}),
@@ -342,6 +346,7 @@ function sbRemove(name, isComp) {
     }
     delete latest[name];
     delete latestText[name];
+    delete latestEnum[name];
 }
 function sbToggle(entry) {
     if (sideWatch.some((w) => w.name === entry.name)) {
@@ -383,7 +388,7 @@ function renderValues() {
         const val = document.createElement("span");
         val.className = "value-number";
         val.dataset.valueName = item.name;
-        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name]));
+        setDisplayedValue(val, fmtExact(latest[item.name], latestText[item.name], latestEnum[item.name]));
         const ty = document.createElement("span");
         ty.className = "value-type";
         ty.textContent = item.type || "u32";
@@ -580,6 +585,7 @@ function renderAvailable() {
                         ...(lf.isConst ? { isConst: true } : {}),
                         ...(lf.isReference ? { isReference: true } : {}),
                         ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
+                        ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
                         ...(lf.runtimeLayout
                             ? {
                                   runtimeLayout: lf.runtimeLayout,
@@ -798,6 +804,7 @@ function mkWriteBtn(entry, disabled, reason) {
         !!entry.isConst ||
         !!entry.isReference ||
         !!entry.isMemberPointer ||
+        !!entry.enumEncodingInferred ||
         Number.isInteger(entry.bitSize);
     const on = !disabled && inWriteList(entry.name);
     return mkAvBtn(
@@ -1195,6 +1202,7 @@ function onWriteResult(m) {
         if (m.ok) {
             latest[m.name] = m.value;
             latestText[m.name] = m.valueText ?? null;
+            latestEnum[m.name] = m.enumText ?? null;
             cells.setVal(m.valueText ?? m.value);
         }
     }
@@ -1239,7 +1247,7 @@ function sbUpdateComposite(name) {
     if (!tree) return;
     sbWalkLeaves(tree, name, (path, node) => {
         const cell = compCells[path];
-        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText));
+        if (cell) setDisplayedValue(cell, fmtExact(node.value, node.valueText, node.enumText));
     });
 }
 function sbNote(container, txt) {
@@ -1261,7 +1269,7 @@ function sbRenderLeaf(container, label, typeName, path, watchType, node) {
     ty.textContent = typeName || watchType;
     const val = document.createElement("span");
     val.className = "sb-mval";
-    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText) : "\u2014");
+    setDisplayedValue(val, node ? fmtExact(node.value, node.valueText, node.enumText) : "\u2014");
     val.title = t("common.copy");
     val.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -1429,6 +1437,7 @@ function updateValues(samples) {
     (samples || []).forEach((s) => {
         latest[s.name] = s.value;
         latestText[s.name] = s.valueText ?? null;
+        latestEnum[s.name] = s.enumText ?? null;
     });
     scheduleValueRefresh();
 }
@@ -1450,7 +1459,10 @@ function scheduleValueRefresh() {
 }
 function refreshDisplayedValues() {
     document.querySelectorAll("[data-value-name]").forEach((el) => {
-        setDisplayedValue(el, fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName]));
+        setDisplayedValue(
+            el,
+            fmtExact(latest[el.dataset.valueName], latestText[el.dataset.valueName], latestEnum[el.dataset.valueName])
+        );
     });
     sideWatch.forEach((it) => {
         if (sbIsComposite(it)) sbUpdateComposite(it.name);
@@ -1839,6 +1851,7 @@ window.EmberProbeMessages.connect(window, {
             sideWatch.forEach((item) => {
                 delete latest[item.name];
                 delete latestText[item.name];
+                delete latestEnum[item.name];
             });
         }
         renderValues();
@@ -1932,6 +1945,7 @@ window.EmberProbeMessages.connect(window, {
     debugSessionChanged: function () {
         latest = Object.create(null);
         latestText = Object.create(null);
+        latestEnum = Object.create(null);
         compCells = Object.create(null);
         renderValues();
         renderWrites();

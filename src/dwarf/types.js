@@ -4,6 +4,7 @@ const {
     DW_TAG_structure_type,
     DW_TAG_union_type,
     DW_TAG_enumeration_type,
+    DW_TAG_enumerator,
     DW_TAG_pointer_type,
     DW_TAG_typedef,
     DW_TAG_base_type,
@@ -43,11 +44,32 @@ const {
     DW_ATE_UTF
 } = require("./constants");
 function typeFlags(info) {
-    return Object.fromEntries(
-        ["isBoolean", "isConst", "isReference", "isMemberPointer"]
-            .filter((key) => info?.[key])
-            .map((key) => [key, true])
-    );
+    return {
+        ...Object.fromEntries(
+            ["isBoolean", "isConst", "isReference", "isMemberPointer", "isEnum", "enumEncodingInferred"]
+                .filter((key) => info?.[key])
+                .map((key) => [key, true])
+        ),
+        ...(info?.enumInfo ? { enumInfo: info.enumInfo } : {})
+    };
+}
+
+function enumMembers(ref, die, dies, childrenMap) {
+    const entries = [];
+    let bytes = 0;
+    for (const off of childrenMap.get(ref) || []) {
+        const child = dies.get(off);
+        if (child?.tag !== DW_TAG_enumerator) continue;
+        const raw = child.constantValue;
+        const value = Number.isSafeInteger(raw) ? String(raw) : raw?.integer64;
+        if (!child.name || typeof value !== "string" || !/^-?\d{1,20}$/.test(value)) return null;
+        const name = child.qualifiedName || child.name;
+        bytes += Buffer.byteLength(name) + value.length;
+        if (entries.length >= 1024 || bytes > 65536)
+            throw Object.assign(new Error("DWARF enum member budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
+        entries.push({ name, value });
+    }
+    return entries.length ? { typeName: die.qualifiedTypeName || die.name || "", entries } : null;
 }
 function bindVariableSymbols(parsed, symbols) {
     const byAddress = new Map();
@@ -222,11 +244,36 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
                 : underlying?.watchType?.startsWith("i")
                   ? DW_ATE_signed
                   : undefined;
+            const enumInfo = enumMembers(refKey, d, dies, childrenMap);
+            const declaredEncoding = d.encoding ?? underlyingEncoding;
+            // Legacy DWARF can omit the underlying encoding. Negative members prove
+            // signed storage; nonnegative members can be read as raw unsigned values.
+            // Such inferred types remain read-only because the original type is uncertain.
+            const encoding =
+                declaredEncoding ??
+                (enumInfo
+                    ? enumInfo.entries.some((entry) => BigInt(entry.value) < 0n)
+                        ? DW_ATE_signed
+                        : DW_ATE_unsigned
+                    : undefined);
+            const watchType = encodingToWatchType(encoding, byteSize);
+            if (enumInfo && watchType) {
+                const bits = BigInt(byteSize * 8);
+                for (const entry of enumInfo.entries) {
+                    let value = BigInt(entry.value);
+                    if (watchType.startsWith("i") && value >= 1n << (bits - 1n) && value < 1n << bits)
+                        value -= 1n << bits;
+                    entry.value = value.toString();
+                }
+            }
             result = {
                 kind: "scalar",
-                typeName: nm ? "enum " + nm : "enum",
-                watchType: encodingToWatchType(d.encoding ?? underlyingEncoding, byteSize),
-                byteSize
+                typeName: nm ? "enum " + (d.qualifiedTypeName || nm) : "enum",
+                watchType,
+                byteSize,
+                isEnum: true,
+                ...(declaredEncoding === undefined && watchType ? { enumEncodingInferred: true } : {}),
+                ...(enumInfo ? { enumInfo } : {})
             };
             break;
         }
@@ -689,6 +736,7 @@ function buildDisplayNames(parsed) {
     return result;
 }
 module.exports = {
+    resolveTypeInfo: _resolveTypeInfo,
     bindVariableSymbols,
     encodingToWatchType,
     buildVariableTypes,

@@ -2,6 +2,24 @@
 const { readULEB, readSLEB, readAddr, cstr } = require("./binary");
 function createFormReader({ buf, str, lineStr }) {
     let depth = 0;
+    // Constants may use all 64 bits; offsets and counts still use the bounded Number readers.
+    function exactLeb(cur, signed) {
+        let value = 0n;
+        for (let index = 0; index < 10; index++) {
+            if (cur.p >= buf.length) throw new Error("Truncated DWARF integer");
+            const byte = buf[cur.p++];
+            value |= BigInt(byte & 0x7f) << BigInt(index * 7);
+            if (!(byte & 0x80)) {
+                if (signed && byte & 0x40) value -= 1n << BigInt((index + 1) * 7);
+                if (value < -(1n << 63n) || value > (signed ? (1n << 63n) - 1n : (1n << 64n) - 1n))
+                    throw new Error("DWARF integer exceeds 64 bits");
+                return value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)
+                    ? Number(value)
+                    : { integer64: value.toString() };
+            }
+        }
+        throw new Error("DWARF integer exceeds 64 bits");
+    }
     function offset(cur, width = 4) {
         const value = width === 8 ? buf.readBigUInt64LE(cur.p) : BigInt(buf.readUInt32LE(cur.p));
         cur.p += width;
@@ -87,13 +105,13 @@ function createFormReader({ buf, str, lineStr }) {
                     return v !== 0;
                 }
                 case 0x0d:
-                    return readSLEB(buf, cur);
+                    return ctx.exactInteger ? exactLeb(cur, true) : readSLEB(buf, cur);
                 case 0x0e: {
                     const off = offset(cur, ctx.offsetSize);
                     return { str: str ? cstr(str.data, off) : "" };
                 }
                 case 0x0f:
-                    return readULEB(buf, cur);
+                    return ctx.exactInteger ? exactLeb(cur, false) : readULEB(buf, cur);
                 case 0x10: {
                     return { ref: (ctx.sectionBase || 0) + offset(cur, ctx.offsetSize) };
                 } // ref_addr（节内偏移）

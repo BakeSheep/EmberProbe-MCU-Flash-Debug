@@ -2251,6 +2251,10 @@ class MainViewProvider {
                     isReference: !!leaves[0].isReference,
                     isMemberPointer: !!leaves[0].isMemberPointer
                 };
+                if (leaves[0].enumEncodingInferred)
+                    throw Object.assign(new Error(`Enum write encoding is unavailable: ${req.name}`), {
+                        code: "WRITE_TYPE_UNKNOWN"
+                    });
             } else {
                 const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: req.name }]);
                 const resolvedSymbol = byName.get(plan.name);
@@ -3036,6 +3040,8 @@ class MainViewProvider {
                 hasRuntimeLayout: symbol.hasRuntimeLayout,
                 unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
+                ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
+                ...(symbol.isEnum ? { isEnum: true } : {}),
                 ...(symbol.isBoolean ? { isBoolean: true } : {}),
                 ...(symbol.isConst ? { isConst: true } : {}),
                 ...(symbol.isReference ? { isReference: true } : {}),
@@ -3346,7 +3352,7 @@ class MainViewProvider {
         const build = (key) => {
             const m = new Map();
             for (const item of this._scalarWatchList(key)) {
-                if (item?.name) m.set(item.name, Number.isInteger(item.bitSize) ? item : item.type);
+                if (item?.name) m.set(item.name, Number.isInteger(item.bitSize) || item.enumInfo ? item : item.type);
             }
             return m;
         };
@@ -3354,7 +3360,14 @@ class MainViewProvider {
         // 写入列表变量按自身观察类型解码后推送到侧栏；同名变量以查看列表类型优先
         for (const item of this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
             if (item?.name && item.type && !sidebar.has(item.name)) {
-                sidebar.set(item.name, Number.isInteger(item.bitSize) ? item : item.type);
+                const symbol = this.readElfSymbols().symbols.find((entry) => entry.name === item.name);
+                const enumInfo = symbol?.watchType === item.type ? symbol.enumInfo : null;
+                sidebar.set(
+                    item.name,
+                    Number.isInteger(item.bitSize) || enumInfo
+                        ? { ...item, ...(enumInfo ? { enumInfo } : {}) }
+                        : item.type
+                );
             }
         }
         const graphs = new Map();

@@ -1,7 +1,7 @@
 "use strict";
 
 const c = require("./constants");
-const { encodingToWatchType } = require("./types");
+const { encodingToWatchType, resolveTypeInfo } = require("./types");
 
 const COMPOSITES = new Set([c.DW_TAG_structure_type, c.DW_TAG_class_type, c.DW_TAG_union_type]);
 const WRAPPERS = new Set([c.DW_TAG_typedef, c.DW_TAG_const_type, c.DW_TAG_volatile_type, c.DW_TAG_restrict_type]);
@@ -9,6 +9,7 @@ const STL =
     /^(?:std::(?:__cxx11::)?)(basic_string|vector|array|pair|tuple|map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|unique_ptr|shared_ptr|weak_ptr|optional|variant)</;
 
 function createRuntimeLayoutResolver(parsed, symbols = []) {
+    const scalarCache = new Map();
     const byName = new Map();
     for (const variable of parsed.variables) {
         const name = variable.linkageName || variable.name;
@@ -60,10 +61,11 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
             } else if ([c.DW_TAG_base_type, c.DW_TAG_enumeration_type, c.DW_TAG_ptr_to_member_type].includes(die.tag)) {
                 node.kind = "scalar";
                 node.watchType = encodingToWatchType(die.encoding, node.byteSize);
-                if (die.tag === c.DW_TAG_enumeration_type && die.typeRef !== undefined) {
-                    const inner = types[visit(die.typeRef, depth + 1)];
-                    node.byteSize ||= inner.byteSize;
-                    node.watchType ||= inner.watchType;
+                if (die.tag === c.DW_TAG_enumeration_type) {
+                    const info = resolveTypeInfo(ref, parsed.dies, parsed.childrenMap, scalarCache);
+                    node.byteSize = info.byteSize;
+                    node.watchType = info.watchType;
+                    if (info.enumInfo) node.enumInfo = info.enumInfo;
                 }
             } else if (die.tag === c.DW_TAG_array_type) {
                 node.kind = "array";

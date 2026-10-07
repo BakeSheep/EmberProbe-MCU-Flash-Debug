@@ -173,7 +173,7 @@ class LiveWatchService {
             }
             if (!sample) continue;
             selected.push(sample);
-            types.set(item.name, Number.isInteger(item.bitSize) ? item : item.type);
+            types.set(item.name, Number.isInteger(item.bitSize) || item.enumInfo ? item : item.type);
         }
         return result.concat(this.decodeConsumerSamples(selected, time, types, null).scalarSamples);
     }
@@ -210,6 +210,7 @@ class LiveWatchService {
                         name: sample.name,
                         value: sample.runtimeTree.value,
                         valueText: sample.runtimeTree.valueText,
+                        ...(sample.runtimeTree.enumText ? { enumText: sample.runtimeTree.enumText } : {}),
                         t: sampleTime
                     };
                     scalarSamples.push(decoded);
@@ -253,6 +254,7 @@ class LiveWatchService {
                       : null,
                 t: sampleTime
             };
+            if (typeSpec.enumInfo) decoded.enumText = this.elfSymbols.enumValueText(decoded, typeSpec.enumInfo);
             scalarSamples.push(decoded);
             latest.set(sample.name, decoded);
         }
