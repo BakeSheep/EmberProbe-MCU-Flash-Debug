@@ -75,6 +75,16 @@ Experimental OpenOCD groups use `serverGroup`, `numberOfProcessors`, `targetProc
 
 ## Verification boundary / 验证边界
 
+The experimental CPU row in the flash/debug card's Other dropdown supports read-only running residency estimates on validated single-core
+FreeRTOS Cortex-M0/M0+/M3/M4/M7 targets with kernel ELF/DWARF. It does not need a paused task snapshot or firmware
+runtime-statistics hooks. Active exceptions count as work; unconfirmed Idle hides the workload number, and
+sleeping time remains unavailable. CPU and variable sampling have separate controls. Shared groups and external
+GDB servers are excluded. See [CPU workload monitoring](CPU-LOAD-MONITORING.md) for scope, gaps and measurement limits.
+
+烧录调试卡片“其他”中的实验性 CPU 进度条可在具有内核 ELF/DWARF 的已验证单核 FreeRTOS Cortex-M0/M0+/M3/M4/M7 上进行运行期只读驻留估计。
+它不依赖暂停任务快照或固件运行统计钩子，活动异常算工作；未确认 Idle 时隐藏工作负载数值，睡眠比例不可用。
+CPU 与变量独立启停，不支持共享组和外部 GDB Server。详见 [使用方法与测量边界](CPU-LOAD-MONITORING.md)。
+
 Configuration handling, OpenOCD argument ordering, multi-task GDB/MI events and DAP control are covered by hardware-independent tests (`test/ember-debug.test.js`, `test/openocd-entrypoints.test.js`, `test/openocd-compatibility.test.js`, `test/debug-control.test.js`). Real task discovery depends on the board, the kernel build and the linker script, so it is verified by the manual FreeRTOS procedure in `test/hil/README.md` on dedicated hardware. Those results are not established by the automated suite.
 
 配置处理、OpenOCD 参数顺序、多任务 GDB/MI 事件与 DAP 控制由不依赖硬件的测试覆盖（`test/ember-debug.test.js`、`test/openocd-entrypoints.test.js`、`test/openocd-compatibility.test.js`、`test/debug-control.test.js`）。真正的任务发现取决于板子、内核构建与链接脚本，因此按 `test/hil/README.md` 中的 FreeRTOS 手工流程在专用硬件上验证。自动化测试套件不能证明这部分结果。

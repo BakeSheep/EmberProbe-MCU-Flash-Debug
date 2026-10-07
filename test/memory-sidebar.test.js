@@ -152,7 +152,11 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         );
         assert.strictEqual(card.querySelector(".foot #statusText")?.id, "statusText");
         const refresh = dom.document.getElementById("memoryRefresh");
-        assert.strictEqual(refresh.closest("summary"), section.querySelector("summary"));
+        assert.strictEqual(refresh.closest("summary"), null);
+        assert.strictEqual(
+            refresh.closest(".other-block-head"),
+            section.querySelector("#memoryUsageBlock .other-block-head")
+        );
         assert.strictEqual(dom.window.getComputedStyle(refresh).borderRadius, "4px");
         for (const id of ["watchCount", "writeCount", "allCount"]) {
             const style = dom.window.getComputedStyle(dom.document.getElementById(id));

@@ -357,6 +357,16 @@ class ElfService {
         });
     }
 
+    async cpuLoadPlan() {
+        const result = this.workerPath ? await this.ready() : this.read();
+        const generation = this.generation;
+        const layout = this.workerPath
+            ? await this.layout("pxCurrentTCB")
+            : { runtimeLayout: result.symbols.find((symbol) => symbol.name === "pxCurrentTCB")?.runtimeLayout };
+        if (generation !== this.generation) throw new Error("ELF changed during CPU metadata resolution");
+        return require("./cpuLoadModel").buildCpuLoadPlan(result, layout);
+    }
+
     read() {
         if (this.workerPath) {
             if (this.cache?.elf) {
@@ -431,7 +441,15 @@ class ElfService {
         const result = this.elfSymbols.parseElfSymbols(buffer);
         result.memory = this.elfSymbols.parseElfSections(buffer);
         result.symbols = result.symbols.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
-        result.elf = { path: elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256 };
+        result.elf = {
+            path: elfPath,
+            mtimeMs: before.mtimeMs,
+            size: before.size,
+            sha256,
+            machine: buffer.length >= 20 ? buffer.readUInt16LE(18) : undefined,
+            elfClass: buffer[4],
+            encoding: buffer[5]
+        };
         const parsed = this.dwarf.parseDwarf(buffer, { filePath: elfPath, runtime: true });
         result.typeMetadataIncomplete = parsed?.diagnostics?.some((entry) => entry.code !== "DWARF_MISSING");
         result.companions = parsed?.companions || [];

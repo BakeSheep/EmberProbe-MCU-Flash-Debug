@@ -76,7 +76,15 @@ async function run(port, filePath) {
         symbolNames = new Set(result.symbols.map((symbol) => symbol.name));
         port.postMessage({
             type: "metadata",
-            elf: { path: filePath, mtimeMs: before.mtimeMs, size: before.size, sha256 },
+            elf: {
+                path: filePath,
+                mtimeMs: before.mtimeMs,
+                size: before.size,
+                sha256,
+                machine: buffer.readUInt16LE(18),
+                elfClass: buffer[4],
+                encoding: buffer[5]
+            },
             memory: parseElfSections(buffer),
             warnings: result.warnings,
             symbolCount: result.symbols.length

@@ -95,6 +95,7 @@ const chipRead = document.getElementById("chipRead"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
+const cpuLoadView = window.EmberProbeCpuLoadView?.create({ api, t });
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
 const memoryAnalysisSection = document.getElementById("memoryAnalysisSection");
@@ -221,6 +222,7 @@ function rerenderDynamic() {
     svdStatus(lastSvd);
     peripheralView?.render();
     rtosView?.render();
+    cpuLoadView?.render();
     memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
@@ -1959,6 +1961,9 @@ window.EmberProbeMessages.connect(window, {
     },
     rtosDebugStatus: function (m) {
         rtosView?.onDebug(m);
+    },
+    cpuLoad: function (m) {
+        cpuLoadView?.onSummary(m);
     },
     rtosSnapshot: function (m) {
         rtosView?.onSnapshot(m);

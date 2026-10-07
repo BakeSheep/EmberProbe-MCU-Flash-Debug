@@ -285,7 +285,12 @@ function parseElfSymbols(buffer) {
         }
         if (stType !== STT_OBJECT) continue; // 仅数据对象（变量）与函数
         const name = readCStr(strtab.offset, stName);
-        if (!name || seen.has(name)) continue; // 同名取首个
+        if (!name) continue;
+        if (seen.has(name)) {
+            const previous = seen.get(name);
+            if (previous.address !== stValue || previous.size !== stSize) previous.addressAmbiguous = true;
+            continue; // Preserve existing variable lookup, but CPU plans must reject ambiguous identities.
+        }
         seen.set(name, { name, address: stValue >>> 0, size: stSize >>> 0 });
     }
     const symbols = Array.from(seen.values())

@@ -136,6 +136,17 @@ class OpenOcdDebugController {
     setPauseReason(reason) {
         this.runtime?.setPauseReason(reason);
     }
+    setCpuLoadPlan(plan) {
+        if (plan && (!this.capabilities.runtimeRead || !this.ready))
+            throw new Error("CPU monitoring requires a ready single-core managed OpenOCD session");
+        return this.runtime?.setCpuLoadPlan(plan);
+    }
+    setCpuLoadPaused(reason) {
+        return this.runtime?.setCpuLoadPaused(reason);
+    }
+    selectCpuIdleTask(key) {
+        return this.runtime?.selectCpuIdleTask(key);
+    }
     stats() {
         return this.runtime?.stats();
     }

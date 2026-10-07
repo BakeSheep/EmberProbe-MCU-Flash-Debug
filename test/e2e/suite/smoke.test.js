@@ -60,6 +60,19 @@ async function run() {
         assert.equal(result.id, 1);
         assert.equal(result.result, true);
         console.log("✓ packaged sampling worker starts independently without hardware");
+        const cpu = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Packaged CPU consumer did not respond")), 5000);
+            worker.once("message", (message) => {
+                clearTimeout(timer);
+                resolve(message);
+            });
+            worker.postMessage({ id: 2, method: "setCpuLoadPlan", args: [null] });
+        });
+        assert.equal(cpu.id, 2);
+        assert.equal(cpu.error, undefined);
+        assert.equal(cpu.state.cpuLoadEnabled, false);
+        assert.equal(cpu.state.samplingEnabled, result.state.samplingEnabled);
+        console.log("✓ CPU consumer is independently controllable and off by default");
     } finally {
         await worker.terminate();
     }

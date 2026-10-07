@@ -15,6 +15,7 @@ const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
+const { CpuLoadSampler } = require("./services/cpuLoadSampler");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
@@ -238,6 +239,21 @@ class ManagedOpenOcdSession {
         this._batchUnsupported = false;
         this._recentCycleTimestamps = [];
         this._timerResolutionHeld = false;
+        this.cpuDeliveryBlocked = false;
+        this._recentTclCosts = [];
+        this.cpuLoad = new CpuLoadSampler(this);
+    }
+
+    setCpuLoadPlan(plan) {
+        this.cpuLoad.configure(plan);
+    }
+
+    setCpuLoadPaused(reason) {
+        this.cpuLoad.pause(reason);
+    }
+
+    selectCpuIdleTask(key) {
+        this.cpuLoad.selectIdle(key);
     }
 
     _warmUp() {
@@ -268,6 +284,7 @@ class ManagedOpenOcdSession {
         this._clearSamplingTimer();
         if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
         if (!this._timerResolutionHeld) this._timerResolutionHeld = windowsTimerResolution.acquire();
+        this._variableDeadline = Number(process.hrtime.bigint()) / 1e6 + delayMs;
         this.timer = scheduleSamplingTick(
             delayMs,
             () => {
@@ -984,6 +1001,21 @@ class ManagedOpenOcdSession {
     }
 
     async _sendCheckedCommand(cmd) {
+        const start = Number(process.hrtime.bigint()) / 1e6;
+        try {
+            return await this._executeCheckedCommand(cmd);
+        } finally {
+            const time = Number(process.hrtime.bigint()) / 1e6;
+            this._recentTclCosts.push({ time, duration: time - start });
+            while (
+                this._recentTclCosts.length &&
+                (this._recentTclCosts.length > 2048 || this._recentTclCosts[0].time < time - 1000)
+            )
+                this._recentTclCosts.shift();
+        }
+    }
+
+    async _executeCheckedCommand(cmd) {
         if (this.mode === "debug") return this._sendSilentDebugCommand(cmd);
         const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; if {$_ep_rc} {set _ep_out "EP_ERR:\${_ep_msg}"} else {set _ep_out "EP_OK:\${_ep_msg}"}; set _ep_out`;
         const response = String((await this._sendCommand(wrapped)) || "").replace(/\x1a/g, "");
@@ -1465,6 +1497,7 @@ class ManagedOpenOcdSession {
 
     stop(timeoutMs = 1200) {
         if (this._stopPromise) return this._stopPromise;
+        this.cpuLoad.stop();
         const child = this.child;
         const socket = this.socket;
         const childExited = child ? this.waitForExit(timeoutMs) : Promise.resolve(true);

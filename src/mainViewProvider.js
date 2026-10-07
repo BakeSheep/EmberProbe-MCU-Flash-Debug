@@ -182,6 +182,7 @@ class MainViewProvider {
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => {
                 this._syncDebugSampleContext();
+                void this._cpuLoadService?.reconcile();
                 this._postConsumerStatuses(status, !!status.error);
                 this._postPeripheralDebugStatus();
             },
@@ -315,6 +316,14 @@ class MainViewProvider {
             cleanPath: cleanWindowsPath,
             t: (key, params) => this._t(key, params)
         });
+        this._cpuLoadService = new (require("./services/cpuLoadService").CpuLoadService)({
+            elf: this._elfService,
+            context: (connect) => this._cpuLoadContext(connect),
+            post: (message) => this._webviewView?.webview.postMessage(message),
+            release: async () => {
+                if (!this._samplingIntent && this._liveSession) await this.stopLiveWatch();
+            }
+        });
         this._openOcdStatusService = new OpenOcdStatusService({
             vscode,
             context,
@@ -444,6 +453,7 @@ class MainViewProvider {
         return { folder, cwd: folder?.uri.fsPath };
     }
     _postPeripheralDebugStatus(post = (message) => this._webviewView?.webview.postMessage(message)) {
+        if (this._cpuLoadService) post(this._cpuLoadService.status());
         if (!this._debugBridge) return;
         this._rtosViewService ||= new RtosViewService(this._debugBridge);
         post(this._rtosViewService.status());
@@ -1517,6 +1527,7 @@ class MainViewProvider {
                             void this._probeConnectionService.recordSuccess(server.options);
                     },
                     onSample: (samples, t, consumers) => this._handleRawSamples(samples, t, consumers),
+                    onCpuLoad: (result) => this._cpuLoadService?.accept(server, result),
                     onStatus: (status) => {
                         if (status?.key === "live.debugRuntimeSampling" || status?.key === "live.debugTclDegraded") {
                             this._postConsumerStatuses({
@@ -1555,6 +1566,7 @@ class MainViewProvider {
                             true
                         ),
                     onDisconnect: (error) => {
+                        if (this._managedDebugServer === server) void this._cpuLoadService?.suspend("disconnected");
                         if (this._managedDebugGroup && this._managedDebugServer === server)
                             void this._handleSharedServerExit(error).catch((failure) =>
                                 this._postLive({ type: "liveError", message: failure.message })
@@ -1591,6 +1603,7 @@ class MainViewProvider {
         throw lastError || new Error("Unable to start managed OpenOCD");
     }
     async _stopManagedDebugServer() {
+        await this._cpuLoadService?.suspend("debug-server-transition");
         if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
@@ -1900,6 +1913,7 @@ class MainViewProvider {
             });
     }
     async _quiesceManagedRuntimeRead() {
+        await this._cpuLoadService?.suspend("debug-inspection");
         this._assertGroupedReadElf();
         const server = this._managedDebugServer;
         if (!server || server.capabilities?.runtimeRead === false) return;
@@ -1914,6 +1928,18 @@ class MainViewProvider {
     }
     _handleManagedTargetState(event) {
         if (!event?.session || !this._managedDebugSessionId || event.session.id !== this._managedDebugSessionId) return;
+        void this._cpuLoadService?.suspend(event.transition || event.state);
+        if (
+            this._cpuLoadService?.intent &&
+            event.state === "continued" &&
+            (!event.transition || event.transition === "continue")
+        ) {
+            const cpuEpoch = event.epoch;
+            setTimeout(() => {
+                if (this._debugBridge.stopEpoch === cpuEpoch && !this._debugBridge.paused)
+                    void this._cpuLoadService?.reconcile();
+            }, 150);
+        }
         if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
@@ -2736,7 +2762,7 @@ class MainViewProvider {
                         break;
                     case "stop":
                         if (this._agentReadRunning) this.stopAgentReadIfRunning();
-                        else this.stopLiveWatch();
+                        else this.stopLiveWatch({ variablesOnly: true });
                         break;
                     case "setInterval":
                         this._setLiveInterval(message.intervalMs);
@@ -2902,6 +2928,7 @@ class MainViewProvider {
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     _invalidateElfState() {
+        void this._cpuLoadService?.suspend("image-changed");
         this._elfService.invalidate();
         this._watchLists.invalidate();
         this._runtimeRamCache = null;
@@ -2919,6 +2946,7 @@ class MainViewProvider {
             }
         } finally {
             await this._refreshSamplingPlan();
+            await this._cpuLoadService?.reconcile();
         }
         await memoryRefresh;
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
@@ -3649,7 +3677,7 @@ class MainViewProvider {
         } else if (action === "stop") {
             // Cancel temporary Agent reads as well as persistent sampling; leave debugging active.
             const agentStopped = this.stopAgentReadIfRunning();
-            const liveStopped = this.stopLiveWatch();
+            const liveStopped = this.stopLiveWatch({ variablesOnly: true });
             await Promise.all([agentStopped, liveStopped]);
         }
         return {
@@ -3764,7 +3792,10 @@ class MainViewProvider {
         }
         if (this._liveSession) {
             if (active.length) this._applySamplingPlan(this._liveSession, active);
-            else {
+            else if (this._cpuLoadService?.intent) {
+                this._applySamplingPlan(this._liveSession, []);
+                this._liveSession.setSamplingEnabled(false);
+            } else {
                 this.stopLiveWatch({ preserveIntent: true });
                 this._postConsumerStatuses({ key: "live.needVar" });
             }
@@ -3787,6 +3818,50 @@ class MainViewProvider {
             for (const i of this._context.workspaceState.get(key) || []) if (i && i.name) names.add(i.name);
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
+    }
+    async _cpuLoadContext(connect = false) {
+        if (this._shutdownPromise) return { reason: "stopped" };
+        if (this._externalDebug?.held) return { reason: "external-gdb-unsupported", unsupported: true };
+        if (this._managedDebugGroup || this._managedDebugServer?.capabilities?.runtimeRead === false)
+            return { reason: "shared-or-multicore-unsupported", unsupported: true };
+        if (this._debugBridge.hasAnySession) {
+            const session = this._debugBridge.activeSession;
+            if (!session || !this._managedDebugServer?.ready || session.id !== this._managedDebugSessionId)
+                return { reason: "requires-emberprobe-managed-debug", unsupported: true };
+            if (this._debugBridge.paused || this._debugBridge.transitionKind || this._debugBridge.controlInFlight)
+                return { reason: "debug-paused-or-control" };
+            const selected = this._context.workspaceState.get(CACHE_KEYS.elfPath);
+            const executable = session.configuration?.executable;
+            const normalize = (value) =>
+                value ? path.resolve(session.configuration?.cwd || ".", value).toLowerCase() : "";
+            if (!selected || normalize(selected) !== normalize(executable))
+                return { reason: "debug-elf-mismatch", unsupported: true };
+            return {
+                runtime: this._managedDebugServer,
+                identity: {
+                    session: session.id,
+                    target: session.configuration?.targetProcessor || 0,
+                    runEpoch: this._debugBridge.stopEpoch
+                }
+            };
+        }
+        if (
+            this._debugStarting ||
+            this._debugCommandPending ||
+            isSupportedDebugSession(vscode.debug.activeDebugSession)
+        )
+            return { reason: "debug-transition" };
+        if (
+            (!this._liveSession && (this._downloadRunning || this._chipInfoRunning || this._agentReadRunning)) ||
+            this._liveStarting ||
+            this._probeDriverSwitching
+        )
+            return { reason: "probe-busy" };
+        if (!this._liveSession && connect) await this.startLiveWatch(undefined, undefined, "cpu", true);
+        return {
+            runtime: this._liveSession,
+            identity: { session: "standalone", target: this._context.workspaceState.get(CACHE_KEYS.mcuCore) }
+        };
     }
     async startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
         if (this._externalDebug?.active && this._debugBridge.hasSession) {
@@ -3836,8 +3911,10 @@ class MainViewProvider {
             await this._elfService.ready();
             await this._elfRebindPromise;
         }
-        this._samplingIntent = true;
-        this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
+        if (consumer !== "cpu") {
+            this._samplingIntent = true;
+            this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
+        }
         if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
         const activeItems = this._activeReadPlan();
         if (
@@ -3888,12 +3965,14 @@ class MainViewProvider {
             this._postConsumerStatuses(status);
             return;
         }
-        if (!activeItems.length) {
+        if (!activeItems.length && consumer !== "cpu") {
             this._postConsumerStatuses({ key: "live.needVar" });
             return;
         }
-        this._liveConsumers.add("graph");
-        this._liveConsumers.add("sidebar");
+        if (consumer !== "cpu") {
+            this._liveConsumers.add("graph");
+            this._liveConsumers.add("sidebar");
+        }
         if (this._liveWatchRunning && this._liveSession) {
             this._applySamplingPlan(this._liveSession, this._activeReadPlan());
             if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
@@ -3941,6 +4020,7 @@ class MainViewProvider {
                     onSample: (samples, t, consumers) => {
                         if (this._liveSession === session) this._handleRawSamples(samples, t, consumers);
                     },
+                    onCpuLoad: (result) => this._cpuLoadService?.accept(session, result),
                     onStatus: (msg) => {
                         if (this._liveSession === session) this._postConsumerStatuses(msg);
                     },
@@ -3949,6 +4029,7 @@ class MainViewProvider {
                     },
                     onDisconnect: (err) => {
                         if (this._liveSession !== session) return;
+                        void this._cpuLoadService?.suspend("disconnected");
                         this._liveSession = null;
                         this._liveWatchLease?.release();
                         this._liveConsumers.clear();
@@ -3975,7 +4056,8 @@ class MainViewProvider {
             session.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
             this._liveWatchLease = startingLease.transition("liveWatch");
             this._setLiveInterval(intervalMs ?? this._liveIntervalMs);
-            this._postConsumerStatuses({ key: "sb.sampling" });
+            this._postConsumerStatuses({ key: this._samplingIntent ? "sb.sampling" : "sb.stopped" });
+            void this._cpuLoadService?.reconcile();
         } catch (error) {
             if (session && this._liveSession === session) {
                 try {
@@ -4002,6 +4084,15 @@ class MainViewProvider {
         }
     }
     stopLiveWatch(options = {}) {
+        if (options.variablesOnly && this._cpuLoadService?.intent) {
+            this._samplingIntent = false;
+            this._debugBridge.setIntent(false);
+            this._liveSession?.setSamplingEnabled(false);
+            this._managedDebugServer?.setSamplingEnabled(false);
+            this._postConsumerStatuses({ key: "sb.stopped" });
+            return;
+        }
+        void this._cpuLoadService?.suspend(options.preserveIntent ? "connection-transition" : "disconnected");
         this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
         let stopped = null;
@@ -4253,6 +4344,7 @@ class MainViewProvider {
             return;
         }
         if (this._managedDebugServer) await this._stopManagedDebugServer();
+        if (this._cpuLoadService?.intent) await this._cpuLoadService.reconcile(true);
         if (!this._samplingIntent) {
             this._postConsumerStatuses({ mode: "stopped", key: "sb.stopped", source: "none" });
             return;
@@ -4280,6 +4372,10 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     shutdown() {
+        if (this._cpuLoadService) {
+            this._cpuLoadService.intent = false;
+            void this._cpuLoadService.suspend("stopped");
+        }
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();
@@ -4500,6 +4596,18 @@ class MainViewProvider {
                     await this._handlePeripheralViewRequest(webviewView.webview, message);
                     break;
                 }
+                case "cpuLoadStart":
+                case "cpuLoadStop":
+                case "cpuLoadIdle": {
+                    try {
+                        if (message.type === "cpuLoadStart") await this._cpuLoadService.start();
+                        else if (message.type === "cpuLoadStop") await this._cpuLoadService.stop();
+                        else await this._cpuLoadService.selectIdle(message.key);
+                    } catch (error) {
+                        webviewView.webview.postMessage({ ...this._cpuLoadService.status(), error: error.message });
+                    }
+                    break;
+                }
                 case "rtosRefresh": {
                     this._rtosViewService ||= new RtosViewService(this._debugBridge);
                     const identity = this._rtosViewService.status();
@@ -4626,7 +4734,7 @@ class MainViewProvider {
                 case "liveToggle": {
                     try {
                         if (this._agentReadRunning) this.stopAgentReadIfRunning();
-                        else if (this._samplingIntent) this.stopLiveWatch();
+                        else if (this._samplingIntent) this.stopLiveWatch({ variablesOnly: true });
                         else {
                             const items = this._context.workspaceState.get(CACHE_KEYS.sidebarWatchList) || [];
                             await this.startLiveWatch(items, message.intervalMs, "sidebar");

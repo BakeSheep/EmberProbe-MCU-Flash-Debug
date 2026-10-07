@@ -9,12 +9,17 @@ const TEST_GROUPS = Object.freeze({
     fast: Object.freeze([
         "composite-decode.test.js",
         "cpp-class-layout.test.js",
+        "cpu-load-model.test.js",
         "dwarf-type-matrix.test.js",
         "elf-analyze.test.js",
         "elf-symbols.test.js",
         "validation.test.js"
     ]),
     integration: Object.freeze([
+        "cpu-load-sampler.test.js",
+        "cpu-load-integration.test.js",
+        "cpu-load-metadata.test.js",
+        "cpu-load-view.test.js",
         "adaptive-sampling.test.js",
         "agent-debug-inspection.test.js",
         "agent-diagnostics.test.js",
