@@ -2939,7 +2939,7 @@ class MainViewProvider {
             resetValues: true
         });
     }
-    async _saveWatchList(key, items) {
+    async _saveWatchList(key, items, { syncSidebar = true } = {}) {
         // Runtime recipes are derived from the current ELF and can contain thousands of
         // type nodes. Persist the user identity/path only; the next ELF rebind regenerates
         // the verified recipe and prevents stale addresses/layouts in workspace state.
@@ -2954,8 +2954,10 @@ class MainViewProvider {
         this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
         for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
         await this._refreshSamplingPlan();
-        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
-        for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
+        // Selection/value changes do not change ELF metadata. Echoing a local sidebar edit
+        // also replaces the active write input and interrupts wheel/slider gestures.
+        if (syncSidebar) this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message), true);
+        for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
     }
     readElfSymbols() {
         return this._elfService.read();
@@ -4767,12 +4769,12 @@ class MainViewProvider {
                 }
                 case "saveSidebarWatch": {
                     const items = Array.isArray(message.items) ? message.items : [];
-                    await this._saveWatchList(CACHE_KEYS.sidebarWatchList, items);
+                    await this._saveWatchList(CACHE_KEYS.sidebarWatchList, items, { syncSidebar: false });
                     break;
                 }
                 case "saveSidebarWrite": {
                     const items = Array.isArray(message.items) ? message.items : [];
-                    await this._saveWatchList(CACHE_KEYS.sidebarWriteList, items);
+                    await this._saveWatchList(CACHE_KEYS.sidebarWriteList, items, { syncSidebar: false });
                     break;
                 }
                 case "writeVariable": {

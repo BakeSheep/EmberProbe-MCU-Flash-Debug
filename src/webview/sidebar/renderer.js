@@ -360,7 +360,7 @@ function sbToggle(entry) {
         if (entry.isComposite) sbExpanded[entry.name] = true;
     }
     renderValues();
-    renderAvailable();
+    updateAvailableSelections();
     saveSideWatch();
     saveSbUi();
 }
@@ -406,7 +406,7 @@ function renderValues() {
         rm.onclick = () => {
             sideWatch = sideWatch.filter((w) => w.name !== item.name);
             renderValues();
-            renderAvailable();
+            updateAvailableSelections();
             saveSideWatch();
         };
         val.title = t("common.copy");
@@ -443,19 +443,27 @@ function scheduleAvailableMemberSearch(query) {
     }, 180);
 }
 function renderAvailable() {
+    const scrollTop = availableBox.scrollTop;
+    const scrollLeft = availableBox.scrollLeft;
+    const content = document.createDocumentFragment();
+    renderAvailableContents(content);
+    availableBox.replaceChildren(content);
+    availableBox.scrollTop = scrollTop;
+    availableBox.scrollLeft = scrollLeft;
+}
+function renderAvailableContents(content) {
     EmberProbeRuntime.renderElfDiagnostics(
         document.getElementById("availableDiagnostics"),
         variableWarnings,
         "",
         t("common.diagnostics")
     );
-    availableBox.textContent = "";
     document.getElementById("allCount").textContent = String(available.length);
     if (variableError) {
         const e = document.createElement("div");
         e.className = "empty";
         e.textContent = variableError;
-        availableBox.appendChild(e);
+        content.appendChild(e);
         return;
     }
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
@@ -489,7 +497,7 @@ function renderAvailable() {
                 : available.length
                   ? t("sb.noMatch")
                   : t("sb.noImportable");
-        availableBox.appendChild(e);
+        content.appendChild(e);
         return;
     }
     list.forEach((sym) => {
@@ -547,7 +555,7 @@ function renderAvailable() {
             ty.className = "available-type";
             ty.textContent = sym.typeName || t("lw.unknownType");
             row.append(wrap, ty);
-            availableBox.appendChild(row);
+            content.appendChild(row);
             const kids = document.createElement("div");
             kids.className = "av-children" + (open ? " open" : "");
             let ownLeafRows = 0;
@@ -630,7 +638,7 @@ function renderAvailable() {
                 }
             };
             if (open) populate();
-            availableBox.appendChild(kids);
+            content.appendChild(kids);
             const toggle = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -715,14 +723,14 @@ function renderAvailable() {
             ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
             b.append(cell, ty);
             if (!noLayout) b.onclick = () => sbToggle(entry);
-            availableBox.appendChild(b);
+            content.appendChild(b);
         }
     });
     if (matching.length > list.length) {
         const note = document.createElement("div");
         note.className = "sb-note";
         note.textContent = t("lw.showingFirst", { n: list.length });
-        availableBox.appendChild(note);
+        content.appendChild(note);
     }
 }
 function sbIsComposite(it) {
@@ -817,7 +825,7 @@ function mkWriteBtn(entry, disabled, reason) {
         !!entry.enumEncodingInferred ||
         Number.isInteger(entry.bitSize);
     const on = !disabled && inWriteList(entry.name);
-    return mkAvBtn(
+    const button = mkAvBtn(
         "av-write",
         "\u270e",
         on,
@@ -825,10 +833,12 @@ function mkWriteBtn(entry, disabled, reason) {
         disabled ? reason || t("sb.writeUnsupported") : on ? t("sb.removeFromWrite") : t("sb.addToWrite"),
         () => wToggle(entry)
     );
+    button.dataset.selectionName = entry.name;
+    return button;
 }
 function mkWatchBtn(name, disabled, reason, handler) {
     const on = !disabled && sideWatch.some((w) => w.name === name);
-    return mkAvBtn(
+    const button = mkAvBtn(
         "av-watch",
         on ? "\u2713" : "+",
         on,
@@ -836,6 +846,28 @@ function mkWatchBtn(name, disabled, reason, handler) {
         disabled ? reason || "" : on ? t("sb.removeFromWatch") : "",
         handler
     );
+    button.dataset.selectionName = name;
+    return button;
+}
+function updateAvailableSelections() {
+    const watched = new Set(sideWatch.map((item) => item.name));
+    const written = new Set(writeList.map((item) => item.name));
+    availableBox.querySelectorAll("[data-selection-name]").forEach((button) => {
+        if (button.disabled) return;
+        const isWrite = button.classList.contains("av-write");
+        const on = (isWrite ? written : watched).has(button.dataset.selectionName);
+        button.classList.toggle("on", on);
+        button.textContent = isWrite ? "\u270e" : on ? "\u2713" : "+";
+        button.title = isWrite ? t(on ? "sb.removeFromWrite" : "sb.addToWrite") : on ? t("sb.removeFromWatch") : "";
+        const row = button.closest(".available-row");
+        const name = row.querySelector(".available-name");
+        if (!isWrite && name) {
+            if (row.classList.contains("comp"))
+                name.title =
+                    name.getAttribute("aria-label") + "\n" + t(on ? "sb.removeFromWatch" : "sb.compositeAddWhole");
+            else row.title = on ? t("sb.removeFromWatch") : "";
+        }
+    });
 }
 function cancelPendingWrite(name) {
     if (writeTimers[name]) {
@@ -849,7 +881,7 @@ function removeWrite(name) {
     cancelPendingWrite(name);
     writeList = writeList.filter((w) => w.name !== name);
     renderWrites();
-    renderAvailable();
+    updateAvailableSelections();
     saveWriteList();
 }
 function wToggle(entry) {
@@ -861,6 +893,7 @@ function wToggle(entry) {
         if (entry.isBoolean) {
             writeList.push({
                 name: entry.name,
+                displayName: sbDisplayName(entry),
                 address: entry.address,
                 size: entry.size,
                 type,
@@ -871,7 +904,14 @@ function wToggle(entry) {
             });
         } else if (isWideInt(type)) {
             const v = latestText[entry.name] || "0";
-            writeList.push({ name: entry.name, address: entry.address, size: entry.size, type: type, value: v });
+            writeList.push({
+                name: entry.name,
+                displayName: sbDisplayName(entry),
+                address: entry.address,
+                size: entry.size,
+                type,
+                value: v
+            });
         } else {
             let v = Number(latest[entry.name]);
             if (!Number.isFinite(v)) v = 0;
@@ -881,6 +921,7 @@ function wToggle(entry) {
             if (v < min) min = -2 * Math.abs(v);
             writeList.push({
                 name: entry.name,
+                displayName: sbDisplayName(entry),
                 address: entry.address,
                 size: entry.size,
                 type: type,
@@ -890,7 +931,7 @@ function wToggle(entry) {
             });
         }
         renderWrites();
-        renderAvailable();
+        updateAvailableSelections();
         saveWriteList();
     }
 }
@@ -985,7 +1026,11 @@ function buildWriteCard(item) {
     top.className = "write-top";
     const nm = document.createElement("span");
     nm.className = "value-name";
-    EmberProbeRuntime.renderVariableName(nm, sbDisplayName(item), item.name);
+    const displayName = sbDisplayName(item);
+    nm.textContent = EmberProbeRuntime.shortVariableName(displayName);
+    nm.title = displayName;
+    nm.dataset.rawName = item.name;
+    nm.setAttribute("aria-label", displayName);
     const dot = document.createElement("span");
     dot.className = "write-dot";
     const nmWrap = document.createElement("span");
@@ -1032,6 +1077,7 @@ function buildWriteCard(item) {
         input,
         slider,
         dot,
+        controls: [minus, plus, input, slider],
         setVal: (v) => {
             if (item.isBoolean) v = Number(v) ? 1 : 0;
             item.value = v;
@@ -1184,6 +1230,15 @@ function renderWrites() {
         return;
     }
     writeList.forEach((item) => writeBox.appendChild(buildWriteCard(item)));
+}
+function updateWriteAvailability() {
+    Object.values(writeCells).forEach((cells) => {
+        cells.row.classList.toggle("gated", !liveCanWrite);
+        cells.controls.forEach((control) => {
+            control.disabled = !liveCanWrite;
+            control.title = liveCanWrite ? "" : t("sb.writeNeedSampling");
+        });
+    });
 }
 function setWriteFeedback(text, isErr) {
     const fb = document.getElementById("writeFeedback");
@@ -1403,7 +1458,7 @@ function sbRenderComposite(item) {
         e.stopPropagation();
         sbRemove(item.name, true);
         renderValues();
-        renderAvailable();
+        updateAvailableSelections();
         saveSideWatch();
         saveSbUi();
     };
@@ -1506,9 +1561,7 @@ function syncWriteValues() {
 function liveStatus(m) {
     m = m || {};
     lastLive = m;
-    const wasRunning = liveRunning,
-        wasWrite = liveCanWrite,
-        wasFresh = liveSnapshotReady;
+    const wasWrite = liveCanWrite;
     const next = window.EmberProbeRuntime.liveState(
         { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
         m
@@ -1527,7 +1580,7 @@ function liveStatus(m) {
         (m.error ? "err" : debugRunning || debugReading ? "busy" : liveCanRead ? "on" : liveRunning ? "busy" : "");
     liveLabel.textContent = msgText(m) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
-    if (wasRunning !== liveRunning || wasWrite !== liveCanWrite || wasFresh !== liveSnapshotReady) renderWrites();
+    if (wasWrite !== liveCanWrite) updateWriteAvailability();
 }
 function openocdStatus(m) {
     m = m || {};
@@ -1741,10 +1794,14 @@ document.getElementById("openocdSelect").onclick = () =>
     api && api.postMessage({ type: "openocdAction", action: "select" });
 document.getElementById("openocdCheck").onclick = () =>
     api && api.postMessage({ type: "openocdAction", action: "check" });
-document.getElementById("varSearch").oninput = renderAvailable;
+document.getElementById("varSearch").oninput = () => {
+    availableBox.scrollTop = 0;
+    renderAvailable();
+};
 document.getElementById("varSearchClear").onclick = function () {
     const v = document.getElementById("varSearch");
     v.value = "";
+    availableBox.scrollTop = 0;
     renderAvailable();
     v.focus();
 };
@@ -1868,12 +1925,12 @@ window.EmberProbeMessages.connect(window, {
             });
         }
         renderValues();
-        renderAvailable();
+        updateAvailableSelections();
     },
     sidebarWriteList: function (m) {
         writeList = (m.items || []).slice();
         renderWrites();
-        renderAvailable();
+        updateAvailableSelections();
     },
     writeResult: function (m) {
         onWriteResult(m);

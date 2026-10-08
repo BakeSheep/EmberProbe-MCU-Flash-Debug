@@ -176,7 +176,8 @@ const TEST_GROUPS = Object.freeze({
         "webview.test.js",
         "write-authorization.test.js",
         "write-connection.test.js",
-        "write-stepping.test.js"
+        "write-stepping.test.js",
+        "write-list-view.test.js"
     ]),
     release: Object.freeze(["release-consistency.test.js"])
 });

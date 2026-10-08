@@ -88,10 +88,19 @@ function deferred() {
     p._livePanels = new Map([["panel", { watchKey: "chart", latestSamples: new Map() }]]);
     p._pruneSampleMap = () => calls.push("prune");
     p._refreshSamplingPlan = async () => calls.push("refresh");
-    p._syncSidebarTarget = () => calls.push("sidebar");
-    p._syncGraphTarget = () => calls.push("graph");
+    p._syncSidebarTarget = (_post, skipElf) => {
+        assert.strictEqual(skipElf, true, "list edits must not resend the ELF snapshot");
+        calls.push("sidebar");
+    };
+    p._syncGraphTarget = (_entry, skipElf) => {
+        assert.strictEqual(skipElf, true);
+        calls.push("graph");
+    };
     await p._saveWatchList("chart", []);
     assert.deepStrictEqual(calls, ["save", "prune", "prune", "refresh", "sidebar", "graph"]);
+    calls.length = 0;
+    await p._saveWatchList("mcu.sidebarWriteList", [], { syncSidebar: false });
+    assert.deepStrictEqual(calls, ["save", "prune", "prune", "refresh", "graph"], "local edits avoid a sidebar echo");
     console.log("Provider cancellation, stale events and list synchronization tests passed");
 })().catch((error) => {
     console.error(error);

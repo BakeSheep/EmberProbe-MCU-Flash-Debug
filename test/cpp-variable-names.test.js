@@ -116,7 +116,11 @@ try {
     sidebar.send({ type: "sidebarWatchList", items: [legacyItem] });
     assertName(sidebar.document.querySelector(".value-name"));
     sidebar.send({ type: "sidebarWriteList", items: [{ ...legacyItem, min: 0, max: 10, value: 1 }] });
-    assertName(sidebar.document.querySelector(".write-name-wrap .value-name"));
+    const writeName = sidebar.document.querySelector(".write-name-wrap .value-name");
+    assert.strictEqual(writeName.textContent, ".value_");
+    assert.strictEqual(writeName.title, readablePath);
+    assert.strictEqual(writeName.dataset.rawName, rawPath);
+    assert.strictEqual(writeName.getAttribute("aria-label"), readablePath);
     sidebar.send({ type: "liveSample", samples: [{ name: rawPath, value: 3 }] });
     assert.strictEqual(sidebar.document.querySelector(".value-number").dataset.valueName, rawPath);
     assert.strictEqual(sidebar.document.querySelector(".value-number").textContent, "3");
