@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-08
+
 - 支持 CMSIS-DAP / DAPLink 与 ST-Link 探针选择，统一探针类型和序列号匹配，改进连接预检及下载错误诊断。
 - Support CMSIS-DAP / DAPLink and ST-Link probe selection with consistent probe-type and serial matching, improved connection preflight and flash diagnostics.
 

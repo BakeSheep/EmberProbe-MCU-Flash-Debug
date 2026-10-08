@@ -70,7 +70,7 @@ npm run package
 
 Normal tests are explicitly grouped in `scripts/test-groups.js`: `npm run test:fast` runs pure logic tests, while `npm run test:integration` runs filesystem, service, and asynchronous integration tests. `npm run test:unit` still runs both groups. The runner uses up to four isolated child processes; use `npm run test:unit -- --jobs 1` for serial debugging and `--keep-logs` to retain passing logs. Summaries are written to `test-results/`. GDB, E2E, HIL, and release consistency tests retain separate entry points.
 
-Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.8.1`.
+Run `npm run release:prepare -- <version> --date YYYY-MM-DD` when preparing a new version; the script synchronizes version metadata, the README, and the Changelog. Pushing the matching `vX.Y.Z` tag automatically creates a GitHub Release and uploads the VSIX; see [docs/RELEASING.md](docs/RELEASING.md) for publishing and retry instructions. See [test/hil/README.md](test/hil/README.md) for hardware-runner setup. The current extension version is `0.8.2`.
 
 ## Project Structure
 
