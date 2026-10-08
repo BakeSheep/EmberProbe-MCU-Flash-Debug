@@ -11,6 +11,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 支持 CMSIS-DAP / DAPLink 与 ST-Link 探针选择，统一探针类型和序列号匹配，改进连接预检及下载错误诊断。
 - Support CMSIS-DAP / DAPLink and ST-Link probe selection with consistent probe-type and serial matching, improved connection preflight and flash diagnostics.
 
+- Windows 探针识别优先读取原生 USB 元数据，保留有界 PowerShell 回退；合并多层复合接口并从物理父设备读取序列号，识别使用通用 HID/USB 名称的已知 CMSIS-DAP 设备。
+- Prefer native Windows USB metadata with bounded PowerShell fallback, group nested composite interfaces by their physical parent and serial, and recognize known CMSIS-DAP devices with generic HID/USB names.
+
+- Linux 自动识别复用 sysfs 产品和接口名称，支持 CMSIS-DAP v2 接口及旧 ST-Link 原始 UID；补齐三平台 ST-Link ID，排除 SEGGER Flasher/J-Trace，并对枚举时间、设备数量和属性大小设置预算。
+- Reuse Linux sysfs product/interface metadata for discovery, support CMSIS-DAP v2 interfaces and legacy ST-Link UIDs, complete cross-platform ST-Link IDs, exclude SEGGER Flasher/J-Trace, and bound enumeration time, device counts and property sizes.
+
 - 保留侧栏列表的选择、展开和编辑交互，修复变量写入后侧栏与波形状态同步。
 - Preserve sidebar selection, expansion and editing interactions, and synchronize sidebar and waveform state after variable writes.
 
