@@ -14,6 +14,7 @@
     "probe-detection.js",
     "probe-connection.js",
     "probe-inventory.js",
+    "windows-probe-inventory.js",
     "probe-preflight.js",
     "elf-file.js"
   ],

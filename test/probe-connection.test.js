@@ -97,8 +97,9 @@ async function main() {
         readdir: async () => ["1-2", "1-2:1.0", "usb1"],
         readFile: async (file) => {
             if (file.endsWith("idVendor")) return "1366\n";
+            if (file.endsWith("idProduct")) return "0101\n";
             if (file.endsWith("serial")) return "1234\n";
-            throw new Error("unreadable optional attribute");
+            throw Object.assign(new Error("absent optional attribute"), { code: "ENOENT" });
         }
     });
     assert.strictEqual(linux.devices.length, 1);

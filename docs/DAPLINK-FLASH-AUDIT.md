@@ -16,6 +16,32 @@
 
 以下章节保留基线问题及证据。修复不等于已经确认用户设备的超时根因；仍需使用实际日志、探针及目标板复测。
 
+## 0.8.2 单探针预检回归修复
+
+H750 测试工程报告 `Cannot select a unique CMSIS-DAP from current USB inventory`。只读检查当前 Windows USB 元数据，发现仅一台 `C251:F001` 探针，其四个接口显示为通用 USB 复合设备、USB 输入、HID 供应商设备和串口，名称不含 CMSIS-DAP。
+
+新增枚举规则漏掉了该已知 ID；旧脚本逐设备读取所有 USB/HID 属性会超时；批量读取时部分父设备属性缺失，也会把同一探针的 HID 子接口误分成第二台。
+
+修复加入 [OpenOCD 已知 CMSIS-DAP ID](https://github.com/openocd-org/openocd/blob/v0.12.0/src/jtag/drivers/cmsis_dap.c) 中的 `C251:F001/F002/2722/2750`。Windows 属性查询仅处理候选探针及其同 VID/PID 的接口和父设备，批量读取并补查缺失父链属性，保留有界 15 秒查询预算。父链比较忽略 Windows 实例 ID 大小写，保留根设备序列号原文；不再依赖每个接口都提供容器 ID。预检错误保留枚举可用状态与失败原因，仍阻止真正多探针的歧义选择。
+
+使用当前真实 USB 元数据及 OpenOCD `noinit` 完整复测，约 10.5 秒完成预检，正确合并四个接口为一台 CMSIS-DAP，保留序列号前导零并自动选择唯一设备。新增无硬件回归覆盖通用中文名称、HID 孙接口、大小写不同的父 ID、缺失根属性、已知 ID 的跨平台识别和执行 PowerShell 枚举脚本的模拟 cmdlet。
+
+未更改 H750 测试工程，未初始化、复位或烧录 MCU；本地验证 VSIX 用于安装后由用户复测，不作为正式发布产物。
+
+本次修复通过 `npm run check`（363 项检查，零失败）、`npm run quality`、bundle 和 VS Code Extension Host。生成本地 `dist/emberprobe-cmsis-inventory-fix-0.8.2.vsix`，并核对包内共享枚举模块与已验证源码一致，插件 bundle 包含新识别规则。
+
+## 读取启动延迟修复
+
+前述 PowerShell PnP 枚举仍占用约 10 秒。芯片信息等独立读取每次执行连接预检，所以在真正读取前会等待该查询；Live Watch 已运行时复用会话，连续采样不会每帧执行 USB 枚举。
+
+Windows 现在优先通过只读 Configuration Manager API 查询当前在线设备，复用插件已打包的 Koffi 运行库。按父设备链合并 USB/HID 接口，保留精确序列号和驱动元数据。每次读取重新枚举，不缓存设备清单；仅缓存 API 绑定。查询保留大小、设备数量、时间及热插拔重试预算，原生运行库不可用或枚举失败时回退到原有有界 PowerShell 查询。独立安装的 Agent Skills 没有该运行库时也可回退。
+
+API 的 present-only 枚举语义见 [Microsoft Configuration Manager 文档](https://learn.microsoft.com/en-us/windows/win32/api/cfgmgr32/nf-cfgmgr32-cm_get_device_id_listw)。本机只读计时：原生首次枚举约 69 毫秒，后续约 11–14 毫秒；包含 OpenOCD `noinit` 能力检查的完整预检首次约 102 毫秒，后续约 48 毫秒，仍选择相同探针并合并四个接口。这些数字是连接预检耗时，不是 MCU 内存读取或采样帧率。
+
+无硬件回归覆盖接口合并、前导零、未知 VID/PID 的名称识别、插拔后身份更新、空清单、缓冲区变化、属性类型/长度验证、查询预算和原生失败后的回退。没有初始化或操作目标板。
+
+本次优化通过 `npm run check`（365 项检查，零失败）、`npm run quality`、`npm run bundle` 和 `npm run test:e2e`。生成本地 `dist/emberprobe-cmsis-fast-read-0.8.2.vsix`（113 个文件），核对包内枚举源码和原生运行库，再从解压包运行只读查询：约 22 毫秒识别出一台探针及其四个接口。未自动安装或发布该包；实际读板耗时与烧录稳定性仍由用户安装后复测。
+
 ## 结论
 
 发现三个可由代码和软件复现确认的问题，以及一个诊断缺口：

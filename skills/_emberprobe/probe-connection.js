@@ -87,7 +87,9 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             "PROBE_SELECTION_REQUIRED",
             `Cannot select a unique ${label} from current USB inventory`,
             {
-                devices
+                devices,
+                inventoryAvailable: inventory.available,
+                notes: inventory.notes || []
             }
         );
     const matches = devices.filter((device) => device.serial === result.probeSerial);

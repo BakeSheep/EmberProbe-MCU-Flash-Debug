@@ -7,6 +7,7 @@ const vm = require("vm");
 const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
+const { spawnSync } = require("child_process");
 const { normalizeProbeSerial, resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 const {
     listProbes,
@@ -150,6 +151,88 @@ async function inventory() {
             ({ idVendor: "0d28", idProduct: "0204", serial, product: "DAPLink" })[path.basename(file)]
     });
     assert.strictEqual(linux.devices[0].serial, serial);
+
+    // Real C251:F001 layout: generic localized names and an HID grandchild.
+    // Root properties can be absent, while Windows parent IDs use different casing.
+    const c251Root = "USB\\VID_C251&PID_F001\\0001A0000000";
+    const c251Interface = "USB\\VID_C251&PID_F001&MI_02\\8&location&0&0002";
+    const c251Rows = [
+        { instanceId: c251Interface, name: "USB 输入设备", parentId: c251Root, containerId: "dap" },
+        { instanceId: c251Root, name: "USB Composite Device" },
+        {
+            instanceId: "HID\\VID_C251&PID_F001&MI_02\\9&location&0&0000",
+            name: "符合 HID 标准的供应商定义设备",
+            parentId: c251Interface.toLowerCase(),
+            containerId: "dap"
+        },
+        {
+            instanceId: "USB\\VID_C251&PID_F001&MI_00\\8&location&0&0000",
+            name: "USB 串行设备 (COM5)",
+            parentId: c251Root,
+            containerId: "dap"
+        },
+        { instanceId: "HID\\VID_1234&PID_5678\\unrelated", name: "HID Keyboard Device" }
+    ];
+    const c251Inventory = { available: true, devices: parseWindowsInventory(JSON.stringify(c251Rows), "all") };
+    assert.strictEqual(c251Inventory.devices.length, 1);
+    assert.strictEqual(c251Inventory.devices[0].interfaces.length, 4);
+    assert.strictEqual(c251Inventory.devices[0].serial, "0001A0000000");
+    const chosen = resolveProbeConnection({ probe: "cmsis-dap.cfg", target: "stm32h7x.cfg" }, c251Inventory);
+    assert.strictEqual(chosen.probeSerial, "0001A0000000");
+    assert.strictEqual(chosen.deviceId, c251Root);
+    assert(buildOpenOcdConfigArgs(launch, "auto", chosen).includes("adapter serial 0001A0000000"));
+    for (const pid of ["f001", "f002", "2722", "2750"]) {
+        const macDevice = parseMacInventory(JSON.stringify({ vendor_id: "0xc251", product_id: `0x${pid}` }), "all");
+        assert.strictEqual(macDevice[0].family, "cmsis-dap");
+        const linuxDevice = await listProbes({
+            platform: "linux",
+            family: "cmsis-dap",
+            readdir: async () => ["1-2"],
+            readFile: async (file) =>
+                ({ idVendor: "c251", idProduct: pid, serial: "0001A0000000", product: "USB device" })[
+                    path.basename(file)
+                ]
+        });
+        assert.strictEqual(linuxDevice.devices[0].serial, "0001A0000000");
+    }
+    assert.deepStrictEqual(parseMacInventory(JSON.stringify({ vendor_id: "0xc251", product_id: "0xf099" }), "all"), []);
+    if (process.platform === "win32") {
+        const fixtureJson = JSON.stringify(c251Rows).replace(/'/g, "''");
+        const mock = `$fixture = '${fixtureJson}' | ConvertFrom-Json; $propertyCalls = 0;
+function Get-PnpDevice { [CmdletBinding()] param([switch]$PresentOnly) $fixture }
+function Get-PnpDeviceProperty { [CmdletBinding()] param([string[]]$InstanceId, [string[]]$KeyName)
+ $script:propertyCalls++;
+ if ($script:propertyCalls -eq 1 -and $InstanceId.Count -ne 4) { throw 'Probe properties must be batched without unrelated devices' };
+ if ($script:propertyCalls -gt 1 -and $KeyName.Count -ne 2) { throw 'Only missing identity properties may be retried' };
+ foreach ($row in $fixture) { foreach ($key in @('Parent', 'ContainerId')) {
+  if ($InstanceId -notcontains $row.instanceId) { continue };
+  $value = if ($key -eq 'Parent') { $row.parentId } else { $row.containerId };
+  if ($value) { [pscustomobject]@{ InstanceId=$row.instanceId; KeyName='DEVPKEY_Device_' + $key; Data=$value } }
+ } }
+}`;
+        const query = spawnSync(
+            path.join(
+                process.env.SystemRoot || "C:\\Windows",
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe"
+            ),
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                `${mock}; ${USB_INVENTORY}; if ($propertyCalls -ne 2) { exit 9 }`
+            ],
+            { encoding: "utf8", windowsHide: true, timeout: 10000 }
+        );
+        assert.strictEqual(query.status, 0, query.error?.message || query.stderr);
+        assert.strictEqual(query.stderr.trim(), "", "Missing optional properties must not produce indexing errors");
+        const parsed = parseWindowsInventory(query.stdout, "all");
+        assert.strictEqual(parsed.length, 1);
+        assert.strictEqual(parsed[0].serial, chosen.probeSerial);
+        assert.strictEqual(parsed[0].interfaces.length, 4);
+    }
 }
 
 async function processLifetime() {

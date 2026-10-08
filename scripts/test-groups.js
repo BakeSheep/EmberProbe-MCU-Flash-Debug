@@ -75,6 +75,8 @@ const TEST_GROUPS = Object.freeze({
         "cubemx.test.js",
         "debug-context-regressions.test.js",
         "daplink-flash.test.js",
+        "windows-probe-inventory.test.js",
+        "probe-platform-audit.test.js",
         "debug-lifecycle-races.test.js",
         "debug-control.test.js",
         "debug-h7-regressions.test.js",
