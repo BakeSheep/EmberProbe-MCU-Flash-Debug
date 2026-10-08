@@ -105,11 +105,7 @@ class WriteAuthorization {
     }
 
     _prune() {
-        const now = this.now();
-        for (const [id, request] of this.pending) {
-            if (request.expiresAt <= now) this.pending.delete(id);
-        }
-        while (this.pending.size > 32) this.pending.delete(this.pending.keys().next().value);
+        this.confirmations.prune();
     }
 
     _request(plan) {

@@ -248,6 +248,14 @@ function adapter(state) {
             a.events.some((event) => event.body?.exited),
             failure !== "exit"
         );
+        if (failure === "exit") {
+            a.mi.exitConfirmed = true;
+            await a.session.closeExternal();
+            assert(
+                a.events.some((event) => event.body?.exited),
+                "unconfirmed exit must allow a later cleanup retry"
+            );
+        }
     }
     const child = new EventEmitter();
     Object.assign(child, {

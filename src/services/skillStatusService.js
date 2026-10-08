@@ -69,6 +69,28 @@ class SkillStatusService {
             if (choice === manage) this.vscode.window.showInformationMessage(this.t("msg.skillsDiffers"));
         });
     }
+    async checkForCall() {
+        const status = await this.refresh(false);
+        const key = JSON.stringify(status.scopes);
+        if (!["modified", "partial", "outdated"].includes(status.state) || this.approvedContents === key) return;
+        const allow = this.t("approval.skillsAllow");
+        const choice = await this.vscode.window.showWarningMessage(
+            this.t("approval.skills"),
+            {
+                modal: true,
+                detail: JSON.stringify(status.scopes?.workspace || status.scopes?.global, null, 2)
+            },
+            allow
+        );
+        if (choice !== allow)
+            throw Object.assign(new Error(this.t("approval.denied")), { code: "SKILLS_APPROVAL_DENIED" });
+        const current = await this.refresh(false);
+        if (JSON.stringify(current.scopes) !== key)
+            throw Object.assign(new Error("Skills changed during approval; review them again"), {
+                code: "SKILLS_CHANGED_DURING_APPROVAL"
+            });
+        this.approvedContents = key;
+    }
 
     promptUpgrade(status) {
         if (this.upgradePrompted || !["outdated", "modified", "partial"].includes(status.state)) return;

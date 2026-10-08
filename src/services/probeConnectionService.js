@@ -54,6 +54,8 @@ class ProbeConnectionService {
     }
 
     async prepare(options, interactive = false) {
+        const preparationOptions = typeof interactive === "object" && interactive ? interactive : {};
+        interactive = interactive === true;
         this.beforePrepare();
         const configured = this.getConfig();
         const expectedSettings = JSON.stringify(connectionIdentity(configured));
@@ -63,7 +65,7 @@ class ProbeConnectionService {
         for (let attempt = 0; attempt < 3; attempt++) {
             this.beforePrepare();
             try {
-                const prepared = await this.prepareConnection(request);
+                const prepared = await this.prepareConnection(request, preparationOptions);
                 this.beforePrepare();
                 const result = prepared;
                 const current = connectionIdentity(this.getConfig());

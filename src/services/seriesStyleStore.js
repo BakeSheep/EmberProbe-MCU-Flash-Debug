@@ -23,6 +23,8 @@ class SeriesStyleStore {
     async update(name, style) {
         if (!Styles.validName(name) || (style !== undefined && !Styles.valid(style)))
             throw new Error("Invalid series style");
+        if (!Object.hasOwn(this.styles, name) && Object.keys(this.styles).length >= 4096)
+            throw new Error("Series style limit reached");
         if (style) this.styles[name] = { color: style.color, line: style.line };
         else Styles.ensure(this.styles, name);
         await this.save();

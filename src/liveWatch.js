@@ -538,7 +538,7 @@ class ManagedOpenOcdSession {
 
     async start() {
         if (!isSafeCfg(this.options.probe) || !isSafeCfg(this.options.target)) {
-            throw new Error(`非法的 OpenOCD 配置名：${this.options.probe} / ${this.options.target}`);
+            throw new Error(`Invalid OpenOCD configuration：${this.options.probe} / ${this.options.target}`);
         }
         const port = clampInteger(this.options.port, 6666, 1, 65535);
         this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
@@ -546,9 +546,12 @@ class ManagedOpenOcdSession {
         const gdbPort = this.mode === "debug" ? clampInteger(this.options.gdbPort, 0, 1, 65535) : 0;
         if (this.mode === "debug" && !gdbPort) throw new Error("Managed debug OpenOCD requires a GDB port");
         if (/(^|\/)gd32vf103\.cfg$/i.test(this.options.target)) {
-            throw Object.assign(new Error("GD32VF103 在 CPU 运行时不支持调试器内存访问，无法启用非侵入实时变量"), {
-                code: "LIVE_MEMORY_UNSUPPORTED"
-            });
+            throw Object.assign(
+                new Error("GD32VF103 does not support debugger memory access while the CPU is running"),
+                {
+                    code: "LIVE_MEMORY_UNSUPPORTED"
+                }
+            );
         }
         const launch = resolveOpenOcdLaunch(
             this.options.executable,
@@ -581,7 +584,7 @@ class ManagedOpenOcdSession {
         } catch (error) {
             const spawnError = /** @type {NodeJS.ErrnoException} */ (error);
             throw spawnError.code === "ENOENT"
-                ? Object.assign(new Error(`找不到 OpenOCD：${this.options.executable}`), {
+                ? Object.assign(new Error(`OpenOCD not found：${this.options.executable}`), {
                       i18nKey: "run.notFound",
                       i18nParams: { path: this.options.executable }
                   })
@@ -591,7 +594,7 @@ class ManagedOpenOcdSession {
             const childError = /** @type {NodeJS.ErrnoException} */ (error);
             const enoent = childError.code === "ENOENT";
             const e = enoent
-                ? Object.assign(new Error(`找不到 OpenOCD：${this.options.executable}`), {
+                ? Object.assign(new Error(`OpenOCD not found：${this.options.executable}`), {
                       i18nKey: "run.notFound",
                       i18nParams: { path: this.options.executable }
                   })
@@ -692,7 +695,7 @@ class ManagedOpenOcdSession {
             await new Promise((resolve, reject) => {
                 this._startReject = reject;
                 if (this.stopped) {
-                    reject(this.connectionError || new Error("OpenOCD 服务在连接过程中已退出"));
+                    reject(this.connectionError || new Error("OpenOCD exited during connection startup"));
                     return;
                 }
                 this._waitForTclListening(6000)
@@ -704,7 +707,7 @@ class ManagedOpenOcdSession {
                             } catch (e) {
                                 /* ignore */
                             }
-                            reject(this.connectionError || new Error("OpenOCD 服务在连接过程中已退出"));
+                            reject(this.connectionError || new Error("OpenOCD exited during connection startup"));
                             return;
                         }
                         this.socket = sock;
@@ -782,7 +785,7 @@ class ManagedOpenOcdSession {
         return new Promise((resolve, reject) => {
             const deadline = Date.now() + timeoutMs;
             const attempt = () => {
-                if (this.stopped) return reject(this.connectionError || new Error("已停止"));
+                if (this.stopped) return reject(this.connectionError || new Error("Stopped"));
                 const sock = net.connect({ host: "127.0.0.1", port });
                 this.connectingSocket = sock;
                 const onConnect = () => {
@@ -794,7 +797,7 @@ class ManagedOpenOcdSession {
                         } catch (e) {
                             /* ignore */
                         }
-                        reject(this.connectionError || new Error("已停止"));
+                        reject(this.connectionError || new Error("Stopped"));
                         return;
                     }
                     resolve(sock);
@@ -807,7 +810,7 @@ class ManagedOpenOcdSession {
                     } catch (e) {
                         /* ignore */
                     }
-                    if (this.stopped) reject(this.connectionError || new Error("已停止"));
+                    if (this.stopped) reject(this.connectionError || new Error("Stopped"));
                     else if (Date.now() > deadline) {
                         const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
                             ...connectionDetails(this.options),
@@ -840,14 +843,14 @@ class ManagedOpenOcdSession {
             // 失控流兜底：若缓冲累积超过 1MB 仍未出现分帧符，说明响应流异常，丢弃并重置连接，避免无限增长
             if (this.pending.length > 1048576) {
                 this.pending = "";
-                this._abortConnection(new Error("OpenOCD 响应流异常：未收到分帧符"));
+                this._abortConnection(new Error("Invalid OpenOCD response stream: framing delimiter missing"));
             }
         });
         socket.on("error", (e) => {
             if (socket === this.socket) this._abortConnection(e);
         });
         socket.on("close", () => {
-            if (socket === this.socket && !this.stopped) this._abortConnection(new Error("Tcl 连接已关闭"));
+            if (socket === this.socket && !this.stopped) this._abortConnection(new Error("Tcl connection closed"));
         });
     }
 
@@ -898,11 +901,19 @@ class ManagedOpenOcdSession {
 
     // 响应是无 ID 的 FIFO 流。任一请求超时后无法判断迟到响应属于谁，只能废弃整条连接。
     _abortConnection(error) {
-        const err = error instanceof Error ? error : new Error(String(error || "连接已断开"));
+        const err = /** @type {Error & { i18nKey?: string }} */ (
+            error instanceof Error ? error : new Error(String(error || "Connection disconnected"))
+        );
         if (this.connectionFailed) return;
         this.connectionFailed = true;
         this.connectionError = err;
-        if (this.mode === "debug" && this.child && !this.stopped && this._startCompleted) {
+        if (
+            this.mode === "debug" &&
+            this.child &&
+            !this.stopped &&
+            this._startCompleted &&
+            err.i18nKey !== "live.probeDisconnected"
+        ) {
             this.sampleEpoch++;
             this.samplingEnabled = false;
             this._clearSamplingTimer();
@@ -929,6 +940,10 @@ class ManagedOpenOcdSession {
             return;
         }
         this.stopped = true;
+        this.sampleEpoch++;
+        this.samplingEnabled = false;
+        this._samplingRequested = false;
+        this.cpuLoad?.stop();
         this._clearSamplingTimer();
         this._releaseTimerResolution();
         this._rejectQueue(err);
@@ -970,17 +985,24 @@ class ManagedOpenOcdSession {
     // 串行发送单条 Tcl 命令并等待响应（带超时）
     _sendCommand(cmd) {
         return new Promise((resolve, reject) => {
-            if (!this.socket || this.socket.destroyed) return reject(new Error("socket 未连接"));
+            if (!this.socket || this.socket.destroyed) return reject(new Error("Socket is not connected"));
             const entry = {};
             const deadline = Date.now() + 2000;
             const timer = setTimeout(() => {
-                if (this.queue.includes(entry)) this._abortConnection(new Error("OpenOCD 响应超时，采样连接已重置"));
+                if (this.queue.includes(entry))
+                    this._abortConnection(
+                        Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
+                            code: "OPENOCD_RPC_TIMEOUT"
+                        })
+                    );
             }, 2000);
             entry.resolve = (v) => {
                 clearTimeout(timer);
                 // A wake-up or busy event loop may dispatch data before the overdue timeout callback.
                 if (Date.now() >= deadline) {
-                    const error = new Error("OpenOCD 响应超时，采样连接已重置");
+                    const error = Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
+                        code: "OPENOCD_RPC_TIMEOUT"
+                    });
                     reject(error);
                     this._abortConnection(error);
                     return;
@@ -1021,11 +1043,11 @@ class ManagedOpenOcdSession {
         const response = String((await this._sendCommand(wrapped)) || "").replace(/\x1a/g, "");
         if (response.startsWith("EP_OK:")) return response.slice(6);
         if (response.startsWith("EP_ERR:")) {
-            throw Object.assign(new Error(response.slice(7).trim() || `OpenOCD 命令失败：${cmd}`), {
+            throw Object.assign(new Error(response.slice(7).trim() || `OpenOCD command failed：${cmd}`), {
                 code: "OPENOCD_TCL_ERROR"
             });
         }
-        throw Object.assign(new Error(`OpenOCD 返回了无法识别的 Tcl 响应：${response.slice(0, 200)}`), {
+        throw Object.assign(new Error(`Unrecognized OpenOCD Tcl response：${response.slice(0, 200)}`), {
             code: "OPENOCD_TCL_PROTOCOL_ERROR"
         });
     }
@@ -1044,7 +1066,7 @@ class ManagedOpenOcdSession {
         const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; set _ep_file [open ${quoteTclWord(responseFile)} w]; puts -nonewline $_ep_file "\${_ep_rc}\\n"; puts -nonewline $_ep_file $_ep_msg; close $_ep_file; set _ep_msg ""`;
         const rpcResponse = String((await this._sendCommand(wrapped)) || "").replace(/\x1a/g, "");
         if (rpcResponse) {
-            throw Object.assign(new Error(`OpenOCD 返回了非预期的 Tcl 响应：${rpcResponse.slice(0, 200)}`), {
+            throw Object.assign(new Error(`Unexpected OpenOCD Tcl response：${rpcResponse.slice(0, 200)}`), {
                 code: "OPENOCD_TCL_PROTOCOL_ERROR"
             });
         }
@@ -1052,20 +1074,22 @@ class ManagedOpenOcdSession {
         try {
             payload = await fs.promises.readFile(responseFile, "utf8");
         } catch (error) {
-            throw Object.assign(new Error(`无法读取 OpenOCD Tcl 响应：${error.message}`), {
+            throw Object.assign(new Error(`Cannot read OpenOCD Tcl response：${error.message}`), {
                 code: "OPENOCD_TCL_PROTOCOL_ERROR",
                 cause: error
             });
         }
         const separator = payload.indexOf("\n");
         if (separator < 0 || (payload[0] !== "0" && payload[0] !== "1")) {
-            throw Object.assign(new Error("OpenOCD 返回了无法识别的静默 Tcl 响应"), {
+            throw Object.assign(new Error("Unrecognized OpenOCD silent Tcl response"), {
                 code: "OPENOCD_TCL_PROTOCOL_ERROR"
             });
         }
         const response = payload.slice(separator + 1);
         if (payload[0] === "0") return response;
-        throw Object.assign(new Error(response.trim() || `OpenOCD 命令失败：${cmd}`), { code: "OPENOCD_TCL_ERROR" });
+        throw Object.assign(new Error(response.trim() || `OpenOCD command failed：${cmd}`), {
+            code: "OPENOCD_TCL_ERROR"
+        });
     }
 
     // 按地址/长度选择 32/16/8 bit 传输，再统一解包为小端字节。
@@ -1275,11 +1299,15 @@ class ManagedOpenOcdSession {
     async readOnce(items, timeoutMs = 2500) {
         if (!Array.isArray(items) || !items.length) return [];
         if (this.mode === "debug") validateManagedReadPlan(items);
-        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
+        if (this.stopped || !this.socket || this.socket.destroyed)
+            throw new Error("OpenOCD Tcl service is not connected");
         const requestEpoch = this.sampleEpoch;
         const deadline = Date.now() + timeoutMs;
         while (this.busy) {
-            if (Date.now() >= deadline) throw new Error("等待实时采样连接空闲超时");
+            if (Date.now() >= deadline)
+                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+                });
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
         this.busy = true;
@@ -1314,7 +1342,7 @@ class ManagedOpenOcdSession {
         let writeBytes = input;
         if (alignedStart !== address || alignedEnd - alignedStart !== input.length) {
             const existing = await this._readMemoryBytes(alignedStart, alignedEnd - alignedStart);
-            if (!existing) throw new Error("写入内存失败：无法读取相邻字节以执行 32 位对齐写入");
+            if (!existing) throw new Error("Memory write failed: cannot read adjacent bytes for aligned 32-bit access");
             writeBytes = existing.slice();
             writeBytes.splice(address - alignedStart, input.length, ...input);
         }
@@ -1332,10 +1360,12 @@ class ManagedOpenOcdSession {
                 try {
                     await this._sendCheckedCommand(build(this.writeCmd));
                 } catch (fallbackError) {
-                    throw Object.assign(new Error("写入内存失败：" + fallbackError.message), { cause: fallbackError });
+                    throw Object.assign(new Error("Memory write failed: " + fallbackError.message), {
+                        cause: fallbackError
+                    });
                 }
             } else {
-                throw Object.assign(new Error("写入内存失败：" + error.message), { cause: error });
+                throw Object.assign(new Error("Memory write failed: " + error.message), { cause: error });
             }
         }
         return true;
@@ -1344,7 +1374,10 @@ class ManagedOpenOcdSession {
     async _waitUntilIdle(timeoutMs) {
         const deadline = Date.now() + timeoutMs;
         while (this.busy) {
-            if (Date.now() >= deadline) throw new Error("等待实时采样连接空闲超时");
+            if (Date.now() >= deadline)
+                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+                });
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
     }
@@ -1366,14 +1399,19 @@ class ManagedOpenOcdSession {
             });
         }
         if (!Array.isArray(items) || !items.length) return { before: [], after: [] };
-        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
+        if (this.stopped || !this.socket || this.socket.destroyed)
+            throw new Error("OpenOCD Tcl service is not connected");
         const deadline = Date.now() + timeoutMs;
         while (this.busy) {
-            if (Date.now() >= deadline) throw new Error("等待实时采样连接空闲超时");
+            if (Date.now() >= deadline)
+                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+                });
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
         // Check and acquire without yielding, including when multiple writers arrive while idle.
-        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
+        if (this.stopped || !this.socket || this.socket.destroyed)
+            throw new Error("OpenOCD Tcl service is not connected");
         this.busy = true;
         let haltedByUs = false;
         let primaryError = null;
@@ -1416,10 +1454,14 @@ class ManagedOpenOcdSession {
             });
         }
         if (!Array.isArray(items) || !items.length) return 0;
-        if (this.stopped || !this.socket || this.socket.destroyed) throw new Error("OpenOCD Tcl 服务未连接");
+        if (this.stopped || !this.socket || this.socket.destroyed)
+            throw new Error("OpenOCD Tcl service is not connected");
         const deadline = Date.now() + timeoutMs;
         while (this.busy) {
-            if (Date.now() >= deadline) throw new Error("等待实时采样连接空闲超时");
+            if (Date.now() >= deadline)
+                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+                });
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
         this.busy = true;
@@ -1509,7 +1551,7 @@ class ManagedOpenOcdSession {
         this.connectionFailed = true;
         this._clearSamplingTimer();
         this._releaseTimerResolution();
-        this._rejectQueue(new Error("采样已停止"));
+        this._rejectQueue(new Error("采样Stopped"));
         if (this.connectingSocket && !this.connectingSocket.destroyed) {
             try {
                 this.connectingSocket.destroy();

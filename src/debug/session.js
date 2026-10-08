@@ -121,7 +121,10 @@ class EmberDebugSession extends DebugSession {
             const confirmed = await this.mi.waitForExit();
             if (!confirmed) throw new Error("Local GDB exit could not be confirmed; external probe hold retained");
             this.sendEvent(new Event("emberprobe.externalGdbProcess", { exited: true }));
-        })();
+        })().catch((error) => {
+            this.externalClosing = null;
+            throw error;
+        });
         return this.externalClosing;
     }
     dispatchRequest(request) {

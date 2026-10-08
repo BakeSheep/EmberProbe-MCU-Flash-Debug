@@ -75,11 +75,12 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
             recordSuccess: async () => events.push("verified")
         },
         _flashService: {
-            download: async () => {
+            download: async (_vscode, options) => {
                 assert.strictEqual(provider._downloadRunning, true);
                 assert.strictEqual(provider._liveSession, null);
                 if (sampling) assert.ok(events.includes("stopped"), "probe exits before flashing starts");
                 events.push("flash");
+                await options.prepare();
                 if (failFlash) throw new Error("Flash failed");
             }
         },

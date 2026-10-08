@@ -10,8 +10,14 @@ class SvdModelService {
         this.disposed = false;
     }
     parse(buffer, sourcePath, sha256) {
+        return this.request(buffer, sourcePath, sha256, "parse");
+    }
+    validate(buffer, identity, sha256) {
+        return this.request(buffer, JSON.stringify(identity), sha256, "validate", identity);
+    }
+    request(buffer, sourcePath, sha256, mode, identity) {
         if (this.disposed) return Promise.reject(new Error("SVD parser disposed"));
-        const key = JSON.stringify([sha256, sourcePath]);
+        const key = JSON.stringify([mode, sha256, sourcePath]);
         if (this.pending.has(key)) return this.pending.get(key).promise;
         if (this.pending.size >= 4)
             return Promise.reject(Object.assign(new Error("SVD parser is busy"), { code: "SVD_PARSER_BUSY" }));
@@ -31,7 +37,7 @@ class SvdModelService {
             };
             try {
                 worker = new this.Worker(this.workerPath, {
-                    workerData: { buffer, sourcePath },
+                    workerData: { buffer, sourcePath, mode, identity },
                     resourceLimits: { maxOldGenerationSizeMb: 256 }
                 });
                 timer = setTimeout(

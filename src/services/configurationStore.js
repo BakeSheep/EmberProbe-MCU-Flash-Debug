@@ -31,7 +31,7 @@ const NUMBER_RANGES = Object.freeze({
     sampleIntervalMs: [5, 10000],
     sampleFrequencyHz: [0.1, 200],
     tclPort: [1, 65535],
-    maxSamples: [100, 100000]
+    maxSamples: [100, 360001]
 });
 
 // Agent Bridge 禁止修改的配置键：openocdPath 可把探针调用引向任意可执行文件（token → 本地执行链），

@@ -258,7 +258,10 @@ class CubeMxService {
     }
 
     async permission(params = {}) {
-        if (params.action === "reset") return this.authorization.reset();
+        if (params.action === "reset") {
+            await this.options.resetApproval?.();
+            return this.authorization.reset();
+        }
         if (params.action && params.action !== "status") throw failure("INVALID_ARGUMENT", "Unknown permission action");
         const summary = this.authorization.summary();
         try {
@@ -290,6 +293,7 @@ class CubeMxService {
             for (const [root, job] of this.jobs.entries()) {
                 if (job.operationId === params.operationId) {
                     job.controller.abort();
+                    job.retryStop?.();
                     return { cancelled: 1, operationId: params.operationId };
                 }
             }
@@ -302,13 +306,33 @@ class CubeMxService {
         let cancelled = 0;
         for (const job of this.jobs.values()) {
             (job.controller || job).abort();
+            job.retryStop?.();
             cancelled++;
         }
         return { cancelled };
     }
+    _retainProcess(root, exited, retryStop) {
+        const job = this.jobs.get(root);
+        if (!job) return;
+        job.exitConfirmation = exited;
+        job.retryStop = retryStop;
+    }
+    _finishJob(root, operationId, stage) {
+        const job = this.jobs.get(root);
+        const cleanup = async () => {
+            if (stage) await fs.rm(stage, { recursive: true, force: true }).catch(() => {});
+            if (this.jobs.get(root) === job) this.jobs.delete(root);
+            this.activeExecutions.delete(operationId);
+        };
+        if (job?.exitConfirmation) {
+            void job.exitConfirmation.then(cleanup).catch(() => {});
+            return Promise.resolve();
+        }
+        return cleanup();
+    }
 
     async start(params = {}) {
-        const plan = await this.plan(params);
+        let plan = await this.plan(params);
         const pHash = computeParamsHash(params);
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
@@ -331,6 +355,20 @@ class CubeMxService {
         }
 
         if (this.jobs.has(plan.root)) throw failure("CUBEMX_BUSY", "This project is already generating or checking");
+        if (this.options.approve) {
+            const approved = await this.options.approve("cubemx.generate", {
+                identity: plan.identity,
+                trust: plan.trust,
+                changes: plan.changes
+            });
+            params = { ...params, remember: approved.remember };
+            const current = await this.plan(params);
+            if (JSON.stringify(plan.identity) !== JSON.stringify(current.identity))
+                throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during human approval");
+            plan = current;
+            if (this.jobs.has(plan.root))
+                throw failure("CUBEMX_BUSY", "This project is already generating or checking");
+        }
         this.authorization.authorize(plan, params.confirmationId, params.remember);
 
         // Claim the project slot synchronously (no await between the busy check and the claim)
@@ -384,7 +422,7 @@ class CubeMxService {
     }
 
     async execute(params = {}, signal, progress = this.options.progress) {
-        const plan = await this.plan(params);
+        let plan = await this.plan(params);
         const pHash = computeParamsHash(params);
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
@@ -437,6 +475,20 @@ class CubeMxService {
         }
 
         if (this.jobs.has(plan.root)) throw failure("CUBEMX_BUSY", "This project is already generating or checking");
+        if (this.options.approve) {
+            const approved = await this.options.approve("cubemx.generate", {
+                identity: plan.identity,
+                trust: plan.trust,
+                changes: plan.changes
+            });
+            params = { ...params, remember: approved.remember };
+            const current = await this.plan(params);
+            if (JSON.stringify(plan.identity) !== JSON.stringify(current.identity))
+                throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during human approval");
+            plan = current;
+            if (this.jobs.has(plan.root))
+                throw failure("CUBEMX_BUSY", "This project is already generating or checking");
+        }
         this.authorization.authorize(plan, params.confirmationId, params.remember);
 
         const controller = new AbortController();
@@ -500,7 +552,8 @@ class CubeMxService {
                 const result = await run(plan.tool, directory, name, {
                     signal: controller.signal,
                     timeoutMs,
-                    stage: runStage
+                    stage: runStage,
+                    onExitUnconfirmed: (exited, retryStop) => this._retainProcess(plan.root, exited, retryStop)
                 });
                 if (!result.logPath)
                     await fs.writeFile(path.join(directory, ".emberprobe-cubemx-output.log"), result.log || "");
@@ -733,8 +786,7 @@ class CubeMxService {
             }
             throw error;
         } finally {
-            this.jobs.delete(plan.root);
-            this.activeExecutions.delete(op.operationId);
+            await this._finishJob(plan.root, op.operationId);
         }
     }
 
@@ -884,7 +936,8 @@ class CubeMxService {
             const runResult = await run(project.tool, stage, name, {
                 signal: controller.signal,
                 timeoutMs: 300000,
-                stage: "deepCheck"
+                stage: "deepCheck",
+                onExitUnconfirmed: (exited, retryStop) => this._retainProcess(root, exited, retryStop)
             });
 
             const raw = normalizeGenerated(before, await snapshot(stage), name, project.tool);
@@ -1016,9 +1069,7 @@ class CubeMxService {
             }
             throw err;
         } finally {
-            if (stage) await fs.rm(stage, { recursive: true, force: true }).catch(() => {});
-            this.jobs.delete(root);
-            this.activeExecutions.delete(op.operationId);
+            await this._finishJob(root, op.operationId, stage);
         }
     }
 }

@@ -58,6 +58,9 @@ async function sanitizeSkillTree(targetRoot, rootBase, manifest) {
 }
 
 async function digest(file) {
+    const stat = await fs.stat(file);
+    if (!stat.isFile() || stat.size > 4 * 1024 * 1024)
+        throw Object.assign(new Error("Skill file exceeds its inspection budget"), { code: "SKILL_FILE_TOO_LARGE" });
     return crypto
         .createHash("sha256")
         .update(await fs.readFile(file))
@@ -130,14 +133,23 @@ async function inspectSkill(sourceRoot, targetRoot, entry) {
     if (!present)
         return { name: entry.name, version: entry.version, state: "notInstalled", missing: entry.required.slice() };
     const missing = [];
+    const contents = [];
     let modified = false;
     for (const relative of entry.required) {
         const sourceFile = path.join(source, relative);
         const targetFile = path.join(target, relative);
         if (!(await exists(targetFile))) missing.push(relative);
-        else if ((await digest(sourceFile)) !== (await digest(targetFile))) modified = true;
+        else {
+            const actual = await digest(targetFile);
+            contents.push([relative, actual]);
+            if ((await digest(sourceFile)) !== actual) modified = true;
+        }
     }
-    if (missing.length) return { name: entry.name, version: entry.version, state: "partial", missing };
+    const fingerprint = crypto
+        .createHash("sha256")
+        .update(JSON.stringify([contents, missing]))
+        .digest("hex");
+    if (missing.length) return { name: entry.name, version: entry.version, state: "partial", missing, fingerprint };
     let installedVersion = "";
     try {
         installedVersion =
@@ -146,13 +158,21 @@ async function inspectSkill(sourceRoot, targetRoot, entry) {
         /* old installs have no metadata */
     }
     if (installedVersion !== entry.version) {
-        return { name: entry.name, version: entry.version, installedVersion, state: "outdated", missing: [] };
+        return {
+            name: entry.name,
+            version: entry.version,
+            installedVersion,
+            state: "outdated",
+            missing: [],
+            fingerprint
+        };
     }
     return {
         name: entry.name,
         version: entry.version,
         installedVersion,
         state: modified ? "modified" : "installed",
+        fingerprint,
         missing: []
     };
 }
@@ -165,12 +185,17 @@ async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
     // skill 状态上。用显式清单而非扩展名过滤，确保新增的共享文档不会被漏检；drift 测试
     // 保证清单与源 _emberprobe 目录一致。源目录缺失时各项 exists 为假，等同无运行时依赖。
     const runtimeStatus = { missing: [], modified: false };
+    const runtimeContents = [];
     for (const name of Array.isArray(manifest.shared) ? manifest.shared : []) {
         const sourceFile = path.join(sourceRoot, "_emberprobe", name);
         const targetFile = path.join(targetRoot, "_emberprobe", name);
         if (!(await exists(sourceFile))) continue;
         if (!(await exists(targetFile))) runtimeStatus.missing.push(`../_emberprobe/${name}`);
-        else if ((await digest(sourceFile)) !== (await digest(targetFile))) runtimeStatus.modified = true;
+        else {
+            const actual = await digest(targetFile);
+            runtimeContents.push([name, actual]);
+            if ((await digest(sourceFile)) !== actual) runtimeStatus.modified = true;
+        }
     }
     for (let index = 0; index < manifest.skills.length; index++) {
         if (!manifest.skills[index].runtime || skills[index].state === "notInstalled") continue;
@@ -192,7 +217,11 @@ async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
         if (await exists(path.join(targetRoot, entry.name))) legacy.push(entry.name);
     }
     if (legacy.length && state === "installed") state = "modified";
-    return { scope, root: targetRoot, state, installed, total: skills.length, skills, legacy };
+    const fingerprint = crypto
+        .createHash("sha256")
+        .update(JSON.stringify([skills, runtimeContents, runtimeStatus.missing, legacy]))
+        .digest("hex");
+    return { scope, root: targetRoot, state, installed, total: skills.length, skills, legacy, fingerprint };
 }
 
 // 检查两个安装范围;顶层为兼容 webview 的合并视图(每个 skill 取较优状态),scopes 供菜单与提示细分

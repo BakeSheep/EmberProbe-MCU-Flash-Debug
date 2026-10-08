@@ -99,6 +99,7 @@ class MiClient extends EventEmitter {
         this.closed = false;
         this.process = null;
         this.exited = false;
+        this.killGraceMs = options.killGraceMs ?? 500;
     }
     start(executable, cwd) {
         this.process = this.spawn(executable, ["--interpreter=mi2", "--quiet", "--nx"], {
@@ -112,6 +113,7 @@ class MiClient extends EventEmitter {
         this.process.stdin.on("error", (error) => this.fail(error));
         this.process.on("error", (error) => this.fail(error));
         this.process.on("exit", () => {
+            clearTimeout(this.killTimer);
             this.exited = true;
             this.fail(new Error("GDB exited"));
         });
@@ -163,11 +165,37 @@ class MiClient extends EventEmitter {
             pending.reject(error);
         }
         this.pending.clear();
-        this.process?.kill();
+        const child = this.process;
+        if (child && !this.exited && child.exitCode == null) {
+            try {
+                child.kill();
+            } catch {
+                /* Exit confirmation remains authoritative. */
+            }
+            this.killTimer = setTimeout(() => {
+                if (!this.exited && child === this.process && child.exitCode == null) {
+                    try {
+                        child.kill("SIGKILL");
+                    } catch {
+                        /* Retain the process for exit confirmation/retry. */
+                    }
+                }
+            }, this.killGraceMs);
+            this.killTimer.unref?.();
+        }
         this.emit("closed", error);
     }
     async stop() {
-        if (this.closed) return;
+        if (this.closed) {
+            if (this.process && !this.exited && this.process.exitCode == null) {
+                try {
+                    this.process.kill("SIGKILL");
+                } catch {
+                    /* Retain the process for another exit check. */
+                }
+            }
+            return;
+        }
         try {
             await this.command("-gdb-exit", 2000);
         } catch {

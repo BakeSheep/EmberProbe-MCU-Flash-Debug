@@ -17,3 +17,7 @@ Remove the duplicate manual entry from the generated source list after reviewing
 Log completion/error state is tracked while reading stdout/stderr, independently of the retained diagnostic tail. Generation failures return the last 100 lines (up to 16 Ki characters), plus the first detected failure line when available. An unusually long individual line is rejected conservatively. Logs and files from successful generation stages remain in the retained stage for diagnosis. A successful generation result is not a compilation or hardware test.
 
 Regression coverage is in `test/cubemx-generation-safety.test.js` and `test/cubemx.test.js`; these tests require no CubeMX installation or hardware.
+
+Agent generation requires approval in the extension's modal UI, in addition to the existing plan-bound confirmation ID. Only the user's UI choice can grant the 24-hour project permission. The project identity is checked again after approval.
+
+Cancellation and timeouts first terminate CubeMX, then escalate to SIGKILL. If exit still cannot be confirmed, `CUBEMX_EXIT_UNCONFIRMED` is returned while the project and staging files remain owned by that process. New generation/deep checks remain blocked. `cubemx.cancel` retries termination; ownership and deferred cleanup finish only after process exit.

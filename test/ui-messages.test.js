@@ -115,7 +115,7 @@ async function commands() {
     Object.assign(manager, {
         activeDownload: null,
         workspaceForElf: () => ({}),
-        identityFor: () => ({}),
+        identityForAsync: async () => ({}),
         onStatus: (status) => statuses.push(status),
         t: f.provider._t,
         vscode: {

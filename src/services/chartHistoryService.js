@@ -46,6 +46,8 @@ class ChartHistoryService {
         for (const request of this.pending.values()) request.reject(error);
         this.pending.clear();
         this.queuedBytes = 0;
+        this.termination = this.worker.terminate();
+        this.termination.catch(() => {});
         this.options.onError?.(error);
     }
     request(method, args = []) {
@@ -73,7 +75,8 @@ class ChartHistoryService {
     }
     async restart() {
         const worker = this.worker;
-        await worker.terminate();
+        await (this.termination || worker.terminate());
+        this.termination = null;
         for (const request of this.pending.values()) request.reject(new Error("History worker restarted"));
         this.pending.clear();
         this.start();
@@ -82,7 +85,7 @@ class ChartHistoryService {
         this.disposed = true;
         for (const request of this.pending.values()) request.reject(new Error("History service disposed"));
         this.pending.clear();
-        await this.worker.terminate();
+        await (this.termination || this.worker.terminate());
     }
 }
 module.exports = { ChartHistoryService };

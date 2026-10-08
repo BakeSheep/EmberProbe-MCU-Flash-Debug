@@ -2648,22 +2648,6 @@ $("impAdd").onclick = importSelected;
 $("clear").onclick = function () {
     clearHistory();
 };
-$("export").onclick = function () {
-    var names = [],
-        bufs = [];
-    watch.forEach(function (w) {
-        var arr = data[w.name];
-        if (arr && arr.length) {
-            names.push(w.name);
-            bufs.push(arr);
-        }
-    });
-    if (!names.length) {
-        setStatusKey("lw.noDataToExport", null, "error");
-        return;
-    }
-    post({ type: "exportCsv", csv: buildCsv(names.map(curveDisplayName), bufs) });
-};
 $("freeze").onclick = function () {
     if (frozen) resumeChart();
     else freezeChart();

@@ -58,6 +58,7 @@ function extractProjectParts(text) {
         while ((match = pattern.exec(text))) {
             const part = normalizePart(match[1]);
             if (part && !parts.includes(part)) parts.push(part);
+            if (parts.length >= 128) return parts;
         }
     }
     return parts;
@@ -102,8 +103,11 @@ function scanProject(workspacePath, maxFiles = 80, maxEntries = 5000) {
 }
 
 class DeviceIdentityService {
+    async resolveAsync(options = {}) {
+        return this.resolve({ ...options, project: await scanProjectAsync(options.workspacePath) });
+    }
     resolve(options = {}) {
-        const project = scanProject(options.workspacePath);
+        const project = options.project || scanProject(options.workspacePath);
         const uniqueProject = [...new Map(project.map((item) => [item.part, item])).values()];
         const chip = options.chipInfo || {};
         const exactChip = normalizePart(chip.chip || chip.device || chip.partNumber);
@@ -150,6 +154,38 @@ class DeviceIdentityService {
         };
     }
 }
+async function scanProjectAsync(workspacePath, maxFiles = 80, maxEntries = 5000) {
+    if (!workspacePath) return [];
+    const found = [],
+        queue = [workspacePath];
+    const ignored = new Set([".git", "node_modules", "dist", "build", "out"]);
+    let scanned = 0,
+        visited = 0;
+    for (let index = 0; index < queue.length && scanned < maxFiles && visited < maxEntries; index++) {
+        const dir = queue[index];
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+            visited++;
+            const file = path.join(dir, entry.name);
+            if (entry.isDirectory() && !ignored.has(entry.name)) queue.push(file);
+            else if (entry.isFile() && /(?:\.ioc|\.ya?ml|\.pdsc|\.cprj)$/i.test(entry.name)) {
+                scanned++;
+                try {
+                    const stat = await fs.promises.stat(file);
+                    if (stat.size <= 2 * 1024 * 1024) {
+                        const text = await fs.promises.readFile(file, "utf8");
+                        if (Buffer.byteLength(text) <= 2 * 1024 * 1024)
+                            for (const part of extractProjectParts(text)) found.push({ part, file });
+                    }
+                } catch {
+                    /* Unreadable metadata is optional. */
+                }
+            }
+            if (scanned >= maxFiles || visited >= maxEntries) break;
+        }
+    }
+    return found;
+}
 
 module.exports = {
     DeviceIdentityService,
@@ -157,5 +193,6 @@ module.exports = {
     vendorForPart,
     targetIdentity,
     extractProjectParts,
-    scanProject
+    scanProject,
+    scanProjectAsync
 };

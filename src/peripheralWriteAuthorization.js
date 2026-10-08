@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { ConfirmationStore } = require("./confirmationStore");
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
@@ -46,24 +47,21 @@ class PeripheralWriteAuthorization {
         this.ttlMs = options.ttlMs || DEFAULT_TTL_MS;
         this.now = options.now || (() => Date.now());
         this.createId = options.createId || (() => crypto.randomBytes(16).toString("hex"));
-        this.pending = new Map();
+        this.confirmations = new ConfirmationStore({ ttlMs: this.ttlMs, now: this.now, createId: this.createId });
+        this.pending = this.confirmations.pending;
     }
 
     _prune() {
-        const now = this.now();
-        for (const [id, entry] of this.pending) if (entry.expiresAt <= now) this.pending.delete(id);
-        while (this.pending.size > 32) this.pending.delete(this.pending.keys().next().value);
+        this.confirmations.prune();
     }
 
     request(plan) {
         this._prune();
-        const confirmationId = this.createId();
-        const expiresAt = this.now() + this.ttlMs;
-        this.pending.set(confirmationId, { expiresAt, fingerprint: fingerprint(plan), identity: stableIdentity(plan) });
+        const { confirmationId, expiresAt } = this.confirmations.request(stableIdentity(plan));
         return {
             confirmationRequired: true,
             confirmationId,
-            expiresAt: new Date(expiresAt).toISOString(),
+            expiresAt,
             choices: ["once", "deny"],
             question: "Allow this one-time MCU peripheral register write?",
             svd: stableIdentity(plan).svd,

@@ -49,7 +49,7 @@
     }
     function clean(record) {
         const result = Object.create(null);
-        for (const [name, style] of Object.entries(record || {}))
+        for (const [name, style] of Object.entries(record || {}).slice(0, 4096))
             if (validName(name) && valid(style)) result[name] = { color: style.color, line: style.line };
         return result;
     }

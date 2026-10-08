@@ -1,4 +1,5 @@
 "use strict";
+const { appendDiagnostic } = require("./diagnostics");
 const {
     DW_TAG_array_type,
     DW_TAG_structure_type,
@@ -48,6 +49,7 @@ const { createFormReader } = require("./forms");
 function _parseDwarfInternal(buffer, options = {}) {
     const elf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const diagnostics = [];
+    let totalUnits = 0;
     const sectionBudget = { decoded: 0, max: 32 * 1024 * 1024 };
     const sections = readSections(elf, diagnostics, sectionBudget);
     const info = sections.get(".debug_info");
@@ -124,13 +126,17 @@ function _parseDwarfInternal(buffer, options = {}) {
             abbrevCache.clear();
             let p = 0;
             while (p + 4 <= infoEnd) {
+                if (++totalUnits > 20000)
+                    throw Object.assign(new Error("DWARF compilation unit budget exceeded"), {
+                        code: "DWARF_BUDGET_EXCEEDED"
+                    });
                 const cuStart = p;
                 let unitLength = buf.readUInt32LE(p);
                 p += 4;
                 let offsetSize = 4;
                 if (unitLength === 0xffffffff) {
                     if (p + 8 > infoEnd) {
-                        diagnostics.push({
+                        appendDiagnostic(diagnostics, {
                             code: "DWARF_CU_INVALID",
                             stage: "header",
                             offset: cuStart,
@@ -146,7 +152,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                 }
                 const headerSize = offsetSize === 8 ? 12 : 4;
                 if (unitLength === 0) {
-                    diagnostics.push({
+                    appendDiagnostic(diagnostics, {
                         code: "DWARF_UNSUPPORTED",
                         stage: "header",
                         offset: cuStart,
@@ -389,7 +395,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                     } catch (e) {
                         // 全局预算耗尽必须中止整个解析，而不是吞掉后继续下一个 CU 累积内存。
                         if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
-                        diagnostics.push({
+                        appendDiagnostic(diagnostics, {
                             code: /unknown DWARF form/.test(e.message) ? "DWARF_UNSUPPORTED" : "DWARF_CU_INVALID",
                             stage: "attributes",
                             offset: p,
@@ -398,7 +404,12 @@ function _parseDwarfInternal(buffer, options = {}) {
                     }
                 } catch (e) {
                     if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
-                    diagnostics.push({ code: "DWARF_CU_INVALID", stage: "header", offset: p, message: e.message });
+                    appendDiagnostic(diagnostics, {
+                        code: "DWARF_CU_INVALID",
+                        stage: "header",
+                        offset: p,
+                        message: e.message
+                    });
                 }
                 p = cuEnd;
             }
@@ -409,7 +420,7 @@ function _parseDwarfInternal(buffer, options = {}) {
         )) {
             unit.dwoName ||= resolveStrx(unit.dwoNameIndex, unit.strBase, unit.offsetSize, unit.strings);
             if (!options.filePath) {
-                diagnostics.push({
+                appendDiagnostic(diagnostics, {
                     code: "DWARF_COMPANION_MISSING",
                     stage: "sections",
                     message: "Split DWARF requires the ELF path and its matching .dwo file"
@@ -435,7 +446,7 @@ function _parseDwarfInternal(buffer, options = {}) {
             } catch (error) {
                 if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
                 if (error.paths) companions.push(...error.paths);
-                diagnostics.push({
+                appendDiagnostic(diagnostics, {
                     code: error.code || "DWARF_COMPANION_MISSING",
                     stage: "sections",
                     message: error.message
@@ -449,7 +460,7 @@ function _parseDwarfInternal(buffer, options = {}) {
             (unit) => unit.input === input && !unit.isType && unit.dwoId && unit.dwoId === input.parent.dwoId
         );
         if (!input.valid)
-            diagnostics.push({
+            appendDiagnostic(diagnostics, {
                 code: "DWARF_COMPANION_MISMATCH",
                 stage: "sections",
                 message: "Split DWARF compilation-unit identity does not match its ELF"
@@ -460,7 +471,7 @@ function _parseDwarfInternal(buffer, options = {}) {
     for (const d of dies.values()) {
         if (d.typeSignature) d.typeRef = signatures.get(d.typeSignature);
         if (d.typeSignature && d.typeRef === undefined)
-            diagnostics.push({
+            appendDiagnostic(diagnostics, {
                 code: "DWARF_TYPE_UNRESOLVED",
                 stage: "types",
                 message: "DWARF type signature is unavailable"
@@ -472,7 +483,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                 d.typeRef = definitionRef;
                 delete d.isDecl;
             } else
-                diagnostics.push({
+                appendDiagnostic(diagnostics, {
                     code: "DWARF_TYPE_UNRESOLVED",
                     stage: "types",
                     message: "DWARF type signature is unavailable"
@@ -490,7 +501,7 @@ function _parseDwarfInternal(buffer, options = {}) {
             )
                 d.address = addresses.readUInt32LE(off);
             else
-                diagnostics.push({
+                appendDiagnostic(diagnostics, {
                     code: "DWARF_ADDRESS_UNRESOLVED",
                     stage: "attributes",
                     message: "Split DWARF address index is unavailable"

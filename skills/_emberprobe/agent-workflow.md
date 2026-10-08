@@ -21,6 +21,22 @@ generic guess and take priority.
 
 ## Failure handling
 
+Sensitive Bridge operations also require approval through EmberProbe's VS Code UI. A returned
+confirmation ID identifies a plan; it is not evidence of human approval. Flash programming,
+variable/peripheral writes, CubeMX generation, and flash verification that temporarily halts
+the target must wait for the UI decision. Only the UI can grant remembered permission. Do not
+replace a rejected approval with a direct CLI call or retry it automatically.
+
+Custom or modified installed skill contents are checked before Bridge calls and require a
+separate UI decision for their current hashes. Changing them invalidates that decision.
+The Bridge rejects calls from an untrusted workspace. Tokens and loopback binding do not
+isolate mutually hostile processes running as the same OS user; OpenOCD Tcl remains a trusted
+local-process interface. Automatically selected Tcl ports no longer fall back to 6666.
+
+For `PROBE_EXIT_UNCONFIRMED` or `CUBEMX_EXIT_UNCONFIRMED`, report the retained ownership and
+retry the appropriate stop/cancel operation only as cleanup. Do not start a competing task,
+delete staging files, or infer that an error response means the device/project is idle.
+
 Follow this order for every failure. Do not skip steps and do not substitute a guess for evidence.
 
 1. **Record** the operation, `error.code`, `error.stage`, and the relevant `details` (method,

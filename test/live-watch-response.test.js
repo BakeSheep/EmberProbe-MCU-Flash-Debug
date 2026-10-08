@@ -122,8 +122,8 @@ function socketFixture() {
     } finally {
         Date.now = realNow;
     }
-    await assert.rejects(pending, /超时/);
-    await assert.rejects(queued, /超时/);
+    await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
+    await assert.rejects(queued, { code: "OPENOCD_RPC_TIMEOUT" });
     assert.strictEqual(overdue.stopped, true, "an overdue response invalidates the FIFO connection");
     assert.strictEqual(overdue.queue.length, 0);
 

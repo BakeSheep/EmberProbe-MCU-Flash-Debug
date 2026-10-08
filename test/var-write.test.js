@@ -107,7 +107,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     failSession._sendCheckedCommand = async () => {
         throw new Error("address out of bounds");
     };
-    await assert.rejects(() => failSession._writeMemoryBytes(0x20000000, [1]), /写入内存失败/);
+    await assert.rejects(() => failSession._writeMemoryBytes(0x20000000, [1]), /Memory write failed/);
 
     const alignedSession = new LiveWatchSession(null, {}, {});
     const alignedSent = [];
@@ -197,7 +197,9 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.strictEqual(concurrent.busy, false, "failed transactions must release the lock");
     assert.strictEqual(operations.at(-1), "resume", "failed transactions must restore the running target");
     concurrent.busy = true;
-    await assert.rejects(concurrent.writeAndVerify([{ name: "x", bytes: [1] }], 0), /超时/);
+    await assert.rejects(concurrent.writeAndVerify([{ name: "x", bytes: [1] }], 0), {
+        code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+    });
     concurrent.busy = false;
 
     // —— variables/write.js 的 --set 解析 ——

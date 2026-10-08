@@ -40,6 +40,7 @@ class AgentService {
         this.workspaceProvider = options.workspaceProvider;
         this.storageDirProvider = options.storageDirProvider || null;
         this.onCall = options.onCall || null;
+        this.isTrusted = options.isTrusted || (() => true);
         this.handlers = { ...options.handlers };
         this.bridge = null;
         this.lifecycleEpoch = 0;
@@ -56,10 +57,14 @@ class AgentService {
     }
 
     async call(method, params = {}) {
+        if (!this.isTrusted())
+            throw Object.assign(new Error("Agent Bridge requires a trusted workspace"), {
+                code: "WORKSPACE_UNTRUSTED"
+            });
         if (method === "capabilities") {
             return { protocol: 1, methods: this.methods() };
         }
-        const handler = this.handlers[method];
+        const handler = Object.hasOwn(this.handlers, method) ? this.handlers[method] : null;
         if (!handler) {
             throw Object.assign(new Error(`Unsupported Agent Bridge method: ${method}`), {
                 code: "METHOD_NOT_FOUND"
@@ -83,6 +88,10 @@ class AgentService {
     }
 
     start() {
+        if (!this.isTrusted())
+            return Promise.reject(
+                Object.assign(new Error("Agent Bridge requires a trusted workspace"), { code: "WORKSPACE_UNTRUSTED" })
+            );
         if (this.stopPromise) return this.stopPromise.then(() => this.start());
         if (this.startPromise) return this.startPromise;
         const workspace = this.workspaceProvider();

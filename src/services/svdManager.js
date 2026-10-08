@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { DeviceIdentityService } = require("./deviceIdentityService");
-const { SvdLibraryService, validateSvdBuffer } = require("./svdLibraryService");
+const { SvdLibraryService } = require("./svdLibraryService");
 const { OfficialSvdService, compareVersions } = require("./officialSvdService");
 
 function folderKey(folder) {
@@ -36,6 +36,24 @@ function findFiles(root, predicate, limit = 1000, maxEntries = Math.max(5000, li
     }
     return result;
 }
+async function findFilesAsync(root, predicate, limit = 1000, maxEntries = Math.max(5000, limit * 10)) {
+    const result = [],
+        queue = [root];
+    const ignored = new Set([".git", "node_modules", "dist", "build", "out"]);
+    let visited = 0;
+    for (let index = 0; index < queue.length && result.length < limit && visited < maxEntries; index++) {
+        const dir = queue[index];
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+            visited++;
+            const file = path.join(dir, entry.name);
+            if (entry.isDirectory() && !ignored.has(entry.name)) queue.push(file);
+            else if (entry.isFile() && predicate(file)) result.push(file);
+            if (result.length >= limit || visited >= maxEntries) break;
+        }
+    }
+    return result;
+}
 
 class SvdManager {
     constructor(options) {
@@ -46,7 +64,7 @@ class SvdManager {
         this.getChipInfo = options.getChipInfo || (() => null);
         this.onStatus = options.onStatus || (() => {});
         this.identity = new DeviceIdentityService();
-        this.library = new SvdLibraryService({ context: options.context });
+        this.library = new SvdLibraryService({ context: options.context, workerPath: options.workerPath });
         this.official = options.official || new OfficialSvdService();
         this.activeDownload = null;
         this.legacyWarned = false;
@@ -63,6 +81,13 @@ class SvdManager {
 
     identityFor(folder) {
         return this.identity.resolve({
+            workspacePath: folder?.uri?.fsPath,
+            target: this.context.workspaceState.get(this.cacheKeys.mcuCore),
+            chipInfo: this.getChipInfo()
+        });
+    }
+    identityForAsync(folder) {
+        return this.identity.resolveAsync({
             workspacePath: folder?.uri?.fsPath,
             target: this.context.workspaceState.get(this.cacheKeys.mcuCore),
             chipInfo: this.getChipInfo()
@@ -85,7 +110,7 @@ class SvdManager {
 
     async resolveForFolder(folder, options = {}) {
         if (!folder) return null;
-        const identity = options.identity || this.identityFor(folder);
+        const identity = options.identity || (await this.identityForAsync(folder));
         const bound = await this.library.resolveBound(folder.uri, identity.exact ? identity : null);
         if (bound) return bound;
 
@@ -104,7 +129,7 @@ class SvdManager {
             const matches = [];
             for (const file of files) {
                 try {
-                    validateSvdBuffer(await fs.promises.readFile(file), matchingIdentity);
+                    await this.library.validate(await this.library.read(file), matchingIdentity);
                     matches.push(file);
                 } catch {
                     /* incompatible */
@@ -121,7 +146,7 @@ class SvdManager {
         };
 
         const project = await selectUnique(
-            findFiles(folder.uri.fsPath, (file) => /\.svd$/i.test(file), 250),
+            await findFilesAsync(folder.uri.fsPath, (file) => /\.svd$/i.test(file), 250),
             "workspace"
         );
         if (project) return project;
@@ -131,7 +156,7 @@ class SvdManager {
             .filter(Boolean);
         for (const root of roots) {
             const cmsis = await selectUnique(
-                findFiles(root, (candidate) => /\.svd$/i.test(candidate), 1500),
+                await findFilesAsync(root, (candidate) => /\.svd$/i.test(candidate), 1500),
                 "CMSIS_PACK_ROOT"
             );
             if (cmsis) return { ...cmsis, source: "cmsis-pack-root" };
@@ -179,7 +204,7 @@ class SvdManager {
             title: this.t("svd.selectExisting")
         });
         if (!picked?.[0]) return null;
-        return this.importAndBind(picked[0].fsPath, folder, this.identityFor(folder), {
+        return this.importAndBind(picked[0].fsPath, folder, await this.identityForAsync(folder), {
             source: "manual",
             originalPath: picked[0].fsPath
         });
@@ -187,7 +212,7 @@ class SvdManager {
 
     async switchBinding(folder = this.workspaceForElf()) {
         if (!folder) throw Object.assign(new Error(this.t("msg.openWorkspaceFirst")), { code: "NO_WORKSPACE" });
-        const identity = this.identityFor(folder);
+        const identity = await this.identityForAsync(folder);
         const list = await this.library.findCompatible(identity.exact ? identity : null);
         /** @type {any[]} */
         const items = list.map((entry) => ({
@@ -253,11 +278,13 @@ class SvdManager {
         if (!folder) throw Object.assign(new Error(this.t("msg.openWorkspaceFirst")), { code: "NO_WORKSPACE" });
         if (this.activeDownload)
             throw Object.assign(new Error(this.t("svd.downloadBusy")), { code: "SVD_DOWNLOAD_BUSY" });
-        const identity = this.identityFor(folder);
         const abort = new AbortController();
         this.activeDownload = abort;
         this.onStatus({ state: "downloading", key: "svd.catalog", percent: null });
         try {
+            const identity = await this.identityForAsync(folder);
+            if (abort.signal.aborted)
+                throw Object.assign(new Error("SVD download cancelled"), { code: "DOWNLOAD_CANCELLED" });
             return await this.vscode.window.withProgress(
                 {
                     location: this.vscode.ProgressLocation.Notification,
@@ -328,7 +355,7 @@ class SvdManager {
                             return accept === this.t("svd.accept");
                         }
                     });
-                    validateSvdBuffer(downloaded.buffer, identity.exact ? identity : null);
+                    await this.library.validate(downloaded.buffer, identity.exact ? identity : null);
                     const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "emberprobe-svd-import-"));
                     const file = path.join(tmp, "device.svd");
                     try {
@@ -385,7 +412,7 @@ class SvdManager {
         }
         const bound = await this.library.resolveBound(folder.uri, null);
         if (!bound) {
-            this.onStatus({ state: "idle", key: "svd.notConfigured", identity: this.identityFor(folder) });
+            this.onStatus({ state: "idle", key: "svd.notConfigured", identity: await this.identityForAsync(folder) });
             return;
         }
         this.onStatus({
@@ -398,7 +425,7 @@ class SvdManager {
         const metadata = bound.metadata;
         if (!metadata?.packageVersion || !metadata?.packageName) return;
         try {
-            const candidates = await this.official.discover(this.identityFor(folder), {});
+            const candidates = await this.official.discover(await this.identityForAsync(folder), {});
             const latest = candidates
                 .filter(
                     (candidate) =>
@@ -422,4 +449,4 @@ class SvdManager {
     }
 }
 
-module.exports = { SvdManager, findFiles, folderKey };
+module.exports = { SvdManager, findFiles, findFilesAsync, folderKey };

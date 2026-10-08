@@ -658,6 +658,15 @@ module.exports = Object.freeze({
     "live.serviceExited":
         "OpenOCD service exited (code {code}): the probe may be busy, the config wrong, or port {port} in use",
     "live.probeDisconnected": "Debugger disconnected; live sampling stopped automatically",
+    "live.disconnecting": "Sampling stopped; closing the probe connection…",
+    "live.connectionClosed": "Sampling connection closed",
+    "approval.once": "Allow once",
+    "approval.workspace": "Allow this workspace for 24 hours",
+    "approval.request": "Agent requests {operation}. Review the actual operation plan",
+    "approval.denied": "The user did not approve this operation",
+    "approval.skills":
+        "Workspace skills differ from the extension version. Allow the current contents to call the Agent Bridge?",
+    "approval.skillsAllow": "Allow this version for this session",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",
     "live.elfReadFail": "Cannot read ELF: {path}",
     "live.elfTooLarge": "ELF exceeds the {limit} MiB safety limit and was not parsed: {path}",

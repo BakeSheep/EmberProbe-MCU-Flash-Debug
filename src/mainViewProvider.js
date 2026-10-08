@@ -31,7 +31,7 @@ const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
-const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
+const { WriteAuthorization, writeConnectionIdentity, fingerprintWritePlan } = require("./writeAuthorization");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { CubeMxFirmware } = require("./services/cubemxFirmware");
@@ -43,6 +43,7 @@ const { FlashService } = require("./services/flashService");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
+const { HumanApprovalService } = require("./services/humanApprovalService");
 const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
@@ -294,7 +295,14 @@ class MainViewProvider {
             changed: () => this.updateView(),
             t: (key) => this._t(key)
         });
+        this._humanApproval = new HumanApprovalService(
+            vscode,
+            (key, params) => this._t(key, params),
+            context.workspaceState
+        );
         this._cubemxService = new CubeMxService({
+            resetApproval: () => this._humanApproval.reset("cubemx.generate"),
+            approve: (kind, plan) => this._humanApproval.approve(kind, plan, true),
             storage: context.workspaceState,
             storageDir: context.globalStorageUri?.fsPath,
             config: () => this._configurationStore.snapshot(),
@@ -354,6 +362,7 @@ class MainViewProvider {
             isDebugActive: () => !!vscode.debug.activeDebugSession
         });
         this._svdManager = new SvdManager({
+            workerPath: path.join(__dirname, "svdWorker.js"),
             vscode,
             context,
             cacheKeys: CACHE_KEYS,
@@ -365,7 +374,8 @@ class MainViewProvider {
             workerPath: path.join(__dirname, "svdWorker.js"),
             loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
             debugBridge: this._debugBridge,
-            authorization: this._peripheralWriteAuthorization
+            authorization: this._peripheralWriteAuthorization,
+            approve: (kind, plan) => this._humanApproval.approve(kind, plan)
         });
         this._peripheralViewService = new PeripheralViewService({
             peripherals: this._svdPeripheralService,
@@ -381,12 +391,14 @@ class MainViewProvider {
             getConfig: () => this._configurationStore.snapshot(),
             coordinator: this._probeCoordinator,
             authorization: this._flashAuthorization,
-            prepare: (options) => this._probeConnectionService.prepare(options),
+            prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
+            approve: (kind, plan) => this._humanApproval.approve(kind, plan),
             recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
         });
         this._agentService = new AgentService({
             Bridge: AgentBridge,
+            isTrusted: () => vscode.workspace.isTrusted,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             // Bridge 描述文件（含 token）写入 globalStorage，工作区只留指针，避免令牌随 git/云同步泄露
             storageDirProvider: () => this._context.globalStorageUri.fsPath,
@@ -868,10 +880,7 @@ class MainViewProvider {
                 }
                 const cleanElfPath = cleanWindowsPath(elfPath);
                 const { cwd } = this._commandContext(resource);
-                const connection = await this._probeConnectionService.prepare(
-                    { executable, probe: debuggerCfg, target: mcuCore },
-                    true
-                );
+                let connection;
                 await this._flashService.download(
                     vscode,
                     {
@@ -880,7 +889,13 @@ class MainViewProvider {
                         transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
-                        ...connection,
+                        prepare: async () => {
+                            connection = await this._probeConnectionService.prepare(
+                                { executable, probe: debuggerCfg, target: mcuCore },
+                                true
+                            );
+                            return connection;
+                        },
                         cwd
                     },
                     (event) => {
@@ -891,7 +906,8 @@ class MainViewProvider {
                         this._webviewView?.webview.postMessage(message);
                     }
                 );
-                if (!this._downloadLease?.released) await this._probeConnectionService.recordSuccess(connection);
+                if (connection && !this._downloadLease?.released)
+                    await this._probeConnectionService.recordSuccess(connection);
                 downloaded = true;
                 vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
                 return true;
@@ -1430,7 +1446,11 @@ class MainViewProvider {
             return validation.clampInteger(cfg.get("tclPort", 6666), 6666, 1, 65535);
         }
         const port = await liveWatch.findFreePort();
-        return port || 6666;
+        if (!Number.isInteger(port) || port < 1 || port > 65535)
+            throw Object.assign(new Error("Unable to allocate a local OpenOCD Tcl port"), {
+                code: "TCL_PORT_UNAVAILABLE"
+            });
+        return port;
     }
     _runtimeRamPlan(items, strict = false) {
         const elfResult = this.readElfSymbols();
@@ -1978,6 +1998,10 @@ class MainViewProvider {
     }
     async _withAgentProbe(handler, options = {}) {
         this._assertCpuIdle();
+        if (this._liveConnectionClosing || this._liveExitUnconfirmed)
+            throw Object.assign(new Error("The previous probe connection has not closed"), {
+                code: "PROBE_EXIT_UNCONFIRMED"
+            });
         const syncStatus = !!options.syncStatus;
         const total = options.total || 0;
         // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
@@ -2047,11 +2071,23 @@ class MainViewProvider {
             operationLease = this._probeCoordinator.acquire("agentRead");
             this._agentReadLease = operationLease;
             this._agentReadCancelled = false;
+            let prepared;
+            const preparation = new Promise((resolve) => {
+                prepared = resolve;
+            });
+            this._agentReadPreparationPromise = preparation;
+            const assertActive = () => {
+                if (operationLease.released || this._agentReadCancelled || this._agentReadLease !== operationLease)
+                    throw Object.assign(new Error("Agent variable read was cancelled"), {
+                        code: "AGENT_READ_CANCELLED"
+                    });
+            };
             try {
                 const debuggerCfg =
                     this._context.workspaceState.get(CACHE_KEYS.debugger) ||
                     (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+                assertActive();
                 if (!debuggerCfg || !mcuCore) {
                     throw Object.assign(new Error(this._t("live.needConfig")), {
                         code: "CONFIG_INCOMPLETE",
@@ -2060,6 +2096,7 @@ class MainViewProvider {
                 }
                 const cfg = vscode.workspace.getConfiguration("emberprobe");
                 const executable = await this._resolveOpenOcdPath(cfg.get("openocdPath", "openocd"));
+                assertActive();
                 if (!executable) {
                     throw Object.assign(new Error(this._t("live.notReady")), {
                         code: "OPENOCD_NOT_READY",
@@ -2071,6 +2108,14 @@ class MainViewProvider {
                         code: "AGENT_READ_CANCELLED"
                     });
                 const { cwd } = this._commandContext();
+                const connection = await this._probeConnectionService.prepare({
+                    executable,
+                    probe: debuggerCfg,
+                    target: mcuCore
+                });
+                assertActive();
+                const port = await this._resolveTclPort(cfg);
+                assertActive();
                 session = new liveWatch.LiveWatchSession(
                     vscode,
                     {
@@ -2079,13 +2124,9 @@ class MainViewProvider {
                         transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                         probe: debuggerCfg,
                         target: mcuCore,
-                        ...(await this._probeConnectionService.prepare({
-                            executable,
-                            probe: debuggerCfg,
-                            target: mcuCore
-                        })),
+                        ...connection,
                         cwd,
-                        port: await this._resolveTclPort(cfg),
+                        port,
                         intervalMs: 10000
                     },
                     {
@@ -2105,6 +2146,9 @@ class MainViewProvider {
             } catch (error) {
                 operationLease?.release();
                 throw error;
+            } finally {
+                prepared();
+                if (this._agentReadPreparationPromise === preparation) this._agentReadPreparationPromise = null;
             }
         }
 
@@ -2112,6 +2156,10 @@ class MainViewProvider {
         try {
             if (temporary) {
                 if (syncStatus) this._postAgentSampling(true, "live.agentStarting", { total });
+                if (this._agentReadCancelled || operationLease.released || this._agentReadSession !== session)
+                    throw Object.assign(new Error("Agent variable read was cancelled"), {
+                        code: "AGENT_READ_CANCELLED"
+                    });
                 await session.start();
                 if (operationLease.released || this._agentReadCancelled || this._agentReadSession !== session)
                     throw Object.assign(new Error("Agent variable read was cancelled"), {
@@ -2350,13 +2398,42 @@ class MainViewProvider {
     async _writeAgentVariables(params) {
         this._assertCpuIdle();
         await this._prepareRequestedLayouts(params.values);
-        const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
+        let plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
         const authorization = this._writeAuthorization.authorize(plan, {
             confirmationId: params.confirmationId,
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
+        if (this._humanApproval) {
+            const approved = await this._humanApproval.approve(
+                "variables.write",
+                {
+                    elf: plan.elfResult.elf,
+                    connection: plan.connection,
+                    items: plan.items.map(({ name, address, size, type, value, valueText, bytes }) => ({
+                        name,
+                        address,
+                        size,
+                        type,
+                        value,
+                        valueText,
+                        bytes
+                    }))
+                },
+                true
+            );
+            authorization.remember = approved.remember;
+            authorization.mode = approved.mode || (approved.remember ? "workspace" : "once");
+            await this._prepareRequestedLayouts(params.values);
+            const current = this._agentWritePlan(params.values, { refreshSymbols: false });
+            current.connection = await this._prepareWriteConnection();
+            if (fingerprintWritePlan(plan) !== fingerprintWritePlan(current))
+                throw Object.assign(new Error("Write plan changed during human approval"), {
+                    code: "WRITE_CONFIRMATION_INVALID"
+                });
+            plan = current;
+        }
         // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
         // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
         // the write path loses the DAP connection identity between confirmation and execution.
@@ -2389,6 +2466,10 @@ class MainViewProvider {
     // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
     async _writeUiVariable(name, value) {
         this._assertCpuIdle();
+        if (this._liveConnectionClosing || this._liveExitUnconfirmed)
+            throw Object.assign(new Error("The previous probe connection has not closed"), {
+                code: "PROBE_EXIT_UNCONFIRMED"
+            });
         const dapSession = this._debugBridge.canWrite ? this._debugBridge : null;
         const session = dapSession || (this._liveWatchRunning ? this._liveSession : null);
         if (!session) {
@@ -2421,7 +2502,10 @@ class MainViewProvider {
                 return this._writeAuthorization.status();
             }
         }
-        if (action === "reset") return this._writeAuthorization.reset();
+        if (action === "reset") {
+            await this._humanApproval?.reset("variables.write");
+            return this._writeAuthorization.reset();
+        }
         throw Object.assign(new Error(`Unsupported write permission action: ${action}`), {
             code: "INVALID_PERMISSION_ACTION"
         });
@@ -2499,6 +2583,7 @@ class MainViewProvider {
         return this._agentService.stop();
     }
     async _syncAgentBridgeWithSkills(status) {
+        if (!vscode.workspace.isTrusted) return this.stopAgentBridge();
         if (hasWorkspaceSkills(status)) {
             return this.startAgentBridge();
         }
@@ -2512,10 +2597,9 @@ class MainViewProvider {
         await this._syncAgentBridgeWithSkills(status);
         return status;
     }
-    // Agent Bridge 收到请求时若发现已安装技能被本地篡改，提示一次：技能脚本以当前用户身份执行，
-    // 被篡改的脚本等于借 Agent 之名运行任意代码（不阻断，用户可能是有意自定义）
-    _warnIfSkillsModified() {
-        this._skillStatusService.warnIfModified();
+    // 调用前检查实际技能摘要；自定义内容需独立 UI 批准，内容再次变化会失效。
+    async _warnIfSkillsModified() {
+        await this._skillStatusService.checkForCall();
     }
     // 后台生成没有自己的 withProgress 窗口（Bridge 调用立即返回 operationId），
     // 因此为运行中的操作挂一个可取消的通知，复用既有进度与取消交互
@@ -2618,6 +2702,8 @@ class MainViewProvider {
             this._refreshSamplingPlan().catch(() => {});
         });
         panel.webview.onDidReceiveMessage(async (message) => {
+            if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string")
+                return;
             try {
                 if (message.panelId !== undefined && Number(message.panelId) !== panelId) {
                     throw Object.assign(new Error("Live panel identity mismatch"), { code: "INVALID_PANEL_ID" });
@@ -3704,6 +3790,16 @@ class MainViewProvider {
             managedServer: this._managedDebugServer,
             agentStatus: this._agentSamplingStatus
         });
+        if (this._liveConnectionClosing || this._liveExitUnconfirmed) {
+            Object.assign(status, {
+                running: false,
+                canRead: false,
+                canWrite: false,
+                snapshotReady: false,
+                mode: this._liveExitUnconfirmed ? "exit-unconfirmed" : "disconnecting",
+                connectionState: this._liveExitUnconfirmed ? "exit-unconfirmed" : "closing"
+            });
+        }
         const session = this._managedDebugServer || this._liveSession;
         if (session?.options?.settingsIdentity) {
             try {
@@ -3985,6 +4081,7 @@ class MainViewProvider {
             await this._elfService.ready();
             await this._elfRebindPromise;
         }
+        if (generation !== this._liveStartGeneration) return;
         {
             this._samplingIntent = true;
             this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
@@ -4065,6 +4162,14 @@ class MainViewProvider {
             if (startingLease.released || generation !== this._liveStartGeneration) return;
             if (!executable) throw Object.assign(new Error(this._t("live.notReady")), { i18nKey: "live.notReady" });
             const { cwd } = this._commandContext();
+            const connection = await this._probeConnectionService.prepare(
+                { executable, probe: debuggerCfg, target: mcuCore },
+                interactive
+            );
+            if (startingLease.released || generation !== this._liveStartGeneration) return;
+            const port = await this._resolveTclPort(cfg);
+            if (startingLease.released || generation !== this._liveStartGeneration) return;
+            this._liveExitUnconfirmed = false;
             session = new liveWatch.LiveWatchSession(
                 vscode,
                 {
@@ -4073,12 +4178,9 @@ class MainViewProvider {
                     transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                     probe: debuggerCfg,
                     target: mcuCore,
-                    ...(await this._probeConnectionService.prepare(
-                        { executable, probe: debuggerCfg, target: mcuCore },
-                        interactive
-                    )),
+                    ...connection,
                     cwd,
-                    port: await this._resolveTclPort(cfg),
+                    port,
                     intervalMs: validation.clampInteger(
                         intervalMs ?? this._liveIntervalMs,
                         this._liveIntervalMs,
@@ -4094,27 +4196,41 @@ class MainViewProvider {
                             void this._probeConnectionService.recordSuccess(session.options);
                     },
                     onSample: (samples, t, consumers) => {
-                        if (this._liveSession === session) this._handleRawSamples(samples, t, consumers);
+                        if (
+                            this._liveSession === session &&
+                            !this._liveConnectionClosing &&
+                            !this._liveExitUnconfirmed &&
+                            !session.stopped &&
+                            !session.connectionFailed
+                        )
+                            this._handleRawSamples(samples, t, consumers);
                     },
                     onStatus: (msg) => {
-                        if (this._liveSession === session) this._postConsumerStatuses(msg);
+                        if (this._liveSession === session && !this._liveConnectionClosing && !this._liveExitUnconfirmed)
+                            this._postConsumerStatuses(msg);
                     },
                     onError: (msg) => {
                         if (this._liveSession === session) this._postLive({ type: "liveError", message: msg });
                     },
                     onDisconnect: (err) => {
                         if (this._liveSession !== session) return;
-                        void Promise.resolve(this.stopLiveWatch()).catch(() => {});
-                        this._liveConsumers.clear();
-                        this._postConsumerStatuses(
-                            {
-                                key: err && err.i18nKey,
-                                params: err && err.i18nParams,
-                                message: (err && err.message) || String(err),
-                                diagnostic: serializeError(err)
-                            },
-                            true
-                        );
+                        const stopped = this.stopLiveWatch({ discardPending: true });
+                        const stoppedGeneration = this._liveStartGeneration;
+                        void Promise.resolve(stopped)
+                            .then(() => {
+                                if (this._liveSession || stoppedGeneration !== this._liveStartGeneration) return;
+                                this._postConsumerStatuses(
+                                    {
+                                        key: err?.i18nKey || "live.connectionClosed",
+                                        params: err?.i18nParams,
+                                        diagnostic: serializeError(err),
+                                        source: "none",
+                                        connectionState: "disconnected"
+                                    },
+                                    true
+                                );
+                            })
+                            .catch(() => {});
                     }
                 }
             );
@@ -4154,6 +4270,14 @@ class MainViewProvider {
     }
     stopLiveWatch(options = {}) {
         this._liveStartGeneration = (this._liveStartGeneration || 0) + 1;
+        if (options.discardPending) {
+            for (const entry of this._livePanels?.values() || []) {
+                entry._pendingScalars = [];
+                entry._pendingComposites = [];
+            }
+            this._pendingSidebarScalars = [];
+            this._pendingSidebarComposites = [];
+        }
         this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
         this._liveConsumers.clear();
@@ -4163,10 +4287,18 @@ class MainViewProvider {
             this._managedDebugServer?.setSamplingEnabled(false);
         }
         this._liveSession?.setSamplingEnabled?.(false);
+        this._liveConnectionClosing = !!(this._liveStartPromise || this._liveSession);
+        this._liveExitUnconfirmed = false;
         this._postConsumerStatuses(
             preserveIntent && this._debugBridge.hasSession
                 ? this._debugBridge.status()
-                : { key: preserveIntent ? "live.restoring" : "sb.stopped" }
+                : {
+                      key: this._liveConnectionClosing
+                          ? "live.disconnecting"
+                          : preserveIntent
+                            ? "live.restoring"
+                            : "sb.stopped"
+                  }
         );
         if (this._liveStopPromise) return this._liveStopPromise;
         const pending = this._liveStartPromise;
@@ -4186,11 +4318,28 @@ class MainViewProvider {
             if (this._liveSession === session) this._liveSession = null;
             this._liveStartLease?.release();
             this._liveWatchLease?.release();
+            this._liveConnectionClosing = false;
+            this._postConsumerStatuses(
+                preserveIntent && this._debugBridge.hasSession
+                    ? this._debugBridge.status()
+                    : {
+                          key: preserveIntent ? "live.restoring" : "sb.stopped",
+                          source: "none",
+                          connectionState: "disconnected"
+                      }
+            );
             return true;
-        })().finally(() => {
-            this._liveStopPromise = null;
-            this._postProbeOperationStatus();
-        });
+        })()
+            .catch((error) => {
+                this._liveExitUnconfirmed = true;
+                this._postConsumerStatuses({ key: "cpu.exitUnconfirmed", diagnostic: serializeError(error) }, true);
+                throw error;
+            })
+            .finally(() => {
+                this._liveConnectionClosing = false;
+                this._liveStopPromise = null;
+                this._postProbeOperationStatus();
+            });
         this._liveStopPromise.catch((error) => this._postLive?.({ type: "liveError", ...toUiError(error) }));
         return this._liveStopPromise;
     }
@@ -4256,7 +4405,8 @@ class MainViewProvider {
                 throw new Error("External GDB was disabled during startup");
             const stoppedAgent = this.stopAgentReadIfRunning();
             if (stoppedAgent) await stoppedAgent;
-            if (this._liveWatchRunning || this._liveSession) await this.stopLiveWatch({ preserveIntent: true });
+            if (this._liveWatchRunning || this._liveSession || this._liveStartPromise || this._liveStopPromise)
+                await this.stopLiveWatch({ preserveIntent: true });
             this._debugBridge.setWorkspace(folder);
             // Freeze settings read at entry. No probe detection or extra TCP readiness connection.
             const reservation = await this._externalDebug.reserve(folder.uri.fsPath, connection);
@@ -4295,7 +4445,7 @@ class MainViewProvider {
         }
         const agentStopped = this.stopAgentReadIfRunning();
         if (agentStopped) await agentStopped;
-        if (this._liveWatchRunning || this._liveSession) {
+        if (this._liveWatchRunning || this._liveSession || this._liveStartPromise || this._liveStopPromise) {
             const stopped = this.stopLiveWatch({ preserveIntent: true });
             if (stopped) await stopped;
             this._postConsumerStatuses({
@@ -4445,6 +4595,7 @@ class MainViewProvider {
     }
     disposeDebugBridge() {
         this._svdPeripheralService?.dispose();
+        this._svdManager?.library?.dispose();
         this._debugBridge.dispose();
     }
     shutdown() {
@@ -4495,7 +4646,7 @@ class MainViewProvider {
         this._postAgentSampling(false, "live.agentStopped");
         const session = this._agentReadSession;
         const lease = this._agentReadLease;
-        if (!session) return null;
+        if (!session) return this._agentReadPreparationPromise || null;
         return Promise.resolve(session.stop()).then((closed) => {
             if (closed === false)
                 throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
@@ -4582,12 +4733,17 @@ class MainViewProvider {
         // 监听Webview消息，主进程执行命令（先释放上一次视图的监听器，避免累积）
         this._messageListener?.dispose();
         this._messageListener = webviewView.webview.onDidReceiveMessage(async (message) => {
+            if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string")
+                return;
             switch (message.type) {
                 case "executeCommand": {
                     const cmd = message.cmd;
                     try {
                         console.log("主进程接收命令：", cmd);
-                        if (this.commandHandlers[cmd]) {
+                        if (
+                            Object.hasOwn(this.commandHandlers, cmd) &&
+                            typeof this.commandHandlers[cmd] === "function"
+                        ) {
                             const result = await this.commandHandlers[cmd]();
                             if (result === null) {
                                 webviewView.webview.postMessage({ type: "commandCancelled", cmd });

@@ -414,6 +414,12 @@ function resolveTarget(model, target) {
 }
 
 function assertReadable(register) {
+    const width = register.size / 8;
+    if (![1, 2, 4, 8].includes(width) || register.address % width !== 0)
+        throw Object.assign(new Error(`Unsupported or unaligned register access: ${register.path}`), {
+            code: "PERIPHERAL_ADDRESS_UNALIGNED",
+            details: { address: register.address, width }
+        });
     if (register.access === "write-only")
         throw Object.assign(new Error(`Register is write-only: ${register.path}`), {
             code: "PERIPHERAL_READ_NOT_ALLOWED"
@@ -513,6 +519,7 @@ function jsonConstraint(value) {
 class SvdPeripheralService {
     constructor(options = {}) {
         this.loadBoundSvd = options.loadBoundSvd;
+        this.approve = options.approve;
         this.debugBridge = options.debugBridge;
         this.authorization = options.authorization;
         this.cache = new Map();
@@ -869,12 +876,20 @@ class SvdPeripheralService {
     }
 
     async _write(params, fromUi = false) {
-        const model = await this.model();
+        let model = await this.model();
         const guard = this._guard(true);
-        const plan = await this._writePlan(model, params.writes, guard);
+        let plan = await this._writePlan(model, params.writes, guard);
         guard();
         if (!fromUi) {
             if (!params.confirmationId) return this.authorization.request(plan);
+            if (this.approve) {
+                await this.approve("peripherals.write", plan);
+                guard();
+                model = await this.model();
+                guard();
+                plan = await this._writePlan(model, params.writes, guard);
+                guard();
+            }
             this.authorization.authorize(plan, params.confirmationId);
         }
         const results = [];

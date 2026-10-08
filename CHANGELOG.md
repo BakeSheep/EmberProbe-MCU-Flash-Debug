@@ -6,6 +6,24 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 支持 CMSIS-DAP / DAPLink 与 ST-Link 探针选择，统一探针类型和序列号匹配，改进连接预检及下载错误诊断。
+- Support CMSIS-DAP / DAPLink and ST-Link probe selection with consistent probe-type and serial matching, improved connection preflight and flash diagnostics.
+
+- 保留侧栏列表的选择、展开和编辑交互，修复变量写入后侧栏与波形状态同步。
+- Preserve sidebar selection, expansion and editing interactions, and synchronize sidebar and waveform state after variable writes.
+
+- 修复采样断开提示早于实际退出确认的问题：立即停止采样并丢弃迟到数据，确认进程退出后才显示断开完成；退出未确认时保留探针占用并允许重试。修复取消启动、Agent 连接准备及调试接管的竞态。
+- Fix premature sampling-disconnect notices: stop sampling immediately, discard late data and report disconnection only after confirmed process exit; retain probe ownership and allow retries when exit is unconfirmed. Fix cancellation races during sampling startup, Agent preparation and debugger takeover.
+
+- 为 Agent 下载／校验、变量／外设写入和 CubeMX 生成增加独立的 VS Code 人工批准；记住许可与重置绑定实际 UI 选择，调用前重新检查技能版本，拒绝非受信任工作区。
+- Require independent VS Code approval for Agent flash/verify, variable/peripheral writes and CubeMX generation. Bind remembered grants and resets to actual UI choices, recheck skill versions before calls and reject untrusted workspaces.
+
+- UI 下载使用带摘要的私有 ELF 快照；SVD 读写在访问目标前校验寄存器对齐，SVD 库校验移到 Worker 并复用摘要缓存。补齐 ELF 符号、DWARF 编译单元和诊断预算。
+- Use a digest-bound private ELF snapshot for UI flashing, validate SVD register alignment before target access, move SVD library validation to a worker with digest caching, and bound ELF symbols, DWARF compilation units and diagnostics.
+
+- 修复并发 OpenOCD 状态刷新误报路径无效、历史 Worker 故障后未回收，以及 CubeMX／GDB 异常终止收尾；取消端口分配失败后的固定端口回退，统一采样设置范围和错误本地化。
+- Fix invalid OpenOCD path results during concurrent refresh, reclaim failed history workers and strengthen CubeMX/GDB shutdown handling. Remove fixed-port fallback after allocation failure and align sampling-setting limits and localized errors.
+
 - CPU 负载采样改为严格独占探针，在连接前校验 FreeRTOS ELF/DWARF；修复失败后残留意图和提前释放探针的问题，退出未确认时允许重试停止。
 - Make CPU load sampling exclusive across hardware operations, validate FreeRTOS ELF/DWARF before connecting, clear failed startup intent and retain probe ownership until confirmed shutdown, with Stop retries.
 

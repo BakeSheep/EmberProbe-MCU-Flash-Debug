@@ -89,7 +89,38 @@ class SvdLibraryService {
     constructor(options) {
         this.context = options.context;
         this.validationCache = new Map();
+        const { SvdModelService } = require("./svdModelService");
+        this.validator = new SvdModelService({
+            workerPath: options.workerPath || path.join(__dirname, "../svdWorker.js")
+        });
         this.root = path.join(options.context.globalStorageUri.fsPath, "svd-library");
+    }
+    async read(file) {
+        const stat = await fs.promises.stat(file);
+        if (!stat.isFile() || stat.size > MAX_SVD_BYTES)
+            throw Object.assign(new Error("SVD file exceeds the size budget"), { code: "INVALID_SVD_SIZE" });
+        const buffer = await fs.promises.readFile(file);
+        if (buffer.length > MAX_SVD_BYTES)
+            throw Object.assign(new Error("SVD file exceeds the size budget"), { code: "INVALID_SVD_SIZE" });
+        return buffer;
+    }
+    validate(buffer, identity = null) {
+        const digest = crypto.createHash("sha256").update(buffer).digest("hex");
+        const key = digest + JSON.stringify(identity);
+        if (!this.validationCache.has(key)) {
+            const pending = this.validator.validate(buffer, identity, digest);
+            this.validationCache.set(key, pending);
+            pending.catch(() => {
+                if (this.validationCache.get(key) === pending) this.validationCache.delete(key);
+            });
+            while (this.validationCache.size > 32)
+                this.validationCache.delete(this.validationCache.keys().next().value);
+        }
+        return this.validationCache.get(key);
+    }
+    dispose() {
+        this.validator.dispose();
+        this.validationCache.clear();
     }
 
     async init() {
@@ -142,8 +173,8 @@ class SvdLibraryService {
             throw Object.assign(new Error("Selected SVD is not a valid file or is too large"), {
                 code: "INVALID_SVD_SIZE"
             });
-        const buffer = await fs.promises.readFile(filePath);
-        const svd = validateSvdBuffer(buffer, identity);
+        const buffer = await this.read(filePath);
+        const svd = await this.validate(buffer, identity);
         const hash = crypto.createHash("sha256").update(buffer).digest("hex");
         const releaseLock = await this.acquireLock();
         try {
@@ -223,16 +254,9 @@ class SvdLibraryService {
         if (!hash || !/^[a-f0-9]{64}$/i.test(hash)) return null;
         const file = path.join(this.root, hash, "device.svd");
         try {
-            const buffer = await fs.promises.readFile(file);
+            const buffer = await this.read(file);
             const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-            const cacheKey = sha256 + JSON.stringify(identity);
-            let svd = this.validationCache.get(cacheKey);
-            if (!svd) {
-                svd = validateSvdBuffer(buffer, identity);
-                this.validationCache.set(cacheKey, svd);
-                while (this.validationCache.size > 4)
-                    this.validationCache.delete(this.validationCache.keys().next().value);
-            }
+            const svd = await this.validate(buffer, identity);
             return { hash, path: file, metadata: await this.metadata(hash), svd, source: "binding", buffer, sha256 };
         } catch {
             if (!options.readOnly) await this.bind(folderUri, "");
@@ -247,7 +271,7 @@ class SvdLibraryService {
             if (!/^[a-f0-9]{64}$/i.test(name)) continue;
             const file = path.join(this.root, name, "device.svd");
             try {
-                const svd = validateSvdBuffer(await fs.promises.readFile(file));
+                const svd = await this.validate(await this.read(file));
                 entries.push({ hash: name, path: file, metadata: await this.metadata(name), svd });
             } catch {
                 /* ignore corrupt entries */
@@ -260,7 +284,13 @@ class SvdLibraryService {
         const matches = [];
         for (const entry of await this.list()) {
             try {
-                validateSvdBuffer(await fs.promises.readFile(entry.path), identity);
+                if (identity?.device && !wildcardMatches(entry.svd.device, identity.device)) continue;
+                if (
+                    identity?.vendor &&
+                    entry.svd.vendor &&
+                    normalizeVendor(identity.vendor) !== normalizeVendor(entry.svd.vendor)
+                )
+                    continue;
                 matches.push(entry);
             } catch {
                 /* incompatible */

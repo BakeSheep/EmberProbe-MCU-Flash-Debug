@@ -20,7 +20,8 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
             "project generate",
             "exit",
             ""
-        ].join("\n")
+        ].join("\n"),
+        { flag: "wx", mode: 0o600 }
     );
     if (options.signal?.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
     const logPath = options.logPath || path.join(directory, ".emberprobe-cubemx-output.log");
@@ -29,6 +30,12 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         const monitor = createLogMonitor({ logPath });
         let stopped = "";
         let completed = false;
+        let escalation;
+        let exitDeadline;
+        let confirmExit;
+        const exited = new Promise((resolveExit) => {
+            confirmExit = resolveExit;
+        });
         const command = cubeMxCommand(tool, "-q", script);
         const child = (options.spawn || spawn)(command.command, command.args, {
             cwd: path.dirname(tool.executable),
@@ -37,14 +44,45 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
             stdio: ["ignore", "pipe", "pipe"]
         });
         const stop = (code) => {
+            if (completed) return;
             stopped = code;
-            child.kill();
+            try {
+                child.kill();
+            } catch {
+                /* Keep ownership until close. */
+            }
+            if (escalation) return;
+            escalation = setTimeout(() => {
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    /* Keep ownership until close. */
+                }
+            }, options.killGraceMs ?? 500);
+            exitDeadline = setTimeout(() => {
+                if (completed) return;
+                options.onExitUnconfirmed?.(exited, () => {
+                    try {
+                        child.kill("SIGKILL");
+                    } catch {
+                        /* Retryable. */
+                    }
+                });
+                reject(
+                    failure("CUBEMX_EXIT_UNCONFIRMED", "CubeMX exit could not be confirmed; project remains busy", {
+                        stage,
+                        logPath
+                    })
+                );
+            }, options.exitTimeoutMs ?? 2000);
         };
         const cancel = () => stop("CUBEMX_CANCELLED");
         const timer = setTimeout(() => stop("CUBEMX_TIMEOUT"), options.timeoutMs || 300000);
         options.signal?.addEventListener("abort", cancel, { once: true });
         const cleanup = async () => {
             clearTimeout(timer);
+            clearTimeout(escalation);
+            clearTimeout(exitDeadline);
             options.signal?.removeEventListener("abort", cancel);
             try {
                 await fs.unlink(script);
@@ -56,7 +94,12 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         child.stderr.on("data", monitor.stderr);
         child.once("error", async (error) => {
             if (completed) return;
+            if (child.pid) {
+                stop("CUBEMX_PROCESS_FAILED");
+                return;
+            }
             completed = true;
+            confirmExit();
             await cleanup();
             monitor.finish();
             reject(failure("CUBEMX_START_FAILED", error.message, { stage, logPath }));
@@ -64,6 +107,7 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         child.once("close", async (code) => {
             if (completed) return;
             completed = true;
+            confirmExit();
             await cleanup();
             const { log, confirmed, failureLine, diagnostic, generatedFiles, warnings, warningSummary } =
                 monitor.finish();

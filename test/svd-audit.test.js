@@ -106,6 +106,26 @@ function fixture(xml, options = {}) {
     const permission = await f.service.write(request);
     assert((await f.service.write({ ...request, confirmationId: permission.confirmationId })).results[0].verified);
     assert.strictEqual(f.writes.length, 1);
+    const humanRequest = await f.service.write(request);
+    f.service.approve = async () => {
+        throw Object.assign(new Error("User denied"), { code: "HUMAN_APPROVAL_DENIED" });
+    };
+    await assert.rejects(f.service.write({ ...request, confirmationId: humanRequest.confirmationId }), {
+        code: "HUMAN_APPROVAL_DENIED"
+    });
+    assert.strictEqual(f.writes.length, 1);
+    f.service.approve = async () => {
+        f.memory.set(0x40000000, Buffer.from([2, 0, 0, 0]));
+    };
+    await assert.rejects(f.service.write({ ...request, confirmationId: humanRequest.confirmationId }), {
+        code: "PERIPHERAL_WRITE_CONFIRMATION_INVALID"
+    });
+    assert.strictEqual(f.writes.length, 1, "register changes while approving must invalidate the old plan");
+    f.service.approve = async () => {};
+    const fresh = await f.service.write(request);
+    await f.service.write({ ...request, confirmationId: fresh.confirmationId });
+    assert.strictEqual(f.writes.length, 2);
+    f.service.approve = null;
     const listed = await f.service.list();
     assert.strictEqual(listed.peripherals[0].registers[0].writeConstraint.maximum, "3");
     assert.doesNotThrow(() => JSON.stringify(listed));

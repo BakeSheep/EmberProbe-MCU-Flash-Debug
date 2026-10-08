@@ -265,14 +265,25 @@ function parseElfSymbols(buffer) {
         throw new Error("ELF 符号表或字符串表越界");
     }
 
+    let scannedBytes = 0;
+    const deadline = Date.now() + 10000;
+    const names = new Map();
+    const budgetError = () =>
+        Object.assign(new Error("ELF symbol processing budget exceeded"), { code: "ELF_SYMBOL_BUDGET_EXCEEDED" });
     const readCStr = (base, rel) => {
+        if (names.has(rel)) return names.get(rel);
         const p = base + rel;
         const limit = base + strtab.size;
         if (rel < 0 || p < base || p >= limit) return "";
         let end = p;
-        while (end < limit && buf[end] !== 0) end++;
+        while (end < limit && buf[end] !== 0) {
+            if (++scannedBytes > 16 * 1024 * 1024 || end - p >= 16384) throw budgetError();
+            end++;
+        }
         if (end === limit) return "";
-        return buf.toString("utf8", p, end);
+        const name = buf.toString("utf8", p, end);
+        names.set(rel, name);
+        return name;
     };
 
     const STT_OBJECT = 1;
@@ -282,9 +293,11 @@ function parseElfSymbols(buffer) {
     const entsize = symtab.entsize || 16;
     if (entsize < 16) throw new Error("ELF 符号表条目大小无效");
     const count = Math.floor(symtab.size / entsize);
+    if (count > 200000) throw budgetError();
     const seen = new Map();
     const seenFuncs = new Map();
     for (let i = 0; i < count; i++) {
+        if (i % 1024 === 0 && Date.now() > deadline) throw budgetError();
         const off = symtab.offset + i * entsize;
         if (off + 16 > buf.length) break;
         const stName = buf.readUInt32LE(off + 0);

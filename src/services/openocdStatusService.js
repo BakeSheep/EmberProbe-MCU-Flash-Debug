@@ -79,9 +79,9 @@ class OpenOcdStatusService {
         }
         const result = await this.probe(target);
         this.checker.setCache(result);
-        if (operation !== this.operation) return null;
         const resolved = await this.checker.resolveOpenOcdStatus(target, this.context, result, report);
-        if (!resolved) this.vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
+        if (!resolved && operation === this.operation)
+            this.vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
         return resolved;
     }
 }

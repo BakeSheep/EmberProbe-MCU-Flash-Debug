@@ -10,7 +10,8 @@ const {
     DeviceIdentityService,
     extractProjectParts,
     targetIdentity,
-    scanProject
+    scanProject,
+    scanProjectAsync
 } = require("../src/services/deviceIdentityService");
 const { SvdLibraryService, validateSvdBuffer } = require("../src/services/svdLibraryService");
 const {
@@ -66,6 +67,7 @@ function zipBuffer(entries) {
         3,
         "project identity scanning must stop at the visited-entry budget"
     );
+    assert.strictEqual((await scanProjectAsync(boundedScan, 80, 3)).length, 3);
     await fs.promises.rm(boundedScan, { recursive: true, force: true });
     const identity = new DeviceIdentityService().resolve({ workspacePath: workspace, target: "stm32f4x.cfg" });
     assert.strictEqual(identity.device, "STM32F407VGT6");

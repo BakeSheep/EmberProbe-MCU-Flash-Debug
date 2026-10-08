@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("crypto");
+const { ConfirmationStore } = require("./confirmationStore");
 const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { normalizeTransport } = require("./openocdScripts");
 const { normalizeProbeSerial, normalizeAdapterSpeed, probeFamily } = require("../skills/_emberprobe/probe-connection");
@@ -42,28 +43,25 @@ class FlashAuthorization {
         this.ttlMs = options.ttlMs || DEFAULT_TTL_MS;
         this.now = options.now || (() => Date.now());
         this.createId = options.createId || (() => crypto.randomBytes(16).toString("hex"));
-        this.pending = new Map();
+        this.confirmations = new ConfirmationStore({ ttlMs: this.ttlMs, now: this.now, createId: this.createId });
+        this.pending = this.confirmations.pending;
     }
 
     _prune() {
-        const now = this.now();
-        for (const [id, entry] of this.pending) if (entry.expiresAt <= now) this.pending.delete(id);
-        while (this.pending.size > 32) this.pending.delete(this.pending.keys().next().value);
+        this.confirmations.prune();
     }
 
     authorize(plan, confirmationId) {
         this._prune();
         const id = String(confirmationId || "").trim();
         if (!id) {
-            const nextId = this.createId();
-            const expiresAt = this.now() + this.ttlMs;
             const identity = flashIdentity(plan);
-            this.pending.set(nextId, { expiresAt, fingerprint: fingerprint(plan), identity });
+            const { confirmationId: nextId, expiresAt } = this.confirmations.request(identity);
             return {
                 authorized: false,
                 confirmationRequired: true,
                 confirmationId: nextId,
-                expiresAt: new Date(expiresAt).toISOString(),
+                expiresAt,
                 choices: ["once", "deny"],
                 question: "Allow this one-time MCU flash erase and firmware download?",
                 ...identity

@@ -146,6 +146,25 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         assert.strictEqual(coordinator.anyActive(), false);
         assert.strictEqual(runs, 3);
         compatible = true;
+        const originalPrepare = service.prepare;
+        service.approve = async () => {
+            throw Object.assign(new Error("User denied"), { code: "HUMAN_APPROVAL_DENIED" });
+        };
+        await assert.rejects(service.execute(params, true), { code: "HUMAN_APPROVAL_DENIED" });
+        assert.strictEqual(runs, 3, "verification must not halt the target before human approval");
+        const denied = await service.authorize(params);
+        await assert.rejects(service.execute({ ...params, confirmationId: denied.confirmationId }), {
+            code: "HUMAN_APPROVAL_DENIED"
+        });
+        assert.strictEqual(runs, 3, "returning a confirmation ID cannot bypass human approval");
+        service.approve = async () => {
+            service.prepare = async (request) => ({ ...request, probeSerial: "changed" });
+        };
+        await assert.rejects(service.execute(params, true), { code: "FLASH_CONFIRMATION_INVALID" });
+        service.prepare = originalPrepare;
+        service.approve = async () => {};
+        await service.execute(params, true);
+        service.approve = null;
         service.run = async (options) => {
             options.onLine("EP_VERIFY FAIL mismatch");
             return { exitCode: 0, openocdTail: [] };

@@ -37,6 +37,14 @@ async function main() {
     assert.strictEqual(config.probeSerial, "", "automatic choices must not overwrite settings");
     assert(Object.isFrozen(result));
     assert(Object.isFrozen(result.selection));
+    const originalPrepare = service.prepareConnection;
+    const launchOptions = { resolveLaunch: () => "prepared-launch" };
+    service.prepareConnection = async (request, forwarded) => {
+        assert.strictEqual(forwarded, launchOptions);
+        return originalPrepare(request);
+    };
+    await service.prepare(options, launchOptions);
+    service.prepareConnection = originalPrepare;
 
     // recordSuccess only writes probe and probeSerial
     await service.recordSuccess(result);

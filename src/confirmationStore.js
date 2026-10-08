@@ -10,12 +10,12 @@ class ConfirmationStore {
         this.createId = options.createId || (() => crypto.randomBytes(16).toString("hex"));
         this.pending = new Map();
     }
-    prune() {
+    prune(reserve = false) {
         for (const [id, entry] of this.pending) if (entry.expiresAt <= this.now()) this.pending.delete(id);
-        while (this.pending.size >= 32) this.pending.delete(this.pending.keys().next().value);
+        while (this.pending.size > (reserve ? 31 : 32)) this.pending.delete(this.pending.keys().next().value);
     }
     request(identity) {
-        this.prune();
+        this.prune(true);
         const confirmationId = this.createId();
         const expiresAt = this.now() + this.ttlMs;
         this.pending.set(confirmationId, { identity, fingerprint: fingerprint(identity), expiresAt });

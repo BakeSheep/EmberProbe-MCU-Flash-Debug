@@ -175,8 +175,11 @@ function resolveExecutablePath(executable) {
     if (configured.includes("/") || configured.includes("\\")) {
         const absolute = path.resolve(configured);
         try {
-            return fs.realpathSync(absolute);
+            const canonical = fs.realpathSync(absolute);
+            assertNativeExecutable(canonical);
+            return canonical;
         } catch (error) {
+            if (error.code === "OPENOCD_EXECUTABLE_UNSUPPORTED") throw error;
             return absolute;
         }
     }
@@ -201,7 +204,9 @@ function resolveExecutablePath(executable) {
                 fs.accessSync(candidate, fs.constants.X_OK);
                 if (!fs.statSync(candidate).isFile()) continue;
                 assertNativeExecutable(candidate);
-                return fs.realpathSync(candidate);
+                const canonical = fs.realpathSync(candidate);
+                assertNativeExecutable(canonical);
+                return canonical;
             } catch (error) {
                 if (error.code === "OPENOCD_EXECUTABLE_UNSUPPORTED") throw error;
                 /* try the next PATH entry */

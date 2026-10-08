@@ -1,4 +1,5 @@
 "use strict";
+const { appendDiagnostic } = require("./diagnostics");
 const elfFormat = require("../elfFormat");
 const zlib = require("zlib");
 const { Decompress: ZstdDecompress } = require("fzstd");
@@ -182,7 +183,7 @@ function readSections(buf, diagnostics = [], sharedBudget) {
         header = elfFormat.readElf32Header(buf);
         entries = elfFormat.readSectionEntries(buf, header);
     } catch (e) {
-        diagnostics.push({ code: "DWARF_INVALID_ELF", stage: "sections", message: e.message });
+        appendDiagnostic(diagnostics, { code: "DWARF_INVALID_ELF", stage: "sections", message: e.message });
         return map;
     }
     const names = elfFormat.readSectionNames(buf, entries, header.shstrndx);
@@ -208,7 +209,7 @@ function readSections(buf, diagnostics = [], sharedBudget) {
         } catch (error) {
             // 解压预算耗尽属于内存安全问题，必须中止整个解析而非仅跳过单节。
             if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
-            diagnostics.push({
+            appendDiagnostic(diagnostics, {
                 code: /unsupported/i.test(error.message) ? "DWARF_UNSUPPORTED" : "DWARF_SECTION_INVALID",
                 stage: "sections",
                 section: originalName,
