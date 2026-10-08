@@ -3,7 +3,11 @@ const fs = require("fs");
 const { normalizeTransport, normalizeRtos } = require("../openocdScripts");
 const { configuredFrequencyHz, frequencyHzFromInterval, intervalMsFromHz } = require("../samplingFrequency");
 const path = require("path");
-const { normalizeProbeSerial, normalizeAdapterSpeed } = require("../../skills/_emberprobe/probe-connection");
+const {
+    normalizeProbeSerial,
+    normalizeAdapterSpeed,
+    probeFamily
+} = require("../../skills/_emberprobe/probe-connection");
 
 const ALLOWED_KEYS = new Set([
     "elf",
@@ -115,6 +119,7 @@ class ConfigurationStore {
         const operations = [];
         await this.beforeChange(values);
         const state = this.context.workspaceState;
+        const family = probeFamily({ debugger: values.debugger ?? state.get(this.cacheKeys.debugger) });
         const stateKeys = { elf: "elfPath", svd: "svdPath", mcu: "mcuCore", debugger: "debugger", iocPath: "iocPath" };
         const addState = (key, value) => {
             const storageKey = this.cacheKeys[stateKeys[key]];
@@ -150,7 +155,7 @@ class ConfigurationStore {
             } else if (key === "rtos") {
                 addSetting(key, normalizeRtos(value));
             } else if (key === "probeSerial") {
-                addSetting(key, normalizeProbeSerial(value));
+                addSetting(key, normalizeProbeSerial(value, family));
             } else if (key === "adapterSpeedKhz") {
                 addSetting(key, normalizeAdapterSpeed(value));
             } else if (NUMBER_RANGES[key]) {

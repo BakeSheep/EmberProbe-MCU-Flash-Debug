@@ -68,11 +68,18 @@ function lastJsonLine(stdout) {
     const flashAuthorization = new FlashAuthorization();
     const { AgentFlashService } = require("../src/services/agentFlashService");
     const { ProbeCoordinator } = require("../src/probeCoordinator");
+    const inventory = {
+        available: true,
+        devices: [{ family: "cmsis-dap", serial: "fixture-DAP", id: "usb-fixture" }],
+        notes: []
+    };
+    const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
     const executor = new AgentFlashService({
         getConfig: () => ({ openocdPath: fakeOpenOcd }),
         coordinator: new ProbeCoordinator(),
         authorization: flashAuthorization,
-        isDebugActive: () => false
+        isDebugActive: () => false,
+        prepare: (options) => prepareProbeConnection(options, { listProbes: async () => inventory })
     });
     const bridge = new AgentBridge(
         root,
@@ -86,6 +93,7 @@ function lastJsonLine(stdout) {
                 };
             }
             if (method === "flash.execute") return executor.execute(params);
+            if (method === "probe.list") return inventory;
             if (method === "flash.verify") return executor.execute(params, true);
             if (method === "flash.authorize") {
                 return flashAuthorization.authorize(
@@ -94,6 +102,7 @@ function lastJsonLine(stdout) {
                         transport: params.transport,
                         target: params.target,
                         probe: params.probe,
+                        probeSerial: params.probeSerial,
                         openocd: params.openocd
                     },
                     params.confirmationId
@@ -131,7 +140,7 @@ function lastJsonLine(stdout) {
             target: "config",
             probe: "config",
             transport: canRunFakeOpenOcd ? "script-default" : "default",
-            probeSerial: "default",
+            probeSerial: canRunFakeOpenOcd ? "inventory" : "default",
             adapterSpeedKhz: "default",
             openocd: "config"
         });

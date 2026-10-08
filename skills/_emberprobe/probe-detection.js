@@ -65,11 +65,14 @@ async function usbInventory() {
 async function detectProbe(dependencies = {}) {
     const [text, inventory] = await Promise.all([
         (dependencies.usbInventory || usbInventory)(),
-        (dependencies.listProbes || listProbes)()
+        (dependencies.listProbes || listProbes)({ family: "all" })
     ]);
     const candidates = probeCandidates(text);
-    if (inventory.available && inventory.devices.length && !candidates.includes("jlink.cfg"))
-        candidates.push("jlink.cfg");
+    if (inventory.available)
+        for (const device of inventory.devices) {
+            const probe = { jlink: "jlink.cfg", "cmsis-dap": "cmsis-dap.cfg", stlink: "stlink.cfg" }[device.family];
+            if (probe && !candidates.includes(probe)) candidates.push(probe);
+        }
     return {
         probe: candidates.length === 1 ? candidates[0] : "",
         candidates,

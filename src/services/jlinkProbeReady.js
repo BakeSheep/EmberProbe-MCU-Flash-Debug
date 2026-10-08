@@ -35,7 +35,7 @@ async function waitForJlinkReady(executable, serial, options = {}) {
     const scriptsRoot = findScriptsRoot(openocd);
     if (!scriptsRoot) throw new Error("OpenOCD scripts directory is unavailable");
     const interfacePath = resolveConfigFile(scriptsRoot, "interface", "jlink.cfg");
-    const normalizedSerial = normalizeProbeSerial(serial);
+    const normalizedSerial = normalizeProbeSerial(serial, "jlink");
     const args = [
         "-s",
         scriptsRoot,

@@ -10,6 +10,7 @@ const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { runOpenOcdOnce } = require("./openocdExec");
 const { probeOpenOcdCompatibility } = require("../../skills/_emberprobe/flash-common");
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
+const { buildFlashProgramCommand } = require("../../skills/_emberprobe/openocd-flash");
 
 class AgentFlashService {
     constructor(options) {
@@ -114,7 +115,7 @@ class AgentFlashService {
                 ? ["set _ep_target [target current]; $_ep_target configure -work-area-size 0", "init", verifyCommand]
                 : [
                       "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }",
-                      `program ${word} verify reset exit`
+                      buildFlashProgramCommand(word)
                   ];
             if (lease.released || this.isDebugActive())
                 throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });

@@ -1,4 +1,5 @@
 "use strict";
+const { flashPhaseFromLine } = require("./openocd-flash");
 function connectionDetails(options) {
     return {
         probe: options.probe,
@@ -45,7 +46,7 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
     const make = (code, category, likelyCause, suggestedActions, retryable = true) => ({
         code,
         category,
-        stage: "openocd_start",
+        stage: retained.reduce((phase, line) => flashPhaseFromLine(line, phase), details.stage || "openocd_start"),
         message: likelyCause,
         likelyCause,
         retryable,

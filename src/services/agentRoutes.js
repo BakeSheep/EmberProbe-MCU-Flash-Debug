@@ -7,7 +7,7 @@ function createAgentRoutes(host, probes = listProbes) {
     let inspection;
     return {
         "config.get": () => host._configurationSnapshot(),
-        "probe.list": () => listProbes(),
+        "probe.list": () => listProbes({ family: "all" }),
         "config.set": (params) => host._setAgentConfiguration(params.values || {}),
         "cubemx.detect": () => host._cubemxConfiguration.detect(),
         "cubemx.inspect": (params) => host._cubemxService.inspect(params || {}),

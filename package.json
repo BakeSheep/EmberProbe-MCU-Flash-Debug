@@ -179,14 +179,14 @@
         "emberprobe.probeSerial": {
           "type": "string",
           "default": "",
-          "description": "高级覆盖：J-Link 序列号。留空时自动选择唯一设备或工作区成功绑定；不会回退到其他设备。"
+          "description": "探针序列号：支持 CMSIS-DAP/DAPLink、ST-Link 和 J-Link。DAP/ST-Link 保留大小写及前导零；留空时选择唯一设备或工作区成功绑定，多设备须选择，不会回退到其他设备。"
         },
         "emberprobe.adapterSpeedKhz": {
           "type": "integer",
           "minimum": 0,
           "maximum": 2147483647,
           "default": 0,
-          "description": "调试链路时钟（kHz）；0 使用 OpenOCD 脚本默认值，不是变量采样频率。"
+          "description": "调试链路时钟（kHz）；非零值同时限制 target 复位事件的提速，保留事件中的必要降速。0 使用脚本默认值；不是变量采样频率。"
         },
         "emberprobe.transport": {
           "type": "string",

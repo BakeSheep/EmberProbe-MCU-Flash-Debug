@@ -76,8 +76,17 @@ function runOpenOcdOnce(options) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            if (error) reject(error);
-            else
+            if (error) {
+                if (["OPENOCD_TIMEOUT", "OPENOCD_OUTPUT_LIMIT"].includes(error.code)) {
+                    const diagnostic = diagnoseOpenOcdFailure(diagnosticLines, connectionDetails(options));
+                    Object.assign(error, {
+                        stage: diagnostic.stage,
+                        retryable: false,
+                        details: { ...error.details, ...diagnostic.details, timeoutMs, resultUnknown: true }
+                    });
+                }
+                reject(error);
+            } else
                 resolve({
                     exitCode,
                     openocdTail: openocdTail.slice(),
@@ -100,7 +109,12 @@ function runOpenOcdOnce(options) {
                 terminalError = Object.assign(new Error("OpenOCD output limit exceeded"), {
                     code: "OPENOCD_OUTPUT_LIMIT"
                 });
-                child.kill("SIGKILL");
+                clearTimeout(timer);
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    /* Retain ownership until close when requested. */
+                }
                 if (!options.waitForCloseOnTimeout) finish(terminalError);
                 return;
             }
@@ -110,6 +124,11 @@ function runOpenOcdOnce(options) {
             for (const line of lines) handleLine(line);
         };
         const timer = setTimeout(() => {
+            const timeoutError =
+                typeof options.buildTimeoutError === "function"
+                    ? options.buildTimeoutError(timeoutMs)
+                    : Object.assign(new Error(`OpenOCD 执行超时（${timeoutMs}ms）`), { code: "OPENOCD_TIMEOUT" });
+            terminalError = timeoutError;
             try {
                 child.kill();
             } catch (error) {
@@ -124,17 +143,15 @@ function runOpenOcdOnce(options) {
                     }
                 }
             }, 500).unref?.();
-            const timeoutError =
-                typeof options.buildTimeoutError === "function"
-                    ? options.buildTimeoutError(timeoutMs)
-                    : Object.assign(new Error(`OpenOCD 执行超时（${timeoutMs}ms）`), { code: "OPENOCD_TIMEOUT" });
-            terminalError = timeoutError;
             if (!options.waitForCloseOnTimeout) finish(timeoutError);
         }, timeoutMs);
 
         child.stdout.on("data", (chunk) => consume("stdout", chunk));
         child.stderr.on("data", (chunk) => consume("stderr", chunk));
-        child.on("error", (error) => finish(normalizeSpawnError(error, launch.executable)));
+        child.on("error", (error) => {
+            if (terminalError && options.waitForCloseOnTimeout) return;
+            finish(normalizeSpawnError(error, launch.executable));
+        });
         child.on("close", (code) => {
             for (const stream of ["stdout", "stderr"]) {
                 if (pending[stream]) handleLine(pending[stream]);

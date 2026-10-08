@@ -13,6 +13,10 @@ const WINDOWS_INVENTORY = `[Console]::OutputEncoding = [System.Text.Encoding]::U
  Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName $keys -ErrorAction SilentlyContinue | ForEach-Object { $p[$_.KeyName] = $_.Data };
  [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath'] }
 }) | ConvertTo-Json -Depth 4 -Compress`;
+const USB_INVENTORY = WINDOWS_INVENTORY.replace(
+    "$_.InstanceId -like 'USB\\VID_1366*'",
+    "$_.InstanceId -match '^(USB|HID)\\\\VID_'"
+);
 function windowsHelperPath(moduleDir = __dirname) {
     // esbuild places the extension's bundled modules in dist/; unbundled Agent Skills
     // still run from skills/_emberprobe/. Both layouts share the extension resources/.
@@ -21,9 +25,9 @@ function windowsHelperPath(moduleDir = __dirname) {
 }
 const WINDOWS_HELPER = windowsHelperPath();
 
-function serialOrUnknown(value) {
+function serialOrUnknown(value, family = "jlink") {
     try {
-        return normalizeProbeSerial(value || "");
+        return normalizeProbeSerial(value || "", family);
     } catch {
         return "";
     }
@@ -33,26 +37,49 @@ function deviceRecord(values) {
     return { family: "jlink", name: "SEGGER USB device", serial: "", vid: "1366", pid: "", interfaces: [], ...values };
 }
 
-function parseWindowsInventory(text) {
+function usbFamily(vid, pid, name) {
+    if (vid === "1366" && !/flasher|j[- ]?trace/i.test(name)) return "jlink";
+    if (/cmsis[- _]?dap|daplink|mcu[- ]?link|picoprobe/i.test(name) || (vid === "0d28" && pid === "0204"))
+        return "cmsis-dap";
+    if (/st[- ]?link/i.test(name) || (vid === "0483" && /^(374[8bef]|375[234])$/.test(pid))) return "stlink";
+    return "";
+}
+
+function parseWindowsInventory(text, family = "jlink") {
     const parsed = JSON.parse(String(text || "[]").replace(/^\uFEFF/, ""));
     const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    const roots = new Map(
+        rows
+            .filter((row) => row.containerId && /^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\/i.test(row.instanceId || ""))
+            .map((row) => [row.containerId, row.instanceId])
+    );
     const groups = new Map();
     for (const row of rows) {
         const id = String(row.instanceId || "");
-        if (!/^USB\\VID_1366&PID_[0-9A-F]{4}/i.test(id)) continue;
+        const usbId = id.match(/^(?:USB|HID)\\VID_([0-9A-F]{4})&PID_([0-9A-F]{4})/i);
+        if (!usbId || (family === "jlink" && usbId[1].toLowerCase() !== "1366")) continue;
         const parent = String(row.parentId || "");
-        const physicalId = String(
-            /&MI_[0-9a-f]{2}/i.test(id)
-                ? /^USB\\VID_1366&PID_[0-9A-F]{4}\\/i.test(parent)
-                    ? parent
-                    : row.containerId || id
-                : id
-        ).toUpperCase();
+        let physicalId = String(
+            roots.get(row.containerId) ||
+                (/&MI_[0-9a-f]{2}/i.test(id) || /^HID\\/i.test(id)
+                    ? /^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\/i.test(parent)
+                        ? parent
+                        : row.containerId || id
+                    : id)
+        );
+        if (usbId[1].toLowerCase() === "1366") physicalId = physicalId.toUpperCase();
         const group =
             groups.get(physicalId) ||
-            deviceRecord({ id: physicalId, pid: id.match(/PID_([0-9A-F]{4})/i)[1].toLowerCase() });
+            deviceRecord({ id: physicalId, vid: usbId[1].toLowerCase(), pid: usbId[2].toLowerCase(), family: "" });
+        const classified = usbFamily(group.vid, group.pid, row.name || "");
+        if (classified) group.family = classified;
         if (row.name && /j[- ]?link/i.test(row.name)) group.name = row.name;
-        const serial = serialOrUnknown(String(physicalId).split("\\").pop());
+        if (row.name && /cmsis|daplink|st[- ]?link/i.test(row.name)) group.name = row.name;
+        const serialId =
+            roots.get(row.containerId) || (/^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\[^&\\]+$/i.test(id) ? id : parent);
+        const serial = /^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\[^&\\]+$/i.test(serialId)
+            ? serialOrUnknown(serialId.split("\\").pop(), group.family)
+            : "";
         if (serial) group.serial = serial;
         group.interfaces.push({
             instanceId: id,
@@ -65,24 +92,35 @@ function parseWindowsInventory(text) {
         groups.set(physicalId, group);
     }
     return [...groups.values()].filter(
-        (device) => !device.interfaces.every((item) => /flasher|j[- ]?trace/i.test(item.name))
+        (device) =>
+            device.family &&
+            (family === "all" || device.family === family) &&
+            !device.interfaces.every((item) => /flasher|j[- ]?trace/i.test(item.name))
     );
 }
 
-function parseMacInventory(text) {
+function parseMacInventory(text, family = "jlink") {
     const devices = [];
     const visit = (value) => {
         if (!value || typeof value !== "object") return;
-        if (/0x1366/i.test(String(value.vendor_id || "")) && !/flasher|j[- ]?trace/i.test(value._name || "")) {
+        const vid =
+            String(value.vendor_id || "")
+                .match(/0x([0-9a-f]{4})/i)?.[1]
+                ?.toLowerCase() || "";
+        const pid =
+            String(value.product_id || "")
+                .match(/0x([0-9a-f]{4})/i)?.[1]
+                ?.toLowerCase() || "";
+        const classified = usbFamily(vid, pid, value._name || "");
+        if (classified && (family === "all" || family === classified)) {
             devices.push(
                 deviceRecord({
                     id: String(value.location_id || `usb-${devices.length}`),
                     name: value._name || "SEGGER USB device",
-                    pid:
-                        String(value.product_id || "")
-                            .match(/0x([0-9a-f]{4})/i)?.[1]
-                            ?.toLowerCase() || "",
-                    serial: serialOrUnknown(value.serial_num)
+                    vid,
+                    pid,
+                    family: classified,
+                    serial: serialOrUnknown(value.serial_num, classified)
                 })
             );
         }
@@ -109,11 +147,12 @@ function runInventory(command, args) {
 
 async function listProbes(options = {}) {
     const platform = options.platform || process.platform;
+    const family = options.family || "jlink";
     const run = options.run || runInventory;
     try {
         let devices;
         if (platform === "win32") {
-            if (!options.run || options.fastRun) {
+            if (family === "jlink" && (!options.run || options.fastRun)) {
                 try {
                     if (!options.fastRun) await fs.access(WINDOWS_HELPER);
                     devices = parseWindowsInventory(await (options.fastRun || runInventory)(WINDOWS_HELPER, ["list"]));
@@ -123,10 +162,16 @@ async function listProbes(options = {}) {
             }
             if (!devices)
                 devices = parseWindowsInventory(
-                    await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_INVENTORY])
+                    await run("powershell.exe", [
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        family === "jlink" ? WINDOWS_INVENTORY : USB_INVENTORY
+                    ]),
+                    family
                 );
         } else if (platform === "darwin")
-            devices = parseMacInventory(await run("system_profiler", ["SPUSBDataType", "-json"]));
+            devices = parseMacInventory(await run("system_profiler", ["SPUSBDataType", "-json"]), family);
         else if (platform === "linux") {
             devices = [];
             const root = options.sysfsRoot || "/sys/bus/usb/devices";
@@ -140,7 +185,6 @@ async function listProbes(options = {}) {
                 } catch {
                     continue;
                 }
-                if (vendor.toLowerCase() !== "1366") continue;
                 const optional = async (file) => {
                     try {
                         return await value(file);
@@ -149,13 +193,17 @@ async function listProbes(options = {}) {
                     }
                 };
                 const product = await optional("product");
-                if (/flasher|j[- ]?trace/i.test(product)) continue;
+                const pid = await optional("idProduct");
+                const classified = usbFamily(vendor.toLowerCase(), pid.toLowerCase(), product);
+                if (!classified || (family !== "all" && classified !== family)) continue;
                 devices.push(
                     deviceRecord({
                         id: name,
                         name: product || "SEGGER USB device",
-                        pid: await optional("idProduct"),
-                        serial: serialOrUnknown(await optional("serial"))
+                        vid: vendor.toLowerCase(),
+                        pid: pid.toLowerCase(),
+                        family: classified,
+                        serial: serialOrUnknown(await optional("serial"), classified)
                     })
                 );
             }
@@ -171,4 +219,11 @@ async function listProbes(options = {}) {
     }
 }
 
-module.exports = { listProbes, parseWindowsInventory, parseMacInventory, windowsHelperPath, WINDOWS_INVENTORY };
+module.exports = {
+    listProbes,
+    parseWindowsInventory,
+    parseMacInventory,
+    windowsHelperPath,
+    WINDOWS_INVENTORY,
+    USB_INVENTORY
+};

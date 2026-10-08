@@ -2,6 +2,7 @@
 const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 const { spawn } = require("child_process");
 const { isSafeCfgPath, resolveOpenOcdLaunch } = require("./openocdScripts");
+const { buildFlashProgramCommand, flashPhaseFromLine } = require("../skills/_emberprobe/openocd-flash");
 
 // 配置路径白名单校验：允许 geehy/apm32f4x.cfg 等 scripts 内安全相对路径。
 function isSafeCfg(name) {
@@ -24,6 +25,9 @@ function quoteTclWord(value) {
 function parseLine(line) {
     const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (!clean) return null;
+    const phase = flashPhaseFromLine(clean, "");
+    if (phase && (/EP_FLASH_STAGE=/.test(clean) || /verify started|resetting target/i.test(clean)))
+        return { stage: phase, level: "info", message: clean };
     let match;
     if (/open on-chip debugger/i.test(clean)) return { stage: "start", level: "info", message: clean };
     if (/CMSIS-DAP|ST-?LINK|J-?Link|DAPLink/i.test(clean) && /Info\s*:/i.test(clean))
@@ -143,7 +147,8 @@ function acquireTerminal(vscode) {
             onDidWrite: writeEmitter.event,
             open() {},
             close() {
-                if (sharedChild && !sharedChild.killed) sharedChild.kill();
+                if (sharedChild && sharedChild.exitCode == null && sharedChild.signalCode == null)
+                    sharedChild.kill("SIGKILL");
                 sharedTerminal = null;
                 sharedEmitter = null;
             }
@@ -176,7 +181,7 @@ function runOpenOcd(vscode, options, onProgress) {
         terminal.show(true);
         const elfPath = options.elf.replace(/\\/g, "/");
         // 关键修复：ELF 路径含空格时必须加引号，否则 OpenOCD 的 TCL 解析会把路径拆成多个参数
-        const programCmd = `program ${quoteTclWord(elfPath)} verify reset exit`;
+        const programCmd = buildFlashProgramCommand(quoteTclWord(elfPath));
         const preserveWorkArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
         const args = [
             ...buildOpenOcdConfigArgs(launch, options.transport, options),
@@ -223,9 +228,23 @@ function runOpenOcd(vscode, options, onProgress) {
         let lastError = "";
         let spawnFailed = false;
         let timedOut = false;
+        let terminalError = null;
+        let phase = "openocd_start";
         const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 120000;
         const timeout = setTimeout(() => {
             timedOut = true;
+            const timeoutError = Object.assign(new Error(`OpenOCD 下载超时（${timeoutMs}ms）`), {
+                code: "OPENOCD_TIMEOUT",
+                stage: phase,
+                retryable: false,
+                details: {
+                    ...connectionDetails(options),
+                    timeoutMs,
+                    resultUnknown: true,
+                    openocdTail: rawTail.slice(-20).map((line) => line.slice(0, 500))
+                }
+            });
+            terminalError = timeoutError;
             try {
                 child.kill();
             } catch (error) {
@@ -240,11 +259,8 @@ function runOpenOcd(vscode, options, onProgress) {
                     }
                 }
             }, 500).unref?.();
-            const timeoutError = Object.assign(new Error(`OpenOCD 下载超时（${timeoutMs}ms）`), {
-                code: "OPENOCD_TIMEOUT"
-            });
             print(`\r\n\x1b[1;31m✗ ${timeoutError.message}\x1b[0m`);
-            reject(timeoutError);
+            onProgress({ stage: "error", level: "error", message: timeoutError.message });
         }, timeoutMs);
         const errors = [];
         const stats = { wrote: null, verified: null, probe: "", chip: "", deviceId: "", flashSize: "", clock: "" };
@@ -253,6 +269,7 @@ function runOpenOcd(vscode, options, onProgress) {
         const flushLine = (line) => {
             const text = line.replace(/\r/g, "");
             if (text) {
+                phase = flashPhaseFromLine(text, phase);
                 rawTail.push(text);
                 // Bounded by the process output limit; classify before trimming for display.
             }
@@ -281,8 +298,21 @@ function runOpenOcd(vscode, options, onProgress) {
             if (outputBytes > 4 * 1024 * 1024 || pending[stream].length + chunk.length > 65536) {
                 timedOut = true;
                 clearTimeout(timeout);
-                child.kill("SIGKILL");
-                reject(Object.assign(new Error("OpenOCD output limit exceeded"), { code: "OPENOCD_OUTPUT_LIMIT" }));
+                terminalError = Object.assign(new Error("OpenOCD output limit exceeded"), {
+                    code: "OPENOCD_OUTPUT_LIMIT",
+                    stage: phase,
+                    retryable: false,
+                    details: {
+                        ...connectionDetails(options),
+                        resultUnknown: true,
+                        openocdTail: rawTail.slice(-20).map((line) => line.slice(0, 500))
+                    }
+                });
+                try {
+                    child.kill("SIGKILL");
+                } catch {
+                    /* Retain ownership until close. */
+                }
                 return;
             }
             pending[stream] += chunk.toString();
@@ -317,7 +347,10 @@ function runOpenOcd(vscode, options, onProgress) {
                 pending[stream] = "";
             }
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
-            if (timedOut) return;
+            if (terminalError) {
+                reject(terminalError);
+                return;
+            }
             if (code === 0) {
                 const elfName = elfPath.split("/").pop() || elfPath;
                 print("\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m");

@@ -10,11 +10,17 @@ Probe selection and transport are automatic by default. Configure manual overrid
 
 | Setting | Meaning / 含义 |
 | --- | --- |
-| `emberprobe.probeSerial` | Decimal J-Link serial / J-Link 十进制序列号 |
+| `emberprobe.probeSerial` | Decimal J-Link serial; exact CMSIS-DAP/ST-Link string / J-Link 十进制序列号；CMSIS-DAP/ST-Link 精确字符串 |
 | `emberprobe.transport` | `auto` by default; optional `swd` / `jtag` override / 默认自动，可手动覆盖协议 |
-| `emberprobe.adapterSpeedKhz` | Integer kHz; `0` keeps script defaults / 整数 kHz，`0` 保留脚本默认速度 |
+| `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests, `0` keeps defaults / 整数 kHz；非零值约束 target 复位事件提速，`0` 保留默认速度 |
 
-A unique J-Link with a readable serial is selected automatically. Explicit serial settings take precedence over the last successful workspace binding; missing selected or bound devices never cause fallback to another probe. Multiple unbound devices require one device selection in the UI; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable, an explicit serial can still be used, but cannot establish a verified success record.
+A unique J-Link, CMSIS-DAP or ST-Link with a readable serial is selected automatically within the selected family. CMSIS-DAP/ST-Link strings preserve case and leading zeros; J-Link serials retain decimal validation. Explicit serial settings take precedence over the last successful workspace binding; missing selected or bound devices never cause fallback to another probe. Multiple unbound devices require one device selection in the UI; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable, an explicit serial can still be used, but cannot establish a verified success record.
+
+在选定探针家族内，唯一且可读取序列号的 J-Link、CMSIS-DAP 或 ST-Link 会自动选定。DAP/ST-Link 保留大小写和前导零；J-Link 仍校验十进制序列号。未知或重复身份会阻止歧义选择。
+
+A nonzero speed setting wraps existing target reset events and caps their `adapter speed` requests. Original clock, watchdog and Flash initialization remains in place, and requests below the cap are preserved. No automatic retry or protocol change is performed. Custom scripts that change speed outside these events remain trusted user code.
+
+非零速度设置保留 target 原有复位事件及其时钟、看门狗和 Flash 初始化，只限制其中的 `adapter speed` 提速请求，保留低于上限的速度。不自动重试或切换协议；在这些事件之外修改速度的自定义脚本仍属于用户信任的代码。
 
 For J-Link, explicit transport overrides take precedence, followed by a valid successful connection record. Known Cortex-M targets default to SWD; other targets retain the interface script default. OpenOCD validates the selected protocol using interface-only configuration with `noinit`. This checks software configuration, not board wiring or physical probe capabilities. There is no automatic speed reduction, protocol retry or reset.
 
@@ -36,7 +42,7 @@ Success history is workspace-local and is written only after a valid target memo
 
 ## Agent and CLI / Agent 与命令行
 
-`config.get` / `config.set` expose `probeSerial` and `adapterSpeedKhz`. Flash program and verify scripts accept `--probe-serial <decimal>` and `--adapter-speed-khz <integer>`, together with `--transport swd|jtag`. Preflight records parameter sources, selected identity and errors; it does not install or replace a USB driver.
+`config.get` / `config.set` expose `probeSerial` and `adapterSpeedKhz`. Flash program and verify scripts accept `--probe-serial <serial>` and `--adapter-speed-khz <integer>`, together with `--transport swd|jtag`. Preflight records parameter sources, selected identity and errors; it does not install or replace a USB driver.
 
 Agent 配置接口支持序列号和速度；烧录、校验脚本支持上述参数。预检记录参数来源与错误，不安装或替换 USB 驱动。
 

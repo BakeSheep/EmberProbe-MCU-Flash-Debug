@@ -149,14 +149,20 @@ function resolver(executable = "openocd") {
     assert.strictEqual(timeoutChild.killed, true);
 
     // Resource ownership must survive a timeout/output failure until the child closes.
-    for (const mode of ["timeout", "output"]) {
+    for (const mode of ["timeout", "output", "kill-error"]) {
         const ownedChild = fakeChild();
+        if (mode === "kill-error")
+            ownedChild.kill = () => {
+                ownedChild.killed = true;
+                ownedChild.emit("error", new Error("kill failed"));
+                throw new Error("kill failed");
+            };
         let settled = false;
         const pending = runOpenOcdOnce({
             executable: "openocd",
             probe: "p.cfg",
             target: "t.cfg",
-            timeoutMs: mode === "timeout" ? 10 : 1000,
+            timeoutMs: mode === "output" ? 1000 : 10,
             waitForCloseOnTimeout: true,
             buildCommands: () => [],
             resolveLaunch: resolver(),
@@ -170,13 +176,18 @@ function resolver(executable = "openocd") {
                 throw error;
             }
         );
+        ownedChild.stderr.write("EP_FLASH_STAGE=reset_init\n");
         if (mode === "output") ownedChild.stdout.write("x".repeat(65537));
         await new Promise((resolve) => setTimeout(resolve, 30));
         assert.strictEqual(ownedChild.killed, true);
         assert.strictEqual(settled, false);
         const rejected = assert.rejects(
             pending,
-            (error) => error.code === (mode === "timeout" ? "OPENOCD_TIMEOUT" : "OPENOCD_OUTPUT_LIMIT")
+            (error) =>
+                error.code === (mode === "output" ? "OPENOCD_OUTPUT_LIMIT" : "OPENOCD_TIMEOUT") &&
+                error.stage === "reset_init" &&
+                error.details.resultUnknown &&
+                error.details.openocdTail.includes("EP_FLASH_STAGE=reset_init")
         );
         ownedChild.emit("close", null);
         await rejected;

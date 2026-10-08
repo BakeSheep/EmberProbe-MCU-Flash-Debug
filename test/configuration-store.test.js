@@ -88,6 +88,17 @@ const { createFixture } = require("./helpers/service-fixture");
         await assert.rejects(store.update({ rtos: "FreeRTOs" }), { code: "OPENOCD_RTOS_INVALID" });
         assert.strictEqual(store.snapshot().rtos, "FreeRTOS", "A rejected update leaves the setting alone");
         assert.strictEqual((await store.update({ rtos: "" })).rtos, "", "An empty value turns RTOS awareness off");
+        assert.strictEqual((await store.update({ probeSerial: "000Aa123" })).probeSerial, "000Aa123");
+        await assert.rejects(store.update({ probeSerial: "000Aa123", debugger: "jlink.cfg" }), {
+            code: "PROBE_SERIAL_INVALID"
+        });
+        assert.strictEqual(store.snapshot().debugger, "cmsis-dap.cfg", "A rejected serial leaves all settings intact");
+        assert.strictEqual((await store.update({ probeSerial: "000123", debugger: "jlink.cfg" })).probeSerial, "123");
+        await assert.rejects(store.update({ probeSerial: "ABC" }), { code: "PROBE_SERIAL_INVALID" });
+        assert.strictEqual(
+            (await store.update({ debugger: "stlink.cfg", probeSerial: "000aBc" })).probeSerial,
+            "000aBc"
+        );
     } finally {
         fixture.dispose();
         fs.rmSync(outside, { recursive: true, force: true });

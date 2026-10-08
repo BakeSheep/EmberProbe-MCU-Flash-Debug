@@ -17,10 +17,10 @@ class ProbeConnectionService {
             options.prepareConnection ||
             ((request) =>
                 prepareProbeConnection(request, {
-                    listProbes: async () =>
-                        options.driverService
-                            ? options.driverService.reconcileInventory(await listProbes())
-                            : listProbes()
+                    listProbes: async (inventoryOptions) =>
+                        options.driverService && inventoryOptions.family === "jlink"
+                            ? options.driverService.reconcileInventory(await listProbes(inventoryOptions))
+                            : listProbes(inventoryOptions)
                 }));
         this.getSuccessfulConnection = options.getSuccessfulConnection || (() => null);
         this.saveSuccessfulConnection = options.saveSuccessfulConnection || (async () => {});
@@ -91,14 +91,14 @@ class ProbeConnectionService {
                             value: device.serial
                         }));
                     if (!choices.length) throw error;
-                    const selected = await this.window.showQuickPick(choices, { title: "Select physical J-Link" });
+                    const selected = await this.window.showQuickPick(choices, { title: "Select physical debug probe" });
                     if (selected) {
                         const serial = selected.value;
                         if (serial) values = { probeSerial: normalizeProbeSerial(serial) };
                     }
                 } else throw error;
                 if (!values)
-                    throw connectionError("PROBE_SELECTION_CANCELLED", "J-Link connection selection was cancelled");
+                    throw connectionError("PROBE_SELECTION_CANCELLED", "Probe connection selection was cancelled");
                 request = { ...request, ...values };
             }
         }
@@ -123,9 +123,10 @@ class ProbeConnectionService {
         if (
             !connection ||
             this.recorded.has(connection) ||
-            connection.adapterFamily !== "jlink" ||
+            !["jlink", "cmsis-dap", "cmsis_dap", "hla", "st-link"].includes(connection.adapterFamily) ||
             !connection.probe ||
             !connection.probeSerial ||
+            (connection.inventory && (!connection.inventory.available || !connection.deviceId)) ||
             (connection.settingsIdentity && this.settingsChanged({ options: connection }))
         )
             return;

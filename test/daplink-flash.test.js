@@ -1,0 +1,252 @@
+"use strict";
+
+const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
+const vm = require("vm");
+const { createRequire } = require("module");
+const { EventEmitter } = require("events");
+const { PassThrough } = require("stream");
+const { normalizeProbeSerial, resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
+const {
+    listProbes,
+    parseWindowsInventory,
+    parseMacInventory,
+    USB_INVENTORY
+} = require("../skills/_emberprobe/probe-inventory");
+const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
+const { buildOpenOcdConfigArgs } = require("../skills/_emberprobe/openocd-launch");
+const { buildFlashProgramCommand, flashPhaseFromLine } = require("../skills/_emberprobe/openocd-flash");
+const { diagnoseOpenOcdFailure } = require("../skills/_emberprobe/openocd-diagnostics");
+const { FlashAuthorization } = require("../src/flashAuthorization");
+const { ProbeConnectionService } = require("../src/services/probeConnectionService");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
+
+const serial = "000Aa123";
+const launch = {
+    executable: "fake",
+    probePath: "/interface/cmsis-dap.cfg",
+    targetPath: "/target/stm32f4x.cfg",
+    scriptsRoot: "/scripts",
+    cwd: "/scripts"
+};
+
+async function identities() {
+    assert.strictEqual(normalizeProbeSerial(serial), serial);
+    assert.strictEqual(normalizeProbeSerial("000123", "jlink"), "123");
+    for (const value of ["x;shutdown", "[shutdown]", "$env", "x y", "x\ny", "a".repeat(129)])
+        assert.throws(() => normalizeProbeSerial(value), { code: "PROBE_SERIAL_INVALID" });
+    for (const [adapterFamily, family, probe] of [
+        ["cmsis-dap", "cmsis-dap", "cmsis-dap.cfg"],
+        ["hla", "stlink", "stlink.cfg"],
+        ["st-link", "stlink", "stlink.cfg"]
+    ]) {
+        const device = { family, serial, id: "usb-1" };
+        const inventory = { available: true, devices: [device], notes: [] };
+        const config = { probe, target: "stm32f4x.cfg", adapterFamily };
+        const prepared = await prepareProbeConnection(config, {
+            resolveLaunch: () => launch,
+            checkCapability: async () => ({ adapterFamily }),
+            listProbes: async (options) => {
+                assert.strictEqual(options.family, family);
+                return inventory;
+            }
+        });
+        assert.strictEqual(prepared.probeSerial, serial);
+        assert.strictEqual(prepared.deviceId, device.id);
+        const two = { ...inventory, devices: [device, { ...device, serial: "other", id: "usb-2" }] };
+        assert.throws(() => resolveProbeConnection(config, two), { code: "PROBE_SELECTION_REQUIRED" });
+        assert.strictEqual(resolveProbeConnection({ ...config, probeSerial: serial }, two).deviceId, "usb-1");
+        assert.throws(() => resolveProbeConnection({ ...config, probeSerial: "missing" }, inventory), {
+            code: "PROBE_SELECTED_NOT_FOUND"
+        });
+        assert.throws(
+            () => resolveProbeConnection({ ...config, probeSerial: serial }, { ...two, devices: [device, device] }),
+            { code: "PROBE_IDENTITY_AMBIGUOUS" }
+        );
+        assert.throws(
+            () =>
+                resolveProbeConnection(
+                    { ...config, probeSerial: serial },
+                    { ...two, devices: [device, { ...device, serial: "" }] }
+                ),
+            { code: "PROBE_IDENTITY_AMBIGUOUS" }
+        );
+        assert.throws(() => resolveProbeConnection(config, { available: false, devices: [] }), {
+            code: "PROBE_SELECTION_REQUIRED"
+        });
+        assert.strictEqual(
+            resolveProbeConnection({ ...config, probeSerial: serial }, { available: false, devices: [] }).probeSerial,
+            serial
+        );
+        let saved;
+        const service = new ProbeConnectionService({
+            getConfig: () => config,
+            saveSuccessfulConnection: async (value) => {
+                saved = value;
+            }
+        });
+        await service.recordSuccess(prepared);
+        assert.strictEqual(saved.probeSerial, serial);
+        const remembered = { ...config, successfulConnection: saved };
+        assert.throws(() => resolveProbeConnection(remembered, { available: true, devices: [] }), {
+            code: "PROBE_SELECTED_NOT_FOUND"
+        });
+        const authorization = new FlashAuthorization();
+        const plan = { ...config, probeSerial: serial, elf: { path: "/firmware.elf", sha256: "abc" } };
+        const pending = authorization.authorize(plan);
+        assert.throws(() => authorization.authorize({ ...plan, probeSerial: "other" }, pending.confirmationId), {
+            code: "FLASH_CONFIRMATION_INVALID"
+        });
+    }
+}
+
+async function inventory() {
+    const root = `USB\\VID_0D28&PID_0204\\${serial}`;
+    const rows = [
+        { instanceId: root, name: "USB Composite Device", containerId: "dap-container" },
+        {
+            instanceId: "USB\\VID_0D28&PID_0204&MI_00\\location",
+            parentId: root,
+            name: "CMSIS-DAP",
+            containerId: "dap-container"
+        },
+        {
+            instanceId: "HID\\VID_0D28&PID_0204&MI_00\\location",
+            parentId: "USB\\VID_0D28&PID_0204&MI_00\\location",
+            name: "CMSIS-DAP",
+            containerId: "dap-container"
+        },
+        { instanceId: "USB\\VID_0483&PID_374B\\000aBc", name: "ST-Link" }
+    ];
+    const devices = parseWindowsInventory(JSON.stringify(rows), "all");
+    assert.strictEqual(devices.length, 2);
+    assert.strictEqual(devices[0].serial, serial);
+    assert.strictEqual(devices[0].interfaces.length, 3);
+    assert.strictEqual(devices[1].serial, "000aBc");
+    assert.strictEqual(parseWindowsInventory(JSON.stringify(rows), "cmsis-dap").length, 1);
+    assert(!USB_INVENTORY.includes("-like 'USB\\VID_1366*'"));
+    const win = await listProbes({
+        platform: "win32",
+        family: "cmsis-dap",
+        run: async (_cmd, args) => {
+            assert.strictEqual(args[3], USB_INVENTORY);
+            return JSON.stringify(rows);
+        }
+    });
+    assert.strictEqual(win.devices[0].serial, serial);
+    const mac = parseMacInventory(
+        JSON.stringify({
+            _items: [{ vendor_id: "0x0d28", product_id: "0x0204", _name: "CMSIS-DAP", serial_num: serial }]
+        }),
+        "all"
+    );
+    assert.strictEqual(mac[0].serial, serial);
+    const linux = await listProbes({
+        platform: "linux",
+        family: "all",
+        readdir: async () => ["1-2"],
+        readFile: async (file) =>
+            ({ idVendor: "0d28", idProduct: "0204", serial, product: "DAPLink" })[path.basename(file)]
+    });
+    assert.strictEqual(linux.devices[0].serial, serial);
+}
+
+async function processLifetime() {
+    const filename = path.resolve(__dirname, "../src/openocdRunner.js");
+    const localRequire = createRequire(filename);
+    const mod = { exports: {} };
+    let child;
+    const overrides = {
+        "./openocdScripts": { ...localRequire("./openocdScripts"), resolveOpenOcdLaunch: () => launch },
+        child_process: {
+            spawn: () => {
+                child = new EventEmitter();
+                child.stdout = new PassThrough();
+                child.stderr = new PassThrough();
+                child.exitCode = null;
+                child.signalCode = null;
+                child.kill = () => {
+                    child.killed = true;
+                };
+                return child;
+            }
+        }
+    };
+    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
+        filename
+    })((name) => overrides[name] || localRequire(name), mod, mod.exports);
+    const vscode = {
+        EventEmitter: class {
+            fire() {}
+        },
+        window: { createTerminal: () => ({ show() {}, dispose() {} }) }
+    };
+    for (const mode of ["timeout", "output"]) {
+        const coordinator = new ProbeCoordinator();
+        const lease = coordinator.acquire("download");
+        let settled = false;
+        const options = {
+            executable: "fake",
+            elf: "/firmware.elf",
+            probe: "cmsis-dap.cfg",
+            target: "stm32f4x.cfg",
+            probeSerial: serial,
+            timeoutMs: mode === "timeout" ? 10 : 1000
+        };
+        const pending = mod.exports
+            .runOpenOcd(vscode, options, () => {})
+            .finally(() => {
+                settled = true;
+                lease.release();
+            });
+        const rejected = assert.rejects(
+            pending,
+            (error) =>
+                error.code === (mode === "timeout" ? "OPENOCD_TIMEOUT" : "OPENOCD_OUTPUT_LIMIT") &&
+                error.stage === "reset_init" &&
+                error.details.resultUnknown &&
+                error.details.openocdTail.includes("EP_FLASH_STAGE=reset_init")
+        );
+        child.stderr.write("EP_FLASH_STAGE=reset_init\n");
+        if (mode === "output") child.stderr.write("x".repeat(65537));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.strictEqual(settled, false);
+        assert.strictEqual(child.killed, true);
+        assert.throws(() => coordinator.acquire("debugStart"), { code: "PROBE_BUSY" });
+        await assert.rejects(
+            mod.exports.runOpenOcd(vscode, options, () => {}),
+            { code: "PROBE_BUSY" }
+        );
+        child.exitCode = 1;
+        child.emit("close", 1);
+        await rejected;
+        assert.strictEqual(coordinator.anyActive(), false);
+    }
+}
+
+(async () => {
+    await identities();
+    await inventory();
+    await processLifetime();
+    const args = buildOpenOcdConfigArgs(launch, "swd", { probeSerial: serial, adapterSpeedKhz: 100 });
+    assert(args.includes(`adapter serial ${serial}`));
+    const cap = args.find((arg) => arg.includes("proc _ep_speed_event"));
+    assert(cap.includes("local proc adapter") && cap.includes("upcall adapter"));
+    assert(cap.includes("cget -event") && cap.includes("reset-init"));
+    assert(!buildOpenOcdConfigArgs(launch, "auto").some((arg) => arg.includes("_ep_speed_event")));
+    assert(buildFlashProgramCommand('"a b.elf"').includes("upcall reset"));
+    assert.strictEqual(flashPhaseFromLine("EP_FLASH_STAGE=reset_run"), "reset_run");
+    const result = diagnoseOpenOcdFailure([
+        "EP_FLASH_STAGE=reset_init",
+        "** Programming Started **",
+        "** Verify Started **",
+        "Error: timeout"
+    ]);
+    assert.strictEqual(result.stage, "verify");
+    assert.strictEqual(result.code, "OPENOCD_CONNECTION_TIMEOUT");
+    console.log("DAPLink/ST-Link identity, speed policy, flash phases and lease lifetime tests passed");
+})().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

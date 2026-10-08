@@ -3,7 +3,7 @@ const fs = require("fs/promises");
 const { execFile } = require("child_process");
 const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
-const { resolveProbeConnection, connectionError } = require("./probe-connection");
+const { resolveProbeConnection, connectionError, probeFamily } = require("./probe-connection");
 const { requireJlinkWinUsb } = require("./jlink-driver");
 
 const capabilitiesCache = new Map();
@@ -126,10 +126,10 @@ async function prepareProbeConnection(options, dependencies = {}) {
         options.transport
     );
     const capability = await (dependencies.checkCapability || checkAdapterCapability)(launch);
-    const inventory =
-        capability.adapterFamily === "jlink"
-            ? await (dependencies.listProbes || listProbes)()
-            : { available: false, devices: [], notes: [] };
+    const family = probeFamily({ ...options, adapterFamily: capability.adapterFamily });
+    const inventory = family
+        ? await (dependencies.listProbes || listProbes)({ family })
+        : { available: false, devices: [], notes: [] };
     const connection = resolveProbeConnection({ ...options, adapterFamily: capability.adapterFamily }, inventory);
     if (capability.adapterFamily === "jlink")
         requireJlinkWinUsb(
@@ -142,7 +142,6 @@ async function prepareProbeConnection(options, dependencies = {}) {
             launch,
             connection.transport
         );
-    if (capability.adapterFamily !== "jlink") connection.probeSerial = "";
     return {
         ...connection,
         openocd: launch.executable,

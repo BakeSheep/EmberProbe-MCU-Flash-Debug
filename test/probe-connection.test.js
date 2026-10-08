@@ -152,7 +152,8 @@ async function main() {
         "PROBE_IDENTITY_AMBIGUOUS"
     );
     assert.strictEqual(resolveProbeConnection({ ...config, probeSerial: "12" }, unavailable).probeSerial, "12");
-    for (const value of ["1; shutdown", "-1", "4294967296", "1.5"]) assert.throws(() => normalizeProbeSerial(value));
+    for (const value of ["1; shutdown", "-1", "4294967296", "1.5"])
+        assert.throws(() => normalizeProbeSerial(value, "jlink"));
     for (const value of [-1, 1.5, Infinity, "100; shutdown"]) assert.throws(() => normalizeAdapterSpeed(value));
 
     const launch = {
