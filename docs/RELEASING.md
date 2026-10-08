@@ -46,7 +46,9 @@ gh release edit v0.8.1 --notes-file "release-notes.md"
 
 如果创建 Release、上传附件或公开草稿失败，在 GitHub **Actions → Release → Run workflow** 中输入原标签重跑。
 
-也可使用 `gh workflow run release.yml -f tag=v0.8.1` 重试，再用 `gh run watch` 选择新触发的运行。执行时替换为原发布标签。
+也可使用 `gh workflow run release.yml --ref master -f tag=v0.8.1` 重试，再用 `gh run watch` 选择新触发的运行。执行时替换为原发布标签。
+
+重试从 `master` 加载发布及复用 CI 工作流，但检查、构建和打包仍检出指定标签。这样可以修正 CI 环境后重试同一份源代码，无需改变标签；功能代码修复应使用新版本发布。Windows 检查先规范化临时目录，避免 runner 的 8.3 短路径与实际文件身份不一致。
 
 工作流可安全处理常见重试场景：
 

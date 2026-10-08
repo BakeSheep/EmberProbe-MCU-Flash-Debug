@@ -21,7 +21,11 @@ const { createFixture } = require("./helpers/service-fixture");
         const progress = [];
         assert.deepStrictEqual(await flash.download({}, { elf }, (event) => progress.push(event)), { ok: true });
         assert.notStrictEqual(flashOptions.elf, elf);
-        assert.strictEqual(flashOptions.originalElf, normalizeFileIdentity(elf));
+        assert.strictEqual(
+            flashOptions.originalElf,
+            normalizeFileIdentity(await fs.promises.realpath(elf)),
+            "original image identity resolves Windows short-name aliases"
+        );
         assert.strictEqual(
             fs.existsSync(flashOptions.elf),
             false,

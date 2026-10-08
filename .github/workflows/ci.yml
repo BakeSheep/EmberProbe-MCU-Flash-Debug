@@ -133,6 +133,14 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Canonicalize Windows test temporary directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $testTemp = node -e "process.stdout.write(require('fs').realpathSync.native(require('os').tmpdir()))"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "TMP=$testTemp" >> $env:GITHUB_ENV
+          "TEMP=$testTemp" >> $env:GITHUB_ENV
       - name: Run checks
         run: npm run check
       - name: Verify bundle
