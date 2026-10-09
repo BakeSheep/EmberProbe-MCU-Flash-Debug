@@ -7,7 +7,6 @@
     "use strict";
 
     var data = root.EmberProbeLiveWatchData;
-    var output = root.EmberProbeMockOutput;
 
     function createLiveWatchHost(iframe, options) {
         options = options || {};
@@ -22,18 +21,6 @@
         var styles = Object.assign({}, data.seriesStyles);
         var stopped = false;
         var initialized = false;
-        var lastSamplingLog = null;
-
-        function logStatus(key, show, cls) {
-            if (stopped) return;
-            notify({
-                action: "operationOutput",
-                panel: "output",
-                channel: "EmberProbe",
-                show: !!show,
-                lines: [{ text: "[波形图] " + (output.messages[key] || key), cls: cls || "info" }]
-            });
-        }
         var archive = [];
         var archiveLimit = Math.min(20000, Math.max(1, options.archiveLimit || 20000));
         var archiveTruncated = false;
@@ -189,9 +176,13 @@
             if (Number.isFinite(Number(hz)) && Number(hz) > 0) frequencyHz = Math.min(1000, Number(hz));
             if (!coordinator.setIntent("livewatch", true)) {
                 syncStatus();
-                send({ type: "liveError", key: coordinator.blockedKey("sampling") });
-                logStatus(coordinator.blockedKey("sampling"), false, "warn");
-            } else notify({ action: "operationOutput", panel: "output", channel: "EmberProbe", lines: [], show: true });
+                var key = coordinator.blockedKey("sampling");
+                send({
+                    type: "liveError",
+                    key: key,
+                    code: key === "probe.driverUnsupported" ? "PROBE_DRIVER_UNSUPPORTED" : "PROBE_BUSY"
+                });
+            }
         }
 
         function stopSampling() {
@@ -203,21 +194,6 @@
             var status = coordinator.liveStatus("livewatch", frequencyHz);
             running = status.intentEnabled;
             send(status);
-            var signature = [status.intentEnabled, status.canRead, status.source, status.key].join(":");
-            if (signature !== lastSamplingLog && (lastSamplingLog !== null || running)) {
-                if (
-                    status.canRead &&
-                    lastSamplingLog &&
-                    lastSamplingLog.startsWith("false:") &&
-                    coordinator.snapshot().debug === "none" &&
-                    !coordinator.intent("sidebar")
-                ) {
-                    logStatus("lw.connecting");
-                    logStatus("lw.connected");
-                }
-                logStatus(status.key);
-            }
-            lastSamplingLog = signature;
             if (timer && !status.canRead) {
                 clearTimeout(timer);
                 timer = null;
@@ -226,7 +202,9 @@
             send({
                 type: "mockOperationStatus",
                 operation: coordinator.snapshot().operation,
-                availability: { live: running || !coordinator.snapshot().operation }
+                availability: {
+                    live: running || (!coordinator.snapshot().operation && coordinator.snapshot().driver === "winusb")
+                }
             });
         }
 

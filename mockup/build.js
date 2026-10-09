@@ -50,8 +50,8 @@ const combinedThemeCss =
 const SIDEBAR_STATE = {
     versionLabel: versionLabel(pkg.version, path.join(root, "..", "src")),
     elf: "EmberProbeDemo.elf",
-    debugger: "J-Link (SEGGER) · SWD",
-    showJlinkDriverChoice: false,
+    debugger: "J-Link · SWD",
+    showJlinkDriverChoice: true,
     mcu: "STM32F407ZGT6 · Cortex-M4",
     cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
     iocPath: "EmberProbeDemo.ioc",
@@ -81,7 +81,7 @@ function inject(html, page, lang) {
 function buildSidebar(lang) {
     const html = modernView
         .getModernWebviewContent(SIDEBAR_STATE, lang)
-        .replace(/(<details id="(?:mcuConfigSection|chipInfoSection)"[^>]*?) open/g, "$1")
+        .replace(/(<details id="chipInfoSection"[^>]*?) open/g, "$1")
         .replace(
             '<details id="variableBrowser" class="variable-browser" open>',
             '<details id="variableBrowser" class="variable-browser">'

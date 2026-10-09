@@ -88,6 +88,8 @@ async function testSidebar() {
     await sleep(120);
 
     const send = (message) => push(window, message);
+    send({ type: "probeDriverChoice", driver: "winusb" });
+    send({ type: "probeDriverSwitch", busy: false });
     send({
         type: "backendStatus",
         backend: "openocd",
@@ -133,6 +135,10 @@ async function testSidebar() {
     await sleep(80);
 
     const doc = window.document;
+    check("MCU configuration expanded", doc.getElementById("mcuConfigSection").open === true);
+    check("driver selector visible", doc.getElementById("jlinkDriverChoice").hidden === false);
+    check("driver defaults to WinUSB", doc.getElementById("jlinkDriverChoice").value === "winusb");
+    check("driver switch idle", doc.getElementById("jlinkDriverBusy").hidden === true);
     check("backend card hidden when ready", doc.getElementById("backendCard").hidden === true);
     check("skill toggle enabled", doc.getElementById("skillStatus").disabled === false);
     check("variable browser rows", doc.querySelectorAll("#availableVars .available-row").length >= 25);
@@ -286,6 +292,8 @@ async function testShell() {
     check("run and debug sidebar removed", !doc.querySelector('.view[data-view="debug"]'));
     check("no launch configuration placeholder", !doc.body.textContent.includes("launch.json"));
     check("no download output before an operation", doc.getElementById("terminalBody").textContent === "");
+    check("Output panel is empty", doc.getElementById("outputBody").textContent === "");
+    check("no invented EmberProbe Output channels", doc.getElementById("outputChannel") === null);
     check("problems rendered", doc.querySelectorAll("#problemsList .problem-row").length === 2);
     check("status bar shows connection", doc.getElementById("emberprobeStatus").textContent.includes("已连接"));
 
@@ -332,6 +340,7 @@ async function testShell() {
         "debug keeps EmberProbe visible",
         doc.querySelector('.view[data-view="emberprobe"]').classList.contains("active")
     );
+    check("debug leaves Output empty", doc.getElementById("outputBody").textContent === "");
 
     check("no shell script errors", errors.length === 0);
     if (errors.length) console.error(errors.join("\n"));

@@ -47,10 +47,6 @@
     var historyIndex = 0;
     var terminalLines = [];
     var debugConsoleLines = [];
-    var outputChannels = new Map([
-        ["EmberProbe", []],
-        [window.EmberProbeMockOutput.chipChannel, []]
-    ]);
 
     var TAB_META = {
         livewatch: { label: "波形图 #1", type: "livewatch" },
@@ -628,7 +624,6 @@
                 .join("\n");
         }
         $("terminalBody").innerHTML = linesHtml(terminalLines);
-        $("outputBody").innerHTML = linesHtml(outputChannels.get($("outputChannel").value) || []);
         $("debugConsoleBody").innerHTML = linesHtml(debugConsoleLines);
     }
 
@@ -638,8 +633,6 @@
             lines = terminalLines;
             if (event.name) $("terminalName").textContent = event.name;
         } else if (event.panel === "debug-console") lines = debugConsoleLines;
-        else if (event.panel === "output" && outputChannels.has(event.channel))
-            lines = outputChannels.get(event.channel);
         else return;
         if (event.clear) lines.length = 0;
         (event.lines || []).forEach(function (line) {
@@ -648,8 +641,6 @@
         if (lines.length > 2000) lines.splice(0, lines.length - 2000);
         renderPanelBody();
         if (event.show) {
-            if (event.panel === "output") $("outputChannel").value = event.channel;
-            renderPanelBody();
             showPanel(event.panel);
         }
         if (state.panelVisible && state.activePanel === event.panel) {
@@ -819,7 +810,7 @@
                 appendOperationOutput(event);
                 break;
             case "toast":
-                showToast(event.text);
+                showToast(event.text, event.icon);
                 break;
             case "debugStart":
                 completeDebugStart();
@@ -845,8 +836,8 @@
                         state.debugPaused ? "已暂停 · main.c:" + state.debugLine : "运行中",
                         state.debugPaused ? "debugging" : "running"
                     );
-                } else
-                    setEmberProbeStatus("已连接 · 目标" + (event.state.target === "halted" ? "已暂停" : "运行中"), "");
+                } else if (event.state.driver === "segger") setEmberProbeStatus("驱动不支持 · 需要 WinUSB", "");
+                else setEmberProbeStatus("已连接 · 目标" + (event.state.target === "halted" ? "已暂停" : "运行中"), "");
                 break;
             }
             case "openLiveWatch":
@@ -1156,7 +1147,6 @@
         });
     });
     $("panelClose").addEventListener("click", togglePanel);
-    $("outputChannel").addEventListener("change", renderPanelBody);
 
     $("commandCenter").addEventListener("click", openPalette);
     $("paletteInput").addEventListener("input", function () {

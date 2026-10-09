@@ -230,9 +230,12 @@ function testConcurrentChipRefresh() {
                 if (mode === "debug-running") host.setTargetState("running");
             }
             if (mode === "cpu") env.deliver(frame, { type: "cpuLoadStart" });
-            if (mode === "driver") env.deliver(frame, { type: "selectProbeDriver", driver: "winusb" });
+            if (mode === "driver") env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
             const before = coordinator.snapshot();
             const chipReadAt = latest(frame, "chipInfo").info.readAt;
+            const chipReads = frame.messages.filter(
+                (message) => message.type === "chipInfoStatus" && message.state === "ready"
+            ).length;
             const samples = chartFrame.messages.filter((message) => message.type === "liveSample").length;
             assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true, mode);
             env.deliver(frame, { type: "readChipInfo" });
@@ -261,15 +264,13 @@ function testConcurrentChipRefresh() {
                 assert.equal(latest(frame, "liveStatus").canRead, true);
                 assert.ok(chartFrame.messages.filter((message) => message.type === "liveSample").length > samples);
             }
-            const diagnostics = notices.filter(
-                (event) => event.action === "operationOutput" && event.channel === operationOutput.chipChannel
+            assert.equal(
+                frame.messages.filter((message) => message.type === "chipInfoStatus" && message.state === "ready")
+                    .length,
+                chipReads + 1,
+                mode + " repeated read clicks are deduplicated"
             );
-            assert.equal(diagnostics.length, 1, mode + " repeated read clicks are deduplicated");
-            assert.equal(diagnostics[0].show, undefined, "diagnostics do not steal the current operation panel");
-            const text = diagnostics[0].lines.map((line) => line.text).join("\n");
-            assert.ok(text.includes("Device ID=" + operationOutput.connection.deviceId));
-            assert.ok(text.includes("EP_KV state " + coordinator.snapshot().target));
-            assert.ok(!text.includes("reset halt"), "diagnostic reads do not invent a target halt");
+            assert.ok(!notices.some((event) => event.panel === "output"), "chip reads do not create Output content");
         } finally {
             host.destroy();
             chart.destroy();
@@ -283,7 +284,137 @@ function testConcurrentChipRefresh() {
     host.destroy();
     const count = notices.length;
     env.advance(3000);
-    assert.equal(notices.length, count, "destroyed refresh cannot publish diagnostics later");
+    assert.equal(notices.length, count, "destroyed refresh cannot publish completion later");
+}
+
+function testDriverSelection() {
+    const env = hostEnvironment();
+    const simulator = sidebarData.createSimulator();
+    const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+    const frame = env.frame();
+    const live = env.frame();
+    const notices = [];
+    const host = env.root.EmberProbeSidebarHost.create(frame, {
+        simulator,
+        coordinator,
+        notify: (event) => notices.push(event)
+    });
+    const chart = env.root.EmberProbeLiveWatchHost.create(live, { simulator, coordinator });
+    const select = (driver) => env.deliver(frame, { type: "selectProbeDriver", driver });
+    try {
+        host.sendInitialState();
+        env.deliver(live, { type: "ready" });
+        env.advance(500);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        const initialEpoch = coordinator.snapshot().epoch;
+        for (const invalid of [undefined, "", "SEGGER", "unknown", {}]) {
+            select(invalid);
+            assert.equal(latest(frame, "commandError").code, "PROBE_DRIVER_INVALID_CHOICE");
+            assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+            assert.equal(env.jobs.size, 0, "invalid choices cannot schedule a driver change");
+        }
+        select("winusb");
+        assert.equal(coordinator.snapshot().epoch, initialEpoch, "the confirmed choice is a no-op");
+        assert.equal(env.jobs.size, 0);
+        select("segger");
+        assert.equal(coordinator.snapshot().operation, "driver");
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb", "requested is not yet confirmed");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, true);
+        assert.equal(latest(frame, "probeDriverStatus").state, "restoring");
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true);
+        const pendingJobs = env.jobs.size;
+        select("segger");
+        assert.equal(latest(frame, "commandError").code, "PROBE_BUSY");
+        assert.equal(env.jobs.size, pendingJobs, "duplicate requests cannot create another driver task");
+        env.advance(899);
+        assert.equal(coordinator.snapshot().driver, "winusb");
+        env.advance(1);
+        assert.equal(coordinator.snapshot().driver, "segger");
+        assert.equal(coordinator.snapshot().operation, null);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        assert.ok(
+            frame.messages.some((message) => message.type === "probeDriverStatus" && message.state === "restored")
+        );
+        assert.equal(latest(frame, "probeDriverStatus").state, "error");
+        assert.ok(latest(frame, "probeDriverStatus").message.includes("WinUSB"));
+        assert.ok(notices.some((event) => event.action === "toast" && event.icon === "warning"));
+        const availability = latest(frame, "mockOperationStatus").availability;
+        for (const name of ["download", "debug", "chipRead", "chipControl", "live"])
+            assert.equal(availability[name], false, name + " requires WinUSB");
+        assert.equal(availability.driver, true, "unsupported drivers must still allow recovery");
+        assert.equal(latest(frame, "cpuLoad").canStart, false);
+        assert.equal(latest(live, "mockOperationStatus").availability.live, false);
+        const unsupportedEpoch = coordinator.snapshot().epoch;
+        const rejected = [
+            [{ type: "executeCommand", cmd: "mcu-vscode.download" }, "commandError"],
+            [{ type: "executeCommand", cmd: "mcu-vscode.debug" }, "commandError"],
+            [{ type: "liveToggle" }, "liveError"],
+            [{ type: "readChipInfo" }, "chipInfoStatus"],
+            [{ type: "chipControl", action: "reset" }, "chipInfoStatus"],
+            [{ type: "cpuLoadStart" }, "commandError"]
+        ];
+        for (const [message, response] of rejected) {
+            env.deliver(frame, message);
+            assert.equal(latest(frame, response).code, "PROBE_DRIVER_UNSUPPORTED", message.type);
+        }
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        assert.equal(latest(live, "liveError").code, "PROBE_DRIVER_UNSUPPORTED");
+        assert.equal(latest(live, "liveStatus").canRead, false);
+        assert.equal(coordinator.snapshot().epoch, unsupportedEpoch);
+        assert.equal(env.jobs.size, 0, "unsupported operations cannot create success callbacks");
+        assert.ok(!notices.some((event) => event.action === "operationOutput"));
+        host.sendInitialState();
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger", "initialization replays confirmed state");
+        assert.equal(latest(frame, "chipInfoStatus").key, "probe.driverUnsupported");
+        env.advance(500);
+        select("winusb");
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger");
+        assert.equal(latest(frame, "probeDriverStatus").state, "installing");
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, false);
+        env.advance(900);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+        assert.equal(latest(frame, "probeDriverStatus").state, "ready");
+        assert.equal(latest(frame, "mockOperationStatus").availability.download, true);
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true);
+        assert.equal(latest(live, "liveStatus").running, false, "recovering a driver does not start sampling");
+    } finally {
+        host.destroy();
+        chart.destroy();
+    }
+    for (const mode of ["sampling", "flash", "debug-starting", "debug-paused", "cpu"]) {
+        const env = hostEnvironment();
+        const simulator = sidebarData.createSimulator();
+        const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+        const frame = env.frame();
+        const host = env.root.EmberProbeSidebarHost.create(frame, { simulator, coordinator });
+        try {
+            if (mode === "sampling") host.startSampling();
+            if (mode === "flash") host.download();
+            if (mode.startsWith("debug")) {
+                host.startDebug();
+                if (mode === "debug-paused") env.advance(2200);
+            }
+            if (mode === "cpu") env.deliver(frame, { type: "cpuLoadStart" });
+            const before = coordinator.snapshot();
+            env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
+            assert.equal(latest(frame, "commandError").code, "PROBE_BUSY", mode);
+            assert.deepStrictEqual(coordinator.snapshot(), before, mode + " keeps its owner and driver");
+            assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+            assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        } finally {
+            host.destroy();
+        }
+    }
+    const cancelled = hostEnvironment();
+    const cancelledFrame = cancelled.frame();
+    const cancelledHost = cancelled.root.EmberProbeSidebarHost.create(cancelledFrame);
+    cancelled.deliver(cancelledFrame, { type: "selectProbeDriver", driver: "segger" });
+    cancelledHost.destroy();
+    const count = cancelledFrame.messages.length;
+    cancelled.advance(2000);
+    assert.equal(cancelledFrame.messages.length, count, "destroyed driver tasks cannot publish a confirmed choice");
 }
 
 function testDynamicOperationOutput() {
@@ -444,7 +575,7 @@ function testStopGenerationAndTaskCleanup() {
         { type: "executeCommand", cmd: "mcu-vscode.downloadOfficialSvd" },
         { type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" },
         { type: "readChipInfo" },
-        { type: "selectProbeDriver", driver: "winusb" },
+        { type: "selectProbeDriver", driver: "segger" },
         { type: "cpuLoadStart" }
     ]) {
         const env = hostEnvironment();
@@ -825,6 +956,68 @@ async function testOperationAvailabilityBridge() {
     }
 }
 
+async function testDriverRendererBridge() {
+    const view = render(getModernWebviewContent({ debugger: "J-Link · SWD", showJlinkDriverChoice: true }, "zh"));
+    const env = hostEnvironment();
+    const frame = env.frame((message) =>
+        view.window.dispatchEvent(
+            new view.window.MessageEvent("message", { source: view.window.parent, data: message })
+        )
+    );
+    const host = env.root.EmberProbeSidebarHost.create(frame);
+    try {
+        view.window.eval(fs.readFileSync(path.join(mockup, "mock/prelude.js"), "utf8"));
+        host.sendInitialState();
+        env.advance(500);
+        await Promise.resolve();
+        const driver = view.document.getElementById("jlinkDriverChoice");
+        const busy = view.document.getElementById("jlinkDriverBusy");
+        const chipRead = view.document.getElementById("chipRead");
+        const download = view.document.querySelector('[data-command="mcu-vscode.download"]');
+        assert.equal(driver.hidden, false, "the real driver selector is visible");
+        assert.equal(driver.value, "winusb");
+        assert.equal(driver.disabled, false);
+        assert.equal(busy.hidden, true);
+        assert.equal(view.document.getElementById("mcuConfigSection").open, true);
+        driver.value = "segger";
+        driver.dispatchEvent(new view.window.Event("change"));
+        assert.equal(driver.value, "winusb", "the renderer retains the confirmed choice while switching");
+        env.deliver(frame, view.messages.at(-1));
+        await Promise.resolve();
+        assert.equal(driver.disabled, true);
+        assert.equal(busy.hidden, false);
+        assert.equal(chipRead.disabled, false, "the demo keeps supported chip refresh available during switching");
+        env.advance(900);
+        await Promise.resolve();
+        assert.equal(driver.value, "segger");
+        assert.equal(driver.disabled, false, "recovery remains available");
+        assert.equal(busy.hidden, true);
+        assert.equal(chipRead.disabled, true);
+        assert.equal(download.disabled, true);
+        assert.equal(view.document.getElementById("liveToggle").disabled, true);
+        driver.value = "winusb";
+        driver.dispatchEvent(new view.window.Event("change"));
+        env.deliver(frame, view.messages.at(-1));
+        env.advance(900);
+        await Promise.resolve();
+        assert.equal(driver.value, "winusb");
+        assert.equal(chipRead.disabled, false);
+        assert.equal(download.disabled, false);
+        host.startSampling();
+        await Promise.resolve();
+        assert.equal(driver.disabled, true, "sampling disables driver changes");
+        env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
+        await Promise.resolve();
+        assert.equal(driver.value, "winusb", "rejected driver changes restore the confirmed selection");
+        assert.equal(driver.disabled, true, "busy responses cannot undo the sampling lock");
+        assert.equal(busy.hidden, true);
+        view.assertHealthy();
+    } finally {
+        host.destroy();
+        view.close();
+    }
+}
+
 function shellHtml() {
     const assets = {
         "operation-output.js": "window.EmberProbeMockOutput = " + JSON.stringify(operationOutput) + ";",
@@ -1022,14 +1215,11 @@ async function testShell() {
         assert.equal(
             doc.querySelector(".panel-pane.active").dataset.panelPane,
             "terminal",
-            "background diagnostics preserve the download terminal"
+            "chip refresh preserves the download terminal"
         );
         assert.equal(themeMessages[0].findLast((m) => m.type === "chipInfoStatus").state, "ready");
-        const channel = doc.getElementById("outputChannel");
-        channel.value = operationOutput.chipChannel;
-        channel.dispatchEvent(new view.window.Event("change"));
-        assert.ok(doc.getElementById("outputBody").textContent.includes(operationOutput.messages["diag.title"]));
-        assert.ok(doc.getElementById("outputBody").textContent.includes("Device ID=0x0009a413"));
+        assert.equal(doc.getElementById("outputChannel"), null, "no invented EmberProbe Output channels");
+        assert.equal(doc.getElementById("outputBody").textContent, "", "operations leave Output empty");
         await new Promise((resolve) => view.window.setTimeout(resolve, 4150));
         assert.ok(terminalBody.textContent.includes("→ 适配器时钟 2000 kHz"));
         assert.ok(terminalBody.textContent.includes("✓ 固件下载并校验成功"));
@@ -1142,6 +1332,7 @@ async function testServer() {
     testOperationLifecycle();
     testSvdCancellation();
     testConcurrentChipRefresh();
+    testDriverSelection();
     testDynamicOperationOutput();
     testCpuOwnershipAndStoppedIntent();
     testStopGenerationAndTaskCleanup();
@@ -1152,6 +1343,7 @@ async function testServer() {
     testDebugLatency();
     testDebugBusyBridge();
     await testOperationAvailabilityBridge();
+    await testDriverRendererBridge();
     await testShell();
     testThemeBridge();
     await testFrozenChartTheme();

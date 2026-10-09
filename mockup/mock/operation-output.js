@@ -2,7 +2,6 @@
 
 // Browser fixtures are generated from the actual download parser and status text.
 const { parseLine } = require("../../src/openocdRunner");
-const { buildChipInfoCommands } = require("../../src/chip/rules");
 const zh = require("../../src/i18n/zh");
 const { CONNECTION: connection, memoryAnalysis } = require("./sidebar-data");
 const flashSections = memoryAnalysis().result.regions.find((region) => region.name === "FLASH").sections;
@@ -40,25 +39,7 @@ const steps = flashLines.map(([at, raw]) => {
 module.exports = {
     connection,
     terminalName: "EmberProbe OpenOCD",
-    chipChannel: zh["diag.channelName"],
-    messages: Object.fromEntries(
-        Object.entries(zh).filter(
-            ([key]) =>
-                key === "msg.debugBusyForDownload" ||
-                /^(?:lw\.(?:connecting|connected)|sb\.(?:sampling|stopped)|live\.|cpu\.|svd\.|diag\.|chip\.)/.test(key)
-        )
-    ),
-    chipCommands: buildChipInfoCommands(connection.target),
-    chipRaw: [
-        "Open On-Chip Debugger 0.12.0",
-        "Info : " + probeBanner,
-        "Info : clock speed " + connection.clock,
-        "Info : Target voltage: 3.300000",
-        "0xe000ed00: 410fc241",
-        "0xe0042000: 0009a413",
-        "0x1fff7a22: 00000400",
-        "0x1fff7a10: 004d002e 51573038 38133236"
-    ],
+    messages: Object.fromEntries(Object.entries(zh).filter(([key]) => key.startsWith("probe."))),
     download: {
         header: [
             { cls: "title", text: "EmberProbe 固件下载" },

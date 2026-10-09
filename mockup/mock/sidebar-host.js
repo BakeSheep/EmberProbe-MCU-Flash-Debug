@@ -35,8 +35,6 @@
         var cpuState = "stopped";
         var cpuStartedAt = 0;
         var chipReadAt = Date.now() - 45000;
-        var lastSamplingLog = null;
-        var lastCpuLog = "";
         var lastSvd = { type: "svdStatus", state: "configured", path: data.SVD_PATH, key: "svd.configured" };
 
         function beginTask(name) {
@@ -64,15 +62,20 @@
             return true;
         }
 
-        function reject(cmd, type) {
+        function reject(cmd, type, settings) {
             var operation = cmd === "mcu-vscode.download" ? "download" : cmd;
-            send({
-                type: type || "commandError",
-                cmd: cmd,
-                key: coordinator.blockedKey(operation),
-                code: "PROBE_BUSY"
-            });
-            logStatus(coordinator.blockedKey(operation), null, "warn");
+            var key = coordinator.blockedKey(operation);
+            send(
+                Object.assign(
+                    {
+                        type: type || "commandError",
+                        cmd: cmd,
+                        key: key,
+                        code: key === "probe.driverUnsupported" ? "PROBE_DRIVER_UNSUPPORTED" : "PROBE_BUSY"
+                    },
+                    settings
+                )
+            );
         }
 
         function emitOutput(panel, lines, settings) {
@@ -86,23 +89,9 @@
             });
         }
 
-        function logStatus(key, params, cls, show) {
-            emitOutput("output", [{ text: messageText(key, params), cls: cls || "info" }], {
-                channel: "EmberProbe",
-                show: !!show
-            });
-        }
-
         function send(message) {
             if (stopped || !iframe.contentWindow) return;
-            if (message.type === "svdStatus") {
-                if (
-                    message.state !== lastSvd.state ||
-                    JSON.stringify(message.params) !== JSON.stringify(lastSvd.params)
-                )
-                    logStatus(message.key, message.params);
-                lastSvd = message;
-            }
+            if (message.type === "svdStatus") lastSvd = message;
             try {
                 iframe.contentWindow.postMessage(message, "*");
             } catch (error) {
@@ -137,6 +126,7 @@
         }
 
         function sendInitialState() {
+            sendDriverState();
             send({
                 type: "backendStatus",
                 backend: "openocd",
@@ -158,8 +148,14 @@
             send({ type: "chipInfo", info: currentChipInfo() });
             send({
                 type: "chipInfoStatus",
-                state: tasks.has("chipInfo") ? "reading" : "ready",
-                key: tasks.has("chipInfo") ? "chip.reading" : "chip.done"
+                state:
+                    coordinator.snapshot().driver === "segger" ? "error" : tasks.has("chipInfo") ? "reading" : "ready",
+                key:
+                    coordinator.snapshot().driver === "segger"
+                        ? "probe.driverUnsupported"
+                        : tasks.has("chipInfo")
+                          ? "chip.reading"
+                          : "chip.done"
             });
             sendDebugStatus();
             syncState();
@@ -169,7 +165,8 @@
                     task,
                     function () {
                         tasks.delete(task.name);
-                        if (!coordinator.snapshot().operation) send({ type: "initSuccess" });
+                        if (!coordinator.snapshot().operation && coordinator.snapshot().driver === "winusb")
+                            send({ type: "initSuccess" });
                     },
                     480
                 );
@@ -229,7 +226,6 @@
         function startSampling() {
             if (stopped) return;
             if (!coordinator.setIntent("sidebar", true)) return reject("liveToggle", "liveError");
-            emitOutput("output", [], { channel: "EmberProbe", show: true });
         }
 
         function sendSamples() {
@@ -262,57 +258,6 @@
                 info.lr = "";
             }
             return info;
-        }
-
-        function writeChipDiagnostics(info) {
-            var parsed = [
-                [messageText("diag.kvCore"), info.core],
-                [messageText("diag.kvCoreRev"), info.coreRevision],
-                ["Device ID", info.deviceId],
-                ["Revision ID", info.revId],
-                [messageText("diag.kvFlash"), info.flashSize],
-                ["UID", info.uid],
-                [messageText("diag.kvState"), info.targetState]
-            ]
-                .map(function (pair) {
-                    return pair.join("=");
-                })
-                .join("，");
-            var lines = [
-                messageText("diag.title"),
-                messageText("diag.time", { time: new Date(chipReadAt).toLocaleString() }),
-                messageText("diag.target", { target: output.connection.target }),
-                messageText("diag.timings", { config: 0, preflight: 0, read: 700, save: 0, total: 700 }),
-                messageText("diag.parsed", { content: parsed }),
-                "",
-                messageText("diag.commands")
-            ].concat(
-                output.chipCommands.map(function (command) {
-                    return "  -c " + command;
-                })
-            );
-            lines.push("", messageText("diag.rawOutput"));
-            var raw = output.chipRaw.concat([
-                "EP_KV name stm32f4x.cpu",
-                "EP_KV state " + info.targetState,
-                "EP_KV endian little",
-                "EP_KV transport swd"
-            ]);
-            if (info.targetState === "halted")
-                raw.push("pc (/32): " + info.pc, "sp (/32): " + info.sp, "lr (/32): " + info.lr);
-            emitOutput(
-                "output",
-                lines
-                    .concat(
-                        raw.map(function (line) {
-                            return "  " + line;
-                        })
-                    )
-                    .map(function (text) {
-                        return { text: text };
-                    }),
-                { channel: output.chipChannel, clear: true }
-            );
         }
 
         function sendDebugStatus() {
@@ -355,17 +300,6 @@
                         ? { i18nKey: coordinator.blockedKey("cpuLoad") }
                         : null
             });
-            var signature = ownsProbe ? cpuState + (measured ? ":" + workload.toFixed(1) : "") : "stopped";
-            if (signature !== lastCpuLog && (ownsProbe || (lastCpuLog && lastCpuLog !== "stopped"))) {
-                logStatus("cpu.state." + (ownsProbe ? cpuState : "stopped"));
-                if (measured)
-                    emitOutput(
-                        "output",
-                        [{ text: "CPU负载: " + workload.toFixed(1) + "%; 计算覆盖率: 96.5%", cls: "info" }],
-                        { channel: "EmberProbe" }
-                    );
-            }
-            lastCpuLog = signature;
         }
 
         function syncState() {
@@ -379,23 +313,6 @@
             sendDebugStatus();
             var status = coordinator.liveStatus("sidebar", 10);
             send(status);
-            var samplingSignature = [status.intentEnabled, status.canRead, status.source, status.key].join(":");
-            if (samplingSignature !== lastSamplingLog && (lastSamplingLog !== null || status.intentEnabled)) {
-                if (
-                    status.canRead &&
-                    lastSamplingLog &&
-                    lastSamplingLog.startsWith("false:") &&
-                    coordinator.snapshot().debug === "none" &&
-                    !coordinator.intent("livewatch")
-                ) {
-                    logStatus("lw.connecting");
-                    logStatus("lw.connected");
-                }
-                emitOutput("output", [{ text: "[侧栏] " + messageText(status.key), cls: "info" }], {
-                    channel: "EmberProbe"
-                });
-            }
-            lastSamplingLog = samplingSignature;
             if (liveTimer && !status.canRead) {
                 clearInterval(liveTimer);
                 liveTimer = null;
@@ -408,11 +325,11 @@
             var availability = {
                 download: coordinator.allowed("download"),
                 debug: coordinator.allowed("debugStart"),
-                chipRead: !tasks.has("chipInfo"),
+                chipRead: state.driver === "winusb" && !tasks.has("chipInfo"),
                 chipControl: !tasks.has("chipInfo") && coordinator.allowed("chipInfo"),
                 driver: coordinator.allowed("driver"),
                 backend: false,
-                live: liveRunning || !state.operation
+                live: liveRunning || (!state.operation && state.driver === "winusb")
             };
             send({
                 type: "mockOperationStatus",
@@ -425,6 +342,64 @@
 
         var unsubscribe = coordinator.subscribe(syncState);
 
+        function sendDriverState() {
+            var state = coordinator.snapshot();
+            send({ type: "probeDriverChoice", driver: state.driver });
+            send({ type: "probeDriverSwitch", busy: state.operation === "driver" });
+        }
+
+        function selectDriver(driver) {
+            if (!["winusb", "segger"].includes(driver)) {
+                sendDriverState();
+                send({
+                    type: "commandError",
+                    cmd: "selectProbeDriver",
+                    code: "PROBE_DRIVER_INVALID_CHOICE",
+                    error: "Invalid J-Link USB driver choice"
+                });
+                return;
+            }
+            if (!coordinator.allowed("driver")) {
+                sendDriverState();
+                return reject("selectProbeDriver");
+            }
+            if (coordinator.snapshot().driver === driver) {
+                sendDriverState();
+                send({ type: "commandSuccess", cmd: "selectProbeDriver" });
+                return;
+            }
+            coordinator.acquire("driver");
+            var task = beginTask("driver");
+            sendDriverState();
+            send({ type: "probeDriverStatus", state: driver === "winusb" ? "installing" : "restoring" });
+            later(
+                task,
+                function () {
+                    tasks.delete(task.name);
+                    coordinator.confirmDriver(driver);
+                    coordinator.release("driver");
+                    sendDriverState();
+                    send({ type: "commandSuccess", cmd: "selectProbeDriver" });
+                    send({ type: "probeDriverStatus", state: driver === "winusb" ? "ready" : "restored" });
+                    if (driver === "segger") {
+                        send({
+                            type: "probeDriverStatus",
+                            state: "error",
+                            message: messageText("probe.driverUnsupported")
+                        });
+                        send({
+                            type: "chipInfoStatus",
+                            state: "error",
+                            key: "probe.driverUnsupported",
+                            code: "PROBE_DRIVER_UNSUPPORTED"
+                        });
+                        notify({ action: "toast", icon: "warning", text: messageText("probe.winusbRequired") });
+                    } else send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+                },
+                900
+            );
+        }
+
         function startCpu() {
             if (!coordinator.allowed("cpuLoad")) {
                 sendCpuStatus();
@@ -433,7 +408,6 @@
             cpuState = "checking";
             cpuStartedAt = Date.now();
             coordinator.acquire("cpuLoad");
-            emitOutput("output", [], { channel: "EmberProbe", show: true });
             var task = beginTask("cpuLoad");
             later(
                 task,
@@ -601,22 +575,28 @@
                     handleExecute(message.cmd);
                     break;
                 case "readChipInfo": {
+                    if (coordinator.snapshot().driver !== "winusb") {
+                        reject("readChipInfo", "chipInfoStatus", { state: "error" });
+                        break;
+                    }
                     // Refresh the shared target snapshot without claiming another probe session.
                     var readTask = beginTask("chipInfo");
                     if (!readTask) break;
                     send({ type: "chipInfoStatus", state: "reading", key: "chip.reading" });
-                    logStatus("chip.reading");
                     syncState();
                     later(
                         readTask,
                         function () {
                             tasks.delete(readTask.name);
+                            if (coordinator.snapshot().driver !== "winusb") {
+                                reject("readChipInfo", "chipInfoStatus", { state: "error" });
+                                syncState();
+                                return;
+                            }
                             chipReadAt = Date.now();
                             var info = currentChipInfo();
                             send({ type: "chipInfo", info: info });
                             send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-                            writeChipDiagnostics(info);
-                            logStatus("chip.done");
                             syncState();
                             notify({ action: "toast", text: "芯片信息读取完成：STM32F407ZGTx" });
                         },
@@ -626,7 +606,7 @@
                 }
                 case "chipControl":
                     if (tasks.has("chipInfo") || !coordinator.allowed("chipInfo")) {
-                        send({ type: "chipInfoStatus", state: "error", key: coordinator.blockedKey("chipInfo") });
+                        reject("chipControl", "chipInfoStatus", { state: "error" });
                         break;
                     }
                     if (["pause", "continue", "reset"].indexOf(message.action) >= 0) {
@@ -791,25 +771,11 @@
                     send({ type: "commandError", cmd: "selectBackend", error: "当前演示工程使用 OpenOCD 后端" });
                     break;
                 case "selectProbeDriver": {
-                    if (!coordinator.acquire("driver")) return reject("selectProbeDriver");
-                    var driverTask = beginTask("driver");
-                    send({ type: "probeDriverChoice", driver: message.driver });
-                    send({ type: "probeDriverSwitch", busy: true });
-                    later(
-                        driverTask,
-                        function () {
-                            tasks.delete(driverTask.name);
-                            send({ type: "probeDriverSwitch", busy: false });
-                            coordinator.release("driver");
-                            send({ type: "probeDriverStatus", state: "ready" });
-                            send({ type: "commandSuccess", cmd: "selectProbeDriver" });
-                        },
-                        900
-                    );
+                    selectDriver(message.driver);
                     break;
                 }
                 case "cancelSvdDownload":
-                    if (cancelTask("svdDownload")) logStatus("svd.cancelled");
+                    cancelTask("svdDownload");
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
                     break;
                 default:

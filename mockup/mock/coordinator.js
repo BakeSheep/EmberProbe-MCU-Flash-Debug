@@ -8,13 +8,14 @@
         var intents = new Set();
         var operation = null;
         var debug = "none";
+        var driver = options.driver === "segger" ? "segger" : "winusb";
         var target = "running";
         var epoch = 1;
         var line = 103;
         var lastTick = -Infinity;
 
         function snapshot() {
-            return { operation: operation, debug: debug, target: target, epoch: epoch, line: line };
+            return { operation: operation, debug: debug, target: target, epoch: epoch, line: line, driver: driver };
         }
 
         function publish() {
@@ -25,6 +26,7 @@
 
         function allowed(name) {
             if (operation || debug !== "none") return false;
+            if (name !== "driver" && driver !== "winusb") return false;
             if (name === "cpuLoad" && target !== "running") return false;
             return ["download", "debugStart"].includes(name) || !intents.size;
         }
@@ -33,6 +35,8 @@
             if (operation === "cpuLoad") return "cpu.busy";
             if (operation === "download") return "live.downloadRunning";
             if (operation === "chipInfo") return "live.chipReading";
+            if (operation === "driver") return "cpu.probeBusy";
+            if (driver !== "winusb") return "probe.driverUnsupported";
             if (name === "cpuLoad" && target !== "running") return "cpu.state.paused";
             if (debug !== "none") return name === "download" ? "msg.debugBusyForDownload" : "chip.busyDebug";
             return intents.size ? "chip.busyLive" : "cpu.probeBusy";
@@ -57,18 +61,20 @@
 
         function liveStatus(consumer, hz) {
             var intent = intents.has(consumer);
-            var readable = intent && !operation;
+            var readable = intent && !operation && driver === "winusb";
             var paused = debug === "paused";
             var source = paused ? "dap" : readable ? "openocd" : "none";
             var key = operation
                 ? blockedKey("sampling")
-                : readable
-                  ? paused
-                      ? "live.dapReady"
-                      : debug === "running"
-                        ? "live.debugRuntimeSampling"
-                        : "sb.sampling"
-                  : "sb.stopped";
+                : driver !== "winusb"
+                  ? "probe.driverUnsupported"
+                  : readable
+                    ? paused
+                        ? "live.dapReady"
+                        : debug === "running"
+                          ? "live.debugRuntimeSampling"
+                          : "sb.sampling"
+                    : "sb.stopped";
             return {
                 type: "liveStatus",
                 running: intent,
@@ -94,7 +100,7 @@
         }
 
         function setTarget(next, settings) {
-            if (!["running", "halted"].includes(next) || operation) return false;
+            if (!["running", "halted"].includes(next) || operation || driver !== "winusb") return false;
             settings = settings || {};
             target = next;
             if (settings.reset && typeof simulator.reset === "function") simulator.reset();
@@ -119,6 +125,7 @@
                 };
             },
             setIntent: function (consumer, enabled) {
+                if (enabled && driver !== "winusb") return false;
                 if (enabled && operation && !intents.has(consumer)) return false;
                 if (enabled) intents.add(consumer);
                 else intents.delete(consumer);
@@ -129,6 +136,15 @@
                 return intents.has(consumer);
             },
             setTarget: setTarget,
+            confirmDriver: function (next) {
+                if (operation !== "driver" || !["winusb", "segger"].includes(next)) return false;
+                if (driver !== next) {
+                    driver = next;
+                    epoch += 1;
+                    publish();
+                }
+                return true;
+            },
             setOperationTarget: function (owner, next) {
                 if (operation !== owner || !["running", "halted"].includes(next) || target === next) return false;
                 target = next;
