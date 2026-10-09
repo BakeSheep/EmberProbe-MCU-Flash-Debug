@@ -25,7 +25,8 @@ const { runTests } = require("@vscode/test-electron");
                 "--skip-release-notes"
             ],
             extensionTestsEnv: {
-                EMBERPROBE_E2E: "1"
+                EMBERPROBE_E2E: "1",
+                EMBERPROBE_E2E_NODE_PATH: process.execPath
             }
         });
     } catch (error) {

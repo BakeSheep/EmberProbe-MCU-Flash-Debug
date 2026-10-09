@@ -8,11 +8,7 @@ const vscode = require("vscode");
 const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
 const { validateDebugConfiguration } = require("./services/debugConfiguration");
-const {
-    DEBUG_TYPE: PROBE_RS_DEBUG_TYPE,
-    probeRsSettings,
-    resolveProbeRsDebugConfiguration
-} = require("./services/probeRsConfiguration");
+const { DEBUG_TYPE: PROBE_RS_DEBUG_TYPE } = require("./services/probeRsConfiguration");
 let activeProvider = null;
 
 function activate(context) {
@@ -81,29 +77,24 @@ function activate(context) {
             }
         }),
         vscode.debug.registerDebugConfigurationProvider(PROBE_RS_DEBUG_TYPE, {
-            resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+            async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
                 if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
-                return resolveProbeRsDebugConfiguration(
-                    config,
-                    folder,
-                    context.workspaceState.get("mcu.elfPath"),
-                    probeRsSettings(vscode)
-                );
+                return provider.prepareProbeRsDebug(folder, config);
             }
         }),
         vscode.debug.registerDebugAdapterDescriptorFactory(PROBE_RS_DEBUG_TYPE, {
-            createDebugAdapterDescriptor() {
-                return new vscode.DebugAdapterExecutable(probeRsSettings(vscode).executable, ["dap-server"]);
+            createDebugAdapterDescriptor(session) {
+                return new vscode.DebugAdapterInlineImplementation(provider.createProbeRsDebugAdapter(session));
             }
         }),
         ...["emberprobe", "cortex-debug", "probe-rs-debug", PROBE_RS_DEBUG_TYPE].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
             createDebugAdapterTracker(session) {
-                provider.handleDebugSessionStart(session);
+                if (session.type !== PROBE_RS_DEBUG_TYPE) provider.handleDebugSessionStart(session);
                 return {
                     onWillReceiveMessage: message => provider.handleDebugAdapterRequest(session, message),
                     onDidSendMessage: message => provider.handleDebugAdapterMessage(session, message),
                     onError: error => console.error("Debug adapter error:", error),
-                    onExit: () => provider.handleDebugAdapterExit(session)?.catch(error => {
+                    onExit: () => session.type !== PROBE_RS_DEBUG_TYPE && provider.handleDebugAdapterExit(session)?.catch(error => {
                         console.error("Unable to clean up after debug adapter exit:", error);
                     })
                 };

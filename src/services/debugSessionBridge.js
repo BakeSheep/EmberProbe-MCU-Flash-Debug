@@ -49,6 +49,7 @@ class DebugSessionBridge {
         this.onError = options.onError || (() => {});
         this.onTargetState = options.onTargetState || (() => {});
         this.beforePausedRead = options.beforePausedRead || (async () => {});
+        this.validateReadPlan = options.validateReadPlan || (() => {});
         this.allSessions = new Map();
         this.sessions = new Map();
         this.sessionContexts = options.trackSessions === false ? null : new Map();
@@ -335,6 +336,7 @@ class DebugSessionBridge {
             if (context) {
                 for (const field of [
                     "paused",
+                    "probeRsReady",
                     "stopReason",
                     "threadId",
                     "transitionKind",
@@ -343,12 +345,13 @@ class DebugSessionBridge {
                 ])
                     this[field] = context[field];
                 this.capabilities = { ...context.capabilities };
-                this.snapshotPending = this.intentEnabled && this.paused;
+                this.snapshotPending = this.intentEnabled && (this.paused || this.runtimeProbeRs);
             }
             this._invalidate();
         }
         this.onStatus(this.status());
         this._notifyState();
+        if (changed) this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
     }
 
     setIntent(enabled) {
@@ -440,7 +443,7 @@ class DebugSessionBridge {
             message.success !== false
         ) {
             this.probeRsReady = true;
-            this.snapshotPending = this.intentEnabled && !this.paused;
+            this.snapshotPending = this.intentEnabled;
             this.onStatus(this.status());
             this._schedule(0);
         }
@@ -905,6 +908,7 @@ class DebugSessionBridge {
             throw Object.assign(new Error("Running probe-rs reads require fixed-address globals"), {
                 code: "LIVE_RUNTIME_LAYOUT_UNSUPPORTED"
             });
+        this.validateReadPlan(items, session);
         if (!runtime) await this.beforePausedRead();
         if (session !== this.activeSession || (!this.paused && !runtime) || this.transitionKind)
             throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
@@ -919,6 +923,7 @@ class DebugSessionBridge {
                 throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
                     code: "DEBUG_STATE_CHANGED"
                 });
+            this.validateReadPlan(items, session);
         };
         const fixed = items.filter((item) => !item.runtimeLayout);
         const groups = mergeReadPlan(fixed);
@@ -948,15 +953,9 @@ class DebugSessionBridge {
             }
         }
         for (const group of groups) {
-            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
-                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
+            guard();
             const data = await this._readBlock(session, group.address, group.size);
-            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
-                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
+            guard();
             for (const item of group.items) {
                 const offset = item.address - group.address;
                 const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
@@ -1029,7 +1028,7 @@ class DebugSessionBridge {
         const epoch = this.epoch;
         const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
         try {
-            const before = await this.read(plan, session);
+            const before = await this.read(plan, session, epoch);
             const writes = [];
             for (const item of items) {
                 const previous = writes[writes.length - 1];
@@ -1049,6 +1048,7 @@ class DebugSessionBridge {
             for (const item of writes) {
                 if (epoch !== this.epoch || !this.canWrite)
                     throw new Error("Target state changed while a DAP write was in progress");
+                this.validateReadPlan(plan, session);
                 const address = Number(item.address);
                 if (this.runtimeProbeRs) {
                     if (![1, 2, 4].includes(item.bytes.length) || address % item.bytes.length !== 0)
@@ -1073,6 +1073,7 @@ class DebugSessionBridge {
                         : await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
                 if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
                     throw new Error("Target state changed before the DAP write could start");
+                this.validateReadPlan(plan, session);
                 if (alignedBytes.length !== alignedEnd - alignedStart)
                     throw new Error(`DAP could not read adjacent bytes before writing ${item.name}`);
                 alignedBytes.set(item.bytes, address - alignedStart);
@@ -1090,7 +1091,7 @@ class DebugSessionBridge {
             }
             if (epoch !== this.epoch || !this.canWrite)
                 throw new Error("Target state changed before DAP write verification");
-            const after = await this.read(plan, session);
+            const after = await this.read(plan, session, epoch);
             if (epoch === this.epoch && (this.paused || this.runtimeProbeRs)) {
                 this.snapshotReady = true;
                 this.snapshotPending = this.runtimeProbeRs;

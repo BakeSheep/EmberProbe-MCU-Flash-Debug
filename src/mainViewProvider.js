@@ -8,6 +8,7 @@ const {
 const { probeRsSettings, resolveProbeRsDebugConfiguration } = require("./services/probeRsConfiguration");
 const { downloadWithProbeRs } = require("./services/probeRsFlashService");
 const { readProbeRsChipInfo } = require("./services/probeRsChipInfo");
+const { ProbeRsDebugAdapter } = require("./services/probeRsDebugAdapter");
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
 const { SharedDebugGroup } = require("./services/sharedDebugGroup");
 const { resolvePrettyPrinting, configuredPrettyPrintingMode } = require("./services/prettyPrinting");
@@ -142,6 +143,7 @@ class MainViewProvider {
         void this._externalDebug.releaseIfDisabled().catch(console.error);
         this._recentProgress = [];
         this._probeRsRttChannels = new Map();
+        this._probeRsAdapters = new Map();
         this._liveSession = null;
         this._managedDebugServer = null;
         this._managedDebugGroup = null;
@@ -189,13 +191,8 @@ class MainViewProvider {
         this._agentSamplingStatus = null;
         this._uiWritePromise = Promise.resolve();
         this._debugBridge = new DebugSessionBridge({
-            getReadPlan: () => {
-                const active = this._activeReadPlan();
-                if (!isProbeRsDebugSession(this._debugBridge.activeSession) || this._debugBridge.paused) return active;
-                const plan = this._runtimeRamPlan(active, true).allowed;
-                liveWatch.validateManagedReadPlan(plan);
-                return plan;
-            },
+            getReadPlan: () => this._activeReadPlan(),
+            validateReadPlan: (items, session) => this._validateDebugReadPlan(items, session),
             getIntervalMs: () =>
                 isProbeRsDebugSession(this._debugBridge.activeSession)
                     ? this._liveIntervalMs
@@ -441,7 +438,7 @@ class MainViewProvider {
         return this._probeCoordinator?.isActive("liveStart") ?? false;
     }
     get _chipInfoRunning() {
-        return this._probeCoordinator?.isActive("chipInfo") ?? false;
+        return !!this._probeRsChipReading || (this._probeCoordinator?.isActive("chipInfo") ?? false);
     }
     get _agentReadRunning() {
         return this._probeCoordinator?.isActive("agentRead") ?? false;
@@ -583,29 +580,96 @@ class MainViewProvider {
     }
     async _startProbeRsDebug(request, resource, watchOnly = false, configuration = {}) {
         const { folder } = this._commandContext(resource);
-        const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        const debugConfig = resolveProbeRsDebugConfiguration(
-            { ...configuration, request, __emberprobeWatchOnly: watchOnly },
+        try {
+            const debugConfig = await this.prepareProbeRsDebug(folder, {
+                ...configuration,
+                request,
+                __emberprobeWatchOnly: watchOnly
+            });
+            return await vscode.debug.startDebugging(folder, debugConfig, { suppressDebugView: watchOnly });
+        } finally {
+            this._probeRsTransition = false;
+        }
+    }
+    async prepareProbeRsDebug(folder, configuration) {
+        if (vscode.workspace.isTrusted === false) throw new Error("Debugging requires a trusted workspace");
+        this._assertCpuIdle();
+        this._assertProbeDriverIdle();
+        this._externalDebug?.assertPhysicalAvailable();
+        const config = resolveProbeRsDebugConfiguration(
+            configuration,
             folder,
-            selectedElf,
+            this._context.workspaceState.get(CACHE_KEYS.elfPath),
             probeRsSettings(vscode)
         );
-        if (this._liveSession) await this.stopLiveWatch({ preserveIntent: watchOnly });
         const autoSession = this._debugBridge.activeSession;
-        if (!watchOnly && autoSession?.configuration?.__emberprobeWatchOnly) {
+        if (!config.__emberprobeWatchOnly && autoSession?.configuration?.__emberprobeWatchOnly) {
             this._probeRsTransition = true;
             try {
                 await vscode.debug.stopDebugging(autoSession);
                 await this._debugBridge.waitForState((state) => state.state === "none", 5000);
+                const adapter = this._probeRsAdapters.get(autoSession.id);
+                if (adapter && !(await adapter.waitForExit(5000)))
+                    throw Object.assign(new Error("The previous probe-rs process has not exited"), {
+                        code: "PROBE_EXIT_UNCONFIRMED"
+                    });
             } catch (error) {
                 this._probeRsTransition = false;
                 throw error;
             }
         }
+        if (this._liveSession || this._liveStopPromise || (this._liveStartPromise && !config.__emberprobeWatchOnly))
+            await this.stopLiveWatch({ preserveIntent: true });
         try {
-            return await vscode.debug.startDebugging(folder, debugConfig, { suppressDebugView: watchOnly });
+            this._assertProbeRsStartAvailable();
+            this._debugBridge.setWorkspace(folder);
+            return config;
         } finally {
             this._probeRsTransition = false;
+        }
+    }
+    _assertProbeRsStartAvailable(session = null) {
+        this._assertCpuIdle();
+        this._assertProbeDriverIdle();
+        this._externalDebug?.assertPhysicalAvailable();
+        if (this._shutdownPromise || this._liveConnectionClosing || this._liveExitUnconfirmed)
+            throw Object.assign(new Error("The previous probe connection has not closed"), {
+                code: "PROBE_EXIT_UNCONFIRMED"
+            });
+        const otherSession = [...this._debugBridge.allSessions.values()].some((other) => other.id !== session?.id);
+        const operation = this._probeCoordinator.firstActive();
+        if (otherSession || operation || this._foreignDebugPending || this._debugCommandPending)
+            throw Object.assign(new Error(`The debug probe is busy with ${operation || "another debugger"}`), {
+                code: "PROBE_BUSY",
+                activeOperation: operation || "debug",
+                retryable: true
+            });
+    }
+    createProbeRsDebugAdapter(session) {
+        this._assertProbeRsStartAvailable(session);
+        const emitter = new vscode.EventEmitter();
+        const adapter = new ProbeRsDebugAdapter({
+            coordinator: this._probeCoordinator,
+            executable: probeRsSettings(vscode).executable,
+            cwd: session.configuration.cwd,
+            emitter,
+            onError: (error) => console.error("probe-rs debug adapter:", error.message),
+            onExit: () => {
+                this._probeRsAdapters.delete(session.id);
+                void this.handleDebugAdapterExit(session)?.catch(console.error);
+            }
+        });
+        this._probeRsAdapters.set(session.id, adapter);
+        try {
+            adapter.start();
+            this.handleDebugSessionStart(session);
+            return adapter;
+        } catch (error) {
+            if (!adapter.process || adapter.exited) {
+                this._probeRsAdapters.delete(session.id);
+                emitter.dispose();
+            } else void adapter.stop();
+            throw error;
         }
     }
     async _downloadProbeRs(resource) {
@@ -1148,6 +1212,7 @@ class MainViewProvider {
     }
     _assertWriteSessionCurrent(session) {
         this._assertCpuIdle();
+        if (session === this._debugBridge) this._assertGroupedReadElf();
         const physical =
             session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
         if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
@@ -1581,6 +1646,12 @@ class MainViewProvider {
 
         return this._withAgentProbe(
             async ({ session, source, temporary }) => {
+                const debugSession = ["probe-rs-dap", "debug-session", "debug-running-openocd"].includes(source)
+                    ? this._debugBridge.activeSession
+                    : null;
+                const assertReadElf = () => {
+                    if (debugSession) this._assertGroupedReadElf(debugSession, elfResult.elf);
+                };
                 if (temporary && syncStatus)
                     this._postAgentSampling(true, "live.agentSampling", { current: 0, total: count });
                 const result = [];
@@ -1590,13 +1661,10 @@ class MainViewProvider {
                         throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
                             code: "AGENT_READ_CANCELLED"
                         });
-                    result.push(
-                        this._decodeAgentSample(
-                            plan,
-                            await session.readOnce(this._runtimeReadRanges(readItems, elfResult)),
-                            compositePlan
-                        )
-                    );
+                    assertReadElf();
+                    const samples = await session.readOnce(this._runtimeReadRanges(readItems, elfResult));
+                    assertReadElf();
+                    result.push(this._decodeAgentSample(plan, samples, compositePlan));
                     if (temporary && syncStatus)
                         this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
                     if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs);
@@ -2066,12 +2134,22 @@ class MainViewProvider {
         vscode.window?.showErrorMessage?.(timeoutMessage);
         await this._handleDebugStartupFailure(session, timeoutMessage);
     }
-    _assertGroupedReadElf() {
-        if (!this._managedDebugGroup && this._debugBridge.activeSession?.configuration?.servertype !== "external")
+    _assertGroupedReadElf(expectedSession = this._debugBridge.activeSession, requestedElf = null) {
+        if (
+            !this._managedDebugGroup &&
+            expectedSession?.configuration?.servertype !== "external" &&
+            !isProbeRsDebugSession(expectedSession)
+        )
             return;
         const session = this._debugBridge.assertUniqueSession();
+        if (session !== expectedSession)
+            throw Object.assign(new Error("The selected debugger changed before the memory operation"), {
+                code: "DEBUG_STATE_CHANGED"
+            });
         const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-        const sessionElf = session.configuration?.executable;
+        const sessionElf = isProbeRsDebugSession(session)
+            ? session.configuration?.coreConfigs?.[0]?.programBinary
+            : session.configuration?.executable;
         const normalize = (file) => {
             if (typeof file !== "string" || !file) return "";
             const resolved = path.resolve(
@@ -2080,10 +2158,19 @@ class MainViewProvider {
             );
             return process.platform === "win32" ? resolved.toLowerCase() : resolved;
         };
-        if (!selectedElf || !sessionElf || normalize(selectedElf) !== normalize(sessionElf))
+        if (
+            !selectedElf ||
+            !sessionElf ||
+            normalize(selectedElf) !== normalize(sessionElf) ||
+            (requestedElf && normalize(requestedElf.path || requestedElf) !== normalize(sessionElf))
+        )
             throw Object.assign(new Error("Select the active core's ELF before reading or writing sidebar variables"), {
                 code: "DEBUG_ELF_SESSION_MISMATCH"
             });
+    }
+    _validateDebugReadPlan(items, session) {
+        this._assertGroupedReadElf(session);
+        if (isProbeRsDebugSession(session) && !this._debugBridge.paused) this._runtimeRamPlan(items, true);
     }
     async _quiesceManagedRuntimeRead() {
         this._assertGroupedReadElf();
@@ -2526,6 +2613,8 @@ class MainViewProvider {
     }
     // 会话内写入执行核心：写前读取 → 写入 → 回读校验，Agent 与侧边栏 UI 写入共用。
     async _executeWritePlan(session, source, plan) {
+        if (session === this._debugBridge)
+            this._assertGroupedReadElf(this._debugBridge.activeSession, plan.elfResult.elf);
         const connection = this._sessionWriteConnection(session);
         if (!plan.connection || JSON.stringify(connection) !== JSON.stringify(writeConnectionIdentity(plan.connection)))
             throw Object.assign(new Error("The active connection changed after write confirmation"), {
@@ -2657,6 +2746,7 @@ class MainViewProvider {
         if (!session) {
             throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
         }
+        if (dapSession) this._assertGroupedReadElf();
         await this._prepareRequestedLayouts([{ name }]);
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
         plan.connection = this._sessionWriteConnection(session);
@@ -4662,6 +4752,8 @@ class MainViewProvider {
     async prepareForCortexDebug(folder, config) {
         this._assertCpuIdle();
         this._assertProbeDriverIdle();
+        if (this._probeRsAdapters?.size)
+            throw Object.assign(new Error("The debug probe is owned by a probe-rs session"), { code: "PROBE_BUSY" });
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
         const token = config?.__emberprobeManagedToken;
         if (token && token === this._managedDebugToken && this._managedDebugServer) return;
@@ -4808,11 +4900,17 @@ class MainViewProvider {
         this._debugBridge.detach(session);
         if (this._debugBridge.hasSession) return;
         this._debugReadPlanKey = "";
+        if (this._probeRsAdapters?.has(session.id)) return; // Session termination does not prove process exit.
         if (managed) await this._stopManagedDebugServer();
         await this.restoreSamplingAfterDebug();
     }
     handleDebugAdapterExit(session) {
         if (!session || !isSupportedDebugSession(session)) return;
+        if (isProbeRsDebugSession(session) && session.type === "emberprobe-probe-rs") {
+            const alreadyTerminated = this._terminatedDebugSessionIds.has(session.id);
+            const cleanup = this.handleDebugSessionTerminate(session);
+            return alreadyTerminated ? cleanup.then(() => this.restoreSamplingAfterDebug()) : cleanup;
+        }
         const managedStartup =
             this._debugLifecycle.pending &&
             (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session));
@@ -4822,6 +4920,7 @@ class MainViewProvider {
     async restoreSamplingAfterDebug() {
         if (this._shutdownPromise) return;
         if (this._probeRsTransition) return;
+        if (this._probeRsAdapters?.size) return;
         if (this._externalDebug?.held) return;
         if (this._managedDebugGroup?.members.size) return;
         if (this._debugBridge.hasAnySession) {
@@ -4885,6 +4984,7 @@ class MainViewProvider {
                 }
             }
             await this._stopManagedDebugServer();
+            await Promise.all([...this._probeRsAdapters.values()].map((adapter) => adapter.stop()));
             const stopped = this.stopLiveWatch();
             if (stopped) await stopped;
             await this._samplingArchive.dispose();
@@ -4928,15 +5028,56 @@ class MainViewProvider {
         this._assertCpuIdle();
         if (this._probeRsSelected() || isProbeRsDebugSession(this._debugBridge.activeSession)) {
             let lease;
+            let ownsRead = false;
             try {
-                lease = this._probeCoordinator.acquire("chipInfo");
-                this._postChipInfo({ state: "reading", key: "chip.reading" });
-                const settings = probeRsSettings(vscode);
+                this._assertProbeDriverIdle();
+                if (this._chipInfoRunning || this._probeRsChipReading)
+                    throw Object.assign(new Error("A chip information read is already in progress"), {
+                        code: "PROBE_BUSY"
+                    });
                 const session = this._debugBridge.activeSession;
-                if (session && !isProbeRsDebugSession(session))
+                if (this._debugBridge.hasAnySession && (!session || !isProbeRsDebugSession(session)))
                     throw Object.assign(new Error("Another debugger owns the probe"), { code: "PROBE_BUSY" });
+                const settings = session
+                    ? {
+                          chip: session.configuration.chip,
+                          probe: session.configuration.probe || "",
+                          speed: session.configuration.speed,
+                          cwd: session.configuration.cwd,
+                          protocol: session.configuration.wireProtocol || session.configuration.protocol || "SWD"
+                      }
+                    : probeRsSettings(vscode);
+                const epoch = this._debugBridge.stopEpoch;
+                const assertCurrent = () => {
+                    if (
+                        this._debugBridge.activeSession !== session ||
+                        this._debugBridge.conflict ||
+                        this._debugBridge.stopEpoch !== epoch ||
+                        this._debugBridge.transitionKind ||
+                        !this._debugBridge.capabilities.read ||
+                        (!this._debugBridge.paused && !this._debugBridge.runtimeProbeRs)
+                    )
+                        throw Object.assign(new Error("The debugger changed during the chip information read"), {
+                            code: "DEBUG_STATE_CHANGED"
+                        });
+                };
+                if (session) assertCurrent();
+                else lease = this._probeCoordinator.acquire("chipInfo");
+                this._probeRsChipReading = true;
+                ownsRead = true;
+                this._postChipInfo({ state: "reading", key: "chip.reading" });
                 const info = await readProbeRsChipInfo(settings, {
-                    session,
+                    session: session
+                        ? {
+                              customRequest: async (command, args) => {
+                                  assertCurrent();
+                                  const response = await session.customRequest(command, args);
+                                  assertCurrent();
+                                  return response;
+                              }
+                          }
+                        : null,
+                    protocol: settings.protocol,
                     state: session ? (this._debugBridge.paused ? "halted" : "running") : ""
                 });
                 this._chipInfoService.info = info;
@@ -4953,6 +5094,7 @@ class MainViewProvider {
                 if (forAgent) throw error;
                 return null;
             } finally {
+                if (ownsRead) this._probeRsChipReading = false;
                 lease?.release();
             }
         }
