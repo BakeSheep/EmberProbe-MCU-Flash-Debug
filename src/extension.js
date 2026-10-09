@@ -8,6 +8,11 @@ const vscode = require("vscode");
 const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
 const { validateDebugConfiguration } = require("./services/debugConfiguration");
+const {
+    DEBUG_TYPE: PROBE_RS_DEBUG_TYPE,
+    probeRsSettings,
+    resolveProbeRsDebugConfiguration
+} = require("./services/probeRsConfiguration");
 let activeProvider = null;
 
 function activate(context) {
@@ -32,13 +37,17 @@ function activate(context) {
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
-            if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.connectionConfigurationChanged();
+            if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz", "backend", "probeRsPath", "probeRsChip", "probeRsProbe"].some(key => event.affectsConfiguration("emberprobe." + key))) {
+                provider.connectionConfigurationChanged();
+                provider.updateView().catch(console.error);
+            }
             if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
-                provider.refreshOpenOcdStatus(true);
             }
+            if (["backend", "openocdPath", "probeRsPath"].some(key => event.affectsConfiguration("emberprobe." + key)))
+                provider.refreshBackendStatus(true);
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             await provider._cpuLoadService.stop("workspace-changed").catch(() => {});
@@ -71,7 +80,23 @@ function activate(context) {
                 return await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated) || undefined;
             }
         }),
-        ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
+        vscode.debug.registerDebugConfigurationProvider(PROBE_RS_DEBUG_TYPE, {
+            resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+                if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
+                return resolveProbeRsDebugConfiguration(
+                    config,
+                    folder,
+                    context.workspaceState.get("mcu.elfPath"),
+                    probeRsSettings(vscode)
+                );
+            }
+        }),
+        vscode.debug.registerDebugAdapterDescriptorFactory(PROBE_RS_DEBUG_TYPE, {
+            createDebugAdapterDescriptor() {
+                return new vscode.DebugAdapterExecutable(probeRsSettings(vscode).executable, ["dap-server"]);
+            }
+        }),
+        ...["emberprobe", "cortex-debug", "probe-rs-debug", PROBE_RS_DEBUG_TYPE].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
             createDebugAdapterTracker(session) {
                 provider.handleDebugSessionStart(session);
                 return {
@@ -96,7 +121,7 @@ function activate(context) {
         })
     );
 
-    provider.refreshOpenOcdStatus(false);
+    provider.refreshBackendStatus(false);
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     if (process.env.EMBERPROBE_E2E === "1") {

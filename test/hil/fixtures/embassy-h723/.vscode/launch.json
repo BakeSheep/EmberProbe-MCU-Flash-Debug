@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "emberprobe-probe-rs",
+      "request": "attach",
+      "name": "H723 smoke: attach + RTT",
+      "chip": "STM32H723VGTx",
+      "rttEnabled": true,
+      "rttChannelFormats": [{ "channelNumber": 0, "dataFormat": "Defmt" }]
+    }
+  ]
+}

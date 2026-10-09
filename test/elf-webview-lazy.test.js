@@ -123,6 +123,19 @@ try {
     sidebar.document.querySelector("#availableVars .av-write").click();
     assert.strictEqual(sidebar.document.querySelector(".write-slider").max, "1");
     assert.strictEqual(sidebar.document.querySelector(".write-row .value-type").textContent, "bool");
+    sidebar.send({ type: "availableVariablesReset", version: "rust-name" });
+    sidebar.send({
+        type: "availableVariablesChunk",
+        version: "rust-name",
+        symbols: [{ name: "_RNvRust4GAIN", address: 0x20000010, size: 4 }]
+    });
+    sidebar.send({
+        type: "availableVariableTypes",
+        version: "rust-name",
+        symbols: [{ name: "_RNvRust4GAIN", displayName: "rust::GAIN", typeName: "Atomic<u32>", watchType: "u32" }]
+    });
+    sidebar.send({ type: "availableTypesDone", version: "rust-name" });
+    assert.match(sidebar.document.getElementById("availableVars").textContent, /rust::GAIN/);
     sidebar.assertHealthy();
 } finally {
     sidebar.close();

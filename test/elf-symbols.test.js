@@ -96,8 +96,12 @@ assert.strictEqual(encodingToWatchType(0x08, 1), "u8"); // unsigned char
 // DWARF：LEB128 解码
 let leb = { p: 0 };
 assert.strictEqual(readULEB(Buffer.from([0xe5, 0x8e, 0x26]), leb), 624485);
+leb.p = 0;
+assert.strictEqual(readULEB(Buffer.from([...Array(8).fill(0x80), 0x01]), leb), 2 ** 56);
 leb = { p: 0 };
 assert.strictEqual(readSLEB(Buffer.from([0x9b, 0xf1, 0x59]), leb), -624485);
+leb.p = 0;
+assert.strictEqual(readSLEB(Buffer.from([...Array(9).fill(0x80), 0x7f]), leb), -(2 ** 63));
 // DWARF：无调试段时优雅降级为空表
 assert.strictEqual(parseDwarfVariableTypes(buildElf()).size, 0);
 

@@ -1,0 +1,31 @@
+[package]
+name = "emberprobe-embassy-h723-smoke"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "emberprobe-embassy-h723-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32h723vg", "memory-x", "time-driver-tim5"] }
+embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
+defmt = "1.1"
+defmt-rtt = "1.2"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+[profile.dev]
+panic = "abort"
+debug = 2
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+debug = 2
+opt-level = "s"

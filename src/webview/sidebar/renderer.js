@@ -2,9 +2,9 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     dot = document.getElementById("statusDot"),
     text = document.getElementById("statusText"),
     log = document.getElementById("openocdLog"),
-    openocdCard = document.getElementById("openocdCard"),
-    openocdMessage = document.getElementById("openocdMessage"),
-    openocdInstall = document.getElementById("openocdInstall"),
+    backendCard = document.getElementById("backendCard"),
+    backendMessage = document.getElementById("backendMessage"),
+    backendInstall = document.getElementById("backendInstall"),
     liveBox = document.getElementById("liveValues"),
     liveCard = liveBox && liveBox.closest(".live-box"),
     writeBox = document.getElementById("writeValues"),
@@ -48,6 +48,9 @@ let sideWatch = [],
     variableWarnings = [],
     lastSkill = { state: "checking" },
     uiState = api && api.getState ? api.getState() || {} : {};
+function variableLabel(name) {
+    return availableByName.get(name)?.displayName || name;
+}
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     compCells = Object.create(null),
     avExpanded = Object.create(null),
@@ -78,7 +81,7 @@ function t(k, p) {
 function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
-var lastOpenocd = { state: "checking" },
+var lastBackend = null,
     lastLive = { running: false, key: "sb.waiting" },
     lastChip = { state: "idle" },
     lastSvd = { state: "idle", key: "svd.notConfigured" },
@@ -222,7 +225,7 @@ function rerenderDynamic() {
     applyFolds();
     renderSkillStatus(lastSkill);
     liveStatus(lastLive);
-    openocdStatus(lastOpenocd);
+    backendStatus(lastBackend);
     chipStatus(lastChip);
     svdStatus(lastSvd);
     peripheralView?.render();
@@ -1582,21 +1585,22 @@ function liveStatus(m) {
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
     if (wasWrite !== liveCanWrite) updateWriteAvailability();
 }
-function openocdStatus(m) {
-    m = m || {};
-    lastOpenocd = m;
+function backendStatus(m) {
+    if (!m) return;
+    if (m.backend && m.backend !== window.__BACKEND__) return;
+    lastBackend = m;
     uiState.sidebarStatus ||= {};
     const { state, key, params, message, canInstall } = m;
-    uiState.sidebarStatus.openocd = { state, key, params, message, canInstall };
+    uiState.sidebarStatus.backend = { backend: window.__BACKEND__, state, key, params, message, canInstall };
     api?.setState?.(uiState);
     const k = m.state || "checking",
         busy = k === "checking" || k === "installing";
-    openocdCard.className = "openocd-card " + (k === "incompatible" ? "error" : k);
-    openocdCard.style.display = k === "ready" ? "none" : "";
-    openocdCard.hidden = k === "ready";
-    openocdMessage.textContent = msgText(m) || t("oc.checking");
-    openocdInstall.style.display = m.canInstall === false ? "none" : "";
-    openocdCard.querySelectorAll("button").forEach((b) => (b.disabled = busy));
+    backendCard.className = "backend-card " + (k === "incompatible" ? "error" : k);
+    backendCard.style.display = k === "ready" ? "none" : "";
+    backendCard.hidden = k === "ready";
+    backendMessage.textContent = msgText(m) || t(window.__BACKEND__ === "probe-rs" ? "pr.checking" : "oc.checking");
+    backendInstall.style.display = window.__BACKEND__ === "probe-rs" || m.canInstall === false ? "none" : "";
+    backendCard.querySelectorAll("button").forEach((b) => (b.disabled = busy));
 }
 function renderSkillStatus(m) {
     lastSkill = m || lastSkill;
@@ -1788,12 +1792,16 @@ liveToggle.onclick = () => {
 for (const id of ["peripheralRefresh", "peripheralFormat", "rtosRefresh"]) {
     document.getElementById(id)?.addEventListener("click", revealIncompleteConfiguration);
 }
-document.getElementById("openocdInstall").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "install" });
-document.getElementById("openocdSelect").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "select" });
-document.getElementById("openocdCheck").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "check" });
+document.getElementById("backendSelect").onchange = (event) => {
+    backendCard.style.display = "none";
+    api?.postMessage({ type: "selectBackend", backend: event.target.value });
+};
+document.getElementById("backendInstall").onclick = () =>
+    api && api.postMessage({ type: "backendAction", action: "install" });
+document.getElementById("backendSelectPath").onclick = () =>
+    api && api.postMessage({ type: "backendAction", action: "select" });
+document.getElementById("backendCheck").onclick = () =>
+    api && api.postMessage({ type: "backendAction", action: "check" });
 document.getElementById("varSearch").oninput = () => {
     availableBox.scrollTop = 0;
     renderAvailable();
@@ -1873,8 +1881,8 @@ window.EmberProbeMessages.connect(window, {
     skillStatus: function (m) {
         renderSkillStatus(m);
     },
-    openocdStatus: function (m) {
-        openocdStatus(m);
+    backendStatus: function (m) {
+        backendStatus(m);
     },
     openocdProgress: function (m) {
         showProbeDiagnostic(m);
@@ -2097,7 +2105,7 @@ window.EmberProbeMessages.connect(window, {
     }
 });
 updateLangToggle();
-if (uiState.sidebarStatus?.openocd) openocdStatus(uiState.sidebarStatus.openocd);
+if (uiState.sidebarStatus?.backend?.backend === window.__BACKEND__) backendStatus(uiState.sidebarStatus.backend);
 renderSkillStatus(uiState.sidebarStatus?.skill || lastSkill);
 if (langToggle) langToggle.onclick = () => setLang(LANG === "zh" ? "en" : "zh", true);
 if (api) api.postMessage({ type: "initCheck" });

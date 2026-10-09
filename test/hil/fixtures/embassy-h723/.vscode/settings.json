@@ -1,0 +1,5 @@
+{
+  "emberprobe.backend": "probe-rs",
+  "emberprobe.probeRsChip": "STM32H723VGTx",
+  "emberprobe.sampleFrequencyHz": 10
+}

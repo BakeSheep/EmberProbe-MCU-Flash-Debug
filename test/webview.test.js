@@ -18,7 +18,8 @@ try {
     for (const id of [
         "liveValues",
         "liveToggle",
-        "openocdCard",
+        "backendCard",
+        "backendSelect",
         "skillStatus",
         "availableVars",
         "chipRead",
@@ -50,16 +51,21 @@ try {
     assert.strictEqual(sidebar.document.getElementById("probeDiagnosticText").querySelector("script"), null);
     click("probeDiagnosticCopy");
     assert.deepStrictEqual(JSON.parse(sidebar.messages.at(-1).text), diagnostic);
-    click("openocdSelect");
-    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });
+    sidebar.send({ type: "backendStatus", backend: "openocd", state: "missing", key: "oc.missing" });
+    click("backendSelectPath");
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "backendAction", action: "select" });
     click("chipRead");
     assert.strictEqual(sidebar.messages.at(-1).type, "readChipInfo");
     sidebar.send({ type: "chipInfo", info: { core: "Cortex-M4", uid: "1234", targetState: "halted" } });
     assert.ok(sidebar.document.getElementById("chipBody").textContent.includes("Cortex-M4"));
     sidebar.document.querySelector(".chip-copy").click();
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "copyText", text: "1234" });
-    sidebar.send({ type: "openocdStatus", state: "incompatible", message: "unsupported" });
-    assert.ok(sidebar.document.getElementById("openocdCard").classList.contains("error"));
+    sidebar.send({ type: "backendStatus", backend: "openocd", state: "incompatible", message: "unsupported" });
+    assert.ok(sidebar.document.getElementById("backendCard").classList.contains("error"));
+    const backendSelect = sidebar.document.getElementById("backendSelect");
+    backendSelect.value = "probe-rs";
+    backendSelect.dispatchEvent(new sidebar.window.Event("change"));
+    assert.deepStrictEqual(sidebar.messages.at(-1), { type: "selectBackend", backend: "probe-rs" });
     const card = sidebar.document.getElementById("liveValues").closest(".live-box");
     for (const status of [
         { source: "dap", snapshotReady: false, mode: "debug-running-waiting", canRead: false },
@@ -136,6 +142,36 @@ try {
     jlinkSidebar.assertHealthy();
 } finally {
     jlinkSidebar.close();
+}
+const probeRsSidebar = render(
+    getModernWebviewContent({ backend: "probe-rs", debugger: "probe-rs", mcu: "STM32H723VGTx" }, "en")
+);
+try {
+    probeRsSidebar.send({ type: "backendStatus", backend: "openocd", state: "error", message: "OpenOCD is missing" });
+    assert.equal(probeRsSidebar.document.getElementById("backendMessage").textContent, "Checking probe-rs…");
+    probeRsSidebar.send({ type: "backendStatus", backend: "probe-rs", state: "missing", key: "pr.missing" });
+    assert.match(probeRsSidebar.document.getElementById("backendMessage").textContent, /probe-rs not found/);
+    assert.equal(probeRsSidebar.document.getElementById("backendInstall").style.display, "none");
+    probeRsSidebar.document.getElementById("chipRead").click();
+    assert.equal(probeRsSidebar.messages.at(-1).type, "readChipInfo");
+    probeRsSidebar.send({
+        type: "chipInfo",
+        info: {
+            chip: "STM32H723VGTx",
+            core: "Cortex-M7",
+            deviceId: "0x483",
+            flashSize: "1024 KiB",
+            uid: "0x001D00413134510438373332",
+            controlsAvailable: false
+        }
+    });
+    const chipBody = probeRsSidebar.document.getElementById("chipBody");
+    assert.match(chipBody.textContent, /Cortex-M7/);
+    assert.match(chipBody.textContent, /0x483/);
+    assert.match(chipBody.textContent, /1024 KiB/);
+    assert.equal(chipBody.querySelectorAll(".chip-control").length, 0);
+} finally {
+    probeRsSidebar.close();
 }
 const graph = render(getLiveWatchContent({ maxSamples: -10, intervalMs: 1, panelId: 2 }, "en"));
 try {

@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增独立 MC02 Embassy 回归仓库，真机验证自动 LiveWatch、全局整数/浮点调参、历史波形、重连和 RTT；兼容新版图表的 `chartValues` 采样消息。
+- Add independent MC02 Embassy hardware regression for automatic LiveWatch, integer/float global tuning, waveform history, reconnect and RTT; adapt the recorder to `chartValues` events.
+- 侧栏新增调试后端选择与独立环境检查；probe-rs 模式不再探测或要求 OpenOCD，自动检测也不再使用 OpenOCD 专用探针配置。
+- Add a backend selector and independent environment checks; probe-rs mode no longer probes or requires OpenOCD, including during automatic detection.
+- 新增 probe-rs 调试与烧录后端，支持 Embassy/Rust 全局变量的运行中波形、LiveWatch 与标量写入；识别 Cargo 无扩展名 ELF 和 Rust DWARF 链接名。
+- Add a probe-rs debugging and flashing backend with running-target charts, LiveWatch, and scalar writes for Embassy/Rust globals; discover extensionless Cargo ELFs and resolve Rust DWARF linkage names.
+- 兼容 Rust DWARF 的 64 位 LEB128 编码；增加独立 STM32H723 Embassy 真机测试程序及 probe-rs / VS Code 验收脚本。
+- Parse 64-bit LEB128 values in Rust DWARF; add an isolated STM32H723 Embassy smoke app and probe-rs / VS Code hardware acceptance runners.
+- 修复 probe-rs 模式下“读取芯片信息”仍依赖 OpenOCD 配置的问题；支持复用调试会话读取 STM32H7 芯片标识。
+- Fix chip information reads in probe-rs mode; reuse the active debug session to read STM32H7 identity registers.
+
 ## [0.8.2] - 2026-10-08
 
 - 支持 CMSIS-DAP / DAPLink 与 ST-Link 探针选择，统一探针类型和序列号匹配，改进连接预检及下载错误诊断。
@@ -168,10 +179,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 侧栏显示带正式版或 beta 标识的版本号；清理过期文档及失效引用。
 - 修复 Windows 采样计时器约 15.6 ms 粒度导致的目标与实测频率差距；仅采样期间申请高精度计时，并在改频后重置实测速率窗口。
 - 实时查看改用采样频率（Hz）设置，默认 30 Hz 并保存到工作区；调整频率后根据探针读耗时快速采用安全间隔。
-- 修复 Agent 烧录可执行文件覆盖路径，统一 ELF 64 MiB 有界读取与授权快照。
-- 修复 SVD 跨作用域继承和写入约束校验；通过 Worker 与展开预算限制解析资源。
-- 修复 ELF 并发加载误报，合并外设批量读取，拆分 Agent 路由并增加安全模块覆盖率门禁。
-
 ## [0.7.13] - 2026-09-26
 
 - 修复 DWARF 结构体、联合体及 typedef 复合变量的识别与按需展开，恢复侧栏和实时监视中的成员浏览及已选变量。

@@ -8,7 +8,11 @@ const { normalizeDebugImages } = require("./debugImages");
 const { normalizeExternalConfiguration } = require("./externalDebugService");
 
 function isSupportedDebugSession(session) {
-    return ["emberprobe", "cortex-debug"].includes(session?.type);
+    return ["emberprobe", "cortex-debug", "probe-rs-debug", "emberprobe-probe-rs"].includes(session?.type);
+}
+
+function isProbeRsDebugSession(session) {
+    return ["probe-rs-debug", "emberprobe-probe-rs"].includes(session?.type);
 }
 
 // launch.json wins whenever the key carries a value, including an explicit empty string that turns
@@ -96,4 +100,10 @@ function validateDebugConfiguration(config, folder) {
     return result;
 }
 
-module.exports = { isSupportedDebugSession, validateDebugConfiguration, resolveRtos, normalizeDebugServerOptions };
+module.exports = {
+    isSupportedDebugSession,
+    isProbeRsDebugSession,
+    validateDebugConfiguration,
+    resolveRtos,
+    normalizeDebugServerOptions
+};

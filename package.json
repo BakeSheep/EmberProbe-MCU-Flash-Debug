@@ -52,7 +52,8 @@
     "onCommand:mcu-vscode.selectExistingSvd",
     "onCommand:mcu-vscode.switchWorkspaceSvd",
     "onCommand:mcu-vscode.checkOpenOcd",
-    "onDebugResolve:emberprobe"
+    "onDebugResolve:emberprobe",
+    "onDebugResolve:emberprobe-probe-rs"
   ],
   "contributes": {
     "viewsContainers": {
@@ -128,6 +129,30 @@
           "type": "string",
           "default": "openocd",
           "description": "OpenOCD >= 0.12.0 可执行文件路径；不在 PATH 时请填写绝对路径（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
+        },
+        "emberprobe.backend": {
+          "type": "string",
+          "enum": [
+            "openocd",
+            "probe-rs"
+          ],
+          "default": "openocd",
+          "description": "用于烧录、启动调试与实时变量监视的探针后端。"
+        },
+        "emberprobe.probeRsPath": {
+          "type": "string",
+          "default": "probe-rs",
+          "description": "probe-rs 可执行文件路径，需支持 dap-server。"
+        },
+        "emberprobe.probeRsChip": {
+          "type": "string",
+          "default": "",
+          "description": "probe-rs 芯片名称，例如 STM32H723VG。"
+        },
+        "emberprobe.probeRsProbe": {
+          "type": "string",
+          "default": "",
+          "description": "可选 probe-rs 探针选择器，例如 VID:PID:Serial；留空时自动选择唯一探针。"
         },
         "emberprobe.tclPort": {
           "type": "number",
@@ -954,6 +979,80 @@
               "type": "emberprobe",
               "request": "attach",
               "name": "EmberProbe: attach"
+            }
+          }
+        ]
+      },
+      {
+        "type": "emberprobe-probe-rs",
+        "label": "EmberProbe (probe-rs)",
+        "languages": [
+          "rust"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "chip": {
+                "type": "string",
+                "description": "probe-rs chip name"
+              },
+              "executable": {
+                "type": "string",
+                "description": "Rust ELF executable; defaults to the selected firmware"
+              },
+              "probe": {
+                "type": "string",
+                "description": "Optional probe-rs probe selector"
+              },
+              "rttEnabled": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          },
+          "attach": {
+            "properties": {
+              "chip": {
+                "type": "string",
+                "description": "probe-rs chip name"
+              },
+              "executable": {
+                "type": "string",
+                "description": "Rust ELF executable; defaults to the selected firmware"
+              },
+              "probe": {
+                "type": "string",
+                "description": "Optional probe-rs probe selector"
+              },
+              "rttEnabled": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "emberprobe-probe-rs",
+            "request": "launch",
+            "name": "EmberProbe: probe-rs"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "EmberProbe probe-rs: launch",
+            "body": {
+              "type": "emberprobe-probe-rs",
+              "request": "launch",
+              "name": "EmberProbe: probe-rs"
+            }
+          },
+          {
+            "label": "EmberProbe probe-rs: attach",
+            "body": {
+              "type": "emberprobe-probe-rs",
+              "request": "attach",
+              "name": "EmberProbe: probe-rs attach"
             }
           }
         ]
