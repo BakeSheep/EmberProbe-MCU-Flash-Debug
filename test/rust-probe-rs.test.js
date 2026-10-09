@@ -75,6 +75,7 @@ async function main() {
     const writes = [];
     let refreshDuringWrite = false;
     let pauseDuringWrite = false;
+    let continuedDuringWrite = false;
     let now = 1000;
     const session = {
         id: "probe-rs-session",
@@ -92,6 +93,12 @@ async function main() {
                 writes.push({ address, data: [...data] });
                 if (refreshDuringWrite) bridge.refreshSnapshot();
                 if (pauseDuringWrite) bridge.handleRequest(session, { type: "request", command: "pause" });
+                if (continuedDuringWrite)
+                    bridge.handleMessage(session, {
+                        type: "event",
+                        event: "continued",
+                        body: { threadId: 0, allThreadsContinued: true }
+                    });
                 return { bytesWritten: data.length };
             }
             throw new Error(`Unexpected DAP request: ${command}`);
@@ -117,6 +124,13 @@ async function main() {
     });
     bridge.handleMessage(session, { type: "response", command: "attach", success: true });
     assert.equal(bridge.canRead, true, "probe-rs can read globals while the core runs");
+    const runtimeEpoch = bridge.epoch;
+    bridge.handleMessage(session, { type: "event", event: "continued", body: { threadId: 0 } });
+    assert.equal(
+        bridge.epoch,
+        runtimeEpoch,
+        "WFI wake reports must not invalidate an already running probe-rs session"
+    );
     assert.deepEqual(
         [...(await bridge.readOnce([{ name: "GAIN", address: 0x20000000, size: 4 }]))[0].bytes],
         [1, 2, 3, 4]
@@ -143,6 +157,10 @@ async function main() {
     assert.equal(bridge.snapshotPending, true);
     refreshDuringWrite = false;
     await bridge._poll();
+    continuedDuringWrite = true;
+    const wakeWrite = await bridge.writeAndVerify([{ name: "GAIN", address: 0x20000000, bytes: [5, 6, 7, 8] }]);
+    assert.deepEqual([...wakeWrite.after[0].bytes], [5, 6, 7, 8], "WFI wake event must allow exact write read-back");
+    continuedDuringWrite = false;
     pauseDuringWrite = true;
     await assert.rejects(
         bridge.writeAndVerify([{ name: "GAIN", address: 0x20000000, bytes: [1, 2, 3, 4] }]),

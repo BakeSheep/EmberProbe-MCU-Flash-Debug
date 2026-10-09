@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- probe-rs 已运行核心的重复 `continued` 事件（例如 WFI 唤醒）不再取消变量写入回读；实际执行控制仍切换调试代次。
+- Preserve live write verification across duplicate probe-rs running/sleep notifications while retaining real execution transitions.
 - 修复图表快照刷新与 DAP 写入回读并发时的误取消；刷新延后到写入结束，实际执行状态变化继续使写入失效。
 - Defer chart snapshot refresh during DAP write verification while preserving cancellation for execution-state changes.
 - 新增独立 MC02 Embassy 回归仓库，真机验证自动 LiveWatch、全局整数/浮点调参、历史波形、重连和 RTT；兼容新版图表的 `chartValues` 采样消息。

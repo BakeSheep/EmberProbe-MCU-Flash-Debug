@@ -526,6 +526,12 @@ class DebugSessionBridge {
             this._notifyState();
             this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
         } else if (message.event === "continued") {
+            // probe-rs reports both running and sleep as continued. Firmware
+            // waking from WFI has not changed the debug generation.
+            if (isProbeRsDebugSession(session) && this.runtimeProbeRs && !this.transitionKind) {
+                if (Number.isInteger(message.body?.threadId)) this.threadId = message.body.threadId;
+                return;
+            }
             const transition = this.transitionKind;
             if (transition === "continue") {
                 this.transitionKind = "";
