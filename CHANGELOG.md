@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复图表快照刷新与 DAP 写入回读并发时的误取消；刷新延后到写入结束，实际执行状态变化继续使写入失效。
+- Defer chart snapshot refresh during DAP write verification while preserving cancellation for execution-state changes.
 - 新增独立 MC02 Embassy 回归仓库，真机验证自动 LiveWatch、全局整数/浮点调参、历史波形、重连和 RTT；兼容新版图表的 `chartValues` 采样消息。
 - Add independent MC02 Embassy hardware regression for automatic LiveWatch, integer/float global tuning, waveform history, reconnect and RTT; adapt the recorder to `chartValues` events.
 - 侧栏新增调试后端选择与独立环境检查；probe-rs 模式不再探测或要求 OpenOCD，自动检测也不再使用 OpenOCD 专用探针配置。

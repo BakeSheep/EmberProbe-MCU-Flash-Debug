@@ -73,6 +73,8 @@ async function main() {
 
     const memory = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
     const writes = [];
+    let refreshDuringWrite = false;
+    let pauseDuringWrite = false;
     let now = 1000;
     const session = {
         id: "probe-rs-session",
@@ -88,6 +90,8 @@ async function main() {
                 const data = Buffer.from(request.data, "base64");
                 memory.set(data, address);
                 writes.push({ address, data: [...data] });
+                if (refreshDuringWrite) bridge.refreshSnapshot();
+                if (pauseDuringWrite) bridge.handleRequest(session, { type: "request", command: "pause" });
                 return { bytesWritten: data.length };
             }
             throw new Error(`Unexpected DAP request: ${command}`);
@@ -129,6 +133,22 @@ async function main() {
     assert.deepEqual([...transaction.after[0].bytes], [9, 10, 11, 12]);
     assert.deepEqual(writes, [{ address: 0, data: [9, 10, 11, 12] }], "running write must not touch adjacent memory");
     assert.equal(bridge.snapshotPending, true, "running sampling resumes after the write");
+    refreshDuringWrite = true;
+    const refreshedWrite = await bridge.writeAndVerify([{ name: "GAIN", address: 0x20000000, bytes: [4, 3, 2, 1] }]);
+    assert.deepEqual(
+        [...refreshedWrite.after[0].bytes],
+        [4, 3, 2, 1],
+        "a chart snapshot refresh must not cancel the in-flight write verification"
+    );
+    assert.equal(bridge.snapshotPending, true);
+    refreshDuringWrite = false;
+    await bridge._poll();
+    pauseDuringWrite = true;
+    await assert.rejects(
+        bridge.writeAndVerify([{ name: "GAIN", address: 0x20000000, bytes: [1, 2, 3, 4] }]),
+        /Target state changed/,
+        "a real execution transition must still cancel write verification"
+    );
     bridge.dispose();
 
     const Provider = loadProvider({

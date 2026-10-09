@@ -68,6 +68,7 @@ class DebugSessionBridge {
         this.timer = null;
         this.polling = false;
         this.writing = false;
+        this.snapshotRefreshAfterWrite = false;
         this.consecutiveErrors = 0;
         this.sampleTimes = [];
         this.readDurations = [];
@@ -366,12 +367,22 @@ class DebugSessionBridge {
 
     refreshSnapshot() {
         if (!this.intentEnabled || (!this.paused && !this.runtimeProbeRs) || !this.hasSession || this.conflict) return;
+        if (this.writing) {
+            this.snapshotRefreshAfterWrite = true;
+            return;
+        }
         this._invalidate();
         this.consecutiveErrors = 0;
         this.snapshotReady = false;
         this.snapshotPending = true;
         this.onStatus(this.status());
         this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
+    }
+
+    _flushSnapshotRefreshAfterWrite() {
+        if (!this.snapshotRefreshAfterWrite) return;
+        this.snapshotRefreshAfterWrite = false;
+        this.refreshSnapshot();
     }
 
     handleRequest(session, message) {
@@ -740,6 +751,7 @@ class DebugSessionBridge {
             return { bytesWritten: Number.isFinite(result.bytesWritten) ? result.bytesWritten : data.length };
         } finally {
             this.writing = false;
+            this._flushSnapshotRefreshAfterWrite();
         }
     }
 
@@ -1082,6 +1094,7 @@ class DebugSessionBridge {
             return { before, after };
         } finally {
             this.writing = false;
+            this._flushSnapshotRefreshAfterWrite();
             if (this.runtimeProbeRs && this.intentEnabled) {
                 this.snapshotPending = true;
                 this._schedule(Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()));
