@@ -110,4 +110,4 @@ Idle 句柄可解析；6 个调度器样本均为运行中，tick 增长符合�
 目标是在连续 60 秒、覆盖率至少 95% 时，稳定负载平均误差不超过 5 个百分点；变量采样率下降不超过 10%，
 同时记录目标时序扰动。实板验收完成前不发布精度或零扰动保证。
 
-参见 [CPU 占用率审计](CPU-UTILIZATION-AUDIT.md)、[RTOS 能力边界](RTOS-AWARENESS.md)、[共享调试组](SHARED-DEBUG-GROUPS.md)。
+参见 [RTOS 能力边界](RTOS-AWARENESS.md)、[共享调试组](SHARED-DEBUG-GROUPS.md)。

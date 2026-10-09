@@ -25,7 +25,7 @@ try {
         "# Change Log\n\n## [Unreleased]\n\n### Fixed\n\n- pending\n\n## [1.2.3] - 2026-01-01\n"
     );
 
-    const { validateVersion, prepareRelease } = require("../scripts/release");
+    const { validateVersion, prepareRelease, parseCli } = require("../scripts/release");
     assert.strictEqual(validateVersion("2.0.0"), "2.0.0");
     assert.strictEqual(validateVersion("2.0.0-beta.1"), "2.0.0-beta.1");
     assert.throws(
@@ -33,11 +33,22 @@ try {
         (error) => error.code === "INVALID_VERSION"
     );
 
+    fs.mkdirSync(path.join(temp, "docs"));
+    const audit = path.join(temp, "docs", "WAVEFORM-AUDIT.md");
+    fs.writeFileSync(audit, "# audit\n");
+    assert.strictEqual(parseCli(["1.3.0", "--no-clean-docs"]).cleanDocs, false);
     const dryRun = prepareRelease(temp, "1.3.0", { date: "2026-07-30", dryRun: true });
+    assert.deepStrictEqual(dryRun.docsRemoved, ["WAVEFORM-AUDIT.md"]);
+    assert.ok(fs.existsSync(audit), "dry run keeps docs");
+    assert.deepStrictEqual(
+        prepareRelease(temp, "1.3.0", { date: "2026-07-30", dryRun: true, cleanDocs: false }).docsRemoved,
+        []
+    );
     assert.ok(dryRun.changed.includes("package.json"));
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(temp, "package.json"), "utf8")).version, "1.2.3");
 
     const result = prepareRelease(temp, "1.3.0", { date: "2026-07-30" });
+    assert.ok(!fs.existsSync(audit), "release preparation cleans docs");
     assert.strictEqual(result.version, "1.3.0");
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(temp, "package.json"), "utf8")).version, "1.3.0");
     const lock = JSON.parse(fs.readFileSync(path.join(temp, "package-lock.json"), "utf8"));
@@ -53,6 +64,15 @@ try {
         () => prepareRelease(temp, "1.3.0", { date: "2026-07-30" }),
         (error) => error.code === "VERSION_EXISTS"
     );
+    fs.writeFileSync(audit, "# audit\n");
+    fs.writeFileSync(
+        path.join(temp, "CHANGELOG.md"),
+        changelog.replace("## [Unreleased]", "## [Unreleased]\n\n- pending")
+    );
+    const skipped = prepareRelease(temp, "1.4.0", { date: "2026-07-31", cleanDocs: false });
+    assert.deepStrictEqual(skipped.docsRemoved, []);
+    assert.ok(fs.existsSync(audit), "--no-clean-docs keeps docs");
+    require("../scripts/validate-release").validateRelease(temp, "v1.4.0");
     console.log("Release script tests passed");
 } finally {
     fs.rmSync(temp, { recursive: true, force: true });

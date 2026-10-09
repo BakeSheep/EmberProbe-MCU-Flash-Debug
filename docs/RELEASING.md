@@ -15,7 +15,7 @@ npm run release:prepare -- 0.8.1 --date 2026-10-04
 node scripts/validate-release.js v0.8.1
 npm run check
 npm run quality
-git add package.json package-lock.json README.md README_EN.md CHANGELOG.md
+git add -A docs package.json package-lock.json README.md README_EN.md CHANGELOG.md
 git commit -m "Release EmberProbe v0.8.1"
 git tag -a v0.8.1 -m "EmberProbe v0.8.1"
 git push origin master
@@ -23,7 +23,11 @@ git push origin v0.8.1
 gh run watch
 ```
 
-`release:prepare` 同步 `package.json`、`package-lock.json`、`README.md`、`README_EN.md` 和 `CHANGELOG.md`。确认验证与质量检查通过后，发布提交仅包含这五个文件；创建标签前检查暂存区，避免夹带其他改动。两个 push 都须成功，再用 `gh run watch` 选择对应 Release 工作流并等待完成。
+`release:prepare` 同步五个版本文件，并清理 `docs/` 中未列入 `scripts/docs-cleanup.js` `MAIN_DOCS` 的 Markdown 和 JSON 文档；图片等资源全部保留。新增长期文档时加入该名单。
+
+用 `npm run docs:clean` 预览，`npm run docs:clean -- --write` 执行；`release:prepare --no-clean-docs` 可跳过清理，`--dry-run` 不修改文件。
+
+确认验证与质量检查通过后，提交五个版本文件及文档删除；创建标签前检查暂存区。两个 push 都须成功，再用 `gh run watch` 等待对应 Release 工作流完成。
 
 标签必须严格使用 `vX.Y.Z`，并与五个文件的版本引用一致。预发布标签（例如 `v0.8.1-beta.1`）会被拒绝，避免意外覆盖稳定渠道。发布时不要在本地运行 `npm run package`；CI 构建并上传正式 VSIX，本地打包仅用于开发验证。
 

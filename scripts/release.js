@@ -1,6 +1,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const { cleanDocs } = require("./docs-cleanup");
 
 const VERSION_RE =
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -89,7 +90,8 @@ function prepareRelease(root, nextVersion, options = {}) {
         changed.push(file);
         if (!options.dryRun) fs.writeFileSync(path.join(root, file), content);
     }
-    return { version, date, dryRun: !!options.dryRun, changed };
+    const docsRemoved = options.cleanDocs === false ? [] : cleanDocs(root, { dryRun: !!options.dryRun });
+    return { version, date, dryRun: !!options.dryRun, changed, docsRemoved };
 }
 
 function parseCli(argv) {
@@ -97,13 +99,15 @@ function parseCli(argv) {
     const version = args.shift();
     let date;
     let dryRun = false;
+    let cleanDocs = true;
     while (args.length) {
         const arg = args.shift();
         if (arg === "--dry-run") dryRun = true;
+        else if (arg === "--no-clean-docs") cleanDocs = false;
         else if (arg === "--date") date = args.shift();
         else throw Object.assign(new Error(`Unknown argument: ${arg}`), { code: "UNKNOWN_ARGUMENT" });
     }
-    return { version, date, dryRun };
+    return { version, date, dryRun, cleanDocs };
 }
 
 if (require.main === module) {
@@ -113,6 +117,9 @@ if (require.main === module) {
         console.log(
             `${result.dryRun ? "Would update" : "Updated"} ${result.changed.join(", ")} for ${result.version} (${result.date})`
         );
+        if (result.docsRemoved.length) {
+            console.log(`${result.dryRun ? "Would remove" : "Removed"} docs: ${result.docsRemoved.join(", ")}`);
+        }
     } catch (error) {
         console.error(`${error.code || "RELEASE_ERROR"}: ${error.message}`);
         process.exitCode = 1;

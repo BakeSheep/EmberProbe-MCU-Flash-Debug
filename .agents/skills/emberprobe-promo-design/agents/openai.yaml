@@ -1,0 +1,4 @@
+interface:
+  display_name: "EmberProbe 宣传图"
+  short_description: "本项目专用：简短文案、充分留白、灵活截图构图与高清 HTML 宣传图"
+  default_prompt: "使用 $emberprobe-promo-design，根据 EmberProbe 当前版本内容与白色主题 mockup 截图制作宣传图，选择适合素材的布局，交付 HTML、高清 PNG 和预览图。"

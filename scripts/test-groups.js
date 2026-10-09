@@ -82,6 +82,7 @@ const TEST_GROUPS = Object.freeze({
         "debug-h7-regressions.test.js",
         "debug-images.test.js",
         "debug-performance.test.js",
+        "docs-cleanup.test.js",
         "debug-scopes.test.js",
         "debug-server-controller.test.js",
         "external-debug.test.js",
