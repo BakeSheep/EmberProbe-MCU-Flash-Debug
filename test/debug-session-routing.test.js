@@ -163,7 +163,7 @@ const { loadProvider } = require("./helpers/load-provider");
     Object.assign(host, {
         _managedDebugGroup: {},
         _context: { workspaceState: { get: () => selected } },
-        _debugBridge: { assertUniqueSession: () => a }
+        _debugBridge: { activeSession: a, assertUniqueSession: () => a }
     });
     host._assertGroupedReadElf();
     selected = path.resolve("core1.elf");

@@ -143,6 +143,8 @@ const TEST_GROUPS = Object.freeze({
         "probe-driver-service.test.js",
         "probe-success-entrypoints.test.js",
         "probe-rs-chip-info.test.js",
+        "probe-rs-debug-adapter.test.js",
+        "probe-rs-safety.test.js",
         "provider-state.test.js",
         "rust-probe-rs.test.js",
         "release-script.test.js",

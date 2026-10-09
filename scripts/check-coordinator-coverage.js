@@ -4,6 +4,7 @@ const path = require("path");
 const summary = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../coverage/coverage-summary.json"), "utf8"));
 const modules = [
     "debugLifecycle.js",
+    "probeRsDebugAdapter.js",
     "samplingCoordinator.js",
     "cpuLoadService.js",
     "watchListStore.js",
