@@ -48,3 +48,6 @@ The accepted 2026-10-09 evidence is retained in `reports/accepted-2026-10-09/`.
 Reports bind the result to the board UID, probe selector, toolchain versions,
 ELF digest and extension bundle digest. Linux hardware acceptance does not
 establish Windows or macOS hardware behaviour.
+
+The real BMI088/VQF follow-up, its rates, parameter-write verification and
+captured curves are recorded in [MC02 probe-rs validation](MC02-PROBE-RS-VALIDATION.md).
