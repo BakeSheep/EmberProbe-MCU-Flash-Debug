@@ -1,0 +1,6 @@
+[build]
+target = "thumbv7em-none-eabihf"
+rustflags = ["-C", "target-cpu=cortex-m7"]
+
+[env]
+DEFMT_LOG = "info"

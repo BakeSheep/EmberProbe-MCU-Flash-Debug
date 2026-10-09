@@ -1,5 +1,13 @@
 "use strict";
-const { isSupportedDebugSession, resolveRtos, normalizeDebugServerOptions } = require("./services/debugConfiguration");
+const {
+    isSupportedDebugSession,
+    isProbeRsDebugSession,
+    resolveRtos,
+    normalizeDebugServerOptions
+} = require("./services/debugConfiguration");
+const { probeRsSettings, resolveProbeRsDebugConfiguration } = require("./services/probeRsConfiguration");
+const { downloadWithProbeRs } = require("./services/probeRsFlashService");
+const { readProbeRsChipInfo } = require("./services/probeRsChipInfo");
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
 const { SharedDebugGroup } = require("./services/sharedDebugGroup");
 const { resolvePrettyPrinting, configuredPrettyPrintingMode } = require("./services/prettyPrinting");
@@ -48,6 +56,7 @@ const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
+const { ProbeRsStatusService } = require("./services/probeRsStatusService");
 const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
@@ -132,11 +141,13 @@ class MainViewProvider {
         });
         void this._externalDebug.releaseIfDisabled().catch(console.error);
         this._recentProgress = [];
+        this._probeRsRttChannels = new Map();
         this._liveSession = null;
         this._managedDebugServer = null;
         this._managedDebugGroup = null;
         this._managedDebugToken = "";
         this._managedDebugSessionId = "";
+        this._probeRsTransition = false;
         this._runtimeResumeTimer = null;
         this._runtimeDeniedKey = "";
         this._runtimeRamCache = null;
@@ -178,8 +189,17 @@ class MainViewProvider {
         this._agentSamplingStatus = null;
         this._uiWritePromise = Promise.resolve();
         this._debugBridge = new DebugSessionBridge({
-            getReadPlan: () => this._activeReadPlan(),
-            getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
+            getReadPlan: () => {
+                const active = this._activeReadPlan();
+                if (!isProbeRsDebugSession(this._debugBridge.activeSession) || this._debugBridge.paused) return active;
+                const plan = this._runtimeRamPlan(active, true).allowed;
+                liveWatch.validateManagedReadPlan(plan);
+                return plan;
+            },
+            getIntervalMs: () =>
+                isProbeRsDebugSession(this._debugBridge.activeSession)
+                    ? this._liveIntervalMs
+                    : Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => {
                 this._syncDebugSampleContext();
@@ -335,7 +355,11 @@ class MainViewProvider {
             context,
             checker: openocdChecker,
             getLang: () => this._lang,
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "openocdStatus", ...status })
+            onStatus: (status) => this._postBackendStatus("openocd", status)
+        });
+        this._probeRsStatusService = new ProbeRsStatusService({
+            vscode,
+            onStatus: (status) => this._postBackendStatus("probe-rs", status)
         });
         this._skillStatusService = new SkillStatusService({
             vscode,
@@ -515,6 +539,21 @@ class MainViewProvider {
     _postOpenOcdStatus(status) {
         this._openOcdStatusService.post(status);
     }
+    _postBackendStatus(backend, status) {
+        if ((this._probeRsSelected() ? "probe-rs" : "openocd") === backend)
+            this._webviewView?.webview.postMessage({ type: "backendStatus", backend, ...status });
+    }
+    _backendStatusService() {
+        return this._probeRsSelected() ? this._probeRsStatusService : this._openOcdStatusService;
+    }
+    refreshBackendStatus(showChecking = true) {
+        return this._backendStatusService().refresh(showChecking);
+    }
+    async _handleBackendAction(action) {
+        if (action === "select" || action === "install")
+            this._assertConnectionEditable({ [this._probeRsSelected() ? "probeRsPath" : "openocdPath"]: true });
+        return this._backendStatusService().handleAction(action);
+    }
     async refreshOpenOcdStatus(showChecking = true) {
         return this._openOcdStatusService.refresh(showChecking);
     }
@@ -525,6 +564,76 @@ class MainViewProvider {
     // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。
     async _resolveOpenOcdPath(executable) {
         return this._openOcdStatusService.resolve(executable);
+    }
+    _probeRsSelected() {
+        return vscode.workspace?.getConfiguration?.("emberprobe")?.get("backend") === "probe-rs";
+    }
+    async _selectBackend(backend) {
+        if (backend !== "openocd" && backend !== "probe-rs")
+            throw Object.assign(new Error("Unsupported debug backend"), { code: "BACKEND_INVALID" });
+        this._assertConnectionEditable({ backend: true });
+        await vscode.workspace
+            .getConfiguration("emberprobe")
+            .update("backend", backend, vscode.ConfigurationTarget.Workspace);
+        this._chipInfoService.info = null;
+        this._chipInfoService.infoConnection = null;
+        this._postChipInfo({ state: "idle", key: "chip.notRead" });
+        await this.updateView();
+        await this.refreshBackendStatus(true);
+    }
+    async _startProbeRsDebug(request, resource, watchOnly = false, configuration = {}) {
+        const { folder } = this._commandContext(resource);
+        const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
+        const debugConfig = resolveProbeRsDebugConfiguration(
+            { ...configuration, request, __emberprobeWatchOnly: watchOnly },
+            folder,
+            selectedElf,
+            probeRsSettings(vscode)
+        );
+        if (this._liveSession) await this.stopLiveWatch({ preserveIntent: watchOnly });
+        const autoSession = this._debugBridge.activeSession;
+        if (!watchOnly && autoSession?.configuration?.__emberprobeWatchOnly) {
+            this._probeRsTransition = true;
+            try {
+                await vscode.debug.stopDebugging(autoSession);
+                await this._debugBridge.waitForState((state) => state.state === "none", 5000);
+            } catch (error) {
+                this._probeRsTransition = false;
+                throw error;
+            }
+        }
+        try {
+            return await vscode.debug.startDebugging(folder, debugConfig, { suppressDebugView: watchOnly });
+        } finally {
+            this._probeRsTransition = false;
+        }
+    }
+    async _downloadProbeRs(resource) {
+        if (this._downloadRunning || this._debugStarting || this._agentReadRunning || this._chipInfoRunning)
+            throw new Error("The debug probe is busy");
+        const active = this._debugBridge.activeSession;
+        if (active?.configuration?.__emberprobeWatchOnly) {
+            await this.stopLiveWatch();
+            await this._debugBridge.waitForState((state) => state.state === "none", 5000);
+        }
+        if (this._debugBridge.hasAnySession) throw new Error("Stop the debug session before downloading firmware");
+        const stopped = this._liveSession ? this.stopLiveWatch() : null;
+        const lease = this._probeCoordinator.acquire("download");
+        this._downloadLease = lease;
+        try {
+            if (stopped) await stopped;
+            const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
+            if (!elf) throw new Error("Select a Rust ELF executable before downloading");
+            const { cwd } = this._commandContext(resource);
+            await downloadWithProbeRs(probeRsSettings(vscode), elf, cwd);
+            vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
+            return true;
+        } catch (error) {
+            vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: error.message }));
+            throw error;
+        } finally {
+            lease.release();
+        }
     }
     // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
@@ -537,39 +646,61 @@ class MainViewProvider {
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
             try {
-                console.log("主进程执行选择 ELF 文件命令");
-                const elfFiles = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 100);
-                if (elfFiles.length === 0) {
-                    vscode.window.showWarningMessage(this._t("msg.noElfFound"));
-                    return false;
-                }
-                const items = elfFiles.map((file) => {
-                    const cleanPath = cleanWindowsPath(file.fsPath); // 替换file.path为file.fsPath，再清洗
-                    return {
-                        label: path.basename(cleanPath),
-                        description: cleanPath
-                    };
-                });
-                const selected = await vscode.window.showQuickPick(items, {
-                    placeHolder: this._t("msg.searchElf"),
-                    matchOnDescription: true
-                });
+                const elfFiles = await autoDetect.candidateElfFiles(vscode);
+                const browse = { label: "$(folder-opened) Browse for ELF…", description: "", browse: true };
+                const selected = await vscode.window.showQuickPick(
+                    [
+                        ...elfFiles.map((file) => ({ label: path.basename(file), description: file, browse: false })),
+                        browse
+                    ],
+                    { placeHolder: this._t("msg.searchElf"), matchOnDescription: true }
+                );
                 if (!selected) return null;
-                const finalPath = cleanWindowsPath(selected.description);
+                const elfPath = selected.browse
+                    ? (
+                          await vscode.window.showOpenDialog({
+                              canSelectMany: false,
+                              openLabel: "Select ELF executable"
+                          })
+                      )?.[0]?.fsPath
+                    : selected.description;
+                if (!elfPath) return null;
+                const finalPath = cleanWindowsPath(elfPath);
+                const header = Buffer.alloc(6);
+                const handle = fs.openSync(finalPath, "r");
+                try {
+                    if (fs.readSync(handle, header, 0, 6, 0) !== 6 || header.readUInt32BE(0) !== 0x7f454c46)
+                        throw new Error("Selected file is not an ELF executable");
+                } finally {
+                    fs.closeSync(handle);
+                }
                 await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
                 await this._refreshElfBindings();
                 await this.updateView();
                 vscode.window.showInformationMessage(this._t("msg.elfSelected", { name: path.basename(finalPath) }));
                 return true;
-            } catch (err) {
-                const errorMsg = err.message;
-                console.error("选择 ELF 文件失败：", errorMsg);
-                vscode.window.showErrorMessage(this._t("msg.selectElfFailed", { error: errorMsg }));
-                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
+            } catch (error) {
+                vscode.window.showErrorMessage(this._t("msg.selectElfFailed", { error: error.message }));
+                throw error;
             }
         };
         // 2. 选择调试器
         this.commandHandlers["mcu-vscode.selectDebugger"] = async () => {
+            if (this._probeRsSelected()) {
+                this._assertConnectionEditable({ probeRsProbe: true });
+                const cfg = vscode.workspace.getConfiguration("emberprobe");
+                const probe = await vscode.window.showInputBox({
+                    title: this._t("pr.selectProbe"),
+                    prompt: this._t("pr.probeHint"),
+                    value: cfg.get("probeRsProbe", "")
+                });
+                if (probe === undefined) return;
+                if (probe.trim() && !/^[A-Za-z0-9:._-]+$/.test(probe.trim()))
+                    throw new Error(this._t("pr.invalidProbe"));
+                await cfg.update("probeRsProbe", probe.trim(), vscode.ConfigurationTarget.Workspace);
+                await this.updateView();
+                return;
+            }
             this._assertConnectionEditable({ debugger: true });
             console.log("主进程执行选择调试器命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -595,6 +726,20 @@ class MainViewProvider {
         };
         // 3. 选择 MCU 核心（无修改）
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
+            if (this._probeRsSelected()) {
+                this._assertConnectionEditable({ probeRsChip: true });
+                const cfg = vscode.workspace.getConfiguration("emberprobe");
+                const chip = await vscode.window.showInputBox({
+                    title: "probe-rs chip name",
+                    prompt: "For STM32H723VGT6 use STM32H723VG",
+                    value: cfg.get("probeRsChip", "")
+                });
+                if (chip === undefined) return;
+                if (!/^[A-Za-z0-9_.+-]+$/.test(chip.trim())) throw new Error("Invalid probe-rs chip name");
+                await cfg.update("probeRsChip", chip.trim(), vscode.ConfigurationTarget.Workspace);
+                await this.updateView();
+                return;
+            }
             this._assertConnectionEditable({ mcu: true });
             console.log("主进程执行选择 MCU 核心命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -623,6 +768,13 @@ class MainViewProvider {
         // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
         this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration, interactive = true) => {
             this._assertCpuIdle();
+            if (this._probeRsSelected())
+                return this._startProbeRsDebug(
+                    configuration?.request || "launch",
+                    resource,
+                    false,
+                    configuration || {}
+                );
             let probePrepared = false;
             let startAccepted = false;
             let ownsPending = false;
@@ -829,6 +981,7 @@ class MainViewProvider {
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers["mcu-vscode.download"] = async (resource) => {
             this._assertCpuIdle();
+            if (this._probeRsSelected()) return this._downloadProbeRs(resource);
             if (this._downloadRunning) {
                 vscode.window.showWarningMessage(this._t("msg.downloadBusy"));
                 return false;
@@ -947,7 +1100,18 @@ class MainViewProvider {
         return snapshot;
     }
     _assertConnectionEditable(values) {
-        const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
+        const keys = [
+            "backend",
+            "debugger",
+            "mcu",
+            "openocdPath",
+            "probeRsPath",
+            "probeRsChip",
+            "probeRsProbe",
+            "transport",
+            "probeSerial",
+            "adapterSpeedKhz"
+        ];
         if (keys.some((key) => Object.hasOwn(values, key))) {
             this._assertCpuIdle();
             this._assertProbeDriverIdle();
@@ -969,6 +1133,8 @@ class MainViewProvider {
     }
     connectionConfigurationChanged() {
         if (this._cpuLoadService?.run) void this._cpuLoadService.stop("configuration-changed").catch(() => {});
+        this._chipInfoService.info = null;
+        this._chipInfoService.infoConnection = null;
         this._probeConnectionService.markConfigurationChanged([
             this._liveSession,
             this._managedDebugServer,
@@ -1015,6 +1181,10 @@ class MainViewProvider {
         // a second standalone OpenOCD identity, which would be rejected at execution.
         if (this._managedDebugServer) return this._sessionWriteConnection(this._debugBridge);
         if (this._debugBridge.canWrite) return this._sessionWriteConnection(this._debugBridge);
+        if (this._probeRsSelected())
+            throw Object.assign(new Error("Start probe-rs LiveWatch before writing variables"), {
+                code: "PROBE_RS_SESSION_REQUIRED"
+            });
         const config = this._configurationStore.snapshot();
         const executable = await this._resolveOpenOcdPath(config.openocdPath);
         return writeConnectionIdentity(
@@ -2014,6 +2184,10 @@ class MainViewProvider {
         let session = this._liveWatchRunning ? this._liveSession : null;
         let temporary = false;
         let source = "active-sampling";
+        if (!session && isProbeRsDebugSession(this._debugBridge.activeSession) && this._debugBridge.canRead) {
+            session = this._debugBridge;
+            source = "probe-rs-dap";
+        }
         if (!session && options.allowPausedDebugRead) {
             session = selectPausedDebugReadSession(this._debugBridge);
             if (session) {
@@ -2050,6 +2224,10 @@ class MainViewProvider {
             }
         }
         if (!session) {
+            if (this._probeRsSelected() || isProbeRsDebugSession(this._debugBridge.activeSession))
+                throw Object.assign(new Error("Start probe-rs LiveWatch before reading variables"), {
+                    code: "PROBE_RS_SESSION_REQUIRED"
+                });
             if (this._agentReadRunning)
                 throw Object.assign(new Error("Another Agent variable read is in progress"), {
                     code: "AGENT_READ_BUSY"
@@ -2382,12 +2560,16 @@ class MainViewProvider {
         if (results.some((r) => !r.verified)) {
             throw Object.assign(
                 new Error(
-                    "Write verification failed while the target was halted: the value read back does not match (check RAM accessibility, MPU/cache configuration, and debug transport)"
+                    "Write verification failed: the value read back does not match (check concurrent firmware updates, RAM accessibility, MPU/cache configuration, and debug transport)"
                 ),
                 {
                     code: "WRITE_VERIFY_FAILED",
                     retryable: true,
-                    details: { results, targetHaltedDuringWrite: true, alignedWordWrites: true }
+                    details: {
+                        results,
+                        targetHaltedDuringWrite: !(session === this._debugBridge && this._debugBridge.runtimeProbeRs),
+                        alignedWordWrites: !(session === this._debugBridge && this._debugBridge.runtimeProbeRs)
+                    }
                 }
             );
         }
@@ -2483,7 +2665,15 @@ class MainViewProvider {
                 dapSession.status({ mode: "debug-paused-writing", key: "live.dapWriting", canWrite: false })
             );
         try {
-            return await this._executeWritePlan(session, dapSession ? "cortex-debug-dap" : "active-sampling", plan);
+            return await this._executeWritePlan(
+                session,
+                dapSession
+                    ? isProbeRsDebugSession(dapSession.activeSession)
+                        ? "probe-rs-dap"
+                        : "cortex-debug-dap"
+                    : "active-sampling",
+                plan
+            );
         } finally {
             if (dapSession) this._postConsumerStatuses(dapSession.status());
         }
@@ -2513,6 +2703,10 @@ class MainViewProvider {
     // 读取并解码 Cortex-M 故障寄存器；与 chip.read 共用 _chipInfoRunning 互斥（一次性 OpenOCD 进程同一时刻只能有一个）
     async _readAgentFault() {
         this._assertCpuIdle();
+        if (this._probeRsSelected())
+            throw Object.assign(new Error("Fault register analysis is not available for the probe-rs backend"), {
+                code: "BACKEND_UNSUPPORTED"
+            });
         const busy = (key, code) => {
             throw Object.assign(new Error(this._t(key)), { i18nKey: key, code });
         };
@@ -3815,7 +4009,12 @@ class MainViewProvider {
                 status.diagnostic = serializeError(error);
             }
         }
-        const stats = typeof session?.stats === "function" ? session.stats() : null;
+        const stats =
+            typeof session?.stats === "function"
+                ? session.stats()
+                : isProbeRsDebugSession(this._debugBridge.activeSession)
+                  ? this._debugBridge.stats()
+                  : null;
         status.intervalMs = this._liveIntervalMs;
         status.frequencyHz = this._liveFrequencyHz;
         status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs;
@@ -4071,6 +4270,29 @@ class MainViewProvider {
         if (this._agentReadRunning)
             throw Object.assign(new Error(this._t("live.agentReading")), { i18nKey: "live.agentReading" });
         if (this._liveStarting) throw Object.assign(new Error(this._t("live.starting")), { i18nKey: "live.starting" });
+        if (this._probeRsSelected() || isProbeRsDebugSession(this._debugBridge.activeSession)) {
+            if (this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
+                await this._elfService.ready();
+                await this._elfRebindPromise;
+            }
+            this._samplingIntent = true;
+            if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
+            this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
+            const active = this._activeReadPlan();
+            if (!active.length) {
+                this._postConsumerStatuses({ key: "live.needVar" });
+                return;
+            }
+            this._runtimeRamPlan(active, true);
+            liveWatch.validateManagedReadPlan(active);
+            if (!this._debugBridge.hasSession) {
+                const started = await this._startProbeRsDebug("attach", undefined, true);
+                if (!started) throw new Error("probe-rs attach was not started");
+            }
+            this._debugBridge.refreshSnapshot();
+            this._postConsumerStatuses(this._debugBridge.status());
+            return;
+        }
         const debuggerCfg =
             this._context.workspaceState.get(CACHE_KEYS.debugger) ||
             (await this._probeConnectionService.resolveProbe());
@@ -4286,6 +4508,11 @@ class MainViewProvider {
             this._debugBridge.setIntent(false);
             this._managedDebugServer?.setSamplingEnabled(false);
         }
+        const autoSession =
+            !preserveIntent && this._debugBridge.activeSession?.configuration?.__emberprobeWatchOnly
+                ? this._debugBridge.activeSession
+                : null;
+        const debugStopped = autoSession ? vscode.debug.stopDebugging(autoSession) : null;
         this._liveSession?.setSamplingEnabled?.(false);
         this._liveConnectionClosing = !!(this._liveStartPromise || this._liveSession);
         this._liveExitUnconfirmed = false;
@@ -4305,7 +4532,7 @@ class MainViewProvider {
         if (!pending && !this._liveSession) {
             this._liveStartLease?.release();
             this._liveWatchLease?.release();
-            return null;
+            return debugStopped;
         }
         this._liveStopPromise = (async () => {
             if (pending) await pending.catch(() => {});
@@ -4341,7 +4568,7 @@ class MainViewProvider {
                 this._postProbeOperationStatus();
             });
         this._liveStopPromise.catch((error) => this._postLive?.({ type: "liveError", ...toUiError(error) }));
-        return this._liveStopPromise;
+        return debugStopped ? Promise.all([this._liveStopPromise, debugStopped]) : this._liveStopPromise;
     }
     // 仅在采样进行中时停止；用于调试会话起止等外部事件触发的自动清理
     stopLiveWatchIfRunning() {
@@ -4492,6 +4719,23 @@ class MainViewProvider {
     }
     handleDebugAdapterMessage(session, message) {
         void this._externalDebug?.message(session, message).catch(console.error);
+        if (session?.type === "emberprobe-probe-rs" && message?.type === "event") {
+            const channel = Number(message.body?.channelNumber);
+            if (message.event === "probe-rs-rtt-channel-config" && Number.isInteger(channel) && channel >= 0) {
+                if (!this._probeRsRttChannels.has(channel))
+                    this._probeRsRttChannels.set(
+                        channel,
+                        vscode.window.createOutputChannel(
+                            `EmberProbe RTT ${channel}: ${message.body.channelName || "channel"}`
+                        )
+                    );
+                void session
+                    .customRequest("rttWindowOpened", { channelNumber: channel, windowIsOpen: true })
+                    .catch((error) => console.error("Unable to open probe-rs RTT channel:", error));
+            } else if (message.event === "probe-rs-rtt-data" && Number.isInteger(channel)) {
+                this._probeRsRttChannels.get(channel)?.append(String(message.body?.data || ""));
+            }
+        }
         if (this._managedDebugGroup?.match(session)) {
             this._managedDebugGroup.message(session, message);
             this._debugBridge.handleMessage(session, message);
@@ -4544,6 +4788,16 @@ class MainViewProvider {
             }
             return;
         }
+        if (session.configuration?.__emberprobeWatchOnly && !this._probeRsTransition) {
+            const wasSampling = this._samplingIntent;
+            this._samplingIntent = false;
+            this._debugBridge.setIntent(false);
+            if (wasSampling)
+                this._postLive({
+                    type: "liveError",
+                    message: "probe-rs watch session ended; restart sampling after checking the probe connection"
+                });
+        }
         if (
             this._debugLifecycle.pending &&
             (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session))
@@ -4567,6 +4821,7 @@ class MainViewProvider {
     }
     async restoreSamplingAfterDebug() {
         if (this._shutdownPromise) return;
+        if (this._probeRsTransition) return;
         if (this._externalDebug?.held) return;
         if (this._managedDebugGroup?.members.size) return;
         if (this._debugBridge.hasAnySession) {
@@ -4581,12 +4836,12 @@ class MainViewProvider {
         this._postConsumerStatuses({
             mode: "restoring",
             key: "live.restoring",
-            source: "openocd",
+            source: this._probeRsSelected() ? "dap" : "openocd",
             canRead: false,
             canWrite: false
         });
         await new Promise((resolve) => setTimeout(resolve, 350));
-        if (!this._samplingIntent || this._debugBridge.hasAnySession) return;
+        if (!this._samplingIntent || this._debugBridge.hasAnySession || this._probeRsTransition) return;
         try {
             await this.startLiveWatch(undefined, this._liveIntervalMs, "restore");
         } catch (error) {
@@ -4614,7 +4869,9 @@ class MainViewProvider {
             const managedSession = this._debugBridge.activeSession;
             if (
                 managedSession &&
-                (managedSession.id === this._managedDebugSessionId || this._externalDebug?.matches(managedSession))
+                (managedSession.id === this._managedDebugSessionId ||
+                    this._externalDebug?.matches(managedSession) ||
+                    managedSession.type === "emberprobe-probe-rs")
             ) {
                 try {
                     await vscode.debug.stopDebugging(managedSession);
@@ -4632,6 +4889,8 @@ class MainViewProvider {
             if (stopped) await stopped;
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
+            for (const channel of this._probeRsRttChannels.values()) channel.dispose();
+            this._probeRsRttChannels.clear();
             this.disposeDebugBridge();
             const agentStopped = this.stopAgentReadIfRunning();
             if (agentStopped) await agentStopped;
@@ -4664,9 +4923,39 @@ class MainViewProvider {
     _syncChipInfo(post) {
         this._chipInfoService.sync(post);
     }
-    // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
+    // probe-rs 会话活动时复用其 DAP 内存接口；独立读取时使用 probe-rs CLI。
     async readChipInfoAction(forAgent = false) {
         this._assertCpuIdle();
+        if (this._probeRsSelected() || isProbeRsDebugSession(this._debugBridge.activeSession)) {
+            let lease;
+            try {
+                lease = this._probeCoordinator.acquire("chipInfo");
+                this._postChipInfo({ state: "reading", key: "chip.reading" });
+                const settings = probeRsSettings(vscode);
+                const session = this._debugBridge.activeSession;
+                if (session && !isProbeRsDebugSession(session))
+                    throw Object.assign(new Error("Another debugger owns the probe"), { code: "PROBE_BUSY" });
+                const info = await readProbeRsChipInfo(settings, {
+                    session,
+                    state: session ? (this._debugBridge.paused ? "halted" : "running") : ""
+                });
+                this._chipInfoService.info = info;
+                this._chipInfoService.infoConnection = { probe: settings.probe, target: settings.chip };
+                this._postChipInfo({ state: "ready", key: "chip.done" }, info);
+                return info;
+            } catch (error) {
+                this._postChipInfo({
+                    state: "error",
+                    key: error.i18nKey,
+                    message: error.message,
+                    diagnostic: serializeError(error)
+                });
+                if (forAgent) throw error;
+                return null;
+            } finally {
+                lease?.release();
+            }
+        }
         return this._chipInfoService.read(forAgent);
     }
     // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
@@ -4817,8 +5106,12 @@ class MainViewProvider {
                     this._syncChipInfo((message) => webviewView.webview.postMessage(message));
                     this._svdManager.syncStatus().catch((error) => console.error("SVD 状态检查失败：", error.message));
                     this._postPeripheralDebugStatus((message) => webviewView.webview.postMessage(message));
-                    webviewView.webview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
-                    this.refreshOpenOcdStatus(false);
+                    webviewView.webview.postMessage({
+                        type: "backendStatus",
+                        backend: this._probeRsSelected() ? "probe-rs" : "openocd",
+                        ...this._backendStatusService().status
+                    });
+                    this.refreshBackendStatus(false);
                     this.refreshSkillStatus().catch((error) =>
                         console.error("Agent Skills 状态检查失败：", error.message)
                     );
@@ -4883,16 +5176,29 @@ class MainViewProvider {
                     }
                     break;
                 }
-                case "openocdAction": {
+                case "backendAction": {
                     try {
-                        await this._handleOpenOcdAction(message.action);
+                        await this._handleBackendAction(message.action);
                     } catch (error) {
-                        this._postOpenOcdStatus({
+                        this._backendStatusService().post({
                             state: "error",
                             key: error.i18nKey,
                             params: error.i18nParams,
                             message: error.message || String(error)
                         });
+                    }
+                    break;
+                }
+                case "selectBackend": {
+                    try {
+                        await this._selectBackend(message.backend);
+                    } catch (error) {
+                        webviewView.webview.postMessage({
+                            type: "commandError",
+                            error: error.message || String(error),
+                            diagnostic: serializeError(error)
+                        });
+                        await this.updateView();
                     }
                     break;
                 }
@@ -4988,7 +5294,12 @@ class MainViewProvider {
                     break;
                 }
                 case "chipControl": {
-                    await this._chipInfoService.control(message.action);
+                    if (this._probeRsSelected())
+                        this._postChipInfo({
+                            state: "error",
+                            message: "Use the probe-rs debug controls for target execution"
+                        });
+                    else await this._chipInfoService.control(message.action);
                     break;
                 }
                 case "cancelSvdDownload": {
@@ -5015,14 +5326,18 @@ class MainViewProvider {
         const visibilityListener = webviewView.onDidChangeVisibility?.(() => {
             if (!webviewView.visible) return;
             // Retained documents do not initialize again. Replay environment changes missed while hidden.
-            sidebarWebview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
+            sidebarWebview.postMessage({
+                type: "backendStatus",
+                backend: this._probeRsSelected() ? "probe-rs" : "openocd",
+                ...this._backendStatusService().status
+            });
             if (this._skillStatusService.lastStatus)
                 sidebarWebview.postMessage({
                     type: "skillStatus",
                     ...this._skillStatusService.lastStatus,
                     busy: !!this._skillStatusService.busy
                 });
-            this.refreshOpenOcdStatus(false);
+            this.refreshBackendStatus(false);
             this.refreshSkillStatus().catch((error) => console.error("Agent Skills 状态检查失败：", error.message));
         });
         webviewView.onDidDispose(() => {
@@ -5059,9 +5374,10 @@ class MainViewProvider {
     }
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
-        if (force) this._assertConnectionEditable({ debugger: true, mcu: true });
+        const probeRs = this._probeRsSelected();
+        if (force && !probeRs) this._assertConnectionEditable({ debugger: true, mcu: true });
         const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
-        const result = await autoDetect.detectWorkspace(vscode);
+        const result = await autoDetect.detectWorkspace(vscode, probeRs ? "probe-rs" : "openocd");
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
@@ -5083,7 +5399,7 @@ class MainViewProvider {
             await this._refreshElfBindings();
         }
         await this.updateView();
-        if (result.debugger && (force || !currentDebugger)) await this._refreshJlinkDriverChoice(true);
+        if (!probeRs && result.debugger && (force || !currentDebugger)) await this._refreshJlinkDriverChoice(true);
         const found = [
             detectedIoc && ".ioc: " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
@@ -5102,7 +5418,7 @@ class MainViewProvider {
         const revision = this._jlinkDriverChoiceRevision || 0;
         if (this._probeDriverSwitching) return null;
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
-        if (process.platform !== "win32" || debuggerCfg !== "jlink.cfg") {
+        if (this._probeRsSelected() || process.platform !== "win32" || debuggerCfg !== "jlink.cfg") {
             this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: "" });
             return null;
         }
@@ -5185,11 +5501,17 @@ class MainViewProvider {
                 cubemxStatus: this._cubemxConfiguration.status,
                 cubemxFirmware: this._cubemxFirmware?.result,
                 cubemxFirmwareError: this._cubemxFirmware?.error,
-                debugger: this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
+                debugger: this._probeRsSelected()
+                    ? vscode.workspace.getConfiguration("emberprobe").get("probeRsProbe", "") || this._t("pr.autoProbe")
+                    : this._context.workspaceState.get(CACHE_KEYS.debugger) || "",
+                backend: this._probeRsSelected() ? "probe-rs" : "openocd",
                 showJlinkDriverChoice:
+                    !this._probeRsSelected() &&
                     process.platform === "win32" &&
                     this._context.workspaceState.get(CACHE_KEYS.debugger) === "jlink.cfg",
-                mcu: this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
+                mcu: this._probeRsSelected()
+                    ? vscode.workspace.getConfiguration("emberprobe").get("probeRsChip", "")
+                    : this._context.workspaceState.get(CACHE_KEYS.mcuCore) || ""
             },
             this._lang
         );

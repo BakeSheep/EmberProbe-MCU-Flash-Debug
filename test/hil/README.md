@@ -1,5 +1,12 @@
 # EmberProbe HIL runners
 
+The independent [Embassy H723 smoke app](fixtures/embassy-h723/README.md)
+exercises Rust global sampling, DAP tuning, and defmt RTT on a dedicated board.
+Its opt-in probe-rs DAP acceptance script does not modify the main firmware
+workspace. Build and flash that app before running the DAP-only script. The
+separate VS Code Extension Host acceptance runner flashes the dedicated board
+itself and checks EmberProbe's UI-side sampling and tuning pipeline.
+
 The HIL workflow flashes real hardware. It is disabled until the repository variable `HIL_ENABLED` is set to `true`.
 
 Provision one self-hosted runner for each label:

@@ -251,7 +251,6 @@
             open: false,
             children: [
                 { type: "file", label: "c_cpp_properties.json" },
-                { type: "file", label: "launch.json" },
                 { type: "file", label: "tasks.json" }
             ]
         },
@@ -386,141 +385,7 @@
         { label: "Core/Inc/pid.h", status: "U", folder: "Core/Inc" }
     ];
 
-    var DEBUG = {
-        name: "EmberProbe (J-Link)",
-        frame: "ControlTask()",
-        file: "main.c",
-        breakpoints: [
-            { file: "main.c", line: 103, enabled: true },
-            { file: "freertos.c", line: 212, enabled: true },
-            { file: "pid.c", line: 58, enabled: false }
-        ],
-        callStack: [
-            { name: "ControlTask", detail: "main.c:103", active: true },
-            { name: "vTaskDelayUntil", detail: "tasks.c:1682" },
-            { name: "prvPortStartFirstTask", detail: "port.c:412" }
-        ],
-        variables: [
-            {
-                name: "pid",
-                value: "{…}",
-                type: "PID_HandleTypeDef",
-                children: [
-                    { name: "kp", value: "1.85", type: "float" },
-                    { name: "ki", value: "0.42", type: "float" },
-                    { name: "kd", value: "0.06", type: "float" },
-                    { name: "integral", value: "18.437", type: "float" },
-                    { name: "output", value: "742.16", type: "float" }
-                ]
-            },
-            { name: "g_sensor_temp", value: "36.412", type: "float" },
-            { name: "g_motor_rpm", value: "1447", type: "uint16_t" },
-            {
-                name: "g_imu",
-                value: "{…}",
-                type: "imu_sample_t",
-                children: [
-                    {
-                        name: "accel",
-                        value: "[3]",
-                        type: "float[3]",
-                        children: [
-                            { name: "[0]", value: "0.0214", type: "float" },
-                            { name: "[1]", value: "-0.0087", type: "float" },
-                            { name: "[2]", value: "0.9812", type: "float" }
-                        ]
-                    },
-                    { name: "gyro", value: "[3]", type: "float[3]" },
-                    { name: "temp", value: "36.81", type: "float" },
-                    { name: "timestamp", value: "0x1F4A03C2", type: "uint32_t" }
-                ]
-            },
-            {
-                name: "g_history",
-                value: "size=10",
-                type: "std::vector<float>",
-                stl: true,
-                children: [
-                    { name: "[0]", value: "36.41", type: "float" },
-                    { name: "[1]", value: "36.42", type: "float" },
-                    { name: "[2]", value: "36.4", type: "float" },
-                    { name: "[3]", value: "36.38", type: "float" },
-                    { name: "[4]", value: "36.39", type: "float" },
-                    { name: "[5]", value: "36.43", type: "float" },
-                    { name: "[6]", value: "36.45", type: "float" },
-                    { name: "[7]", value: "36.44", type: "float" },
-                    { name: "[8]", value: "36.42", type: "float" },
-                    { name: "[9]", value: "36.4", type: "float" }
-                ]
-            },
-            {
-                name: "g_fw_version",
-                value: '"1.4.2"',
-                type: "std::string",
-                stl: true,
-                children: [
-                    { name: "size", value: "5", type: "size_type" },
-                    { name: "capacity", value: "15", type: "size_type" }
-                ]
-            },
-            {
-                name: "g_telemetry_frame",
-                value: "{…}",
-                type: "telemetry_frame_t",
-                children: [
-                    { name: "rpm", value: "1447", type: "uint16_t" },
-                    { name: "voltage", value: "24.02", type: "float" },
-                    { name: "current", value: "1.83", type: "float" }
-                ]
-            }
-        ],
-        watch: [
-            { name: "g_motor_rpm", value: "1447", type: "uint16_t" },
-            { name: "pid.integral", value: "18.437", type: "float" },
-            { name: "g_imu.temp", value: "36.81", type: "float" }
-        ]
-    };
-
-    var TERMINAL_LINES = [
-        { cls: "dim", text: "Open On-Chip Debugger 0.12.0 (2024-11-24-10:12)" },
-        { cls: "dim", text: "Licensed under GNU GPL v2" },
-        { cls: "info", text: "Info : Listening on port 6666 for tcl connections" },
-        { cls: "info", text: "Info : Listening on port 4444 for telnet connections" },
-        { cls: "info", text: "Info : J-Link V11 compiled Nov 24 2024 10:12:05" },
-        { cls: "info", text: "Info : Hardware version: 11.00" },
-        { cls: "info", text: "Info : VTarget = 3.300 V" },
-        { cls: "info", text: "Info : clock speed 4000 kHz" },
-        { cls: "info", text: "Info : SWD DPIDR 0x2ba01477" },
-        { cls: "info", text: "Info : [stm32f4x.cpu] Cortex-M4 r0p1 processor detected" },
-        { cls: "info", text: "Info : [stm32f4x.cpu] target has 6 breakpoints, 4 watchpoints" },
-        { cls: "info", text: "Info : starting gdb server for stm32f4x.cpu on 3333" },
-        { cls: "info", text: "Info : Listening on port 3333 for gdb connections" },
-        { cls: "info", text: "Info : accepting 'gdb' connection on tcp/3333" },
-        { cls: "warn", text: "Warn : rtos detection failed: symbol 'uxTopUsedPriority' not found" },
-        { cls: "ok", text: "Info : halted: PC 0x08001a3c, SP 0x2001ffb0" },
-        { cls: "ok", text: "Info : breakpoint hit at 0x08001a3c (main.c:103)" }
-    ];
-
-    var OUTPUT_LINES = [
-        { cls: "title", text: "EmberProbe 芯片诊断 — 2026/10/5 14:32:08" },
-        { cls: "", text: "目标: stm32f4x.cpu" },
-        {
-            cls: "",
-            text: "解析: Core=Cortex-M4，Core Rev=r0p1，Device ID=0x1007 0x6435，Revision ID=0x1007，Flash=1024 KB，UID=0x002E 004D 3038 5157 3236 3813，State=halted"
-        },
-        { cls: "", text: "" },
-        { cls: "dim", text: "命令:" },
-        { cls: "", text: "  -c init" },
-        { cls: "", text: "  -c reset halt" },
-        { cls: "", text: "  -c flash probe 0" },
-        { cls: "", text: "  -c mdw 0xE0042000 4" },
-        { cls: "", text: "  -c mdw 0x1FFF7A10 4" },
-        { cls: "", text: "" },
-        { cls: "dim", text: "原始输出:" },
-        { cls: "", text: "  device id = 0x10076435" },
-        { cls: "", text: "  flash size = 1024 kbytes" },
-        { cls: "", text: "  unique id = 0x002E004D 30385157 32363813" }
-    ];
+    var BREAKPOINTS = [{ file: "main.c", line: 103, enabled: true }];
 
     var PROBLEMS = [
         { severity: "warning", file: "main.c", line: 47, message: '未使用的变量 "g_debug_counter"', source: "clangd" },
@@ -531,15 +396,6 @@
             message: "隐式转换可能丢失精度: double -> float",
             source: "clangd"
         }
-    ];
-
-    var DEBUG_CONSOLE_LINES = [
-        { cls: "prompt", text: "> EmberProbe DAP 会话已启动 (J-Link · SWD 4000 kHz)" },
-        { cls: "", text: "已加载符号: EmberProbeDemo.elf (28 个全局变量, 6 个 FreeRTOS 任务)" },
-        { cls: "", text: "断点命中 main.c:103 — ControlTask()" },
-        { cls: "dim", text: "  g_setpoint = 1500.0" },
-        { cls: "dim", text: "  g_measured = 1447.0" },
-        { cls: "dim", text: "  pid.output = 742.16" }
     ];
 
     var COMMANDS = [
@@ -553,19 +409,19 @@
             id: "mcu-vscode.checkOpenOcd",
             title: "检查 OpenOCD 环境",
             category: "EmberProbe",
-            action: "toast:OpenOCD 0.12.0 可用（J-Link · SWD 4000 kHz）"
+            action: "toast:OpenOCD 0.12.0 可用（J-Link · SWD 2000 kHz）"
         },
         {
             id: "mcu-vscode.manageAgentSkills",
             title: "管理 Agent Skills",
             category: "EmberProbe",
-            action: "toast:Agent Skill 已安装到当前工作区"
+            action: "command:mcu-vscode.manageAgentSkills"
         },
         {
             id: "mcu-vscode.downloadOfficialSvd",
             title: "下载/配置官方 SVD",
             category: "EmberProbe",
-            action: "toast:SVD 已配置：STM32F407.svd"
+            action: "command:mcu-vscode.downloadOfficialSvd"
         },
         {
             id: "workbench.view.emberprobe",
@@ -573,7 +429,6 @@
             category: "视图",
             action: "view:emberprobe"
         },
-        { id: "workbench.view.explorer", title: "显示资源管理器", category: "视图", action: "view:explorer" },
         {
             id: "workbench.action.terminal.toggle",
             title: "切换终端",
@@ -604,15 +459,12 @@
     ];
 
     return {
+        BREAKPOINTS: BREAKPOINTS,
         FILES: FILES,
         EXPLORER: EXPLORER,
         SEARCH_RESULTS: SEARCH_RESULTS,
         SCM_CHANGES: SCM_CHANGES,
-        DEBUG: DEBUG,
-        TERMINAL_LINES: TERMINAL_LINES,
-        OUTPUT_LINES: OUTPUT_LINES,
         PROBLEMS: PROBLEMS,
-        DEBUG_CONSOLE_LINES: DEBUG_CONSOLE_LINES,
         COMMANDS: COMMANDS
     };
 });

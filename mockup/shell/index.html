@@ -247,77 +247,6 @@
                             </div>
                         </section>
 
-                        <section class="view" data-view="debug" hidden>
-                            <header class="view-header">
-                                <span>运行和调试</span>
-                                <span class="view-actions"
-                                    ><button type="button" title="更多操作">
-                                        <span class="codicon codicon-more" aria-hidden="true"></span></button
-                                ></span>
-                            </header>
-                            <div class="view-body">
-                                <div class="debug-config-row">
-                                    <span class="debug-config-name">EmberProbe (J-Link)</span>
-                                    <button
-                                        type="button"
-                                        class="debug-start"
-                                        id="debugStartButton"
-                                        title="开始调试 (F5)"
-                                    >
-                                        <span class="codicon codicon-debug-start" aria-hidden="true"></span>
-                                    </button>
-                                    <button type="button" title="打开 launch.json">
-                                        <span class="codicon codicon-settings-gear" aria-hidden="true"></span>
-                                    </button>
-                                </div>
-                                <div class="section-header">
-                                    <span class="chevron"
-                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
-                                    ></span>
-                                    变量
-                                    <span class="section-actions"
-                                        ><button type="button" title="刷新">
-                                            <span class="codicon codicon-refresh" aria-hidden="true"></span></button
-                                    ></span>
-                                </div>
-                                <div class="tree debug-tree" id="debugVariables"></div>
-                                <div class="section-header">
-                                    <span class="chevron"
-                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
-                                    ></span>
-                                    监视
-                                    <span class="section-actions"
-                                        ><button type="button" title="添加">
-                                            <span class="codicon codicon-add" aria-hidden="true"></span></button
-                                    ></span>
-                                </div>
-                                <div class="tree debug-tree" id="debugWatch"></div>
-                                <div class="section-header">
-                                    <span class="chevron"
-                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
-                                    ></span>
-                                    调用堆栈
-                                </div>
-                                <div class="tree" id="debugCallStack"></div>
-                                <div class="section-header">
-                                    <span class="chevron"
-                                        ><span class="codicon codicon-chevron-down" aria-hidden="true"></span
-                                    ></span>
-                                    断点
-                                    <span class="section-actions"
-                                        ><button type="button" title="添加">
-                                            <span class="codicon codicon-add" aria-hidden="true"></span></button
-                                        ><button type="button" title="禁用断点">
-                                            <span
-                                                class="codicon codicon-circle-slash"
-                                                aria-hidden="true"
-                                            ></span></button
-                                    ></span>
-                                </div>
-                                <div class="tree" id="debugBreakpoints"></div>
-                            </div>
-                        </section>
-
                         <section class="view" data-view="extensions" hidden>
                             <header class="view-header">
                                 <span>扩展</span>
@@ -450,13 +379,6 @@
                                 <div id="problemsList"></div>
                             </div>
                             <div class="panel-pane" data-panel-pane="output">
-                                <div class="panel-pane-header">
-                                    <select>
-                                        <option>EmberProbe 芯片诊断</option>
-                                        <option>EmberProbe</option>
-                                        <option>任务</option>
-                                    </select>
-                                </div>
                                 <pre id="outputBody" class="terminal-body"></pre>
                             </div>
                             <div class="panel-pane" data-panel-pane="debug-console">
@@ -466,12 +388,8 @@
                                 </div>
                             </div>
                             <div class="panel-pane active" data-panel-pane="terminal">
+                                <div class="panel-pane-header" id="terminalName">EmberProbe OpenOCD</div>
                                 <pre id="terminalBody" class="terminal-body"></pre>
-                                <div class="terminal-input-line">
-                                    <span class="prompt">➜</span
-                                    ><span class="cmd">openocd -f interface/jlink.cfg -f target/stm32f4x.cfg</span
-                                    ><span class="terminal-cursor"></span>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -584,6 +502,8 @@
         <script src="chart-history.js"></script>
         <script src="sidebar-data.js"></script>
         <script src="livewatch-data.js"></script>
+        <script src="coordinator.js"></script>
+        <script src="operation-output.js"></script>
         <script src="sidebar-host.js"></script>
         <script src="livewatch-host.js"></script>
         <script src="shell-data.js"></script>

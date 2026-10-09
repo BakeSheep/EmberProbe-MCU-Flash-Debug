@@ -12,6 +12,15 @@
     var VERSION = "mock-elf-8f3c21";
     var SVD_PATH = "C:\\Users\\dev\\.emberprobe\\svd\\STM32F407.svd";
     var ELF_PATH = "C:\\Users\\dev\\EmberProbeDemo\\build\\Debug\\EmberProbeDemo.elf";
+    var CONNECTION = {
+        elf: ELF_PATH,
+        probe: "jlink.cfg",
+        target: "stm32f4x.cfg",
+        deviceId: "0x0009a413",
+        probeName: "J-Link V9",
+        probeVersion: "V9 compiled May  7 2021 16:26:12",
+        clock: "2000 kHz"
+    };
 
     /* ------------------------------------------------------------------ symbols */
 
@@ -161,7 +170,7 @@
             result: {
                 elf: { path: ELF_PATH },
                 flash: { total: 917504, estimated: false },
-                ram: { total: 42880, estimated: true },
+                ram: { total: 42880, estimated: false },
                 regions: [
                     {
                         name: "FLASH",
@@ -304,12 +313,12 @@
             info: {
                 core: "Cortex-M4",
                 coreRevision: "r0p1",
-                deviceId: "0x1007 0x6435",
-                revId: "0x1007",
+                deviceId: CONNECTION.deviceId,
+                revId: "0x0009",
                 designer: "STMicroelectronics",
                 designerCode: "JEP106:020 STMicroelectronics",
                 romDesigner: "",
-                romPart: "0x435",
+                romPart: "0x413",
                 flashSize: "1024 KB",
                 endian: "little",
                 uid: "0x002E 004D 3038 5157 3236 3813",
@@ -319,10 +328,10 @@
                 sp: "0x2001ffb0",
                 lr: "0x080012b7",
                 probe: "J-Link",
-                probeName: "J-Link V11",
-                probeVersion: "V11 compiled Nov 24 2024 10:12:05",
+                probeName: CONNECTION.probeName,
+                probeVersion: CONNECTION.probeVersion,
                 transport: "SWD",
-                clock: "4000 kHz",
+                clock: CONNECTION.clock,
                 voltage: "3.30 V",
                 targetName: "STM32F407ZGTx",
                 authenticity: "genuine",
@@ -348,9 +357,11 @@
             state: state,
             stopEpoch: stopEpoch || 0,
             inspectionEpoch: 1,
-            sessionId: state === "paused" ? RTOS_SESSION : "",
-            supported: true,
-            sessions: [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
+            sessionId: ["paused", "running"].includes(state) ? RTOS_SESSION : "",
+            supported: ["paused", "running"].includes(state),
+            sessions: ["paused", "running"].includes(state)
+                ? [{ id: RTOS_SESSION, name: "EmberProbe (J-Link)", serverGroup: "Cortex-M4", targetProcessor: 0 }]
+                : []
         };
     }
 
@@ -808,10 +819,13 @@
             current: 1.82,
             errors: 3,
             warns: 12,
+            now: Date.now(),
+            loopTimeUs: 840,
             adc: [],
             imu: { accel: [0.02, -0.01, 0.98], gyro: [0.4, -0.2, 0.1], temp: 36.8, timestamp: 0 }
         };
         for (var i = 0; i < 16; i++) state.adc.push(2048 + Math.round(Math.sin(i / 3) * 120));
+        var initial = JSON.parse(JSON.stringify(state));
         function noise(amount) {
             return (Math.random() - 0.5) * amount;
         }
@@ -820,6 +834,8 @@
             return Math.round(value * factor) / factor;
         }
         function tick() {
+            state.now = Date.now();
+            state.loopTimeUs = 840 + Math.round(noise(60));
             state.temp = round(state.temp + noise(0.06) + (36.5 - state.temp) * 0.02, 3);
             state.rpm = Math.max(0, Math.min(65535, Math.round(state.rpm + noise(6))));
             state.voltage = round(state.voltage + noise(0.02), 3);
@@ -849,7 +865,7 @@
                 g_bus_current: state.current,
                 g_error_count: state.errors,
                 g_warn_count: state.warns,
-                g_state: Math.floor(Date.now() / 2000) % 4,
+                g_state: Math.floor(state.now / 2000) % 4,
                 g_target_rpm: 1500,
                 g_pid_kp: 1.85,
                 g_pid_ki: 0.42,
@@ -857,13 +873,13 @@
                 g_setpoint: 1500,
                 g_measured: state.rpm,
                 g_pwm_duty: Math.min(1000, Math.round(state.rpm / 2)),
-                g_uart_tx_count: 12844 + (Math.floor(Date.now() / 1000) % 1000),
-                g_uart_rx_count: 9120 + (Math.floor(Date.now() / 1000) % 700),
+                g_uart_tx_count: 12844 + (Math.floor(state.now / 1000) % 1000),
+                g_uart_rx_count: 9120 + (Math.floor(state.now / 1000) % 700),
                 g_can_last_id: 0x18ff50e5,
                 g_watchdog_kick: 88213,
                 g_heap_used: 35456,
                 g_stack_high_water: 412,
-                g_loop_time_us: 840 + Math.round(noise(60)),
+                g_loop_time_us: state.loopTimeUs,
                 g_control_dt: 0.001,
                 g_temp_limit: 85,
                 g_motor_enabled: 1,
@@ -978,11 +994,22 @@
             }
             return null;
         }
-        return { tick: tick, scalarSamples: scalarSamples, compositeSample: compositeSample, write: write };
+        return {
+            tick: tick,
+            scalarSamples: scalarSamples,
+            compositeSample: compositeSample,
+            write: write,
+            reset: function () {
+                overrides.clear();
+                state = JSON.parse(JSON.stringify(initial));
+                state.now = Date.now();
+            }
+        };
     }
 
     return {
         VERSION: VERSION,
+        CONNECTION: CONNECTION,
         SVD_PATH: SVD_PATH,
         SYMBOLS: SYMBOLS,
         watchItem: watchItem,

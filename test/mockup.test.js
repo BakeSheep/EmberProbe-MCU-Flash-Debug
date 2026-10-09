@@ -11,6 +11,7 @@ const { getModernWebviewContent } = require("../src/modernView");
 const csvTools = require("../src/liveWatchView");
 const sidebarData = require("../mockup/mock/sidebar-data");
 const liveData = require("../mockup/mock/livewatch-data");
+const operationOutput = require("../mockup/mock/operation-output");
 const { createMockServer } = require("../mockup/serve");
 const mockup = path.resolve(__dirname, "../mockup");
 
@@ -23,6 +24,7 @@ function hostEnvironment() {
     const root = {
         EmberProbeSidebarData: sidebarData,
         EmberProbeLiveWatchData: liveData,
+        EmberProbeMockOutput: operationOutput,
         EmberProbeMockCsv: csvTools,
         addEventListener: (_type, handler) => listeners.add(handler),
         removeEventListener: (_type, handler) => listeners.delete(handler)
@@ -60,7 +62,7 @@ function hostEnvironment() {
             body: { appendChild() {} }
         }
     });
-    for (const file of ["sidebar-host.js", "livewatch-host.js"])
+    for (const file of ["coordinator.js", "sidebar-host.js", "livewatch-host.js"])
         vm.runInContext(fs.readFileSync(path.join(mockup, "mock", file), "utf8"), context, { filename: file });
     function frame(onSend) {
         const messages = [];
@@ -98,6 +100,500 @@ function hostEnvironment() {
 
 function latest(frame, type) {
     return frame.messages.findLast((message) => message.type === type);
+}
+
+function testOperationLifecycle() {
+    const env = hostEnvironment();
+    const simulator = sidebarData.createSimulator();
+    const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+    const sidebar = env.frame();
+    const live = env.frame();
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, { simulator, coordinator });
+    const chart = env.root.EmberProbeLiveWatchHost.create(live, { simulator, coordinator });
+    const execute = (cmd) => env.deliver(sidebar, { type: "executeCommand", cmd });
+    try {
+        env.deliver(sidebar, { type: "initCheck" });
+        env.deliver(live, { type: "ready" });
+        assert.equal(latest(sidebar, "liveStatus").canWrite, false, "idle is not a writable DAP snapshot");
+        assert.equal(latest(sidebar, "rtosDebugStatus").state, "none", "idle has no invented debug session");
+        env.deliver(sidebar, { type: "liveToggle" });
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        assert.equal(latest(sidebar, "liveStatus").source, "openocd");
+        execute("mcu-vscode.download");
+        assert.equal(latest(sidebar, "liveStatus").canRead, false);
+        assert.equal(latest(live, "liveStatus").canRead, false, "flash suspends both consumers");
+        execute("mcu-vscode.download");
+        execute("mcu-vscode.debug");
+        assert.equal(host.isDebugStarting(), false, "debug cannot start during flash");
+        env.advance(4900);
+        assert.equal(
+            sidebar.messages.filter((m) => m.type === "commandSuccess" && m.cmd === "mcu-vscode.download").length,
+            1
+        );
+        assert.equal(latest(sidebar, "liveStatus").canWrite, true);
+        assert.equal(latest(live, "liveStatus").canRead, true, "flash restores requested sampling");
+        execute("mcu-vscode.debug");
+        env.advance(2200);
+        assert.equal(latest(sidebar, "rtosDebugStatus").state, "paused");
+        assert.equal(latest(live, "liveStatus").source, "dap");
+        const frozen = latest(sidebar, "liveSample").samples.map(({ name, value }) => ({ name, value }));
+        env.advance(300);
+        assert.deepStrictEqual(
+            latest(sidebar, "liveSample").samples.map(({ name, value }) => ({ name, value })),
+            frozen
+        );
+        const epoch = latest(sidebar, "peripheralDebugStatus").epoch;
+        host.setTargetState("running", { notify: false });
+        assert.equal(latest(sidebar, "liveStatus").source, "openocd");
+        assert.equal(latest(sidebar, "liveStatus").canWrite, false, "running debug samples are read-only");
+        assert.ok(latest(sidebar, "peripheralDebugStatus").epoch > epoch);
+        env.deliver(sidebar, { type: "writeVariable", name: "g_target_rpm", value: 1900, seq: 42 });
+        assert.equal(latest(sidebar, "writeResult").ok, false);
+        execute("mcu-vscode.download");
+        assert.equal(latest(sidebar, "commandError").cmd, "mcu-vscode.download");
+        assert.equal(latest(sidebar, "commandError").key, "msg.debugBusyForDownload");
+        host.stopDebug();
+        assert.equal(latest(sidebar, "rtosDebugStatus").state, "none");
+        assert.equal(latest(sidebar, "liveStatus").canWrite, true, "stopping debug restores standalone sampling");
+        env.deliver(sidebar, { type: "liveToggle" });
+        env.deliver(live, { type: "stop" });
+        env.deliver(sidebar, { type: "writeVariable", name: "g_target_rpm", value: 1900, seq: 43 });
+        assert.equal(latest(sidebar, "writeResult").ok, false, "stopped consumers cannot write");
+    } finally {
+        host.destroy();
+        chart.destroy();
+    }
+}
+
+function testSvdCancellation() {
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const host = env.root.EmberProbeSidebarHost.create(frame);
+    const command = { type: "executeCommand", cmd: "mcu-vscode.downloadOfficialSvd" };
+    try {
+        env.deliver(frame, command);
+        env.advance(400);
+        env.deliver(frame, { type: "cancelSvdDownload" });
+        const cancelled = frame.messages.length;
+        env.advance(3000);
+        assert.equal(frame.messages.length, cancelled, "cancelled SVD callbacks cannot revive progress or success");
+        env.deliver(frame, command);
+        env.deliver(frame, command);
+        env.advance(2500);
+        assert.equal(frame.messages.filter((m) => m.type === "commandSuccess" && m.cmd === command.cmd).length, 1);
+        env.deliver(frame, command);
+        host.destroy();
+        assert.equal(env.jobs.size, 0, "destroy clears every pending host task");
+    } finally {
+        host.destroy();
+    }
+}
+
+function testConcurrentChipRefresh() {
+    for (const mode of [
+        "idle",
+        "sampling",
+        "flash",
+        "debug-starting",
+        "debug-paused",
+        "debug-running",
+        "cpu",
+        "driver"
+    ]) {
+        const env = hostEnvironment();
+        const simulator = sidebarData.createSimulator();
+        const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+        const frame = env.frame();
+        const chartFrame = env.frame();
+        const notices = [];
+        const host = env.root.EmberProbeSidebarHost.create(frame, {
+            simulator,
+            coordinator,
+            notify: (event) => notices.push(event)
+        });
+        const chart = env.root.EmberProbeLiveWatchHost.create(chartFrame, { simulator, coordinator });
+        try {
+            env.deliver(frame, { type: "initCheck" });
+            env.deliver(chartFrame, { type: "ready" });
+            env.advance(500);
+            if (mode === "sampling") {
+                host.startSampling();
+                env.deliver(chartFrame, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+            }
+            if (mode === "flash") {
+                host.download();
+                env.advance(550);
+            }
+            if (mode.startsWith("debug")) {
+                host.startDebug();
+                if (mode !== "debug-starting") env.advance(2200);
+                if (mode === "debug-running") host.setTargetState("running");
+            }
+            if (mode === "cpu") env.deliver(frame, { type: "cpuLoadStart" });
+            if (mode === "driver") env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
+            const before = coordinator.snapshot();
+            const chipReadAt = latest(frame, "chipInfo").info.readAt;
+            const chipReads = frame.messages.filter(
+                (message) => message.type === "chipInfoStatus" && message.state === "ready"
+            ).length;
+            const samples = chartFrame.messages.filter((message) => message.type === "liveSample").length;
+            assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true, mode);
+            env.deliver(frame, { type: "readChipInfo" });
+            env.deliver(frame, { type: "readChipInfo" });
+            assert.equal(coordinator.snapshot().operation, before.operation, mode + " preserves the current owner");
+            assert.equal(coordinator.snapshot().epoch, before.epoch, mode + " preserves the stop generation");
+            assert.equal(
+                latest(frame, "mockOperationStatus").availability.chipRead,
+                false,
+                "only the pending refresh is disabled"
+            );
+            env.advance(700);
+            assert.equal(latest(frame, "chipInfoStatus").state, "ready", mode);
+            assert.equal(coordinator.snapshot().operation, before.operation, mode);
+            assert.equal(latest(frame, "chipInfo").info.deviceId, operationOutput.connection.deviceId);
+            assert.ok(latest(frame, "chipInfo").info.readAt > chipReadAt);
+            assert.equal(
+                latest(frame, "chipInfo").info.targetState,
+                coordinator.snapshot().target,
+                "read completes with current target state"
+            );
+            assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true, mode);
+            if (mode !== "flash")
+                assert.equal(coordinator.snapshot().epoch, before.epoch, "read alone does not invalidate snapshots");
+            if (mode === "sampling") {
+                assert.equal(latest(frame, "liveStatus").canRead, true);
+                assert.ok(chartFrame.messages.filter((message) => message.type === "liveSample").length > samples);
+            }
+            assert.equal(
+                frame.messages.filter((message) => message.type === "chipInfoStatus" && message.state === "ready")
+                    .length,
+                chipReads + 1,
+                mode + " repeated read clicks are deduplicated"
+            );
+            assert.ok(!notices.some((event) => event.panel === "output"), "chip reads do not create Output content");
+        } finally {
+            host.destroy();
+            chart.destroy();
+        }
+    }
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const notices = [];
+    const host = env.root.EmberProbeSidebarHost.create(frame, { notify: (event) => notices.push(event) });
+    env.deliver(frame, { type: "readChipInfo" });
+    host.destroy();
+    const count = notices.length;
+    env.advance(3000);
+    assert.equal(notices.length, count, "destroyed refresh cannot publish completion later");
+}
+
+function testDriverSelection() {
+    const env = hostEnvironment();
+    const simulator = sidebarData.createSimulator();
+    const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+    const frame = env.frame();
+    const live = env.frame();
+    const notices = [];
+    const host = env.root.EmberProbeSidebarHost.create(frame, {
+        simulator,
+        coordinator,
+        notify: (event) => notices.push(event)
+    });
+    const chart = env.root.EmberProbeLiveWatchHost.create(live, { simulator, coordinator });
+    const select = (driver) => env.deliver(frame, { type: "selectProbeDriver", driver });
+    try {
+        host.sendInitialState();
+        env.deliver(live, { type: "ready" });
+        env.advance(500);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        const initialEpoch = coordinator.snapshot().epoch;
+        for (const invalid of [undefined, "", "SEGGER", "unknown", {}]) {
+            select(invalid);
+            assert.equal(latest(frame, "commandError").code, "PROBE_DRIVER_INVALID_CHOICE");
+            assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+            assert.equal(env.jobs.size, 0, "invalid choices cannot schedule a driver change");
+        }
+        select("winusb");
+        assert.equal(coordinator.snapshot().epoch, initialEpoch, "the confirmed choice is a no-op");
+        assert.equal(env.jobs.size, 0);
+        select("segger");
+        assert.equal(coordinator.snapshot().operation, "driver");
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb", "requested is not yet confirmed");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, true);
+        assert.equal(latest(frame, "probeDriverStatus").state, "restoring");
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true);
+        const pendingJobs = env.jobs.size;
+        select("segger");
+        assert.equal(latest(frame, "commandError").code, "PROBE_BUSY");
+        assert.equal(env.jobs.size, pendingJobs, "duplicate requests cannot create another driver task");
+        env.advance(899);
+        assert.equal(coordinator.snapshot().driver, "winusb");
+        env.advance(1);
+        assert.equal(coordinator.snapshot().driver, "segger");
+        assert.equal(coordinator.snapshot().operation, null);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger");
+        assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        assert.ok(
+            frame.messages.some((message) => message.type === "probeDriverStatus" && message.state === "restored")
+        );
+        assert.equal(latest(frame, "probeDriverStatus").state, "error");
+        assert.ok(latest(frame, "probeDriverStatus").message.includes("WinUSB"));
+        assert.ok(notices.some((event) => event.action === "toast" && event.icon === "warning"));
+        const availability = latest(frame, "mockOperationStatus").availability;
+        for (const name of ["download", "debug", "chipRead", "chipControl", "live"])
+            assert.equal(availability[name], false, name + " requires WinUSB");
+        assert.equal(availability.driver, true, "unsupported drivers must still allow recovery");
+        assert.equal(latest(frame, "cpuLoad").canStart, false);
+        assert.equal(latest(live, "mockOperationStatus").availability.live, false);
+        const unsupportedEpoch = coordinator.snapshot().epoch;
+        const rejected = [
+            [{ type: "executeCommand", cmd: "mcu-vscode.download" }, "commandError"],
+            [{ type: "executeCommand", cmd: "mcu-vscode.debug" }, "commandError"],
+            [{ type: "liveToggle" }, "liveError"],
+            [{ type: "readChipInfo" }, "chipInfoStatus"],
+            [{ type: "chipControl", action: "reset" }, "chipInfoStatus"],
+            [{ type: "cpuLoadStart" }, "commandError"]
+        ];
+        for (const [message, response] of rejected) {
+            env.deliver(frame, message);
+            assert.equal(latest(frame, response).code, "PROBE_DRIVER_UNSUPPORTED", message.type);
+        }
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        assert.equal(latest(live, "liveError").code, "PROBE_DRIVER_UNSUPPORTED");
+        assert.equal(latest(live, "liveStatus").canRead, false);
+        assert.equal(coordinator.snapshot().epoch, unsupportedEpoch);
+        assert.equal(env.jobs.size, 0, "unsupported operations cannot create success callbacks");
+        assert.ok(!notices.some((event) => event.action === "operationOutput"));
+        host.sendInitialState();
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger", "initialization replays confirmed state");
+        assert.equal(latest(frame, "chipInfoStatus").key, "probe.driverUnsupported");
+        env.advance(500);
+        select("winusb");
+        assert.equal(latest(frame, "probeDriverChoice").driver, "segger");
+        assert.equal(latest(frame, "probeDriverStatus").state, "installing");
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, false);
+        env.advance(900);
+        assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+        assert.equal(latest(frame, "probeDriverStatus").state, "ready");
+        assert.equal(latest(frame, "mockOperationStatus").availability.download, true);
+        assert.equal(latest(frame, "mockOperationStatus").availability.chipRead, true);
+        assert.equal(latest(live, "liveStatus").running, false, "recovering a driver does not start sampling");
+    } finally {
+        host.destroy();
+        chart.destroy();
+    }
+    for (const mode of ["sampling", "flash", "debug-starting", "debug-paused", "cpu"]) {
+        const env = hostEnvironment();
+        const simulator = sidebarData.createSimulator();
+        const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+        const frame = env.frame();
+        const host = env.root.EmberProbeSidebarHost.create(frame, { simulator, coordinator });
+        try {
+            if (mode === "sampling") host.startSampling();
+            if (mode === "flash") host.download();
+            if (mode.startsWith("debug")) {
+                host.startDebug();
+                if (mode === "debug-paused") env.advance(2200);
+            }
+            if (mode === "cpu") env.deliver(frame, { type: "cpuLoadStart" });
+            const before = coordinator.snapshot();
+            env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
+            assert.equal(latest(frame, "commandError").code, "PROBE_BUSY", mode);
+            assert.deepStrictEqual(coordinator.snapshot(), before, mode + " keeps its owner and driver");
+            assert.equal(latest(frame, "probeDriverChoice").driver, "winusb");
+            assert.equal(latest(frame, "probeDriverSwitch").busy, false);
+        } finally {
+            host.destroy();
+        }
+    }
+    const cancelled = hostEnvironment();
+    const cancelledFrame = cancelled.frame();
+    const cancelledHost = cancelled.root.EmberProbeSidebarHost.create(cancelledFrame);
+    cancelled.deliver(cancelledFrame, { type: "selectProbeDriver", driver: "segger" });
+    cancelledHost.destroy();
+    const count = cancelledFrame.messages.length;
+    cancelled.advance(2000);
+    assert.equal(cancelledFrame.messages.length, count, "destroyed driver tasks cannot publish a confirmed choice");
+}
+
+function testDynamicOperationOutput() {
+    const { parseLine } = require("../src/openocdRunner");
+    for (const step of operationOutput.download.steps) assert.deepStrictEqual(step.event, parseLine(step.raw));
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const notices = [];
+    const host = env.root.EmberProbeSidebarHost.create(frame, { notify: (event) => notices.push(event) });
+    const terminalText = () =>
+        notices
+            .filter((event) => event.panel === "terminal")
+            .flatMap((event) => event.lines)
+            .map((line) => line.text)
+            .join("\n");
+    try {
+        host.sendInitialState();
+        assert.equal(terminalText(), "");
+        host.download();
+        host.download();
+        assert.ok(terminalText().includes("EmberProbe 固件下载"));
+        assert.ok(!terminalText().includes("开始写入固件"));
+        env.advance(3600);
+        assert.ok(terminalText().includes("→ ** Verify Started **"));
+        assert.ok(!terminalText().includes("固件校验通过"), "verification cannot complete early");
+        env.advance(1200);
+        const lines = terminalText();
+        const events = operationOutput.download.steps.map((step) => step.line.text);
+        let previous = -1;
+        for (const text of events.concat("✓ 固件下载并校验成功")) {
+            const index = lines.indexOf(text);
+            assert.ok(index > previous, text + " follows the real parser order");
+            previous = index;
+        }
+        assert.ok(lines.includes("  探针 J-Link V9 compiled May  7 2021 16:26:12"));
+        assert.ok(lines.includes("  目标 stm32f4x.cfg · 探针配置 jlink.cfg"));
+        assert.equal(
+            frame.messages.filter(
+                (message) => message.type === "commandSuccess" && message.cmd === "mcu-vscode.download"
+            ).length,
+            1
+        );
+        host.download();
+        env.advance(4800);
+        assert.equal(
+            terminalText().split("✓ 固件下载并校验成功").length - 1,
+            2,
+            "shared terminal retains sequential operation history"
+        );
+        host.download();
+        env.advance(400);
+        host.destroy();
+        const count = notices.length;
+        env.advance(5000);
+        assert.equal(notices.length, count, "disposed flash cannot emit a success summary");
+    } finally {
+        host.destroy();
+    }
+}
+
+function testCpuOwnershipAndStoppedIntent() {
+    const env = hostEnvironment();
+    const simulator = sidebarData.createSimulator();
+    const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
+    const frame = env.frame();
+    const live = env.frame();
+    const host = env.root.EmberProbeSidebarHost.create(frame, { simulator, coordinator });
+    const chart = env.root.EmberProbeLiveWatchHost.create(live, { simulator, coordinator });
+    try {
+        env.deliver(frame, { type: "initCheck" });
+        env.deliver(live, { type: "ready" });
+        assert.equal(latest(frame, "cpuLoad").canStart, true);
+        env.deliver(frame, { type: "cpuLoadStart" });
+        assert.equal(latest(frame, "cpuLoad").ownsProbe, true);
+        assert.equal(latest(live, "mockOperationStatus").availability.live, false);
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        env.deliver(frame, { type: "liveToggle" });
+        host.download();
+        host.startDebug();
+        env.deliver(frame, { type: "readChipInfo" });
+        env.deliver(frame, { type: "selectProbeDriver", driver: "winusb" });
+        assert.equal(coordinator.snapshot().operation, "cpuLoad", "all hardware entry points respect CPU ownership");
+        assert.equal(host.isDebugStarting(), false);
+        assert.equal(latest(live, "liveStatus").running, false);
+        env.advance(10300);
+        const summary = latest(frame, "cpuLoad");
+        assert.equal(summary.state, "running");
+        assert.ok(summary.workloadPercent > 0 && summary.workloadPercent < 100);
+        env.deliver(frame, { type: "cpuLoadStop" });
+        assert.equal(coordinator.snapshot().operation, null);
+        assert.equal(latest(frame, "cpuLoad").canStart, true);
+        env.deliver(frame, { type: "liveToggle" });
+        env.deliver(frame, { type: "cpuLoadStart" });
+        assert.equal(latest(frame, "cpuLoad").ownsProbe, false, "CPU cannot take a sampling lease");
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        host.download();
+        const archived = latest(live, "liveSample").t;
+        env.advance(500);
+        assert.equal(latest(live, "liveSample").t, archived, "flash cannot append fictitious samples");
+        env.deliver(frame, { type: "liveToggle" });
+        env.deliver(live, { type: "stop" });
+        env.deliver(live, { type: "start", items: liveData.watchList(), frequencyHz: 30 });
+        assert.equal(latest(live, "liveStatus").running, false, "a new consumer cannot start during flash");
+        env.advance(4400);
+        assert.equal(latest(frame, "liveStatus").running, false);
+        assert.equal(latest(live, "liveStatus").running, false, "explicit stop cancels automatic restoration");
+        assert.equal(latest(frame, "cpuLoad").canStart, true);
+        env.deliver(frame, { type: "readChipInfo" });
+        env.deliver(frame, { type: "cpuLoadStart" });
+        assert.equal(coordinator.snapshot().operation, "cpuLoad", "chip refresh does not take the probe lease");
+        env.advance(700);
+        assert.equal(latest(frame, "chipInfoStatus").state, "ready");
+        env.deliver(frame, { type: "cpuLoadStop" });
+        host.startDebug();
+        env.deliver(frame, { type: "cpuLoadStart" });
+        assert.equal(coordinator.snapshot().operation, "debugStart");
+        env.advance(2200);
+        env.deliver(frame, { type: "cpuLoadStart" });
+        assert.equal(latest(frame, "cpuLoad").canStart, false, "paused debug still owns the probe");
+    } finally {
+        host.destroy();
+        chart.destroy();
+    }
+}
+
+function testStopGenerationAndTaskCleanup() {
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const host = env.root.EmberProbeSidebarHost.create(frame);
+    const original = sidebarData.peripheralReadResult(["GPIOA.MODER"], false).registers[0].value;
+    try {
+        env.deliver(frame, { type: "initCheck" });
+        env.deliver(frame, { type: "liveToggle" });
+        host.startDebug();
+        env.advance(2200);
+        const epoch = latest(frame, "peripheralDebugStatus").epoch;
+        env.deliver(frame, { type: "peripheralWriteRequest", target: "GPIOA.MODER", value: "0", mockEpoch: epoch });
+        const reads = frame.messages.filter((m) => m.type === "peripheralReadResult").length;
+        host.setTargetState("running");
+        host.setTargetState("halted");
+        env.advance(60);
+        assert.equal(
+            frame.messages.filter((m) => m.type === "peripheralReadResult").length,
+            reads,
+            "old write readback cannot cross stop generations"
+        );
+        env.deliver(frame, { type: "writeVariable", name: "g_target_rpm", value: 2500, seq: 5, mockEpoch: epoch });
+        assert.equal(latest(frame, "writeResult").ok, false, "a late scalar write cannot cross stop generations");
+        env.deliver(frame, { type: "rtosRefresh", mockEpoch: epoch });
+        assert.equal(latest(frame, "rtosError").type, "rtosError");
+    } finally {
+        sidebarData.peripheralWriteResult("GPIOA.MODER", original);
+        host.destroy();
+    }
+    for (const message of [
+        { type: "executeCommand", cmd: "mcu-vscode.download" },
+        { type: "executeCommand", cmd: "mcu-vscode.debug" },
+        { type: "executeCommand", cmd: "mcu-vscode.downloadOfficialSvd" },
+        { type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" },
+        { type: "readChipInfo" },
+        { type: "selectProbeDriver", driver: "segger" },
+        { type: "cpuLoadStart" }
+    ]) {
+        const env = hostEnvironment();
+        const frame = env.frame();
+        const host = env.root.EmberProbeSidebarHost.create(frame);
+        env.deliver(frame, message);
+        assert.ok(env.jobs.size > 0);
+        host.destroy();
+        const count = frame.messages.length;
+        assert.equal(env.jobs.size, 0, `${message.type} releases its pending callbacks`);
+        host.startSampling();
+        host.stopDebug();
+        assert.equal(host.setTargetState("halted"), false, "detached shell callbacks cannot change the target");
+        assert.equal(env.jobs.size, 0, "a destroyed host cannot restart sampling");
+        env.advance(20000);
+        assert.equal(frame.messages.length, count);
+        host.destroy();
+    }
 }
 
 function testSimulatorAndRegisters() {
@@ -146,13 +642,26 @@ function testHostsAndRenderer() {
     const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
     const sidebar = env.frame((message) => view.send(message));
     const simulator = sidebarData.createSimulator();
+    const coordinator = env.root.EmberProbeMockCoordinator.create({ simulator });
     const notices = [];
-    const host = env.root.EmberProbeSidebarHost.create(sidebar, { simulator, notify: (event) => notices.push(event) });
+    const host = env.root.EmberProbeSidebarHost.create(sidebar, {
+        simulator,
+        coordinator,
+        notify: (event) => notices.push(event)
+    });
     const live = env.frame();
-    const liveHost = env.root.EmberProbeLiveWatchHost.create(live, { simulator, getSidebarWatch: host.getWatchList });
+    const liveHost = env.root.EmberProbeLiveWatchHost.create(live, {
+        simulator,
+        coordinator,
+        getSidebarWatch: host.getWatchList
+    });
     try {
         env.deliver(sidebar, { type: "initCheck" });
+        assert.equal(view.document.querySelector("#writeValues .write-input").disabled, true);
+        env.deliver(sidebar, { type: "liveToggle" });
         const memory = latest(sidebar, "memoryAnalysis").result;
+        assert.equal(memory.ram.estimated, false);
+        assert.ok(!view.document.getElementById("memoryBody").textContent.includes("估计"));
         for (let i = 0; i < 5; i++) {
             env.advance(1);
             env.deliver(sidebar, { type: "memoryRefresh" });
@@ -192,12 +701,16 @@ function testHostsAndRenderer() {
         assert.equal(latest(live, "liveSample").samples.find((sample) => sample.name === "g_target_rpm").value, 2000);
         assert.ok(latest(live, "liveCompositeSample").samples.some((sample) => sample.name === "g_imu"));
 
+        env.deliver(sidebar, { type: "liveToggle" });
+        env.deliver(live, { type: "stop" });
         env.deliver(sidebar, { type: "chipControl", action: "reset" });
         assert.equal(notices.at(-1).state, "running");
         env.deliver(sidebar, { type: "readChipInfo" });
         env.advance(700);
         assert.equal(latest(sidebar, "chipInfo").info.targetState, "running");
         env.deliver(sidebar, { type: "chipControl", action: "pause" });
+        host.startDebug();
+        env.advance(2200);
         const epoch = latest(sidebar, "peripheralDebugStatus").epoch;
         env.deliver(sidebar, { type: "peripheralReadRequest", targets: ["GPIOA.MODER"] });
         assert.equal(latest(sidebar, "peripheralReadResult").session.epoch, epoch);
@@ -321,6 +834,7 @@ function testDebugLatency() {
             1,
             "duplicate clicks share one wait"
         );
+        host.stopDebug();
         host.startDebug();
         env.advance(1000);
         assert.equal(host.cancelDebugStart(), true);
@@ -375,8 +889,138 @@ function testDebugBusyBridge() {
     }
 }
 
+async function testOperationAvailabilityBridge() {
+    const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
+    try {
+        view.window.eval(fs.readFileSync(path.join(mockup, "mock/prelude.js"), "utf8"));
+        function send(source, availability) {
+            view.window.dispatchEvent(
+                new view.window.MessageEvent("message", {
+                    source,
+                    data: { type: "mockOperationStatus", operation: "download", epoch: 42, availability }
+                })
+            );
+        }
+        const button = view.document.querySelector('[data-command="mcu-vscode.download"]');
+        send({}, { download: false });
+        assert.equal(button.disabled, false, "foreign frames cannot change operation availability");
+        send(view.window.parent, { download: false, debug: false, chipRead: true, chipControl: false, live: true });
+        assert.equal(button.disabled, true);
+        assert.equal(
+            view.document.getElementById("chipRead").disabled,
+            false,
+            "chip refresh stays available during flash"
+        );
+        assert.ok([...view.document.querySelectorAll(".chip-control")].every((control) => control.disabled));
+        assert.equal(
+            view.document.getElementById("liveToggle").disabled,
+            false,
+            "an active consumer can stop during flash"
+        );
+        button.disabled = false;
+        view.document.getElementById("chipRead").disabled = true;
+        await Promise.resolve();
+        assert.equal(button.disabled, true, "renderer cooldowns cannot undo the operation lock");
+        assert.equal(
+            view.document.getElementById("chipRead").disabled,
+            false,
+            "CPU and driver renderer locks cannot disable concurrent refresh"
+        );
+        send(view.window.parent, { chipRead: false, chipControl: false });
+        assert.equal(
+            view.document.getElementById("chipRead").disabled,
+            true,
+            "a pending refresh disables its own button"
+        );
+        const messages = [];
+        view.window.parent.postMessage = (message) => messages.push(message);
+        view.window.acquireVsCodeApi().postMessage({ type: "writeVariable", name: "g_target_rpm", value: 2000 });
+        assert.equal(messages[0].message.mockEpoch, 42, "writes are stamped with the displayed stop generation");
+        const shortcut = new view.window.KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true });
+        view.document.getElementById("liveToggle").dispatchEvent(shortcut);
+        assert.equal(shortcut.defaultPrevented, true, "F5 in a webview must not refresh the browser");
+        assert.equal(messages.at(-1).__emberprobeMockShortcut, true);
+        assert.equal(messages.at(-1).key, "F5");
+        const count = messages.length;
+        view.document
+            .getElementById("liveToggle")
+            .dispatchEvent(
+                new view.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })
+            );
+        assert.equal(messages.length, count, "local webview editing keys stay local");
+        send(view.window.parent, { download: true, debug: true, chipRead: true, chipControl: true, live: true });
+        assert.equal(button.disabled, false, "completion unlocks controls");
+        view.assertHealthy();
+    } finally {
+        view.close();
+    }
+}
+
+async function testDriverRendererBridge() {
+    const view = render(getModernWebviewContent({ debugger: "J-Link · SWD", showJlinkDriverChoice: true }, "zh"));
+    const env = hostEnvironment();
+    const frame = env.frame((message) =>
+        view.window.dispatchEvent(
+            new view.window.MessageEvent("message", { source: view.window.parent, data: message })
+        )
+    );
+    const host = env.root.EmberProbeSidebarHost.create(frame);
+    try {
+        view.window.eval(fs.readFileSync(path.join(mockup, "mock/prelude.js"), "utf8"));
+        host.sendInitialState();
+        env.advance(500);
+        await Promise.resolve();
+        const driver = view.document.getElementById("jlinkDriverChoice");
+        const busy = view.document.getElementById("jlinkDriverBusy");
+        const chipRead = view.document.getElementById("chipRead");
+        const download = view.document.querySelector('[data-command="mcu-vscode.download"]');
+        assert.equal(driver.hidden, false, "the real driver selector is visible");
+        assert.equal(driver.value, "winusb");
+        assert.equal(driver.disabled, false);
+        assert.equal(busy.hidden, true);
+        assert.equal(view.document.getElementById("mcuConfigSection").open, true);
+        driver.value = "segger";
+        driver.dispatchEvent(new view.window.Event("change"));
+        assert.equal(driver.value, "winusb", "the renderer retains the confirmed choice while switching");
+        env.deliver(frame, view.messages.at(-1));
+        await Promise.resolve();
+        assert.equal(driver.disabled, true);
+        assert.equal(busy.hidden, false);
+        assert.equal(chipRead.disabled, false, "the demo keeps supported chip refresh available during switching");
+        env.advance(900);
+        await Promise.resolve();
+        assert.equal(driver.value, "segger");
+        assert.equal(driver.disabled, false, "recovery remains available");
+        assert.equal(busy.hidden, true);
+        assert.equal(chipRead.disabled, true);
+        assert.equal(download.disabled, true);
+        assert.equal(view.document.getElementById("liveToggle").disabled, true);
+        driver.value = "winusb";
+        driver.dispatchEvent(new view.window.Event("change"));
+        env.deliver(frame, view.messages.at(-1));
+        env.advance(900);
+        await Promise.resolve();
+        assert.equal(driver.value, "winusb");
+        assert.equal(chipRead.disabled, false);
+        assert.equal(download.disabled, false);
+        host.startSampling();
+        await Promise.resolve();
+        assert.equal(driver.disabled, true, "sampling disables driver changes");
+        env.deliver(frame, { type: "selectProbeDriver", driver: "segger" });
+        await Promise.resolve();
+        assert.equal(driver.value, "winusb", "rejected driver changes restore the confirmed selection");
+        assert.equal(driver.disabled, true, "busy responses cannot undo the sampling lock");
+        assert.equal(busy.hidden, true);
+        view.assertHealthy();
+    } finally {
+        host.destroy();
+        view.close();
+    }
+}
+
 function shellHtml() {
     const assets = {
+        "operation-output.js": "window.EmberProbeMockOutput = " + JSON.stringify(operationOutput) + ";",
         "csv.js": `window.EmberProbeMockCsv = { buildCsv: ${csvTools.buildCsv}, csvDataRowCount: ${csvTools.csvDataRowCount} };`
     };
     return fs
@@ -415,6 +1059,15 @@ async function testShell() {
         assert.ok(doc.querySelector('[data-tab="livewatch"].active'));
         assert.ok(doc.getElementById("panel").classList.contains("collapsed"));
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
+        assert.equal(doc.querySelector('.view[data-view="debug"]'), null);
+        assert.ok(!doc.body.textContent.includes("launch.json"));
+        for (const button of doc.querySelectorAll(".activity-item[data-view]")) {
+            button.click();
+            assert.equal(doc.querySelector("#sidebar-views .view.active").dataset.view, "emberprobe");
+            assert.equal(button.disabled, button.dataset.view !== "emberprobe");
+        }
+        assert.equal(doc.getElementById("terminalBody").textContent, "", "idle does not claim an unstarted download");
+        assert.equal(doc.getElementById("debugConsoleBody").textContent, "", "idle has no invented session output");
         assert.equal(doc.getElementById("navigateBack").disabled, true);
         const initialFrame = doc.getElementById("livewatchFrame").contentWindow;
         doc.querySelector('[data-tab="main.c"]').click();
@@ -447,12 +1100,19 @@ async function testShell() {
         assert.equal(doc.documentElement.dataset.mockTheme, "dark");
         assert.ok(doc.body.classList.contains("vscode-dark"));
         assert.equal(doc.getElementById("themeDark").getAttribute("aria-checked"), "true");
-        doc.getElementById("debugStartButton").click();
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.debug" });
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
-        assert.equal(doc.getElementById("debugStartButton").disabled, true);
+        assert.equal(themeMessages[0].findLast((m) => m.type === "mockOperationStatus").availability.debug, false);
+        assert.ok(doc.getElementById("debugConsoleBody").textContent.includes("Reading symbols from"));
+        assert.ok(!doc.getElementById("debugConsoleBody").textContent.includes("Breakpoint 1"));
         assert.ok(doc.getElementById("emberprobeStatus").textContent.includes("正在执行"));
         await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
-        assert.equal(doc.getElementById("debugStartButton").disabled, false);
+        assert.equal(
+            doc.querySelector("#sidebar-views .view.active").dataset.view,
+            "emberprobe",
+            "debug cannot replace the sidebar"
+        );
+        assert.ok(doc.getElementById("debugConsoleBody").textContent.includes("Breakpoint 1, ControlTask"));
         const activeGlyph = doc.querySelector(".gutter-line.active .glyph-margin");
         assert.ok(activeGlyph.querySelector(".codicon-debug-stackframe"));
         assert.ok(activeGlyph.querySelector(".breakpoint.codicon-debug-stackframe-dot"));
@@ -460,14 +1120,51 @@ async function testShell() {
         assert.ok(doc.getElementById("dbgContinue").querySelector(".codicon-debug-pause"));
         assert.equal(doc.getElementById("dbgStepOver").disabled, true);
         assert.equal(doc.querySelector(".current-arrow"), null);
-        doc.getElementById("dbgContinue").click();
+        assert.equal(doc.getElementById("debugCallStack"), null);
+        const debugText = doc.getElementById("debugConsoleBody").textContent;
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F5", bubbles: true }));
+        assert.equal(
+            doc.getElementById("debugConsoleBody").textContent,
+            debugText,
+            "F5 does not launch another running session"
+        );
+        doc.getElementById("commandCenter").click();
+        doc.getElementById("paletteInput").value = "下载程序";
+        doc.getElementById("paletteInput").dispatchEvent(new view.window.Event("input"));
+        doc.querySelector("#paletteList [data-index]").click();
+        assert.equal(themeMessages[0].at(-1).type, "commandError", "palette download uses the same debug exclusion");
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F6", bubbles: true }));
         assert.equal(doc.getElementById("dbgStepOver").disabled, false);
+        function frameShortcut(source, key, modifiers) {
+            view.window.dispatchEvent(
+                new view.window.MessageEvent("message", {
+                    source,
+                    data: { __emberprobeMockShortcut: true, key, ...modifiers }
+                })
+            );
+        }
+        frameShortcut({}, "F5");
+        assert.equal(doc.getElementById("dbgStepOver").disabled, false, "foreign windows cannot resume debugging");
+        frameShortcut(doc.getElementById("sidebarFrame").contentWindow, "F5");
+        assert.equal(doc.getElementById("dbgStepOver").disabled, true);
+        frameShortcut(doc.getElementById("livewatchFrame").contentWindow, "F6");
+        assert.equal(
+            doc.getElementById("dbgStepOver").disabled,
+            false,
+            "chart shortcuts use the shared debug controls"
+        );
+        frameShortcut(doc.getElementById("livewatchFrame").contentWindow, "P", { ctrlKey: true, shiftKey: true });
+        assert.equal(doc.getElementById("command-palette").classList.contains("hidden"), false);
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
         const initialLine = Number(doc.querySelector(".code-line.active-line").dataset.line);
         doc.getElementById("dbgStepOver").click();
         const second = Number(doc.querySelector(".code-line.active-line").dataset.line);
         assert.ok(second > initialLine, "stepping advances despite host state notification");
-        doc.getElementById("dbgStepInto").click();
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F11", bubbles: true }));
         assert.ok(Number(doc.querySelector(".code-line.active-line").dataset.line) > second);
+        const third = Number(doc.querySelector(".code-line.active-line").dataset.line);
+        doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F11", shiftKey: true, bubbles: true }));
+        assert.ok(Number(doc.querySelector(".code-line.active-line").dataset.line) > third);
         doc.querySelector('[data-tab="FreeRTOSConfig.h"]').click();
         assert.ok(doc.getElementById("code").textContent.includes("configUSE_PREEMPTION"));
         assert.ok(!doc.getElementById("code").textContent.includes("pid_update"));
@@ -475,7 +1172,6 @@ async function testShell() {
         assert.equal(doc.querySelector(".code-line.active-line"), null);
         doc.querySelector('.gutter-line[data-line="4"]').click();
         assert.ok(doc.querySelector('.gutter-line[data-line="4"] .breakpoint'));
-        assert.ok(doc.getElementById("debugBreakpoints").textContent.includes("FreeRTOSConfig.h:4"));
         doc.querySelector('[data-tab="main.c"]').click();
         assert.equal(
             doc.querySelector('.gutter-line[data-line="4"] .breakpoint'),
@@ -495,15 +1191,39 @@ async function testShell() {
         }
         while (doc.querySelector("[data-close]")) doc.querySelector("[data-close]").click();
         assert.equal(doc.querySelector(".editor-pane.active"), null, "closing all tabs leaves an empty editor");
-        doc.getElementById("debugStartButton").click();
-        doc.getElementById("debugStartButton").click();
+        doc.getElementById("dbgStop").click();
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.debug" });
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.debug" });
         assert.equal(doc.querySelector(".editor-pane.active"), null, "waiting leaves the current editor unchanged");
         doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F5", shiftKey: true, bubbles: true }));
         await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
         assert.equal(doc.querySelector(".editor-pane.active"), null, "cancellation preserves the current editor");
-        doc.getElementById("debugStartButton").click();
+        assert.ok(
+            !doc.getElementById("debugConsoleBody").textContent.includes("Breakpoint 1"),
+            "cancelled startup cannot emit a later stop"
+        );
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.debug" });
         await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
         assert.ok(doc.querySelector('[data-tab="main.c"].active'));
+        doc.getElementById("dbgStop").click();
+        hostMessage("sidebarFrame", { type: "executeCommand", cmd: "mcu-vscode.download" });
+        const terminalBody = doc.getElementById("terminalBody");
+        assert.equal(doc.getElementById("terminalName").textContent, "EmberProbe OpenOCD");
+        assert.ok(!terminalBody.textContent.includes("固件下载并校验成功"));
+        hostMessage("sidebarFrame", { type: "readChipInfo" });
+        await new Promise((resolve) => view.window.setTimeout(resolve, 750));
+        assert.equal(
+            doc.querySelector(".panel-pane.active").dataset.panelPane,
+            "terminal",
+            "chip refresh preserves the download terminal"
+        );
+        assert.equal(themeMessages[0].findLast((m) => m.type === "chipInfoStatus").state, "ready");
+        assert.equal(doc.getElementById("outputChannel"), null, "no invented EmberProbe Output channels");
+        assert.equal(doc.getElementById("outputBody").textContent, "", "operations leave Output empty");
+        await new Promise((resolve) => view.window.setTimeout(resolve, 4150));
+        assert.ok(terminalBody.textContent.includes("→ 适配器时钟 2000 kHz"));
+        assert.ok(terminalBody.textContent.includes("✓ 固件下载并校验成功"));
+        assert.equal(doc.querySelector("#sidebar-views .view.active").dataset.view, "emberprobe");
         view.assertHealthy();
     } finally {
         view.close();
@@ -609,12 +1329,21 @@ async function testServer() {
 }
 
 (async () => {
+    testOperationLifecycle();
+    testSvdCancellation();
+    testConcurrentChipRefresh();
+    testDriverSelection();
+    testDynamicOperationOutput();
+    testCpuOwnershipAndStoppedIntent();
+    testStopGenerationAndTaskCleanup();
     testSimulatorAndRegisters();
     testHostsAndRenderer();
     testArchive();
     testReadableArchiveHeaders();
     testDebugLatency();
     testDebugBusyBridge();
+    await testOperationAvailabilityBridge();
+    await testDriverRendererBridge();
     await testShell();
     testThemeBridge();
     await testFrozenChartTheme();

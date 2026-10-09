@@ -277,14 +277,29 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0) {
             };
             break;
         }
-        case DW_TAG_structure_type:
-            result = {
-                kind: "struct",
-                typeName: nm ? "struct " + nm : "struct",
-                watchType: "",
-                byteSize: d.byteSize || 0
-            };
+        case DW_TAG_structure_type: {
+            // Rust's Atomic<T> is a fixed-address scalar wrapper in current Cortex-M DWARF.
+            // Match both the inner type and the reported storage width before allowing live writes.
+            const atomic = /^Atomic<(u8|i8|u16|i16|u32|i32|u64|i64|bool)>$/.exec(nm);
+            const atomicType = atomic?.[1] === "bool" ? "u8" : atomic?.[1];
+            const atomicSize = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, u64: 8, i64: 8 }[atomicType];
+            result =
+                atomicType && atomicSize === d.byteSize
+                    ? {
+                          kind: "scalar",
+                          typeName: nm,
+                          watchType: atomicType,
+                          byteSize: atomicSize,
+                          isBoolean: atomic?.[1] === "bool"
+                      }
+                    : {
+                          kind: "struct",
+                          typeName: nm ? "struct " + nm : "struct",
+                          watchType: "",
+                          byteSize: d.byteSize || 0
+                      };
             break;
+        }
         case DW_TAG_class_type:
             result = {
                 kind: "class",

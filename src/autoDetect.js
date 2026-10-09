@@ -7,19 +7,78 @@ const {
 } = require("../skills/_emberprobe/probe-detection");
 const path = require("path");
 
+async function isArmElf(file) {
+    let handle;
+    try {
+        handle = await fs.open(file, "r");
+        const header = Buffer.alloc(20);
+        if ((await handle.read(header, 0, header.length, 0)).bytesRead !== header.length) return false;
+        return (
+            header.readUInt32BE(0) === 0x7f454c46 &&
+            header[4] === 1 &&
+            header[5] === 1 &&
+            header.readUInt16LE(18) === 0x28
+        );
+    } catch {
+        return false;
+    } finally {
+        await handle?.close();
+    }
+}
+
+async function cargoTargetExecutables(root) {
+    const target = process.env.CARGO_TARGET_DIR
+        ? path.resolve(root, process.env.CARGO_TARGET_DIR)
+        : path.join(root, "target");
+    const candidates = [];
+    const search = async (directory) => {
+        let entries;
+        try {
+            entries = await fs.readdir(directory, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            if (!entry.isFile() || (path.extname(entry.name) && !entry.name.endsWith(".elf"))) continue;
+            const file = path.join(directory, entry.name);
+            if (await isArmElf(file)) candidates.push(file);
+        }
+    };
+    await Promise.all([search(path.join(target, "debug")), search(path.join(target, "release"))]);
+    let targets = [];
+    try {
+        targets = await fs.readdir(target, { withFileTypes: true });
+    } catch {
+        return candidates;
+    }
+    await Promise.all(
+        targets
+            .filter((entry) => entry.isDirectory() && /^(?:thumb|riscv32)/.test(entry.name))
+            .flatMap((entry) => ["debug", "release"].map((profile) => search(path.join(target, entry.name, profile))))
+    );
+    return candidates;
+}
+
+async function candidateElfFiles(vscode) {
+    const found = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
+    const roots = (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
+    const cargo = await Promise.all(roots.map(cargoTargetExecutables));
+    return [...new Set([...found.map((uri) => uri.fsPath), ...cargo.flat()])];
+}
+
 async function newestElf(vscode) {
-    const files = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
+    const files = await candidateElfFiles(vscode);
     const ranked = await Promise.all(
-        files.map(async (uri) => {
+        files.map(async (file) => {
             try {
-                return { uri, mtime: (await fs.stat(uri.fsPath)).mtimeMs };
+                return { file, mtime: (await fs.stat(file)).mtimeMs };
             } catch {
-                return { uri, mtime: 0 };
+                return { file, mtime: 0 };
             }
         })
     );
     ranked.sort((a, b) => b.mtime - a.mtime);
-    return ranked[0]?.uri.fsPath || "";
+    return ranked[0]?.file || "";
 }
 
 function targetFromText(text) {
@@ -77,8 +136,16 @@ async function detectDebugger() {
     return { debugger: detected.probe, probeCandidates: detected.candidates };
 }
 
-async function detectWorkspace(vscode) {
+async function detectWorkspace(vscode, backend = "openocd") {
+    if (backend === "probe-rs") return { elf: await newestElf(vscode), mcu: "", debugger: "", probeCandidates: [] };
     const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
     return { elf, mcu, ...debuggerConfig };
 }
-module.exports = { detectWorkspace, targetFromText, debuggerFromInventory, usbInventory };
+module.exports = {
+    detectWorkspace,
+    candidateElfFiles,
+    cargoTargetExecutables,
+    targetFromText,
+    debuggerFromInventory,
+    usbInventory
+};

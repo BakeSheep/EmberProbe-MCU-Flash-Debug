@@ -1,6 +1,6 @@
 # EmberProbe
 
-EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it provides firmware flashing, automatic target detection, and live variable watching.
+EmberProbe is a VS Code extension for Cortex-M development. It supports OpenOCD and probe-rs backends for firmware flashing, automatic target detection, and live variable watching.
 
 > [中文文档](README.md)
 
@@ -20,8 +20,8 @@ EmberProbe is a VS Code extension for Cortex-M development. Built on OpenOCD, it
 ## Requirements
 
 - Visual Studio Code 1.85 or later
-- OpenOCD
-- ARM GDB toolchain (required for debugging); existing Cortex-Debug configurations remain supported
+- OpenOCD (default backend), or the probe-rs CLI (Rust debugging and sampling backend)
+- ARM GDB toolchain (required for OpenOCD debugging); existing Cortex-Debug configurations remain supported
 
 ## Live Variable Watch
 
@@ -41,6 +41,18 @@ The sidebar lists all global/static variables of the current ELF; click a variab
 - Background history: a dedicated worker retains the latest 30 minutes of original samples; `emberprobe.maxSamples` is deprecated. Showing a silent curve restores its current viewport history; All shows the retained range. Webviews request pixel extrema and gaps, while CSV uses original samples with exact 64-bit text. `emberprobe.chartHistoryMaxMiB` defaults to 512 MiB, including frozen references; exhaustion pauses sampling and preserves disk archives. See [layered sampling](docs/LAYERED-SAMPLING.md).
 
 - Sampling isolation: OpenOCD transport and the sampling clock run in a worker thread so extension-host stalls from builds or synchronous ELF parsing do not stop acquisition. Hz uses acquisition timestamps. Target resets, debugger pauses, probe contention and resource exhaustion can still affect reads.
+
+### Embassy / Rust with probe-rs
+
+EmberProbe can use `probe-rs dap-server` to debug Rust firmware and sample fixed-address globals while the core is running. Install the probe-rs CLI, choose `probe-rs` in the sidebar's Debug Backend selector, then select the probe and chip. The sidebar checks only the selected backend; OpenOCD is not required in probe-rs mode. You can also set `emberprobe.backend` to `probe-rs` and `emberprobe.probeRsChip` to a name from `probe-rs chip list` (for STM32H723VGT6, use `STM32H723VG`). Set `emberprobe.probeRsPath` if the executable is not on PATH; `emberprobe.probeRsProbe` optionally selects a probe by `VID:PID:Serial`.
+
+The firmware picker detects extensionless ARM ELF files in Cargo's default `target/<triple>/debug` and `release` directories; use Browse for ELF for other locations. Keep ELF symbols and DWARF debug information. Starting LiveWatch automatically attaches a probe-rs DAP session to the running firmware. DAP attach briefly halts the core during initialization, then resumes it without flashing or resetting; later samples read RAM while the core runs. The Debug button launches probe-rs with flashing, and the Download button flashes and resets via the probe-rs CLI. A manual debug configuration can use `type: "emberprobe-probe-rs"`, `request: "launch"` or `"attach"`, `chip`, and `executable`. Set `rttEnabled: true` and `rttChannelFormats` with `dataFormat: "Defmt"` to display defmt output in EmberProbe RTT output channels.
+
+The initial Rust scope is fixed-address global `static` values, including scalar `Atomic<T>` values with matching DWARF storage widths. Async task locals are outside this scope. Running-target writes are limited to aligned 8/16/32-bit scalars and require a writable ELF RAM section, a known type, and read-back verification. probe-rs 0.32 implements DAP `writeMemory` as byte transfers, so a multi-byte live write is not atomic; firmware can observe an intermediate value or change the read-back result. On STM32H7, D-Cache can make debug-port RAM reads differ from the core's cached data; validate observables with cache disabled or in non-cacheable RAM first.
+
+Agent Bridge variable reads and writes can reuse an active probe-rs LiveWatch/DAP session. Agent Flash and fault register analysis remain OpenOCD-only; use the sidebar Flash button for probe-rs firmware downloads.
+
+See the independent [STM32H723 Embassy smoke app](test/hil/fixtures/embassy-h723/README.md) for hardware acceptance steps.
 
 ## Agent Skills
 

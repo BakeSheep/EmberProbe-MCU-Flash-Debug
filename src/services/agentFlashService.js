@@ -29,6 +29,10 @@ class AgentFlashService {
 
     request(params) {
         const configured = this.getConfig();
+        if (configured.backend === "probe-rs")
+            throw Object.assign(new Error("Use the EmberProbe Download button for probe-rs flashing"), {
+                code: "BACKEND_UNSUPPORTED"
+            });
         const executable = resolveExecutablePath(configured.openocdPath);
         if (!executable) throw new Error("Configure OpenOCD before flashing");
         for (const key of ["openocd", "executable"]) {

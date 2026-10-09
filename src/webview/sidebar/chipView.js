@@ -77,11 +77,13 @@
             );
         }
         const toggle =
-            info.targetState === "running"
-                ? controlButton("pause", t("chip.pause"))
-                : info.targetState === "halted"
-                  ? controlButton("continue", t("chip.continue"))
-                  : "";
+            info.controlsAvailable === false
+                ? ""
+                : info.targetState === "running"
+                  ? controlButton("pause", t("chip.pause"))
+                  : info.targetState === "halted"
+                    ? controlButton("continue", t("chip.continue"))
+                    : "";
         const stateCard =
             '<div class="chip-stat chip-state-stat"><span class="chip-k">' +
             chipEsc(t("chip.targetState")) +
@@ -91,7 +93,7 @@
             chipEsc(stt) +
             '</span><span class="chip-controls">' +
             toggle +
-            controlButton("reset", t("chip.reset")) +
+            (info.controlsAvailable === false ? "" : controlButton("reset", t("chip.reset"))) +
             "</span></div>";
         const grid = [
             chipStat(t("chip.adapterClock"), info.clock),

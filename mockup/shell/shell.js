@@ -39,13 +39,14 @@
         debugActive: false,
         debugPaused: false,
         debugLine: 0,
-        expandedNodes: { g_imu: true, g_history: true },
-        breakpoints: D.DEBUG.breakpoints.map(function (item) {
+        breakpoints: D.BREAKPOINTS.map(function (item) {
             return Object.assign({}, item);
         })
     };
     var tabHistory = [state.activeTab];
     var historyIndex = 0;
+    var terminalLines = [];
+    var debugConsoleLines = [];
 
     var TAB_META = {
         livewatch: { label: "波形图 #1", type: "livewatch" },
@@ -57,6 +58,7 @@
     var sidebarHost = null;
     var livewatchHost = null;
     var simulator = window.EmberProbeSidebarData.createSimulator();
+    var coordinator = window.EmberProbeMockCoordinator.create({ simulator: simulator });
 
     function sendTheme(frame) {
         if (frame.contentWindow)
@@ -586,90 +588,6 @@
             "<div>● 1a2c9f4 &nbsp;添加 FreeRTOS 任务统计</div>";
     }
 
-    function renderVariableTree(nodes, depth, prefix) {
-        return nodes
-            .map(function (node) {
-                var path = prefix ? prefix + "." + node.name : node.name;
-                var hasChildren = !!(node.children && node.children.length);
-                var expanded = !!state.expandedNodes[path];
-                var html =
-                    '<div class="tree-row' +
-                    (hasChildren ? " expandable" : "") +
-                    '" data-var-path="' +
-                    esc(path) +
-                    '" style="padding-left:' +
-                    (12 + depth * 14) +
-                    'px">' +
-                    '<span class="chevron">' +
-                    (hasChildren ? icon(expanded ? "chevron-down" : "chevron-right") : "") +
-                    '</span><span class="var-name">' +
-                    esc(node.name) +
-                    '</span><span class="var-value">= ' +
-                    esc(node.value) +
-                    "</span>" +
-                    (node.stl ? '<span class="stl-badge">STL</span>' : "") +
-                    '<span class="var-type">' +
-                    esc(node.type) +
-                    "</span></div>";
-                if (hasChildren && expanded) html += renderVariableTree(node.children, depth + 1, path);
-                return html;
-            })
-            .join("");
-    }
-
-    function renderDebugSidebar() {
-        $("debugVariables").innerHTML = renderVariableTree(D.DEBUG.variables, 0, "");
-        $("debugWatch").innerHTML = D.DEBUG.watch
-            .map(function (item) {
-                return (
-                    '<div class="tree-row"><span class="chevron"></span><span class="var-name">' +
-                    esc(item.name) +
-                    '</span><span class="var-value">= ' +
-                    esc(item.value) +
-                    '</span><span class="var-type">' +
-                    esc(item.type) +
-                    "</span></div>"
-                );
-            })
-            .join("");
-        $("debugCallStack").innerHTML = D.DEBUG.callStack
-            .map(function (frame, index) {
-                return (
-                    '<div class="tree-row stack-row' +
-                    (frame.active ? " active" : "") +
-                    '" data-frame="' +
-                    index +
-                    '"><span class="chevron"></span><span class="label">' +
-                    esc(frame.name) +
-                    '()</span><span class="stack-line" style="margin-left:auto">' +
-                    esc(frame.detail) +
-                    "</span></div>"
-                );
-            })
-            .join("");
-        $("debugBreakpoints").innerHTML = state.breakpoints
-            .map(function (item, index) {
-                return (
-                    '<div class="tree-row breakpoint-row' +
-                    (item.enabled ? "" : " disabled") +
-                    '" data-breakpoint="' +
-                    index +
-                    '"><input type="checkbox" aria-label="切换断点 ' +
-                    esc(item.file) +
-                    ":" +
-                    item.line +
-                    '"' +
-                    (item.enabled ? " checked" : "") +
-                    '><span class="dot codicon codicon-debug-breakpoint"></span><span class="label">' +
-                    esc(item.file) +
-                    '</span><span class="file">:' +
-                    item.line +
-                    "</span></div>"
-                );
-            })
-            .join("");
-    }
-
     function renderProblems() {
         $("problemsList").innerHTML = D.PROBLEMS.map(function (item) {
             return (
@@ -700,18 +618,45 @@
         function linesHtml(lines) {
             return lines
                 .map(function (line) {
-                    return '<span class="' + (line.cls || "dim-line") + '">' + esc(line.text) + "</span>";
+                    var cls = ["dim", "info", "warn", "ok", "error", "title"].includes(line.cls) ? line.cls : "";
+                    return '<span class="' + cls + '">' + esc(line.text) + "</span>";
                 })
                 .join("\n");
         }
-        $("terminalBody").innerHTML = linesHtml(D.TERMINAL_LINES);
-        $("outputBody").innerHTML = linesHtml(D.OUTPUT_LINES);
-        $("debugConsoleBody").innerHTML = linesHtml(D.DEBUG_CONSOLE_LINES);
+        $("terminalBody").innerHTML = linesHtml(terminalLines);
+        $("debugConsoleBody").innerHTML = linesHtml(debugConsoleLines);
+    }
+
+    function appendOperationOutput(event) {
+        var lines;
+        if (event.panel === "terminal") {
+            lines = terminalLines;
+            if (event.name) $("terminalName").textContent = event.name;
+        } else if (event.panel === "debug-console") lines = debugConsoleLines;
+        else return;
+        if (event.clear) lines.length = 0;
+        (event.lines || []).forEach(function (line) {
+            lines.push({ text: String(line.text || ""), cls: line.cls });
+        });
+        if (lines.length > 2000) lines.splice(0, lines.length - 2000);
+        renderPanelBody();
+        if (event.show) {
+            showPanel(event.panel);
+        }
+        if (state.panelVisible && state.activePanel === event.panel) {
+            var pane = document.querySelector('.panel-pane[data-panel-pane="' + event.panel + '"]');
+            pane.scrollTop = pane.scrollHeight;
+        }
+    }
+
+    function debugOutput(text) {
+        appendOperationOutput({ panel: "debug-console", lines: [{ text: text }] });
     }
 
     /* ---------------------------------------------------------- view switch */
 
-    function switchView(view) {
+    function switchView() {
+        var view = "emberprobe";
         state.activeView = view;
         document.querySelectorAll(".activity-item").forEach(function (item) {
             item.classList.toggle("active", item.dataset.view === view);
@@ -763,8 +708,9 @@
         });
     }
 
-    function startDebug() {
-        if (sidebarHost) sidebarHost.startDebug();
+    function startDebug(restart) {
+        if (state.debugActive && !restart) return;
+        if (sidebarHost) sidebarHost.startDebug(restart);
     }
 
     function completeDebugStart() {
@@ -775,9 +721,11 @@
         updateDebugToolbar();
         renderEditor();
         setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
-        switchView("debug");
+        switchView();
         openFileTab("main.c");
         if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
+        debugOutput("Breakpoint 1, ControlTask () at Core/Src/main.c:" + state.debugLine);
+        debugOutput(state.debugLine + "\t" + codeLines("main.c")[state.debugLine - 1].trim());
         showToast("调试会话已启动：EmberProbe (J-Link)");
     }
 
@@ -786,18 +734,21 @@
             setEmberProbeStatus("已连接", "");
             return;
         }
+        var wasActive = state.debugActive;
         state.debugActive = false;
         state.debugPaused = false;
+        if (sidebarHost) sidebarHost.stopDebug();
+        if (wasActive) debugOutput("[Inferior 1 (Remote target) detached]");
         $("debug-toolbar").classList.add("hidden");
         updateDebugToolbar();
         renderEditor();
         setEmberProbeStatus("已连接 · 目标运行中", "running");
-        if (sidebarHost) sidebarHost.setTargetState("running", { notify: false });
         showToast("调试会话已停止，目标继续运行");
     }
 
     function pauseDebug() {
         if (sidebarHost && sidebarHost.isDebugStarting()) return;
+        if (!state.debugActive || state.debugPaused) return;
         state.debugActive = true;
         state.debugPaused = true;
         state.debugLine = findDebugLine();
@@ -806,19 +757,23 @@
         renderEditor();
         setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
         if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
+        debugOutput("Program received signal SIGINT, Interrupt.");
+        debugOutput("ControlTask () at Core/Src/main.c:" + state.debugLine);
     }
 
     function continueDebug() {
         if (sidebarHost && sidebarHost.isDebugStarting()) return;
         if (!state.debugActive) return startDebug();
+        if (!state.debugPaused) return;
         state.debugPaused = false;
         updateDebugToolbar();
         renderEditor();
         setEmberProbeStatus("运行中", "running");
         if (sidebarHost) sidebarHost.setTargetState("running", { notify: false });
+        debugOutput("Continuing.");
     }
 
-    function stepDebug() {
+    function stepDebug(kind) {
         if (sidebarHost && sidebarHost.isDebugStarting()) return;
         if (!state.debugActive) return startDebug();
         if (!state.debugPaused) return;
@@ -837,28 +792,13 @@
         renderEditor();
         setEmberProbeStatus("已暂停 · main.c:" + state.debugLine, "debugging");
         if (sidebarHost) sidebarHost.setTargetState("halted", { notify: false, line: state.debugLine });
-        showToast("单步跳过 → main.c:" + state.debugLine, "debug-step-over");
+        debugOutput(state.debugLine + "\t" + lines[state.debugLine - 1].trim());
+        var action = kind === "into" ? "单步调试" : kind === "out" ? "单步跳出" : "单步跳过";
+        showToast(action + " → main.c:" + state.debugLine, "debug-step-over");
     }
 
     function simulateDownload() {
-        showPanel("terminal");
-        var body = $("terminalBody");
-        var steps = [
-            { cls: "info", text: "Info : accepting 'gdb' connection on tcp/3333" },
-            { cls: "info", text: "Info : flash write 0x08000000 917504 bytes" },
-            { cls: "ok", text: "Info : verified OK (CRC32 0x8F3C21A7)" },
-            { cls: "ok", text: "Info : EmberProbe download complete in 4.8s" }
-        ];
-        steps.forEach(function (step, index) {
-            setTimeout(
-                function () {
-                    body.innerHTML += '\n<span class="' + step.cls + '">' + esc(step.text) + "</span>";
-                    body.parentElement.scrollTop = body.parentElement.scrollHeight;
-                    if (index === steps.length - 1) showToast("烧录完成：EmberProbeDemo.elf（917504 字节）");
-                },
-                500 + index * 550
-            );
-        });
+        if (sidebarHost) sidebarHost.download();
     }
 
     /* ------------------------------------------------------------ frame hosts */
@@ -866,21 +806,48 @@
     function notify(event) {
         if (!event || !event.action) return;
         switch (event.action) {
+            case "operationOutput":
+                appendOperationOutput(event);
+                break;
             case "toast":
-                showToast(event.text);
+                showToast(event.text, event.icon);
                 break;
             case "debugStart":
                 completeDebugStart();
                 break;
             case "debugPending":
-                $("debugStartButton").disabled = event.busy;
-                $("debugStartButton").setAttribute("aria-busy", String(event.busy));
                 if (event.busy) setEmberProbeStatus("正在执行…", "");
                 break;
+            case "operationStatus": {
+                state.debugActive = ["paused", "running"].includes(event.state.debug);
+                state.debugPaused = event.state.debug === "paused";
+                state.debugLine = event.state.line;
+                updateDebugToolbar();
+                if (event.state.operation) {
+                    var labels = {
+                        download: "烧录中…",
+                        debugStart: "正在执行…",
+                        driver: "切换驱动…",
+                        cpuLoad: "CPU 负载采样中"
+                    };
+                    setEmberProbeStatus(labels[event.state.operation] || "正在执行…", "");
+                } else if (state.debugActive) {
+                    setEmberProbeStatus(
+                        state.debugPaused ? "已暂停 · main.c:" + state.debugLine : "运行中",
+                        state.debugPaused ? "debugging" : "running"
+                    );
+                } else if (event.state.driver === "segger") setEmberProbeStatus("驱动不支持 · 需要 WinUSB", "");
+                else setEmberProbeStatus("已连接 · 目标" + (event.state.target === "halted" ? "已暂停" : "运行中"), "");
+                break;
+            }
             case "openLiveWatch":
                 openLiveWatch();
                 break;
             case "targetState":
+                if (event.debug === "none") {
+                    renderEditor();
+                    break;
+                }
                 if (event.state === "running") {
                     state.debugPaused = false;
                     updateDebugToolbar();
@@ -914,7 +881,8 @@
         if (sidebarHost) sidebarHost.destroy();
         sidebarHost = window.EmberProbeSidebarHost.create($("sidebarFrame"), {
             notify: notify,
-            simulator: simulator
+            simulator: simulator,
+            coordinator: coordinator
         });
         var frame = $("sidebarFrame");
         frame.onload = function () {
@@ -933,6 +901,7 @@
         livewatchHost = window.EmberProbeLiveWatchHost.create($("livewatchFrame"), {
             notify: notify,
             simulator: simulator,
+            coordinator: coordinator,
             getSidebarWatch: function () {
                 return sidebarHost ? sidebarHost.getWatchList() : [];
             }
@@ -990,6 +959,7 @@
     }
 
     function runCommand(action) {
+        if (action.indexOf("command:") === 0 && sidebarHost) return sidebarHost.executeCommand(action.slice(8));
         if (action.indexOf("toast:") === 0) return showToast(action.slice(6), "info");
         if (action.indexOf("view:") === 0) return switchView(action.slice(5));
         if (action.indexOf("panel:") === 0) return showPanel(action.slice(6));
@@ -1038,7 +1008,7 @@
 
     /* -------------------------------------------------------------- shortcuts */
 
-    document.addEventListener("keydown", function (event) {
+    function handleShortcut(event) {
         var paletteOpen = !$("command-palette").classList.contains("hidden");
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "p") {
             event.preventDefault();
@@ -1062,7 +1032,10 @@
             }
             return;
         }
-        if (event.key === "F5" && !event.shiftKey) {
+        if (event.key === "F5" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+            event.preventDefault();
+            startDebug(true);
+        } else if (event.key === "F5" && !event.shiftKey) {
             event.preventDefault();
             state.debugPaused ? continueDebug() : startDebug();
         } else if (event.key === "F5" && event.shiftKey) {
@@ -1071,6 +1044,12 @@
         } else if (event.key === "F10") {
             event.preventDefault();
             stepDebug();
+        } else if (event.key === "F6") {
+            event.preventDefault();
+            pauseDebug();
+        } else if (event.key === "F11") {
+            event.preventDefault();
+            stepDebug(event.shiftKey ? "out" : "into");
         } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
             event.preventDefault();
             toggleSidebar();
@@ -1081,16 +1060,28 @@
             event.preventDefault();
             showPanel("terminal");
         }
+    }
+
+    document.addEventListener("keydown", handleShortcut);
+    window.addEventListener("message", function (event) {
+        if (event.source !== $("sidebarFrame").contentWindow && event.source !== $("livewatchFrame").contentWindow)
+            return;
+        var message = event.data;
+        if (!message || message.__emberprobeMockShortcut !== true || typeof message.key !== "string") return;
+        handleShortcut({
+            key: message.key,
+            ctrlKey: message.ctrlKey === true,
+            metaKey: message.metaKey === true,
+            shiftKey: message.shiftKey === true,
+            preventDefault: function () {}
+        });
     });
 
     /* ----------------------------------------------------------------- wiring */
 
     document.querySelectorAll(".activity-item[data-view]").forEach(function (item) {
+        item.disabled = item.dataset.view !== "emberprobe";
         item.addEventListener("click", function () {
-            if (item.dataset.view === "accounts") {
-                showToast("账户同步为演示占位", "info");
-                return;
-            }
             switchView(item.dataset.view);
         });
     });
@@ -1130,52 +1121,23 @@
         if (match) openFileTab(match.dataset.file === "main.c" ? "main.c" : "main.c");
     });
 
-    $("debugVariables").addEventListener("click", function (event) {
-        var row = event.target.closest("[data-var-path]");
-        if (!row) return;
-        var path = row.dataset.varPath;
-        state.expandedNodes[path] = !state.expandedNodes[path];
-        renderDebugSidebar();
-    });
-
-    $("debugCallStack").addEventListener("click", function (event) {
-        var row = event.target.closest("[data-frame]");
-        if (!row) return;
-        openFileTab("main.c");
-        if (state.debugActive) {
-            state.debugPaused = true;
-            renderEditor();
-        }
-    });
-
-    $("debugBreakpoints").addEventListener("click", function (event) {
-        var row = event.target.closest("[data-breakpoint]");
-        if (!row) return;
-        var item = state.breakpoints[Number(row.dataset.breakpoint)];
-        item.enabled = !item.enabled;
-        renderDebugSidebar();
-        renderEditor();
-    });
-
     $("problemsList").addEventListener("click", function (event) {
         var row = event.target.closest(".problem-row");
         if (row) openFileTab(row.dataset.file);
-    });
-
-    $("debugStartButton").addEventListener("click", function () {
-        state.debugActive ? stopDebug() : startDebug();
     });
 
     $("dbgContinue").addEventListener("click", function () {
         state.debugPaused ? continueDebug() : pauseDebug();
     });
     $("dbgStepOver").addEventListener("click", stepDebug);
-    $("dbgStepInto").addEventListener("click", stepDebug);
+    $("dbgStepInto").addEventListener("click", function () {
+        stepDebug("into");
+    });
     $("dbgStepOut").addEventListener("click", function () {
-        showToast("单步跳出 → ControlTask()", "debug-step-out");
+        stepDebug("out");
     });
     $("dbgRestart").addEventListener("click", function () {
-        startDebug();
+        startDebug(true);
     });
     $("dbgStop").addEventListener("click", stopDebug);
 
@@ -1223,7 +1185,6 @@
         if (index < 0) state.breakpoints.push({ file: file, line: number, enabled: true });
         else if (state.breakpoints[index].enabled) state.breakpoints.splice(index, 1);
         else state.breakpoints[index].enabled = true;
-        renderDebugSidebar();
         renderEditor();
     });
 
@@ -1366,9 +1327,9 @@
     renderExplorer();
     renderSearch();
     renderScm();
-    renderDebugSidebar();
     renderProblems();
     renderPanelBody();
+    switchView();
     renderMarkdown();
     activateTab(state.activeTab);
     updateDebugToolbar();

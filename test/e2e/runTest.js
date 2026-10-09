@@ -10,6 +10,9 @@ const { runTests } = require("@vscode/test-electron");
     try {
         await runTests({
             version: "1.136.1",
+            ...(process.env.EMBERPROBE_E2E_VSCODE_PATH
+                ? { vscodeExecutablePath: process.env.EMBERPROBE_E2E_VSCODE_PATH }
+                : {}),
             extensionDevelopmentPath: root,
             extensionTestsPath: path.resolve(__dirname, "suite"),
             launchArgs: [

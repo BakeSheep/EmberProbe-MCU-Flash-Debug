@@ -72,6 +72,10 @@ class ConfigurationStore {
             probeSerial: cfg.get("probeSerial", ""),
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
+            backend: cfg.get("backend", "openocd"),
+            probeRsPath: cfg.get("probeRsPath", "probe-rs"),
+            probeRsChip: cfg.get("probeRsChip", ""),
+            probeRsProbe: cfg.get("probeRsProbe", ""),
             cubemxPath: cfg.get("cubemxPath", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
             sampleIntervalMs: intervalMsFromHz(configuredFrequencyHz(cfg)),
@@ -99,7 +103,21 @@ class ConfigurationStore {
                 code: "PATH_OUTSIDE_WORKSPACE"
             });
         }
-        if (extension && path.extname(resolvedReal).toLowerCase() !== extension) {
+        let isExtensionlessElf = false;
+        if (extension === ".elf" && path.extname(resolvedReal) === "") {
+            const header = Buffer.alloc(6);
+            const handle = fs.openSync(resolvedReal, "r");
+            try {
+                isExtensionlessElf =
+                    fs.readSync(handle, header, 0, header.length, 0) === header.length &&
+                    header.readUInt32BE(0) === 0x7f454c46 &&
+                    header[4] === 1 &&
+                    header[5] === 1;
+            } finally {
+                fs.closeSync(handle);
+            }
+        }
+        if (extension && path.extname(resolvedReal).toLowerCase() !== extension && !isExtensionlessElf) {
             throw Object.assign(new Error(`Expected a ${extension} file`), { code: "INVALID_FILE_TYPE" });
         }
         return this.cleanPath(resolvedReal);

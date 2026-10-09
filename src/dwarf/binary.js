@@ -15,29 +15,28 @@ const REQUIRED_DWARF_SECTIONS = new Set([
     ".debug_addr"
 ]);
 function readULEB(buf, cur) {
-    let result = 0,
-        shift = 0,
-        byte;
-    do {
-        if (cur.p >= buf.length || shift >= 56) throw new Error("Truncated or oversized LEB128 value");
-        byte = buf[cur.p++];
-        result += (byte & 0x7f) * Math.pow(2, shift);
-        shift += 7;
-    } while (byte & 0x80);
-    return result;
+    let result = 0n;
+    for (let index = 0; index < 10; index++) {
+        if (cur.p >= buf.length) throw new Error("Truncated or oversized LEB128 value");
+        const byte = buf[cur.p++];
+        result |= BigInt(byte & 0x7f) << BigInt(index * 7);
+        if (!(byte & 0x80)) return Number(result);
+    }
+    throw new Error("Truncated or oversized LEB128 value");
 }
 function readSLEB(buf, cur) {
-    let result = 0,
-        shift = 0,
-        byte;
-    do {
-        if (cur.p >= buf.length || shift >= 56) throw new Error("Truncated or oversized LEB128 value");
-        byte = buf[cur.p++];
-        result += (byte & 0x7f) * Math.pow(2, shift);
-        shift += 7;
-    } while (byte & 0x80);
-    if (shift < 64 && byte & 0x40) result -= Math.pow(2, shift);
-    return result;
+    let result = 0n;
+    for (let index = 0; index < 10; index++) {
+        if (cur.p >= buf.length) throw new Error("Truncated or oversized LEB128 value");
+        const byte = buf[cur.p++];
+        const shift = BigInt(index * 7);
+        result |= BigInt(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) {
+            if (byte & 0x40) result -= 1n << (shift + 7n);
+            return Number(result);
+        }
+    }
+    throw new Error("Truncated or oversized LEB128 value");
 }
 function cstr(buf, off) {
     if (off < 0 || off >= buf.length) return "";

@@ -12,6 +12,7 @@
         options = options || {};
         var notify = options.notify || function () {};
         var simulator = options.simulator || root.EmberProbeSidebarData.createSimulator();
+        var coordinator = options.coordinator || root.EmberProbeMockCoordinator.create({ simulator: simulator });
         var symbols = root.EmberProbeSidebarData.SYMBOLS;
         var timer = null;
         var running = false;
@@ -117,9 +118,9 @@
         }
 
         function streamSamples() {
-            if (!running) return;
+            if (!running || !coordinator.liveStatus("livewatch", frequencyHz).canRead) return;
             var t = Date.now();
-            simulator.tick();
+            coordinator.tick();
             var names = watchItems.map(function (item) {
                 return item.name;
             });
@@ -172,42 +173,42 @@
 
         function startSampling(items, hz) {
             if (Array.isArray(items)) watchItems = items;
-            if (Number.isFinite(Number(hz)) && Number(hz) > 0) frequencyHz = Number(hz);
-            running = true;
-            if (timer) clearTimeout(timer);
-            send({
-                type: "liveStatus",
-                running: true,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.sampling",
-                actualHz: frequencyHz,
-                frequencyHz: frequencyHz,
-                effectiveIntervalMs: Math.round(1000 / frequencyHz),
-                p95DurationMs: Math.round((1000 / frequencyHz) * 0.85),
-                missedDeadlines: 0
-            });
-            streamSamples();
+            if (Number.isFinite(Number(hz)) && Number(hz) > 0) frequencyHz = Math.min(1000, Number(hz));
+            if (!coordinator.setIntent("livewatch", true)) {
+                syncStatus();
+                var key = coordinator.blockedKey("sampling");
+                send({
+                    type: "liveError",
+                    key: key,
+                    code: key === "probe.driverUnsupported" ? "PROBE_DRIVER_UNSUPPORTED" : "PROBE_BUSY"
+                });
+            }
         }
 
         function stopSampling() {
-            running = false;
-            if (timer) {
+            if (!stopped) coordinator.setIntent("livewatch", false);
+        }
+
+        function syncStatus() {
+            if (stopped) return;
+            var status = coordinator.liveStatus("livewatch", frequencyHz);
+            running = status.intentEnabled;
+            send(status);
+            if (timer && !status.canRead) {
                 clearTimeout(timer);
                 timer = null;
             }
+            if (!timer && status.canRead) streamSamples();
             send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.stopped"
+                type: "mockOperationStatus",
+                operation: coordinator.snapshot().operation,
+                availability: {
+                    live: running || (!coordinator.snapshot().operation && coordinator.snapshot().driver === "winusb")
+                }
             });
         }
+
+        var unsubscribe = coordinator.subscribe(syncStatus);
 
         function triggerDownload(csv) {
             try {
@@ -244,15 +245,7 @@
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
             send({ type: "liveFrequency", frequencyHz: frequencyHz, intervalMs: Math.round(1000 / frequencyHz) });
-            send({
-                type: "liveStatus",
-                running: false,
-                canRead: true,
-                canWrite: true,
-                source: "dap",
-                snapshotReady: true,
-                key: "sb.stopped"
-            });
+            syncStatus();
             send(archiveInfo(false));
         }
 
@@ -311,12 +304,15 @@
                     break;
                 case "setFrequency":
                     if (Number.isFinite(Number(message.frequencyHz)) && Number(message.frequencyHz) > 0) {
-                        frequencyHz = Number(message.frequencyHz);
+                        frequencyHz = Math.min(1000, Number(message.frequencyHz));
                         send({
                             type: "liveFrequency",
                             frequencyHz: frequencyHz,
                             intervalMs: Math.round(1000 / frequencyHz)
                         });
+                        if (timer) clearTimeout(timer);
+                        timer = null;
+                        syncStatus();
                     }
                     break;
                 case "importVariables":
@@ -462,8 +458,11 @@
                 return initialized;
             },
             destroy: function () {
+                if (stopped) return;
                 stopped = true;
+                unsubscribe();
                 if (timer) clearTimeout(timer);
+                coordinator.setIntent("livewatch", false);
                 root.removeEventListener("message", onMessage);
             }
         };
