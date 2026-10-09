@@ -17,6 +17,7 @@ const pkg = require("../package.json");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const { versionLabel } = require("../src/buildInfo");
+const operationOutput = require("./mock/operation-output");
 
 const root = __dirname;
 const dist = path.join(root, "dist");
@@ -114,6 +115,11 @@ function copyFile(from, to) {
 function main() {
     fs.rmSync(dist, { recursive: true, force: true });
     fs.mkdirSync(dist, { recursive: true });
+    fs.writeFileSync(
+        path.join(dist, "operation-output.js"),
+        "window.EmberProbeMockOutput = " + JSON.stringify(operationOutput) + ";\n",
+        "utf8"
+    );
     const historySource = fs
         .readFileSync(path.join(root, "../src/services/chartHistoryStore.js"), "utf8")
         .replace("module.exports =", "root.EmberProbeMockHistory =");
@@ -134,6 +140,7 @@ function main() {
     for (const name of [
         "prelude.js",
         "theme.js",
+        "coordinator.js",
         "sidebar-data.js",
         "sidebar-host.js",
         "livewatch-data.js",
