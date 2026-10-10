@@ -6,6 +6,7 @@ const {
     normalizeDebugServerOptions
 } = require("./services/debugConfiguration");
 const { probeRsSettings, resolveProbeRsDebugConfiguration } = require("./services/probeRsConfiguration");
+const { listProbeRsTargets } = require("./services/probeRsTargets");
 const { downloadWithProbeRs } = require("./services/probeRsFlashService");
 const { readProbeRsChipInfo } = require("./services/probeRsChipInfo");
 const { ProbeRsDebugAdapter } = require("./services/probeRsDebugAdapter");
@@ -565,6 +566,50 @@ class MainViewProvider {
     _probeRsSelected() {
         return vscode.workspace?.getConfiguration?.("emberprobe")?.get("backend") === "probe-rs";
     }
+    _assertProbeRsTargetEditable(settings) {
+        const current = probeRsSettings(vscode);
+        if (!this._probeRsSelected() || current.executable !== settings.executable || current.chip !== settings.chip)
+            throw Object.assign(new Error(this._t("pr.targetConfigChanged")), {
+                code: "PROBE_RS_CONFIGURATION_CHANGED",
+                i18nKey: "pr.targetConfigChanged"
+            });
+        this._assertConnectionEditable({ probeRsChip: true });
+        if (this._probeCoordinator?.anyActive())
+            throw Object.assign(new Error(this._t("pr.targetBusy")), {
+                code: "PROBE_CONFIGURATION_BUSY",
+                i18nKey: "pr.targetBusy"
+            });
+    }
+    async _pickProbeRsTarget(targets, preferred = []) {
+        const names = new Set(preferred);
+        const selected = await vscode.window.showQuickPick(
+            [
+                ...targets.filter((target) => names.has(target.label)),
+                ...targets.filter((target) => !names.has(target.label))
+            ],
+            {
+                title: this._t("pr.selectChip"),
+                placeHolder: this._t("pr.searchChip"),
+                matchOnDescription: true
+            }
+        );
+        return selected?.label || "";
+    }
+    async _selectProbeRsMcuTarget() {
+        const settings = probeRsSettings(vscode);
+        this._assertProbeRsTargetEditable(settings);
+        const targets = await listProbeRsTargets(settings.executable);
+        this._assertProbeRsTargetEditable(settings);
+        const chip = await this._pickProbeRsTarget(targets, [settings.chip]);
+        if (!chip) return null;
+        this._assertProbeRsTargetEditable(settings);
+        await vscode.workspace
+            .getConfiguration("emberprobe")
+            .update("probeRsChip", chip, vscode.ConfigurationTarget.Workspace);
+        await this.updateView();
+        vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: chip }));
+        return true;
+    }
     async _selectBackend(backend) {
         if (backend !== "openocd" && backend !== "probe-rs")
             throw Object.assign(new Error("Unsupported debug backend"), { code: "BACKEND_INVALID" });
@@ -790,20 +835,7 @@ class MainViewProvider {
         };
         // 3. 选择 MCU 核心（无修改）
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
-            if (this._probeRsSelected()) {
-                this._assertConnectionEditable({ probeRsChip: true });
-                const cfg = vscode.workspace.getConfiguration("emberprobe");
-                const chip = await vscode.window.showInputBox({
-                    title: "probe-rs chip name",
-                    prompt: "For STM32H723VGT6 use STM32H723VG",
-                    value: cfg.get("probeRsChip", "")
-                });
-                if (chip === undefined) return;
-                if (!/^[A-Za-z0-9_.+-]+$/.test(chip.trim())) throw new Error("Invalid probe-rs chip name");
-                await cfg.update("probeRsChip", chip.trim(), vscode.ConfigurationTarget.Workspace);
-                await this.updateView();
-                return;
-            }
+            if (this._probeRsSelected()) return this._selectProbeRsMcuTarget();
             this._assertConnectionEditable({ mcu: true });
             console.log("主进程执行选择 MCU 核心命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -5496,8 +5528,10 @@ class MainViewProvider {
         // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
         const configured =
             this._context.workspaceState.get(CACHE_KEYS.elfPath) &&
-            this._context.workspaceState.get(CACHE_KEYS.debugger) &&
-            this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+            (this._probeRsSelected()
+                ? vscode.workspace.getConfiguration("emberprobe").get("probeRsChip", "")
+                : this._context.workspaceState.get(CACHE_KEYS.debugger) &&
+                  this._context.workspaceState.get(CACHE_KEYS.mcuCore));
         if (!configured)
             setTimeout(
                 () =>
@@ -5517,26 +5551,52 @@ class MainViewProvider {
     // 更新Webview内容（无修改）
     async runAutoDetect(force) {
         const probeRs = this._probeRsSelected();
-        if (force && !probeRs) this._assertConnectionEditable({ debugger: true, mcu: true });
+        const settings = probeRs ? probeRsSettings(vscode) : null;
+        if (force) {
+            if (probeRs) this._assertProbeRsTargetEditable(settings);
+            else this._assertConnectionEditable({ debugger: true, mcu: true });
+        }
         const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
-        const result = await autoDetect.detectWorkspace(vscode, probeRs ? "probe-rs" : "openocd");
+        const needsTargets = probeRs && (force || !settings.chip);
+        const targets = needsTargets ? await listProbeRsTargets(settings.executable) : [];
+        const result = await autoDetect.detectWorkspace(
+            vscode,
+            probeRs ? "probe-rs" : "openocd",
+            targets,
+            detectedIoc || this._context.workspaceState.get(CACHE_KEYS.iocPath) || ""
+        );
+        if (needsTargets) this._assertProbeRsTargetEditable(settings);
+        if (probeRs && force && !result.mcu) {
+            result.mcu =
+                !result.mcuCandidates?.length && targets.some((target) => target.label === settings.chip)
+                    ? settings.chip
+                    : await this._pickProbeRsTarget(targets, [...(result.mcuCandidates || []), settings.chip]);
+        }
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
-        const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        const currentMcu = probeRs ? settings.chip : this._context.workspaceState.get(CACHE_KEYS.mcuCore);
         if (!currentDebugger && result.probeCandidates?.length > 1 && force) {
             result.debugger =
                 (await vscode.window.showQuickPick(result.probeCandidates, {
                     placeHolder: this._t("msg.selectDetectedProbe")
                 })) || "";
         }
+        if (probeRs && result.mcu && (force || !currentMcu)) this._assertProbeRsTargetEditable(settings);
         if (result.elf && (force || !currentElf))
             await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
-        if ((result.debugger && (force || !currentDebugger)) || (result.mcu && (force || !currentMcu)))
+        if (!probeRs && ((result.debugger && (force || !currentDebugger)) || (result.mcu && (force || !currentMcu))))
             this._assertConnectionEditable({ debugger: true, mcu: true });
         if (result.debugger && (force || !currentDebugger))
             await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
-        if (result.mcu && (force || !currentMcu))
-            await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
+        if (result.mcu && (force || !currentMcu)) {
+            if (probeRs) {
+                this._assertProbeRsTargetEditable(settings);
+                if (result.mcu !== currentMcu)
+                    await vscode.workspace
+                        .getConfiguration("emberprobe")
+                        .update("probeRsChip", result.mcu, vscode.ConfigurationTarget.Workspace);
+            } else await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
+        }
         if (result.elf && (force || !currentElf)) {
             await this._refreshElfBindings();
         }

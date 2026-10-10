@@ -136,8 +136,82 @@ async function detectDebugger() {
     return { debugger: detected.probe, probeCandidates: detected.candidates };
 }
 
-async function detectWorkspace(vscode, backend = "openocd") {
-    if (backend === "probe-rs") return { elf: await newestElf(vscode), mcu: "", debugger: "", probeCandidates: [] };
+// Match the installed registry, including STM32 package/temperature suffixes.
+// Family-only names and unsupported vendors must not select a flash algorithm.
+function probeRsTargetsFromText(text, targets) {
+    const byName = new Map(targets.map((target) => [target.label.toLowerCase(), target.label]));
+    const byPart = new Map();
+    const partPattern = /^(STM32[A-Z][A-Z0-9]{3}[A-Z][A-Z0-9])(?:[A-Z][0-9X](?:[A-Z])?)?$/i;
+    for (const target of targets) {
+        const part = partPattern.exec(target.label)?.[1].toLowerCase();
+        if (!part) continue;
+        if (!byPart.has(part)) byPart.set(part, []);
+        byPart.get(part).push(target.label);
+    }
+    const words = new Set(
+        (text.match(/[A-Za-z0-9][A-Za-z0-9_.+-]*/g) || [])
+            .flatMap((word) => [word, ...word.split(/[._+-]/)])
+            .map((word) => word.toLowerCase())
+    );
+    const found = new Set();
+    for (const word of words) {
+        const exact = byName.get(word);
+        if (exact) found.add(exact);
+        else {
+            const part = partPattern.exec(word)?.[1].toLowerCase();
+            for (const name of byPart.get(part) || []) found.add(name);
+        }
+    }
+    return targets.map((target) => target.label).filter((name) => found.has(name));
+}
+
+async function detectProbeRsMcu(vscode, targets, selectedIoc) {
+    if (!targets.length) return [];
+    const exclude = "{**/node_modules/**,**/.git/**,**/target/**}";
+    const groups = selectedIoc
+        ? [[{ fsPath: selectedIoc }]]
+        : await Promise.all([
+              vscode.workspace.findFiles("**/*.ioc", exclude, 20),
+              vscode.workspace.findFiles("**/{CMakeLists.txt,*.cmake,*.ld}", exclude, 80),
+              vscode.workspace.findFiles("**/{.vscode/launch.json,.cargo/config.toml,.cargo/config}", exclude, 20)
+          ]);
+    const files = [...new Set(groups.flat().map((uri) => uri.fsPath))];
+    const hints = [];
+    let remaining = 1024 * 1024;
+    for (const file of files) {
+        if (remaining <= 0) break;
+        hints.push(path.basename(file));
+        let handle;
+        try {
+            handle = await fs.open(file, "r");
+            const limit = Math.min(64 * 1024, remaining);
+            const buffer = Buffer.alloc(limit + 1);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            remaining -= bytesRead;
+            if (bytesRead <= limit) hints.push(buffer.toString("utf8", 0, bytesRead));
+        } catch {
+            // Missing or unreadable hints cannot establish a target identity.
+        } finally {
+            await handle?.close();
+        }
+    }
+    return probeRsTargetsFromText(hints.join("\n"), targets);
+}
+
+async function detectWorkspace(vscode, backend = "openocd", probeRsTargets = [], selectedIoc = "") {
+    if (backend === "probe-rs") {
+        const [elf, mcuCandidates] = await Promise.all([
+            newestElf(vscode),
+            detectProbeRsMcu(vscode, probeRsTargets, selectedIoc)
+        ]);
+        return {
+            elf,
+            mcu: mcuCandidates.length === 1 ? mcuCandidates[0] : "",
+            mcuCandidates,
+            debugger: "",
+            probeCandidates: []
+        };
+    }
     const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
     return { elf, mcu, ...debuggerConfig };
 }
@@ -146,6 +220,7 @@ module.exports = {
     candidateElfFiles,
     cargoTargetExecutables,
     targetFromText,
+    probeRsTargetsFromText,
     debuggerFromInventory,
     usbInventory
 };

@@ -78,6 +78,7 @@ async function main() {
     assert.deepEqual(await detectWorkspace(vscode, "probe-rs"), {
         elf: "",
         mcu: "",
+        mcuCandidates: [],
         debugger: "",
         probeCandidates: []
     });

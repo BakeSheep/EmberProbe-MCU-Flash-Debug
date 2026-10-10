@@ -6,10 +6,39 @@ const fs = require("node:fs");
 const os = require("node:os");
 const vscode = require("vscode");
 
+async function verifyTargetDetection(extension, folder) {
+    const { detectWorkspace } = require(path.join(extension.extensionPath, "src/autoDetect"));
+    const root = fs.mkdtempSync(path.join(folder.uri.fsPath, "probe-rs-targets-"));
+    const cargo = path.join(root, ".cargo", "config.toml");
+    const launch = path.join(root, ".vscode", "launch.json");
+    const ioc = path.join(root, "board.ioc");
+    const targets = [
+        { label: "nRF52840_xxAA", description: "nRF52 Series" },
+        { label: "STM32F407ZG", description: "STM32F4 Series" },
+        { label: "STM32H723VG", description: "STM32H7 Series" }
+    ];
+    try {
+        fs.mkdirSync(path.dirname(cargo));
+        fs.mkdirSync(path.dirname(launch));
+        fs.writeFileSync(cargo, '[target.thumbv7em-none-eabihf]\nrunner = "probe-rs run --chip nRF52840_xxAA"\n');
+        assert.equal((await detectWorkspace(vscode, "probe-rs", targets)).mcu, "nRF52840_xxAA");
+        fs.unlinkSync(cargo);
+        fs.writeFileSync(launch, JSON.stringify({ configurations: [{ chip: "STM32F407ZG" }] }));
+        assert.equal((await detectWorkspace(vscode, "probe-rs", targets)).mcu, "STM32F407ZG");
+        fs.writeFileSync(ioc, "Mcu.CPN=STM32H723VGT6\nMcu.Name=STM32H723VGTx\n");
+        assert.equal((await detectWorkspace(vscode, "probe-rs", targets)).mcu, "");
+        assert.equal((await detectWorkspace(vscode, "probe-rs", targets, ioc)).mcu, "STM32H723VG");
+        console.log("✓ probe-rs MCU detection: Cargo and launch globs, ambiguous hints and selected ioc priority");
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+}
+
 async function run() {
     const extension = vscode.extensions.getExtension("BakeSheep.emberprobe");
     const provider = extension.exports.debugTestProvider;
     const folder = vscode.workspace.workspaceFolders[0];
+    await verifyTargetDetection(extension, folder);
     const settings = vscode.workspace.getConfiguration("emberprobe");
     const keys = ["backend", "probeRsPath", "probeRsChip"];
     const previous = keys.map((key) => settings.inspect(key).globalValue);

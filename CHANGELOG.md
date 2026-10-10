@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- probe-rs 后端新增可搜索的 MCU 目标列表，复用本机目标数据库并接入一键配置；支持工作区芯片匹配和所选 `.ioc` 优先，保留取消与探针占用保护。
+- Add searchable probe-rs MCU targets from the installed registry and integrate one-click configuration with workspace chip matching, selected `.ioc` priority, cancellation and probe ownership guards.
 - probe-rs 已运行核心的重复 `continued` 事件（例如 WFI 唤醒）不再取消变量写入回读；实际执行控制仍切换调试代次。
 - Preserve live write verification across duplicate probe-rs running/sleep notifications while retaining real execution transitions.
 - 修复图表快照刷新与 DAP 写入回读并发时的误取消；刷新延后到写入结束，实际执行状态变化继续使写入失效。
