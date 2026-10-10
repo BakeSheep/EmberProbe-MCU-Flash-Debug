@@ -93,7 +93,9 @@
             chipEsc(stt) +
             '</span><span class="chip-controls">' +
             toggle +
-            (info.controlsAvailable === false ? "" : controlButton("reset", t("chip.reset"))) +
+            (info.controlsAvailable === false || info.resetAvailable === false
+                ? ""
+                : controlButton("reset", t("chip.reset"))) +
             "</span></div>";
         const grid = [
             chipStat(t("chip.adapterClock"), info.clock),
@@ -166,6 +168,28 @@
             '</div><div class="chip-rows">' +
             g3 +
             "</div></div>";
+        const errors = Array.isArray(info.readErrors) ? info.readErrors.slice(0, 10) : [];
+        const errorLabels = {
+            targetState: "chip.targetState",
+            romDesigner: "chip.designer",
+            idcode: "chip.deviceId",
+            flashSize: "chip.flashSize",
+            uid: "chip.uid",
+            registers: "chip.groupRun"
+        };
+        const partialNote = errors.length
+            ? '<div class="chip-note" title="' +
+              chipEsc(errors.map((error) => error.message).join("; ")) +
+              '">' +
+              chipEsc(
+                  t("chip.partialRead", {
+                      fields: [...new Set(errors.map((error) => t(errorLabels[error.field] || "chip.info")))].join(
+                          " · "
+                      )
+                  })
+              ) +
+              "</div>"
+            : "";
         return (
             '<div class="chip-hero">' +
             CHIP_ICON +
@@ -177,7 +201,9 @@
             chipEsc(sub) +
             '</div></div></div><div class="chip-stats">' +
             grid +
-            '</div><details class="chip-more"' +
+            "</div>" +
+            partialNote +
+            '<details class="chip-more"' +
             (chipMoreOpen ? " open" : "") +
             ' id="chipMore"><summary>' +
             t("chip.details") +

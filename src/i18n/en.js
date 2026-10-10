@@ -382,6 +382,7 @@ module.exports = Object.freeze({
     "chip.readAgain": "Probe or target changed; read chip info again",
     "chip.readAt": "Read at (read again after reset)",
     "chip.stateError": "State read failed",
+    "chip.partialRead": "Some information could not be read: {fields}",
     "live.targetPollingFailed":
         "Target polling keeps failing; sampling stopped. Check the target configuration, power, and debug connection before restarting.",
     "chip.debugProbe": "Debug Probe",

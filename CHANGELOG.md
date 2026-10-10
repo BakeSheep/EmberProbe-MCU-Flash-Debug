@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 优化 probe-rs 芯片读取：核心信息先显示，Agent 按字段/分组读取，F1/F2/F4/F7 的 UID 与容量合并读取，执行控制后的刷新复用同一连接；运行态独立读取保持 CLI 路径。
+- Optimize probe-rs chip reads with progressive core results, selective Agent reads, combined F1/F2/F4/F7 factory reads and connection reuse after execution controls; retain the CLI path for standalone running targets.
+- probe-rs 芯片信息复用已知 STM32 系列地址表，补齐 Device/Revision ID、Flash 容量、UID、CoreSight 厂商线索、运行状态与停机寄存器；支持侧栏暂停、继续和复位，保留会话绑定、探针占用及退出确认。
+- Align probe-rs chip information with the known STM32 family tables, including identity, flash capacity, UID, CoreSight vendor clues, run state and halted registers; add sidebar execution controls with session binding, probe ownership and confirmed cleanup.
 - probe-rs 后端新增可搜索的 MCU 目标列表，复用本机目标数据库并接入一键配置；支持工作区芯片匹配和所选 `.ioc` 优先，保留取消与探针占用保护。
 - Add searchable probe-rs MCU targets from the installed registry and integrate one-click configuration with workspace chip matching, selected `.ioc` priority, cancellation and probe ownership guards.
 - probe-rs 已运行核心的重复 `continued` 事件（例如 WFI 唤醒）不再取消变量写入回读；实际执行控制仍切换调试代次。

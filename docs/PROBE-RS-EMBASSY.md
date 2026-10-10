@@ -40,4 +40,14 @@ EmberProbe 可以用 probe-rs 调试 Cortex-M 上的 Rust 程序，并在同一�
 Agent Bridge 的变量读取与写入可复用活动的 probe-rs LiveWatch/DAP 会话。Agent Flash 与故障寄存器分析仍限于 OpenOCD；probe-rs 烧录请使用侧栏“烧录”按钮。
 
 独立的 STM32H723 Embassy 真机测试程序与复测步骤见 [HIL smoke app](../test/hil/fixtures/embassy-h723/README.md)。
-probe-rs 模式下“读取芯片信息”会读取核心 CPUID；对 STM32H7 还会读取 Device ID、Revision ID、Flash 容量和 UID。独立模式使用 probe-rs CLI，调试会话内复用 DAP 连接。
+probe-rs 模式下“读取芯片信息”与 OpenOCD 复用项目的已知芯片地址表：Cortex-M CPUID、核心版本、CoreSight ROM / JEP106 厂商线索，以及 STM32 F0/F1/F2/F3/F4/F7、G0/G4、H7、L0/L1/L4、WB/WL 的 Device ID、Revision ID 和 UID。Flash 容量读取按地址表提供，L1 没有容量地址；F2/F4/F7 等半字地址使用 16 位读取。表内的家族级支持不代表每个子型号已完成实板验证；H7R/S、其他未知系列不使用旧 H7/STM32 身份地址，也不会扫描其他家族。APM32F4 只读已知 IDCODE；检测到 Geehy 厂商指纹时也不会套用 STM32 UID/容量地址。厂商指纹提供线索，不构成可靠的真伪鉴定。
+
+独立模式用只读 CLI 读取身份信息和 DHCSR 状态；运行或休眠时不为普通读取建立 DAP 调试连接。状态读回停机时，使用短连接 DAP 的 `info reg` 读取 PC/SP/LR；CLI 对原停止位置的限制见下文。已有调试会话则复用所选 DAP 会话，并按停止代次检查结果；运行状态不读停机寄存器。选填字段读取失败时，已取得的信息仍显示，面板注明缺失字段，悬停可查看原因；Agent 返回的 `readErrors` 保留对应诊断。一次信息读取有 15 秒时间预算和固定字节预算。
+
+面板会在 CPUID 返回后先显示核心，随后补齐身份字段，完成前禁用控制按钮。F1/F2/F4 的 UID 和容量跨度为 20 字节，F7 为 36 字节，使用一次半字读取；区间不可读则回退到分字段读取。Geehy 指纹仍禁止 UID/容量读取。Agent 的 `--fields`/`--section` 会传入硬件读取计划，跳过不需要的 ROM、IDCODE、容量、UID、运行状态或寄存器；选择性结果不会覆盖面板完整缓存。仅查询配置派生的调试元数据时不访问芯片，不代表已经验证探针在线。独立执行控制后的刷新复用尚未关闭的 DAP 连接。
+
+保留 CLI 独立读取意味着完整刷新仍有多次探针连接开销。上游 `probe-rs read` 完成后会调用 `resume_all_cores`，连接和清理也可能短暂停机；这条路径不能保证已暂停目标的原停止位置。需要保持断点暂停时，使用已有 DAP 调试会话读取。优化边界及 F407_car 只读实测见 [芯片读取性能说明](PROBE-RS-CHIP-INFO-PERFORMANCE.md)。
+
+芯片面板支持暂停、继续和复位。独立模式在 `chipInfo` 探针租约内复核状态，再用短连接 DAP 执行；普通读取不复位或烧录。短连接跳过 `configurationDone`，避免初始化自动恢复已停机核心，断开时不要求暂停或终止目标；仅在进程退出确认后释放探针。独立复位最终继续运行。已有调试会话的控制使用共用 DebugSessionBridge，并按适配器声明决定是否显示复位按钮；调试期间复位遵循当前调试配置的 restart 行为。连接、芯片配置或所选会话变化后，须重新读取后再操作；写入或其他探针操作占用时拒绝控制。
+
+链路速率显示配置值，探针类型在选择器可明确识别时显示 J-Link 或 ST-Link。当前上游 CLI/DAP 未提供通用目标电压或探针固件/硬件版本查询，缺失时继续显示“不支持读取”或留空。短连接 attach 的暂停行为依据 [probe-rs 0.32 DAP 初始化实现](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs-tools/src/bin/probe-rs/cmd/dap_server/server/debugger.rs)；寄存器命令依据 [上游 info reg 实现](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs-tools/src/bin/probe-rs/cmd/dap_server/debug_adapter/dap/repl_commands/info.rs)。本次验证为模拟探针和 Extension Host 回归，未执行实板暂停、复位、烧录或驱动切换。

@@ -23,17 +23,31 @@ async function main() {
     };
     let openOcdCalls = 0;
     let probeRsReads = 0;
+    let chipState = "running";
+    const chipControls = [];
     const Provider = loadProvider(vscode, {
         "./services/probeRsChipInfo": {
-            readProbeRsChipInfo: async (settings) => {
+            readProbeRsChipInfo: async (settings, options) => {
                 probeRsReads++;
                 assert.equal(settings.chip, "STM32H723VG");
-                return { core: "Cortex-M7", deviceId: "0x483" };
+                if (options.fields) assert.deepEqual(options.fields, ["core"]);
+                options.onProgress?.({ core: "Cortex-M7" });
+                return { core: "Cortex-M7", deviceId: "0x483", targetState: chipState };
+            },
+            controlProbeRsTarget: async (settings, action, options) => {
+                assert.equal(options.lease.operation, "chipInfo");
+                assert.equal(options.lease.released, false);
+                options.assertCurrent();
+                chipControls.push({ settings, action });
+                chipState = action === "pause" ? "halted" : "running";
+                assert.equal(options.refresh, true);
+                return { state: chipState, info: { core: "Cortex-M7", targetState: chipState } };
             }
         }
     });
     const provider = Object.create(Provider.prototype);
     provider._probeCoordinator = new ProbeCoordinator();
+    provider._commandContext = () => ({ cwd: __dirname });
     provider._debugBridge = { activeSession: null, hasAnySession: false };
     provider._chipInfoService = { info: null, infoConnection: null };
     provider._openOcdStatusService = {
@@ -43,14 +57,37 @@ async function main() {
         }
     };
     provider._probeRsStatusService = { refresh: async () => "probe-rs" };
-    provider._postChipInfo = () => {};
+    const chipUpdates = [];
+    provider._postChipInfo = (status, info) => chipUpdates.push({ status, info });
+    provider._t = (key) => key;
     provider._webviewView = { webview: { postMessage: () => {} } };
     assert.equal(await provider.refreshBackendStatus(), "probe-rs");
     const info = await provider.readChipInfoAction(true);
     assert.equal(info.core, "Cortex-M7");
     assert.equal(probeRsReads, 1);
+    assert.equal(chipUpdates.find(({ status }) => status === null).info.controlsAvailable, false);
     assert.equal(openOcdCalls, 0);
     assert.equal(provider._chipInfoService.infoConnection.target, "STM32H723VG");
+    assert.equal((await provider.controlChipInfoAction("pause")).targetState, "halted");
+    assert.equal((await provider.controlChipInfoAction("continue")).targetState, "running");
+    assert.equal(probeRsReads, 1, "controls reuse the information refreshed inside the native session");
+    const cached = provider._chipInfoService.info;
+    const partial = await provider.readChipInfoAction(true, { fields: ["core"], sections: [] });
+    assert.equal(partial.core, "Cortex-M7");
+    assert.strictEqual(
+        provider._chipInfoService.info,
+        cached,
+        "a selective Agent read must not replace the full panel cache"
+    );
+    assert.equal(provider._probeCoordinator.anyActive(), false);
+    assert.deepEqual(
+        chipControls.map(({ action }) => action),
+        ["pause", "continue"]
+    );
+    values.probeRsProbe = "different-probe";
+    assert.equal(await provider.controlChipInfoAction("reset"), null);
+    assert.equal(chipControls.length, 2, "a changed probe selector rejects controls before execution");
+    values.probeRsProbe = "";
     await assert.rejects(
         provider._withAgentProbe(() => {}),
         { code: "PROBE_RS_SESSION_REQUIRED" }

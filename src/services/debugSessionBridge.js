@@ -536,7 +536,7 @@ class DebugSessionBridge {
                 return;
             }
             const transition = this.transitionKind;
-            if (transition === "continue") {
+            if (transition === "continue" || transition === "reset") {
                 this.transitionKind = "";
                 this.transitionCommand = "";
                 this.transitionRequestSeq = null;

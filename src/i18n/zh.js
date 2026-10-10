@@ -375,6 +375,7 @@ module.exports = Object.freeze({
     "chip.readAgain": "调试器或目标已更改，请重新读取芯片信息",
     "chip.readAt": "读取时间（重置后请重新读取）",
     "chip.stateError": "状态读取失败",
+    "chip.partialRead": "部分信息未能读取：{fields}",
     "live.targetPollingFailed": "目标持续轮询失败，已停止采样。请检查目标配置、供电和调试连接后重新启动。",
     "chip.debugProbe": "调试探针",
     "chip.endianLE": "小端 LE",

@@ -58,6 +58,12 @@ async function run() {
         }
     };
     let session;
+    let chipStatus;
+    const postChipInfo = provider._postChipInfo;
+    provider._postChipInfo = function (status, info) {
+        chipStatus = status;
+        return postChipInfo.call(this, status, info);
+    };
     try {
         await settings.update("backend", "probe-rs", vscode.ConfigurationTarget.Global);
         await settings.update("probeRsPath", process.env.EMBERPROBE_E2E_NODE_PATH, vscode.ConfigurationTarget.Global);
@@ -90,6 +96,28 @@ async function run() {
         const chip = await provider.readChipInfoAction(true);
         assert.equal(chip.core, "Cortex-M4");
         assert.equal(chip.chip, config.chip);
+        assert.equal(chip.deviceId, "0x413");
+        assert.equal(chip.flashSize, "1024 KiB");
+        assert.equal(chip.uid, "0x001D00413134510438373332");
+        assert.equal(chip.designer, "STMicroelectronics");
+        assert.equal(chip.controlsAvailable, true);
+        const fullChipCache = provider._chipInfoService.info;
+        assert.deepEqual(await provider._handleAgentCall("chip.read", { sections: [], fields: ["core"] }), {
+            core: "Cortex-M4"
+        });
+        assert.strictEqual(provider._chipInfoService.info, fullChipCache);
+        const halted = await provider.controlChipInfoAction("pause");
+        assert.equal(halted.targetState, "halted");
+        assert.equal(halted.pc, "0x08000100");
+        assert.equal(halted.sp, "0x20001000");
+        assert.equal(halted.lr, "0xFFFFFFF9");
+        const continued = await provider.controlChipInfoAction("continue");
+        assert.ok(continued, JSON.stringify(chipStatus));
+        assert.equal(continued.targetState, "running");
+        const reset = await provider.controlChipInfoAction("reset");
+        assert.ok(reset, JSON.stringify(chipStatus));
+        assert.equal(reset.targetState, "running");
+        assert.equal(provider._probeCoordinator.isActive("debugServer"), true);
         await provider.startLiveWatch(undefined, 100, "sidebar", false);
         await waitFor(() => provider._debugBridge.canWrite);
         const written = await provider._writeUiVariable(gain.name, 123);
@@ -126,6 +154,7 @@ async function run() {
             "✓ native probe-rs F5: owned process, launch chip, runtime RAM guards, ELF rejection and lease release"
         );
     } finally {
+        provider._postChipInfo = postChipInfo;
         await provider.stopLiveWatch();
         if (session) await vscode.debug.stopDebugging(session);
         for (let i = 0; i < keys.length; i++)

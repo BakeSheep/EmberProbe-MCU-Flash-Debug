@@ -13,7 +13,7 @@
 - 烧录：[probeRsFlashService.js](../src/services/probeRsFlashService.js)、[flashService.js](../src/services/flashService.js)、[agentFlashService.js](../src/services/agentFlashService.js)、[elf-file.js](../skills/_emberprobe/elf-file.js)、[debugImages.js](../src/services/debugImages.js)。
 - 调试：[probeRsConfiguration.js](../src/services/probeRsConfiguration.js)、[probeRsDebugAdapter.js](../src/services/probeRsDebugAdapter.js)、[debugSessionBridge.js](../src/services/debugSessionBridge.js)、[session.js](../src/debug/session.js)。
 - LiveWatch 与类型：[mainViewProvider.js](../src/mainViewProvider.js)、[liveWatch.js](../src/liveWatch.js)、[liveWatchService.js](../src/services/liveWatchService.js)、[types.js](../src/dwarf/types.js)、[svdPeripheralService.js](../src/services/svdPeripheralService.js)。
-- 诊断与配置：[probeRsChipInfo.js](../src/services/probeRsChipInfo.js)、[probeRsStatusService.js](../src/services/probeRsStatusService.js)、[rules.js](../src/chip/rules.js)、[autoDetect.js](../src/autoDetect.js)、[probeRsTargets.js](../src/services/probeRsTargets.js)。
+- 诊断与配置：[probeRsChipInfo.js](../src/services/probeRsChipInfo.js)、[probeRsChipSession.js](../src/services/probeRsChipSession.js)、[probeRsStatusService.js](../src/services/probeRsStatusService.js)、[rules.js](../src/chip/rules.js)、[autoDetect.js](../src/autoDetect.js)、[probeRsTargets.js](../src/services/probeRsTargets.js)。
 
 ---
 
@@ -54,10 +54,10 @@
 |                          | SVD 停机读写                  | 共用 SVD 服务                             | 共用 SVD 服务                                       | 已接入                | 访问权限、副作用、传输宽度和具体寄存器行为仍需验证                       |
 |                          | SVD 运行中读写                | 暂停状态门禁                              | 暂停状态门禁                                        | 共同限制              | `TARGET_NOT_PAUSED` 是保护策略，不是上游硬件能力判定                     |
 | **诊断、驱动与配置**     | Cortex-M CPUID                | 支持                                      | 支持                                                | 已接入                | 读取 `0xe000ed00`，不应推广到所有架构                                    |
-|                          | IDCODE、Flash 容量、UID       | 一批 STM32 系列地址表及受限兜底           | 当前仅 STM32H7 名称分支补充读取                     | 接入差距              | OpenOCD 非全家族保证；APM32F4 的 UID/Flash 地址读取仍禁用                |
-|                          | CoreSight ROM 厂商线索        | JEP106 解码                               | 芯片信息服务未接入                                  | 接入差距              | 厂商指纹不是可靠的芯片真伪鉴定                                           |
-|                          | 芯片面板电压及 PC/SP/LR       | 探针提供信息时解析；停机读取寄存器        | 面板未接入                                          | 接入差距              | 不等于 probe-rs 库或 DAP 无寄存器读取能力                                |
-|                          | 芯片面板 Pause/Run/Reset      | 支持，受占用限制                          | `controlsAvailable: false`                          | 面板差距              | probe-rs 仍可使用调试器的执行控制                                        |
+|                          | IDCODE、Flash 容量、UID       | 一批 STM32 系列地址表及受限兜底           | 复用已知系列地址表，正确处理半字读取                 | 已接入                | 未知系列不扫描兜底；APM32F4 UID/容量及 H7R/S 身份地址保持禁用           |
+|                          | CoreSight ROM 厂商线索        | JEP106 解码                               | 复用解码并合并连续读取                              | 已接入                | 厂商指纹不是可靠的芯片真伪鉴定                                           |
+|                          | 芯片面板电压及 PC/SP/LR       | 探针提供信息时解析；停机读取寄存器        | 停机读取 PC/SP/LR；电压仍缺通用查询                  | 部分对齐              | 电压与探针版本未知时不填猜测值；运行中不读取停机寄存器                   |
+|                          | 芯片面板 Pause/Run/Reset      | 支持，受占用限制                          | 独立短连接或复用所选 DAP；受租约/代次检查            | 已接入                | DAP 复位按钮按 restart 能力显示；调试复位遵循当前调试配置               |
 |                          | 调试期间刷新芯片信息          | 独占操作，通常拒绝占用                    | 可复用选定 DAP 会话                                 | probe-rs 集成优势     | 重复读取、会话/状态变化和其他冲突仍被拒绝                                |
 |                          | Agent Fault 自动分析          | 支持 Cortex-M 故障寄存器解码              | `BACKEND_UNSUPPORTED`                               | 显式限制              | 不代表所有手动寄存器读取或上游异常调试均不可用                           |
 |                          | CPU 负载率监测                | 现有服务使用 OpenOCD                      | 未实现 probe-rs 执行路径                            | 接入差距              | 监测仍为独占探针的实验性功能                                             |
@@ -207,9 +207,9 @@ LiveWatch 当前围绕固定地址全局量，不解析动态栈寻址的函数�
 #### 芯片信息读取
 
 - **身份地址覆盖**：OpenOCD 地址表覆盖一批 STM32 系列，不是全家族/全型号保证。例如 Flash 容量表没有 L1，未知目标的扫描兜底受停机状态限制。APM32F4 当前只明确提供 IDCODE 地址，UID/Flash 容量地址读取仍禁用，等待地址验证。
-- **probe-rs 补充字段**：通用 Cortex-M CPUID 之外，仅在配置 chip 名以 `STM32H7` 开头时读取额外 IDCODE、Flash 容量和 UID；其他系列没有这套补充字段。共用 H7 地址不能代表全部 H7 子型号已逐一验证。
-- **厂商线索**：OpenOCD 读取 CoreSight ROM 信息并进行 JEP106 解码；probe-rs 的芯片信息服务尚未接入。厂商指纹提供识别线索，不能视为可靠真伪鉴定。
-- **探针与寄存器面板**：OpenOCD 在探针输出相关信息时解析电压、固件等，并可在停机状态读 PC/SP/LR；probe-rs 面板使用 `probeName: "probe-rs"`，没有同样的字段读取和面板控制。此处限制不能推广为上游库/DAP 不会读寄存器。
+- **probe-rs 补充字段**：复用共用规则中 F0/F1/F2/F3/F4/F7、G0/G4、H7、L0/L1/L4、WB/WL 的已知地址，按实际宽度读取 IDCODE、Flash 容量和 UID；L1 仍无容量地址。H7R/S 不套用旧 H7 地址。APM32F4 或 Geehy ROM 指纹不读取未经验证的 UID/容量地址。子型号覆盖仍须单独实板验证。
+- **厂商线索**：两个后端共用 CoreSight ROM 的 JEP106 解码；probe-rs 将 PIDR/CIDR 合并为一次连续读取。厂商指纹提供识别线索，不能视为可靠真伪鉴定。
+- **探针与寄存器面板**：probe-rs 显示可识别的探针选择器类型、配置的链路速度、核心字节序和运行状态，停机时通过 `info reg` 读取 PC/SP/LR。电压、探针固件/硬件版本仍缺少通用上游 CLI/DAP 查询，保持未知。独立运行态读取使用只读 CLI；停机寄存器和显式 Pause/Run/Reset 使用持租约的短连接 DAP，跳过初始化自动 resume，退出确认后才释放探针。活动会话的控制复用 DebugSessionBridge；复位能力和行为由当前调试适配器/配置决定。选填字段失败保留其他结果并返回/展示 `readErrors`。
 - **连接复用**：OpenOCD 芯片读取走独占流程，调试/采样占用时拒绝；probe-rs 可复用选定活动 DAP 会话。重复芯片读取、能力未就绪、执行状态变化、会话切换和其他冲突仍受检查，不能称为无限制“随时并发”。
 
 #### RTT/defmt 输出
@@ -251,7 +251,7 @@ probe-rs 已接入的主要路径包括：
 3. RTOS 任务感知、原生 FreeRTOS 诊断面板和现有 CPU 负载率监测。
 4. F5 的 HEX/BIN `loadFiles`、多镜像加载及 GDB 命令钩子。
 5. 实验性 `serverGroup` 多会话协同；双核实板支持仍待验收。
-6. 地址表覆盖范围内的芯片详细身份读取、CoreSight 厂商线索和 Windows J-Link 驱动助手。
+6. Windows J-Link 驱动助手，以及探针输出中的电压和版本信息。
 
 Rust static/Atomic 解析可由两个后端共用；标准 `connectUnderReset` 等 F5 配置也不是必须切换 OpenOCD 的理由。
 
@@ -260,7 +260,7 @@ Rust static/Atomic 解析可由两个后端共用；标准 `connectUnderReset` �
 1. **适配 Agent Flash 执行器**：将 probe-rs 烧录与校验纳入既有镜像指纹、快照、连接身份和授权流程，不能只删除后端拒绝分支。
 2. **补齐侧栏下载功能**：增加经过验证的格式/基地址、校验、连接策略和进度处理，以及成功下载后的符号刷新和采样恢复。
 3. **接入驱动诊断与选择**：probe-rs 模式复用 J-Link inventory 和驱动助手，保留主动授权、独占租约及退出确认。
-4. **扩展芯片身份读取**：复用经验证的型号地址与读取预算，为主流非 H7 型号补充字段；未知地址和型号继续保持限制。
+4. **扩展芯片身份验收**：已知系列地址、厂商线索和面板控制已接入；补充各子型号实板验证，保持未知地址限制，并追踪上游探针电压/版本查询接口。
 5. **适配 Fault 分析**：复用会话绑定、暂停/状态检查和读取预算，通过 DAP 读取 Cortex-M SCB 数据并接入现有解码。
 6. **补充对照验收**：同条件测量两后端的读取、调度、休眠和 RTT 开销，并单独验证多核、缓存开启和 MMIO 写入宽度。
 
@@ -273,6 +273,7 @@ node test/rust-probe-rs.test.js
 node test/probe-rs-safety.test.js
 node test/probe-rs-debug-adapter.test.js
 node test/probe-rs-chip-info.test.js
+node test/probe-rs-chip-session.test.js
 node test/probe-rs-configuration.test.js
 node test/probe-rs-targets.test.js
 node test/backend-routing.test.js

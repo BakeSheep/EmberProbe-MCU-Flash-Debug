@@ -50,6 +50,7 @@ const TEST_GROUPS = Object.freeze({
         "chip-control.test.js",
         "chip-info-service.test.js",
         "chip-info.test.js",
+        "probe-rs-chip-session.test.js",
         "ci-test-topology.test.js",
         "configuration-store.test.js",
         "contracts.test.js",

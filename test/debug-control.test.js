@@ -210,6 +210,7 @@ class FunctionBreakpoint {
             id: "event-first",
             async customRequest(command, args) {
                 if (command === "restart") {
+                    eventFirstBridge.handleRequest(eventFirstSession, { type: "request", seq: 1, command });
                     eventFirstBridge.handleMessage(eventFirstSession, {
                         type: "event",
                         event: "continued",
@@ -229,6 +230,11 @@ class FunctionBreakpoint {
         });
         const eventConfirmedRestart = await eventFirstBridge.control("restart", 7);
         assert.strictEqual(eventConfirmedRestart.status.state, "running");
+        assert.strictEqual(
+            eventFirstBridge.transitionKind,
+            "",
+            "continued completes a restart that resumes the target"
+        );
         assert.ok(
             eventConfirmedRestart.status.epoch > eventConfirmedRestart.before.epoch,
             "a conclusive state event must complete restart even when customRequest never settles"

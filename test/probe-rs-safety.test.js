@@ -18,7 +18,7 @@ function ready(bridge, session) {
         type: "response",
         command: "initialize",
         success: true,
-        body: { supportsReadMemoryRequest: true, supportsWriteMemoryRequest: true }
+        body: { supportsReadMemoryRequest: true, supportsWriteMemoryRequest: true, supportsRestartRequest: true }
     });
     bridge.handleMessage(session, { type: "response", command: "attach", success: true });
 }
@@ -53,6 +53,17 @@ function fixture() {
         },
         async customRequest(command, args) {
             requests.push({ command, args });
+            if (["pause", "continue", "restart"].includes(command)) {
+                provider._debugBridge.handleRequest(session, { type: "request", seq: requests.length, command });
+                provider._debugBridge.handleMessage(session, {
+                    type: "event",
+                    event: command === "pause" ? "stopped" : "continued",
+                    body: { threadId: 7, reason: "pause" }
+                });
+                return {};
+            }
+            if (command === "threads") return { threads: [{ id: 7, name: "Core" }] };
+            if (command === "evaluate") return { result: "PC/R15: 0x08000100 SP/R13: 0x20001000 LR/R14: 0xfffffff9" };
             if (command === "writeMemory") return { bytesWritten: Buffer.from(args.data, "base64").length };
             assert.equal(command, "readMemory");
             const data = Buffer.alloc(args.count);
@@ -69,6 +80,7 @@ function fixture() {
     provider._postConsumerStatuses = () => {};
     provider._chipInfoService = {};
     provider._postChipInfo = () => {};
+    provider._t = (key) => key;
     provider.readElfSymbols = () => ({
         elf: { path: selectedElf, sha256: selectedElf },
         memory: { sections: [{ name: ".data", addr: 0x20000000, size: 0x100, flags: 3 }] }
@@ -160,6 +172,41 @@ async function main() {
         assert.equal(info.transport, "JTAG");
         assert.equal(provider._chipInfoService.infoConnection.target, session.configuration.chip);
         assert.equal(provider._probeCoordinator.isActive("debugServer"), true);
+
+        assert.equal((await provider.controlChipInfoAction("pause")).targetState, "halted");
+        assert.equal(provider._chipInfoService.info.pc, "0x08000100");
+        assert.equal((await provider.controlChipInfoAction("continue")).targetState, "running");
+        assert.equal(provider._chipInfoService.info.pc, undefined);
+        assert.equal((await provider.controlChipInfoAction("reset")).targetState, "running");
+        assert.equal(
+            provider._probeCoordinator.isActive("debugServer"),
+            true,
+            "chip controls reuse the owned debugger"
+        );
+        const controls = requests.filter(({ command }) => ["pause", "continue", "restart"].includes(command));
+        assert.deepEqual(
+            controls.map(({ command }) => command),
+            ["pause", "continue", "restart"]
+        );
+        assert.equal(controls[0].args.threadId, 7);
+        const cached = provider._chipInfoService.info;
+        provider._debugBridge.writing = true;
+        assert.equal(await provider.controlChipInfoAction("pause"), null);
+        assert.equal(provider._chipInfoService.info, cached);
+        provider._debugBridge.writing = false;
+
+        const switched = { ...session, id: "probe-rs-new" };
+        ready(provider._debugBridge, switched);
+        provider._debugBridge.selectSession({ sessionId: switched.id });
+        const requestsBeforeStale = requests.length;
+        assert.equal(await provider.controlChipInfoAction("pause"), null);
+        assert.equal(
+            requests.length,
+            requestsBeforeStale,
+            "cached chip info cannot control a different selected session"
+        );
+        provider._debugBridge.detach(switched);
+        await provider.readChipInfoAction(true);
 
         state.afterRead(() => provider._debugBridge.detach(session));
         await assert.rejects(provider.readChipInfoAction(true), { code: "DEBUG_STATE_CHANGED" });

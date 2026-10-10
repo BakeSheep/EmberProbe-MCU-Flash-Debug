@@ -12,16 +12,21 @@ function probeRsArgs(command, settings, elf) {
     const args = [command, "--chip", chip, "--non-interactive"];
     if (settings.probe) args.push("--probe", settings.probe);
     if (settings.speed) args.push("--speed", String(settings.speed));
+    if (settings.protocol) {
+        const protocol = String(settings.protocol).toLowerCase();
+        if (!["swd", "jtag"].includes(protocol)) throw new Error("Invalid probe-rs wire protocol");
+        args.push("--protocol", protocol);
+    }
     if (elf) args.push(elf);
     return args;
 }
 
-function runProbeRs(executable, args, cwd) {
+function runProbeRs(executable, args, cwd, options = {}) {
     return new Promise((resolve, reject) => {
         execFile(
             executable,
             args,
-            { cwd, windowsHide: true, timeout: 120000, maxBuffer: 1024 * 1024 },
+            { cwd, windowsHide: true, timeout: options.timeoutMs ?? 120000, maxBuffer: 1024 * 1024 },
             (error, stdout, stderr) => {
                 if (error) {
                     error.message = `${error.message}\n${String(stderr || stdout).slice(-2000)}`;

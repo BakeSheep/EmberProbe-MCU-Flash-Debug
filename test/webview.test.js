@@ -170,6 +170,41 @@ try {
     assert.match(chipBody.textContent, /0x483/);
     assert.match(chipBody.textContent, /1024 KiB/);
     assert.equal(chipBody.querySelectorAll(".chip-control").length, 0);
+    probeRsSidebar.send({
+        type: "chipInfo",
+        info: { core: "Cortex-M4", targetState: "running", controlsAvailable: true, resetAvailable: false }
+    });
+    probeRsSidebar.send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+    assert.equal(chipBody.querySelectorAll(".chip-control").length, 1);
+    chipBody.querySelector('[data-chip-action="pause"]').click();
+    assert.deepEqual(probeRsSidebar.messages.at(-1), { type: "chipControl", action: "pause" });
+    probeRsSidebar.send({
+        type: "chipInfo",
+        info: {
+            core: "Cortex-M4",
+            targetState: "halted",
+            controlsAvailable: true,
+            resetAvailable: true,
+            pc: "0x08000100",
+            sp: "0x20001000",
+            lr: "0xfffffff9"
+        }
+    });
+    probeRsSidebar.send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
+    assert.equal(chipBody.querySelectorAll(".chip-control").length, 2);
+    assert.match(chipBody.textContent, /0x08000100/);
+    chipBody.querySelector('[data-chip-action="continue"]').click();
+    assert.deepEqual(probeRsSidebar.messages.at(-1), { type: "chipControl", action: "continue" });
+    probeRsSidebar.send({
+        type: "chipInfo",
+        info: {
+            core: "Cortex-M4",
+            targetState: "running",
+            readErrors: [{ field: "flashSize", message: "<script>unreadable</script>" }]
+        }
+    });
+    assert.match(chipBody.textContent, /Some information could not be read: Flash Size/);
+    assert.equal(chipBody.querySelector("script"), null);
 } finally {
     probeRsSidebar.close();
 }

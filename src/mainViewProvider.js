@@ -8,7 +8,7 @@ const {
 const { probeRsSettings, resolveProbeRsDebugConfiguration } = require("./services/probeRsConfiguration");
 const { listProbeRsTargets } = require("./services/probeRsTargets");
 const { downloadWithProbeRs } = require("./services/probeRsFlashService");
-const { readProbeRsChipInfo } = require("./services/probeRsChipInfo");
+const { readProbeRsChipInfo, controlProbeRsTarget } = require("./services/probeRsChipInfo");
 const { ProbeRsDebugAdapter } = require("./services/probeRsDebugAdapter");
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
 const { SharedDebugGroup } = require("./services/sharedDebugGroup");
@@ -52,7 +52,7 @@ const { ConfigurationStore, assertAgentSettable } = require("./services/configur
 const { FlashService } = require("./services/flashService");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
-const { AgentService } = require("./services/agentService");
+const { AgentService, requestedChipFields } = require("./services/agentService");
 const { HumanApprovalService } = require("./services/humanApprovalService");
 const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
@@ -5054,13 +5054,88 @@ class MainViewProvider {
     // 同步侧边栏：视图重建后回放已缓存的芯片信息与当前状态
     _syncChipInfo(post) {
         this._chipInfoService.sync(post);
+        if (this._probeRsChipReading) post({ type: "chipInfoStatus", state: "reading", key: "chip.reading" });
+    }
+    _probeRsChipSettings(session) {
+        const settings = probeRsSettings(vscode);
+        if (session)
+            return {
+                ...settings,
+                chip: session.configuration.chip,
+                probe: session.configuration.probe || "",
+                speed: session.configuration.speed,
+                cwd: session.configuration.cwd,
+                protocol: session.configuration.wireProtocol || session.configuration.protocol || "SWD"
+            };
+        const protocol = vscode.workspace.getConfiguration("emberprobe").get("transport", "auto");
+        return {
+            ...settings,
+            cwd: this._commandContext().cwd,
+            protocol: String(protocol).toLowerCase().includes("jtag") ? "JTAG" : "SWD"
+        };
+    }
+    _probeRsChipReadOptions(settings, session, lease) {
+        const epoch = this._debugBridge.stopEpoch;
+        const backend = this._probeRsSelected();
+        const identity = JSON.stringify(settings);
+        const assertCurrent = () => {
+            const changed = session
+                ? this._debugBridge.activeSession !== session ||
+                  this._debugBridge.conflict ||
+                  this._debugBridge.stopEpoch !== epoch ||
+                  this._debugBridge.transitionKind ||
+                  this._debugBridge.controlInFlight ||
+                  this._debugBridge.writing ||
+                  !this._debugBridge.capabilities.read ||
+                  (!this._debugBridge.paused && !this._debugBridge.runtimeProbeRs)
+                : lease.released || this._debugBridge.hasAnySession;
+            if (
+                changed ||
+                this._shutdownPromise ||
+                backend !== this._probeRsSelected() ||
+                identity !== JSON.stringify(this._probeRsChipSettings(session))
+            )
+                throw Object.assign(new Error("The connection changed during the chip information operation"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+        };
+        return {
+            lease,
+            assertCurrent,
+            session: session
+                ? {
+                      customRequest: async (command, args) => {
+                          assertCurrent();
+                          const response = await session.customRequest(command, args);
+                          assertCurrent();
+                          return response;
+                      }
+                  }
+                : null,
+            protocol: settings.protocol,
+            state: session ? (this._debugBridge.paused ? "halted" : "running") : "",
+            haltReason: session && this._debugBridge.paused ? this._debugBridge.stopReason : "",
+            resetAvailable: this._debugBridge.capabilities?.restart === true
+        };
+    }
+    _cacheProbeRsChipInfo(info, settings, session) {
+        this._chipInfoService.info = info;
+        this._chipInfoService.infoConnection = {
+            backend: "probe-rs",
+            probe: settings.probe,
+            target: settings.chip,
+            sessionId: session?.id || "",
+            settings: JSON.stringify(settings)
+        };
+        this._postChipInfo({ state: "ready", key: "chip.done" }, info);
     }
     // probe-rs 会话活动时复用其 DAP 内存接口；独立读取时使用 probe-rs CLI。
-    async readChipInfoAction(forAgent = false) {
+    async readChipInfoAction(forAgent = false, request = null) {
         this._assertCpuIdle();
         if (this._probeRsSelected() || isProbeRsDebugSession(this._debugBridge.activeSession)) {
             let lease;
             let ownsRead = false;
+            let retainLease = false;
             try {
                 this._assertProbeDriverIdle();
                 if (this._chipInfoRunning || this._probeRsChipReading)
@@ -5070,53 +5145,29 @@ class MainViewProvider {
                 const session = this._debugBridge.activeSession;
                 if (this._debugBridge.hasAnySession && (!session || !isProbeRsDebugSession(session)))
                     throw Object.assign(new Error("Another debugger owns the probe"), { code: "PROBE_BUSY" });
-                const settings = session
-                    ? {
-                          chip: session.configuration.chip,
-                          probe: session.configuration.probe || "",
-                          speed: session.configuration.speed,
-                          cwd: session.configuration.cwd,
-                          protocol: session.configuration.wireProtocol || session.configuration.protocol || "SWD"
-                      }
-                    : probeRsSettings(vscode);
-                const epoch = this._debugBridge.stopEpoch;
-                const assertCurrent = () => {
-                    if (
-                        this._debugBridge.activeSession !== session ||
-                        this._debugBridge.conflict ||
-                        this._debugBridge.stopEpoch !== epoch ||
-                        this._debugBridge.transitionKind ||
-                        !this._debugBridge.capabilities.read ||
-                        (!this._debugBridge.paused && !this._debugBridge.runtimeProbeRs)
-                    )
-                        throw Object.assign(new Error("The debugger changed during the chip information read"), {
-                            code: "DEBUG_STATE_CHANGED"
-                        });
-                };
-                if (session) assertCurrent();
-                else lease = this._probeCoordinator.acquire("chipInfo");
+                if (this._shutdownPromise || this._liveConnectionClosing || this._liveExitUnconfirmed)
+                    throw Object.assign(new Error("Probe cleanup is still in progress"), { code: "PROBE_BUSY" });
+                const settings = this._probeRsChipSettings(session);
+                if (!session) lease = this._probeCoordinator.acquire("chipInfo");
+                const options = this._probeRsChipReadOptions(settings, session, lease);
+                const selective = forAgent && request !== null;
+                if (selective) options.fields = [...requestedChipFields(request)];
+                else
+                    options.onProgress = (info) => {
+                        options.assertCurrent();
+                        this._postChipInfo(null, { ...info, controlsAvailable: false, resetAvailable: false });
+                    };
+                options.assertCurrent();
                 this._probeRsChipReading = true;
                 ownsRead = true;
                 this._postChipInfo({ state: "reading", key: "chip.reading" });
-                const info = await readProbeRsChipInfo(settings, {
-                    session: session
-                        ? {
-                              customRequest: async (command, args) => {
-                                  assertCurrent();
-                                  const response = await session.customRequest(command, args);
-                                  assertCurrent();
-                                  return response;
-                              }
-                          }
-                        : null,
-                    protocol: settings.protocol,
-                    state: session ? (this._debugBridge.paused ? "halted" : "running") : ""
-                });
-                this._chipInfoService.info = info;
-                this._chipInfoService.infoConnection = { probe: settings.probe, target: settings.chip };
-                this._postChipInfo({ state: "ready", key: "chip.done" }, info);
+                const info = await readProbeRsChipInfo(settings, options);
+                options.assertCurrent();
+                if (selective) this._postChipInfo({ state: "ready", key: "chip.done" });
+                else this._cacheProbeRsChipInfo(info, settings, session);
                 return info;
             } catch (error) {
+                retainLease = error.code === "PROBE_EXIT_UNCONFIRMED";
                 this._postChipInfo({
                     state: "error",
                     key: error.i18nKey,
@@ -5127,10 +5178,76 @@ class MainViewProvider {
                 return null;
             } finally {
                 if (ownsRead) this._probeRsChipReading = false;
-                lease?.release();
+                if (!retainLease) lease?.release();
             }
         }
         return this._chipInfoService.read(forAgent);
+    }
+    async controlChipInfoAction(action) {
+        if (!this._probeRsSelected() && !isProbeRsDebugSession(this._debugBridge.activeSession))
+            return this._chipInfoService.control(action);
+        let lease;
+        let ownsControl = false;
+        let retainLease = false;
+        try {
+            this._assertCpuIdle();
+            this._assertProbeDriverIdle();
+            if (!["pause", "continue", "reset"].includes(action))
+                throw Object.assign(new Error(`Unsupported target action: ${action}`), { code: "CHIP_ACTION_INVALID" });
+            if (
+                this._chipInfoRunning ||
+                this._shutdownPromise ||
+                this._liveConnectionClosing ||
+                this._liveExitUnconfirmed
+            )
+                throw Object.assign(new Error("The probe is busy"), { code: "PROBE_BUSY" });
+            const session = this._debugBridge.activeSession;
+            if (this._debugBridge.hasAnySession && (!session || !isProbeRsDebugSession(session)))
+                throw Object.assign(new Error("Another debugger owns the probe"), { code: "PROBE_BUSY" });
+            const settings = this._probeRsChipSettings(session);
+            const connection = this._chipInfoService.infoConnection;
+            if (!this._chipInfoService.info)
+                throw Object.assign(new Error(this._t("chip.notRead")), { code: "CHIP_NOT_READ" });
+            if (
+                connection?.backend !== "probe-rs" ||
+                connection.sessionId !== (session?.id || "") ||
+                connection.settings !== JSON.stringify(settings)
+            )
+                throw Object.assign(new Error(this._t("chip.readAgain")), { code: "CHIP_INFO_STALE" });
+            if (!session) lease = this._probeCoordinator.acquire("chipInfo");
+            const before = this._probeRsChipReadOptions(settings, session, lease);
+            before.assertCurrent();
+            this._probeRsChipReading = true;
+            ownsControl = true;
+            this._postChipInfo({ state: "reading", key: "chip.controlling" });
+            const result = session
+                ? await this._debugBridge.control(action === "reset" ? "restart" : action)
+                : await controlProbeRsTarget(settings, action, { ...before, refresh: true });
+            if (session && this._debugBridge.activeSession !== session)
+                throw Object.assign(new Error("The selected debugger changed during target control"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+            const state = session ? (this._debugBridge.paused ? "halted" : "running") : result.state;
+            this._cacheProbeRsChipInfo(
+                { ...this._chipInfoService.info, targetState: state, haltReason: "", pc: "", sp: "", lr: "" },
+                settings,
+                session
+            );
+            // Keep the verified transition visible if the subsequent information read fails.
+            const options = this._probeRsChipReadOptions(settings, session, lease);
+            if (result.readError) throw result.readError;
+            const info = result.info || (await readProbeRsChipInfo(settings, options));
+            options.assertCurrent();
+            this._cacheProbeRsChipInfo(info, settings, session);
+            return info;
+        } catch (error) {
+            retainLease = error.code === "PROBE_EXIT_UNCONFIRMED";
+            this._postChipInfo({ state: "error", ...toUiError(error) });
+            return null;
+        } finally {
+            if (ownsControl) this._probeRsChipReading = false;
+            if (!retainLease) lease?.release();
+        }
     }
     // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
     _writeChipDiagnostics(diag, info) {
@@ -5468,12 +5585,7 @@ class MainViewProvider {
                     break;
                 }
                 case "chipControl": {
-                    if (this._probeRsSelected())
-                        this._postChipInfo({
-                            state: "error",
-                            message: "Use the probe-rs debug controls for target execution"
-                        });
-                    else await this._chipInfoService.control(message.action);
+                    await this.controlChipInfoAction(message.action);
                     break;
                 }
                 case "cancelSvdDownload": {

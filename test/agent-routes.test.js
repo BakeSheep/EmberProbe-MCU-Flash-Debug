@@ -69,7 +69,9 @@ const { AgentService } = require("../src/services/agentService");
     }
     assert.deepStrictEqual(await bridge.call("probe.list"), { devices: ["probe"] });
     await routes["chip.read"]();
-    assert.deepStrictEqual(calls.at(-1).args, [true]);
+    assert.deepStrictEqual(calls.at(-1).args, [true, {}]);
+    await routes["chip.read"]({ sections: [], fields: ["core"] });
+    assert.deepStrictEqual(calls.at(-1).args, [true, { sections: [], fields: ["core"] }]);
     await bridge.call("cubemx.check");
     assert.strictEqual(calls.at(-1).method, "_showAgentCubeMxProgress");
     operation = null;
