@@ -6,6 +6,27 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 写入滑条串行发送并合并最新值，正常写入及快照刷新期间保持可拖动，松手后提交最终值；停止/切换会话、执行控制或真实失败清除待发送值，拒绝旧会话代次写入。
+- Serialize slider writes and coalesce the newest value while keeping controls editable during sidebar writes and sample refreshes; submit the final value on release, cancel pending values on stop, context changes or failures, and reject stale UI write contexts.
+
+- 修复 probe-rs 在 GCC C++ 无 prologue 标记及 Windows 源码路径大小写不一致时的普通源码断点：按当前 ELF 精确行地址回退到已验证的指令断点；自动采样的侧栏写入等待快照刷新，并区分不可写状态提示。
+- Fix probe-rs source breakpoints for GCC C++ without prologue markers and Windows path casing through verified instruction fallback; wait for refreshed samples before sidebar writes and report the actual unavailable state.
+
+- probe-rs 实时采样将读取与分发耗时计入采样周期，解除原 50 Hz 软件调度上限，Windows 采样期间复用高精度定时器；同一 ELF 可写 RAM 区间内合并近邻变量读取，保留每轮字节预算、会话校验与写入回读，并修复已有样本后的读取失败重试。
+- Include read and delivery latency in probe-rs sampling periods, remove the former 50 Hz scheduling cap, use finer Windows timers while sampling, batch nearby globals within validated writable ELF RAM and retain cycle budgets, session checks and write verification; fix retries after a successful sample.
+
+- probe-rs 分散 RAM 区间按最多 4 个请求分组读取，取消与失败时收完在途响应；提供固定源码及 SHA-256 校验的可唤醒 stdio DAP 性能构建，保留原核心/RTT 轮询期限，避免新读取请求等待 50 ms 空闲休眠结束，在 Windows 后端会话内管理精细定时器，并复用 J-Link USB 端点。
+- Queue separate probe-rs RAM ranges in batches of at most four and drain in-flight replies on cancellation or failure; provide a source-pinned, SHA-256-verified stdio DAP sampling build that wakes for requests, preserves core/RTT polling deadlines, manages finer Windows timers within backend sessions and reuses J-Link USB endpoints.
+
+- probe-rs 环境缺失时提供“选择路径”和官方“一键安装”，显示安装进度并验证后保存路径；检测用户 Cargo 安装目录，无需重启 VS Code 刷新 PATH，VSIX 不捆绑 probe-rs。
+- Offer path selection and official one-click installation with progress and verified configuration when probe-rs is missing; detect user Cargo installs without restarting VS Code and exclude probe-rs binaries from the VSIX.
+
+- probe-rs 下载在同一连接内强制写后校验并复位，等待采样适配器退出后再占用探针，补齐驱动/调试门禁、阶段及超时诊断；成功后刷新 ELF 绑定并按原意图恢复采样，F5 Launch 默认开启校验。
+- Verify and reset probe-rs downloads in one connection, wait for watch-adapter exit before acquiring the probe, enforce driver/debug gates and structured failure/timeout diagnostics; refresh ELF bindings and restore prior sampling after success, with verification enabled by default for F5 launch.
+
+- 注册 C/C++/ASM/Rust 源码断点入口；Agent 添加或启用断点前检查所选会话的 DAP 能力，拒绝不支持的函数、条件、命中次数和日志断点；补齐模拟断点命中、单步回归及独立真机验收脚本。
+- Register C/C++/ASM/Rust source breakpoints; validate the selected session's DAP capabilities before Agent additions or enables, reject unsupported advanced breakpoints, and add simulated breakpoint/step regressions plus an opt-in hardware acceptance runner.
+
 - 优化 probe-rs 芯片读取：核心信息先显示，Agent 按字段/分组读取，F1/F2/F4/F7 的 UID 与容量合并读取，执行控制后的刷新复用同一连接；运行态独立读取保持 CLI 路径。
 - Optimize probe-rs chip reads with progressive core results, selective Agent reads, combined F1/F2/F4/F7 factory reads and connection reuse after execution controls; retain the CLI path for standalone running targets.
 - probe-rs 芯片信息复用已知 STM32 系列地址表，补齐 Device/Revision ID、Flash 容量、UID、CoreSight 厂商线索、运行状态与停机寄存器；支持侧栏暂停、继续和复位，保留会话绑定、探针占用及退出确认。
@@ -189,6 +210,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 侧栏显示带正式版或 beta 标识的版本号；清理过期文档及失效引用。
 - 修复 Windows 采样计时器约 15.6 ms 粒度导致的目标与实测频率差距；仅采样期间申请高精度计时，并在改频后重置实测速率窗口。
 - 实时查看改用采样频率（Hz）设置，默认 30 Hz 并保存到工作区；调整频率后根据探针读耗时快速采用安全间隔。
+
 ## [0.7.13] - 2026-09-26
 
 - 修复 DWARF 结构体、联合体及 typedef 复合变量的识别与按需展开，恢复侧栏和实时监视中的成员浏览及已选变量。

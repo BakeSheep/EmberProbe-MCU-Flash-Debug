@@ -4,18 +4,44 @@ MC02 的独立 Embassy 仓库、自动 LiveWatch 和整数/浮点调参验收步
 
 ## Embassy / Rust 与 probe-rs
 
-EmberProbe 可以用 probe-rs 调试 Cortex-M 上的 Rust 程序，并在同一个调试会话中读取运行中的全局变量、绘制波形和写入可调标量。先安装支持 `dap-server` 的 `probe-rs` 命令行工具，在侧栏“调试后端”选择 `probe-rs`，再选择探针和芯片。侧栏只检测当前后端的环境；probe-rs 模式不需要安装 OpenOCD。也可在 VS Code 工作区设置中配置：
+EmberProbe 可以用 probe-rs 调试 Cortex-M 上的 Rust 程序，并在同一个调试会话中读取运行中的全局变量、绘制波形和写入可调标量。在侧栏“调试后端”选择 `probe-rs`，扩展会检测命令行工具；未安装时，环境卡片提供“选择路径”和“一键安装”。安装或配置支持 `dap-server` 的 probe-rs 后，再选择探针和芯片。侧栏只检测当前后端的环境；probe-rs 模式不需要安装 OpenOCD。也可在 VS Code 工作区设置中配置：
 
 ```json
 {
-  "emberprobe.backend": "probe-rs",
-  "emberprobe.probeRsPath": "probe-rs",
-  "emberprobe.probeRsChip": "STM32H723VG",
-  "emberprobe.sampleFrequencyHz": 10
+    "emberprobe.backend": "probe-rs",
+    "emberprobe.probeRsPath": "probe-rs",
+    "emberprobe.probeRsChip": "STM32H723VG",
+    "emberprobe.sampleFrequencyHz": 10
 }
 ```
 
-上面的芯片名适用于 STM32H723VGT6；其他芯片请以 `probe-rs chip list` 的名称为准。多探针环境可另设 `emberprobe.probeRsProbe` 为 `VID:PID:Serial`。选择固件时，EmberProbe 会查找 Cargo 默认 `target/<triple>/debug` 和 `release` 目录内的无扩展名 ARM ELF；也可点“Browse for ELF”手选。固件必须包含未剥离的 ELF 符号和 DWARF 类型信息。点击侧栏“启动”会以 probe-rs `attach` 连接现有固件；“启动调试”会使用 probe-rs 烧录并开启断点调试。下载按钮调用 probe-rs 烧录、复位。
+## 环境检测与安装
+
+扩展先检查 PATH，再检查用户 Cargo 安装目录（`CARGO_HOME/bin` 或 `~/.cargo/bin`）。显式填写的 `emberprobe.probeRsPath` 优先，不会自动改用其他程序。命令面板也提供“EmberProbe: 检查 probe-rs 环境”。缺少或无法运行的工具会显示环境卡片；启动调试、LiveWatch 或下载前再次检查，缺失时打开侧栏，不启动探针进程。
+
+“选择路径”打开可执行文件选择框，只有通过 `probe-rs --version` 验证的程序才会保存。“一键安装”按平台执行 [probe-rs 官方安装文档](https://probe.rs/docs/getting-started/installation/) 的指令，下载当前官方发布的工具：
+
+Windows：
+
+```powershell
+irm https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.ps1 | iex
+```
+
+Linux / macOS：
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh
+```
+
+Windows 使用非交互 PowerShell；Linux/macOS 使用 Bash 的 `pipefail` 执行官方管道，下载失败也会报错。通知和环境卡片显示持续进度条及安装输出，安装结束后验证程序并保存路径。官方脚本没有提供完整下载总量，因此进度条不显示估算百分比。整个安装有 10 分钟超时。失败后可重试或选择已有路径；安装期间重复点击不会重复执行，后台检测也不会覆盖安装状态。安装期间若路径设置发生变化，保留新的设置。
+
+官方脚本会安装到用户 Cargo 目录并按其规则更新 PATH；设置了 `PROBE_RS_TOOLS_INSTALL_DIR` 或 `CARGO_DIST_FORCE_INSTALL_DIR` 时，也会检查对应的 `bin` 目录。扩展直接检测安装位置并保存验证通过的路径，当前 VS Code 进程无需重启以刷新 PATH。VSIX 不包含 probe-rs 可执行文件或安装包；一键安装需要访问官方 GitHub 下载地址。
+
+## 固件、目标与调试
+
+上面的芯片名适用于 STM32H723VGT6；其他芯片请以 `probe-rs chip list` 的名称为准。多探针环境可另设 `emberprobe.probeRsProbe` 为 `VID:PID:Serial`。选择固件时，EmberProbe 会查找 Cargo 默认 `target/<triple>/debug` 和 `release` 目录内的无扩展名 ARM ELF；也可点“Browse for ELF”手选。固件必须包含未剥离的 ELF 符号和 DWARF 类型信息。点击侧栏“启动”会以 probe-rs `attach` 连接现有固件；“启动调试”会使用 probe-rs 烧录并开启断点调试。下载按钮在同一连接内烧录、写后校验并复位，成功后刷新变量和内存信息，按原意图恢复采样；F5 Launch 默认启用写后校验。门禁、失败诊断及验证范围见 [烧录行为说明](PROBE-RS-FLASH.md)。
+
+源码中可用 F9 或行号旁的边栏设置普通硬件断点，暂停后使用 VS Code 调试工具栏单步、查看调用栈与局部变量。probe-rs 0.32 DAP 尚未支持函数断点、条件断点、命中次数断点、日志点或数据断点。Agent 按选定会话的实际 DAP 能力拒绝不支持的断点请求；详细入口、测试范围和独立真机验收见 [断点调试说明](PROBE-RS-BREAKPOINTS.md)。
 
 侧栏“MCU 目标”会读取当前配置的 probe-rs 可执行文件的内置目标列表，支持搜索芯片名称和系列；选择后保存到工作区的 `emberprobe.probeRsChip`。目标列表随本机 probe-rs 版本更新，无需维护另一份预设。列表读取失败时会提示检查 probe-rs 路径和安装，保留已有芯片配置；也可直接在工作区设置中填写芯片名称。
 
@@ -25,17 +51,49 @@ EmberProbe 可以用 probe-rs 调试 Cortex-M 上的 Rust 程序，并在同一�
 
 ```json
 {
-  "type": "emberprobe-probe-rs",
-  "request": "launch",
-  "name": "EmberProbe: Rust",
-  "chip": "STM32H723VG",
-  "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/firmware",
-  "rttEnabled": true,
-  "rttChannelFormats": [{ "channelNumber": 0, "dataFormat": "Defmt" }]
+    "type": "emberprobe-probe-rs",
+    "request": "launch",
+    "name": "EmberProbe: Rust",
+    "chip": "STM32H723VG",
+    "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/firmware",
+    "rttEnabled": true,
+    "rttChannelFormats": [{ "channelNumber": 0, "dataFormat": "Defmt" }]
 }
 ```
 
 `attach` 不烧录或复位固件；probe-rs DAP 在连接初始化时会短暂暂停核心，完成配置后再继续运行。后续运行中采样直接读 RAM。RTT 数据会显示在 `EmberProbe RTT` 输出通道。LiveWatch 第一阶段支持固定 RAM 地址的 Rust 全局 `static`，包括 `Atomic<u32>` 等存储宽度明确的标量；不解析 async 任务局部变量。使用当前 Rust 编译器的 `DW_AT_linkage_name` 关联 Rust 符号与 DWARF 类型。运行中写入限定对齐的 8/16/32 位标量，并要求 ELF 可写 RAM 段、可靠类型和回读校验；probe-rs 0.32 的 DAP `writeMemory` 实际按字节传输，多字节写入不能视为原子操作，固件若同时读取或改写该地址，可能读到中间值或导致回读不同。STM32H7 开启 D-Cache 时，调试口读到的 RAM 也可能不同于核心缓存中的值，建议先在关闭缓存或非缓存区验证观测量。
+
+### 实时采样频率
+
+侧栏频率设置支持 0.1–200 Hz。probe-rs 按每轮开始时间计算周期，读取和样本分发耗时包含在该周期内。例如设定 20 Hz（50 ms）、每次读取耗时 25 ms，修正后的软件调度每轮约 50 ms；旧实现每轮约 75 ms，实际只有约 13.3 Hz。读取超过设定周期时，完成后再开始下一轮，不积压补采请求；面板显示实际频率及读取耗时。
+
+附近变量会合并为一次 DAP `readMemory`，包含至多 64 字节的间隙；合并区间必须完全位于同一 ELF 可写、已分配 RAM 段。无法合并的运行期区间以最多 4 个请求为一组发送，减少逐项等待带来的后端空闲休眠；停止或状态变化后不发送下一组，失败时收完本组已发送的响应再退出。每轮读取仍受 4096 字节和请求数量预算限制，间隙也计入字节预算；没有预算余量时使用精确区间。暂停快照保持原有读取行为，运行中写入仍只写授权标量并逐项回读。
+
+Windows 运行期采样复用扩展已有的高精度定时器，减少普通定时器约 15.6 ms 粒度带来的周期延长；停止、暂停、会话变化、无变量和重试耗尽时释放。原生定时器不可用时继续采样，实际频率可能较低。
+
+实际频率取决于探针、SWD 速度、变量地址分布、目标运行状态和上游 DAP。probe-rs 0.32 的 [DAP 请求循环](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs-tools/src/bin/probe-rs/cmd/dap_server/server/debugger.rs) 在运行且没有待处理请求时可能休眠 50 ms，并在请求处理前检查核心状态和 RTT；即使设置 200 Hz，也不保证达到 OpenOCD 的采样频率。当前优化复用已有连接，不新增探针连接或后台预读。
+
+自动化回归覆盖 25 ms 模拟读取下的 20 Hz 调度、1 ms 模拟读取下的 200 Hz 调度、跨 RAM 段隔离、字节预算、失败重试和状态变化取消。Extension Host 使用有 25 ms 延迟的模拟 DAP 进程检查实际 IPC 链路。这些软件结果不代表实板频率；真机验证需记录实际频率、读取耗时、探针和变量数量。
+
+### 可被读取请求唤醒的后端构建
+
+原版 probe-rs 0.32 的 stdio 空闲休眠不能被新请求打断，所以即使扩展设定周期正确，实际频率仍可能达到平台上限。`build:probe-rs-sampling` 提供一个可复现的性能构建：下载固定提交 `48f5e4d53c690a1d40c2454033c6f785b4f4f95c` 并校验源码归档 SHA-256，给 stdio 输入添加 Tokio 通知，用请求到达或原轮询期限共同结束等待。通知在读取请求队列前注册，避免请求恰好到达时丢失唤醒；没有请求时仍按原期限轮询核心和 RTT。核心状态检查、休眠目标读取、内存访问和烧录逻辑保持上游实现。
+
+Windows 下，stdio 会话另行申请 1 ms 定时器精度，退出或错误返回时自动释放；申请失败则继续使用系统默认精度。扩展与后端分别管理各自的定时器，因为 Windows 10 2004 起，`timeBeginPeriod` 的精度设置按调用进程生效，不能依赖 Extension Host 的申请来缩短后端内部等待。参见 [Microsoft 的定时器说明](https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod)。
+
+J-Link USB 传输复用连接期间打开的输入、输出端点，减少原 [J-Link 实现](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs/src/probe/jlink/mod.rs) 中逐次打开端点的开销。使用上游已有的 [端点传输辅助函数](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs/src/probe/usb_util.rs)，保留 500 ms 超时、超时取消及收尾、短写校验和整包读取兼容处理；请求仍串行访问同一探针，连接结束时释放端点。此优化不切换 USB 驱动或 SWD/JTAG 协议。
+
+需要 Rust/Cargo 及当前平台的 probe-rs 原生构建依赖：
+
+```sh
+npm run build:probe-rs-sampling
+```
+
+构建脚本运行原生通知、定时器及 J-Link 软件测试，成功后在 `test-results/probe-rs-sampling-build/performance-3/` 生成 `probe-rs.exe`（Windows）或 `probe-rs`。将 `emberprobe.probeRsPath` 指向该文件，并在新会话中验证。它不会替换用户安装的 probe-rs，也不会连接探针；VSIX 仍不包含 probe-rs。重新构建前需结束使用该输出文件的会话，避免覆盖正在运行的程序。选择原版路径即可恢复原版后端。重新建立 `attach` 会话会短暂暂停核心，需遵守项目硬件授权规则。
+
+此构建修正 stdio 请求等待；TCP DAP 保持上游行为，探针 USB/SWD 吞吐、核心状态读取和 RAM 分组数量仍会限制实际频率。构建和通知测试通过不代表真机达到 200 Hz。
+
+J-Link / F407_car 授权实测中，20 Hz 设置达到约 19.9 Hz，100/200 Hz 设置约 29.2 Hz，相对原约 6.4 Hz 提升约 4.5 倍；仍未达到 OpenOCD 的 200 Hz。测试方法、后端身份与验证边界见 [采样性能实测](PROBE-RS-SAMPLING-PERFORMANCE.md)。
 
 Agent Bridge 的变量读取与写入可复用活动的 probe-rs LiveWatch/DAP 会话。Agent Flash 与故障寄存器分析仍限于 OpenOCD；probe-rs 烧录请使用侧栏“烧录”按钮。
 

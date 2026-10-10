@@ -55,9 +55,12 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     compCells = Object.create(null),
     avExpanded = Object.create(null),
     writeCells = Object.create(null),
-    writeTimers = Object.create(null),
+    writeQueue = new Map(),
+    writeInFlight = null,
+    writeTimer = null,
+    writeContext = undefined,
+    lastWriteAt = 0,
     writeLastAt = Object.create(null),
-    latestWriteSeq = Object.create(null),
     writeSeq = 0,
     writeFbTimer = null,
     runtimeBodies = Object.create(null);
@@ -873,12 +876,33 @@ function updateAvailableSelections() {
     });
 }
 function cancelPendingWrite(name) {
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
+    writeQueue.delete(name);
+    if (writeInFlight?.name === name) writeInFlight.cancelled = true;
     delete writeLastAt[name];
-    delete latestWriteSeq[name];
+    updateWritePending(name);
+    if (!writeQueue.size) {
+        clearTimeout(writeTimer);
+        writeTimer = null;
+    }
+}
+function cancelQueuedWrites() {
+    for (const name of new Set([...writeQueue.keys(), ...(writeInFlight ? [writeInFlight.name] : [])]))
+        cancelPendingWrite(name);
+}
+function updateWritePending(name) {
+    writeCells[name]?.input.classList.toggle(
+        "pending",
+        writeQueue.has(name) || (writeInFlight?.name === name && !writeInFlight.cancelled)
+    );
+}
+function canEditWrites() {
+    return (
+        liveCanWrite ||
+        (liveRunning &&
+            !lastLive.error &&
+            (writeQueue.size > 0 || (writeInFlight && !writeInFlight.cancelled)) &&
+            ["writing", "snapshot"].includes(lastLive.writeBlockedReason))
+    );
 }
 function removeWrite(name) {
     cancelPendingWrite(name);
@@ -939,40 +963,43 @@ function wToggle(entry) {
     }
 }
 function postWrite(item) {
-    if (!api || !inWriteList(item.name)) return;
-    if (!liveCanWrite) {
-        setWriteFeedback(t("sb.writeNeedSampling"), true);
+    const seq = ++writeSeq;
+    writeInFlight = { ...item, seq, cancelled: false };
+    lastWriteAt = writeLastAt[item.name] = Date.now();
+    updateWritePending(item.name);
+    api.postMessage({
+        type: "writeVariable",
+        name: item.name,
+        value: item.value,
+        seq,
+        writeContext: lastLive.writeContext
+    });
+}
+function drainWrites() {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+    if (!api || writeInFlight || !liveCanWrite || !writeQueue.size) return;
+    const [name, item] = writeQueue.entries().next().value;
+    const wait = item.immediate ? 0 : WRITE_INTERVAL_MS - (Date.now() - lastWriteAt);
+    if (wait > 0) {
+        writeTimer = setTimeout(drainWrites, wait);
         return;
     }
-    const seq = ++writeSeq;
-    latestWriteSeq[item.name] = seq;
-    const cells = writeCells[item.name];
-    if (cells) cells.input.classList.add("pending");
-    api.postMessage({ type: "writeVariable", name: item.name, value: item.value, seq });
+    writeQueue.delete(name);
+    postWrite(item);
 }
 function sendWrite(item, immediate) {
-    const name = item.name;
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
-    const now = Date.now();
-    if (immediate) {
-        writeLastAt[name] = now;
-        postWrite(item);
+    if (!api || !inWriteList(item.name)) return;
+    if (!canEditWrites()) {
+        setWriteFeedback(t(window.EmberProbeRuntime.writeUnavailableKey(lastLive)), true);
         return;
     }
-    const wait = WRITE_INTERVAL_MS - (now - (writeLastAt[name] || 0));
-    if (wait <= 0) {
-        writeLastAt[name] = now;
-        postWrite(item);
-        return;
-    }
-    writeTimers[name] = setTimeout(() => {
-        delete writeTimers[name];
-        writeLastAt[name] = Date.now();
-        postWrite(item);
-    }, wait);
+    // Keep the newest intent while one verified write is in flight, including mouse-up.
+    if (!writeInFlight?.cancelled && writeInFlight?.name === item.name && Object.is(writeInFlight.value, item.value))
+        writeQueue.delete(item.name);
+    else writeQueue.set(item.name, { name: item.name, value: item.value, immediate });
+    updateWritePending(item.name);
+    drainWrites();
 }
 function setBound(item, key, v) {
     if (item.isBoolean) return;
@@ -1088,6 +1115,7 @@ function buildWriteCard(item) {
             if (!wide) slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), v)));
         }
     };
+    updateWritePending(item.name);
     if (wide) {
         minus.hidden = true;
         plus.hidden = true;
@@ -1166,7 +1194,7 @@ function buildWriteCard(item) {
         input.addEventListener(
             "wheel",
             (e) => {
-                if (!liveCanWrite) return;
+                if (!canEditWrites()) return;
                 e.preventDefault();
                 const value = inputValue();
                 setValue(
@@ -1211,9 +1239,9 @@ function buildWriteCard(item) {
             bindBound(maxL, item, "max", syncSlider);
         }
     }
-    if (!liveCanWrite) {
+    if (!canEditWrites()) {
         row.classList.add("gated");
-        const gt = t("sb.writeNeedSampling");
+        const gt = t(window.EmberProbeRuntime.writeUnavailableKey(lastLive));
         [minus, plus, input, slider].forEach((el) => {
             el.disabled = true;
             el.title = gt;
@@ -1235,11 +1263,12 @@ function renderWrites() {
     writeList.forEach((item) => writeBox.appendChild(buildWriteCard(item)));
 }
 function updateWriteAvailability() {
+    const editable = canEditWrites();
     Object.values(writeCells).forEach((cells) => {
-        cells.row.classList.toggle("gated", !liveCanWrite);
+        cells.row.classList.toggle("gated", !editable);
         cells.controls.forEach((control) => {
-            control.disabled = !liveCanWrite;
-            control.title = liveCanWrite ? "" : t("sb.writeNeedSampling");
+            control.disabled = !editable;
+            control.title = editable ? "" : t(window.EmberProbeRuntime.writeUnavailableKey(lastLive));
         });
     });
 }
@@ -1259,11 +1288,18 @@ function setWriteFeedback(text, isErr) {
 }
 // 写入结果反馈：变量名前的小圆点渐亮后消失（成功绿点/失败红点）；失败另在标题区显示错误原因
 function onWriteResult(m) {
-    if (m.seq !== latestWriteSeq[m.name]) return;
-    delete latestWriteSeq[m.name];
+    if (!writeInFlight || m.seq !== writeInFlight.seq || m.name !== writeInFlight.name) return;
+    const cancelled = writeInFlight.cancelled;
+    writeInFlight = null;
+    if (cancelled) {
+        updateWriteAvailability();
+        drainWrites();
+        return;
+    }
+    if (!m.ok) cancelQueuedWrites();
     const cells = writeCells[m.name];
     if (cells) {
-        cells.input.classList.remove("pending");
+        updateWritePending(m.name);
         cells.dot.className = "write-dot " + (m.ok ? "ok" : "err");
         void cells.dot.offsetWidth;
         cells.dot.classList.add("flash");
@@ -1271,10 +1307,12 @@ function onWriteResult(m) {
             latest[m.name] = m.value;
             latestText[m.name] = m.valueText ?? null;
             latestEnum[m.name] = m.enumText ?? null;
-            cells.setVal(m.valueText ?? m.value);
+            if (!writeQueue.has(m.name)) cells.setVal(m.valueText ?? m.value);
         }
     }
     if (!m.ok) setWriteFeedback(t("sb.writeFail", { msg: msgText(m) || t("sb.commandFailed") }), true);
+    updateWriteAvailability();
+    drainWrites();
 }
 const EYE_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
@@ -1374,26 +1412,26 @@ function sbRenderLayout(container, layout, path) {
         if (total > shown) sbNote(container, t("lw.arrayMore", { n: total - shown }));
     }
 }
-function sbRenderRuntimeTree(container, tree, path) {
+function sbRenderRuntimeTree(container, tree, path, label) {
     if (!tree) return;
+    if (label && (tree.members || tree.elements)) {
+        sbRenderMemberGroup(container, tree.typeName || "", label, path, (body) =>
+            sbRenderRuntimeTree(body, tree, path)
+        );
+        return;
+    }
     if (tree.members) {
         tree.members.forEach((member) => {
             const childPath = member.name ? path + "." + member.name : path;
-            if (member.members || member.elements) sbRenderRuntimeTree(container, member, childPath);
-            else if (Object.prototype.hasOwnProperty.call(member, "value"))
-                sbRenderLeaf(
-                    container,
-                    member.name || "value",
-                    member.typeName || member.type || "",
-                    childPath,
-                    member.type,
-                    member
-                );
+            sbRenderRuntimeTree(container, member, childPath, member.name);
         });
     } else if (tree.elements) {
-        tree.elements.forEach((element) => sbRenderRuntimeTree(container, element, path + "[" + element.index + "]"));
+        tree.elements.forEach((element) => {
+            const indexLabel = "[" + element.index + "]";
+            sbRenderRuntimeTree(container, element, path + indexLabel, indexLabel);
+        });
     } else if (Object.prototype.hasOwnProperty.call(tree, "value")) {
-        sbRenderLeaf(container, "value", tree.typeName || tree.type || "", path, tree.type, tree);
+        sbRenderLeaf(container, label || "value", tree.typeName || tree.type || "", path, tree.type, tree);
     }
     if (tree.unavailable) sbNote(container, tree.unavailable);
 }
@@ -1408,8 +1446,9 @@ function sbRenderRuntimeBody(body, tree, name) {
     sbRenderRuntimeTree(body, tree, name);
     if (!body.childNodes.length) sbNote(body, t("lw.waitSamples"));
 }
-function sbRenderNest(container, layout, fieldName, path) {
+function sbRenderMemberGroup(container, typeName, fieldName, path, renderMembers) {
     const wrap = document.createElement("div");
+    wrap.dataset.memberPath = path;
     const head = document.createElement("div");
     head.className = "sb-comp-head";
     const open = !!sbExpanded[path];
@@ -1419,9 +1458,10 @@ function sbRenderNest(container, layout, fieldName, path) {
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
     nm.textContent = fieldName;
+    nm.title = path;
     const ty = document.createElement("span");
     ty.className = "sb-comp-type";
-    ty.textContent = layout.typeName || "";
+    ty.textContent = typeName;
     head.append(arrow, nm, ty);
     const body = document.createElement("div");
     body.className = "sb-members" + (open ? " open" : "");
@@ -1432,9 +1472,14 @@ function sbRenderNest(container, layout, fieldName, path) {
         arrow.classList.toggle("open", nextOpen);
         saveSbUi();
     };
-    sbRenderLayout(body, layout, path);
+    renderMembers(body);
     wrap.append(head, body);
     container.appendChild(wrap);
+}
+function sbRenderNest(container, layout, fieldName, path) {
+    sbRenderMemberGroup(container, layout.typeName || "", fieldName, path, (body) =>
+        sbRenderLayout(body, layout, path)
+    );
 }
 function sbRenderComposite(item) {
     const row = document.createElement("div");
@@ -1544,7 +1589,7 @@ function syncWriteValues() {
         const c = writeCells[item.name];
         if (!c) return;
         if (Date.now() - (writeLastAt[item.name] || 0) < 1000) return;
-        if (writeTimers[item.name]) return;
+        if (writeQueue.has(item.name)) return;
         if (c.input.classList.contains("pending")) return;
         const ae = document.activeElement;
         if (ae === c.input || ae === c.slider) return;
@@ -1563,8 +1608,8 @@ function syncWriteValues() {
 }
 function liveStatus(m) {
     m = m || {};
+    const previousSource = lastLive.source;
     lastLive = m;
-    const wasWrite = liveCanWrite;
     const next = window.EmberProbeRuntime.liveState(
         { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
         m
@@ -1573,6 +1618,17 @@ function liveStatus(m) {
     liveCanRead = next.canRead;
     liveCanWrite = next.canWrite;
     liveSnapshotReady = next.fresh;
+    const contextChanged =
+        m.writeContext !== undefined && writeContext !== undefined && JSON.stringify(m.writeContext) !== writeContext;
+    if (m.writeContext !== undefined) writeContext = JSON.stringify(m.writeContext);
+    if (
+        !liveRunning ||
+        m.error ||
+        contextChanged ||
+        (previousSource && m.source && previousSource !== m.source) ||
+        (!liveCanWrite && !["writing", "snapshot"].includes(m.writeBlockedReason))
+    )
+        cancelQueuedWrites();
     const debugRunning = m.mode === "debug-running-waiting",
         debugReading = m.source === "dap" && liveRunning && !liveSnapshotReady;
     if (liveCard) liveCard.classList.toggle("debug-stale", !liveSnapshotReady);
@@ -1583,7 +1639,8 @@ function liveStatus(m) {
         (m.error ? "err" : debugRunning || debugReading ? "busy" : liveCanRead ? "on" : liveRunning ? "busy" : "");
     liveLabel.textContent = msgText(m) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
-    if (wasWrite !== liveCanWrite) updateWriteAvailability();
+    updateWriteAvailability();
+    drainWrites();
 }
 function backendStatus(m) {
     if (!m) return;
@@ -1599,7 +1656,9 @@ function backendStatus(m) {
     backendCard.style.display = k === "ready" ? "none" : "";
     backendCard.hidden = k === "ready";
     backendMessage.textContent = msgText(m) || t(window.__BACKEND__ === "probe-rs" ? "pr.checking" : "oc.checking");
-    backendInstall.style.display = window.__BACKEND__ === "probe-rs" || m.canInstall === false ? "none" : "";
+    backendInstall.style.display = m.canInstall === false ? "none" : "";
+    document.getElementById("backendProgress").hidden = k !== "installing";
+    backendCard.setAttribute("aria-busy", String(busy));
     backendCard.querySelectorAll("button").forEach((b) => (b.disabled = busy));
 }
 function renderSkillStatus(m) {
@@ -1936,6 +1995,7 @@ window.EmberProbeMessages.connect(window, {
         updateAvailableSelections();
     },
     sidebarWriteList: function (m) {
+        cancelQueuedWrites();
         writeList = (m.items || []).slice();
         renderWrites();
         updateAvailableSelections();

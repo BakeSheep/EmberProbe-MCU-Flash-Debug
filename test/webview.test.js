@@ -151,7 +151,7 @@ try {
     assert.equal(probeRsSidebar.document.getElementById("backendMessage").textContent, "Checking probe-rs…");
     probeRsSidebar.send({ type: "backendStatus", backend: "probe-rs", state: "missing", key: "pr.missing" });
     assert.match(probeRsSidebar.document.getElementById("backendMessage").textContent, /probe-rs not found/);
-    assert.equal(probeRsSidebar.document.getElementById("backendInstall").style.display, "none");
+    assert.equal(probeRsSidebar.document.getElementById("backendInstall").style.display, "");
     probeRsSidebar.document.getElementById("chipRead").click();
     assert.equal(probeRsSidebar.messages.at(-1).type, "readChipInfo");
     probeRsSidebar.send({

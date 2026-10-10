@@ -52,10 +52,25 @@
     "onCommand:mcu-vscode.selectExistingSvd",
     "onCommand:mcu-vscode.switchWorkspaceSvd",
     "onCommand:mcu-vscode.checkOpenOcd",
+    "onCommand:mcu-vscode.checkProbeRs",
     "onDebugResolve:emberprobe",
     "onDebugResolve:emberprobe-probe-rs"
   ],
   "contributes": {
+    "breakpoints": [
+      {
+        "language": "c"
+      },
+      {
+        "language": "cpp"
+      },
+      {
+        "language": "asm"
+      },
+      {
+        "language": "rust"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -90,6 +105,10 @@
       {
         "command": "mcu-vscode.checkOpenOcd",
         "title": "EmberProbe: 检查 OpenOCD 环境"
+      },
+      {
+        "command": "mcu-vscode.checkProbeRs",
+        "title": "EmberProbe: 检查 probe-rs 环境"
       },
       {
         "command": "mcu-vscode.manageAgentSkills",
@@ -142,7 +161,7 @@
         "emberprobe.probeRsPath": {
           "type": "string",
           "default": "probe-rs",
-          "description": "probe-rs 可执行文件路径，需支持 dap-server。"
+          "description": "probe-rs 可执行文件路径，需支持 dap-server；自动检测 PATH 和用户 Cargo 安装目录。未安装时可在侧栏选择路径或运行官方一键安装，插件不捆绑 probe-rs。"
         },
         "emberprobe.probeRsChip": {
           "type": "string",
@@ -1068,7 +1087,7 @@
     "dist/elfWorker.js",
     "dist/webview/**/*",
     "src/webview/**/*",
-    "resources/**/*.tar.gz",
+    "resources/openocd-*.tar.gz",
     "resources/driver-helper/win32-x64/*",
     "media/**/*",
     "skills/**/*",
@@ -1101,6 +1120,7 @@
     "release:prepare": "node scripts/release.js",
     "docs:clean": "node scripts/docs-cleanup.js",
     "bundle": "node esbuild.js",
+    "build:probe-rs-sampling": "node scripts/build-probe-rs-sampling.js",
     "vscode:prepublish": "npm run bundle",
     "package": "npx --yes @vscode/vsce@3.9.1 package --allow-unused-files-pattern --out dist/emberprobe.vsix",
     "mockup": "node mockup/build.js",

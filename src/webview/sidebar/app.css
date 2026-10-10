@@ -269,3 +269,6 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 }
 
 .backend-picker{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:7px 9px 0;padding:6px 8px;border:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border));border-radius:4px;font-size:11px}.backend-picker select{min-width:96px;padding:2px 4px;border:1px solid var(--vscode-dropdown-border,var(--vscode-input-border));border-radius:2px;color:var(--vscode-dropdown-foreground,var(--vscode-foreground));background:var(--vscode-dropdown-background,var(--vscode-input-background));font:11px var(--vscode-font-family);cursor:pointer}
+
+.backend-progress{display:block;width:100%;height:5px;margin:7px 0;accent-color:var(--vscode-progressBar-background)}
+.backend-progress[hidden]{display:none}

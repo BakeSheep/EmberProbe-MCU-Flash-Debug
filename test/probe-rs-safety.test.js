@@ -215,6 +215,7 @@ async function main() {
         assert.equal(provider._probeCoordinator.anyActive(), false);
 
         const config = { request: "attach", chip: "STM32F407ZG", executable: elf };
+        provider._probeRsStatusService = { resolve: async (executable) => executable };
         for (const operation of ["download", "chipInfo", "cpuLoad", "debugStart", "debugServer"]) {
             const lease = provider._probeCoordinator.acquire(operation);
             await assert.rejects(provider.prepareProbeRsDebug(folder, config), { code: "PROBE_BUSY" });
@@ -255,6 +256,88 @@ async function main() {
         }
     } finally {
         provider._debugBridge.dispose();
+    }
+    const automatic = fixture();
+    const ui = automatic.provider;
+    const bridge = ui._debugBridge;
+    let value = 123;
+    let writes = 0;
+    automatic.session.configuration.__emberprobeWatchOnly = true;
+    automatic.session.customRequest = async (command, args) => {
+        if (command === "writeMemory") {
+            value = Buffer.from(args.data, "base64").readUInt32LE();
+            writes++;
+            return { bytesWritten: 4 };
+        }
+        assert.equal(command, "readMemory");
+        const data = Buffer.alloc(4);
+        data.writeUInt32LE(value);
+        return { data: data.toString("base64") };
+    };
+    ui._prepareRequestedLayouts = async () => {};
+    ui._samplingCoordinator = { backpressured: false };
+    ui._agentWritePlan = (items) => ({
+        elfResult: ui.readElfSymbols(),
+        items: items.map(({ name, value: next }) => ({
+            ...ramItem,
+            name,
+            requestedName: name,
+            type: "u32",
+            value: next,
+            bytes: [next, 0, 0, 0]
+        }))
+    });
+    bridge.schedule = setTimeout;
+    bridge.cancel = clearTimeout;
+    try {
+        bridge.refreshSnapshot();
+        assert.equal(bridge.canWrite, false);
+        const immediate = ui._writeUiVariable("GAIN", 42);
+        await bridge._poll();
+        assert.equal(
+            (await immediate).results[0].verified,
+            true,
+            "automatic sampling writes wait through a read-plan refresh"
+        );
+        assert.equal(value, 42);
+        assert.equal(writes, 1);
+        const writeContext = bridge.status().writeContext;
+        assert.equal(writeContext.sessionId, automatic.session.id);
+        await assert.rejects(ui._writeUiVariable("GAIN", 43, { ...writeContext, sessionId: "previous-session" }), {
+            code: "DEBUG_STATE_CHANGED"
+        });
+        await assert.rejects(
+            ui._writeUiVariable("GAIN", 43, { ...writeContext, stopEpoch: writeContext.stopEpoch - 1 }),
+            {
+                code: "DEBUG_STATE_CHANGED"
+            }
+        );
+        ui._prepareRequestedLayouts = async () => {
+            bridge.handleMessage(automatic.session, {
+                type: "event",
+                event: "stopped",
+                body: { reason: "breakpoint" }
+            });
+        };
+        await assert.rejects(ui._writeUiVariable("GAIN", 43, writeContext), { code: "DEBUG_STATE_CHANGED" });
+        ui._prepareRequestedLayouts = async () => {};
+        assert.equal(writes, 1, "queued UI contexts cannot cross sessions or execution changes during preparation");
+        bridge.refreshSnapshot();
+        const interrupted = ui._writeUiVariable("GAIN", 43);
+        bridge.setIntent(false);
+        await assert.rejects(interrupted, { code: "WRITE_SAMPLING_REQUIRED" });
+        assert.equal(writes, 1, "stopping sampling cancels queued writes without a second connection");
+        bridge.setIntent(true);
+        bridge.capabilities.write = false;
+        await assert.rejects(ui._writeUiVariable("GAIN", 43), { code: "DEBUG_MEMORY_WRITE_UNSUPPORTED" });
+        bridge.capabilities.write = true;
+        bridge.refreshSnapshot();
+        const changed = ui._writeUiVariable("GAIN", 44);
+        bridge.detach(automatic.session);
+        await assert.rejects(changed, { code: "DEBUG_STATE_CHANGED" });
+        assert.equal(writes, 1);
+    } finally {
+        bridge.dispose();
     }
 }
 

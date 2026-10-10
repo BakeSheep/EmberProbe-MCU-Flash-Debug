@@ -2,13 +2,14 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveProbeRsExecutable } = require("./probeRsEnvironment");
 
 const DEBUG_TYPE = "emberprobe-probe-rs";
 
 function probeRsSettings(vscode) {
     const settings = vscode.workspace.getConfiguration("emberprobe");
     return {
-        executable: settings.get("probeRsPath", "probe-rs"),
+        executable: resolveProbeRsExecutable(settings.get("probeRsPath", "probe-rs")),
         chip: settings.get("probeRsChip", ""),
         probe: settings.get("probeRsProbe", ""),
         speed: settings.get("adapterSpeedKhz", 0)
@@ -47,6 +48,7 @@ function resolveProbeRsDebugConfiguration(config, folder, selectedElf, settings)
         coreConfigs,
         flashingConfig: {
             ...(config.flashingConfig || {}),
+            verifyAfterFlashing: config.flashingConfig?.verifyAfterFlashing ?? config.request === "launch",
             flashingEnabled: config.request === "launch" && config.flashingConfig?.flashingEnabled !== false
         }
     };

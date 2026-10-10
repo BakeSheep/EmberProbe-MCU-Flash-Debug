@@ -146,6 +146,12 @@ const TEST_GROUPS = Object.freeze({
         "probe-rs-chip-info.test.js",
         "probe-rs-configuration.test.js",
         "probe-rs-debug-adapter.test.js",
+        "probe-rs-source-breakpoints.test.js",
+        "probe-rs-environment.test.js",
+        "probe-rs-flash-provider.test.js",
+        "probe-rs-flash-service.test.js",
+        "probe-rs-sampling.test.js",
+        "probe-rs-sampling-build.test.js",
         "probe-rs-safety.test.js",
         "probe-rs-targets.test.js",
         "provider-state.test.js",
@@ -155,6 +161,7 @@ const TEST_GROUPS = Object.freeze({
         "rtos-snapshot.test.js",
         "rtos-view.test.js",
         "runtime-fixes.test.js",
+        "runtime-member-hierarchy.test.js",
         "runtime-native-layouts.test.js",
         "runtime-nested-selection.test.js",
         "runtime-objects.test.js",
@@ -189,6 +196,7 @@ const TEST_GROUPS = Object.freeze({
         "write-authorization.test.js",
         "write-connection.test.js",
         "write-stepping.test.js",
+        "write-slider.test.js",
         "write-list-view.test.js"
     ]),
     release: Object.freeze(["release-consistency.test.js"])

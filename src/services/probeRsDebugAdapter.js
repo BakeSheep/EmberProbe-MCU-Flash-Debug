@@ -1,6 +1,7 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const { ProbeRsBreakpoints } = require("./probeRsBreakpoints");
 
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES = 8192;
@@ -13,6 +14,7 @@ class ProbeRsDebugAdapter {
         executable,
         cwd,
         emitter,
+        resolveSourceLines = null,
         onExit = () => {},
         onError = (_error) => {},
         spawnProcess = spawn,
@@ -38,6 +40,14 @@ class ProbeRsDebugAdapter {
         this.exited = false;
         this.stopping = null;
         this.startupTimer = null;
+        this.requestSeq = 0;
+        this.clientRequests = new Map();
+        this.internalRequests = new Map();
+        this.instructionBreakpointsSupported = false;
+        this.nativeSourceCoordinates = true;
+        this.breakpoints = resolveSourceLines
+            ? new ProbeRsBreakpoints((command, args) => this._request(command, args), resolveSourceLines)
+            : null;
         this.exitPromise = new Promise((resolve) => {
             this.resolveExit = resolve;
         });
@@ -76,8 +86,67 @@ class ProbeRsDebugAdapter {
 
     handleMessage(message) {
         if (!this.process || this.exited || this.stopping) return;
+        if (message.type === "request" && message.command === "initialize")
+            this.nativeSourceCoordinates =
+                message.arguments?.linesStartAt1 !== false &&
+                message.arguments?.columnsStartAt1 !== false &&
+                message.arguments?.pathFormat !== "uri";
+        if (
+            this.breakpoints &&
+            this.instructionBreakpointsSupported &&
+            this.nativeSourceCoordinates &&
+            message.type === "request" &&
+            ["setBreakpoints", "setInstructionBreakpoints"].includes(message.command)
+        ) {
+            void this.breakpoints.handle(message).then(
+                (response) => {
+                    if (!this.exited && !this.stopping)
+                        this.emitter.fire({
+                            ...response,
+                            type: "response",
+                            command: message.command,
+                            request_seq: message.seq,
+                            seq: ++this.seq
+                        });
+                },
+                (error) => {
+                    if (!this.exited && !this.stopping)
+                        this.emitter.fire({
+                            type: "response",
+                            command: message.command,
+                            request_seq: message.seq,
+                            seq: ++this.seq,
+                            success: false,
+                            message: error.message
+                        });
+                }
+            );
+            return;
+        }
+        if (this.breakpoints && message.type === "request") {
+            const seq = ++this.requestSeq;
+            this.clientRequests.set(seq, message.seq);
+            message = { ...message, seq };
+        }
+        this._send(message);
+    }
+
+    _send(message) {
         const body = JSON.stringify(message);
         this.process.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+    }
+
+    _request(command, args) {
+        if (this.exited || this.stopping) return Promise.reject(new Error("probe-rs session ended"));
+        const seq = ++this.requestSeq;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.internalRequests.delete(seq);
+                reject(new Error(`probe-rs ${command} timed out`));
+            }, 5000);
+            this.internalRequests.set(seq, { resolve, reject, timer });
+            this._send({ type: "request", seq, command, arguments: args });
+        });
     }
 
     _receive(chunk) {
@@ -104,6 +173,22 @@ class ProbeRsDebugAdapter {
                 if (!message || !["event", "request", "response"].includes(message.type))
                     throw new Error("Invalid probe-rs DAP message");
                 this.seq = Math.max(this.seq, Number(message.seq) || 0);
+                if (message.type === "response") {
+                    if (message.command === "initialize" && message.success)
+                        this.instructionBreakpointsSupported = message.body?.supportsInstructionBreakpoints === true;
+                    const internal = this.internalRequests.get(message.request_seq);
+                    if (internal) {
+                        this.internalRequests.delete(message.request_seq);
+                        clearTimeout(internal.timer);
+                        internal.resolve(message);
+                        continue;
+                    }
+                    if (this.clientRequests.has(message.request_seq)) {
+                        const originalSeq = this.clientRequests.get(message.request_seq);
+                        this.clientRequests.delete(message.request_seq);
+                        message.request_seq = originalSeq;
+                    } else if (this.breakpoints) continue; // Hide late replies to expired internal requests.
+                }
                 if (message.type === "event" && message.event === "terminated") this.terminated = true;
                 if (message.type === "response" && ["launch", "attach"].includes(message.command)) {
                     clearTimeout(this.startupTimer);
@@ -134,6 +219,12 @@ class ProbeRsDebugAdapter {
         clearTimeout(this.startupTimer);
         this.startupTimer = null;
         this.buffer = Buffer.alloc(0);
+        this.clientRequests.clear();
+        for (const pending of this.internalRequests.values()) {
+            clearTimeout(pending.timer);
+            pending.reject(new Error("probe-rs session ended"));
+        }
+        this.internalRequests.clear();
         this.lease?.release();
         this.resolveExit(true);
         if (!this.terminated) this.emitter.fire({ type: "event", seq: ++this.seq, event: "terminated" });

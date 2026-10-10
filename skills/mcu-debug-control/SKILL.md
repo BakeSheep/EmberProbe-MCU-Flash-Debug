@@ -21,7 +21,7 @@ has been verified at a firmware address; report adapter verification when availa
 
 - **Applies to**: controlling the workspace debugger session (start/stop/pause/continue/step/restart) and managing source-line or function breakpoints.
 - **Requires**: the EmberProbe Agent Bridge and VS Code's debugger APIs; `--start` also needs a complete EmberProbe debug configuration (ELF, probe, target, OpenOCD, SVD).
-- **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; breakpoints can be created before a session starts.
+- **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; ordinary source breakpoints can be created before a session starts. Function breakpoints, conditions, hit counts and log points require confirmed support from the selected session.
 - **Side effects**: `--start` launches a session and halts the target; control actions change execution state; `--stop` ends the session; breakpoint mutations change VS Code breakpoints.
 - **Success evidence**: state-changing commands complete from the corresponding DAP state event. A `--status`/`--breakpoints` read does not prove `--start` works. On timeout, read status; never auto-resend.
 
@@ -58,6 +58,10 @@ node <skill-dir>/scripts/debug.js --workspace <workspace> --disable-breakpoint -
 node <skill-dir>/scripts/debug.js --workspace <workspace> --remove-breakpoint --function main
 ```
 
-Breakpoint mutation actions are `--add-breakpoint`, `--remove-breakpoint`, `--enable-breakpoint`, and `--disable-breakpoint`. Select either `--source <workspace-file> --line <1-based-line> [--column <1-based-column>]` or `--function <name>`. Optional `--condition`, `--hit-condition`, and `--log-message` are accepted when adding. Breakpoints are managed by VS Code, remain visible in its Breakpoints view, and can be created before a session starts.
+Breakpoint mutation actions are `--add-breakpoint`, `--remove-breakpoint`, `--enable-breakpoint`, and `--disable-breakpoint`. Select either `--source <workspace-file> --line <1-based-line> [--column <1-based-column>]` or `--function <name>`. Optional `--condition`, `--hit-condition`, and `--log-message` are accepted when adding if the selected adapter supports them. Ordinary source breakpoints can be created before a session starts. Breakpoints are managed by VS Code and remain visible in its Breakpoints view.
+
+Read `--status` capabilities before configuring an advanced breakpoint: `functionBreakpoints`, `conditionalBreakpoints`, `hitConditionalBreakpoints`, and `logPoints` are `null` until initialized, then reflect the adapter's DAP declarations. Adding or enabling an unsupported breakpoint returns `BREAKPOINT_UNSUPPORTED`; unknown support returns `BREAKPOINT_CAPABILITY_UNAVAILABLE`, so start the debugger and read status before trying again. Re-enabling checks stored conditions before changing any breakpoint. Removing or disabling remains available for cleanup. Select one session when status reports a conflict.
+
+The probe-rs 0.32 DAP backend supports ordinary source and instruction hardware breakpoints but does not declare function breakpoints, conditions, hit counts, or log points. Use an ordinary source line instead. Hardware-independent regressions do not establish real-board breakpoint support.
 
 If EmberProbe reports `DEBUG_SESSION_CONFLICT`, do not guess which session to control. Base all failure explanations on the structured stderr diagnostic.

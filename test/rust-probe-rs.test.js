@@ -16,6 +16,13 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 
 async function main() {
+    const manifest = require("../package.json");
+    const breakpointLanguages = new Set(manifest.contributes.breakpoints?.map((item) => item.language));
+    for (const debuggerInfo of manifest.contributes.debuggers) {
+        for (const language of debuggerInfo.languages) {
+            assert.ok(breakpointLanguages.has(language), `Register source breakpoints for ${language}`);
+        }
+    }
     const elf = path.join(__dirname, "fixtures", "rust-globals.elf");
     const bytes = fs.readFileSync(elf);
     const { symbols } = parseElfSymbols(bytes);
@@ -65,6 +72,10 @@ async function main() {
             "--chip",
             "STM32H723VG",
             "--non-interactive",
+            "--verify",
+            "--reset",
+            "--binary-format",
+            "elf",
             program
         ]);
     } finally {

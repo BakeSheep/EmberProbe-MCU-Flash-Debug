@@ -12,11 +12,20 @@ const { resolveProbeRsDebugConfiguration } = require("../../src/services/probeRs
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class DapClient {
-    constructor(executable) {
-        this.child = spawn(executable, ["dap-server"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    constructor(executable, options = {}) {
+        this.child = spawn(executable, ["dap-server"], {
+            cwd: options.cwd,
+            stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true
+        });
         this.buffer = Buffer.alloc(0);
         this.nextSeq = 0;
         this.pending = new Map();
+        this.events = [];
+        this.eventCounter = 0;
+        this.eventWaiters = new Set();
+        this.failure = null;
+        this.exitPromise = new Promise((resolve) => this.child.once("close", resolve));
         this.stderr = "";
         this.rtt = "";
         this.child.stdout.on("data", (chunk) => this.consume(chunk));
@@ -24,15 +33,47 @@ class DapClient {
             this.stderr = (this.stderr + chunk.toString()).slice(-4000);
         });
         this.child.on("error", (error) => this.fail(error));
+        this.child.stdin.on("error", (error) => this.fail(error));
         this.child.on("exit", (code) => this.fail(new Error(`probe-rs DAP exited (${code}): ${this.stderr}`)));
     }
 
     fail(error) {
+        this.failure = error;
         for (const pending of this.pending.values()) {
             clearTimeout(pending.timer);
             pending.reject(error);
         }
         this.pending.clear();
+        for (const waiter of this.eventWaiters) {
+            clearTimeout(waiter.timer);
+            waiter.reject(error);
+        }
+        this.eventWaiters.clear();
+    }
+
+    waitForEvent(event, after = this.eventCounter, timeoutMs = 15000) {
+        const recorded = this.events.find((entry) => entry.index > after && entry.message.event === event);
+        if (recorded) return Promise.resolve(recorded.message.body || {});
+        if (this.failure) return Promise.reject(this.failure);
+        return new Promise((resolve, reject) => {
+            const waiter = { event, after, resolve, reject, timer: null };
+            waiter.timer = setTimeout(() => {
+                this.eventWaiters.delete(waiter);
+                reject(new Error(`DAP ${event} event timed out: ${this.stderr}`));
+            }, timeoutMs);
+            this.eventWaiters.add(waiter);
+        });
+    }
+
+    recordEvent(message) {
+        this.events.push({ index: ++this.eventCounter, message });
+        this.events = this.events.slice(-64);
+        for (const waiter of this.eventWaiters) {
+            if (message.event !== waiter.event || this.eventCounter <= waiter.after) continue;
+            this.eventWaiters.delete(waiter);
+            clearTimeout(waiter.timer);
+            waiter.resolve(message.body || {});
+        }
     }
 
     consume(chunk) {
@@ -48,6 +89,7 @@ class DapClient {
             if (this.buffer.length < headerEnd + 4 + length) return;
             const message = JSON.parse(this.buffer.toString("utf8", headerEnd + 4, headerEnd + 4 + length));
             this.buffer = this.buffer.subarray(headerEnd + 4 + length);
+            if (message.type === "event") this.recordEvent(message);
             if (message.type === "response") {
                 const pending = this.pending.get(message.request_seq);
                 if (!pending) continue;
@@ -67,6 +109,7 @@ class DapClient {
     }
 
     request(command, args = {}, timeoutMs = 15000) {
+        if (this.failure) return Promise.reject(this.failure);
         const seq = ++this.nextSeq;
         const payload = JSON.stringify({ seq, type: "request", command, arguments: args });
         const frame = `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`;
@@ -90,9 +133,25 @@ class DapClient {
         try {
             await this.request("disconnect", { terminateDebuggee: false, suspendDebuggee: false }, 3000);
         } catch {
-            // The adapter may already have exited; the process is still terminated below.
+            // The adapter may already have exited; confirm process cleanup below.
         }
+        this.child.stdin.end();
+        const waitForExit = async () => {
+            let timer;
+            try {
+                return await Promise.race([
+                    this.exitPromise.then(() => true),
+                    new Promise((resolve) => {
+                        timer = setTimeout(() => resolve(false), 2000);
+                    })
+                ]);
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+        if (await waitForExit()) return;
         this.child.kill();
+        if (!(await waitForExit())) throw new Error("probe-rs process exit could not be confirmed");
     }
 }
 
@@ -188,7 +247,10 @@ async function main() {
     }
 }
 
-main().catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-});
+if (require.main === module)
+    main().catch((error) => {
+        console.error(error);
+        process.exitCode = 1;
+    });
+
+module.exports = { DapClient };

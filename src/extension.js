@@ -31,6 +31,10 @@ function activate(context) {
             await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
             await provider.refreshOpenOcdStatus(true);
         }),
+        vscode.commands.registerCommand("mcu-vscode.checkProbeRs", async () => {
+            await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
+            await provider.refreshProbeRsStatus(true);
+        }),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
             if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz", "backend", "probeRsPath", "probeRsChip", "probeRsProbe"].some(key => event.affectsConfiguration("emberprobe." + key))) {

@@ -357,6 +357,8 @@ class MainViewProvider {
         });
         this._probeRsStatusService = new ProbeRsStatusService({
             vscode,
+            t: (key, params) => this._t(key, params),
+            assertEditable: () => this._assertConnectionEditable({ probeRsPath: true }),
             onStatus: (status) => this._postBackendStatus("probe-rs", status)
         });
         this._skillStatusService = new SkillStatusService({
@@ -555,6 +557,9 @@ class MainViewProvider {
     async refreshOpenOcdStatus(showChecking = true) {
         return this._openOcdStatusService.refresh(showChecking);
     }
+    async refreshProbeRsStatus(showChecking = true) {
+        return this._probeRsStatusService.refresh(showChecking);
+    }
     async _handleOpenOcdAction(action) {
         if (["select", "install"].includes(action)) this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
@@ -631,6 +636,7 @@ class MainViewProvider {
                 request,
                 __emberprobeWatchOnly: watchOnly
             });
+            if (!debugConfig) return false;
             return await vscode.debug.startDebugging(folder, debugConfig, { suppressDebugView: watchOnly });
         } finally {
             this._probeRsTransition = false;
@@ -641,13 +647,31 @@ class MainViewProvider {
         this._assertCpuIdle();
         this._assertProbeDriverIdle();
         this._externalDebug?.assertPhysicalAvailable();
+        const settings = probeRsSettings(vscode);
+        const probeRsSelected = this._probeRsSelected();
         const config = resolveProbeRsDebugConfiguration(
             configuration,
             folder,
             this._context.workspaceState.get(CACHE_KEYS.elfPath),
-            probeRsSettings(vscode)
+            settings
         );
         const autoSession = this._debugBridge.activeSession;
+        if (
+            !autoSession?.configuration?.__emberprobeWatchOnly &&
+            !this._liveSession &&
+            !this._liveStopPromise &&
+            !this._liveStartPromise
+        )
+            this._assertProbeRsStartAvailable();
+        if (!(await this._probeRsStatusService.resolve(settings.executable))) return undefined;
+        const current = probeRsSettings(vscode);
+        if (
+            this._probeRsSelected() !== probeRsSelected ||
+            Object.keys(settings).some((key) => settings[key] !== current[key])
+        )
+            throw Object.assign(new Error("The probe-rs configuration changed before debugging"), {
+                code: "PROBE_RS_CONFIGURATION_CHANGED"
+            });
         if (!config.__emberprobeWatchOnly && autoSession?.configuration?.__emberprobeWatchOnly) {
             this._probeRsTransition = true;
             try {
@@ -693,11 +717,25 @@ class MainViewProvider {
     createProbeRsDebugAdapter(session) {
         this._assertProbeRsStartAvailable(session);
         const emitter = new vscode.EventEmitter();
+        const program = session.configuration.coreConfigs?.[0]?.programBinary;
+        const programStat = program ? fs.statSync(program) : null;
         const adapter = new ProbeRsDebugAdapter({
             coordinator: this._probeCoordinator,
             executable: probeRsSettings(vscode).executable,
             cwd: session.configuration.cwd,
             emitter,
+            resolveSourceLines: async (source, breakpoints) => {
+                this._assertGroupedReadElf(session);
+                const result = await this._elfService.ready();
+                if (!programStat || result.elf.mtimeMs !== programStat.mtimeMs || result.elf.size !== programStat.size)
+                    throw new Error("The debug ELF changed after the session started");
+                const locations = await this._elfService.sourceLines(source, breakpoints);
+                this._assertGroupedReadElf(session);
+                const current = fs.statSync(program);
+                if (current.mtimeMs !== programStat.mtimeMs || current.size !== programStat.size)
+                    throw new Error("The debug ELF changed during breakpoint lookup");
+                return locations;
+            },
             onError: (error) => console.error("probe-rs debug adapter:", error.message),
             onExit: () => {
                 this._probeRsAdapters.delete(session.id);
@@ -717,31 +755,154 @@ class MainViewProvider {
             throw error;
         }
     }
-    async _downloadProbeRs(resource) {
-        if (this._downloadRunning || this._debugStarting || this._agentReadRunning || this._chipInfoRunning)
-            throw new Error("The debug probe is busy");
-        const active = this._debugBridge.activeSession;
-        if (active?.configuration?.__emberprobeWatchOnly) {
-            await this.stopLiveWatch();
-            await this._debugBridge.waitForState((state) => state.state === "none", 5000);
-        }
-        if (this._debugBridge.hasAnySession) throw new Error("Stop the debug session before downloading firmware");
-        const stopped = this._liveSession ? this.stopLiveWatch() : null;
-        const lease = this._probeCoordinator.acquire("download");
-        this._downloadLease = lease;
+    _assertProbeRsDownloadAvailable({
+        watchSession = null,
+        allowSampling = false,
+        ownTransition = false,
+        lease = null
+    } = {}) {
+        if (vscode.workspace.isTrusted === false) throw new Error("Downloading requires a trusted workspace");
+        this._assertCpuIdle();
+        this._assertProbeDriverIdle();
+        if (
+            this._shutdownPromise ||
+            this._liveExitUnconfirmed ||
+            (this._liveConnectionClosing && !this._liveStopPromise)
+        )
+            throw Object.assign(new Error("The previous probe connection has not closed"), {
+                code: "PROBE_EXIT_UNCONFIRMED"
+            });
+        const operation = this._probeCoordinator.firstActive();
+        const ownsDownload = operation === "download" && lease && !lease.released;
+        const stoppingSampling =
+            allowSampling &&
+            ((operation === "debugServer" && watchSession) ||
+                (operation === "liveWatch" && (this._liveSession || this._liveStopPromise)));
+        const otherSession =
+            this._debugBridge.hasAnySession &&
+            (!watchSession ||
+                [...this._debugBridge.allSessions.values()].some((session) => session.id !== watchSession.id));
+        const current = vscode.debug.activeDebugSession;
+        if (
+            (operation && !ownsDownload && !stoppingSampling) ||
+            otherSession ||
+            (isSupportedDebugSession(current) && current.id !== watchSession?.id) ||
+            [...this._probeRsAdapters.keys()].some((id) => id !== watchSession?.id) ||
+            this._chipInfoRunning ||
+            this._liveStartPromise ||
+            this._foreignDebugPending ||
+            this._debugCommandPending ||
+            (this._probeRsTransition && !ownTransition)
+        )
+            throw Object.assign(new Error(`The debug probe is busy with ${operation || "another debugger"}`), {
+                code: "PROBE_BUSY",
+                activeOperation: operation || "debug",
+                retryable: true
+            });
+    }
+    _reportDownloadProgress(event) {
+        const message = { type: "openocdProgress", cmd: "mcu-vscode.download", ...event };
+        this._recentProgress.push(message);
+        if (this._recentProgress.length > 6) this._recentProgress.shift();
+        this._webviewView?.webview.postMessage(message);
+    }
+    async _finishDownload(downloaded, lease) {
         try {
-            if (stopped) await stopped;
-            const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-            if (!elf) throw new Error("Select a Rust ELF executable before downloading");
-            const { cwd } = this._commandContext(resource);
-            await downloadWithProbeRs(probeRsSettings(vscode), elf, cwd);
+            if (!downloaded) return false;
+            await this._refreshElfBindings();
+            return true;
+        } catch (error) {
+            this._postLive({ type: "liveError", ...toUiError(error) });
+            vscode.window.showWarningMessage(this._t("msg.downloadRefreshFailed", { error: error.message }));
+            return false;
+        } finally {
+            lease?.release();
+            if (this._downloadLease === lease) this._downloadLease = null;
+        }
+    }
+    async _resumeSamplingAfterDownload() {
+        try {
+            await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
+        } catch (error) {
+            vscode.window.showWarningMessage(this._t("msg.downloadSamplingFailed", { error: error.message }));
+        }
+    }
+    async _downloadProbeRs(resource) {
+        const active = this._debugBridge.activeSession;
+        const watchSession =
+            active?.type === "emberprobe-probe-rs" && active.configuration?.__emberprobeWatchOnly ? active : null;
+        this._assertProbeRsDownloadAvailable({ watchSession, allowSampling: true });
+        const elf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
+        if (!elf) throw new Error("Select a Rust ELF executable before downloading");
+        const settings = probeRsSettings(vscode);
+        if (!(await this._probeRsStatusService.resolve(settings.executable))) return false;
+        this._assertProbeRsDownloadAvailable({ watchSession, allowSampling: true });
+        const { cwd } = this._commandContext(resource);
+        const configurationCurrent = () => {
+            const current = probeRsSettings(vscode);
+            return (
+                this._probeRsSelected() &&
+                this._context.workspaceState.get(CACHE_KEYS.elfPath) === elf &&
+                Object.keys(settings).every((key) => settings[key] === current[key])
+            );
+        };
+        // Capture before stopDebugging: session termination may remove the map entry before USB cleanup finishes.
+        const adapter = watchSession && this._probeRsAdapters.get(watchSession.id);
+        const resumeSampling =
+            !!this._samplingIntent &&
+            !!(watchSession || this._liveWatchRunning || this._liveSession || this._liveStopPromise);
+        let lease;
+        let downloaded = false;
+        let stoppedGeneration;
+        this._probeRsTransition = true;
+        this._recentProgress = [];
+        try {
+            const stopped = this.stopLiveWatch({ discardPending: true });
+            stoppedGeneration = this._liveStartGeneration;
+            await stopped;
+            if (watchSession) {
+                await this._debugBridge.waitForState((state) => state.state === "none", 5000);
+                if (adapter && !(await adapter.waitForExit(5000)))
+                    throw Object.assign(new Error("The previous probe-rs process has not exited"), {
+                        code: "PROBE_EXIT_UNCONFIRMED"
+                    });
+            }
+            const assertReady = () => {
+                this._assertProbeRsDownloadAvailable({ ownTransition: true, lease });
+                if (!configurationCurrent())
+                    throw Object.assign(new Error("The probe-rs configuration or ELF changed before downloading"), {
+                        code: "PROBE_RS_CONFIGURATION_CHANGED"
+                    });
+            };
+            assertReady();
+            lease = this._probeCoordinator.acquire("download");
+            this._downloadLease = lease;
+            await downloadWithProbeRs(settings, elf, cwd, {
+                beforeRun: assertReady,
+                onProgress: (event) => this._reportDownloadProgress(event)
+            });
+            downloaded = true;
             vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
             return true;
         } catch (error) {
-            vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: error.message }));
+            const message = error.i18nKey ? this._t(error.i18nKey, error.i18nParams) : error.message;
+            vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: message }));
             throw error;
         } finally {
-            lease.release();
+            let refreshed;
+            try {
+                refreshed = await this._finishDownload(downloaded, lease);
+            } finally {
+                this._probeRsTransition = false;
+            }
+            if (
+                resumeSampling &&
+                refreshed &&
+                stoppedGeneration === this._liveStartGeneration &&
+                !this._shutdownPromise &&
+                configurationCurrent()
+            )
+                await this._resumeSamplingAfterDownload();
         }
     }
     // 注册命令处理函数（主进程执行）
@@ -1147,13 +1308,7 @@ class MainViewProvider {
                         },
                         cwd
                     },
-                    (event) => {
-                        // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
-                        const message = { type: "openocdProgress", cmd: "mcu-vscode.download", ...event };
-                        this._recentProgress.push(message);
-                        if (this._recentProgress.length > 6) this._recentProgress.shift();
-                        this._webviewView?.webview.postMessage(message);
-                    }
+                    (event) => this._reportDownloadProgress(event)
                 );
                 if (connection && !this._downloadLease?.released)
                     await this._probeConnectionService.recordSuccess(connection);
@@ -1166,27 +1321,8 @@ class MainViewProvider {
                 vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: errorMsg }));
                 throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
             } finally {
-                let refreshed = false;
-                try {
-                    if (downloaded) {
-                        await this._refreshElfBindings();
-                        refreshed = true;
-                    }
-                } catch (error) {
-                    this._postLive({ type: "liveError", ...toUiError(error) });
-                    vscode.window.showWarningMessage(this._t("msg.downloadRefreshFailed", { error: error.message }));
-                } finally {
-                    downloadLease.release();
-                }
-                if (resumeSampling && refreshed) {
-                    try {
-                        await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
-                    } catch (error) {
-                        vscode.window.showWarningMessage(
-                            this._t("msg.downloadSamplingFailed", { error: error.message })
-                        );
-                    }
-                }
+                const refreshed = await this._finishDownload(downloaded, downloadLease);
+                if (resumeSampling && refreshed) await this._resumeSamplingAfterDownload();
             }
         };
     }
@@ -2202,7 +2338,7 @@ class MainViewProvider {
     }
     _validateDebugReadPlan(items, session) {
         this._assertGroupedReadElf(session);
-        if (isProbeRsDebugSession(session) && !this._debugBridge.paused) this._runtimeRamPlan(items, true);
+        if (isProbeRsDebugSession(session) && !this._debugBridge.paused) return this._runtimeRamPlan(items, true);
     }
     async _quiesceManagedRuntimeRead() {
         this._assertGroupedReadElf();
@@ -2767,24 +2903,54 @@ class MainViewProvider {
     // 侧边栏写入列表：用户在 UI 中直接操作，不经过 WriteAuthorization 确认；
     // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
     // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
-    async _writeUiVariable(name, value) {
+    async _writeUiVariable(name, value, expectedContext = null) {
         this._assertCpuIdle();
         if (this._liveConnectionClosing || this._liveExitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
-        const dapSession = this._debugBridge.canWrite ? this._debugBridge : null;
+        const dapSession = this._debugBridge.hasAnySession ? this._debugBridge : null;
+        const writeContext =
+            expectedContext ??
+            (dapSession && { sessionId: dapSession.activeSession?.id, stopEpoch: dapSession.stopEpoch });
+        const assertWriteContext = () => {
+            if (
+                writeContext != null &&
+                (!dapSession ||
+                    writeContext.sessionId !== dapSession.activeSession?.id ||
+                    writeContext.stopEpoch !== dapSession.stopEpoch)
+            )
+                throw Object.assign(new Error("The debug target changed before writing"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+        };
+        assertWriteContext();
         const session = dapSession || (this._liveWatchRunning ? this._liveSession : null);
         if (!session) {
             throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
         }
-        if (dapSession) this._assertGroupedReadElf();
+        const connection = this._sessionWriteConnection(session);
+        if (dapSession) {
+            this._assertGroupedReadElf();
+            if (this._samplingCoordinator?.backpressured)
+                throw Object.assign(new Error("Sampling is paused by storage backpressure"), {
+                    code: "WRITE_SNAPSHOT_UNAVAILABLE",
+                    i18nKey: "sb.writeWaiting"
+                });
+            await dapSession.waitForWriteReady();
+        }
         await this._prepareRequestedLayouts([{ name }]);
+        assertWriteContext();
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
-        plan.connection = this._sessionWriteConnection(session);
+        plan.connection = connection;
         if (dapSession)
             this._postConsumerStatuses(
-                dapSession.status({ mode: "debug-paused-writing", key: "live.dapWriting", canWrite: false })
+                dapSession.status({
+                    mode: "debug-writing",
+                    key: dapSession.runtimeProbeRs ? "live.dapRuntimeWriting" : "live.dapWriting",
+                    canWrite: false,
+                    writeBlockedReason: "writing"
+                })
             );
         try {
             return await this._executeWritePlan(
@@ -5538,7 +5704,7 @@ class MainViewProvider {
                         .catch(() => {})
                         .then(async () => {
                             try {
-                                const result = await this._writeUiVariable(name, message.value);
+                                const result = await this._writeUiVariable(name, message.value, message.writeContext);
                                 const r = result.results && result.results[0];
                                 webviewView.webview.postMessage({
                                     type: "writeResult",

@@ -1,12 +1,28 @@
 "use strict";
 const { isSupportedDebugSession, isProbeRsDebugSession } = require("./debugConfiguration");
+const { windowsTimerResolution } = require("../windowsTimerResolution");
 
 const MIN_DAP_INTERVAL_MS = 250;
-const MIN_PROBE_RS_INTERVAL_MS = 20;
+const MIN_PROBE_RS_INTERVAL_MS = 5;
+const MAX_PROBE_RS_READ_GAP_BYTES = 64;
+const MAX_PROBE_RS_READ_BATCH = 4;
 const MAX_READ_BYTES = 4096;
 const SNAPSHOT_INITIAL_DELAY_MS = 180;
 const SNAPSHOT_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000]);
 const CONTROL_TIMEOUT_MS = 5000;
+const DAP_CAPABILITIES = Object.freeze({
+    read: "supportsReadMemoryRequest",
+    write: "supportsWriteMemoryRequest",
+    restart: "supportsRestartRequest",
+    functionBreakpoints: "supportsFunctionBreakpoints",
+    conditionalBreakpoints: "supportsConditionalBreakpoints",
+    hitConditionalBreakpoints: "supportsHitConditionalBreakpoints",
+    logPoints: "supportsLogPoints"
+});
+
+function unknownCapabilities() {
+    return Object.fromEntries(Object.keys(DAP_CAPABILITIES).map((name) => [name, null]));
+}
 
 function sessionFolderKey(session) {
     return session?.workspaceFolder?.uri?.toString?.() || "";
@@ -18,7 +34,7 @@ function unwrapResponse(value) {
         : value || {};
 }
 
-function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
+function mergeReadPlan(items, maxBytes = MAX_READ_BYTES, { maxGapBytes = 0, ranges = [] } = {}) {
     const sorted = (items || [])
         .filter((item) => Number.isFinite(Number(item.address)) && Number(item.size) > 0)
         .map((item) => ({ ...item, address: Number(item.address), size: Number(item.size) }))
@@ -27,7 +43,15 @@ function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
     for (const item of sorted) {
         const last = groups[groups.length - 1];
         const end = item.address + item.size;
-        if (last && item.address <= last.address + last.size && end - last.address <= maxBytes) {
+        const gap = last ? item.address - (last.address + last.size) : Infinity;
+        const safeGap =
+            last &&
+            gap > 0 &&
+            gap <= maxGapBytes &&
+            ranges.some((range) => last.address >= range.start && end <= range.end);
+        const sameRange =
+            !ranges.length || (last && ranges.some((range) => last.address >= range.start && end <= range.end));
+        if (last && (gap <= 0 || safeGap) && sameRange && end - last.address <= maxBytes) {
             last.size = Math.max(last.size, end - last.address);
             last.items.push(item);
         } else {
@@ -42,6 +66,8 @@ class DebugSessionBridge {
         this.schedule = options.schedule || setTimeout;
         this.cancel = options.cancel || clearTimeout;
         this.now = options.now || Date.now;
+        this.timerResolution = options.timerResolution || windowsTimerResolution;
+        this.timerResolutionHeld = false;
         this.getReadPlan = options.getReadPlan || (() => []);
         this.getIntervalMs = options.getIntervalMs || (() => MIN_DAP_INTERVAL_MS);
         this.onSamples = options.onSamples || (() => {});
@@ -58,7 +84,7 @@ class DebugSessionBridge {
         this.intentEnabled = false;
         this.workspaceKey = "";
         this.paused = false;
-        this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
+        this.capabilities = unknownCapabilities();
         this.stopReason = "";
         this.probeRsReady = false;
         this.threadId = null;
@@ -276,7 +302,23 @@ class DebugSessionBridge {
             intentEnabled: this.intentEnabled,
             canRead: this.canRead,
             canWrite: this.canWrite,
+            writeBlockedReason: this.writing
+                ? "writing"
+                : this.transitionKind || this.controlInFlight
+                  ? "transition"
+                  : !this.intentEnabled
+                    ? "sampling"
+                    : this.conflict
+                      ? "conflict"
+                      : this.capabilities.write === false
+                        ? "unsupported"
+                        : this.canRead && !this.snapshotReady
+                          ? "snapshot"
+                          : this.canWrite
+                            ? ""
+                            : "paused",
             snapshotReady: this.snapshotReady,
+            writeContext: this.activeSession ? { sessionId: this.activeSession.id, stopEpoch: this.stopEpoch } : null,
             source,
             key,
             ...extra
@@ -321,7 +363,7 @@ class DebugSessionBridge {
         this.contextSessionId = activeId;
         if (changed) {
             this.paused = false;
-            this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
+            this.capabilities = unknownCapabilities();
             this.stopReason = "";
             this.probeRsReady = false;
             this.threadId = null;
@@ -474,10 +516,7 @@ class DebugSessionBridge {
         }
         if (message.type === "response" && message.command === "initialize" && message.success !== false) {
             const body = unwrapResponse(message);
-            this.capabilities.read = body.supportsReadMemoryRequest === true;
-            this.capabilities.write = body.supportsWriteMemoryRequest === true;
-            this.capabilities.restart = body.supportsRestartRequest === true;
-            this.capabilities.functionBreakpoints = body.supportsFunctionBreakpoints === true;
+            for (const [name, key] of Object.entries(DAP_CAPABILITIES)) this.capabilities[name] = body[key] === true;
             if (
                 this.intentEnabled &&
                 (this.paused || this.runtimeProbeRs) &&
@@ -492,13 +531,9 @@ class DebugSessionBridge {
         }
         if (message.type === "event" && message.event === "capabilities") {
             const capabilities = message.body?.capabilities || {};
-            for (const [name, key] of [
-                ["read", "supportsReadMemoryRequest"],
-                ["write", "supportsWriteMemoryRequest"],
-                ["restart", "supportsRestartRequest"],
-                ["functionBreakpoints", "supportsFunctionBreakpoints"]
-            ])
+            for (const [name, key] of Object.entries(DAP_CAPABILITIES))
                 if (Object.hasOwn(capabilities, key)) this.capabilities[name] = capabilities[key] === true;
+            if (!this.canRead) this._releaseTimerResolution();
             this.onStatus(this.status());
             return;
         }
@@ -618,6 +653,13 @@ class DebugSessionBridge {
         this.epoch += 1;
         if (this.timer) this.cancel(this.timer);
         this.timer = null;
+        this._releaseTimerResolution();
+    }
+
+    _releaseTimerResolution() {
+        if (!this.timerResolutionHeld) return;
+        this.timerResolutionHeld = false;
+        this.timerResolution.release();
     }
 
     _schedule(delay) {
@@ -630,6 +672,7 @@ class DebugSessionBridge {
             this.timer
         )
             return;
+        if (this.runtimeProbeRs && !this.timerResolutionHeld) this.timerResolutionHeld = this.timerResolution.acquire();
         this.timer = this.schedule(
             () => {
                 this.timer = null;
@@ -640,8 +683,11 @@ class DebugSessionBridge {
     }
 
     async _poll() {
-        if (!this.canRead || !this.snapshotPending || (!this.runtimeProbeRs && this.snapshotReady) || this.polling)
+        if (!this.canRead || !this.snapshotPending || (!this.runtimeProbeRs && this.snapshotReady)) {
+            this._releaseTimerResolution();
             return;
+        }
+        if (this.polling) return;
         const session = this.activeSession;
         const epoch = this.epoch;
         const runtime = this.runtimeProbeRs;
@@ -680,10 +726,15 @@ class DebugSessionBridge {
             }
         } finally {
             this.polling = false;
+            if (!this.canRead || !this.snapshotPending || !this.runtimeProbeRs) this._releaseTimerResolution();
             const retryDelay = SNAPSHOT_RETRY_DELAYS_MS[this.consecutiveErrors - 1];
-            if (this.runtimeProbeRs && this.snapshotPending && !this.consecutiveErrors)
-                this._schedule(Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()));
-            else if (this.snapshotPending && !this.snapshotReady)
+            if (this.runtimeProbeRs && this.snapshotPending && !this.consecutiveErrors) {
+                // A sampling interval is measured between cycle starts. Include
+                // the DAP read and sample delivery in it; never queue catch-up reads.
+                const intervalMs = Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs());
+                const elapsedMs = epoch === this.epoch ? Math.max(0, this.now() - startedAt) : 0;
+                this._schedule(Math.max(0, intervalMs - elapsedMs));
+            } else if (this.snapshotPending && (this.runtimeProbeRs || !this.snapshotReady))
                 this._schedule(retryDelay === undefined ? SNAPSHOT_INITIAL_DELAY_MS : retryDelay);
         }
     }
@@ -908,7 +959,7 @@ class DebugSessionBridge {
             throw Object.assign(new Error("Running probe-rs reads require fixed-address globals"), {
                 code: "LIVE_RUNTIME_LAYOUT_UNSUPPORTED"
             });
-        this.validateReadPlan(items, session);
+        const validated = this.validateReadPlan(items, session);
         if (!runtime) await this.beforePausedRead();
         if (session !== this.activeSession || (!this.paused && !runtime) || this.transitionKind)
             throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
@@ -926,7 +977,17 @@ class DebugSessionBridge {
             this.validateReadPlan(items, session);
         };
         const fixed = items.filter((item) => !item.runtimeLayout);
-        const groups = mergeReadPlan(fixed);
+        // Only widen running-target reads across small gaps inside one verified
+        // writable ELF section. Other DAP reads retain their exact ranges.
+        let groups = mergeReadPlan(fixed, MAX_READ_BYTES, {
+            maxGapBytes: runtime ? MAX_PROBE_RS_READ_GAP_BYTES : 0,
+            ranges: validated?.ranges || []
+        });
+        // Padding also consumes the per-cycle byte budget. Fall back to exact
+        // reads when the original plan has no room for the additional bytes.
+        if (runtime && groups.reduce((sum, group) => sum + group.size, 0) > MAX_READ_BYTES)
+            groups = mergeReadPlan(fixed, MAX_READ_BYTES, { ranges: validated?.ranges || [] });
+        if (runtime) this.validateReadPlan(groups, session);
         const budget = {
             bytes: groups.reduce((sum, group) => sum + group.size, 0),
             commands: groups.length,
@@ -952,15 +1013,29 @@ class DebugSessionBridge {
                 });
             }
         }
-        for (const group of groups) {
+        const batchSize = runtime ? MAX_PROBE_RS_READ_BATCH : 1;
+        for (let start = 0; start < groups.length; start += batchSize) {
             guard();
-            const data = await this._readBlock(session, group.address, group.size);
+            const batch = groups.slice(start, start + batchSize);
+            if (runtime) this.validateReadPlan(batch, session);
+            // Queue a bounded batch together so the server can drain requests
+            // without entering its idle poll between separate RAM ranges.
+            // Drain every response before failing or allowing a write/control.
+            const results = await Promise.allSettled(
+                batch.map((group) => this._readBlock(session, group.address, group.size))
+            );
             guard();
-            for (const item of group.items) {
-                const offset = item.address - group.address;
-                const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
-                if (bytes.length !== item.size) throw new Error(`DAP partially read ${item.name}`);
-                samples.push({ name: item.name, bytes });
+            for (let index = 0; index < results.length; index++) {
+                const result = results[index];
+                if (result.status === "rejected") throw result.reason;
+                const group = batch[index];
+                const data = result.value;
+                for (const item of group.items) {
+                    const offset = item.address - group.address;
+                    const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
+                    if (bytes.length !== item.size) throw new Error(`DAP partially read ${item.name}`);
+                    samples.push({ name: item.name, bytes });
+                }
             }
         }
         return samples;
@@ -1106,6 +1181,40 @@ class DebugSessionBridge {
                 this.snapshotPending = true;
                 this._schedule(Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()));
             }
+        }
+    }
+
+    async waitForWriteReady(timeoutMs = 2000) {
+        const session = this.assertUniqueSession();
+        const epoch = this.stopEpoch;
+        const deadline = this.now() + timeoutMs;
+        for (;;) {
+            if (session !== this.activeSession || epoch !== this.stopEpoch || this.transitionKind)
+                throw Object.assign(new Error("The debug target changed before writing"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+            if (!this.intentEnabled)
+                throw Object.assign(new Error("Start sampling before writing"), {
+                    code: "WRITE_SAMPLING_REQUIRED",
+                    i18nKey: "sb.writeNeedSampling"
+                });
+            if (this.writing || this.controlInFlight)
+                throw Object.assign(new Error("Another debug operation is in progress"), {
+                    code: "DEBUG_CONTROL_BUSY",
+                    i18nKey: "sb.writeBusy"
+                });
+            if (this.capabilities.write === false)
+                throw Object.assign(new Error("The debugger does not support DAP writeMemory"), {
+                    code: "DEBUG_MEMORY_WRITE_UNSUPPORTED",
+                    i18nKey: "sb.writeBackendUnsupported"
+                });
+            if (this.canWrite) return;
+            if (!this.canRead || this.now() >= deadline)
+                throw Object.assign(new Error("Wait for a current writable debugger sample"), {
+                    code: "WRITE_SNAPSHOT_UNAVAILABLE",
+                    i18nKey: "sb.writeWaiting"
+                });
+            await new Promise((resolve) => this.schedule(resolve, 10));
         }
     }
 

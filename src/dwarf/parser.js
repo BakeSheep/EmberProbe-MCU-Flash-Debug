@@ -265,6 +265,9 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         ? Number(raw.integer64)
                                         : raw;
                                 switch (attr.at) {
+                                    case 0x10: // DW_AT_stmt_list
+                                        unit.stmtList = v;
+                                        break;
                                     case 0x1b: // DW_AT_comp_dir
                                         unit.compDir = v?.str;
                                         break;

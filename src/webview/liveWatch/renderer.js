@@ -674,9 +674,10 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     row.append(toggle, val);
     container.appendChild(row);
 }
-function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
+function renderMemberGroupInto(container, fieldName, path, renderMembers) {
     var wrap = document.createElement("div");
     wrap.className = "comp-nest";
+    wrap.dataset.memberPath = path;
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
@@ -685,6 +686,7 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
     var nm = document.createElement("span");
     nm.className = "comp-name";
     nm.textContent = fieldName;
+    nm.title = path;
     head.append(arrow, nm);
     var body = document.createElement("div");
     body.className = "comp-members" + (expanded[path] ? " open" : "");
@@ -695,9 +697,14 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
         arrow.classList.toggle("open", open);
         saveUi();
     };
-    renderLayoutInto(body, layout, path, baseAddr, offset, null);
+    renderMembers(body);
     wrap.append(head, body);
     container.appendChild(wrap);
+}
+function renderNestInto(container, layout, fieldName, path, baseAddr, offset) {
+    renderMemberGroupInto(container, fieldName, path, function (body) {
+        renderLayoutInto(body, layout, path, baseAddr, offset, null);
+    });
 }
 function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
     if (!layout) return;
@@ -737,29 +744,34 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
         if (total > end) appendNote(container, t("lw.arrayMore", { n: total - end }));
     }
 }
-function renderRuntimeTreeInto(container, tree, path) {
+function renderRuntimeTreeInto(container, tree, path, label) {
     if (!tree) return;
+    if (label && (tree.members || tree.elements)) {
+        renderMemberGroupInto(container, label, path, function (body) {
+            renderRuntimeTreeInto(body, tree, path);
+        });
+        return;
+    }
     if (tree.members)
         tree.members.forEach(function (member) {
             var childPath = member.name ? path + "." + member.name : path;
-            if (member.members || member.elements) renderRuntimeTreeInto(container, member, childPath);
-            else if (Object.prototype.hasOwnProperty.call(member, "value"))
-                renderLeafInto(
-                    container,
-                    member.name || "value",
-                    member.typeName || member.type || "",
-                    childPath,
-                    member.type,
-                    member.address,
-                    member
-                );
+            renderRuntimeTreeInto(container, member, childPath, member.name);
         });
     else if (tree.elements)
         tree.elements.forEach(function (element) {
-            renderRuntimeTreeInto(container, element, path + "[" + element.index + "]");
+            var indexLabel = "[" + element.index + "]";
+            renderRuntimeTreeInto(container, element, path + indexLabel, indexLabel);
         });
     else if (Object.prototype.hasOwnProperty.call(tree, "value"))
-        renderLeafInto(container, "value", tree.typeName || tree.type || "", path, tree.type, tree.address, tree);
+        renderLeafInto(
+            container,
+            label || "value",
+            tree.typeName || tree.type || "",
+            path,
+            tree.type,
+            tree.address,
+            tree
+        );
     if (tree.unavailable) appendNote(container, tree.unavailable);
 }
 function renderRuntimeBody(body, tree, name) {

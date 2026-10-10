@@ -29,6 +29,7 @@ class ElfService {
         this.generation = 0;
         this.nextRequestId = 0;
         this.pendingLayouts = new Map();
+        this.pendingSourceLines = new Map();
         this.symbolByName = new Map();
         this.layoutErrors = new Map();
     }
@@ -42,6 +43,8 @@ class ElfService {
         }
         for (const pending of this.pendingLayouts.values()) pending.reject(new Error("ELF changed"));
         this.pendingLayouts.clear();
+        for (const pending of this.pendingSourceLines.values()) pending.reject(new Error("ELF changed"));
+        this.pendingSourceLines.clear();
         this.symbolByName.clear();
         this.layoutErrors.clear();
         if (this.rejectSymbols) this.rejectSymbols(new Error("ELF changed"));
@@ -233,6 +236,8 @@ class ElfService {
             result.dwarfReady = false;
             for (const pending of this.pendingLayouts.values()) pending.reject(failure);
             this.pendingLayouts.clear();
+            for (const pending of this.pendingSourceLines.values()) pending.reject(failure);
+            this.pendingSourceLines.clear();
             worker.terminate().catch(() => {});
             if (this.worker === worker) this.worker = null;
             result.warnings.push(`${failure.code}: ${failure.message}`);
@@ -241,6 +246,15 @@ class ElfService {
         worker.on("message", (message) => {
             if (generation !== this.generation || failed) return;
             switch (message.type) {
+                case "sourceLinesResult": {
+                    const pending = this.pendingSourceLines.get(message.id);
+                    if (!pending) break;
+                    this.pendingSourceLines.delete(message.id);
+                    if (message.error)
+                        pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
+                    else pending.resolve(message.locations);
+                    break;
+                }
                 case "metadata":
                     result.elf = message.elf;
                     result.memory = message.memory;
@@ -366,6 +380,29 @@ class ElfService {
                 reject
             });
             this.worker.postMessage({ type: "layout", id, name });
+        });
+    }
+
+    async sourceLines(source, breakpoints) {
+        await this.ready();
+        if (!this.worker) return [];
+        const id = ++this.nextRequestId;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingSourceLines.delete(id);
+                reject(new Error("Source breakpoint lookup timed out"));
+            }, 2000);
+            this.pendingSourceLines.set(id, {
+                resolve: (value) => {
+                    clearTimeout(timer);
+                    resolve(value);
+                },
+                reject: (error) => {
+                    clearTimeout(timer);
+                    reject(error);
+                }
+            });
+            this.worker.postMessage({ type: "sourceLines", id, source, breakpoints });
         });
     }
 
