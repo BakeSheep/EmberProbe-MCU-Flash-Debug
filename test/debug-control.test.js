@@ -30,132 +30,11 @@ class FunctionBreakpoint {
     }
 }
 
-async function testBreakpointCapabilities(root) {
-    const bridge = new DebugSessionBridge();
-    const breakpoints = [];
-    const vscode = {
-        Position,
-        Location,
-        SourceBreakpoint,
-        FunctionBreakpoint,
-        Uri: { file: (fsPath) => ({ fsPath }) },
-        debug: {
-            breakpoints,
-            addBreakpoints: (items) => breakpoints.push(...items),
-            removeBreakpoints(items) {
-                for (const item of items) breakpoints.splice(breakpoints.indexOf(item), 1);
-            }
-        }
-    };
-    const service = new DebugControlService({ vscode, debugBridge: bridge, workspaceProvider: () => root });
-    const source = { type: "source", file: "main.c", line: 1 };
-    const folder = { uri: { fsPath: root, toString: () => `file://${root}` } };
-    const supported = { id: "supported", type: "emberprobe", workspaceFolder: folder, configuration: {} };
-    const probeRs = { ...supported, id: "probe-rs", type: "emberprobe-probe-rs" };
-    const features = [
-        ["functionBreakpoints", "supportsFunctionBreakpoints", { type: "function", function: "main" }],
-        ["conditionalBreakpoints", "supportsConditionalBreakpoints", { ...source, condition: "counter > 2" }],
-        ["hitConditionalBreakpoints", "supportsHitConditionalBreakpoints", { ...source, hitCondition: "3" }],
-        ["logPoints", "supportsLogPoints", { ...source, logMessage: "counter={counter}" }]
-    ];
-    try {
-        await service.updateBreakpoints({ action: "add", ...source });
-        assert.equal(breakpoints.length, 1, "ordinary breakpoints can be configured before debugging");
-        for (const [feature, , params] of features) {
-            await assert.rejects(service.updateBreakpoints({ action: "add", ...params }), (error) => {
-                assert.equal(error.code, "BREAKPOINT_CAPABILITY_UNAVAILABLE");
-                assert.equal(error.details.capability, feature);
-                return true;
-            });
-        }
-        bridge.setWorkspace(folder);
-        bridge.attach(supported);
-        await assert.rejects(service.updateBreakpoints({ action: "add", ...source, condition: "true" }), {
-            code: "BREAKPOINT_CAPABILITY_UNAVAILABLE"
-        });
-        bridge.handleMessage(supported, {
-            type: "response",
-            command: "initialize",
-            body: Object.fromEntries(features.map(([, capability]) => [capability, true]))
-        });
-        for (const [feature, , params] of features) {
-            assert.equal(service.status().capabilities[feature], true);
-            await service.updateBreakpoints({ action: "remove", ...params });
-            await service.updateBreakpoints({ action: "add", ...params });
-            const added = breakpoints.at(-1);
-            for (const key of ["condition", "hitCondition", "logMessage"]) {
-                assert.equal(added[key], params[key]);
-            }
-            await service.updateBreakpoints({ action: "disable", ...params });
-            await service.updateBreakpoints({ action: "enable", ...params });
-            assert.equal(breakpoints.at(-1).enabled, true);
-            await service.updateBreakpoints({ action: "remove", ...params });
-        }
-        bridge.attach(probeRs);
-        bridge.handleMessage(probeRs, { type: "response", command: "initialize", body: {} });
-        await assert.rejects(service.updateBreakpoints({ action: "add", ...source }), {
-            code: "DEBUG_SESSION_CONFLICT"
-        });
-        bridge.selectSession({ sessionId: probeRs.id });
-        for (const [feature, , params] of features) {
-            assert.equal(service.status().capabilities[feature], false);
-            const before = breakpoints.slice();
-            await assert.rejects(service.updateBreakpoints({ action: "add", ...params }), (error) => {
-                assert.equal(error.code, "BREAKPOINT_UNSUPPORTED");
-                assert.equal(error.details.capability, feature);
-                assert.equal(error.details.sessionId, probeRs.id);
-                return true;
-            });
-            assert.deepEqual(breakpoints, before, "unsupported additions must not change VS Code breakpoints");
-        }
-        await service.updateBreakpoints({ action: "add", ...source });
-        // A user or another extension can create an unsupported disabled breakpoint.
-        const location = new Location(vscode.Uri.file(path.join(root, "main.c")), new Position(0, 0));
-        const conditional = new SourceBreakpoint(location, false, "counter > 2");
-        vscode.debug.addBreakpoints([conditional]);
-        const beforeEnable = breakpoints.slice();
-        await assert.rejects(service.updateBreakpoints({ action: "enable", ...source }), {
-            code: "BREAKPOINT_UNSUPPORTED"
-        });
-        assert.deepEqual(breakpoints, beforeEnable, "validate every match before removing or enabling any of them");
-        await service.updateBreakpoints({ action: "disable", ...source });
-        assert.ok(breakpoints.every((breakpoint) => !breakpoint.enabled));
-        await service.updateBreakpoints({ action: "remove", ...source });
-        assert.equal(breakpoints.length, 0, "unsupported breakpoints can still be disabled and removed");
-        for (const key of ["condition", "hitCondition", "logMessage"]) {
-            await assert.rejects(service.updateBreakpoints({ action: "add", ...source, [key]: 42 }), {
-                code: "INVALID_BREAKPOINT"
-            });
-        }
-        bridge.handleMessage(supported, {
-            type: "event",
-            event: "capabilities",
-            body: { capabilities: { supportsConditionalBreakpoints: false } }
-        });
-        assert.equal(bridge.capabilities.logPoints, false, "another session cannot supply the selected capabilities");
-        bridge.selectSession({ sessionId: supported.id });
-        assert.equal(bridge.capabilities.conditionalBreakpoints, false);
-        assert.equal(bridge.capabilities.logPoints, true, "a partial capability event preserves the other fields");
-        await service.updateBreakpoints({ action: "add", ...source, logMessage: "hello" });
-        bridge.detach(supported);
-        assert.equal(bridge.capabilities.logPoints, false, "detaching restores the remaining session's capabilities");
-        bridge.detach(probeRs);
-        assert.equal(bridge.capabilities.logPoints, null, "ended sessions must not leave cached support behind");
-        await assert.rejects(service.updateBreakpoints({ action: "enable", ...source }), {
-            code: "BREAKPOINT_CAPABILITY_UNAVAILABLE"
-        });
-        await service.updateBreakpoints({ action: "remove", ...source });
-    } finally {
-        bridge.dispose();
-    }
-}
-
 (async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-debug-control-"));
     try {
         const source = path.join(root, "main.c");
         fs.writeFileSync(source, "int main(void) { return 0; }\n");
-        await testBreakpointCapabilities(root);
         const bridge = new DebugSessionBridge({ onStatus() {} });
         const requests = [];
         const session = {
@@ -331,7 +210,6 @@ async function testBreakpointCapabilities(root) {
             id: "event-first",
             async customRequest(command, args) {
                 if (command === "restart") {
-                    eventFirstBridge.handleRequest(eventFirstSession, { type: "request", seq: 1, command });
                     eventFirstBridge.handleMessage(eventFirstSession, {
                         type: "event",
                         event: "continued",
@@ -351,11 +229,6 @@ async function testBreakpointCapabilities(root) {
         });
         const eventConfirmedRestart = await eventFirstBridge.control("restart", 7);
         assert.strictEqual(eventConfirmedRestart.status.state, "running");
-        assert.strictEqual(
-            eventFirstBridge.transitionKind,
-            "",
-            "continued completes a restart that resumes the target"
-        );
         assert.ok(
             eventConfirmedRestart.status.epoch > eventConfirmedRestart.before.epoch,
             "a conclusive state event must complete restart even when customRequest never settles"

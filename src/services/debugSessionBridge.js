@@ -1,28 +1,11 @@
 "use strict";
-const { isSupportedDebugSession, isProbeRsDebugSession } = require("./debugConfiguration");
-const { windowsTimerResolution } = require("../windowsTimerResolution");
+const { isSupportedDebugSession } = require("./debugConfiguration");
 
 const MIN_DAP_INTERVAL_MS = 250;
-const MIN_PROBE_RS_INTERVAL_MS = 5;
-const MAX_PROBE_RS_READ_GAP_BYTES = 64;
-const MAX_PROBE_RS_READ_BATCH = 4;
 const MAX_READ_BYTES = 4096;
 const SNAPSHOT_INITIAL_DELAY_MS = 180;
 const SNAPSHOT_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000]);
 const CONTROL_TIMEOUT_MS = 5000;
-const DAP_CAPABILITIES = Object.freeze({
-    read: "supportsReadMemoryRequest",
-    write: "supportsWriteMemoryRequest",
-    restart: "supportsRestartRequest",
-    functionBreakpoints: "supportsFunctionBreakpoints",
-    conditionalBreakpoints: "supportsConditionalBreakpoints",
-    hitConditionalBreakpoints: "supportsHitConditionalBreakpoints",
-    logPoints: "supportsLogPoints"
-});
-
-function unknownCapabilities() {
-    return Object.fromEntries(Object.keys(DAP_CAPABILITIES).map((name) => [name, null]));
-}
 
 function sessionFolderKey(session) {
     return session?.workspaceFolder?.uri?.toString?.() || "";
@@ -34,7 +17,7 @@ function unwrapResponse(value) {
         : value || {};
 }
 
-function mergeReadPlan(items, maxBytes = MAX_READ_BYTES, { maxGapBytes = 0, ranges = [] } = {}) {
+function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
     const sorted = (items || [])
         .filter((item) => Number.isFinite(Number(item.address)) && Number(item.size) > 0)
         .map((item) => ({ ...item, address: Number(item.address), size: Number(item.size) }))
@@ -43,15 +26,7 @@ function mergeReadPlan(items, maxBytes = MAX_READ_BYTES, { maxGapBytes = 0, rang
     for (const item of sorted) {
         const last = groups[groups.length - 1];
         const end = item.address + item.size;
-        const gap = last ? item.address - (last.address + last.size) : Infinity;
-        const safeGap =
-            last &&
-            gap > 0 &&
-            gap <= maxGapBytes &&
-            ranges.some((range) => last.address >= range.start && end <= range.end);
-        const sameRange =
-            !ranges.length || (last && ranges.some((range) => last.address >= range.start && end <= range.end));
-        if (last && (gap <= 0 || safeGap) && sameRange && end - last.address <= maxBytes) {
+        if (last && item.address <= last.address + last.size && end - last.address <= maxBytes) {
             last.size = Math.max(last.size, end - last.address);
             last.items.push(item);
         } else {
@@ -66,8 +41,6 @@ class DebugSessionBridge {
         this.schedule = options.schedule || setTimeout;
         this.cancel = options.cancel || clearTimeout;
         this.now = options.now || Date.now;
-        this.timerResolution = options.timerResolution || windowsTimerResolution;
-        this.timerResolutionHeld = false;
         this.getReadPlan = options.getReadPlan || (() => []);
         this.getIntervalMs = options.getIntervalMs || (() => MIN_DAP_INTERVAL_MS);
         this.onSamples = options.onSamples || (() => {});
@@ -75,7 +48,6 @@ class DebugSessionBridge {
         this.onError = options.onError || (() => {});
         this.onTargetState = options.onTargetState || (() => {});
         this.beforePausedRead = options.beforePausedRead || (async () => {});
-        this.validateReadPlan = options.validateReadPlan || (() => {});
         this.allSessions = new Map();
         this.sessions = new Map();
         this.sessionContexts = options.trackSessions === false ? null : new Map();
@@ -84,9 +56,8 @@ class DebugSessionBridge {
         this.intentEnabled = false;
         this.workspaceKey = "";
         this.paused = false;
-        this.capabilities = unknownCapabilities();
+        this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
         this.stopReason = "";
-        this.probeRsReady = false;
         this.threadId = null;
         this.stopEpoch = 0;
         this.inspectionEpoch = 0;
@@ -95,11 +66,7 @@ class DebugSessionBridge {
         this.timer = null;
         this.polling = false;
         this.writing = false;
-        this.snapshotRefreshAfterWrite = false;
         this.consecutiveErrors = 0;
-        this.sampleTimes = [];
-        this.readDurations = [];
-        this.missedDeadlines = 0;
         this.snapshotPending = false;
         this.snapshotReady = false;
         this.controlTimeoutMs = Number.isFinite(options.controlTimeoutMs)
@@ -129,7 +96,7 @@ class DebugSessionBridge {
     get canRead() {
         return !!(
             this.intentEnabled &&
-            (this.paused || this.runtimeProbeRs) &&
+            this.paused &&
             !this.transitionKind &&
             !this.conflict &&
             this.activeSession &&
@@ -138,42 +105,6 @@ class DebugSessionBridge {
     }
     get canWrite() {
         return !!(this.canRead && this.snapshotReady && this.capabilities.write);
-    }
-
-    get runtimeProbeRs() {
-        return !this.paused && this.probeRsReady && isProbeRsDebugSession(this.activeSession);
-    }
-
-    resetStats() {
-        this.sampleTimes = [];
-        this.readDurations = [];
-        this.missedDeadlines = 0;
-    }
-
-    recordSample(startedAt, finishedAt) {
-        const previous = this.sampleTimes.at(-1);
-        if (
-            previous !== undefined &&
-            finishedAt - previous > Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()) * 1.5
-        )
-            this.missedDeadlines++;
-        this.sampleTimes.push(finishedAt);
-        while (this.sampleTimes.length > 1 && this.sampleTimes[0] < finishedAt - 3000) this.sampleTimes.shift();
-        this.readDurations.push(Math.max(0, finishedAt - startedAt));
-        if (this.readDurations.length > 64) this.readDurations.shift();
-    }
-
-    stats() {
-        const times = this.sampleTimes;
-        const elapsed = times.length > 1 ? times.at(-1) - times[0] : 0;
-        const durations = this.readDurations.slice().sort((a, b) => a - b);
-        return {
-            effectiveIntervalMs: Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()),
-            actualHz: elapsed > 0 ? ((times.length - 1) * 1000) / elapsed : 0,
-            p95DurationMs: durations.length ? durations[Math.ceil(durations.length * 0.95) - 1] : 0,
-            missedDeadlines: this.missedDeadlines,
-            pauseReason: null
-        };
     }
 
     agentStatus() {
@@ -280,8 +211,8 @@ class DebugSessionBridge {
         } else if (this.hasSession) {
             source = "dap";
             if (!this.paused) {
-                mode = this.runtimeProbeRs && this.canRead ? "debug-running-sampling" : "debug-running-waiting";
-                key = this.runtimeProbeRs && this.canRead ? "live.debugRuntimeSampling" : "live.debugWaiting";
+                mode = "debug-running-waiting";
+                key = "live.debugWaiting";
             } else if (!this.intentEnabled) {
                 mode = "debug-disabled";
                 key = "sb.stopped";
@@ -302,23 +233,7 @@ class DebugSessionBridge {
             intentEnabled: this.intentEnabled,
             canRead: this.canRead,
             canWrite: this.canWrite,
-            writeBlockedReason: this.writing
-                ? "writing"
-                : this.transitionKind || this.controlInFlight
-                  ? "transition"
-                  : !this.intentEnabled
-                    ? "sampling"
-                    : this.conflict
-                      ? "conflict"
-                      : this.capabilities.write === false
-                        ? "unsupported"
-                        : this.canRead && !this.snapshotReady
-                          ? "snapshot"
-                          : this.canWrite
-                            ? ""
-                            : "paused",
             snapshotReady: this.snapshotReady,
-            writeContext: this.activeSession ? { sessionId: this.activeSession.id, stopEpoch: this.stopEpoch } : null,
             source,
             key,
             ...extra
@@ -363,22 +278,19 @@ class DebugSessionBridge {
         this.contextSessionId = activeId;
         if (changed) {
             this.paused = false;
-            this.capabilities = unknownCapabilities();
+            this.capabilities = { read: null, write: null, restart: null, functionBreakpoints: null };
             this.stopReason = "";
-            this.probeRsReady = false;
             this.threadId = null;
             this.stopEpoch += 1;
             this.snapshotPending = false;
             this.snapshotReady = false;
             this.transitionKind = "";
-            this.resetStats();
             this.transitionCommand = "";
             this.transitionRequestSeq = null;
             const context = this.sessionContexts?.get(activeId);
             if (context) {
                 for (const field of [
                     "paused",
-                    "probeRsReady",
                     "stopReason",
                     "threadId",
                     "transitionKind",
@@ -387,13 +299,12 @@ class DebugSessionBridge {
                 ])
                     this[field] = context[field];
                 this.capabilities = { ...context.capabilities };
-                this.snapshotPending = this.intentEnabled && (this.paused || this.runtimeProbeRs);
+                this.snapshotPending = this.intentEnabled && this.paused;
             }
             this._invalidate();
         }
         this.onStatus(this.status());
         this._notifyState();
-        if (changed) this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
     }
 
     setIntent(enabled) {
@@ -401,9 +312,8 @@ class DebugSessionBridge {
         this.intentEnabled = !!enabled;
         if (changed) {
             this._invalidate();
-            this.resetStats();
             this.snapshotReady = false;
-            this.snapshotPending = this.intentEnabled && (this.paused || this.runtimeProbeRs);
+            this.snapshotPending = this.intentEnabled && this.paused;
             this.consecutiveErrors = 0;
         }
         this.onStatus(this.status());
@@ -411,23 +321,13 @@ class DebugSessionBridge {
     }
 
     refreshSnapshot() {
-        if (!this.intentEnabled || (!this.paused && !this.runtimeProbeRs) || !this.hasSession || this.conflict) return;
-        if (this.writing) {
-            this.snapshotRefreshAfterWrite = true;
-            return;
-        }
+        if (!this.intentEnabled || !this.paused || !this.hasSession || this.conflict) return;
         this._invalidate();
         this.consecutiveErrors = 0;
         this.snapshotReady = false;
         this.snapshotPending = true;
         this.onStatus(this.status());
         this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
-    }
-
-    _flushSnapshotRefreshAfterWrite() {
-        if (!this.snapshotRefreshAfterWrite) return;
-        this.snapshotRefreshAfterWrite = false;
-        this.refreshSnapshot();
     }
 
     handleRequest(session, message) {
@@ -478,17 +378,6 @@ class DebugSessionBridge {
             this._notifyState();
             return;
         }
-        if (
-            isProbeRsDebugSession(session) &&
-            message.type === "response" &&
-            ["launch", "attach"].includes(message.command) &&
-            message.success !== false
-        ) {
-            this.probeRsReady = true;
-            this.snapshotPending = this.intentEnabled;
-            this.onStatus(this.status());
-            this._schedule(0);
-        }
         const failedTransition =
             message.type === "response" &&
             message.success === false &&
@@ -501,7 +390,7 @@ class DebugSessionBridge {
             this.transitionCommand = "";
             this.transitionRequestSeq = null;
             this._invalidate();
-            this.snapshotPending = this.intentEnabled && (this.paused || this.runtimeProbeRs);
+            this.snapshotPending = this.intentEnabled && this.paused;
             this.snapshotReady = false;
             this.onTargetState({
                 state: "transition-failed",
@@ -516,13 +405,11 @@ class DebugSessionBridge {
         }
         if (message.type === "response" && message.command === "initialize" && message.success !== false) {
             const body = unwrapResponse(message);
-            for (const [name, key] of Object.entries(DAP_CAPABILITIES)) this.capabilities[name] = body[key] === true;
-            if (
-                this.intentEnabled &&
-                (this.paused || this.runtimeProbeRs) &&
-                this.capabilities.read &&
-                !this.snapshotReady
-            )
+            this.capabilities.read = body.supportsReadMemoryRequest === true;
+            this.capabilities.write = body.supportsWriteMemoryRequest === true;
+            this.capabilities.restart = body.supportsRestartRequest === true;
+            this.capabilities.functionBreakpoints = body.supportsFunctionBreakpoints === true;
+            if (this.intentEnabled && this.paused && this.capabilities.read && !this.snapshotReady)
                 this.snapshotPending = true;
             this.onStatus(this.status());
             this._notifyState();
@@ -531,9 +418,13 @@ class DebugSessionBridge {
         }
         if (message.type === "event" && message.event === "capabilities") {
             const capabilities = message.body?.capabilities || {};
-            for (const [name, key] of Object.entries(DAP_CAPABILITIES))
+            for (const [name, key] of [
+                ["read", "supportsReadMemoryRequest"],
+                ["write", "supportsWriteMemoryRequest"],
+                ["restart", "supportsRestartRequest"],
+                ["functionBreakpoints", "supportsFunctionBreakpoints"]
+            ])
                 if (Object.hasOwn(capabilities, key)) this.capabilities[name] = capabilities[key] === true;
-            if (!this.canRead) this._releaseTimerResolution();
             this.onStatus(this.status());
             return;
         }
@@ -550,7 +441,6 @@ class DebugSessionBridge {
             this.stopEpoch += 1;
             this.consecutiveErrors = 0;
             this._invalidate();
-            this.resetStats();
             this.snapshotReady = false;
             this.snapshotPending = this.intentEnabled;
             this.onTargetState({
@@ -564,14 +454,8 @@ class DebugSessionBridge {
             this._notifyState();
             this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
         } else if (message.event === "continued") {
-            // probe-rs reports both running and sleep as continued. Firmware
-            // waking from WFI has not changed the debug generation.
-            if (isProbeRsDebugSession(session) && this.runtimeProbeRs && !this.transitionKind) {
-                if (Number.isInteger(message.body?.threadId)) this.threadId = message.body.threadId;
-                return;
-            }
             const transition = this.transitionKind;
-            if (transition === "continue" || transition === "reset") {
+            if (transition === "continue") {
                 this.transitionKind = "";
                 this.transitionCommand = "";
                 this.transitionRequestSeq = null;
@@ -581,13 +465,11 @@ class DebugSessionBridge {
             if (Number.isInteger(message.body?.threadId)) this.threadId = message.body.threadId;
             this.stopEpoch += 1;
             this._invalidate();
-            this.resetStats();
-            this.snapshotPending = this.intentEnabled && isProbeRsDebugSession(session);
+            this.snapshotPending = false;
             this.snapshotReady = false;
             this.onTargetState({ state: "continued", transition, epoch: this.stopEpoch, session });
             this.onStatus(this.status());
             this._notifyState();
-            this._schedule(0);
         } else if (message.event === "thread") {
             // A task that exits invalidates the cached id, so the next control action reconciles
             // against the live list instead of stepping a task that no longer exists.
@@ -653,26 +535,11 @@ class DebugSessionBridge {
         this.epoch += 1;
         if (this.timer) this.cancel(this.timer);
         this.timer = null;
-        this._releaseTimerResolution();
-    }
-
-    _releaseTimerResolution() {
-        if (!this.timerResolutionHeld) return;
-        this.timerResolutionHeld = false;
-        this.timerResolution.release();
     }
 
     _schedule(delay) {
-        if (
-            !this.canRead ||
-            !this.snapshotPending ||
-            (!this.runtimeProbeRs && this.snapshotReady) ||
-            this.polling ||
-            this.writing ||
-            this.timer
-        )
+        if (!this.canRead || !this.snapshotPending || this.snapshotReady || this.polling || this.writing || this.timer)
             return;
-        if (this.runtimeProbeRs && !this.timerResolutionHeld) this.timerResolutionHeld = this.timerResolution.acquire();
         this.timer = this.schedule(
             () => {
                 this.timer = null;
@@ -683,19 +550,12 @@ class DebugSessionBridge {
     }
 
     async _poll() {
-        if (!this.canRead || !this.snapshotPending || (!this.runtimeProbeRs && this.snapshotReady)) {
-            this._releaseTimerResolution();
-            return;
-        }
-        if (this.polling) return;
+        if (!this.canRead || !this.snapshotPending || this.snapshotReady || this.polling) return;
         const session = this.activeSession;
         const epoch = this.epoch;
-        const runtime = this.runtimeProbeRs;
-        const startedAt = this.now();
         this.polling = true;
         try {
-            if (epoch !== this.epoch || !this.canRead || !this.snapshotPending || (!runtime && this.snapshotReady))
-                return;
+            if (epoch !== this.epoch || !this.canRead || !this.snapshotPending || this.snapshotReady) return;
             const plan = this.getReadPlan() || [];
             if (!plan.length) {
                 this.snapshotPending = false;
@@ -705,11 +565,9 @@ class DebugSessionBridge {
             const samples = await this.read(plan, session, epoch);
             if (epoch !== this.epoch || !this.canRead || session !== this.activeSession) return;
             this.consecutiveErrors = 0;
-            this.snapshotPending = runtime;
+            this.snapshotPending = false;
             this.snapshotReady = true;
-            const finishedAt = this.now();
-            if (runtime) this.recordSample(startedAt, finishedAt);
-            this.onSamples(samples, finishedAt);
+            this.onSamples(samples, this.now());
             this.onStatus(this.status());
         } catch (error) {
             if (epoch !== this.epoch) return;
@@ -726,15 +584,8 @@ class DebugSessionBridge {
             }
         } finally {
             this.polling = false;
-            if (!this.canRead || !this.snapshotPending || !this.runtimeProbeRs) this._releaseTimerResolution();
             const retryDelay = SNAPSHOT_RETRY_DELAYS_MS[this.consecutiveErrors - 1];
-            if (this.runtimeProbeRs && this.snapshotPending && !this.consecutiveErrors) {
-                // A sampling interval is measured between cycle starts. Include
-                // the DAP read and sample delivery in it; never queue catch-up reads.
-                const intervalMs = Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs());
-                const elapsedMs = epoch === this.epoch ? Math.max(0, this.now() - startedAt) : 0;
-                this._schedule(Math.max(0, intervalMs - elapsedMs));
-            } else if (this.snapshotPending && (this.runtimeProbeRs || !this.snapshotReady))
+            if (this.snapshotPending && !this.snapshotReady)
                 this._schedule(retryDelay === undefined ? SNAPSHOT_INITIAL_DELAY_MS : retryDelay);
         }
     }
@@ -811,7 +662,6 @@ class DebugSessionBridge {
             return { bytesWritten: Number.isFinite(result.bytesWritten) ? result.bytesWritten : data.length };
         } finally {
             this.writing = false;
-            this._flushSnapshotRefreshAfterWrite();
         }
     }
 
@@ -954,40 +804,23 @@ class DebugSessionBridge {
     async read(items, session = this.activeSession, expectedEpoch = null) {
         if (!session || this.conflict) throw new Error("No unique debugger session is available");
         if (!this.capabilities.read) throw new Error("The debugger does not support DAP readMemory");
-        const runtime = this.runtimeProbeRs && isProbeRsDebugSession(session);
-        if (runtime && items.some((item) => item.runtimeLayout))
-            throw Object.assign(new Error("Running probe-rs reads require fixed-address globals"), {
-                code: "LIVE_RUNTIME_LAYOUT_UNSUPPORTED"
-            });
-        const validated = this.validateReadPlan(items, session);
-        if (!runtime) await this.beforePausedRead();
-        if (session !== this.activeSession || (!this.paused && !runtime) || this.transitionKind)
+        await this.beforePausedRead();
+        if (session !== this.activeSession || !this.paused || this.transitionKind)
             throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
         const samples = [];
         const guard = () => {
             if (
                 session !== this.activeSession ||
-                (!this.paused && !runtime) ||
+                !this.paused ||
                 this.transitionKind ||
                 (expectedEpoch !== null && expectedEpoch !== this.epoch)
             )
                 throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
                     code: "DEBUG_STATE_CHANGED"
                 });
-            this.validateReadPlan(items, session);
         };
         const fixed = items.filter((item) => !item.runtimeLayout);
-        // Only widen running-target reads across small gaps inside one verified
-        // writable ELF section. Other DAP reads retain their exact ranges.
-        let groups = mergeReadPlan(fixed, MAX_READ_BYTES, {
-            maxGapBytes: runtime ? MAX_PROBE_RS_READ_GAP_BYTES : 0,
-            ranges: validated?.ranges || []
-        });
-        // Padding also consumes the per-cycle byte budget. Fall back to exact
-        // reads when the original plan has no room for the additional bytes.
-        if (runtime && groups.reduce((sum, group) => sum + group.size, 0) > MAX_READ_BYTES)
-            groups = mergeReadPlan(fixed, MAX_READ_BYTES, { ranges: validated?.ranges || [] });
-        if (runtime) this.validateReadPlan(groups, session);
+        const groups = mergeReadPlan(fixed);
         const budget = {
             bytes: groups.reduce((sum, group) => sum + group.size, 0),
             commands: groups.length,
@@ -1013,43 +846,23 @@ class DebugSessionBridge {
                 });
             }
         }
-        const batchSize = runtime ? MAX_PROBE_RS_READ_BATCH : 1;
-        for (let start = 0; start < groups.length; start += batchSize) {
-            guard();
-            const batch = groups.slice(start, start + batchSize);
-            if (runtime) this.validateReadPlan(batch, session);
-            // Queue a bounded batch together so the server can drain requests
-            // without entering its idle poll between separate RAM ranges.
-            // Drain every response before failing or allowing a write/control.
-            const results = await Promise.allSettled(
-                batch.map((group) => this._readBlock(session, group.address, group.size))
-            );
-            guard();
-            for (let index = 0; index < results.length; index++) {
-                const result = results[index];
-                if (result.status === "rejected") throw result.reason;
-                const group = batch[index];
-                const data = result.value;
-                for (const item of group.items) {
-                    const offset = item.address - group.address;
-                    const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
-                    if (bytes.length !== item.size) throw new Error(`DAP partially read ${item.name}`);
-                    samples.push({ name: item.name, bytes });
-                }
+        for (const group of groups) {
+            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
+                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+            const data = await this._readBlock(session, group.address, group.size);
+            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
+                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
+                    code: "DEBUG_STATE_CHANGED"
+                });
+            for (const item of group.items) {
+                const offset = item.address - group.address;
+                const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
+                if (bytes.length !== item.size) throw new Error(`DAP partially read ${item.name}`);
+                samples.push({ name: item.name, bytes });
             }
         }
-        return samples;
-    }
-
-    async readOnce(items) {
-        if (!this.canRead) throw new Error("The debugger is not ready to read target memory");
-        const session = this.activeSession;
-        const epoch = this.epoch;
-        const samples = await this.read(items, session, epoch);
-        if (session !== this.activeSession || epoch !== this.epoch)
-            throw Object.assign(new Error("Target state changed during DAP memory read"), {
-                code: "DEBUG_STATE_CHANGED"
-            });
         return samples;
     }
 
@@ -1089,26 +902,25 @@ class DebugSessionBridge {
         if (this.writing || this.controlInFlight)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const session = this.activeSession;
-        if (!this.canWrite || !session)
-            throw new Error("The debugger target must support DAP writeMemory and have a current sample");
+        if (!this.paused || !session || this.capabilities.write !== true)
+            throw new Error("The debugger target must be paused and support DAP writeMemory");
         this._invalidate();
         const waitDeadline = this.now() + 2000;
         while (this.polling && this.canWrite && this.now() < waitDeadline)
             await new Promise((resolve) => this.schedule(resolve, 5));
         if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
         if (!this.canWrite || session !== this.activeSession)
-            throw new Error("Target state changed before the DAP write could start");
+            throw new Error("Target continued before the DAP write could start");
         this.writing = true;
         this._invalidate();
         const epoch = this.epoch;
         const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
         try {
-            const before = await this.read(plan, session, epoch);
+            const before = await this.read(plan, session);
             const writes = [];
             for (const item of items) {
                 const previous = writes[writes.length - 1];
                 if (
-                    !this.runtimeProbeRs &&
                     previous &&
                     Number(previous.address) % 4 === 0 &&
                     previous.bytes.length % 4 === 0 &&
@@ -1122,24 +934,8 @@ class DebugSessionBridge {
             }
             for (const item of writes) {
                 if (epoch !== this.epoch || !this.canWrite)
-                    throw new Error("Target state changed while a DAP write was in progress");
-                this.validateReadPlan(plan, session);
+                    throw new Error("Target continued while a DAP write was in progress");
                 const address = Number(item.address);
-                if (this.runtimeProbeRs) {
-                    if (![1, 2, 4].includes(item.bytes.length) || address % item.bytes.length !== 0)
-                        throw new Error(`Running-target write requires an aligned scalar: ${item.name}`);
-                    const result = unwrapResponse(
-                        await session.customRequest("writeMemory", {
-                            memoryReference: `0x${address.toString(16)}`,
-                            offset: 0,
-                            data: Buffer.from(item.bytes).toString("base64"),
-                            allowPartial: false
-                        })
-                    );
-                    if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== item.bytes.length)
-                        throw new Error(`DAP partially wrote ${item.name}`);
-                    continue;
-                }
                 const alignedStart = Math.floor(address / 4) * 4;
                 const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
                 const alignedBytes =
@@ -1148,7 +944,6 @@ class DebugSessionBridge {
                         : await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
                 if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
                     throw new Error("Target state changed before the DAP write could start");
-                this.validateReadPlan(plan, session);
                 if (alignedBytes.length !== alignedEnd - alignedStart)
                     throw new Error(`DAP could not read adjacent bytes before writing ${item.name}`);
                 alignedBytes.set(item.bytes, address - alignedStart);
@@ -1165,56 +960,17 @@ class DebugSessionBridge {
                 }
             }
             if (epoch !== this.epoch || !this.canWrite)
-                throw new Error("Target state changed before DAP write verification");
-            const after = await this.read(plan, session, epoch);
-            if (epoch === this.epoch && (this.paused || this.runtimeProbeRs)) {
+                throw new Error("Target continued before DAP write verification");
+            const after = await this.read(plan, session);
+            if (epoch === this.epoch && this.paused) {
                 this.snapshotReady = true;
-                this.snapshotPending = this.runtimeProbeRs;
+                this.snapshotPending = false;
                 this.onSamples(after, this.now());
                 this.onStatus(this.status());
             }
             return { before, after };
         } finally {
             this.writing = false;
-            this._flushSnapshotRefreshAfterWrite();
-            if (this.runtimeProbeRs && this.intentEnabled) {
-                this.snapshotPending = true;
-                this._schedule(Math.max(MIN_PROBE_RS_INTERVAL_MS, this.getIntervalMs()));
-            }
-        }
-    }
-
-    async waitForWriteReady(timeoutMs = 2000) {
-        const session = this.assertUniqueSession();
-        const epoch = this.stopEpoch;
-        const deadline = this.now() + timeoutMs;
-        for (;;) {
-            if (session !== this.activeSession || epoch !== this.stopEpoch || this.transitionKind)
-                throw Object.assign(new Error("The debug target changed before writing"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
-            if (!this.intentEnabled)
-                throw Object.assign(new Error("Start sampling before writing"), {
-                    code: "WRITE_SAMPLING_REQUIRED",
-                    i18nKey: "sb.writeNeedSampling"
-                });
-            if (this.writing || this.controlInFlight)
-                throw Object.assign(new Error("Another debug operation is in progress"), {
-                    code: "DEBUG_CONTROL_BUSY",
-                    i18nKey: "sb.writeBusy"
-                });
-            if (this.capabilities.write === false)
-                throw Object.assign(new Error("The debugger does not support DAP writeMemory"), {
-                    code: "DEBUG_MEMORY_WRITE_UNSUPPORTED",
-                    i18nKey: "sb.writeBackendUnsupported"
-                });
-            if (this.canWrite) return;
-            if (!this.canRead || this.now() >= deadline)
-                throw Object.assign(new Error("Wait for a current writable debugger sample"), {
-                    code: "WRITE_SNAPSHOT_UNAVAILABLE",
-                    i18nKey: "sb.writeWaiting"
-                });
-            await new Promise((resolve) => this.schedule(resolve, 10));
         }
     }
 

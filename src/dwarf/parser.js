@@ -13,11 +13,11 @@ const {
     DW_TAG_volatile_type,
     DW_TAG_restrict_type,
     DW_TAG_variable,
-    DW_TAG_namespace,
     DW_TAG_member,
     DW_TAG_subrange_type,
     DW_TAG_class_type,
     DW_TAG_inheritance,
+    DW_TAG_namespace,
     DW_TAG_subprogram,
     DW_AT_name,
     DW_AT_byte_size,
@@ -27,7 +27,6 @@ const {
     DW_AT_type,
     DW_AT_location,
     DW_AT_declaration,
-    DW_AT_linkage_name,
     DW_AT_str_offsets_base,
     DW_AT_data_member_location,
     DW_AT_bit_size,
@@ -35,6 +34,7 @@ const {
     DW_AT_data_bit_offset,
     DW_AT_count,
     DW_AT_upper_bound,
+    DW_AT_linkage_name,
     DW_AT_virtuality,
     DW_ATE_boolean,
     DW_ATE_float,
@@ -265,9 +265,6 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         ? Number(raw.integer64)
                                         : raw;
                                 switch (attr.at) {
-                                    case 0x10: // DW_AT_stmt_list
-                                        unit.stmtList = v;
-                                        break;
                                     case 0x1b: // DW_AT_comp_dir
                                         unit.compDir = v?.str;
                                         break;
@@ -568,8 +565,8 @@ function _parseDwarfInternal(buffer, options = {}) {
         const die = dies.get(dieOff);
         if (!die) return { name: "", typeRef: undefined, linkageName: "", scopeDieOff: dieOff };
         let name = die.name || "";
-        let linkageName = die.linkageName || "";
         let typeRef = die.typeRef;
+        let linkageName = die.linkageName || "";
         let scopeDieOff = dieOff;
         for (const parentRef of [die.abstractOriginRef, die.specificationRef]) {
             if (parentRef === undefined) continue;

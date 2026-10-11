@@ -222,11 +222,6 @@ button {
     color: var(--vscode-activityBar-foreground);
 }
 
-.activity-item:disabled {
-    cursor: default;
-    color: var(--vscode-activityBar-inactiveForeground);
-}
-
 .activity-item.active {
     color: var(--vscode-activityBar-foreground);
 }
@@ -1352,10 +1347,6 @@ button {
 
 .terminal-body .ok {
     color: var(--vscode-terminal-ansiGreen);
-}
-
-.terminal-body .error {
-    color: var(--vscode-terminal-ansiRed);
 }
 
 .terminal-body .title {

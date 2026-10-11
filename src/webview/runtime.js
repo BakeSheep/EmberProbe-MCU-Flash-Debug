@@ -369,17 +369,6 @@
                     : message.source === "openocd" && message.canRead === true
         };
     }
-    function writeUnavailableKey(message = {}) {
-        const reason = message.writeBlockedReason;
-        if (reason === "writing" || reason === "transition") return "sb.writeBusy";
-        if (reason === "conflict" || message.mode === "debug-session-conflict") return "live.debugConflict";
-        if (reason === "unsupported") return "sb.writeBackendUnsupported";
-        if (reason === "sampling" || message.intentEnabled === false || message.running === false)
-            return "sb.writeNeedSampling";
-        if (reason === "paused" || (message.source === "dap" && message.mode === "debug-running-waiting"))
-            return "sb.writeNeedPause";
-        return "sb.writeWaiting";
-    }
     return {
         SUPPORTED_TYPES,
         typeByteLength,
@@ -396,7 +385,6 @@
         runtimeSelection,
         runtimeTreeShape,
         liveState,
-        writeUnavailableKey,
         renderElfDiagnostics
     };
 });

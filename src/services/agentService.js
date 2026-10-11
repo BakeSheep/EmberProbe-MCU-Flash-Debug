@@ -34,14 +34,6 @@ const CHIP_GROUPS = Object.freeze({
     runtime: ["targetState", "haltReason", "pc", "sp", "lr"]
 });
 
-function requestedChipFields(params = {}) {
-    const requested = new Set((params.fields || []).map(String));
-    for (const section of params.sections || ["identity"]) {
-        for (const field of CHIP_GROUPS[section] || []) requested.add(field);
-    }
-    return requested;
-}
-
 class AgentService {
     constructor(options) {
         this.Bridge = options.Bridge;
@@ -84,7 +76,10 @@ class AgentService {
     }
 
     selectChipFields(info, params = {}) {
-        const requested = requestedChipFields(params);
+        const requested = new Set((params.fields || []).map(String));
+        for (const section of params.sections || ["identity"]) {
+            for (const field of CHIP_GROUPS[section] || []) requested.add(field);
+        }
         return Object.fromEntries(
             Array.from(requested)
                 .filter((field) => Object.hasOwn(info, field))
@@ -150,4 +145,4 @@ class AgentService {
     }
 }
 
-module.exports = { AgentService, CHIP_GROUPS, requestedChipFields };
+module.exports = { AgentService, CHIP_GROUPS };

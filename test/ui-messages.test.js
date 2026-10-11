@@ -29,7 +29,7 @@ function fixture() {
         writes = [];
     const vscode = {
         workspace: {
-            findFiles: async () => [{ fsPath: path.join(__dirname, "fixtures", "rust-globals.elf") }],
+            findFiles: async () => [{ fsPath: path.resolve("firmware.elf") }],
             getConfiguration: () => ({ get: (_key, fallback) => fallback })
         },
         window: {
@@ -248,9 +248,9 @@ async function diagnostics() {
             "audit-openocd",
             {},
             { requested: "audit-openocd", found: false, error: "spawn EACCES" },
-            (status) => view.send({ type: "backendStatus", backend: "openocd", ...status })
+            (status) => view.send({ type: "openocdStatus", ...status })
         );
-        assert.match(view.document.getElementById("backendMessage").textContent, /EACCES/);
+        assert.match(view.document.getElementById("openocdMessage").textContent, /EACCES/);
     } finally {
         view.close();
         resetCache();

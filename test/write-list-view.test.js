@@ -59,28 +59,14 @@ try {
             canRead: true,
             canWrite,
             source: "dap",
-            writeBlockedReason: canWrite ? "" : "snapshot",
             snapshotReady: canWrite
         });
         assert.strictEqual(view.document.querySelector(".write-input"), input, "write gating keeps the active card");
-        assert.strictEqual(input.disabled, false, "a current sidebar write keeps controls editable while refreshing");
+        assert.strictEqual(input.disabled, !canWrite);
         assert(input.classList.contains("pending"));
     }
-    view.send({ type: "liveStatus", running: true, canWrite: false, writeBlockedReason: "writing" });
-    assert.equal(input.disabled, false, "the sidebar's own write must not interrupt a gesture");
-    view.send({ type: "liveStatus", running: true, canWrite: true, writeBlockedReason: "" });
     view.send({ ...request, type: "writeResult", ok: true, value: 7 });
     assert(!input.classList.contains("pending"));
-    for (const [writeBlockedReason, title] of [
-        ["writing", /operation in progress/],
-        ["unsupported", /does not support/],
-        ["sampling", /Start sampling/]
-    ]) {
-        view.send({ type: "liveStatus", running: true, canWrite: false, writeBlockedReason });
-        assert.match(input.title, title);
-        assert.equal(input.disabled, true);
-    }
-    view.send({ type: "liveStatus", running: true, canWrite: true, writeBlockedReason: "" });
     view.send({ type: "liveSample", samples: [{ name: symbols[60].name, value: 7 }] });
     assert.deepStrictEqual(Array.from(box.querySelectorAll(".available-row")), rows);
     assert.strictEqual(box.scrollTop, 900);

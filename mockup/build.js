@@ -17,7 +17,6 @@ const pkg = require("../package.json");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
 const { versionLabel } = require("../src/buildInfo");
-const operationOutput = require("./mock/operation-output");
 
 const root = __dirname;
 const dist = path.join(root, "dist");
@@ -50,8 +49,8 @@ const combinedThemeCss =
 const SIDEBAR_STATE = {
     versionLabel: versionLabel(pkg.version, path.join(root, "..", "src")),
     elf: "EmberProbeDemo.elf",
-    debugger: "J-Link · SWD",
-    showJlinkDriverChoice: true,
+    debugger: "J-Link (SEGGER) · SWD",
+    showJlinkDriverChoice: false,
     mcu: "STM32F407ZGT6 · Cortex-M4",
     cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
     iocPath: "EmberProbeDemo.ioc",
@@ -81,7 +80,7 @@ function inject(html, page, lang) {
 function buildSidebar(lang) {
     const html = modernView
         .getModernWebviewContent(SIDEBAR_STATE, lang)
-        .replace(/(<details id="chipInfoSection"[^>]*?) open/g, "$1")
+        .replace(/(<details id="(?:mcuConfigSection|chipInfoSection)"[^>]*?) open/g, "$1")
         .replace(
             '<details id="variableBrowser" class="variable-browser" open>',
             '<details id="variableBrowser" class="variable-browser">'
@@ -115,11 +114,6 @@ function copyFile(from, to) {
 function main() {
     fs.rmSync(dist, { recursive: true, force: true });
     fs.mkdirSync(dist, { recursive: true });
-    fs.writeFileSync(
-        path.join(dist, "operation-output.js"),
-        "window.EmberProbeMockOutput = " + JSON.stringify(operationOutput) + ";\n",
-        "utf8"
-    );
     const historySource = fs
         .readFileSync(path.join(root, "../src/services/chartHistoryStore.js"), "utf8")
         .replace("module.exports =", "root.EmberProbeMockHistory =");
@@ -140,7 +134,6 @@ function main() {
     for (const name of [
         "prelude.js",
         "theme.js",
-        "coordinator.js",
         "sidebar-data.js",
         "sidebar-host.js",
         "livewatch-data.js",

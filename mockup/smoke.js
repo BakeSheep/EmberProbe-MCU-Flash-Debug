@@ -88,15 +88,7 @@ async function testSidebar() {
     await sleep(120);
 
     const send = (message) => push(window, message);
-    send({ type: "probeDriverChoice", driver: "winusb" });
-    send({ type: "probeDriverSwitch", busy: false });
-    send({
-        type: "backendStatus",
-        backend: "openocd",
-        state: "ready",
-        key: "oc.readyVer",
-        params: { version: "0.12.0" }
-    });
+    send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
     send({ type: "skillStatus", state: "installed", busy: false, scopes: { workspace: { state: "installed" } } });
     send({ type: "availableVariablesReset", version: sidebarData.VERSION, warnings: [] });
     send({ type: "availableVariablesChunk", version: sidebarData.VERSION, symbols: sidebarData.SYMBOLS });
@@ -135,11 +127,7 @@ async function testSidebar() {
     await sleep(80);
 
     const doc = window.document;
-    check("MCU configuration expanded", doc.getElementById("mcuConfigSection").open === true);
-    check("driver selector visible", doc.getElementById("jlinkDriverChoice").hidden === false);
-    check("driver defaults to WinUSB", doc.getElementById("jlinkDriverChoice").value === "winusb");
-    check("driver switch idle", doc.getElementById("jlinkDriverBusy").hidden === true);
-    check("backend card hidden when ready", doc.getElementById("backendCard").hidden === true);
+    check("OpenOCD card hidden when ready", doc.getElementById("openocdCard").hidden === true);
     check("skill toggle enabled", doc.getElementById("skillStatus").disabled === false);
     check("variable browser rows", doc.querySelectorAll("#availableVars .available-row").length >= 25);
     check("watch list rows", doc.querySelectorAll("#liveValues .value-row").length === 4);
@@ -289,11 +277,10 @@ async function testShell() {
     check("no initial execution highlight", !doc.querySelector(".code-line.active-line"));
     check("breakpoint marker", !!doc.querySelector("#gutter .breakpoint"));
     check("debug toolbar initially hidden", doc.getElementById("debug-toolbar").classList.contains("hidden"));
-    check("run and debug sidebar removed", !doc.querySelector('.view[data-view="debug"]'));
-    check("no launch configuration placeholder", !doc.body.textContent.includes("launch.json"));
-    check("no download output before an operation", doc.getElementById("terminalBody").textContent === "");
-    check("Output panel is empty", doc.getElementById("outputBody").textContent === "");
-    check("no invented EmberProbe Output channels", doc.getElementById("outputChannel") === null);
+    check("variable tree rendered", doc.querySelectorAll("#debugVariables .tree-row").length > 8);
+    check("stl badges rendered", doc.querySelectorAll("#debugVariables .stl-badge").length === 2);
+    check("call stack rendered", doc.querySelectorAll("#debugCallStack .stack-row").length === 3);
+    check("terminal rendered", doc.querySelectorAll("#terminalBody span").length === shellData.TERMINAL_LINES.length);
     check("problems rendered", doc.querySelectorAll("#problemsList .problem-row").length === 2);
     check("status bar shows connection", doc.getElementById("emberprobeStatus").textContent.includes("已连接"));
 
@@ -309,38 +296,18 @@ async function testShell() {
 
     doc.querySelector('.activity-item[data-view="explorer"]').click();
     await sleep(20);
-    check(
-        "sidebar stays on EmberProbe",
-        doc.querySelector('.view[data-view="emberprobe"]').classList.contains("active")
-    );
-    check("other activity views are locked", doc.querySelector('.activity-item[data-view="debug"]').disabled);
+    check("activity view switches", doc.querySelector('.view[data-view="explorer"]').classList.contains("active"));
     doc.querySelector('.activity-item[data-view="emberprobe"]').click();
 
     doc.getElementById("dbgStop").click();
     await sleep(20);
     check("stop hides debug toolbar", doc.getElementById("debug-toolbar").classList.contains("hidden"));
-    const execute = (cmd) =>
-        window.dispatchEvent(
-            new window.MessageEvent("message", {
-                source: doc.getElementById("sidebarFrame").contentWindow,
-                data: { __emberprobeMock: true, message: { type: "executeCommand", cmd } }
-            })
-        );
-    execute("mcu-vscode.debug");
+    doc.getElementById("debugStartButton").click();
     await sleep(20);
     check("debug waits before showing the toolbar", doc.getElementById("debug-toolbar").classList.contains("hidden"));
-    check(
-        "debug output follows startup",
-        doc.getElementById("debugConsoleBody").textContent.includes("Reading symbols from")
-    );
-    execute("mcu-vscode.debug");
+    check("pending debug prevents repeated clicks", doc.getElementById("debugStartButton").disabled);
     await sleep(2300);
     check("start shows debug toolbar", !doc.getElementById("debug-toolbar").classList.contains("hidden"));
-    check(
-        "debug keeps EmberProbe visible",
-        doc.querySelector('.view[data-view="emberprobe"]').classList.contains("active")
-    );
-    check("debug leaves Output empty", doc.getElementById("outputBody").textContent === "");
 
     check("no shell script errors", errors.length === 0);
     if (errors.length) console.error(errors.join("\n"));

@@ -6,48 +6,6 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
-- 写入滑条串行发送并合并最新值，正常写入及快照刷新期间保持可拖动，松手后提交最终值；停止/切换会话、执行控制或真实失败清除待发送值，拒绝旧会话代次写入。
-- Serialize slider writes and coalesce the newest value while keeping controls editable during sidebar writes and sample refreshes; submit the final value on release, cancel pending values on stop, context changes or failures, and reject stale UI write contexts.
-
-- 修复 probe-rs 在 GCC C++ 无 prologue 标记及 Windows 源码路径大小写不一致时的普通源码断点：按当前 ELF 精确行地址回退到已验证的指令断点；自动采样的侧栏写入等待快照刷新，并区分不可写状态提示。
-- Fix probe-rs source breakpoints for GCC C++ without prologue markers and Windows path casing through verified instruction fallback; wait for refreshed samples before sidebar writes and report the actual unavailable state.
-
-- probe-rs 实时采样将读取与分发耗时计入采样周期，解除原 50 Hz 软件调度上限，Windows 采样期间复用高精度定时器；同一 ELF 可写 RAM 区间内合并近邻变量读取，保留每轮字节预算、会话校验与写入回读，并修复已有样本后的读取失败重试。
-- Include read and delivery latency in probe-rs sampling periods, remove the former 50 Hz scheduling cap, use finer Windows timers while sampling, batch nearby globals within validated writable ELF RAM and retain cycle budgets, session checks and write verification; fix retries after a successful sample.
-
-- probe-rs 分散 RAM 区间按最多 4 个请求分组读取，取消与失败时收完在途响应；文档说明原版 probe-rs DAP 的空闲休眠、逐请求轮询和分块读取对采样频率的限制。
-- Queue separate probe-rs RAM ranges in batches of at most four and drain in-flight replies on cancellation or failure; document how upstream probe-rs DAP idle sleeps, per-request polling and chunked reads limit sampling rates.
-
-- probe-rs 环境缺失时提供“选择路径”和官方“一键安装”，显示安装进度并验证后保存路径；检测用户 Cargo 安装目录，无需重启 VS Code 刷新 PATH，VSIX 不捆绑 probe-rs。
-- Offer path selection and official one-click installation with progress and verified configuration when probe-rs is missing; detect user Cargo installs without restarting VS Code and exclude probe-rs binaries from the VSIX.
-
-- probe-rs 下载在同一连接内强制写后校验并复位，等待采样适配器退出后再占用探针，补齐驱动/调试门禁、阶段及超时诊断；成功后刷新 ELF 绑定并按原意图恢复采样，F5 Launch 默认开启校验。
-- Verify and reset probe-rs downloads in one connection, wait for watch-adapter exit before acquiring the probe, enforce driver/debug gates and structured failure/timeout diagnostics; refresh ELF bindings and restore prior sampling after success, with verification enabled by default for F5 launch.
-
-- 注册 C/C++/ASM/Rust 源码断点入口；Agent 添加或启用断点前检查所选会话的 DAP 能力，拒绝不支持的函数、条件、命中次数和日志断点；补齐模拟断点命中、单步回归及独立真机验收脚本。
-- Register C/C++/ASM/Rust source breakpoints; validate the selected session's DAP capabilities before Agent additions or enables, reject unsupported advanced breakpoints, and add simulated breakpoint/step regressions plus an opt-in hardware acceptance runner.
-
-- 优化 probe-rs 芯片读取：核心信息先显示，Agent 按字段/分组读取，F1/F2/F4/F7 的 UID 与容量合并读取，执行控制后的刷新复用同一连接；运行态独立读取保持 CLI 路径。
-- Optimize probe-rs chip reads with progressive core results, selective Agent reads, combined F1/F2/F4/F7 factory reads and connection reuse after execution controls; retain the CLI path for standalone running targets.
-- probe-rs 芯片信息复用已知 STM32 系列地址表，补齐 Device/Revision ID、Flash 容量、UID、CoreSight 厂商线索、运行状态与停机寄存器；支持侧栏暂停、继续和复位，保留会话绑定、探针占用及退出确认。
-- Align probe-rs chip information with the known STM32 family tables, including identity, flash capacity, UID, CoreSight vendor clues, run state and halted registers; add sidebar execution controls with session binding, probe ownership and confirmed cleanup.
-- probe-rs 后端新增可搜索的 MCU 目标列表，复用本机目标数据库并接入一键配置；支持工作区芯片匹配和所选 `.ioc` 优先，保留取消与探针占用保护。
-- Add searchable probe-rs MCU targets from the installed registry and integrate one-click configuration with workspace chip matching, selected `.ioc` priority, cancellation and probe ownership guards.
-- probe-rs 已运行核心的重复 `continued` 事件（例如 WFI 唤醒）不再取消变量写入回读；实际执行控制仍切换调试代次。
-- Preserve live write verification across duplicate probe-rs running/sleep notifications while retaining real execution transitions.
-- 修复图表快照刷新与 DAP 写入回读并发时的误取消；刷新延后到写入结束，实际执行状态变化继续使写入失效。
-- Defer chart snapshot refresh during DAP write verification while preserving cancellation for execution-state changes.
-- 新增独立 MC02 Embassy 回归仓库，真机验证自动 LiveWatch、全局整数/浮点调参、历史波形、重连和 RTT；兼容新版图表的 `chartValues` 采样消息。
-- Add independent MC02 Embassy hardware regression for automatic LiveWatch, integer/float global tuning, waveform history, reconnect and RTT; adapt the recorder to `chartValues` events.
-- 侧栏新增调试后端选择与独立环境检查；probe-rs 模式不再探测或要求 OpenOCD，自动检测也不再使用 OpenOCD 专用探针配置。
-- Add a backend selector and independent environment checks; probe-rs mode no longer probes or requires OpenOCD, including during automatic detection.
-- 新增 probe-rs 调试与烧录后端，支持 Embassy/Rust 全局变量的运行中波形、LiveWatch 与标量写入；识别 Cargo 无扩展名 ELF 和 Rust DWARF 链接名。
-- Add a probe-rs debugging and flashing backend with running-target charts, LiveWatch, and scalar writes for Embassy/Rust globals; discover extensionless Cargo ELFs and resolve Rust DWARF linkage names.
-- 兼容 Rust DWARF 的 64 位 LEB128 编码；增加独立 STM32H723 Embassy 真机测试程序及 probe-rs / VS Code 验收脚本。
-- Parse 64-bit LEB128 values in Rust DWARF; add an isolated STM32H723 Embassy smoke app and probe-rs / VS Code hardware acceptance runners.
-- 修复 probe-rs 模式下“读取芯片信息”仍依赖 OpenOCD 配置的问题；支持复用调试会话读取 STM32H7 芯片标识。
-- Fix chip information reads in probe-rs mode; reuse the active debug session to read STM32H7 identity registers.
-
 ## [0.8.2] - 2026-10-08
 
 - 支持 CMSIS-DAP / DAPLink 与 ST-Link 探针选择，统一探针类型和序列号匹配，改进连接预检及下载错误诊断。
@@ -210,6 +168,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 侧栏显示带正式版或 beta 标识的版本号；清理过期文档及失效引用。
 - 修复 Windows 采样计时器约 15.6 ms 粒度导致的目标与实测频率差距；仅采样期间申请高精度计时，并在改频后重置实测速率窗口。
 - 实时查看改用采样频率（Hz）设置，默认 30 Hz 并保存到工作区；调整频率后根据探针读耗时快速采用安全间隔。
+- 修复 Agent 烧录可执行文件覆盖路径，统一 ELF 64 MiB 有界读取与授权快照。
+- 修复 SVD 跨作用域继承和写入约束校验；通过 Worker 与展开预算限制解析资源。
+- 修复 ELF 并发加载误报，合并外设批量读取，拆分 Agent 路由并增加安全模块覆盖率门禁。
 
 ## [0.7.13] - 2026-09-26
 

@@ -160,33 +160,6 @@ class DebugControlService {
         return new this.vscode.SourceBreakpoint(location, enabled, condition, hitCondition, logMessage);
     }
 
-    _assertBreakpointCapabilities(locator, params) {
-        const status = this.status();
-        if (status.state === "conflict")
-            throw error("Select one debugger session before adding or enabling breakpoints", "DEBUG_SESSION_CONFLICT");
-        const required = locator.type === "function" ? ["functionBreakpoints"] : [];
-        for (const [field, capability] of [
-            ["condition", "conditionalBreakpoints"],
-            ["hitCondition", "hitConditionalBreakpoints"],
-            ["logMessage", "logPoints"]
-        ]) {
-            if (params[field] !== undefined && typeof params[field] !== "string")
-                throw error(`${field} must be a string`, "INVALID_BREAKPOINT");
-            if (params[field]) required.push(capability);
-        }
-        for (const capability of required) {
-            const supported = status.capabilities?.[capability];
-            if (supported !== true)
-                throw error(
-                    supported === false
-                        ? `The selected debugger does not support ${capability}`
-                        : `Start the debugger and wait for its ${capability} capability before configuring this breakpoint`,
-                    supported === false ? "BREAKPOINT_UNSUPPORTED" : "BREAKPOINT_CAPABILITY_UNAVAILABLE",
-                    { capability, sessionId: status.session?.id || null }
-                );
-        }
-    }
-
     async listBreakpoints() {
         const session = this.debugBridge.activeSession;
         const breakpoints = [];
@@ -226,16 +199,12 @@ class DebugControlService {
             this._matches(breakpoint, locator)
         );
         if (action === "add") {
-            this._assertBreakpointCapabilities(locator, params);
-            for (const breakpoint of matches) this._assertBreakpointCapabilities(locator, breakpoint);
             if (!matches.length) this.vscode.debug.addBreakpoints([this._create(locator, params)]);
         } else if (action === "remove") {
             if (matches.length) this.vscode.debug.removeBreakpoints(matches);
         } else {
             const enabled = action === "enable";
             if (matches.length) {
-                // Check every stored condition before making any host-side mutation.
-                if (enabled) for (const breakpoint of matches) this._assertBreakpointCapabilities(locator, breakpoint);
                 this.vscode.debug.removeBreakpoints(matches);
                 this.vscode.debug.addBreakpoints(
                     matches.map((breakpoint) => this._create(locator, breakpoint, enabled))

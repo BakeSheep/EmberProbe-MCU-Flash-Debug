@@ -7,78 +7,19 @@ const {
 } = require("../skills/_emberprobe/probe-detection");
 const path = require("path");
 
-async function isArmElf(file) {
-    let handle;
-    try {
-        handle = await fs.open(file, "r");
-        const header = Buffer.alloc(20);
-        if ((await handle.read(header, 0, header.length, 0)).bytesRead !== header.length) return false;
-        return (
-            header.readUInt32BE(0) === 0x7f454c46 &&
-            header[4] === 1 &&
-            header[5] === 1 &&
-            header.readUInt16LE(18) === 0x28
-        );
-    } catch {
-        return false;
-    } finally {
-        await handle?.close();
-    }
-}
-
-async function cargoTargetExecutables(root) {
-    const target = process.env.CARGO_TARGET_DIR
-        ? path.resolve(root, process.env.CARGO_TARGET_DIR)
-        : path.join(root, "target");
-    const candidates = [];
-    const search = async (directory) => {
-        let entries;
-        try {
-            entries = await fs.readdir(directory, { withFileTypes: true });
-        } catch {
-            return;
-        }
-        for (const entry of entries) {
-            if (!entry.isFile() || (path.extname(entry.name) && !entry.name.endsWith(".elf"))) continue;
-            const file = path.join(directory, entry.name);
-            if (await isArmElf(file)) candidates.push(file);
-        }
-    };
-    await Promise.all([search(path.join(target, "debug")), search(path.join(target, "release"))]);
-    let targets = [];
-    try {
-        targets = await fs.readdir(target, { withFileTypes: true });
-    } catch {
-        return candidates;
-    }
-    await Promise.all(
-        targets
-            .filter((entry) => entry.isDirectory() && /^(?:thumb|riscv32)/.test(entry.name))
-            .flatMap((entry) => ["debug", "release"].map((profile) => search(path.join(target, entry.name, profile))))
-    );
-    return candidates;
-}
-
-async function candidateElfFiles(vscode) {
-    const found = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
-    const roots = (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath);
-    const cargo = await Promise.all(roots.map(cargoTargetExecutables));
-    return [...new Set([...found.map((uri) => uri.fsPath), ...cargo.flat()])];
-}
-
 async function newestElf(vscode) {
-    const files = await candidateElfFiles(vscode);
+    const files = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
     const ranked = await Promise.all(
-        files.map(async (file) => {
+        files.map(async (uri) => {
             try {
-                return { file, mtime: (await fs.stat(file)).mtimeMs };
+                return { uri, mtime: (await fs.stat(uri.fsPath)).mtimeMs };
             } catch {
-                return { file, mtime: 0 };
+                return { uri, mtime: 0 };
             }
         })
     );
     ranked.sort((a, b) => b.mtime - a.mtime);
-    return ranked[0]?.file || "";
+    return ranked[0]?.uri.fsPath || "";
 }
 
 function targetFromText(text) {
@@ -136,91 +77,8 @@ async function detectDebugger() {
     return { debugger: detected.probe, probeCandidates: detected.candidates };
 }
 
-// Match the installed registry, including STM32 package/temperature suffixes.
-// Family-only names and unsupported vendors must not select a flash algorithm.
-function probeRsTargetsFromText(text, targets) {
-    const byName = new Map(targets.map((target) => [target.label.toLowerCase(), target.label]));
-    const byPart = new Map();
-    const partPattern = /^(STM32[A-Z][A-Z0-9]{3}[A-Z][A-Z0-9])(?:[A-Z][0-9X](?:[A-Z])?)?$/i;
-    for (const target of targets) {
-        const part = partPattern.exec(target.label)?.[1].toLowerCase();
-        if (!part) continue;
-        if (!byPart.has(part)) byPart.set(part, []);
-        byPart.get(part).push(target.label);
-    }
-    const words = new Set(
-        (text.match(/[A-Za-z0-9][A-Za-z0-9_.+-]*/g) || [])
-            .flatMap((word) => [word, ...word.split(/[._+-]/)])
-            .map((word) => word.toLowerCase())
-    );
-    const found = new Set();
-    for (const word of words) {
-        const exact = byName.get(word);
-        if (exact) found.add(exact);
-        else {
-            const part = partPattern.exec(word)?.[1].toLowerCase();
-            for (const name of byPart.get(part) || []) found.add(name);
-        }
-    }
-    return targets.map((target) => target.label).filter((name) => found.has(name));
-}
-
-async function detectProbeRsMcu(vscode, targets, selectedIoc) {
-    if (!targets.length) return [];
-    const exclude = "{**/node_modules/**,**/.git/**,**/target/**}";
-    const groups = selectedIoc
-        ? [[{ fsPath: selectedIoc }]]
-        : await Promise.all([
-              vscode.workspace.findFiles("**/*.ioc", exclude, 20),
-              vscode.workspace.findFiles("**/{CMakeLists.txt,*.cmake,*.ld}", exclude, 80),
-              vscode.workspace.findFiles("**/{.vscode/launch.json,.cargo/config.toml,.cargo/config}", exclude, 20)
-          ]);
-    const files = [...new Set(groups.flat().map((uri) => uri.fsPath))];
-    const hints = [];
-    let remaining = 1024 * 1024;
-    for (const file of files) {
-        if (remaining <= 0) break;
-        hints.push(path.basename(file));
-        let handle;
-        try {
-            handle = await fs.open(file, "r");
-            const limit = Math.min(64 * 1024, remaining);
-            const buffer = Buffer.alloc(limit + 1);
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-            remaining -= bytesRead;
-            if (bytesRead <= limit) hints.push(buffer.toString("utf8", 0, bytesRead));
-        } catch {
-            // Missing or unreadable hints cannot establish a target identity.
-        } finally {
-            await handle?.close();
-        }
-    }
-    return probeRsTargetsFromText(hints.join("\n"), targets);
-}
-
-async function detectWorkspace(vscode, backend = "openocd", probeRsTargets = [], selectedIoc = "") {
-    if (backend === "probe-rs") {
-        const [elf, mcuCandidates] = await Promise.all([
-            newestElf(vscode),
-            detectProbeRsMcu(vscode, probeRsTargets, selectedIoc)
-        ]);
-        return {
-            elf,
-            mcu: mcuCandidates.length === 1 ? mcuCandidates[0] : "",
-            mcuCandidates,
-            debugger: "",
-            probeCandidates: []
-        };
-    }
+async function detectWorkspace(vscode) {
     const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
     return { elf, mcu, ...debuggerConfig };
 }
-module.exports = {
-    detectWorkspace,
-    candidateElfFiles,
-    cargoTargetExecutables,
-    targetFromText,
-    probeRsTargetsFromText,
-    debuggerFromInventory,
-    usbInventory
-};
+module.exports = { detectWorkspace, targetFromText, debuggerFromInventory, usbInventory };

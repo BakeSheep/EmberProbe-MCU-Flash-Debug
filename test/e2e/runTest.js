@@ -10,9 +10,6 @@ const { runTests } = require("@vscode/test-electron");
     try {
         await runTests({
             version: "1.136.1",
-            ...(process.env.EMBERPROBE_E2E_VSCODE_PATH
-                ? { vscodeExecutablePath: process.env.EMBERPROBE_E2E_VSCODE_PATH }
-                : {}),
             extensionDevelopmentPath: root,
             extensionTestsPath: path.resolve(__dirname, "suite"),
             launchArgs: [
@@ -25,8 +22,7 @@ const { runTests } = require("@vscode/test-electron");
                 "--skip-release-notes"
             ],
             extensionTestsEnv: {
-                EMBERPROBE_E2E: "1",
-                EMBERPROBE_E2E_NODE_PATH: process.execPath
+                EMBERPROBE_E2E: "1"
             }
         });
     } catch (error) {

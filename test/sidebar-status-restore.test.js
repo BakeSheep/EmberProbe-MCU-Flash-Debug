@@ -9,17 +9,11 @@ const html = getModernWebviewContent({}, "en");
 const first = render(html);
 let saved;
 try {
-    const card = first.document.getElementById("backendCard");
+    const card = first.document.getElementById("openocdCard");
     const toggle = first.document.getElementById("skillStatus");
     assert.strictEqual(card.hidden, true, "unknown OpenOCD status does not flash a checking card");
     assert.strictEqual(toggle.classList.contains("status-ready"), false);
-    first.send({
-        type: "backendStatus",
-        backend: "openocd",
-        state: "ready",
-        key: "oc.ready",
-        result: { lines: ["verbose log"] }
-    });
+    first.send({ type: "openocdStatus", state: "ready", key: "oc.ready", result: { lines: ["verbose log"] } });
     first.send({
         type: "skillStatus",
         state: "installed",
@@ -30,7 +24,7 @@ try {
     assert.strictEqual(toggle.disabled, false);
     assert.strictEqual(toggle.classList.contains("animate"), false, "initial status does not slide the switch");
     saved = first.getState();
-    assert.ok(!Object.hasOwn(saved.sidebarStatus.backend, "result"), "cache only the visible OpenOCD state");
+    assert.ok(!Object.hasOwn(saved.sidebarStatus.openocd, "result"), "cache only the visible OpenOCD state");
     assert.deepStrictEqual(saved.sidebarStatus.skill.scopes, { workspace: { state: "installed" } });
     first.assertHealthy();
 } finally {
@@ -40,7 +34,7 @@ try {
 const restored = render(html, saved);
 let missing;
 try {
-    const card = restored.document.getElementById("backendCard");
+    const card = restored.document.getElementById("openocdCard");
     const toggle = restored.document.getElementById("skillStatus");
     assert.strictEqual(card.hidden, true, "ready status survives document recreation before host replies");
     assert.strictEqual(toggle.getAttribute("aria-checked"), "true");
@@ -53,13 +47,7 @@ try {
     assert.strictEqual(restored.messages.at(-1).cmd, "mcu-vscode.manageAgentSkills");
     restored.send({ type: "skillStatus", state: "notInstalled", scopes: { workspace: { state: "notInstalled" } } });
     assert.strictEqual(toggle.getAttribute("aria-checked"), "false");
-    restored.send({
-        type: "backendStatus",
-        backend: "openocd",
-        state: "missing",
-        key: "oc.notFound",
-        canInstall: true
-    });
+    restored.send({ type: "openocdStatus", state: "missing", key: "oc.notFound", canInstall: true });
     assert.strictEqual(card.hidden, false, "a new missing result remains visible");
     missing = restored.getState();
 } finally {
@@ -68,11 +56,11 @@ try {
 
 const failed = render(html, missing);
 try {
-    assert.strictEqual(failed.document.getElementById("backendCard").hidden, false);
+    assert.strictEqual(failed.document.getElementById("openocdCard").hidden, false);
     assert.strictEqual(failed.document.getElementById("skillStatus").getAttribute("aria-checked"), "false");
-    failed.send({ type: "backendStatus", backend: "openocd", state: "checking", key: "oc.checking" });
+    failed.send({ type: "openocdStatus", state: "checking", key: "oc.checking" });
     assert.strictEqual(
-        failed.document.getElementById("backendCard").hidden,
+        failed.document.getElementById("openocdCard").hidden,
         false,
         "explicit rechecks still show progress"
     );
@@ -113,7 +101,7 @@ Object.assign(provider, {
     getModernWebviewContent: () => "",
     _renderWebview: async () => {},
     updateView: async () => {},
-    refreshBackendStatus: (checking) => checks.push(checking),
+    refreshOpenOcdStatus: (checking) => checks.push(checking),
     refreshSkillStatus: async () => checks.push("skills")
 });
 provider.resolveWebviewView(view);
@@ -122,7 +110,7 @@ assert.strictEqual(environmentMessages.length, 0, "do not replay into a hidden v
 view.visible = true;
 onVisibility();
 assert.deepStrictEqual(environmentMessages, [
-    { type: "backendStatus", backend: "openocd", state: "ready" },
+    { type: "openocdStatus", state: "ready" },
     { type: "skillStatus", state: "installed", busy: true }
 ]);
 assert.deepStrictEqual(checks, [false, "skills"], "revalidate quietly without resetting the document");

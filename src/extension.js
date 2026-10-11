@@ -8,7 +8,6 @@ const vscode = require("vscode");
 const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
 const { validateDebugConfiguration } = require("./services/debugConfiguration");
-const { DEBUG_TYPE: PROBE_RS_DEBUG_TYPE } = require("./services/probeRsConfiguration");
 let activeProvider = null;
 
 function activate(context) {
@@ -31,23 +30,15 @@ function activate(context) {
             await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
             await provider.refreshOpenOcdStatus(true);
         }),
-        vscode.commands.registerCommand("mcu-vscode.checkProbeRs", async () => {
-            await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
-            await provider.refreshProbeRsStatus(true);
-        }),
         vscode.workspace.onDidChangeConfiguration(event => {
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
-            if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz", "backend", "probeRsPath", "probeRsChip", "probeRsProbe"].some(key => event.affectsConfiguration("emberprobe." + key))) {
-                provider.connectionConfigurationChanged();
-                provider.updateView().catch(console.error);
-            }
+            if (["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.connectionConfigurationChanged();
             if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
+                provider.refreshOpenOcdStatus(true);
             }
-            if (["backend", "openocdPath", "probeRsPath"].some(key => event.affectsConfiguration("emberprobe." + key)))
-                provider.refreshBackendStatus(true);
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
             await provider._cpuLoadService.stop("workspace-changed").catch(() => {});
@@ -80,25 +71,14 @@ function activate(context) {
                 return await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated) || undefined;
             }
         }),
-        vscode.debug.registerDebugConfigurationProvider(PROBE_RS_DEBUG_TYPE, {
-            async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
-                if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
-                return provider.prepareProbeRsDebug(folder, config);
-            }
-        }),
-        vscode.debug.registerDebugAdapterDescriptorFactory(PROBE_RS_DEBUG_TYPE, {
-            createDebugAdapterDescriptor(session) {
-                return new vscode.DebugAdapterInlineImplementation(provider.createProbeRsDebugAdapter(session));
-            }
-        }),
-        ...["emberprobe", "cortex-debug", "probe-rs-debug", PROBE_RS_DEBUG_TYPE].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
+        ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
             createDebugAdapterTracker(session) {
-                if (session.type !== PROBE_RS_DEBUG_TYPE) provider.handleDebugSessionStart(session);
+                provider.handleDebugSessionStart(session);
                 return {
                     onWillReceiveMessage: message => provider.handleDebugAdapterRequest(session, message),
                     onDidSendMessage: message => provider.handleDebugAdapterMessage(session, message),
                     onError: error => console.error("Debug adapter error:", error),
-                    onExit: () => session.type !== PROBE_RS_DEBUG_TYPE && provider.handleDebugAdapterExit(session)?.catch(error => {
+                    onExit: () => provider.handleDebugAdapterExit(session)?.catch(error => {
                         console.error("Unable to clean up after debug adapter exit:", error);
                     })
                 };
@@ -116,7 +96,7 @@ function activate(context) {
         })
     );
 
-    provider.refreshBackendStatus(false);
+    provider.refreshOpenOcdStatus(false);
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     if (process.env.EMBERPROBE_E2E === "1") {

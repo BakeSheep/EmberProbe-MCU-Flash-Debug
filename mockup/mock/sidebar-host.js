@@ -7,13 +7,11 @@
     "use strict";
 
     var data = root.EmberProbeSidebarData;
-    var output = root.EmberProbeMockOutput;
 
     function createSidebarHost(iframe, options) {
         options = options || {};
         var notify = options.notify || function () {};
         var simulator = options.simulator || data.createSimulator();
-        var coordinator = options.coordinator || root.EmberProbeMockCoordinator.create({ simulator: simulator });
         var liveRunning = false;
         var liveTimer = null;
         var watchItems = data.sidebarWatchList();
@@ -27,71 +25,13 @@
         var stopped = false;
         var initialized = false;
         var debugTimer = null;
-        var targetState = "running";
+        var targetState = "halted";
         var stopEpoch = 1;
         var targetLine = 103;
         var lastMemory = data.memoryAnalysis();
-        var tasks = new Map();
-        var cpuState = "stopped";
-        var cpuStartedAt = 0;
-        var chipReadAt = Date.now() - 45000;
-        var lastSvd = { type: "svdStatus", state: "configured", path: data.SVD_PATH, key: "svd.configured" };
-
-        function beginTask(name) {
-            if (stopped || tasks.has(name)) return null;
-            var task = { name: name, timers: new Set() };
-            tasks.set(name, task);
-            return task;
-        }
-
-        function later(task, callback, delay) {
-            var timer = setTimeout(function () {
-                task.timers.delete(timer);
-                if (stopped || tasks.get(task.name) !== task) return;
-                callback();
-            }, delay);
-            task.timers.add(timer);
-            return timer;
-        }
-
-        function cancelTask(name) {
-            var task = tasks.get(name);
-            if (!task) return false;
-            task.timers.forEach(clearTimeout);
-            tasks.delete(name);
-            return true;
-        }
-
-        function reject(cmd, type, settings) {
-            var operation = cmd === "mcu-vscode.download" ? "download" : cmd;
-            var key = coordinator.blockedKey(operation);
-            send(
-                Object.assign(
-                    {
-                        type: type || "commandError",
-                        cmd: cmd,
-                        key: key,
-                        code: key === "probe.driverUnsupported" ? "PROBE_DRIVER_UNSUPPORTED" : "PROBE_BUSY"
-                    },
-                    settings
-                )
-            );
-        }
-
-        function emitOutput(panel, lines, settings) {
-            if (stopped) return;
-            notify(Object.assign({ action: "operationOutput", panel: panel, lines: lines }, settings));
-        }
-
-        function messageText(key, params) {
-            return (output.messages[key] || key).replace(/\{(\w+)\}/g, function (_match, name) {
-                return params && params[name] !== undefined ? params[name] : _match;
-            });
-        }
 
         function send(message) {
             if (stopped || !iframe.contentWindow) return;
-            if (message.type === "svdStatus") lastSvd = message;
             try {
                 iframe.contentWindow.postMessage(message, "*");
             } catch (error) {
@@ -126,14 +66,7 @@
         }
 
         function sendInitialState() {
-            sendDriverState();
-            send({
-                type: "backendStatus",
-                backend: "openocd",
-                state: "ready",
-                key: "oc.readyVer",
-                params: { version: "0.12.0" }
-            });
+            send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
             send({
                 type: "skillStatus",
                 state: "installed",
@@ -144,32 +77,23 @@
             send({ type: "sidebarWatchList", items: watchItems, resetValues: true });
             send({ type: "sidebarWriteList", items: writeItems });
             send(lastMemory);
-            send(lastSvd);
+            send({ type: "svdStatus", state: "configured", path: data.SVD_PATH, key: "svd.configured" });
             send({ type: "chipInfo", info: currentChipInfo() });
-            send({
-                type: "chipInfoStatus",
-                state:
-                    coordinator.snapshot().driver === "segger" ? "error" : tasks.has("chipInfo") ? "reading" : "ready",
-                key:
-                    coordinator.snapshot().driver === "segger"
-                        ? "probe.driverUnsupported"
-                        : tasks.has("chipInfo")
-                          ? "chip.reading"
-                          : "chip.done"
-            });
+            send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
             sendDebugStatus();
-            syncState();
-            var task = beginTask("initialize");
-            if (task)
-                later(
-                    task,
-                    function () {
-                        tasks.delete(task.name);
-                        if (!coordinator.snapshot().operation && coordinator.snapshot().driver === "winusb")
-                            send({ type: "initSuccess" });
-                    },
-                    480
-                );
+            send({
+                type: "liveStatus",
+                running: false,
+                canRead: true,
+                canWrite: true,
+                source: "dap",
+                snapshotReady: true,
+                key: "sb.stopped"
+            });
+            sendSamples();
+            setTimeout(function () {
+                if (debugTimer === null) send({ type: "initSuccess" });
+            }, 480);
         }
 
         function setDebugPending(busy) {
@@ -177,60 +101,66 @@
             notify({ action: "debugPending", busy: busy });
         }
 
-        function startDebug(restart) {
+        function startDebug() {
             if (stopped || debugTimer !== null) return;
-            if (restart && ["paused", "running"].includes(coordinator.snapshot().debug)) coordinator.stopDebug();
-            if (!coordinator.acquire("debugStart")) return reject("mcu-vscode.debug");
-            var task = beginTask("debugStart");
-            emitOutput("debug-console", output.debug.start, { clear: true, show: true });
-            output.debug.steps.forEach(function (step) {
-                later(
-                    task,
-                    function () {
-                        emitOutput("debug-console", step.lines);
-                    },
-                    step.at
-                );
-            });
-            debugTimer = later(
-                task,
-                function () {
-                    debugTimer = null;
-                    tasks.delete(task.name);
-                    coordinator.completeDebug();
-                    setDebugPending(false);
-                    send({ type: "commandSuccess", cmd: "mcu-vscode.debug" });
-                    notify({ action: "debugStart" });
-                },
-                2200
-            );
+            debugTimer = setTimeout(function () {
+                debugTimer = null;
+                if (stopped) return;
+                setDebugPending(false);
+                send({ type: "commandSuccess", cmd: "mcu-vscode.debug" });
+                notify({ action: "debugStart" });
+            }, 2200);
             setDebugPending(true);
             send({ type: "openocdProgress", stage: "debug", key: "sb.executing", level: "info" });
         }
 
         function cancelDebugStart() {
             if (debugTimer === null) return false;
-            cancelTask("debugStart");
+            clearTimeout(debugTimer);
             debugTimer = null;
-            coordinator.release("debugStart");
             setDebugPending(false);
             send({ type: "openocdProgress", stage: "debug", key: "sb.stopped", level: "info" });
-            emitOutput("debug-console", [{ text: "Debug session cancelled.", cls: "warn" }]);
             return true;
         }
 
-        function stopSampling() {
-            if (!stopped) coordinator.setIntent("sidebar", false);
+        function stopSampling(key) {
+            liveRunning = false;
+            if (liveTimer) {
+                clearInterval(liveTimer);
+                liveTimer = null;
+            }
+            send({
+                type: "liveStatus",
+                running: false,
+                canRead: true,
+                canWrite: true,
+                source: "dap",
+                snapshotReady: true,
+                key: key || "sb.stopped"
+            });
         }
 
         function startSampling() {
-            if (stopped) return;
-            if (!coordinator.setIntent("sidebar", true)) return reject("liveToggle", "liveError");
+            liveRunning = true;
+            send({
+                type: "liveStatus",
+                running: true,
+                canRead: true,
+                canWrite: true,
+                source: "dap",
+                snapshotReady: true,
+                key: "sb.sampling",
+                actualHz: 10
+            });
+            if (liveTimer) clearInterval(liveTimer);
+            sendSamples();
+            liveTimer = setInterval(function () {
+                simulator.tick();
+                sendSamples();
+            }, 100);
         }
 
         function sendSamples() {
-            if (!coordinator.liveStatus("sidebar", 10).canRead) return;
-            coordinator.tick();
             var t = Date.now();
             var names = Array.from(new Set(watchNames.concat(writeNames)));
             send({ type: "liveSample", samples: simulator.scalarSamples(names, t), t: t });
@@ -244,14 +174,8 @@
 
         function currentChipInfo() {
             var info = data.chipInfo().info;
-            info.readAt = chipReadAt;
             info.targetState = targetState;
-            info.haltReason =
-                targetState === "halted"
-                    ? coordinator.snapshot().debug === "paused"
-                        ? "断点命中 · main.c:" + targetLine
-                        : "用户暂停"
-                    : "";
+            info.haltReason = targetState === "halted" ? "断点命中 · main.c:" + targetLine : "";
             if (targetState !== "halted") {
                 info.pc = "";
                 info.sp = "";
@@ -261,221 +185,54 @@
         }
 
         function sendDebugStatus() {
-            var debug = coordinator.snapshot().debug;
-            var paused = debug === "paused";
-            send(data.rtosDebugStatus(debug === "starting" ? "none" : debug, stopEpoch));
+            send(data.rtosDebugStatus(targetState === "halted" ? "paused" : "running", stopEpoch));
             send({
                 type: "peripheralDebugStatus",
-                state: debug,
+                state: targetState === "halted" ? "paused" : "running",
                 epoch: stopEpoch,
-                canRead: paused,
-                canWrite: paused
+                canRead: targetState === "halted",
+                canWrite: targetState === "halted"
             });
         }
 
         function setTargetState(next, settings) {
-            if (stopped) return false;
             settings = settings || {};
-            if (!coordinator.setTarget(next, settings)) return false;
-            if (settings.notify !== false)
-                notify({ action: "targetState", state: next, debug: coordinator.snapshot().debug });
-            return true;
-        }
-
-        function sendCpuStatus() {
-            var ownsProbe = coordinator.snapshot().operation === "cpuLoad";
-            var measured = ownsProbe && cpuState === "running";
-            var workload = measured ? 37 + Math.sin((Date.now() - cpuStartedAt) / 3000) * 6 : null;
-            send({
-                type: "cpuLoad",
-                state: ownsProbe ? cpuState : "stopped",
-                intentEnabled: ownsProbe,
-                ownsProbe: ownsProbe,
-                canStart: coordinator.allowed("cpuLoad"),
-                canStop: ownsProbe,
-                coveragePercent: measured ? 96.5 : null,
-                workloadPercent: workload,
-                blockedReason:
-                    !ownsProbe && !coordinator.allowed("cpuLoad")
-                        ? { i18nKey: coordinator.blockedKey("cpuLoad") }
-                        : null
-            });
-        }
-
-        function syncState() {
-            if (stopped) return;
-            var state = coordinator.snapshot();
-            targetState = state.target;
-            stopEpoch = state.epoch;
-            targetLine = state.line;
-            liveRunning = coordinator.intent("sidebar");
+            targetState = next;
+            if (next === "halted") stopEpoch += 1;
+            if (Number.isInteger(settings.line)) targetLine = settings.line;
             send({ type: "chipInfo", info: currentChipInfo() });
+            send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
             sendDebugStatus();
-            var status = coordinator.liveStatus("sidebar", 10);
-            send(status);
-            if (liveTimer && !status.canRead) {
-                clearInterval(liveTimer);
-                liveTimer = null;
-            }
-            if (!liveTimer && status.canRead) {
-                sendSamples();
-                liveTimer = setInterval(sendSamples, 100);
-            }
-            sendCpuStatus();
-            var availability = {
-                download: coordinator.allowed("download"),
-                debug: coordinator.allowed("debugStart"),
-                chipRead: state.driver === "winusb" && !tasks.has("chipInfo"),
-                chipControl: !tasks.has("chipInfo") && coordinator.allowed("chipInfo"),
-                driver: coordinator.allowed("driver"),
-                backend: false,
-                live: liveRunning || (!state.operation && state.driver === "winusb")
-            };
-            send({
-                type: "mockOperationStatus",
-                operation: state.operation,
-                epoch: state.epoch,
-                availability: availability
-            });
-            notify({ action: "operationStatus", state: state, availability: availability });
-        }
-
-        var unsubscribe = coordinator.subscribe(syncState);
-
-        function sendDriverState() {
-            var state = coordinator.snapshot();
-            send({ type: "probeDriverChoice", driver: state.driver });
-            send({ type: "probeDriverSwitch", busy: state.operation === "driver" });
-        }
-
-        function selectDriver(driver) {
-            if (!["winusb", "segger"].includes(driver)) {
-                sendDriverState();
-                send({
-                    type: "commandError",
-                    cmd: "selectProbeDriver",
-                    code: "PROBE_DRIVER_INVALID_CHOICE",
-                    error: "Invalid J-Link USB driver choice"
-                });
-                return;
-            }
-            if (!coordinator.allowed("driver")) {
-                sendDriverState();
-                return reject("selectProbeDriver");
-            }
-            if (coordinator.snapshot().driver === driver) {
-                sendDriverState();
-                send({ type: "commandSuccess", cmd: "selectProbeDriver" });
-                return;
-            }
-            coordinator.acquire("driver");
-            var task = beginTask("driver");
-            sendDriverState();
-            send({ type: "probeDriverStatus", state: driver === "winusb" ? "installing" : "restoring" });
-            later(
-                task,
-                function () {
-                    tasks.delete(task.name);
-                    coordinator.confirmDriver(driver);
-                    coordinator.release("driver");
-                    sendDriverState();
-                    send({ type: "commandSuccess", cmd: "selectProbeDriver" });
-                    send({ type: "probeDriverStatus", state: driver === "winusb" ? "ready" : "restored" });
-                    if (driver === "segger") {
-                        send({
-                            type: "probeDriverStatus",
-                            state: "error",
-                            message: messageText("probe.driverUnsupported")
-                        });
-                        send({
-                            type: "chipInfoStatus",
-                            state: "error",
-                            key: "probe.driverUnsupported",
-                            code: "PROBE_DRIVER_UNSUPPORTED"
-                        });
-                        notify({ action: "toast", icon: "warning", text: messageText("probe.winusbRequired") });
-                    } else send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-                },
-                900
-            );
-        }
-
-        function startCpu() {
-            if (!coordinator.allowed("cpuLoad")) {
-                sendCpuStatus();
-                return reject("cpuLoadStart");
-            }
-            cpuState = "checking";
-            cpuStartedAt = Date.now();
-            coordinator.acquire("cpuLoad");
-            var task = beginTask("cpuLoad");
-            later(
-                task,
-                function () {
-                    cpuState = "collecting";
-                    sendCpuStatus();
-                },
-                300
-            );
-            function measure() {
-                cpuState = "running";
-                sendCpuStatus();
-                later(task, measure, 1000);
-            }
-            later(task, measure, 10300);
-        }
-
-        function stopCpu() {
-            cancelTask("cpuLoad");
-            cpuState = "stopped";
-            coordinator.release("cpuLoad");
+            if (settings.notify !== false) notify({ action: "targetState", state: next });
         }
 
         function simulateDownload(cmd) {
-            if (!coordinator.acquire("download")) return reject(cmd);
-            var task = beginTask("download");
-            emitOutput("terminal", output.download.header, { name: output.terminalName, show: true });
-            send({ type: "openocdProgress", cmd: cmd, stage: "download", key: "sb.executing", level: "info" });
-            output.download.steps.forEach(function (step) {
-                later(
-                    task,
+            var steps = [
+                { level: "info", message: "正在解析 ELF：build/Debug/EmberProbeDemo.elf" },
+                { level: "info", message: "连接探针 J-Link V11 (SWD 4000 kHz)…" },
+                { level: "info", message: "擦除扇区 0-7 (0x08000000 - 0x080FFFFF)…" },
+                { level: "info", message: "写入 917504 字节 (87.5%)…" },
+                { level: "success", message: "校验通过：CRC32 0x8F3C21A7" },
+                { level: "success", message: "烧录完成，耗时 4.8s" }
+            ];
+            steps.forEach(function (step, index) {
+                setTimeout(
                     function () {
-                        emitOutput("terminal", [step.line]);
-                        send(Object.assign({ type: "openocdProgress", cmd: cmd }, step.event));
-                        if (step.event.stage === "target") coordinator.setOperationTarget("download", "halted");
-                        if (step.event.stage === "reset_run") coordinator.setOperationTarget("download", "running");
+                        send({ type: "openocdProgress", cmd: cmd, level: step.level, message: step.message });
+                        if (index === steps.length - 1) {
+                            send({ type: "commandSuccess", cmd: cmd });
+                            notify({ action: "toast", text: "烧录完成：EmberProbeDemo.elf (917504 字节)" });
+                        }
                     },
-                    step.at
+                    350 + index * 420
                 );
             });
-            later(
-                task,
-                function () {
-                    tasks.delete(task.name);
-                    emitOutput("terminal", output.download.summary);
-                    coordinator.completeDownload();
-                    send({
-                        type: "openocdProgress",
-                        cmd: cmd,
-                        stage: "done",
-                        level: "success",
-                        key: "run.downloadSuccess"
-                    });
-                    send({ type: "commandSuccess", cmd: cmd });
-                    notify({ action: "toast", text: "烧录完成：EmberProbeDemo.elf (917504 字节)" });
-                },
-                4800
-            );
         }
 
         function simulateSvdDownload(cmd) {
-            var task = beginTask("svdDownload");
-            if (!task) return;
-            send({ type: "svdStatus", state: "downloading", key: "svd.downloadingPercent", params: { percent: 0 } });
             var percents = [8, 26, 51, 77, 94];
             percents.forEach(function (percent, index) {
-                later(
-                    task,
+                setTimeout(
                     function () {
                         send({
                             type: "svdStatus",
@@ -488,17 +245,14 @@
                     300 + index * 320
                 );
             });
-            later(
-                task,
+            setTimeout(
                 function () {
                     send({ type: "svdStatus", state: "validating", key: "svd.validating", path: data.SVD_PATH });
                 },
                 300 + percents.length * 320
             );
-            later(
-                task,
+            setTimeout(
                 function () {
-                    tasks.delete(task.name);
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
                     send({ type: "commandSuccess", cmd: cmd });
                     send({
@@ -512,29 +266,22 @@
         }
 
         function simulateSkillToggle(cmd) {
-            var task = beginTask("skills");
-            if (!task) return;
             send({
                 type: "skillStatus",
                 state: "installed",
                 busy: true,
                 scopes: { workspace: { state: "installed" } }
             });
-            later(
-                task,
-                function () {
-                    tasks.delete(task.name);
-                    send({
-                        type: "skillStatus",
-                        state: "installed",
-                        busy: false,
-                        scopes: { workspace: { state: "installed" } }
-                    });
-                    send({ type: "commandSuccess", cmd: cmd });
-                    notify({ action: "toast", text: "Agent Skill 已安装到当前工作区" });
-                },
-                900
-            );
+            setTimeout(function () {
+                send({
+                    type: "skillStatus",
+                    state: "installed",
+                    busy: false,
+                    scopes: { workspace: { state: "installed" } }
+                });
+                send({ type: "commandSuccess", cmd: cmd });
+                notify({ action: "toast", text: "Agent Skill 已安装到当前工作区" });
+            }, 900);
         }
 
         function handleCommand(message) {
@@ -551,13 +298,6 @@
                     var name = message.name;
                     var seq = message.seq;
                     var value = Number(message.value);
-                    if (
-                        !coordinator.liveStatus("sidebar", 10).canWrite ||
-                        (message.mockEpoch !== undefined && message.mockEpoch !== stopEpoch)
-                    ) {
-                        send({ type: "writeResult", ok: false, name: name, seq: seq, key: "sb.writeNeedSampling" });
-                        break;
-                    }
                     if (!Number.isFinite(value)) {
                         send({ type: "writeResult", ok: false, name: name, seq: seq, message: "无效的写入值" });
                         break;
@@ -574,53 +314,17 @@
                 case "executeCommand":
                     handleExecute(message.cmd);
                     break;
-                case "readChipInfo": {
-                    if (coordinator.snapshot().driver !== "winusb") {
-                        reject("readChipInfo", "chipInfoStatus", { state: "error" });
-                        break;
-                    }
-                    // Refresh the shared target snapshot without claiming another probe session.
-                    var readTask = beginTask("chipInfo");
-                    if (!readTask) break;
+                case "readChipInfo":
                     send({ type: "chipInfoStatus", state: "reading", key: "chip.reading" });
-                    syncState();
-                    later(
-                        readTask,
-                        function () {
-                            tasks.delete(readTask.name);
-                            if (coordinator.snapshot().driver !== "winusb") {
-                                reject("readChipInfo", "chipInfoStatus", { state: "error" });
-                                syncState();
-                                return;
-                            }
-                            chipReadAt = Date.now();
-                            var info = currentChipInfo();
-                            send({ type: "chipInfo", info: info });
-                            send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-                            syncState();
-                            notify({ action: "toast", text: "芯片信息读取完成：STM32F407ZGTx" });
-                        },
-                        700
-                    );
-                    break;
-                }
-                case "chipControl":
-                    if (tasks.has("chipInfo") || !coordinator.allowed("chipInfo")) {
-                        reject("chipControl", "chipInfoStatus", { state: "error" });
-                        break;
-                    }
-                    if (["pause", "continue", "reset"].indexOf(message.action) >= 0) {
-                        setTargetState(message.action === "pause" ? "halted" : "running", {
-                            reset: message.action === "reset"
-                        });
+                    setTimeout(function () {
+                        send({ type: "chipInfo", info: currentChipInfo() });
                         send({ type: "chipInfoStatus", state: "ready", key: "chip.done" });
-                    }
+                        notify({ action: "toast", text: "芯片信息读取完成：STM32F407ZGTx" });
+                    }, 700);
                     break;
-                case "cpuLoadStart":
-                    startCpu();
-                    break;
-                case "cpuLoadStop":
-                    stopCpu();
+                case "chipControl":
+                    if (["pause", "continue", "reset"].indexOf(message.action) >= 0)
+                        setTargetState(message.action === "pause" ? "halted" : "running");
                     break;
                 case "memoryRefresh": {
                     lastMemory = data.memoryAnalysis();
@@ -643,70 +347,42 @@
                     send(data.peripheralRegisters(message.name));
                     break;
                 case "peripheralReadRequest": {
-                    if (
-                        coordinator.snapshot().debug !== "paused" ||
-                        (message.mockEpoch !== undefined && message.mockEpoch !== stopEpoch)
-                    ) {
-                        send({ type: "peripheralError", operation: message.type, message: "暂停调试器后才能读取外设" });
-                        break;
-                    }
-                    var result = data.peripheralReadResult(message.targets, false);
+                    if (targetState !== "halted") break;
+                    var result = data.peripheralReadResult(message.targets, true);
                     result.session.epoch = stopEpoch;
                     send(result);
                     break;
                 }
                 case "peripheralWriteRequest": {
-                    if (
-                        coordinator.snapshot().debug !== "paused" ||
-                        (message.mockEpoch !== undefined && message.mockEpoch !== stopEpoch)
-                    ) {
-                        send({ type: "peripheralError", operation: message.type, message: "暂停调试器后才能写入外设" });
-                        break;
-                    }
+                    if (targetState !== "halted") break;
                     var writeResult = data.peripheralWriteResult(message.target, message.value);
                     send(writeResult);
                     if (writeResult.type === "peripheralError") break;
                     var writeEpoch = stopEpoch;
-                    var writeTask = beginTask("peripheral:" + message.target);
-                    if (!writeTask) break;
-                    later(
-                        writeTask,
-                        function () {
-                            tasks.delete(writeTask.name);
-                            if (coordinator.snapshot().debug !== "paused" || stopEpoch !== writeEpoch) return;
-                            var base = String(message.target || "")
-                                .split(".")
-                                .slice(0, 2)
-                                .join(".");
-                            var result = data.peripheralReadResult([base], false);
-                            result.session.epoch = stopEpoch;
-                            send(result);
-                        },
-                        60
-                    );
+                    setTimeout(function () {
+                        if (targetState !== "halted" || stopEpoch !== writeEpoch) return;
+                        var base = String(message.target || "")
+                            .split(".")
+                            .slice(0, 2)
+                            .join(".");
+                        var result = data.peripheralReadResult([base], false);
+                        result.session.epoch = stopEpoch;
+                        send(result);
+                    }, 60);
                     break;
                 }
                 case "rtosRefresh":
-                    if (
-                        coordinator.snapshot().debug === "paused" &&
-                        (message.mockEpoch === undefined || message.mockEpoch === stopEpoch)
-                    )
-                        send(data.rtosSnapshot(stopEpoch));
+                    if (targetState === "halted") send(data.rtosSnapshot(stopEpoch));
                     else
                         send(
-                            Object.assign(data.rtosDebugStatus(coordinator.snapshot().debug, stopEpoch), {
+                            Object.assign(data.rtosDebugStatus("running", stopEpoch), {
                                 type: "rtosError",
                                 message: "暂停调试器后才能刷新 RTOS 任务"
                             })
                         );
                     break;
                 case "debugSelectSession":
-                    if (
-                        message.sessionId === data.rtosDebugStatus("paused", stopEpoch).sessionId &&
-                        ["paused", "running"].includes(coordinator.snapshot().debug)
-                    )
-                        sendDebugStatus();
-                    else reject("debugSelectSession");
+                    send(data.rtosDebugStatus(targetState === "halted" ? "paused" : "running", stopEpoch));
                     break;
                 case "resolveCompositeLayout": {
                     var symbol = data.SYMBOLS.filter(function (item) {
@@ -730,7 +406,7 @@
                 }
                 case "refreshVariables":
                     sendVariableList();
-                    notify({ action: "toast", text: "已从 ELF 重新读取 " + data.SYMBOLS.length + " 个变量" });
+                    notify({ action: "toast", text: "已从 ELF 重新读取 28 个变量" });
                     break;
                 case "saveSidebarWatch": {
                     watchItems = message.items || [];
@@ -757,25 +433,19 @@
                     copyText(message.text);
                     break;
                 case "openocdAction":
-                case "backendAction":
-                    send({
-                        type: "backendStatus",
-                        backend: "openocd",
-                        state: "ready",
-                        key: "oc.readyVer",
-                        params: { version: "0.12.0" }
-                    });
+                    send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
                     send({ type: "commandSuccess", cmd: "openocdAction" });
                     break;
-                case "selectBackend":
-                    send({ type: "commandError", cmd: "selectBackend", error: "当前演示工程使用 OpenOCD 后端" });
+                case "selectProbeDriver":
+                    send({ type: "probeDriverChoice", driver: message.driver });
+                    send({ type: "probeDriverSwitch", busy: true });
+                    setTimeout(function () {
+                        send({ type: "probeDriverSwitch", busy: false });
+                        send({ type: "probeDriverStatus", state: "ready" });
+                        send({ type: "commandSuccess", cmd: "selectProbeDriver" });
+                    }, 900);
                     break;
-                case "selectProbeDriver": {
-                    selectDriver(message.driver);
-                    break;
-                }
                 case "cancelSvdDownload":
-                    cancelTask("svdDownload");
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
                     break;
                 default:
@@ -802,7 +472,6 @@
                     simulateSvdDownload(cmd);
                     break;
                 case "mcu-vscode.selectExistingSvd":
-                    cancelTask("svdDownload");
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });
                     send({ type: "commandSuccess", cmd: cmd });
                     send({
@@ -812,14 +481,12 @@
                     });
                     break;
                 case "mcu-vscode.autoDetect":
-                    notify({
-                        action: "toast",
-                        text: "自动检测完成：" + output.connection.probeName + " · STM32F407ZGTx"
-                    });
+                    notify({ action: "toast", text: "自动检测完成：J-Link V11 · STM32F407ZGTx" });
                     send({ type: "commandSuccess", cmd: cmd });
                     break;
                 default:
-                    send({ type: "commandError", cmd: cmd, error: "网页演示使用固定工程，此命令暂不支持：" + cmd });
+                    send({ type: "commandSuccess", cmd: cmd });
+                    notify({ action: "toast", text: "已执行命令 " + cmd });
                     break;
             }
         }
@@ -846,17 +513,6 @@
             sendInitialState: sendInitialState,
             setTargetState: setTargetState,
             startDebug: startDebug,
-            stopDebug: function () {
-                if (stopped) return;
-                cancelDebugStart();
-                coordinator.stopDebug();
-            },
-            download: function () {
-                if (!stopped) simulateDownload("mcu-vscode.download");
-            },
-            executeCommand: function (cmd) {
-                if (!stopped) handleExecute(cmd);
-            },
             cancelDebugStart: cancelDebugStart,
             isDebugStarting: function () {
                 return debugTimer !== null;
@@ -873,17 +529,9 @@
                 return initialized;
             },
             destroy: function () {
-                if (stopped) return;
                 cancelDebugStart();
                 stopped = true;
-                unsubscribe();
-                tasks.forEach(function (_task, name) {
-                    cancelTask(name);
-                });
                 if (liveTimer) clearInterval(liveTimer);
-                coordinator.stopDebug();
-                coordinator.setIntent("sidebar", false);
-                ["download", "driver", "cpuLoad"].forEach(coordinator.release);
                 root.removeEventListener("message", onMessage);
             }
         };

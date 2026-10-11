@@ -6,7 +6,6 @@ const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { parseElfSymbols, parseElfSections } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
 const { createRuntimeLayoutResolver } = require("./dwarf/runtimeTypes");
-const { resolveSourceLines } = require("./dwarf/lineTable");
 const {
     buildVariableTypes,
     buildDisplayNames,
@@ -31,7 +30,6 @@ async function run(port, filePath) {
     let resolveLayout;
     let resolveRuntime;
     let symbolNames;
-    let resolveLines;
     const acks = new Map();
     port.on("message", (message) => {
         if (message?.type === "ack") {
@@ -39,21 +37,7 @@ async function run(port, filePath) {
             acks.delete(message.kind);
             return;
         }
-        if (!Number.isSafeInteger(message?.id)) return;
-        if (message.type === "sourceLines") {
-            try {
-                const locations = resolveLines?.(message.source, message.breakpoints) || [];
-                port.postMessage({ type: "sourceLinesResult", id: message.id, locations });
-            } catch (error) {
-                port.postMessage({
-                    type: "sourceLinesResult",
-                    id: message.id,
-                    error: { code: error.code, message: error.message }
-                });
-            }
-            return;
-        }
-        if (message.type !== "layout") return;
+        if (message?.type !== "layout" || !Number.isSafeInteger(message.id)) return;
         try {
             if (!resolveLayout || !symbolNames.has(message.name)) {
                 port.postMessage({ type: "layoutResult", id: message.id, name: message.name, layout: null });
@@ -109,10 +93,6 @@ async function run(port, filePath) {
         await sendChunks(port, "functions", result.functions, acks);
         try {
             const parsed = bindVariableSymbols(parseDwarfInternal(buffer, { filePath }), result.symbols);
-            const units = [
-                ...new Set([...parsed.dies.values()].filter((die) => die.tag === 0x11).map((die) => die.unit))
-            ];
-            resolveLines = (source, breakpoints) => resolveSourceLines(buffer, units, source, breakpoints);
             const types = buildVariableTypes(parsed);
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);

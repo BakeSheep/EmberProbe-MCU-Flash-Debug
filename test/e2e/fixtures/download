@@ -1,1 +1,0 @@
-require("../../fixtures/fake-probe-rs-flash.js");
