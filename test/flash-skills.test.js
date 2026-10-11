@@ -253,19 +253,8 @@ function lastJsonLine(stdout) {
             if (method === "flash.execute") return executor.execute(params);
             if (method === "probe.list") return inventory;
             if (method === "flash.verify") return executor.execute(params, true);
-            if (method === "flash.authorize") {
-                return flashAuthorization.authorize(
-                    {
-                        elf: { path: params.elf, sha256: params.elfSha256 },
-                        transport: params.transport,
-                        target: params.target,
-                        probe: params.probe,
-                        probeSerial: params.probeSerial,
-                        openocd: params.openocd
-                    },
-                    params.confirmationId
-                );
-            }
+            // Mirror agentRoutes: the Bridge resolves the serial itself before fingerprinting.
+            if (method === "flash.authorize") return executor.authorize(params);
             throw Object.assign(new Error(`Unexpected method: ${method}`), { code: "METHOD_NOT_FOUND" });
         },
         path.join(root, ".global-storage")
