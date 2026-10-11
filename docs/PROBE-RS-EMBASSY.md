@@ -71,29 +71,19 @@ Windows 使用非交互 PowerShell；Linux/macOS 使用 Bash 的 `pipefail` 执�
 
 Windows 运行期采样复用扩展已有的高精度定时器，减少普通定时器约 15.6 ms 粒度带来的周期延长；停止、暂停、会话变化、无变量和重试耗尽时释放。原生定时器不可用时继续采样，实际频率可能较低。
 
-实际频率取决于探针、SWD 速度、变量地址分布、目标运行状态和上游 DAP。probe-rs 0.32 的 [DAP 请求循环](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs-tools/src/bin/probe-rs/cmd/dap_server/server/debugger.rs) 在运行且没有待处理请求时可能休眠 50 ms，并在请求处理前检查核心状态和 RTT；即使设置 200 Hz，也不保证达到 OpenOCD 的采样频率。当前优化复用已有连接，不新增探针连接或后台预读。
+实际频率取决于探针、SWD 速度、变量地址分布、目标运行状态和上游 DAP；即使设置 200 Hz，也不保证达到 OpenOCD 的采样频率，上游限制见下节。当前优化复用已有连接，不新增探针连接或后台预读。
 
 自动化回归覆盖 25 ms 模拟读取下的 20 Hz 调度、1 ms 模拟读取下的 200 Hz 调度、跨 RAM 段隔离、字节预算、失败重试和状态变化取消。Extension Host 使用有 25 ms 延迟的模拟 DAP 进程检查实际 IPC 链路。这些软件结果不代表实板频率；真机验证需记录实际频率、读取耗时、探针和变量数量。
 
-### 可被读取请求唤醒的后端构建
+### 原版 probe-rs 的频率上限
 
-原版 probe-rs 0.32 的 stdio 空闲休眠不能被新请求打断，所以即使扩展设定周期正确，实际频率仍可能达到平台上限。`build:probe-rs-sampling` 提供一个可复现的性能构建：下载固定提交 `48f5e4d53c690a1d40c2454033c6f785b4f4f95c` 并校验源码归档 SHA-256，给 stdio 输入添加 Tokio 通知，用请求到达或原轮询期限共同结束等待。通知在读取请求队列前注册，避免请求恰好到达时丢失唤醒；没有请求时仍按原期限轮询核心和 RTT。核心状态检查、休眠目标读取、内存访问和烧录逻辑保持上游实现。
+EmberProbe 使用用户安装的原版 probe-rs，不提供修改过的采样后端。probe-rs 0.32 的 [DAP 请求循环](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs-tools/src/bin/probe-rs/cmd/dap_server/server/debugger.rs) 有以下固定开销，扩展侧调度无法消除：
 
-Windows 下，stdio 会话另行申请 1 ms 定时器精度，退出或错误返回时自动释放；申请失败则继续使用系统默认精度。扩展与后端分别管理各自的定时器，因为 Windows 10 2004 起，`timeBeginPeriod` 的精度设置按调用进程生效，不能依赖 Extension Host 的申请来缩短后端内部等待。参见 [Microsoft 的定时器说明](https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod)。
+- 目标运行且没有待处理请求时休眠 50 ms，新请求不能打断这次休眠。
+- 每个请求处理前都轮询一次核心状态，并重新创建核心访问对象、重读 AP 寄存器。J-Link 在 probe-rs 中按原始 SWD 访问，每次寄存器读写都是一次独立的 USB 往返。
+- `readMemory` 先把请求长度减半再分块，4 字节变量会拆成 2+1+1 字节，对同一个 32 位字读 3 次。目标在两次读取之间更新变量时，可能读到从未出现过的拼接值。
 
-J-Link USB 传输复用连接期间打开的输入、输出端点，减少原 [J-Link 实现](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs/src/probe/jlink/mod.rs) 中逐次打开端点的开销。使用上游已有的 [端点传输辅助函数](https://github.com/probe-rs/probe-rs/blob/v0.32.0/probe-rs/src/probe/usb_util.rs)，保留 500 ms 超时、超时取消及收尾、短写校验和整包读取兼容处理；请求仍串行访问同一探针，连接结束时释放端点。此优化不切换 USB 驱动或 SWD/JTAG 协议。
-
-需要 Rust/Cargo 及当前平台的 probe-rs 原生构建依赖：
-
-```sh
-npm run build:probe-rs-sampling
-```
-
-构建脚本运行原生通知、定时器及 J-Link 软件测试，成功后在 `test-results/probe-rs-sampling-build/performance-3/` 生成 `probe-rs.exe`（Windows）或 `probe-rs`。将 `emberprobe.probeRsPath` 指向该文件，并在新会话中验证。它不会替换用户安装的 probe-rs，也不会连接探针；VSIX 仍不包含 probe-rs。重新构建前需结束使用该输出文件的会话，避免覆盖正在运行的程序。选择原版路径即可恢复原版后端。重新建立 `attach` 会话会短暂暂停核心，需遵守项目硬件授权规则。
-
-此构建修正 stdio 请求等待；TCP DAP 保持上游行为，探针 USB/SWD 吞吐、核心状态读取和 RAM 分组数量仍会限制实际频率。构建和通知测试通过不代表真机达到 200 Hz。
-
-J-Link / F407_car 授权实测中，20 Hz 设置达到约 19.9 Hz，100/200 Hz 设置约 29.2 Hz，相对原约 6.4 Hz 提升约 4.5 倍；仍未达到 OpenOCD 的 200 Hz。测试方法、后端身份与验证边界见 [采样性能实测](PROBE-RS-SAMPLING-PERFORMANCE.md)。
+此前在 J-Link / F407_car 上使用原版 probe-rs 0.32、设定 100 Hz，监视两个相距 324 字节的 4 字节 RAM 变量时，实测约 6.4 Hz，每轮读取 P95 约 155 ms。上游 master 已合并探针层的 [批量内存访问](https://github.com/probe-rs/probe-rs/pull/4345) 等改动，可减少每次访问的 USB 包数；截至 2026-10-11 尚未发布，DAP 层的空闲休眠、逐请求轮询和分块读取也没有改变。C 固件需要高频采样时，建议使用 OpenOCD 后端；probe-rs 后端更适合 Rust/Embassy 调试和低频观测。
 
 Agent Bridge 的变量读取与写入可复用活动的 probe-rs LiveWatch/DAP 会话。Agent Flash 与故障寄存器分析仍限于 OpenOCD；probe-rs 烧录请使用侧栏“烧录”按钮。
 

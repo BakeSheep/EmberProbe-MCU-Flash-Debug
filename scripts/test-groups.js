@@ -151,7 +151,6 @@ const TEST_GROUPS = Object.freeze({
         "probe-rs-flash-provider.test.js",
         "probe-rs-flash-service.test.js",
         "probe-rs-sampling.test.js",
-        "probe-rs-sampling-build.test.js",
         "probe-rs-safety.test.js",
         "probe-rs-targets.test.js",
         "provider-state.test.js",

@@ -15,8 +15,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - probe-rs 实时采样将读取与分发耗时计入采样周期，解除原 50 Hz 软件调度上限，Windows 采样期间复用高精度定时器；同一 ELF 可写 RAM 区间内合并近邻变量读取，保留每轮字节预算、会话校验与写入回读，并修复已有样本后的读取失败重试。
 - Include read and delivery latency in probe-rs sampling periods, remove the former 50 Hz scheduling cap, use finer Windows timers while sampling, batch nearby globals within validated writable ELF RAM and retain cycle budgets, session checks and write verification; fix retries after a successful sample.
 
-- probe-rs 分散 RAM 区间按最多 4 个请求分组读取，取消与失败时收完在途响应；提供固定源码及 SHA-256 校验的可唤醒 stdio DAP 性能构建，保留原核心/RTT 轮询期限，避免新读取请求等待 50 ms 空闲休眠结束，在 Windows 后端会话内管理精细定时器，并复用 J-Link USB 端点。
-- Queue separate probe-rs RAM ranges in batches of at most four and drain in-flight replies on cancellation or failure; provide a source-pinned, SHA-256-verified stdio DAP sampling build that wakes for requests, preserves core/RTT polling deadlines, manages finer Windows timers within backend sessions and reuses J-Link USB endpoints.
+- probe-rs 分散 RAM 区间按最多 4 个请求分组读取，取消与失败时收完在途响应；文档说明原版 probe-rs DAP 的空闲休眠、逐请求轮询和分块读取对采样频率的限制。
+- Queue separate probe-rs RAM ranges in batches of at most four and drain in-flight replies on cancellation or failure; document how upstream probe-rs DAP idle sleeps, per-request polling and chunked reads limit sampling rates.
 
 - probe-rs 环境缺失时提供“选择路径”和官方“一键安装”，显示安装进度并验证后保存路径；检测用户 Cargo 安装目录，无需重启 VS Code 刷新 PATH，VSIX 不捆绑 probe-rs。
 - Offer path selection and official one-click installation with progress and verified configuration when probe-rs is missing; detect user Cargo installs without restarting VS Code and exclude probe-rs binaries from the VSIX.
