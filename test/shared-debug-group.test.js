@@ -303,6 +303,100 @@ function bind(group, member) {
     assert.strictEqual(wedgedOwner._managedDebugGroup, null);
     wedged.coordinator.acquire("agentRead").release();
     wedgedOwner._debugBridge.dispose();
+    const realTimers = { setTimeout, clearTimeout };
+    try {
+        for (const mode of ["hang-joined", "hang-last", "hang-unconfirmed", "late-rejection", "resolved", "rejected"]) {
+            const cleanup = makeGroup();
+            const clock = new FakeClock();
+            const cancelled = [];
+            global.setTimeout = clock.schedule;
+            global.clearTimeout = (timer) => {
+                if (timer !== undefined) cancelled.push(timer);
+                clock.cancel(timer);
+            };
+            let owner;
+            let rejectStop;
+            const stopRequest = new Promise((_resolve, reject) => {
+                rejectStop = reject;
+            });
+            const TimedProvider = loadProvider({
+                debug: {
+                    stopDebugging: async (session) => {
+                        if (mode === "resolved") {
+                            await owner.handleDebugSessionTerminate(session);
+                            return true;
+                        }
+                        if (mode === "rejected") throw new Error("adapter stop failed");
+                        return stopRequest;
+                    }
+                }
+            });
+            owner = Object.create(TimedProvider.prototype);
+            Object.assign(owner, {
+                _managedDebugGroup: cleanup.group,
+                _managedDebugServer: cleanup.controller,
+                _debugServerLease: cleanup.lease,
+                _debugBridge: new DebugSessionBridge(),
+                _terminatedDebugSessionIds: new Set(),
+                _postLive() {},
+                restoreSamplingAfterDebug: async () => {}
+            });
+            const primaryMember = reserve(cleanup.group, 0);
+            const primarySession = bind(cleanup.group, primaryMember);
+            owner._debugBridge.attach(primarySession);
+            let failedMember = primaryMember;
+            if (mode === "hang-joined") {
+                failedMember = reserve(cleanup.group, 1);
+                owner._debugBridge.attach(bind(cleanup.group, failedMember));
+            }
+            if (mode === "hang-unconfirmed") cleanup.failStop(true);
+            const failure = owner._failGroupedCore(failedMember.token, "Shared core failed");
+            const completion =
+                mode === "resolved"
+                    ? failure
+                    : assert.rejects(
+                          failure,
+                          mode === "hang-unconfirmed"
+                              ? /exit not confirmed/
+                              : mode === "rejected"
+                                ? /adapter stop failed/
+                                : { code: "DEBUG_CONTROL_TIMEOUT" }
+                      );
+            await clock.advance(0);
+            if (mode.startsWith("hang-") || mode === "late-rejection") {
+                await clock.advance(1999);
+                assert(cleanup.group.members.has(failedMember.token), "the stop request owns its member until timeout");
+                assert.throws(() => cleanup.coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
+                await clock.advance(1);
+                if (mode === "late-rejection") rejectStop(new Error("late adapter failure"));
+                await clock.advance(2000);
+            }
+            await completion;
+            assert.strictEqual(cleanup.group.members.has(failedMember.token), false);
+            assert.strictEqual(clock.tasks.size, 0, "stop and termination timers cannot leak");
+            assert(cancelled.length > 0, "the stop race always clears its timer");
+            if (mode === "hang-joined") {
+                assert.strictEqual(cleanup.stops, 0, "another core keeps the physical server and lease");
+                assert.throws(() => cleanup.coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
+                await owner.handleDebugSessionTerminate(primarySession);
+            } else if (mode === "hang-unconfirmed") {
+                assert.strictEqual(cleanup.group.stopped, false);
+                assert.strictEqual(owner._managedDebugServer, cleanup.controller);
+                assert.strictEqual(owner._managedDebugGroup, cleanup.group);
+                assert.throws(() => cleanup.coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
+                cleanup.failStop(false);
+                await cleanup.group.stop();
+            } else {
+                assert.strictEqual(cleanup.stops, 1, "the final member stops the physical server");
+                assert.strictEqual(cleanup.group.stopped, true);
+            }
+            cleanup.coordinator.acquire("agentRead").release();
+            owner._debugBridge.dispose();
+        }
+    } finally {
+        global.setTimeout = realTimers.setTimeout;
+        global.clearTimeout = realTimers.clearTimeout;
+    }
     // Failure before VS Code's start event still owns a DAP member and must stop it.
     const untracked = makeGroup();
     const pendingMember = reserve(untracked.group, 0);

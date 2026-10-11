@@ -13,6 +13,7 @@ const { controlTarget } = require("../src/chipInfo");
             {
                 ...options,
                 run: async (request) => {
+                    assert.strictEqual(request.waitForCloseOnTimeout, true);
                     const commands = request.buildCommands();
                     assert.deepStrictEqual([commands[0], commands[2]], ["init", "shutdown"]);
                     assert.ok(commands[1].includes(command));

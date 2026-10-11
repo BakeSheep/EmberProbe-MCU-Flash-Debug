@@ -365,6 +365,7 @@ module.exports = Object.freeze({
     "chip.unknownCore": "未知内核",
     "chip.adapterClock": "适配器时钟",
     "chip.coreRev": "内核修订",
+    "chip.coreMismatch": "内核与系列不符",
     "chip.targetState": "读取时状态",
     "chip.pause": "暂停",
     "chip.continue": "继续",

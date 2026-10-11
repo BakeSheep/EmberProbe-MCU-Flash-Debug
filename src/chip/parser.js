@@ -20,6 +20,7 @@ const {
     FLASHSIZE_ADDR_SET,
     UID_ADDR_SET,
     DEV_ID_FAMILY,
+    coreMatchesSeries,
     JEP106_DESIGNERS,
     ST_JEP106_KEY,
     ARM_JEP106_KEY,
@@ -57,6 +58,8 @@ function createChipParser(target) {
         coreRevision: "",
         cpuid: "",
         implementer: "",
+        // CPUID 内核与 DEV_ID/目标推导系列不一致时的说明（空表示一致或无法判定）
+        coreMismatch: "",
         // 芯片系列
         chip: "",
         series: seriesFromTarget(options.target),
@@ -171,7 +174,7 @@ function createChipParser(target) {
         }
         let m;
         // 5) 内核识别行：Info : [xxx] Cortex-M4 r0p1 processor detected（比 CPUID 更直观且更早出现）
-        if (/processor detected/i.test(clean) && (m = clean.match(/\b(Cortex-[MAR]\d+\+?)\s+(r\d+p\d+)\b/i))) {
+        if (/processor detected/i.test(clean) && (m = clean.match(/\b(Cortex-[MAR]\d+(?:\+|P)?)\s+(r\d+p\d+)\b/i))) {
             if (!info.core) info.core = m[1];
             if (!info.coreRevision) info.coreRevision = m[2];
             return;
@@ -259,26 +262,35 @@ function createChipParser(target) {
                     info.revId = split.revId;
                 }
             }
-            // 由 DEV_ID 推断实际芯片家族，修正目标配置名推导的系列（用户选错 target 时仍能正确显示）
+            // 由 DEV_ID 推断实际芯片家族，修正目标配置名推导的系列（用户选错 target 时仍能正确显示）。
+            // CPUID 内核与该家族不符时不采信 DEV_ID 改写系列，并标记不一致供界面提示。
+            let devFamily = "";
             if (info.deviceId && /^stm32/i.test(info.series)) {
-                const devNum = parseInt(info.deviceId, 16);
-                const family = DEV_ID_FAMILY[devNum];
-                if (family && family !== info.series) info.series = family;
+                const family = DEV_ID_FAMILY[parseInt(info.deviceId, 16)];
+                if (family && coreMatchesSeries(info.core, family) === false) {
+                    info.coreMismatch = `${info.core} ≠ ${family} (DEV_ID ${info.deviceId})`;
+                } else if (family) {
+                    devFamily = family;
+                    if (family !== info.series) info.series = family;
+                }
             }
             // 硬件实测的 flash 驱动名优先于目标配置名修正系列（避免用户选错 target 时显示错误系列）
             const hwSeries = seriesFromFlashDriver(info.flashDriver);
-            if (hwSeries && hwSeries !== info.series && !DEV_ID_FAMILY[parseInt(info.deviceId || "0", 16)])
-                info.series = hwSeries;
+            if (hwSeries && hwSeries !== info.series && !devFamily) info.series = hwSeries;
+            if (!info.coreMismatch && coreMatchesSeries(info.core, info.series) === false)
+                info.coreMismatch = `${info.core} ≠ ${info.series}`;
             // Flash 容量：优先取“修正后家族”地址的寄存器值（权威，覆盖日志推导值），次取目标配置地址；
             // 均未命中时仅对 STM32 系列接受任意候选地址的有效值（避免非 STM32 芯片展示杂值）
             {
                 const seriesKey = String(info.series || "").toLowerCase();
                 const famFlashBase = lookupStmBase(STM32_FLASHSIZE_BASE, seriesKey);
+                // DEV_ID 已确认家族但本表未收录其地址（如 L1/L5/U5）时，其它家族地址上的读数只是杂值
+                const knownLayoutElsewhere = Boolean(devFamily) && !famFlashBase;
                 let kb = null;
                 if (famFlashBase && flsReads[famFlashBase >>> 0] != null) kb = flsReads[famFlashBase >>> 0];
                 else if (flashSizeBase && flsReads[flashSizeBase >>> 0] != null) kb = flsReads[flashSizeBase >>> 0];
                 if (kb != null && kb > 0 && kb < 0xffff) info.flashSize = kb + " KiB";
-                else if (!info.flashSize && /^stm32/i.test(seriesKey)) {
+                else if (!info.flashSize && /^stm32/i.test(seriesKey) && !knownLayoutElsewhere) {
                     for (const a of ALL_FLASHSIZE_ADDRS) {
                         const v = flsReads[a];
                         if (v != null && v > 0 && v < 0xffff) {
@@ -291,7 +303,7 @@ function createChipParser(target) {
                 const famUidBase = lookupStmBase(STM32_UID_BASE, seriesKey);
                 let uidWords =
                     (famUidBase && uidReads[famUidBase >>> 0]) || (uidBase && uidReads[uidBase >>> 0]) || null;
-                if (!uidWords && /^stm32/i.test(seriesKey)) {
+                if (!uidWords && /^stm32/i.test(seriesKey) && !knownLayoutElsewhere) {
                     for (const a of ALL_UID_ADDRS) {
                         if (uidReads[a]) {
                             uidWords = uidReads[a];

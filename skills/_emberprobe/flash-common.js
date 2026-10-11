@@ -82,6 +82,11 @@ async function getEmberProbeConfig(workspace) {
     }
 }
 
+// The Bridge resolves automatic selections against the current workspace binding.
+function probeSerialOverride(result) {
+    return ["explicit", "config"].includes(result.sources?.probeSerial) ? result.probeSerial : undefined;
+}
+
 async function authorizeFlash(result, confirmationId) {
     return call(result.workspace, "flash.authorize", {
         elf: result.elf,
@@ -90,7 +95,7 @@ async function authorizeFlash(result, confirmationId) {
         probe: result.probe,
         openocd: result.openocd,
         transport: result.transport,
-        probeSerial: result.probeSerial,
+        probeSerial: probeSerialOverride(result),
         adapterSpeedKhz: result.adapterSpeedKhz,
         confirmationId
     });
@@ -448,7 +453,8 @@ async function preflight(options) {
                     target,
                     transport,
                     probeSerial,
-                    adapterSpeedKhz
+                    adapterSpeedKhz,
+                    successfulConnection: config?.successfulConnection
                 },
                 {
                     listProbes: async (inventoryOptions) => {
@@ -503,6 +509,7 @@ function emit(value) {
 module.exports = {
     parseArgs,
     getEmberProbeConfig,
+    probeSerialOverride,
     authorizeFlash,
     findNewestElf,
     inferTarget,

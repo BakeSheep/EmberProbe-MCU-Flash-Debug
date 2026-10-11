@@ -165,6 +165,7 @@ async function readFaultInfo(options) {
         inventory: options.inventory,
         cwd: options.cwd,
         timeoutMs: 15000,
+        waitForCloseOnTimeout: true,
         buildCommands: () => cmds,
         onLine: handleLine,
         buildTimeoutError: () =>

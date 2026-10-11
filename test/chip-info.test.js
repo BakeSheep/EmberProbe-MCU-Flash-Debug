@@ -20,7 +20,10 @@ const {
     assessAuthenticity,
     deriveVendor,
     chooseIdcode,
-    ALL_IDCODE_ADDRS
+    ALL_IDCODE_ADDRS,
+    DEV_ID_FAMILY,
+    STM32_SERIES_CORES,
+    coreMatchesSeries
 } = require("../src/chipInfo");
 const { createChipParser } = require("../src/chip/parser");
 
@@ -206,5 +209,68 @@ apmParser.handleLine("0xe0042000: 10076413");
 const apmInfo = apmParser.finish(0);
 assert.strictEqual(apmInfo.series, "APM32F4X");
 assert.strictEqual(apmInfo.deviceId, "0x413");
+
+// CPUID 部件号：M55/M85/M52/M35P 与 OpenOCD cortex_m.h 一致
+assert.strictEqual(decodeCpuid(0x410fd220).core, "Cortex-M55");
+assert.strictEqual(decodeCpuid(0x410fd230).core, "Cortex-M85");
+assert.strictEqual(decodeCpuid(0x410fd240).core, "Cortex-M52");
+assert.strictEqual(decodeCpuid(0x410fd310).core, "Cortex-M35P");
+assert.strictEqual(decodeCpuid(0x410fd210).core, "Cortex-M33");
+
+// DEV_ID → 系列：曾错配的型号，以及每个系列的内核与 STM32_SERIES_CORES 一致
+const expectedFamilies = {
+    0x420: "STM32F1x",
+    0x428: "STM32F1x",
+    0x418: "STM32F1x",
+    0x444: "STM32F0x",
+    0x448: "STM32F0x",
+    0x427: "STM32L1x",
+    0x470: "STM32L4x",
+    0x472: "STM32L5x",
+    0x483: "STM32H7x",
+    0x479: "STM32G4x",
+    0x456: "STM32G0x",
+    0x497: "STM32WLx"
+};
+for (const [dev, family] of Object.entries(expectedFamilies))
+    assert.strictEqual(DEV_ID_FAMILY[dev], family, "DEV_ID 0x" + Number(dev).toString(16));
+assert.strictEqual(DEV_ID_FAMILY[0x426], undefined);
+for (const family of new Set(Object.values(DEV_ID_FAMILY)))
+    assert.ok(STM32_SERIES_CORES[family], "missing core list for " + family);
+assert.strictEqual(coreMatchesSeries("Cortex-M7", "STM32H7x"), true);
+assert.strictEqual(coreMatchesSeries("Cortex-M4", "STM32H7x"), true);
+assert.strictEqual(coreMatchesSeries("Cortex-M0+", "STM32H7x"), false);
+assert.strictEqual(coreMatchesSeries("", "STM32H7x"), null);
+assert.strictEqual(coreMatchesSeries("Cortex-M4", "NRF52"), null);
+
+function parseChip(target, lines) {
+    const parser = createChipParser(target);
+    for (const line of lines) parser.handleLine(line);
+    return parser.finish(0);
+}
+// H723 误选 stm32g0x 目标：DEV_ID 0x483 应纠正为 H7，内核一致
+const h723 = parseChip("stm32g0x.cfg", ["0xe000ed00: 411fc272", "0x40015800: 10016483"]);
+assert.strictEqual(h723.core, "Cortex-M7");
+assert.strictEqual(h723.series, "STM32H7x");
+assert.strictEqual(h723.coreMismatch, "");
+// F100（M3）DEV_ID 0x420 属 F1，而非 F0
+const f100 = parseChip("stm32f1x.cfg", ["0xe000ed00: 411fc231", "0xe0042000: 10016420"]);
+assert.strictEqual(f100.series, "STM32F1x");
+assert.strictEqual(f100.coreMismatch, "");
+// 内核与 DEV_ID 家族冲突：不改写系列，并给出不一致说明
+const clash = parseChip("stm32f4x.cfg", ["0xe000ed00: 410fc241", "0xe0042000: 10006460"]);
+assert.strictEqual(clash.series, "STM32F4x");
+assert.strictEqual(clash.coreMismatch, "Cortex-M4 ≠ STM32G0x (DEV_ID 0x460)");
+// 无 DEV_ID 时按目标系列校验内核
+const wrongTarget = parseChip("stm32f1x.cfg", ["0xe000ed00: 410cc601"]);
+assert.strictEqual(wrongTarget.coreMismatch, "Cortex-M0+ ≠ STM32F1x");
+// OpenOCD "processor detected" 行中的 M35P 不应被截断
+const m35p = parseChip("stm32f1x.cfg", ["Info : [x.cpu] Cortex-M35P r1p0 processor detected"]);
+assert.strictEqual(m35p.core, "Cortex-M35P");
+assert.strictEqual(m35p.coreRevision, "r1p0");
+// L5 等未收录地址的家族不得从其它家族地址回退 Flash 容量/UID
+const l5 = parseChip("stm32l5x.cfg", ["0xe000ed00: 410fd214", "0xe0042000: 10006472", "0x1fff7a22: 00000400"]);
+assert.strictEqual(l5.series, "STM32L5x");
+assert.strictEqual(l5.flashSize, "");
 
 console.log("Chip info tests passed");

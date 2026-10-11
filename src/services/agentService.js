@@ -4,6 +4,7 @@ const CHIP_GROUPS = Object.freeze({
     identity: [
         "core",
         "coreRevision",
+        "coreMismatch",
         "cpuid",
         "chip",
         "series",
