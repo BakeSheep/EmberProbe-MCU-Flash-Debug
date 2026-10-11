@@ -14,6 +14,165 @@ const { AgentBridge } = require("../src/agentBridge");
 const { FlashAuthorization } = require("../src/flashAuthorization");
 const { canonicalFileSync } = require("../skills/_emberprobe/file-identity");
 const flashCommon = require("../skills/_emberprobe/flash-common");
+const vm = require("vm");
+const { createRequire } = require("module");
+const { EventEmitter } = require("events");
+const { PassThrough } = require("stream");
+const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
+const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
+const { loadProvider } = require("./helpers/load-provider");
+const { createAgentRoutes } = require("../src/services/agentRoutes");
+
+function loadFlashModule(file, overrides, processImpl = process) {
+    const filename = path.resolve(__dirname, "..", file);
+    const localRequire = createRequire(filename);
+    const mod = { exports: {} };
+    const main = vm.runInThisContext(
+        "(function(require,module,exports,process){" +
+            fs.readFileSync(filename, "utf8") +
+            "\nreturn typeof main === 'function' ? main : undefined;})",
+        { filename }
+    )((name) => overrides[name] || localRequire(name), mod, mod.exports, processImpl);
+    return { exports: mod.exports, main };
+}
+
+async function testProbeBinding(root, elf) {
+    const devices = ["probe-A", "probe-B"].map((serial) => ({ family: "cmsis-dap", serial, id: serial }));
+    const config = {
+        elf,
+        debugger: "cmsis-dap.cfg",
+        mcu: "geehy/apm32f4x.cfg",
+        openocdPath: "fixture-openocd",
+        probeSerial: "",
+        successfulConnection: { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" }
+    };
+    const inventory = { available: true, devices, notes: [] };
+    const requests = [];
+    const Provider = loadProvider();
+    const host = Object.create(Provider.prototype);
+    Object.assign(host, {
+        _configurationStore: {
+            snapshot: () => {
+                const { successfulConnection, ...settings } = config;
+                return settings;
+            }
+        },
+        _svdManager: { peekBound: async () => null },
+        _context: {
+            workspaceState: {
+                get: (key) => {
+                    assert.strictEqual(key, "mcu.successfulProbeConnection");
+                    return config.successfulConnection;
+                }
+            }
+        }
+    });
+    const routes = createAgentRoutes(host);
+    const bridgeCall = async (_workspace, method, params) => {
+        if (method === "config.get") return routes[method]();
+        if (method === "probe.list") return inventory;
+        requests.push({ method, params: JSON.parse(JSON.stringify(params)) });
+        const connection = resolveProbeConnection(
+            { ...config, ...params, probeSerial: params.probeSerial ?? config.probeSerial },
+            inventory
+        );
+        if (method === "flash.authorize") return { confirmationRequired: true, confirmationId: "fixture-plan" };
+        assert(["flash.execute", "flash.verify"].includes(method));
+        return { code: 0, verified: true, probeSerial: connection.probeSerial };
+    };
+    const launch = { executable: config.openocdPath };
+    const common = loadFlashModule("skills/_emberprobe/flash-common.js", {
+        "./agent-client": { ...require("../skills/_emberprobe/agent-client"), call: bridgeCall },
+        "./openocd-launch": {
+            ...require("../skills/_emberprobe/openocd-launch"),
+            resolveExecutablePath: (value) => value,
+            resolveOpenOcdLaunch: () => launch
+        },
+        "./probe-preflight": {
+            prepareProbeConnection: (request, dependencies) =>
+                prepareProbeConnection(request, {
+                    ...dependencies,
+                    resolveLaunch: () => launch,
+                    checkCapability: async () => ({ adapterFamily: "cmsis-dap" })
+                })
+        },
+        child_process: {
+            spawn: () => {
+                const child = new EventEmitter();
+                child.stdout = new PassThrough();
+                child.stderr = new PassThrough();
+                child.kill = () => {};
+                process.nextTick(() => {
+                    child.stdout.write("Open On-Chip Debugger 0.12.0\n");
+                    child.emit("close", 0);
+                });
+                return child;
+            }
+        }
+    }).exports;
+    const execute = (script, result) => {
+        const processImpl = {
+            argv: ["node", script, "--workspace", root, "--execute", "--confirmation-id", "fixture-plan"],
+            platform: process.platform,
+            stdout: { write() {} },
+            stderr: { write() {} },
+            exit: (code) => {
+                throw new Error("Unexpected CLI exit: " + code);
+            }
+        };
+        return loadFlashModule(
+            "skills/mcu-flash/scripts/" + script + ".js",
+            {
+                "../../_emberprobe/flash-common": { ...common, preflight: async () => result, emit() {} },
+                "../../_emberprobe/agent-client": { call: bridgeCall }
+            },
+            processImpl
+        ).main();
+    };
+
+    const bound = await common.preflight({ workspace: root });
+    assert.strictEqual(bound.ready, true, "the remembered probe resolves an inventory with A and B online");
+    assert.strictEqual(bound.probeSerial, "probe-A");
+    assert.strictEqual(bound.sources.probeSerial, "inventory");
+    inventory.devices = [devices[1]];
+    const missing = await common.preflight({ workspace: root });
+    assert.strictEqual(missing.ready, false, "an unplugged binding never falls back to probe B");
+    assert(missing.diagnostics.some((diagnostic) => diagnostic.error.code === "PROBE_SELECTED_NOT_FOUND"));
+    assert.strictEqual(requests.length, 0, "failed preflight cannot request flash authorization or execution");
+
+    inventory.devices = devices;
+    for (const source of ["inventory", "config", "explicit"]) {
+        config.probeSerial = source === "config" ? "probe-B" : "";
+        const result = await common.preflight({
+            workspace: root,
+            ...(source === "explicit" ? { "probe-serial": "probe-B" } : {})
+        });
+        assert.strictEqual(result.ready, true);
+        assert.strictEqual(result.sources.probeSerial, source);
+        const authorization = await common.authorizeFlash(result);
+        assert.strictEqual(authorization.confirmationRequired, true, "preflight still requires human approval");
+        assert.strictEqual(authorization.authorized, undefined);
+        for (const script of ["verify", "program"]) await execute(script, result);
+        for (const request of requests.slice(-3)) {
+            assert.strictEqual(request.params.probeSerial, source === "inventory" ? undefined : "probe-B");
+            if (source === "inventory") assert.strictEqual(Object.hasOwn(request.params, "probeSerial"), false);
+        }
+        assert.strictEqual(requests.at(-1).params.confirmationId, "fixture-plan");
+    }
+
+    config.probeSerial = "";
+    config.successfulConnection = undefined;
+    inventory.devices = [devices[1]];
+    const detected = await common.preflight({ workspace: root });
+    assert.strictEqual(detected.ready, true);
+    assert.strictEqual(detected.probeSerial, "probe-B");
+    config.successfulConnection = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" };
+    await assert.rejects(common.authorizeFlash(detected), { code: "PROBE_SELECTED_NOT_FOUND" });
+    for (const script of ["verify", "program"]) {
+        await assert.rejects(execute(script, detected), { code: "PROBE_SELECTED_NOT_FOUND" });
+        assert.strictEqual(Object.hasOwn(requests.at(-1).params, "probeSerial"), false);
+    }
+}
 
 const execFileAsync = promisify(execFile);
 const canRunFakeOpenOcd = process.platform !== "win32";
@@ -73,7 +232,6 @@ function lastJsonLine(stdout) {
         devices: [{ family: "cmsis-dap", serial: "fixture-DAP", id: "usb-fixture" }],
         notes: []
     };
-    const { prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
     const executor = new AgentFlashService({
         getConfig: () => ({ openocdPath: fakeOpenOcd }),
         coordinator: new ProbeCoordinator(),
@@ -95,19 +253,8 @@ function lastJsonLine(stdout) {
             if (method === "flash.execute") return executor.execute(params);
             if (method === "probe.list") return inventory;
             if (method === "flash.verify") return executor.execute(params, true);
-            if (method === "flash.authorize") {
-                return flashAuthorization.authorize(
-                    {
-                        elf: { path: params.elf, sha256: params.elfSha256 },
-                        transport: params.transport,
-                        target: params.target,
-                        probe: params.probe,
-                        probeSerial: params.probeSerial,
-                        openocd: params.openocd
-                    },
-                    params.confirmationId
-                );
-            }
+            // Mirror agentRoutes: the Bridge resolves the serial itself before fingerprinting.
+            if (method === "flash.authorize") return executor.authorize(params);
             throw Object.assign(new Error(`Unexpected method: ${method}`), { code: "METHOD_NOT_FOUND" });
         },
         path.join(root, ".global-storage")
@@ -117,6 +264,7 @@ function lastJsonLine(stdout) {
         execFileAsync(process.execPath, [path.resolve(__dirname, "../skills", script), "--workspace", root, ...extra]);
 
     try {
+        await testProbeBinding(root, elf);
         await bridge.start();
 
         const downloadPreflight = firstJsonLine((await run("mcu-flash/scripts/program.js")).stdout);

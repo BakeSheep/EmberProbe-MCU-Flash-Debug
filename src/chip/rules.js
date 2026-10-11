@@ -8,9 +8,10 @@ const CORTEX_M_PARTS = {
     0xc27: "Cortex-M7",
     0xd20: "Cortex-M23",
     0xd21: "Cortex-M33",
-    0xd22: "Cortex-M35P",
-    0xd23: "Cortex-M55",
-    0xd24: "Cortex-M85"
+    0xd22: "Cortex-M55",
+    0xd23: "Cortex-M85",
+    0xd24: "Cortex-M52",
+    0xd31: "Cortex-M35P"
 };
 const IMPLEMENTERS = { 0x41: "ARM", 0x44: "DEC", 0x4a: "Fujitsu", 0x51: "Qualcomm", 0x56: "Marvell", 0x69: "Intel" };
 const STM32_UID_BASE = {
@@ -77,55 +78,97 @@ const ALL_UID_ADDRS = Array.from(new Set([...FALLBACK_UID_ADDRS, ...Object.value
 const IDCODE_ADDR_SET = new Set(ALL_IDCODE_ADDRS);
 const FLASHSIZE_ADDR_SET = new Set(ALL_FLASHSIZE_ADDRS);
 const UID_ADDR_SET = new Set(ALL_UID_ADDRS);
+// DBGMCU DEV_ID → 系列，依据 ST 各系列参考手册 DBGMCU_IDCODE 章节与 OpenOCD flash 驱动表
 const DEV_ID_FAMILY = {
-    0x410: "STM32F1x",
-    0x412: "STM32F1x",
-    0x414: "STM32F1x",
-    0x430: "STM32F1x",
+    0x410: "STM32F1x", // F101/F102/F103 中密度
+    0x412: "STM32F1x", // 低密度
+    0x414: "STM32F1x", // 高密度
+    0x418: "STM32F1x", // 互联型 F105/F107
+    0x420: "STM32F1x", // F100 超值型低/中密度
+    0x428: "STM32F1x", // F100 超值型高密度
+    0x430: "STM32F1x", // XL 密度
     0x411: "STM32F2x",
-    0x413: "STM32F4x",
-    0x419: "STM32F4x",
-    0x421: "STM32F4x",
-    0x423: "STM32F4x",
-    0x431: "STM32F4x",
-    0x433: "STM32F4x",
-    0x434: "STM32F4x",
-    0x441: "STM32F4x",
-    0x448: "STM32F4x",
-    0x463: "STM32F4x",
-    0x422: "STM32F3x",
-    0x432: "STM32F3x",
-    0x438: "STM32F3x",
-    0x439: "STM32F3x",
-    0x444: "STM32F3x",
-    0x446: "STM32F3x",
-    0x449: "STM32F7x",
-    0x451: "STM32F7x",
-    0x452: "STM32F7x",
-    0x450: "STM32H7x",
-    0x480: "STM32H7x",
-    0x460: "STM32G0x",
-    0x466: "STM32G0x",
-    0x467: "STM32G0x",
-    0x483: "STM32G0x",
-    0x468: "STM32G4x",
-    0x469: "STM32G4x",
-    0x470: "STM32G4x",
-    0x415: "STM32L4x",
-    0x435: "STM32L4x",
-    0x461: "STM32L4x",
-    0x462: "STM32L4x",
-    0x471: "STM32L4x",
-    0x472: "STM32L4x",
-    0x416: "STM32L1x",
-    0x427: "STM32L0x",
-    0x425: "STM32L0x",
-    0x417: "STM32L0x",
-    0x420: "STM32F0x",
-    0x426: "STM32F0x",
-    0x428: "STM32F0x",
-    0x495: "STM32WBx"
+    0x413: "STM32F4x", // F405/F407/F415/F417
+    0x419: "STM32F4x", // F42x/F43x
+    0x421: "STM32F4x", // F446
+    0x423: "STM32F4x", // F401xB/C
+    0x431: "STM32F4x", // F411
+    0x433: "STM32F4x", // F401xD/E
+    0x434: "STM32F4x", // F469/F479
+    0x441: "STM32F4x", // F412
+    0x458: "STM32F4x", // F410
+    0x463: "STM32F4x", // F413/F423
+    0x422: "STM32F3x", // F302xB/C、F303xB/C、F358
+    0x432: "STM32F3x", // F37x
+    0x438: "STM32F3x", // F303x6/8、F334、F328
+    0x439: "STM32F3x", // F301、F302x6/8、F318
+    0x446: "STM32F3x", // F302xD/E、F303xD/E、F398
+    0x440: "STM32F0x", // F030x8、F05x
+    0x442: "STM32F0x", // F030xC、F09x
+    0x444: "STM32F0x", // F03x
+    0x445: "STM32F0x", // F04x、F070x6
+    0x448: "STM32F0x", // F070xB、F07x
+    0x449: "STM32F7x", // F74x/F75x
+    0x451: "STM32F7x", // F76x/F77x
+    0x452: "STM32F7x", // F72x/F73x
+    0x450: "STM32H7x", // H74x/H75x（含双核 H745/H747/H755/H757）
+    0x480: "STM32H7x", // H7A3/H7B3
+    0x483: "STM32H7x", // H72x/H73x
+    0x456: "STM32G0x", // G05x/G06x
+    0x460: "STM32G0x", // G07x/G08x
+    0x466: "STM32G0x", // G03x/G04x
+    0x467: "STM32G0x", // G0B1/G0C1
+    0x468: "STM32G4x", // G431/G441
+    0x469: "STM32G4x", // G47x/G48x
+    0x479: "STM32G4x", // G491/G4A1
+    0x415: "STM32L4x", // L47x/L48x
+    0x435: "STM32L4x", // L43x/L44x
+    0x461: "STM32L4x", // L49x/L4Ax
+    0x462: "STM32L4x", // L45x/L46x
+    0x464: "STM32L4x", // L41x/L42x
+    0x470: "STM32L4x", // L4R/L4S
+    0x471: "STM32L4x", // L4P5/L4Q5
+    0x472: "STM32L5x", // L552/L562
+    0x455: "STM32U5x", // U535/U545
+    0x481: "STM32U5x", // U59x/U5Ax
+    0x482: "STM32U5x", // U575/U585
+    0x416: "STM32L1x", // cat.1
+    0x429: "STM32L1x", // cat.2
+    0x427: "STM32L1x", // cat.3
+    0x436: "STM32L1x", // cat.4/cat.3 中密度增强
+    0x437: "STM32L1x", // cat.5/cat.6
+    0x457: "STM32L0x", // cat.1
+    0x425: "STM32L0x", // cat.2
+    0x417: "STM32L0x", // cat.3
+    0x447: "STM32L0x", // cat.5
+    0x495: "STM32WBx", // WB55/WB35
+    0x497: "STM32WLx" // WLE5/WL55
 };
+// 各系列可被调试器选中的内核（双核系列包含第二内核，用于 CPUID 与 DEV_ID 交叉校验）
+const STM32_SERIES_CORES = {
+    STM32F0x: ["Cortex-M0"],
+    STM32F1x: ["Cortex-M3"],
+    STM32F2x: ["Cortex-M3"],
+    STM32F3x: ["Cortex-M4"],
+    STM32F4x: ["Cortex-M4"],
+    STM32F7x: ["Cortex-M7"],
+    STM32H7x: ["Cortex-M7", "Cortex-M4"],
+    STM32G0x: ["Cortex-M0+"],
+    STM32G4x: ["Cortex-M4"],
+    STM32L0x: ["Cortex-M0+"],
+    STM32L1x: ["Cortex-M3"],
+    STM32L4x: ["Cortex-M4"],
+    STM32L5x: ["Cortex-M33"],
+    STM32U5x: ["Cortex-M33"],
+    STM32WBx: ["Cortex-M4", "Cortex-M0+"],
+    STM32WLx: ["Cortex-M4", "Cortex-M0+"]
+};
+// 内核与 DEV_ID 推断系列是否相符；任一未知时返回 null（无法判定）
+function coreMatchesSeries(core, series) {
+    const allowed = STM32_SERIES_CORES[series];
+    if (!core || !allowed) return null;
+    return allowed.includes(core);
+}
 const JEP106_DESIGNERS = {
     "0:0x0e": "Freescale (NXP)",
     "0:0x15": "NXP",
@@ -394,6 +437,8 @@ module.exports = {
     FLASHSIZE_ADDR_SET,
     UID_ADDR_SET,
     DEV_ID_FAMILY,
+    STM32_SERIES_CORES,
+    coreMatchesSeries,
     JEP106_DESIGNERS,
     ST_JEP106_KEY,
     ARM_JEP106_KEY,

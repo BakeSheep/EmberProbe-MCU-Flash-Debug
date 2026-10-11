@@ -112,6 +112,7 @@
         const g1 =
             [
                 chipRow(t("chip.coreRev"), info.coreRevision),
+                chipRow(t("chip.coreMismatch"), info.coreMismatch),
                 chipRow(t("chip.deviceId"), info.deviceId),
                 chipRow(t("chip.revId"), info.revId),
                 chipRow(t("chip.designer"), info.designer),

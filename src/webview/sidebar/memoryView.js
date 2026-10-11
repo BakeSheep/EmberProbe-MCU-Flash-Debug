@@ -16,15 +16,7 @@
     }
     function render(result, t) {
         const summaries = ["flash", "ram"].map(
-            (kind) =>
-                "<span><strong>" +
-                kind.toUpperCase() +
-                "</strong> " +
-                esc(bytes(result[kind].total)) +
-                (result[kind].estimated
-                    ? ' <small class="memory-estimate">' + esc(t("memory.estimated")) + "</small>"
-                    : "") +
-                "</span>"
+            (kind) => "<span><strong>" + kind.toUpperCase() + "</strong> " + esc(bytes(result[kind].total)) + "</span>"
         );
         const regions = result.regions
             .map((region) => {

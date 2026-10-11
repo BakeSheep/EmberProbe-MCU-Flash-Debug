@@ -3,7 +3,14 @@
 // 先输出预检 JSON（含检测到的 ELF/目标/探针/OpenOCD），--execute 才真正执行烧录。
 const fs = require("fs");
 const { call } = require("../../_emberprobe/agent-client");
-const { parseArgs, preflight, emit, isSafeCfgPath, authorizeFlash } = require("../../_emberprobe/flash-common");
+const {
+    parseArgs,
+    preflight,
+    emit,
+    isSafeCfgPath,
+    authorizeFlash,
+    probeSerialOverride
+} = require("../../_emberprobe/flash-common");
 
 function fail(message) {
     process.stderr.write(message + "\n");
@@ -61,7 +68,7 @@ async function main() {
             probe: result.probe,
             openocd: result.openocd,
             transport: result.transport,
-            probeSerial: result.probeSerial,
+            probeSerial: probeSerialOverride(result),
             adapterSpeedKhz: result.adapterSpeedKhz,
             confirmationId: options["confirmation-id"]
         },

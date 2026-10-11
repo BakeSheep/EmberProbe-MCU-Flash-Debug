@@ -944,6 +944,8 @@ class MainViewProvider {
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
         snapshot.svd = (await this._svdManager.peekBound())?.path || "";
+        const successfulConnection = this._context?.workspaceState.get("mcu.successfulProbeConnection");
+        if (successfulConnection?.version === 1) snapshot.successfulConnection = successfulConnection;
         return snapshot;
     }
     _assertConnectionEditable(values) {
@@ -1737,7 +1739,17 @@ class MainViewProvider {
         this._postLive({ type: "liveError", message });
         try {
             if (member.session) {
-                await vscode.debug.stopDebugging(member.session);
+                let stopTimer;
+                try {
+                    await Promise.race([
+                        vscode.debug.stopDebugging(member.session),
+                        new Promise((resolve) => {
+                            stopTimer = setTimeout(resolve, 2000);
+                        })
+                    ]);
+                } finally {
+                    clearTimeout(stopTimer);
+                }
                 await this._debugBridge.waitForState(
                     () => this._terminatedDebugSessionIds.has(member.session.id),
                     2000

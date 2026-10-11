@@ -3,7 +3,7 @@
 // 先输出预检 JSON，--execute 输出 {verified, elf, elfSha256, detail} 并以退出码反映结果。
 const fs = require("fs");
 const { call } = require("../../_emberprobe/agent-client");
-const { parseArgs, preflight, emit, isSafeCfgPath } = require("../../_emberprobe/flash-common");
+const { parseArgs, preflight, emit, isSafeCfgPath, probeSerialOverride } = require("../../_emberprobe/flash-common");
 
 function fail(message) {
     process.stderr.write(message + "\n");
@@ -36,7 +36,7 @@ async function main() {
             probe: result.probe,
             openocd: result.openocd,
             transport: result.transport,
-            probeSerial: result.probeSerial,
+            probeSerial: probeSerialOverride(result),
             adapterSpeedKhz: result.adapterSpeedKhz,
             confirmationId: options["confirmation-id"]
         },

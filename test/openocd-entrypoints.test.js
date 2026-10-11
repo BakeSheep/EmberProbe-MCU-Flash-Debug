@@ -8,6 +8,7 @@ const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const shared = require("../src/openocdScripts");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
 
 // Execute the production modules with only process creation and path lookup replaced.
 function load(file, overrides) {
@@ -183,6 +184,63 @@ function load(file, overrides) {
         assert(args.indexOf("/scripts/interface/jlink.cfg") < args.indexOf("transport select swd"));
         assert(args.indexOf("transport select swd") < args.indexOf("/scripts/target/stm32f4x.cfg"));
         assert(args.indexOf("/scripts/target/stm32f4x.cfg") < args.indexOf("adapter speed 100"));
+    }
+    for (const operation of ["chip-read", "pause", "continue", "reset", "fault-read"]) {
+        const coordinator = new ProbeCoordinator();
+        const lease = coordinator.acquire("chipInfo");
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.exitCode = null;
+        child.kill = () => {
+            child.killed = true;
+        };
+        const delayedExec = load("src/services/openocdExec.js", {
+            child_process: { spawn: () => child },
+            "../openocdScripts": scripts
+        });
+        const timedExec = {
+            runOpenOcdOnce: (request) => delayedExec.runOpenOcdOnce({ ...request, timeoutMs: 10 })
+        };
+        const timedChip = load("src/chipInfo.js", { "./services/openocdExec": timedExec });
+        const timedFault = load("src/faultInfo.js", { "./services/openocdExec": timedExec });
+        const request =
+            operation === "chip-read"
+                ? timedChip.readChipInfo(vscode, options)
+                : operation === "fault-read"
+                  ? timedFault.readFaultInfo(options)
+                  : timedChip.controlTarget(options, operation);
+        let settled = false;
+        const outcome = request
+            .finally(() => lease.release())
+            .then(
+                () => {
+                    settled = true;
+                    return null;
+                },
+                (error) => {
+                    settled = true;
+                    return error;
+                }
+            );
+        try {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            assert.strictEqual(child.killed, true, operation + " terminates the timed-out process");
+            assert.strictEqual(settled, false, operation + " must wait for process close");
+            assert.throws(() => coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
+            child.emit("error", new Error("kill failed"));
+            await Promise.resolve();
+            assert.strictEqual(settled, false, "a kill error cannot release physical ownership");
+        } finally {
+            child.exitCode = 1;
+            child.emit("close", 1);
+        }
+        const error = await outcome;
+        assert(error, operation + " reports the original timeout after close");
+        if (operation.endsWith("read")) assert.strictEqual(error.i18nKey, "chip.timeout");
+        else assert.strictEqual(error.code, "OPENOCD_TIMEOUT");
+        assert.strictEqual(coordinator.isActive("chipInfo"), false);
+        coordinator.acquire("agentRead").release();
     }
     console.log("OpenOCD entrypoint transport and diagnostic tests passed");
 })().catch((error) => {

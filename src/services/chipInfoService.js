@@ -1,5 +1,6 @@
 "use strict";
 const { serializeError } = require("./errorEnvelope");
+const { connectionIdentity } = require("../../skills/_emberprobe/probe-connection");
 
 class ChipInfoService {
     constructor(options) {
@@ -98,23 +99,20 @@ class ChipInfoService {
                 : {};
             preflightMs = Date.now() - preflightStartedAt;
             const openOcdStartedAt = Date.now();
-            const info = await this.chipInfo.readChipInfo(
-                this.vscode,
-                {
-                    executable,
-                    probe,
-                    target,
-                    cwd,
-                    transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
-                    ...connection
-                },
-                (event) => {
-                    if (event?.stage === "raw") {
-                        diagnostics = event;
-                        openOcdMs = Date.now() - openOcdStartedAt;
-                    }
+            const options = {
+                executable,
+                probe,
+                target,
+                cwd,
+                transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
+                ...connection
+            };
+            const info = await this.chipInfo.readChipInfo(this.vscode, options, (event) => {
+                if (event?.stage === "raw") {
+                    diagnostics = event;
+                    openOcdMs = Date.now() - openOcdStartedAt;
                 }
-            );
+            });
             openOcdMs = Date.now() - openOcdStartedAt;
             const saveStartedAt = Date.now();
             if (!lease.released && (info.cpuid || info.core || info.idcode || info.uid))
@@ -122,7 +120,7 @@ class ChipInfoService {
             saveMs = Date.now() - saveStartedAt;
             info.readAt = new Date().toISOString();
             this.info = info;
-            this.infoConnection = { probe, target };
+            this.infoConnection = connectionIdentity(options);
             this.post({ state: "ready", key: "chip.done" }, info);
             this.onDiagnostics(diagnosticReport(), info);
             return info;
@@ -178,6 +176,11 @@ class ChipInfoService {
                 transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                 ...connection
             };
+            if (JSON.stringify(connectionIdentity(options)) !== JSON.stringify(this.infoConnection))
+                throw Object.assign(new Error(this.t("chip.readAgain")), {
+                    i18nKey: "chip.readAgain",
+                    code: "CHIP_INFO_STALE"
+                });
             const result = await this.chipInfo.controlTarget(options, action);
             // Show the verified transition even if the subsequent full information read fails.
             this.info = {

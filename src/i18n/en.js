@@ -372,6 +372,7 @@ module.exports = Object.freeze({
     "chip.unknownCore": "Unknown core",
     "chip.adapterClock": "Adapter Clock",
     "chip.coreRev": "Core Revision",
+    "chip.coreMismatch": "Core/Series Mismatch",
     "chip.targetState": "State when read",
     "chip.pause": "Pause",
     "chip.continue": "Continue",

@@ -2,6 +2,9 @@
 const assert = require("assert");
 const { ChipInfoService } = require("../src/services/chipInfoService");
 const { createFixture } = require("./helpers/service-fixture");
+const { ProbeConnectionService } = require("../src/services/probeConnectionService");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
+const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 (async () => {
     const fixture = createFixture();
     const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
@@ -64,6 +67,78 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.deepStrictEqual(actions, ["pause", "continue", "reset"]);
         assert.ok(chipPosts.some((message) => message.key === "chip.busyDownload"));
         active.delete("download");
+
+        for (const selection of ["configured", "remembered"]) {
+            let configuredSerial = "";
+            let remembered = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" };
+            const inventory = {
+                available: true,
+                devices: ["probe-A", "probe-B"].map((serial) => ({ family: "cmsis-dap", serial, id: serial })),
+                notes: []
+            };
+            const connections = new ProbeConnectionService({
+                getConfig: () => ({
+                    debugger: "cmsis-dap.cfg",
+                    mcu: "stm32f4x.cfg",
+                    probeSerial: configuredSerial,
+                    transport: "swd",
+                    openocdPath: "openocd"
+                }),
+                getSuccessfulConnection: () => remembered,
+                prepareConnection: async (request) => resolveProbeConnection(request, inventory)
+            });
+            const coordinator = new ProbeCoordinator();
+            const posts = [];
+            const reads = [];
+            const controls = [];
+            const service = new ChipInfoService({
+                vscode,
+                context,
+                cacheKeys,
+                chipInfo: {
+                    readChipInfo: async (_vscode, request) => {
+                        reads.push(request);
+                        return { core: "Cortex-M4", uid: request.probeSerial, targetState: "running" };
+                    },
+                    controlTarget: async (request, action) => {
+                        controls.push({ request, action });
+                        return { state: "halted" };
+                    }
+                },
+                coordinator,
+                t: (key) => key,
+                resolveExecutable: async (value) => value,
+                prepareConnection: (request, interactive) => connections.prepare(request, interactive),
+                commandContext: () => ({ cwd: temp }),
+                onPost: (message) => posts.push(message),
+                onDiagnostics() {},
+                isDebugActive: () => false
+            });
+            state.set(cacheKeys.debugger, "cmsis-dap.cfg");
+            state.set(cacheKeys.mcuCore, "stm32f4x.cfg");
+            assert.strictEqual((await service.read()).uid, "probe-A");
+            assert.strictEqual(service.infoConnection.probeSerial, "probe-A");
+            assert.strictEqual((await service.control("pause")).uid, "probe-A");
+            assert.strictEqual(controls[0].request.probeSerial, "probe-A", "control uses the compared resolved serial");
+            const displayed = service.info;
+            const readCount = reads.length;
+            if (selection === "configured") configuredSerial = "probe-B";
+            else remembered = { ...remembered, probeSerial: "probe-B" };
+            for (const action of ["pause", "continue", "reset"]) {
+                assert.strictEqual(await service.control(action), null);
+                assert.strictEqual(posts.at(-1).key, "chip.readAgain");
+                assert.strictEqual(posts.at(-1).diagnostic.code, "CHIP_INFO_STALE");
+                assert.strictEqual(service.info, displayed, "stale rejection preserves the displayed identity");
+                assert.strictEqual(reads.length, readCount, "stale controls cannot read or operate on probe B");
+                assert.strictEqual(controls.length, 1);
+                assert.strictEqual(coordinator.isActive("chipInfo"), false);
+                coordinator.acquire("agentRead").release();
+            }
+            assert.strictEqual((await service.read()).uid, "probe-B");
+            assert.strictEqual(service.infoConnection.probeSerial, "probe-B");
+            assert.strictEqual((await service.control("pause")).uid, "probe-B");
+            assert.strictEqual(controls.at(-1).request.probeSerial, "probe-B");
+        }
 
         const unavailableChip = new ChipInfoService({
             vscode: { workspace: { getConfiguration: () => ({ get: () => "openocd" }) } },

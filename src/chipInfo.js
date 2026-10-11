@@ -21,6 +21,7 @@ async function readChipInfo(vscode, options, onProgress) {
             inventory: options.inventory,
             cwd: options.cwd,
             timeoutMs: 15000,
+            waitForCloseOnTimeout: true,
             buildCommands: () => cmds,
             onLine: parser.handleLine,
             buildTimeoutError: () =>
@@ -69,6 +70,7 @@ async function controlTarget(options, action) {
         inventory: options.inventory,
         cwd: options.cwd,
         timeoutMs: 15000,
+        waitForCloseOnTimeout: true,
         buildCommands: () => ["init", script, "shutdown"],
         onLine: (line) => {
             const match = line.match(/\bEP_CONTROL_(OK|ERROR)\s+(.+)$/);
