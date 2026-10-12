@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("assert");
+const { MAX_COMPOSITE_DEPTH } = require("../src/dwarf/layoutLimits");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
@@ -404,7 +405,10 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         assert.equal(lazy.window.collectLeaves(manyLeaves, "large", 0).length, 1000, "bound member-search traversal");
         const cyclic = { kind: "struct", members: [] };
         cyclic.members.push({ name: "self", compositeLayout: cyclic }, { name: "value", watchType: "u32" });
-        assert.ok(lazy.window.collectLeaves(cyclic, "cycle", 0).length <= 13, "bound recursion in malformed layouts");
+        assert.ok(
+            lazy.window.collectLeaves(cyclic, "cycle", 0).length <= MAX_COMPOSITE_DEPTH + 1,
+            "bound recursion in malformed layouts"
+        );
         lazy.assertHealthy();
     } finally {
         lazy.close();

@@ -34,7 +34,22 @@ function fixture(depth, width, variableCount = 1) {
 }
 const healthy = buildCompositeLayouts(fixture(2, 2));
 assert.strictEqual(healthy.get("root0").members[0].compositeLayout.members.length, 2);
-assert.throws(() => buildCompositeLayouts(fixture(7, 6)), { code: "DWARF_BUDGET_EXCEEDED" });
+const bounded = buildCompositeLayouts(fixture(7, 6)).get("root0");
+assert.strictEqual(bounded.truncated, true);
+function countNodes(layout) {
+    return (
+        1 +
+        (layout.members || []).reduce(
+            (sum, member) => sum + 1 + (member.compositeLayout ? countNodes(member.compositeLayout) : 0),
+            0
+        )
+    );
+}
+assert.ok(countNodes(bounded) <= 16384, "partial layout work remains bounded");
+assert.ok(
+    bounded.members.some((member) => member.compositeLayout),
+    "an oversized branch must not discard all top-level members"
+);
 assert.strictEqual(buildCompositeLayouts(fixture(1, 2048)).size, 1);
 assert.strictEqual(buildCompositeLayouts(fixture(1, 1, 1025)).size, 1025);
 assert.throws(() => buildCompositeLayouts(fixture(1, 16384)), { code: "DWARF_BUDGET_EXCEEDED" });

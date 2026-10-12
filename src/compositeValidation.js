@@ -1,4 +1,5 @@
 "use strict";
+const { MAX_COMPOSITE_DEPTH } = require("./dwarf/layoutLimits");
 
 // Validate the complete layout before any consumer allocates expanded leaves or trees.
 function validateComposite(layout, size, address = 0) {
@@ -17,7 +18,7 @@ function validateComposite(layout, size, address = 0) {
     )
         invalid();
     const walk = (node, available, depth, multiplier) => {
-        if (!node || depth > 16 || (remaining -= multiplier) < 0) invalid();
+        if (!node || depth > MAX_COMPOSITE_DEPTH || (remaining -= multiplier) < 0) invalid();
         if (node.kind === "array") {
             const count = node.totalElements;
             const width = node.elementType?.byteSize;
@@ -28,9 +29,10 @@ function validateComposite(layout, size, address = 0) {
                 width <= 0 ||
                 !Number.isSafeInteger(count * width) ||
                 count * width > available ||
-                count * multiplier > remaining
+                (!node.elementType.unobservable && count * multiplier > remaining)
             )
                 invalid();
+            if (node.elementType.unobservable) return;
             if (node.elementType.compositeLayout)
                 walk(node.elementType.compositeLayout, width, depth + 1, multiplier * count);
             else remaining -= count * multiplier;
@@ -46,7 +48,8 @@ function validateComposite(layout, size, address = 0) {
                     offset + width > available
                 )
                     invalid();
-                if (member.compositeLayout) walk(member.compositeLayout, width, depth + 1, multiplier);
+                if (!member.unobservable && member.compositeLayout)
+                    walk(member.compositeLayout, width, depth + 1, multiplier);
                 else if ((remaining -= multiplier) < 0) invalid();
             }
         }

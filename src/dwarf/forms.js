@@ -41,6 +41,7 @@ function createFormReader({ buf, str, lineStr }) {
             depth--;
         }
         function readValue(cur, form, ctx) {
+            ctx.form = form;
             switch (form) {
                 case 0x01:
                     return readAddr(buf, cur, ctx.addrSize); // addr

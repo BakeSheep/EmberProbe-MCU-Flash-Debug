@@ -20,6 +20,7 @@ function activate(context) {
             webviewOptions: { retainContextWhenHidden: true }
         }),
         vscode.commands.registerCommand("mcu-vscode.folderDebug", resource => provider.commandHandlers["mcu-vscode.debug"](resource)),
+        vscode.commands.registerCommand("mcu-vscode.folderAttachDebug", resource => provider.commandHandlers["mcu-vscode.attachDebug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),
         vscode.commands.registerCommand("mcu-vscode.openLiveWatch", () => provider.commandHandlers["mcu-vscode.openLiveWatch"]()),
         vscode.commands.registerCommand("mcu-vscode.manageAgentSkills", () => provider.commandHandlers["mcu-vscode.manageAgentSkills"]()),

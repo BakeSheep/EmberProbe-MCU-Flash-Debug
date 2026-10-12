@@ -4,6 +4,33 @@ const { SUPPORTED_TYPES, typeByteLength, parseMemberPath, expandCompositeLeaves 
 const { variableDisplayName, requiresRuntimePath } = require("./webview/runtime");
 const { runtimeWatchEntry } = require("./services/runtimeWatch");
 
+function validateLayoutExpansionRequest(handle, generation) {
+    const { LAYOUT_HANDLE_PATTERN } = require("./dwarf/layoutExpansion");
+    if (typeof handle !== "string" || handle.length > 280 || !LAYOUT_HANDLE_PATTERN.test(handle))
+        throw Object.assign(new Error("Invalid layout expansion handle"), { code: "INVALID_LAYOUT_HANDLE" });
+    if (!Number.isSafeInteger(generation) || generation < 0)
+        throw Object.assign(new Error("Invalid ELF layout generation"), { code: "INVALID_LAYOUT_HANDLE" });
+}
+
+function validateLayoutExpansionTarget(name, path) {
+    const symbol = typeof name === "string" && name.length <= 1024 && parseMemberPath(name);
+    const parsed = typeof path === "string" && path.length <= 4096 && parseMemberPath(path);
+    if (
+        !symbol ||
+        symbol.base !== name ||
+        symbol.segments.length ||
+        !parsed ||
+        parsed.base !== name ||
+        !parsed.segments.length ||
+        parsed.segments.length > 256 ||
+        parsed.segments.some((segment) => !["member", "index"].includes(segment.kind))
+    )
+        throw Object.assign(new Error("Invalid layout expansion symbol or member path"), {
+            code: "INVALID_VARIABLE_PATH"
+        });
+    return parsed;
+}
+
 function cleanWindowsPath(value) {
     if (!value) return "";
     return String(value)
@@ -24,11 +51,7 @@ function resolveLeafPath(name, byName, supported) {
     if (!parsed || !parsed.segments.length) return null;
     const base = byName.get(parsed.base);
     if (!base || !base.isComposite || !base.compositeLayout) return null;
-    const leaves = expandCompositeLeaves(
-        { name: base.name, address: base.address, size: base.size },
-        base.compositeLayout,
-        parsed
-    );
+    const leaves = expandCompositeLeaves(base, base.compositeLayout, parsed);
     if (leaves.length !== 1) return null; // 仅单标量叶子可入观察列表
     const leaf = leaves[0];
     if (!supported.has(leaf.type)) return null;
@@ -37,6 +60,9 @@ function resolveLeafPath(name, byName, supported) {
         address: leaf.address >>> 0,
         size: Number(leaf.size) || typeByteLength(leaf.type),
         type: leaf.type,
+        ...(leaf.layoutExpanded
+            ? { layoutExpanded: true, ...(base.runtimeLayout ? { staticRuntimeStorage: true } : {}) }
+            : {}),
         ...(leaf.enumInfo ? { enumInfo: leaf.enumInfo } : {}),
         ...(leaf.isBoolean ? { isBoolean: true } : {}),
         ...(Number.isInteger(leaf.bitSize) ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset } : {})
@@ -54,6 +80,13 @@ function normalizeWatchList(items, symbols) {
         const symbol = byName.get(item.name);
         const path = parseMemberPath(item.name);
         const runtimeSymbol = symbol || (path && byName.get(path.base));
+        const expanded = runtimeSymbol?.layoutExpansions && resolveLeafPath(item.name, byName, supported);
+        if (expanded?.layoutExpanded) {
+            seen.add(item.name);
+            const displayName = variableDisplayName(expanded, byName);
+            result.push({ ...expanded, ...(displayName !== expanded.name ? { displayName } : {}) });
+            continue;
+        }
         const runtime = runtimeSymbol && runtimeWatchEntry(item.name, runtimeSymbol, path?.segments || []);
         if (runtime) {
             seen.add(item.name);
@@ -83,7 +116,13 @@ function normalizeWatchList(items, symbols) {
                 size: Number(symbol.size) >>> 0,
                 type: "",
                 isComposite: true,
-                compositeLayout: symbol.compositeLayout || null
+                compositeLayout: symbol.compositeLayout || null,
+                ...(symbol.layoutExpansions
+                    ? {
+                          layoutExpansions: symbol.layoutExpansions,
+                          layoutExpansionGeneration: symbol.layoutExpansionGeneration
+                      }
+                    : {})
             });
             continue;
         }
@@ -104,4 +143,10 @@ function normalizeWatchList(items, symbols) {
     return result;
 }
 
-module.exports = { cleanWindowsPath, clampInteger, normalizeWatchList };
+module.exports = {
+    cleanWindowsPath,
+    clampInteger,
+    normalizeWatchList,
+    validateLayoutExpansionRequest,
+    validateLayoutExpansionTarget
+};

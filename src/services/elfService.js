@@ -2,6 +2,11 @@
 const { Worker } = require("worker_threads");
 const { isCppRuntimeSymbol, isItaniumMangled } = require("../elfSymbols");
 const { companionsUnchanged } = require("../dwarf/files");
+const { validateLayoutExpansionRequest, validateLayoutExpansionTarget } = require("../validation");
+const { resolveLayoutPath, expandCompositeLeaves } = require("../elfSymbols");
+const { validateComposite } = require("../compositeValidation");
+const MAX_LAYOUT_EXPANSIONS = 32;
+const MAX_LAYOUT_EXPANSION_BYTES = 8 * 1024 * 1024;
 
 // §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
 // autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
@@ -31,6 +36,8 @@ class ElfService {
         this.pendingLayouts = new Map();
         this.symbolByName = new Map();
         this.layoutErrors = new Map();
+        this.symbolExpansionsPending = new Map();
+        this.symbolExpansionBytes = new Map();
     }
 
     invalidate() {
@@ -40,8 +47,19 @@ class ElfService {
             this.worker.terminate().catch(() => {});
             this.worker = null;
         }
-        for (const pending of this.pendingLayouts.values()) pending.reject(new Error("ELF changed"));
+        for (const pending of this.pendingLayouts.values())
+            pending.reject(
+                Object.assign(new Error("ELF changed"), {
+                    code: pending.isExpansion ? "STALE_LAYOUT_HANDLE" : "ELF_CHANGED"
+                })
+            );
         this.pendingLayouts.clear();
+        for (const symbol of this.symbolByName.values()) {
+            for (const path of Object.keys(symbol.layoutExpansions || {})) delete symbol.layoutExpansions[path];
+            symbol.layoutExpansionGeneration = -1;
+        }
+        this.symbolExpansionsPending.clear();
+        this.symbolExpansionBytes.clear();
         this.symbolByName.clear();
         this.layoutErrors.clear();
         if (this.rejectSymbols) this.rejectSymbols(new Error("ELF changed"));
@@ -190,7 +208,7 @@ class ElfService {
         let worker;
         try {
             worker = new Worker(this.workerPath, {
-                workerData: { path: elfPath },
+                workerData: { path: elfPath, generation },
                 resourceLimits: { maxOldGenerationSizeMb: 512 }
             });
         } catch (error) {
@@ -312,12 +330,17 @@ class ElfService {
                     result.diagnostics.push(message.diagnostic);
                     fail(message.diagnostic);
                     break;
+                case "layoutExpansionResult":
                 case "layoutResult": {
                     const pending = this.pendingLayouts.get(message.id);
                     if (!pending) break;
                     this.pendingLayouts.delete(message.id);
+                    for (const diagnostic of message.diagnostics || []) {
+                        result.diagnostics.push(diagnostic);
+                        result.warnings.push(`${diagnostic.code}: ${diagnostic.message}`);
+                    }
                     if (message.error) {
-                        this.layoutErrors.set(message.name, message.error);
+                        if (message.type === "layoutResult") this.layoutErrors.set(message.name, message.error);
                         pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
                     } else pending.resolve(message.layout);
                     break;
@@ -357,6 +380,7 @@ class ElfService {
                 resolve: (layout) => {
                     if (generation !== this.generation) return reject(new Error("ELF changed"));
                     if (layout) {
+                        layout.expansionGeneration = generation;
                         symbol.compositeLayout = layout;
                         symbol.runtimeLayout = layout.runtimeLayout;
                         symbol.unsupportedReason = "";
@@ -365,8 +389,119 @@ class ElfService {
                 },
                 reject
             });
-            this.worker.postMessage({ type: "layout", id, name });
+            try {
+                this.worker.postMessage({ type: "layout", id, name });
+            } catch (error) {
+                this.pendingLayouts.delete(id);
+                reject(error);
+            }
         });
+    }
+
+    // Expansions remain detached: merging fresh budgets into a cached root would
+    // bypass its depth/node bounds and change the meaning of existing write paths.
+    async expandLayout(handle, generation) {
+        validateLayoutExpansionRequest(handle, generation);
+        if (generation !== this.generation)
+            throw Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" });
+        try {
+            await this.ready();
+        } catch (error) {
+            if (generation !== this.generation)
+                throw Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" });
+            throw error;
+        }
+        if (generation !== this.generation)
+            throw Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" });
+        if (!this.worker)
+            throw Object.assign(new Error("ELF layout expansion requires a Worker"), { code: "ELF_LOADING" });
+        if (this.pendingLayouts.size >= 128)
+            throw Object.assign(new Error("Too many pending ELF layout requests"), { code: "DWARF_BUDGET_EXCEEDED" });
+        const id = ++this.nextRequestId;
+        return new Promise((resolve, reject) => {
+            this.pendingLayouts.set(id, {
+                isExpansion: true,
+                resolve: (layout) => {
+                    if (generation !== this.generation)
+                        return reject(
+                            Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" })
+                        );
+                    if (layout) layout.expansionGeneration = generation;
+                    resolve(layout);
+                },
+                reject
+            });
+            try {
+                this.worker.postMessage({ type: "expandLayout", id, handle, generation });
+            } catch (error) {
+                this.pendingLayouts.delete(id);
+                reject(error);
+            }
+        });
+    }
+
+    async expandSymbolLayout(name, path, handle, generation) {
+        validateLayoutExpansionRequest(handle, generation);
+        const parsed = validateLayoutExpansionTarget(name, path);
+        const stale = () => Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" });
+        if (generation !== this.generation) throw stale();
+        await this.ready();
+        if (generation !== this.generation) throw stale();
+        const symbol = this.symbolByName.get(name);
+        const layout = await this.layout(name);
+        if (generation !== this.generation) throw stale();
+        const target = symbol && resolveLayoutPath(symbol, layout, parsed, { finalExpansion: false });
+        if (
+            !target ||
+            target.path !== path ||
+            target.node.expansionHandle !== handle ||
+            !["depth-limit", "expansion-budget"].includes(target.node.unobservable)
+        )
+            throw Object.assign(new Error("Expansion handle does not belong to this symbol member path"), {
+                code: "INVALID_LAYOUT_HANDLE"
+            });
+        if (symbol.layoutExpansions?.[path]) return symbol.layoutExpansions[path];
+        const key = JSON.stringify([name, path]);
+        if (this.symbolExpansionsPending.has(key)) return this.symbolExpansionsPending.get(key);
+        const pendingCount = [...this.symbolExpansionsPending.keys()].filter(
+            (key) => JSON.parse(key)[0] === name
+        ).length;
+        if (Object.keys(symbol.layoutExpansions || {}).length + pendingCount >= MAX_LAYOUT_EXPANSIONS)
+            throw Object.assign(new Error("Per-symbol layout expansion limit reached"), {
+                code: "LAYOUT_EXPANSION_LIMIT"
+            });
+        const task = (async () => {
+            const expanded = await this.expandLayout(handle, generation);
+            if (generation !== this.generation) throw stale();
+            if (!expanded || expanded.byteSize !== target.node.byteSize)
+                throw Object.assign(new Error("Expanded layout does not match its verified storage size"), {
+                    code: "INVALID_COMPOSITE_LAYOUT"
+                });
+            validateComposite(expanded, target.node.byteSize, Number(symbol.address) + target.offset);
+            const bytes = Buffer.byteLength(JSON.stringify(expanded));
+            const total = (this.symbolExpansionBytes.get(name) || 0) + bytes;
+            if (total > MAX_LAYOUT_EXPANSION_BYTES)
+                throw Object.assign(new Error("Per-symbol layout metadata limit reached"), {
+                    code: "LAYOUT_EXPANSION_LIMIT"
+                });
+            const candidate = {
+                ...symbol,
+                layoutExpansionGeneration: generation,
+                layoutExpansions: { ...symbol.layoutExpansions, [path]: expanded }
+            };
+            expandCompositeLeaves(candidate, layout);
+            symbol.layoutExpansionGeneration = generation;
+            symbol.layoutExpansions ||= Object.create(null);
+            symbol.layoutExpansions[path] = expanded;
+            this.symbolExpansionBytes.set(name, total);
+            return expanded;
+        })();
+        this.symbolExpansionsPending.set(key, task);
+        try {
+            return await task;
+        } finally {
+            if (this.symbolExpansionsPending.get(key) === task) this.symbolExpansionsPending.delete(key);
+        }
     }
 
     async cpuLoadPlan() {
@@ -479,4 +614,4 @@ class ElfService {
     }
 }
 
-module.exports = { ElfService };
+module.exports = { ElfService, MAX_LAYOUT_EXPANSIONS, MAX_LAYOUT_EXPANSION_BYTES };

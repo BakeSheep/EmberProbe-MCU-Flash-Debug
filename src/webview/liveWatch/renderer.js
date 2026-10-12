@@ -165,6 +165,7 @@ var watch = [],
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
     impVersion = "",
+    impGeneration = null,
     impWarnings = [],
     impError = "",
     impTypesReady = true,
@@ -251,6 +252,31 @@ var historyRevision = 0,
 function defType(size) {
     return window.EmberProbeRuntime.defaultType(size);
 }
+function layoutSymbol(path) {
+    const name = EmberProbeRuntime.variableBaseName(path);
+    const symbol = impSymbolByName.get(name);
+    return symbol?.compositeLayout ? symbol : watch.find((item) => item.name === name) || symbol;
+}
+const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
+    post,
+    version: () => impVersion,
+    generation: () => impGeneration,
+    symbol: layoutSymbol,
+    changed: () => {
+        for (const item of watch) {
+            const symbol = impSymbolByName.get(item.name);
+            if (
+                symbol?.compositeLayout &&
+                symbol.compositeLayout.expansionGeneration === item.compositeLayout?.expansionGeneration
+            ) {
+                item.layoutExpansions = symbol?.layoutExpansions;
+                item.layoutExpansionGeneration = symbol?.layoutExpansionGeneration;
+            }
+        }
+        if (!$("overlay").classList.contains("hidden")) renderImport();
+        renderVars();
+    }
+});
 function post(m) {
     if (api) {
         m.panelId = CFG.panelId;
@@ -625,7 +651,7 @@ function walkTreeLeaves(node, path, cb) {
     if (!node) return;
     if (node.members) {
         node.members.forEach(function (m) {
-            walkTreeLeaves(m, m.name ? path + "." + m.name : path, cb);
+            walkTreeLeaves(m, EmberProbeRuntime.layoutMemberPath(path, m), cb);
         });
     } else if (node.elements) {
         node.elements.forEach(function (e) {
@@ -703,10 +729,18 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
     if (!layout) return;
     if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
         var ms = layout.members || [];
-        ms.forEach(function (m) {
-            var cp = m.name ? path + "." + m.name : path,
+        ms.forEach(function (original) {
+            const m = EmberProbeRuntime.layoutBranch(
+                layoutSymbol(path),
+                original,
+                EmberProbeRuntime.layoutMemberPath(path, original)
+            );
+            var cp = EmberProbeRuntime.layoutMemberPath(path, m),
                 off = offset + (Number(m.offset) || 0);
-            if (m.compositeLayout && !m.name) renderLayoutInto(container, m.compositeLayout, cp, baseAddr, off, null);
+            if (m.unobservable)
+                layoutExpansionUi.render(container, { ...m, path: cp }, EmberProbeRuntime.variableBaseName(path), t);
+            else if (m.compositeLayout && !m.name)
+                renderLayoutInto(container, m.compositeLayout, cp, baseAddr, off, null);
             else if (m.compositeLayout) renderNestInto(container, m.compositeLayout, m.name, cp, baseAddr, off);
             else if (m.watchType)
                 renderLeafInto(container, m.name, m.typeName || m.watchType, cp, m.watchType, baseAddr + off, m);
@@ -723,14 +757,23 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp) {
             end = Math.min(total, isNaN(Number(disp.end)) ? total : Number(disp.end));
             end = Math.min(end, start + 256);
         }
-        if (!et.watchType && !et.compositeLayout) {
+        if (!et.watchType && !et.compositeLayout && !et.unobservable) {
             appendNote(container, t("lw.compositeNoLayout"));
             return;
         }
         for (var i = start; i < end; i++) {
             var cp = path + "[" + i + "]",
                 off = offset + i * es;
-            if (et.compositeLayout) renderNestInto(container, et.compositeLayout, "[" + i + "]", cp, baseAddr, off);
+            const element = EmberProbeRuntime.layoutBranch(layoutSymbol(path), et, cp);
+            if (element.unobservable)
+                layoutExpansionUi.render(
+                    container,
+                    { ...element, path: cp },
+                    EmberProbeRuntime.variableBaseName(path),
+                    t
+                );
+            else if (element.compositeLayout)
+                renderNestInto(container, element.compositeLayout, "[" + i + "]", cp, baseAddr, off);
             else
                 renderLeafInto(container, "[" + i + "]", et.typeName || et.watchType, cp, et.watchType, baseAddr + off);
         }
@@ -741,8 +784,13 @@ function renderRuntimeTreeInto(container, tree, path) {
     if (!tree) return;
     if (tree.members)
         tree.members.forEach(function (member) {
-            var childPath = member.name ? path + "." + member.name : path;
-            if (member.members || member.elements) renderRuntimeTreeInto(container, member, childPath);
+            var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
+            if (member.unobservable)
+                appendNote(
+                    container,
+                    (member.name || "?") + ": " + EmberProbeRuntime.unobservableReason(member.unobservable, t)
+                );
+            else if (member.members || member.elements) renderRuntimeTreeInto(container, member, childPath);
             else if (Object.prototype.hasOwnProperty.call(member, "value"))
                 renderLeafInto(
                     container,
@@ -760,7 +808,8 @@ function renderRuntimeTreeInto(container, tree, path) {
         });
     else if (Object.prototype.hasOwnProperty.call(tree, "value"))
         renderLeafInto(container, "value", tree.typeName || tree.type || "", path, tree.type, tree.address, tree);
-    if (tree.unavailable) appendNote(container, tree.unavailable);
+    if (tree.unobservable) appendNote(container, EmberProbeRuntime.unobservableReason(tree.unobservable, t));
+    else if (tree.unavailable) appendNote(container, tree.unavailable);
 }
 function renderRuntimeBody(body, tree, name) {
     var shape = EmberProbeRuntime.runtimeTreeShape(tree);
@@ -770,7 +819,11 @@ function renderRuntimeBody(body, tree, name) {
     });
     body.textContent = "";
     body.dataset.runtimeShape = shape;
+    if (tree?.truncated) appendNote(body, t("lw.layoutPartial"));
     renderRuntimeTreeInto(body, tree, name);
+    const symbol = layoutSymbol(name);
+    for (const entry of EmberProbeRuntime.layoutUnavailableRows(symbol?.compositeLayout, name, 64, symbol))
+        layoutExpansionUi.render(body, entry, name, t);
     if (!body.childNodes.length) appendNote(body, t("lw.waitSamples"));
 }
 function appendNote(container, text) {
@@ -819,7 +872,10 @@ function renderCompositeCard(item, idx, box) {
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
         renderRuntimeBody(body, latest[item.name], item.name);
-    } else renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
+    } else {
+        if (lay.truncated) appendNote(body, t("lw.layoutPartial"));
+        renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
+    }
     if (controls) controls.decorate(card, item.name);
     content.append(head, body);
     card.append(rm, content);
@@ -832,9 +888,8 @@ function baseNameOf(n) {
 function isLeafChild(name) {
     var b = baseNameOf(name);
     if (b === name) return false;
-    return watch.some(function (w) {
-        return w.name === b && isCompositeItem(w);
-    });
+    const parent = watch.find((w) => w.name === b && isCompositeItem(w));
+    return !!parent && !(parent.runtimeLayout && watch.find((w) => w.name === name)?.layoutExpanded);
 }
 function addLeafWatch(path, address, watchType, node) {
     if (
@@ -848,6 +903,7 @@ function addLeafWatch(path, address, watchType, node) {
         address: Number(address) >>> 0,
         size: defW(watchType),
         type: watchType,
+        ...(node?.layoutExpanded ? { layoutExpanded: true, staticRuntimeStorage: node.staticRuntimeStorage } : {}),
         ...(node && Number.isInteger(node.bitSize) ? { bitSize: node.bitSize, bitOffset: node.bitOffset } : {})
     });
     ensureBuf(path);
@@ -869,20 +925,33 @@ function toggleLeafInChart(path, address, watchType, node) {
 }
 function collectLeaves(layout, name, baseAddr) {
     var out = [];
-    (function walk(lyt, path, off, depth = 0) {
-        if (!lyt || depth > 12 || out.length >= 1000) return;
+    (function walk(lyt, path, off, depth = 0, expanded = false) {
+        const symbol = layoutSymbol(name);
+        const maxDepth = symbol?.layoutExpansions
+            ? EmberProbeRuntime.MAX_LAYOUT_PATH_DEPTH
+            : EmberProbeRuntime.MAX_COMPOSITE_DEPTH;
+        if (!lyt || depth > maxDepth || out.length >= 1000) return;
         if (lyt.kind === "struct" || lyt.kind === "union" || lyt.kind === "class") {
-            (lyt.members || []).forEach(function (m) {
-                if (out.length >= 1000) return;
-                var cp = m.name ? path + "." + m.name : path,
+            (lyt.members || []).forEach(function (original) {
+                const m = EmberProbeRuntime.layoutBranch(
+                    symbol,
+                    original,
+                    EmberProbeRuntime.layoutMemberPath(path, original)
+                );
+                if (out.length >= 1000 || m.unobservable) return;
+                const childExpanded = expanded || !!m.expansionRoot;
+                var cp = EmberProbeRuntime.layoutMemberPath(path, m),
                     mo = off + (Number(m.offset) || 0);
-                if (m.compositeLayout) walk(m.compositeLayout, cp, mo, depth + 1);
+                if (m.compositeLayout) walk(m.compositeLayout, cp, mo, depth + 1, childExpanded);
                 else if (m.watchType)
                     out.push({
                         path: cp,
                         label: cp.slice(name.length),
                         address: (baseAddr + mo) >>> 0,
-                        type: m.watchType
+                        type: m.watchType,
+                        ...(childExpanded
+                            ? { layoutExpanded: true, staticRuntimeStorage: !!symbol?.runtimeLayout }
+                            : {})
                     });
             });
         } else if (lyt.kind === "array") {
@@ -893,18 +962,26 @@ function collectLeaves(layout, name, baseAddr) {
             for (var i = 0; i < end && out.length < 1000; i++) {
                 var cp = path + "[" + i + "]",
                     eo = off + i * es;
-                if (et.compositeLayout) walk(et.compositeLayout, cp, eo, depth + 1);
+                const element = EmberProbeRuntime.layoutBranch(symbol, et, cp);
+                if (element.unobservable) continue;
+                if (element.compositeLayout)
+                    walk(element.compositeLayout, cp, eo, depth + 1, expanded || !!element.expansionRoot);
                 else if (et.watchType)
                     out.push({
                         path: cp,
                         label: cp.slice(name.length),
                         address: (baseAddr + eo) >>> 0,
-                        type: et.watchType
+                        type: et.watchType,
+                        ...(expanded ? { layoutExpanded: true, staticRuntimeStorage: !!symbol?.runtimeLayout } : {})
                     });
             }
         }
     })(layout, name, 0);
     return out;
+}
+function selectionLeaves(symbol, runtime) {
+    const statics = collectLeaves(symbol.compositeLayout, symbol.name, symbol.address);
+    return runtime ? runtime.entries.concat(statics.filter((leaf) => leaf.layoutExpanded)) : statics;
 }
 function onCompositeSamples(samples) {
     if (historyClearPending) return;
@@ -1106,7 +1183,7 @@ function renderImport() {
             if (!f || s.name.toLowerCase().includes(f) || displayNameFor(s).toLowerCase().includes(f)) return true;
             if (!s.isComposite) return false;
             var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
-            var leaves = runtime?.entries || collectLeaves(s.compositeLayout, s.name, s.address);
+            var leaves = selectionLeaves(s, runtime);
             var matches = leaves.filter(function (leaf) {
                 return (
                     leaf.path.toLowerCase().includes(f) || displayNameFor({ name: leaf.path }).toLowerCase().includes(f)
@@ -1165,10 +1242,7 @@ function renderImport() {
                     return;
                 }
                 var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
-                var leaves =
-                    memberMatches.get(s.name) ||
-                    runtime?.entries ||
-                    collectLeaves(s.compositeLayout, s.name, s.address);
+                var leaves = memberMatches.get(s.name) || selectionLeaves(s, runtime);
                 if (runtime)
                     appendNote(
                         kids,
@@ -1180,6 +1254,12 @@ function renderImport() {
                                   : "lw.runtimeMembersHint"
                         )
                     );
+                if (runtime && leaves.some((leaf) => leaf.layoutExpanded))
+                    appendNote(kids, t("lw.layoutStaticStorage"));
+                if (s.compositeLayout?.truncated || s.runtimeLayout?.truncated) appendNote(kids, t("lw.layoutPartial"));
+                EmberProbeRuntime.layoutUnavailableRows(s.compositeLayout, s.name, 64, s).forEach(function (entry) {
+                    layoutExpansionUi.render(kids, entry, s.name, t);
+                });
                 var shownLeaves = Math.min(leaves.length, Math.max(0, IMPORT_ROW_LIMIT - shown.length - leafRows));
                 leaves.slice(0, shownLeaves).forEach(function (lf) {
                     var lr = document.createElement("label");
@@ -1191,6 +1271,7 @@ function renderImport() {
                     lcb.dataset.leafAddr = String(lf.address);
                     lcb.dataset.leafType = lf.type;
                     if (lf.runtimeLayout) lcb.runtimeEntry = lf;
+                    else lcb.leafEntry = lf;
                     var ln = document.createElement("span");
                     ln.className = "imp-leaf-name";
                     ln.textContent = lf.label;
@@ -1384,7 +1465,7 @@ function importSelected() {
     var changed = false;
     leafCbs.forEach(function (cb) {
         if (cb.runtimeEntry) addSymbol(cb.runtimeEntry, true);
-        else if (addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType))
+        else if (addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType, cb.leafEntry))
             changed = true;
     });
     syms.forEach(function (s) {
@@ -2467,10 +2548,17 @@ window.EmberProbeMessages.connect(window, {
         renderElfDiagnostics();
         cancelImportMemberSearch();
         impVersion = m.version || "";
+        impGeneration = m.generation ?? null;
+        layoutExpansionUi.reset();
+        for (const item of watch) {
+            delete item.layoutExpansions;
+            item.layoutExpansionGeneration = -1;
+        }
         impTypesReady = false;
         allSymbols = [];
         hideAutocomplete();
         impSymbolByName.clear();
+        renderVars();
         impIndexByName.clear();
         impTypeChunks = 0;
         impLayoutPending.clear();
@@ -2516,6 +2604,9 @@ window.EmberProbeMessages.connect(window, {
         renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
+    layoutExpansionResult: function (m) {
+        layoutExpansionUi.receive(m);
+    },
     compositeLayoutResult: function (m) {
         if (m.version !== impVersion) return;
         impLayoutPending.delete(m.name);
@@ -2523,6 +2614,8 @@ window.EmberProbeMessages.connect(window, {
         if (!symbol) return;
         if (m.layout) {
             symbol.compositeLayout = m.layout;
+            symbol.layoutExpansions = m.layoutExpansions;
+            symbol.layoutExpansionGeneration = m.layoutExpansionGeneration;
             symbol.runtimeLayout = m.layout.runtimeLayout || null;
             symbol.layoutError = "";
         } else {

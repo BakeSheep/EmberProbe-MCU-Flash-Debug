@@ -9,7 +9,8 @@ const {
     bindVariableSymbols
 } = require("./dwarf/types");
 const { parseElfSymbols } = require("./elfSymbols");
-const { createRuntimeLayoutResolver } = require("./dwarf/runtimeTypes");
+const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
+const { MAX_DIAGNOSTICS } = require("./dwarf/diagnostics");
 // 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
 // 外层（extension.js）仍按 ELF SHA-256 缓存最终结果；两层缓存职责不同。
 const _parseCache = new WeakMap();
@@ -25,7 +26,7 @@ function _parseDwarfCached(buffer, options = {}) {
         } catch {
             // Synthetic or stripped DWARF can still be inspected without a symbol table.
         }
-        parsed = bindVariableSymbols(parsed, symbols);
+        parsed = { ...bindVariableSymbols(parsed, symbols), symbols };
         if (!options.filePath) _parseCache.set(buf, parsed);
     }
     return parsed;
@@ -70,16 +71,27 @@ function parseDwarf(buffer, options = {}) {
                     message: error.message
                 });
             });
-            const resolveRuntime = options.runtime
-                ? createRuntimeLayoutResolver(parsed, parseElfSymbols(buf).symbols)
-                : null;
+            const resolveRuntime = options.runtime ? createRuntimeLayoutResolver(parsed, parsed.symbols) : null;
+            const seenRuntime = new Set();
+            const runtimeError = (name, error) => {
+                if (diagnostics.length < MAX_DIAGNOSTICS)
+                    diagnostics.push({
+                        code: error.code || "DWARF_PARSE_FAILED",
+                        stage: "runtime-layouts",
+                        symbol: name,
+                        message: error.message
+                    });
+            };
             for (const variable of options.runtime ? parsed.variables : []) {
                 const name = variable.linkageName || variable.name;
-                const runtimeLayout = resolveRuntime(name);
+                if (seenRuntime.has(name)) continue;
+                seenRuntime.add(name);
+                const runtimeLayout = resolveRuntimeLayout(name, resolveRuntime, runtimeError);
                 if (runtimeLayout)
                     layouts.set(name, {
                         ...(layouts.get(name) || { kind: "class", byteSize: 4, members: [] }),
-                        runtimeLayout
+                        runtimeLayout,
+                        ...(runtimeLayout.truncated ? { truncated: true } : {})
                     });
             }
             return {

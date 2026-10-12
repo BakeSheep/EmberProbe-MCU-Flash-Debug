@@ -20,6 +20,11 @@ function readCompanion(unit, elfPath, remainingBytes) {
         );
     };
     if (!safe(candidates[0])) throw new Error("Split DWARF companion path escapes the ELF directory");
+    if (typeof unit.compDir === "string" && unit.compDir && !/[\x00-\x1f]/.test(unit.compDir)) {
+        const compiled = path.resolve(root, unit.compDir, name);
+        if (safe(compiled)) candidates.push(compiled);
+    }
+    candidates.push(path.resolve(root, path.basename(name)));
     for (const candidate of new Set(candidates)) {
         const before = fs.statSync(candidate, { throwIfNoEntry: false });
         if (!before) continue;

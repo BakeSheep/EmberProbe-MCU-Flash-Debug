@@ -45,6 +45,7 @@
     "onView:mcu-vscode.mainView",
     "onDebugResolve:cortex-debug",
     "onCommand:mcu-vscode.folderDebug",
+    "onCommand:mcu-vscode.folderAttachDebug",
     "onCommand:mcu-vscode.folderDownload",
     "onCommand:mcu-vscode.openLiveWatch",
     "onCommand:mcu-vscode.manageAgentSkills",
@@ -79,6 +80,10 @@
         "title": "EmberProbe: 启动调试"
       },
       {
+        "command": "mcu-vscode.folderAttachDebug",
+        "title": "EmberProbe: 不复位调试（保留现场）"
+      },
+      {
         "command": "mcu-vscode.folderDownload",
         "title": "EmberProbe: 下载程序"
       },
@@ -111,6 +116,11 @@
       "explorer/context": [
         {
           "command": "mcu-vscode.folderDebug",
+          "group": "mcu-vscode@1",
+          "when": "explorerResourceIsFolder"
+        },
+        {
+          "command": "mcu-vscode.folderAttachDebug",
           "group": "mcu-vscode@1",
           "when": "explorerResourceIsFolder"
         },

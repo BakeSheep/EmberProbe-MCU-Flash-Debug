@@ -10,12 +10,13 @@ function appendMissingWatchItems(current, additions) {
     return result;
 }
 class WatchListStore {
-    constructor({ state, normalize, symbols, onChanged, onError }) {
+    constructor({ state, normalize, symbols, onChanged, onError, serialize = (items) => items }) {
         this.state = state;
         this.normalize = normalize;
         this.symbols = symbols;
         this.onChanged = onChanged;
         this.onError = onError;
+        this.serialize = serialize;
         this.cache = new Map();
     }
     invalidate(key) {
@@ -35,7 +36,7 @@ class WatchListStore {
         }
     }
     async save(key, items) {
-        await this.state.update(key, items);
+        await this.state.update(key, this.serialize(items));
         this.invalidate(key);
     }
     async rebind(keys, symbols) {
@@ -44,7 +45,8 @@ class WatchListStore {
         for (const key of new Set(keys)) {
             const previous = this.state.get(key) || [];
             const items = this.normalize(previous, symbols, key);
-            if (JSON.stringify(items) !== JSON.stringify(previous)) await this.state.update(key, items);
+            const persisted = this.serialize(items);
+            if (JSON.stringify(persisted) !== JSON.stringify(previous)) await this.state.update(key, persisted);
             this.cache.set(key, items);
             result.set(key, items);
         }

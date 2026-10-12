@@ -27,6 +27,7 @@ async function run() {
     const commands = new Set(await vscode.commands.getCommands(true));
     for (const command of [
         "mcu-vscode.folderDebug",
+        "mcu-vscode.folderAttachDebug",
         "mcu-vscode.folderDownload",
         "mcu-vscode.openLiveWatch",
         "mcu-vscode.checkOpenOcd"

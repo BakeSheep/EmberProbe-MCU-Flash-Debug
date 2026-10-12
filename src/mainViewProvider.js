@@ -158,6 +158,7 @@ class MainViewProvider {
         this._consumerTypesCache = null;
         this._watchLists = new WatchListStore({
             state: context.workspaceState,
+            serialize: (items) => this._watchIdentities(items),
             normalize: (items, symbols, key) => {
                 const normalized = validation.normalizeWatchList(items, symbols);
                 if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
@@ -617,11 +618,19 @@ class MainViewProvider {
             vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: mcuCore }));
             return true;
         };
+        this.commandHandlers["mcu-vscode.attachDebug"] = (resource) =>
+            this.commandHandlers["mcu-vscode.debug"](resource, undefined, true, { attach: true });
         this.commandHandlers["mcu-vscode.downloadOfficialSvd"] = () => this._svdManager.downloadOfficial();
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
         // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
-        this.commandHandlers["mcu-vscode.debug"] = async (resource, configuration, interactive = true) => {
+        // startOptions.attach：托管 OpenOCD 但走 attach 请求，只 halt 不复位不下载，用于保留现场。
+        this.commandHandlers["mcu-vscode.debug"] = async (
+            resource,
+            configuration,
+            interactive = true,
+            startOptions
+        ) => {
             this._assertCpuIdle();
             let probePrepared = false;
             let startAccepted = false;
@@ -749,7 +758,7 @@ class MainViewProvider {
                         ...serverOptions,
                         type: "emberprobe",
                         name: configuration?.name || this._t("msg.debugConfigName"),
-                        request: configuration?.request || "launch",
+                        request: configuration?.request || (startOptions?.attach ? "attach" : "launch"),
                         cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
                         executable: elfPath,
                         gdbTarget: managed.gdbTarget,
@@ -1156,6 +1165,11 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Variable not found in current ELF: ${rawName}`), {
                     code: "VARIABLE_NOT_FOUND"
                 });
+            const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
+            if (expanded.length) {
+                for (const leaf of expanded) appendResolved({ ...leaf, name: leaf.path });
+                continue;
+            }
             const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
                 rawName,
                 symbol,
@@ -1251,6 +1265,7 @@ class MainViewProvider {
             folded.get(key).push(s);
         }
         const scalarRequests = [];
+        const expandedScalars = [];
         const compositePlan = [];
         for (const req of requests) {
             const parsed = elfSymbols.parseMemberPath(req.name);
@@ -1269,16 +1284,22 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Variable not found in current ELF: ${req.name}`), {
                     code: "VARIABLE_NOT_FOUND"
                 });
-            const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
-                req.name,
-                symbol,
-                parsed?.segments || []
-            );
+            const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
+            if (
+                expanded.length === 1 &&
+                elfSymbols.resolveLayoutPath(symbol, symbol.compositeLayout, parsed)?.node.watchType
+            ) {
+                expandedScalars.push({ ...expanded[0], name: expanded[0].path, requestedName: req.name });
+                continue;
+            }
+            const runtime =
+                !expanded.length &&
+                require("./services/runtimeWatch").runtimeWatchEntry(req.name, symbol, parsed?.segments || []);
             if (runtime) {
                 compositePlan.push({ ...runtime, requestedName: req.name });
                 continue;
             }
-            if (require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
+            if (!expanded.length && require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
                 throw Object.assign(new Error(`Invalid runtime member path: ${req.name}`), {
                     code: "INVALID_VARIABLE_PATH"
                 });
@@ -1308,6 +1329,8 @@ class MainViewProvider {
                     type: "",
                     isComposite: true,
                     compositeLayout: symbol.compositeLayout,
+                    layoutExpansions: symbol.layoutExpansions,
+                    layoutExpansionGeneration: symbol.layoutExpansionGeneration,
                     pathSpec: parsed
                 });
             } else if (parsed && parsed.segments.length) {
@@ -1319,7 +1342,9 @@ class MainViewProvider {
                 scalarRequests.push(req);
             }
         }
-        const plan = scalarRequests.length ? elfSymbols.resolveVariableRequests(elfResult.symbols, scalarRequests) : [];
+        const plan = expandedScalars.concat(
+            scalarRequests.length ? elfSymbols.resolveVariableRequests(elfResult.symbols, scalarRequests) : []
+        );
         return { elfResult, plan, compositePlan };
     }
     _decodeAgentSample(plan, samples, compositePlan) {
@@ -1328,10 +1353,16 @@ class MainViewProvider {
         const values = {};
         for (const item of plan) {
             const sample = byName.get(item.name);
+            const decoded =
+                Number.isInteger(item.bitSize) && sample?.bytes
+                    ? elfSymbols.decodeBitfieldValue(sample.bytes, item.type, item.bitOffset, item.bitSize)
+                    : {
+                          value: sample?.bytes ? elfSymbols.decodeValue(sample.bytes, item.type) : null,
+                          valueText: sample?.bytes ? elfSymbols.decodeValueText(sample.bytes, item.type) : null
+                      };
             values[item.name] = {
                 requestedName: item.requestedName,
-                value: sample?.bytes ? elfSymbols.decodeValue(sample.bytes, item.type) : null,
-                valueText: sample?.bytes ? elfSymbols.decodeValueText(sample.bytes, item.type) : null,
+                ...decoded,
                 type: item.type,
                 address: `0x${item.address.toString(16).toUpperCase()}`
             };
@@ -1342,7 +1373,7 @@ class MainViewProvider {
                 const fullTree = comp.runtimeLayout
                     ? sample?.runtimeTree
                     : sample?.bytes
-                      ? elfSymbols.decodeComposite(sample.bytes, comp.compositeLayout)
+                      ? elfSymbols.decodeComposite(sample.bytes, comp.compositeLayout, comp)
                       : null;
                 const node = comp.runtimeLayout
                     ? fullTree
@@ -2796,6 +2827,9 @@ class MainViewProvider {
                         } else post({ type: "liveError", key: "live.varNotFound", params: { name: message.name } });
                         break;
                     }
+                    case "expandLayout":
+                        await this._handleLayoutExpansion(message, post);
+                        break;
                     case "resolveCompositeLayout": {
                         try {
                             const layout = await this._resolveElfLayout(message.name, message.version);
@@ -2803,7 +2837,8 @@ class MainViewProvider {
                                 type: "compositeLayoutResult",
                                 name: message.name,
                                 version: message.version,
-                                layout
+                                layout,
+                                ...this._layoutExpansionSnapshot(message.name)
                             });
                         } catch (error) {
                             post({
@@ -3037,17 +3072,25 @@ class MainViewProvider {
             resetValues: true
         });
     }
+    _watchIdentities(items) {
+        return items.map((item) => ({
+            name: item.name,
+            type: item.type,
+            ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {}),
+            ...(item.layoutExpanded ? { layoutExpanded: true } : {}),
+            ...(item.min !== undefined ? { min: item.min } : {}),
+            ...(item.max !== undefined ? { max: item.max } : {}),
+            ...(item.value !== undefined ? { value: item.value } : {})
+        }));
+    }
     async _saveWatchList(key, items, { syncSidebar = true } = {}) {
-        // Runtime recipes are derived from the current ELF and can contain thousands of
-        // type nodes. Persist the user identity/path only; the next ELF rebind regenerates
-        // the verified recipe and prevents stale addresses/layouts in workspace state.
-        const persisted = (Array.isArray(items) ? items : []).map((item) => {
-            if (!item?.runtimeLayout) return item;
-            const { runtimeLayout, runtimeRanges, compositeLayout, ...identity } = item;
-            return compositeLayout?.runtimeLayout
-                ? { ...identity, compositeLayout: (({ runtimeLayout: ignored, ...layout }) => layout)(compositeLayout) }
-                : { ...identity, ...(compositeLayout ? { compositeLayout } : {}) };
-        });
+        // Persist identities only. Layouts, handles and expansions are derived from
+        // the current ELF; normalization must verify them again after a reload.
+        const selected = Array.isArray(items) ? items : [];
+        const normalized = this._watchLists.normalize
+            ? this._watchLists.normalize(selected, this.readElfSymbols().symbols, key)
+            : selected;
+        const persisted = this._watchIdentities(normalized);
         await this._watchLists.save(key, persisted);
         this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
         for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
@@ -3083,7 +3126,7 @@ class MainViewProvider {
         const result = this._elfService?.cache;
         if (!result?.elf) return;
         const version = this._elfVersion(result);
-        post({ type: `${listType}Reset`, version, warnings: result.warnings });
+        post({ type: `${listType}Reset`, version, generation: this._elfService.generation, warnings: result.warnings });
         for (let i = 0; i < result.symbols.length; i += 1000)
             post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
         post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: result.warnings });
@@ -3101,8 +3144,20 @@ class MainViewProvider {
             .filter((entry) => entry.ready)
             .map((entry) => entry.post);
         if (phase === "metadata") {
-            sidebarPost({ type: "availableVariablesReset", version, warnings: result.warnings });
-            for (const post of graphPosts) post({ type: "variablesListReset", version, warnings: result.warnings });
+            this._watchLists.invalidate();
+            sidebarPost({
+                type: "availableVariablesReset",
+                version,
+                generation: this._elfService.generation,
+                warnings: result.warnings
+            });
+            for (const post of graphPosts)
+                post({
+                    type: "variablesListReset",
+                    version,
+                    generation: this._elfService.generation,
+                    warnings: result.warnings
+                });
         } else if (phase === "symbols") {
             sidebarPost({ type: "availableVariablesChunk", version, symbols: entries });
             for (const post of graphPosts) post({ type: "variablesListChunk", version, symbols: entries });
@@ -3190,6 +3245,56 @@ class MainViewProvider {
             throw Object.assign(new Error("ELF changed while resolving layout"), { code: "ELF_CHANGED" });
         return this._elfService.layout(name);
     }
+    _layoutExpansionSnapshot(name) {
+        const symbol = this._elfService.symbolByName.get(name);
+        return symbol?.layoutExpansions
+            ? {
+                  layoutExpansions: symbol.layoutExpansions,
+                  layoutExpansionGeneration: symbol.layoutExpansionGeneration
+              }
+            : {};
+    }
+    async _expandElfLayout(message) {
+        validation.validateLayoutExpansionRequest(message.handle, message.generation);
+        validation.validateLayoutExpansionTarget(message.name, message.path);
+        const result = await this._elfService.ready();
+        if (message.generation !== this._elfService.generation || message.version !== this._elfVersion(result))
+            throw Object.assign(new Error("ELF changed while expanding layout"), { code: "STALE_LAYOUT_HANDLE" });
+        const layout = await this._elfService.expandSymbolLayout(
+            message.name,
+            message.path,
+            message.handle,
+            message.generation
+        );
+        if (message.generation !== this._elfService.generation)
+            throw Object.assign(new Error("ELF changed while expanding layout"), { code: "STALE_LAYOUT_HANDLE" });
+        return layout;
+    }
+    async _handleLayoutExpansion(message, post) {
+        const identity = {
+            type: "layoutExpansionResult",
+            name: message.name,
+            path: message.path,
+            handle: message.handle,
+            generation: message.generation,
+            version: message.version
+        };
+        let layout;
+        try {
+            layout = await this._expandElfLayout(message);
+        } catch (error) {
+            post({ ...identity, code: error.code || "LAYOUT_EXPANSION_FAILED" });
+            return;
+        }
+        const reply = { ...identity, layout };
+        post(reply);
+        this._webviewView?.webview.postMessage(reply);
+        for (const entry of this._livePanels.values()) entry.post(reply);
+        this._watchLists.invalidate();
+        this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message), true);
+        for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
+        await this._refreshSamplingPlan();
+    }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
     _postLive(message) {
         if (message.type === "liveError" && message.message && typeof message.message === "object")
@@ -3217,6 +3322,11 @@ class MainViewProvider {
         });
     }
     _scalarWatchList(key) {
+        if (this._elfService?.workerPath && !this._elfService.cache?.dwarfReady) return [];
+        if (this._watchGeneration !== this._elfService?.generation) {
+            this._watchGeneration = this._elfService?.generation;
+            this._watchLists.invalidate();
+        }
         return this._watchLists.read(key);
     }
     _displayNamesForSeries(watchKey, names) {
@@ -3259,6 +3369,15 @@ class MainViewProvider {
     }
     async _rebindWatchLists(symbols) {
         const entries = Array.from(this._livePanels.values());
+        const keys = [
+            CACHE_KEYS.sidebarWatchList,
+            CACHE_KEYS.sidebarWriteList,
+            CACHE_KEYS.watchList,
+            ...entries.map((entry) => entry.watchKey)
+        ];
+        const expanded = keys.flatMap((key) =>
+            (this._context.workspaceState.get(key) || []).filter((item) => item.layoutExpanded)
+        );
         const rebound = await this._watchLists.rebind(
             [
                 CACHE_KEYS.sidebarWatchList,
@@ -3268,6 +3387,10 @@ class MainViewProvider {
             ],
             symbols
         );
+        const valid = new Set([...rebound.values()].flat().map((item) => item.name));
+        const invalid = [...new Set(expanded.filter((item) => !valid.has(item.name)).map((item) => item.name))];
+        if (invalid.length)
+            this._postLive({ type: "liveError", key: "lw.layoutWatchInvalid", params: { names: invalid.join(", ") } });
         this._latestSidebarSamples.clear();
         for (const entry of entries) entry.latestSamples.clear();
         return { entries, rebound };
@@ -3478,8 +3601,7 @@ class MainViewProvider {
     _compositeMap(key) {
         const map = new Map();
         for (const item of this._scalarWatchList(key)) {
-            if (item.isComposite && item.compositeLayout)
-                map.set(item.name, { layout: item.compositeLayout, address: item.address });
+            if (item.isComposite && item.compositeLayout) map.set(item.name, { ...item, layout: item.compositeLayout });
         }
         return map;
     }
@@ -4762,7 +4884,10 @@ class MainViewProvider {
                                 break;
                             }
                             if (result === false) {
-                                if (cmd !== "mcu-vscode.debug" || !this._debugStartupErrorReported)
+                                if (
+                                    !["mcu-vscode.debug", "mcu-vscode.attachDebug"].includes(cmd) ||
+                                    !this._debugStartupErrorReported
+                                )
                                     webviewView.webview.postMessage({
                                         type: "commandError",
                                         cmd,
@@ -4916,6 +5041,9 @@ class MainViewProvider {
                     }
                     break;
                 }
+                case "expandLayout":
+                    await this._handleLayoutExpansion(message, (reply) => webviewView.webview.postMessage(reply));
+                    break;
                 case "resolveCompositeLayout": {
                     try {
                         const layout = await this._resolveElfLayout(message.name, message.version);
@@ -4923,7 +5051,8 @@ class MainViewProvider {
                             type: "compositeLayoutResult",
                             name: message.name,
                             version: message.version,
-                            layout
+                            layout,
+                            ...this._layoutExpansionSnapshot(message.name)
                         });
                     } catch (error) {
                         webviewView.webview.postMessage({
