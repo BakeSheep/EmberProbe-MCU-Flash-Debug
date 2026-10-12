@@ -7,11 +7,12 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
     const add = (item) => {
         if (!item?.name) return;
         if (item.runtimeLayout) {
-            byName.set(item.name, { ...item });
+            const { layoutExpansions, layoutExpansionGeneration, compositeLayout, ...runtime } = item;
+            byName.set(item.name, runtime);
             return;
         }
         if (item.isComposite && item.compositeLayout) {
-            const sym = { name: item.name, address: item.address, size: item.size };
+            const sym = item;
             const leaves = elfSymbols.expandCompositeLeaves(sym, item.compositeLayout, null);
             if (!leaves.length) return;
             const totalSize =
@@ -224,7 +225,12 @@ class LiveWatchService {
             }
             const composite = compositeMap?.get(sample.name);
             if (composite) {
-                const tree = sample.bytes ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout) : null;
+                const tree = sample.bytes
+                    ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout, {
+                          name: sample.name,
+                          ...composite
+                      })
+                    : null;
                 if (tree) {
                     const decoded = { name: sample.name, tree, t: sampleTime };
                     compositeSamples.push(decoded);

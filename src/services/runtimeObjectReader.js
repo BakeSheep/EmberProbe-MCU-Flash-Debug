@@ -1,6 +1,7 @@
 "use strict";
 
 const elf = require("../elfSymbols");
+const { MAX_COMPOSITE_DEPTH, MAX_TYPE_ALIASES } = require("../dwarf/layoutLimits");
 
 function failure(code, message) {
     return Object.assign(new Error(message), { code });
@@ -18,7 +19,7 @@ class RuntimeObjectReader {
         this.nodes = 0;
     }
     type(id) {
-        for (let depth = 0; depth < 32; depth++) {
+        for (let depth = 0; depth < MAX_TYPE_ALIASES; depth++) {
             const type = this.graph.types[id];
             if (!type) throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime type is unavailable");
             if (type.kind !== "alias") return { ...type, id };
@@ -28,6 +29,11 @@ class RuntimeObjectReader {
     }
     size(id) {
         const type = this.type(id);
+        if (type.unobservable)
+            throw Object.assign(
+                failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime type is unavailable: " + type.unobservable),
+                { unobservable: type.unobservable }
+            );
         const size = type.byteSize || (type.kind === "array" ? type.count * this.size(type.target) : 0);
         if (!Number.isSafeInteger(size) || size <= 0 || size > 65536)
             throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime object size is unavailable or oversized");
@@ -93,7 +99,8 @@ class RuntimeObjectReader {
         return stack[0];
     }
     async field(object, name, depth = 0, internal = false) {
-        if (depth > 12) throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime member lookup depth exceeded");
+        if (depth > MAX_COMPOSITE_DEPTH)
+            throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime member lookup depth exceeded");
         const type = this.type(object.type);
         const direct = type.fields?.filter((field) => field.name === name) || [];
         if (direct.length === 1) return this.member(object, direct[0]);
@@ -120,6 +127,11 @@ class RuntimeObjectReader {
         return matches[0];
     }
     async member(object, field) {
+        const unavailable = field.unobservable || this.type(field.type).unobservable;
+        if (unavailable)
+            throw Object.assign(failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime member is unavailable: " + unavailable), {
+                unobservable: unavailable
+            });
         const type = this.type(object.type);
         const offset = field.dataBitOffset !== undefined ? Math.floor(field.dataBitOffset / 8) : field.offset;
         const address = Number.isSafeInteger(offset)
@@ -183,7 +195,8 @@ class RuntimeObjectReader {
         return candidates[0].id;
     }
     async tupleFields(object, depth = 0, fields = []) {
-        if (depth > 12) throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime tuple layout depth exceeded");
+        if (depth > MAX_COMPOSITE_DEPTH)
+            throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime tuple layout depth exceeded");
         const node = this.type(object.type);
         for (const member of node.fields || []) {
             if (member.name === "_M_head_impl") {
@@ -515,138 +528,215 @@ class RuntimeObjectReader {
             object = await this.dereference(object);
         return object;
     }
-    async tree(object, depth = 0, ancestors = new Set(), followPointers = !this.item.runtimeStaticPointers) {
-        if (depth > 12 || ++this.nodes > 256)
-            throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object expansion budget exceeded");
-        const key = object.type + ":" + object.address;
-        if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
-        const next = new Set(ancestors).add(key);
-        let type = this.type(object.type);
-        if (!followPointers && ["pointer", "reference"].includes(type.kind)) {
-            const address = await this.pointer(object);
+    async tree(
+        object,
+        depth = 0,
+        ancestors = new Set(),
+        followPointers = !this.item.runtimeStaticPointers,
+        maxNodes = 256
+    ) {
+        if (depth > MAX_COMPOSITE_DEPTH || this.nodes >= maxNodes)
             return {
-                kind: "scalar",
-                type: "u32",
-                typeName: type.typeName || "pointer",
-                address: object.address,
-                value: address,
-                valueText: `0x${address.toString(16)}`
+                kind: "unavailable",
+                unobservable: depth > MAX_COMPOSITE_DEPTH ? "depth-limit" : "expansion-budget"
             };
-        }
-        if (type.kind === "reference") {
-            try {
-                return this.tree(await this.dereference(object), depth + 1, next, followPointers);
-            } catch (error) {
-                if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
+        this.nodes++;
+        try {
+            const key = object.type + ":" + object.address;
+            if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
+            const next = new Set(ancestors).add(key);
+            let type = this.type(object.type);
+            if (type.unobservable)
+                return { kind: "unavailable", typeName: type.typeName, unobservable: type.unobservable };
+            const branchBudget = (remaining) =>
+                this.nodes + Math.max(0, Math.floor((maxNodes - this.nodes) / remaining));
+            const unavailable = () => ({
+                kind: "unavailable",
+                typeName: type.typeName,
+                unobservable: "expansion-budget"
+            });
+            if (!followPointers && ["pointer", "reference"].includes(type.kind)) {
                 const address = await this.pointer(object);
                 return {
                     kind: "scalar",
-                    type: "pointer",
-                    typeName: type.typeName,
+                    type: "u32",
+                    typeName: type.typeName || "pointer",
                     address: object.address,
                     value: address,
-                    valueText: `0x${address.toString(16)}`,
-                    unavailable: error.message
-                };
-            }
-        }
-        if (type.kind === "pointer") {
-            const address = await this.pointer(object);
-            if (!address)
-                return {
-                    kind: "class",
-                    typeName: type.typeName + " *",
-                    members: [],
-                    valueText: "nullptr"
-                };
-            try {
-                const value = await this.tree(await this.dereference(object), depth + 1, next, followPointers);
-                return {
-                    kind: "class",
-                    typeName: type.typeName + " *",
-                    members: [{ name: "value", ...value }],
                     valueText: `0x${address.toString(16)}`
                 };
-            } catch (error) {
-                if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
-                return {
-                    kind: "scalar",
-                    type: "pointer",
-                    typeName: type.typeName + " *",
-                    address: object.address,
-                    value: address,
-                    valueText: `0x${address.toString(16)}`,
-                    unavailable: error.message
-                };
             }
-        }
-        if (type.byteSize && type.byteSize <= 256) await this.memory(object.address, type.byteSize);
-        const storage = await this.storage(object);
-        if (storage) {
-            const count = Math.min(storage.count, 100);
-            const values = [];
-            for (let index = 0; index < count; index++)
-                values.push({
-                    index,
-                    name: storage.labels?.[index] || "value",
-                    ...(await this.tree(await storage.at(index), depth + 1, next, true))
-                });
-            return storage.named || storage.labels
-                ? { kind: "class", typeName: type.typeName, members: values, partial: count < storage.count }
-                : {
-                      kind: "array",
-                      typeName: type.typeName,
-                      totalElements: storage.count,
-                      elements: values,
-                      partial: count < storage.count
-                  };
-        }
-        if (type.kind === "array") {
-            const elements = [];
-            for (let index = 0; index < Math.min(type.count, 100); index++)
-                elements.push({
-                    index,
-                    ...(await this.tree(
-                        { address: object.address + index * this.size(type.target), type: type.target },
+            if (type.kind === "reference") {
+                try {
+                    return this.tree(await this.dereference(object), depth + 1, next, followPointers, maxNodes);
+                } catch (error) {
+                    if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
+                    const address = await this.pointer(object);
+                    return {
+                        kind: "scalar",
+                        type: "pointer",
+                        typeName: type.typeName,
+                        address: object.address,
+                        value: address,
+                        valueText: `0x${address.toString(16)}`,
+                        unavailable: error.message
+                    };
+                }
+            }
+            if (type.kind === "pointer") {
+                const address = await this.pointer(object);
+                if (!address)
+                    return {
+                        kind: "class",
+                        typeName: type.typeName + " *",
+                        members: [],
+                        valueText: "nullptr"
+                    };
+                try {
+                    const value = await this.tree(
+                        await this.dereference(object),
                         depth + 1,
                         next,
-                        followPointers
-                    ))
-                });
-            return {
-                kind: "array",
-                typeName: type.typeName,
-                totalElements: type.count,
-                elements,
-                partial: type.count > 100
-            };
-        }
-        if (["class", "union"].includes(type.kind)) {
-            const members = [];
-            for (const field of type.fields || []) {
-                if (field.name.startsWith("_vptr")) continue;
-                members.push({
-                    name: field.name,
-                    ...(await this.tree(await this.member(object, field), depth + 1, next, followPointers))
-                });
+                        followPointers,
+                        maxNodes
+                    );
+                    return {
+                        kind: "class",
+                        typeName: type.typeName + " *",
+                        members: [{ name: "value", ...value }],
+                        valueText: `0x${address.toString(16)}`
+                    };
+                } catch (error) {
+                    if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
+                    return {
+                        kind: "scalar",
+                        type: "pointer",
+                        typeName: type.typeName + " *",
+                        address: object.address,
+                        value: address,
+                        valueText: `0x${address.toString(16)}`,
+                        unavailable: error.message
+                    };
+                }
             }
-            return { kind: type.kind, typeName: type.typeName, members };
+            if (type.byteSize && type.byteSize <= 256) await this.memory(object.address, type.byteSize);
+            const storage = await this.storage(object);
+            if (storage) {
+                const count = Math.min(storage.count, 100);
+                if (this.nodes + count > maxNodes) return unavailable();
+                this.nodes += count;
+                const values = [];
+                for (let index = 0; index < count; index++)
+                    values.push({
+                        index,
+                        name: storage.labels?.[index] || "value",
+                        ...(await this.tree(
+                            await storage.at(index),
+                            depth + 1,
+                            next,
+                            true,
+                            branchBudget(count - index)
+                        ))
+                    });
+                const truncated = values.some((value) => value.unobservable || value.truncated);
+                return storage.named || storage.labels
+                    ? {
+                          kind: "class",
+                          typeName: type.typeName,
+                          members: values,
+                          partial: count < storage.count,
+                          ...(truncated ? { truncated: true } : {})
+                      }
+                    : {
+                          kind: "array",
+                          typeName: type.typeName,
+                          totalElements: storage.count,
+                          elements: values,
+                          partial: count < storage.count,
+                          ...(truncated ? { truncated: true } : {})
+                      };
+            }
+            if (type.kind === "array") {
+                const count = Math.min(type.count, 100);
+                if (this.nodes + count > maxNodes) return unavailable();
+                this.nodes += count;
+                const elements = [];
+                for (let index = 0; index < count; index++)
+                    elements.push({
+                        index,
+                        ...(await this.tree(
+                            { address: object.address + index * this.size(type.target), type: type.target },
+                            depth + 1,
+                            next,
+                            followPointers,
+                            branchBudget(count - index)
+                        ))
+                    });
+                return {
+                    kind: "array",
+                    typeName: type.typeName,
+                    totalElements: type.count,
+                    elements,
+                    partial: type.count > 100,
+                    ...(elements.some((element) => element.unobservable || element.truncated)
+                        ? { truncated: true }
+                        : {})
+                };
+            }
+            if (["class", "union"].includes(type.kind)) {
+                const fields = (type.fields || []).filter((field) => !field.name.startsWith("_vptr"));
+                if (this.nodes + fields.length > maxNodes) return unavailable();
+                this.nodes += fields.length;
+                const members = [];
+                let remaining = fields.length;
+                for (const field of fields) {
+                    const code = field.unobservable || this.type(field.type).unobservable;
+                    if (code) {
+                        members.push({ name: field.name, kind: "unavailable", unobservable: code });
+                        remaining--;
+                        continue;
+                    }
+                    members.push({
+                        name: field.name,
+                        ...(await this.tree(
+                            await this.member(object, field),
+                            depth + 1,
+                            next,
+                            followPointers,
+                            branchBudget(remaining--)
+                        ))
+                    });
+                }
+                return {
+                    kind: type.kind,
+                    typeName: type.typeName,
+                    members,
+                    ...(members.some((member) => member.unobservable || member.truncated) ? { truncated: true } : {})
+                };
+            }
+            if (type.kind !== "scalar" || !type.watchType)
+                throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime scalar type is unavailable");
+            const bytes = await this.memory(object.address, this.size(object.type));
+            const bits = object.field?.bitSize;
+            const decoded = bits
+                ? elf.decodeBitfieldValue(bytes, type.watchType, object.field.bitOffset || 0, bits)
+                : {
+                      value: elf.decodeValue(bytes, type.watchType),
+                      valueText: elf.decodeValueText(bytes, type.watchType)
+                  };
+            return {
+                kind: "scalar",
+                type: type.watchType,
+                typeName: type.typeName,
+                address: object.address,
+                ...decoded,
+                ...(type.enumInfo ? { enumText: elf.enumValueText(decoded, type.enumInfo) } : {})
+            };
+        } catch (error) {
+            if (["depth-limit", "expansion-budget", "type-cycle"].includes(error.unobservable))
+                return { kind: "unavailable", unobservable: error.unobservable };
+            throw error;
         }
-        if (type.kind !== "scalar" || !type.watchType)
-            throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime scalar type is unavailable");
-        const bytes = await this.memory(object.address, this.size(object.type));
-        const bits = object.field?.bitSize;
-        const decoded = bits
-            ? elf.decodeBitfieldValue(bytes, type.watchType, object.field.bitOffset || 0, bits)
-            : { value: elf.decodeValue(bytes, type.watchType), valueText: elf.decodeValueText(bytes, type.watchType) };
-        return {
-            kind: "scalar",
-            type: type.watchType,
-            typeName: type.typeName,
-            address: object.address,
-            ...decoded,
-            ...(type.enumInfo ? { enumText: elf.enumValueText(decoded, type.enumInfo) } : {})
-        };
     }
     async sample() {
         const object = await this.select(

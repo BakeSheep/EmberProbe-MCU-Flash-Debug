@@ -324,6 +324,8 @@
 | `sb.selectMcu` | 选择 MCU 目标 | Select MCU Target | [src/modernView.js:25](../src/modernView.js) |
 | `sb.otherConfig` | 其他配置 | Other Configuration | [src/modernView.js:25](../src/modernView.js) |
 | `sb.debug` | 调试 | Debug | [src/modernView.js:25](../src/modernView.js) |
+| `sb.attachDebug` | 不复位调试（保留现场） | Debug Without Reset | [src/modernView.js:25](../src/modernView.js) |
+| `sb.attachDebugTitle` | 附加到正在运行的芯片并暂停，不复位、不下载固件；ELF 必须与芯片中的固件一致 | Attach to the running chip and halt it without reset or download; the ELF must match the firmware on the chip | [src/modernView.js:25](../src/modernView.js) |
 | `svd.selectConfig` | 选择 SVD 文件 | Select SVD File | [src/modernView.js:19](../src/modernView.js) |
 | `svd.notConfigured` | SVD 未配置 | SVD not configured | [src/modernView.js:19](../src/modernView.js)，[src/services/svdManager.js:213](../src/services/svdManager.js)，[src/services/svdManager.js:310](../src/services/svdManager.js)，[src/services/svdManager.js:380](../src/services/svdManager.js) |
 | `svd.configured` | SVD 已配置 | SVD configured | [src/services/svdManager.js:78](../src/services/svdManager.js)，[src/services/svdManager.js:220](../src/services/svdManager.js)，[src/services/svdManager.js:390](../src/services/svdManager.js)，[src/webview/sidebar/renderer.js:1628](../src/webview/sidebar/renderer.js) |
@@ -1608,3 +1610,29 @@
 | [src/webviewAssets.js:96](../src/webviewAssets.js) | `new Error(ˋWebview ${scope} contained markup that failed CSP hardeningˋ)` |
 | [src/webviewTemplate.js:17](../src/webviewTemplate.js) | `new Error(ˋMissing webview asset: ${key}ˋ)` |
 | [src/writeAuthorization.js:60](../src/writeAuthorization.js) | `new Error(message)` |
+
+
+## 深层 C++ 布局限制（2026-10-11，issue #28）
+
+侧边栏与实时观察的复合树和导入列表通过 src/webview/runtime.js 的 unobservableReason
+将机器代码映射到中英文文案。受限条目在解析成功前不生成观察、写入或曲线按钮，也不展示猜测地址。带签名 handle 的深度/预算条目提供按需展开按钮。
+
+| 机器代码 / 状态 | i18n key | 展示含义 |
+| --- | --- | --- |
+| depth-limit | lw.layoutDepthLimit | 达到复合嵌套深度上限 |
+| expansion-budget | lw.layoutExpansionBudget | 达到布局展开预算 |
+| type-cycle | lw.layoutTypeCycle | 非法值类型循环，此分支不可观测且只读 |
+| virtual-base | lw.layoutVirtualBase | 虚基类需要已验证的运行期位置 |
+| base-location / member-location | lw.layoutLocationUnavailable | DWARF 成员位置不可用 |
+| truncated: true | lw.layoutPartial | 部分布局，某些分支不可观测 |
+
+| 已展开的 STL 静态存储 | lw.layoutStaticStorage | 可以读取/观察已验证的静态字节，运行期写入仍不可用 |
+| 可展开 | lw.layoutLoadMore | 加载更多成员 |
+| 请求在途 | lw.layoutLoading | 正在加载成员；同一路径不重复请求 |
+| STALE_LAYOUT_HANDLE / ELF_CHANGED | lw.layoutStale | ELF 已更新，请刷新变量后重新展开 |
+| LAYOUT_EXPANSION_LIMIT / DWARF_BUDGET_EXCEEDED | lw.layoutExpansionLimit | 达到展开上限，请刷新变量后重新开始 |
+| 其他展开错误 | lw.layoutExpansionFailed | 成员加载失败，请重试 |
+| reload 后路径失效 | lw.layoutWatchInvalid | 已展开的观察路径无法在新 ELF 中解析，报告名称 |
+
+侧边栏和实时观察使用同一个展开状态控制器；type-cycle 没有展开按钮。展开结果只存入当前
+符号/generation 的路径映射，不回填根布局，也不接受用户输入的地址。

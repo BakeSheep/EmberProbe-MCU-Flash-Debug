@@ -4,6 +4,10 @@
     if (typeof module === "object" && module.exports) module.exports = runtime;
     else root.EmberProbeRuntime = runtime;
 })(typeof globalThis === "object" ? globalThis : this, function () {
+    const MAX_COMPOSITE_DEPTH = 32;
+    const MAX_TYPE_ALIASES = 256;
+    const MAX_LAYOUT_PATH_DEPTH = 256;
+    const MAX_LAYOUT_VISITS = 65536;
     const SUPPORTED_TYPES = ["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
     const WIDTHS = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
     function typeByteLength(type) {
@@ -73,6 +77,165 @@
         element.dataset.rawName = rawName;
         element.setAttribute("aria-label", name);
     }
+    // Detached subroots are selected by concrete symbol path, never merged into the root.
+    function layoutBranch(symbol, node, path) {
+        const expanded = symbol?.layoutExpansions?.[path];
+        if (
+            !expanded ||
+            !Number.isSafeInteger(symbol.layoutExpansionGeneration) ||
+            expanded.byteSize !== node?.byteSize ||
+            !node?.expansionHandle ||
+            !["depth-limit", "expansion-budget"].includes(node.unobservable) ||
+            symbol.layoutExpansionGeneration !== symbol.compositeLayout?.expansionGeneration ||
+            expanded.expansionGeneration !== symbol.layoutExpansionGeneration
+        )
+            return node;
+        const { unobservable, expansionHandle, ...identity } = node;
+        return { ...identity, compositeLayout: expanded, expansionRoot: true };
+    }
+    function layoutMemberPath(path, member) {
+        return member.name
+            ? path + "." + member.name
+            : member.unobservable || member.expansionRoot
+              ? path + ".?"
+              : path;
+    }
+    function* layoutArrayIndices(symbol, layout, path, start = 0, end = layout.totalElements) {
+        if (!layout.elementType?.unobservable) {
+            for (let index = start; index < end; index++) yield index;
+            return;
+        }
+        const indices = new Set();
+        for (const key of Object.keys(symbol?.layoutExpansions || {})) {
+            if (!key.startsWith(path + "[")) continue;
+            const suffix = key.slice(path.length).match(/^\[(\d+)\]$/);
+            const index = suffix ? Number(suffix[1]) : -1;
+            if (index >= start && index < end && !layoutBranch(symbol, layout.elementType, key)?.unobservable)
+                indices.add(index);
+        }
+        yield* [...indices].sort((a, b) => a - b);
+    }
+    function layoutUnavailableRows(layout, path, maxEntries = 64, symbol) {
+        const rows = [];
+        const pending = [{ node: layout, path, depth: 0 }];
+        let visits = 0;
+        while (pending.length && rows.length < maxEntries && ++visits <= MAX_LAYOUT_VISITS) {
+            const current = pending.pop();
+            const node = layoutBranch(symbol, current.node, current.path);
+            if (!node || current.depth > MAX_LAYOUT_PATH_DEPTH) continue;
+            if (node.unobservable) {
+                rows.push({
+                    path: current.path,
+                    unobservable: node.unobservable,
+                    expansionHandle: node.expansionHandle
+                });
+                continue;
+            }
+            if (node.compositeLayout)
+                pending.push({ ...current, node: node.compositeLayout, depth: current.depth + 1 });
+            else if (node.kind === "array") {
+                const shown = Math.min(Number(node.totalElements) || 0, 16);
+                for (let index = shown - 1; index >= 0; index--)
+                    pending.push({ ...current, node: node.elementType, path: current.path + "[" + index + "]" });
+            } else
+                for (let index = (node.members || []).length - 1; index >= 0; index--) {
+                    const member = node.members[index];
+                    pending.push({ node: member, depth: current.depth, path: layoutMemberPath(current.path, member) });
+                }
+        }
+        return rows;
+    }
+    function layoutExpansionError(code, t) {
+        return t(
+            ["STALE_LAYOUT_HANDLE", "ELF_CHANGED"].includes(code)
+                ? "lw.layoutStale"
+                : ["DWARF_BUDGET_EXCEEDED", "LAYOUT_EXPANSION_LIMIT", "INVALID_COMPOSITE_LAYOUT"].includes(code)
+                  ? "lw.layoutExpansionLimit"
+                  : "lw.layoutExpansionFailed"
+        );
+    }
+    function createLayoutExpansionUi({ post, version, generation, symbol, changed }) {
+        const requests = new Map();
+        const key = (name, path) => JSON.stringify([name, path]);
+        return {
+            reset() {
+                requests.clear();
+            },
+            render(container, entry, name, t) {
+                const row = container.ownerDocument.createElement("div");
+                row.className = "layout-expansion-row";
+                const label = container.ownerDocument.createElement("span");
+                label.textContent = entry.path + ": " + unobservableReason(entry.unobservable, t);
+                row.appendChild(label);
+                if (entry.expansionHandle && ["depth-limit", "expansion-budget"].includes(entry.unobservable)) {
+                    const state = requests.get(key(name, entry.path));
+                    const stale =
+                        generation?.() != null && symbol(name)?.compositeLayout?.expansionGeneration !== generation();
+                    const button = container.ownerDocument.createElement("button");
+                    button.className = "layout-expand";
+                    button.dataset.path = entry.path;
+                    button.textContent = t(state?.loading ? "lw.layoutLoading" : "lw.layoutLoadMore");
+                    button.disabled = !!state?.loading || stale;
+                    button.onclick = (event) => {
+                        event.stopPropagation();
+                        const id = key(name, entry.path);
+                        if (requests.get(id)?.loading) return;
+                        const current = symbol(name);
+                        const request = {
+                            type: "expandLayout",
+                            name,
+                            path: entry.path,
+                            handle: entry.expansionHandle,
+                            generation: current?.compositeLayout?.expansionGeneration,
+                            version: version()
+                        };
+                        requests.set(id, { ...request, loading: true });
+                        post(request);
+                        changed();
+                    };
+                    row.appendChild(button);
+                    if (state?.error || stale) {
+                        const error = container.ownerDocument.createElement("span");
+                        error.className = "layout-expansion-error";
+                        error.setAttribute("role", "status");
+                        error.textContent = layoutExpansionError(stale ? "STALE_LAYOUT_HANDLE" : state.error, t);
+                        row.appendChild(error);
+                    }
+                }
+                container.appendChild(row);
+            },
+            receive(message) {
+                if (message.version !== version() || (generation?.() != null && message.generation !== generation()))
+                    return false;
+                const current = symbol(message.name);
+                if (!current || current.compositeLayout?.expansionGeneration !== message.generation) return false;
+                const id = key(message.name, message.path);
+                const request = requests.get(id);
+                if (request && request.handle !== message.handle) return false;
+                if (message.layout) {
+                    current.layoutExpansionGeneration = message.generation;
+                    current.layoutExpansions ||= Object.create(null);
+                    current.layoutExpansions[message.path] = message.layout;
+                    requests.delete(id);
+                } else if (request) requests.set(id, { ...request, loading: false, error: message.code });
+                else return false;
+                changed();
+                return true;
+            }
+        };
+    }
+    function unobservableReason(code, t) {
+        const key =
+            {
+                "depth-limit": "lw.layoutDepthLimit",
+                "expansion-budget": "lw.layoutExpansionBudget",
+                "type-cycle": "lw.layoutTypeCycle",
+                "virtual-base": "lw.layoutVirtualBase",
+                "base-location": "lw.layoutLocationUnavailable",
+                "member-location": "lw.layoutLocationUnavailable"
+            }[code] || "lw.compositeNoLayout";
+        return t(key);
+    }
     function translate(tables, language, key, params) {
         const table = tables[language] || tables.zh || {};
         const value = table[key] ?? tables.zh?.[key] ?? key;
@@ -84,7 +247,7 @@
         const graph = symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout;
         if (!graph) return null;
         const unwrap = (id) => {
-            for (let depth = 0; depth < 32; depth++) {
+            for (let depth = 0; depth < MAX_TYPE_ALIASES; depth++) {
                 const type = graph.types[id];
                 if (!type) return null;
                 if (type.kind !== "alias") return type;
@@ -182,7 +345,8 @@
         if (type?.stl) enteredContainer = true;
         const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
         if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
-        if (!type || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType)) return null;
+        if (!type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType))
+            return null;
         const displayName = variableDisplayName({ name }, [symbol]);
         return {
             name,
@@ -191,6 +355,12 @@
             type: rawPointer ? "u32" : type.watchType || "",
             isComposite: !rawPointer && type.kind !== "scalar",
             compositeLayout: symbol.compositeLayout || null,
+            ...(symbol.layoutExpansions
+                ? {
+                      layoutExpansions: symbol.layoutExpansions,
+                      layoutExpansionGeneration: symbol.layoutExpansionGeneration
+                  }
+                : {}),
             runtimeLayout: graph,
             runtimeSegments: segments,
             ...(hasContainers && !enteredContainer ? { runtimeStaticPointers: true } : {}),
@@ -201,7 +371,7 @@
         return symbol?.runtimeLayout || symbol?.compositeLayout?.runtimeLayout || null;
     }
     function runtimeType(graph, id) {
-        for (let depth = 0; graph && depth < 32; depth++) {
+        for (let depth = 0; graph && depth < MAX_TYPE_ALIASES; depth++) {
             const type = graph.types?.[id];
             if (!type || type.kind !== "alias") return type || null;
             id = type.target;
@@ -210,7 +380,7 @@
     }
     function runtimeContainsContainer(graph, id, seen = new Set(), depth = 0) {
         const type = runtimeType(graph, id);
-        if (!type || seen.has(type) || depth > 32) return false;
+        if (!type || type.unobservable || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return false;
         if (type.stl) return true;
         seen.add(type);
         if (type.kind === "array") return runtimeContainsContainer(graph, type.target, seen, depth + 1);
@@ -221,8 +391,8 @@
         );
     }
     function runtimeFieldType(graph, type, name, seen = new Set(), depth = 0) {
-        if (!type || seen.has(type) || depth > 12) return null;
-        const direct = (type.fields || []).filter((field) => field.name === name);
+        if (!type || type.unobservable || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return null;
+        const direct = (type.fields || []).filter((field) => field.name === name && !field.unobservable);
         if (direct.length) return direct.length === 1 ? runtimeType(graph, direct[0].type) : null;
         const next = new Set(seen).add(type);
         const inherited = (type.fields || [])
@@ -255,7 +425,8 @@
                 entries.push({ ...entry, path: entry.name, label: suffix, typeName: entry.type });
         };
         const walkTree = (node, segments, depth = 0) => {
-            if (!node || node.unavailable || depth > 12 || entries.length >= 200) return;
+            if (!node || node.unavailable || node.unobservable || depth > MAX_COMPOSITE_DEPTH || entries.length >= 200)
+                return;
             if (Object.prototype.hasOwnProperty.call(node, "value")) add(segments);
             else {
                 if (segments.length && requiresRuntimePath(symbol, segments)) add(segments);
@@ -273,7 +444,7 @@
         };
         const walkType = (id, segments, depth = 0) => {
             const type = runtimeType(graph, id);
-            if (!type || depth > 12 || entries.length >= 200) return;
+            if (!type || type.unobservable || depth > MAX_COMPOSITE_DEPTH || entries.length >= 200) return;
             if (type.stl && segments.length) add(segments);
             if (["scalar", "pointer", "reference"].includes(type.kind)) return add(segments);
             if (["unique_ptr", "shared_ptr", "weak_ptr", "optional"].includes(type.stl)) {
@@ -326,6 +497,7 @@
                       node.address,
                       Object.prototype.hasOwnProperty.call(node, "value"),
                       node.unavailable,
+                      node.unobservable,
                       node.members?.map(shape),
                       node.elements?.map(shape)
                   ]
@@ -370,6 +542,17 @@
         };
     }
     return {
+        MAX_COMPOSITE_DEPTH,
+        MAX_TYPE_ALIASES,
+        unobservableReason,
+        layoutUnavailableRows,
+        layoutBranch,
+        layoutMemberPath,
+        layoutArrayIndices,
+        layoutExpansionError,
+        createLayoutExpansionUi,
+        MAX_LAYOUT_PATH_DEPTH,
+        MAX_LAYOUT_VISITS,
         SUPPORTED_TYPES,
         typeByteLength,
         defaultType,

@@ -1,5 +1,7 @@
 "use strict";
 const { appendDiagnostic } = require("./diagnostics");
+const { isEmptyUpperBound } = require("./subranges");
+const { normalizeTypeDeclarations } = require("./typeIdentity");
 const {
     DW_TAG_array_type,
     DW_TAG_structure_type,
@@ -250,14 +252,15 @@ function _parseDwarfInternal(buffer, options = {}) {
                             }
                             const rec = { tag: ab.tag, unit };
                             for (const attr of ab.attrs) {
-                                const raw = readFormValue(cur, attr.form, {
+                                const formContext = {
                                     addrSize,
                                     cuRel,
                                     sectionBase,
                                     offsetSize,
                                     exactInteger: attr.at === 0x1c,
                                     implicit: attr.implicit
-                                });
+                                };
+                                const raw = readFormValue(cur, attr.form, formContext);
                                 const v =
                                     raw?.integer64 &&
                                     BigInt(raw.integer64) >= BigInt(Number.MIN_SAFE_INTEGER) &&
@@ -266,7 +269,8 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         : raw;
                                 switch (attr.at) {
                                     case 0x1b: // DW_AT_comp_dir
-                                        unit.compDir = v?.str;
+                                        if (v?.str !== undefined) unit.compDir = v.str;
+                                        else if (v?.strx !== undefined) unit.compDirIndex = v.strx;
                                         break;
                                     case 0x76: // DW_AT_dwo_name
                                     case 0x2130: // DW_AT_GNU_dwo_name
@@ -318,13 +322,17 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         break;
                                     case DW_AT_location:
                                         if (v && v.block && v.block.length >= 1) {
-                                            rec.hasAddr = [0x03, 0xa1, 0xfb].includes(v.block[0]);
-                                            if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5)
+                                            rec.hasAddr = false;
+                                            if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5) {
                                                 rec.address = v.block.readUInt32LE(1);
-                                            else if ([0xa1, 0xfb].includes(v.block[0])) {
+                                                rec.hasAddr = true;
+                                            } else if ([0xa1, 0xfb].includes(v.block[0])) {
                                                 const cursor = { p: 1 };
-                                                rec.addressIndex = readULEB(v.block, cursor);
-                                                if (cursor.p !== v.block.length) rec.hasAddr = false;
+                                                const index = readULEB(v.block, cursor);
+                                                if (cursor.p === v.block.length) {
+                                                    rec.addressIndex = index;
+                                                    rec.hasAddr = true;
+                                                }
                                             }
                                         }
                                         break;
@@ -378,7 +386,9 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         if (typeof v === "number") rec.subrangeCount = v;
                                         break;
                                     case DW_AT_upper_bound:
-                                        if (typeof v === "number") rec.subrangeUpperBound = v;
+                                        if (isEmptyUpperBound(raw, formContext.form)) rec.subrangeCount ??= 0;
+                                        else if (typeof v === "number") rec.subrangeUpperBound = v;
+                                        else if (raw?.integer64) rec.subrangeUpperBound = Infinity;
                                         break;
                                 }
                             }
@@ -419,6 +429,7 @@ function _parseDwarfInternal(buffer, options = {}) {
             (entry) => entry.input === input && (entry.dwoName || entry.dwoNameIndex !== undefined)
         )) {
             unit.dwoName ||= resolveStrx(unit.dwoNameIndex, unit.strBase, unit.offsetSize, unit.strings);
+            unit.compDir ||= resolveStrx(unit.compDirIndex, unit.strBase, unit.offsetSize, unit.strings);
             if (!options.filePath) {
                 appendDiagnostic(diagnostics, {
                     code: "DWARF_COMPANION_MISSING",
@@ -513,6 +524,20 @@ function _parseDwarfInternal(buffer, options = {}) {
             d.linkageName = resolveStrx(d.linkageStrx, d.base, d.unit.offsetSize, d.unit.strings);
     }
 
+    // Out-of-line nested definitions can carry only DW_AT_specification.
+    for (const die of dies.values()) {
+        if (![DW_TAG_structure_type, DW_TAG_class_type, DW_TAG_union_type, DW_TAG_enumeration_type].includes(die.tag))
+            continue;
+        let inherited = die;
+        const seen = new Set();
+        while (!die.name && inherited?.specificationRef !== undefined && seen.size < 16) {
+            if (seen.has(inherited.specificationRef)) break;
+            seen.add(inherited.specificationRef);
+            inherited = dies.get(inherited.specificationRef);
+            die.name ||= inherited?.name;
+        }
+    }
+
     // 作用域链（namespace/class/struct/union 祖先）构造 C++ 限定名；遇到 CU 根自然终止。
     const SCOPE_TAGS = new Set([DW_TAG_namespace, DW_TAG_class_type, DW_TAG_structure_type, DW_TAG_union_type]);
     const scopePrefix = (dieOff) => {
@@ -545,7 +570,7 @@ function _parseDwarfInternal(buffer, options = {}) {
     };
     for (const [off, die] of dies) {
         if ((SCOPE_TAGS.has(die.tag) || die.tag === DW_TAG_enumeration_type) && die.name)
-            die.qualifiedTypeName = buildQualifiedName(off, die.name);
+            die.qualifiedTypeName = buildQualifiedName(die.specificationRef ?? off, die.name);
     }
     for (const [off, die] of dies) {
         if (die.tag !== DW_TAG_enumerator || !die.name) continue;
@@ -555,6 +580,8 @@ function _parseDwarfInternal(buffer, options = {}) {
                 ? parent.qualifiedTypeName + "::" + die.name
                 : buildQualifiedName(off, die.name);
     }
+
+    normalizeTypeDeclarations({ dies, childrenMap, parentOf });
 
     // LTO 常把地址留在具体变量 DIE，而把名称和类型放进 abstract_origin/specification。
     // 所有 CU 都完成后再继承，才能正确解析 DW_FORM_ref_addr 的跨 CU 引用。

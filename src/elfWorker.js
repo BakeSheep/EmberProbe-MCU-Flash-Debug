@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { parseElfSymbols, parseElfSections } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
-const { createRuntimeLayoutResolver } = require("./dwarf/runtimeTypes");
+const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
 const {
     buildVariableTypes,
     buildDisplayNames,
@@ -13,6 +13,10 @@ const {
     bindVariableSymbols
 } = require("./dwarf/types");
 
+const { createLayoutExpansion } = require("./dwarf/layoutExpansion");
+const { validateLayoutExpansionRequest } = require("./validation");
+
+const MAX_LAYOUT_BYTES = 4 * 1024 * 1024;
 const MAX_ELF_BYTES = 64 * 1024 * 1024;
 const CHUNK_SIZE = 1000;
 
@@ -26,7 +30,8 @@ async function sendChunks(port, kind, entries, acks) {
     port.postMessage({ type: `${kind}Done` });
 }
 
-async function run(port, filePath) {
+async function run(port, filePath, generation = 0) {
+    let expansion;
     let resolveLayout;
     let resolveRuntime;
     let symbolNames;
@@ -37,26 +42,56 @@ async function run(port, filePath) {
             acks.delete(message.kind);
             return;
         }
-        if (message?.type !== "layout" || !Number.isSafeInteger(message.id)) return;
+        if (!["layout", "expandLayout"].includes(message?.type) || !Number.isSafeInteger(message.id) || message.id <= 0)
+            return;
+        const replyType = message.type === "layout" ? "layoutResult" : "layoutExpansionResult";
         try {
+            if (message.type === "expandLayout") {
+                validateLayoutExpansionRequest(message.handle, message.generation);
+                if (message.generation !== generation)
+                    throw Object.assign(new Error("ELF layout generation changed"), { code: "STALE_LAYOUT_HANDLE" });
+                if (!expansion)
+                    throw Object.assign(new Error("ELF layouts are still loading"), { code: "ELF_LOADING" });
+                const layout = expansion.expand(message.handle);
+                if (layout && Buffer.byteLength(JSON.stringify(layout)) > MAX_LAYOUT_BYTES)
+                    throw Object.assign(new Error("DWARF layout response budget exceeded"), {
+                        code: "DWARF_BUDGET_EXCEEDED"
+                    });
+                port.postMessage({ type: replyType, id: message.id, layout });
+                return;
+            }
             if (!resolveLayout || !symbolNames.has(message.name)) {
                 port.postMessage({ type: "layoutResult", id: message.id, name: message.name, layout: null });
                 return;
             }
             let layout = resolveLayout(message.name);
-            const runtimeLayout = resolveRuntime(message.name);
-            if (runtimeLayout) layout = { ...(layout || { kind: "class", byteSize: 4, members: [] }), runtimeLayout };
-            if (layout && Buffer.byteLength(JSON.stringify(layout)) > 4 * 1024 * 1024) {
+            const diagnostics = [];
+            const runtimeLayout = resolveRuntimeLayout(message.name, resolveRuntime, (name, error) => {
+                diagnostics.push({
+                    code: error.code || "DWARF_PARSE_FAILED",
+                    stage: "runtime-layouts",
+                    symbol: name,
+                    message: error.message
+                });
+            });
+            if (runtimeLayout)
+                layout = {
+                    ...(layout || { kind: "class", byteSize: 4, members: [] }),
+                    runtimeLayout,
+                    ...(runtimeLayout.truncated ? { truncated: true } : {})
+                };
+            layout = expansion.annotate(layout);
+            if (layout && Buffer.byteLength(JSON.stringify(layout)) > MAX_LAYOUT_BYTES) {
                 throw Object.assign(new Error("DWARF layout response budget exceeded"), {
                     code: "DWARF_BUDGET_EXCEEDED"
                 });
             }
-            port.postMessage({ type: "layoutResult", id: message.id, name: message.name, layout });
+            port.postMessage({ type: "layoutResult", id: message.id, name: message.name, layout, diagnostics });
         } catch (error) {
             port.postMessage({
-                type: "layoutResult",
+                type: replyType,
                 id: message.id,
-                name: message.name,
+                name: message.type === "layout" ? message.name : undefined,
                 error: { code: error.code || "DWARF_PARSE_FAILED", message: error.message }
             });
         }
@@ -97,6 +132,7 @@ async function run(port, filePath) {
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);
             resolveLayout = createCompositeLayoutResolver(parsed);
+            expansion = createLayoutExpansion(resolveLayout);
             resolveRuntime = createRuntimeLayoutResolver(parsed, result.symbols);
             port.postMessage({
                 type: "dwarfReady",
@@ -118,6 +154,6 @@ async function run(port, filePath) {
     }
 }
 
-if (!isMainThread) run(parentPort, workerData.path);
+if (!isMainThread) run(parentPort, workerData.path, workerData.generation || 0);
 
 module.exports = { run };
