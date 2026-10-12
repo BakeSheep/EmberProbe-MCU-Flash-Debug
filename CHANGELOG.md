@@ -8,6 +8,24 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.8.3] - 2026-10-12
 
+- 新增「不复位调试」（issue #28 相关）：侧栏新增「不复位调试」按钮及资源管理器文件夹右键命令 `EmberProbe: 不复位调试（保留现场）`，复用托管 OpenOCD 但以 DAP attach 附加，只暂停内核，不复位、不下载固件，保留芯片当前运行现场；ELF 必须与芯片中固件一致。原「调试」按钮更名为「复位调试」，`launch.json` 显式指定的 request 不受影响。
+- Add "Debug without reset": a sidebar button and an Explorer folder command `EmberProbe: Debug without reset (keep state)` reuse the managed OpenOCD server but issue a DAP attach, halting the core only, with no reset or download, so the running state is preserved (the ELF must match the chip firmware). The existing button is renamed "Debug with reset", and an explicit `request` in `launch.json` is never overridden.
+
+- 支持超过 8 层嵌套的 C++ 结构体/联合体/数组布局（issue #28）：复合类型按需惰性展开，侧栏与波形窗口中被截断的节点可点击逐层加载（每符号最多 32 次 / 8 MiB），静态展开上限为 32 层复合嵌套、每根 16384 节点、2 MiB 元数据，typedef 与 cv 修饰不计层数，兄弟分支公平分摊预算；超限、预算耗尽或按值类型循环只使对应分支不可观测且只读，其余成员保留并显示本地化原因。展开句柄带签名并绑定 ELF 代次，ELF 更新后失效，展开路径下的观察项会被移除并提示。
+- Support C++ struct/union/array layouts nested deeper than 8 levels (issue #28): composite types expand lazily and truncated nodes in the sidebar and waveform window can be clicked to load level by level (up to 32 expansions / 8 MiB per symbol). Static expansion allows 32 composite levels, 16,384 nodes and 2 MiB of metadata per root; typedef and cv wrappers do not count, and sibling branches share the budget fairly. Hitting a depth, budget or by-value-cycle limit only makes that branch unobservable and read-only while other members remain, with a localized reason. Expansion handles are signed and bound to the ELF generation, so they are invalidated when the ELF changes and watches under expanded paths are dropped with a notice.
+
+- 修复 C++ 类声明未关联到其他编译单元中的完整定义的问题（issue #27）：同 CU 定义优先，跨 CU 仅关联公开作用域内唯一的完整定义或存储身份一致的多个定义；匿名命名空间、函数内类型保持局部身份；候选不一致、缺失或比较预算不足时回退为不可展开的只读声明。另修复零长度数组（含 -1 与全 1 上界）影响外层结构体其他成员的问题，并限制分离调试文件（.dwo）只能位于 ELF 目录内。
+- Fix C++ class declarations not being linked to full definitions in other compilation units (issue #27): a same-CU definition wins, cross-CU linking happens only for a unique complete definition in public scope or definitions with identical storage identity, and anonymous-namespace and function-local types keep their local identity. Inconsistent, missing or over-budget candidates fall back to a non-expandable read-only declaration. Also fix zero-length arrays (including -1 and all-ones upper bounds) suppressing the containing struct's other members, and confine split-DWARF companion files to the ELF directory.
+
+- 优化 CMSIS-DAP / DAPLink 与多探针处理：芯片暂停/继续/复位绑定到读取时解析出的探针序列号，下载 CLI 不再把自动识别的序列号升级为显式指定；上次使用的探针未连接时不再静默改用其他设备，而是弹出选择框（「上次使用的探针 … 未连接」）；一次性 OpenOCD 超时后保持探针占用直到进程退出；共享调试组的 `stopDebugging` 增加超时，失败清理不再卡死。
+- Improve CMSIS-DAP / DAPLink and multi-probe handling: chip pause/continue/reset are bound to the probe serial resolved for the read, the flash CLI no longer promotes auto-detected serials to explicit overrides, a missing remembered probe is no longer silently replaced and instead prompts for a present one, probe leases are held until a timed-out one-shot OpenOCD exits, and shared-group `stopDebugging` is bounded so failure cleanup cannot hang.
+
+- 修复芯片信息的内核识别：更正 Cortex-M 型号表（M55/M85/M52/M35P）与 STM32 DEV_ID 系列映射，并用 DEV_ID 系列交叉校验 CPUID 内核，不一致时在芯片信息中显示「内核与系列不符」。
+- Fix chip-info core detection: correct the Cortex-M part-number table (M55/M85/M52/M35P) and STM32 DEV_ID families, and cross-check the CPUID core against the DEV_ID series, showing "Core/series mismatch" when they disagree.
+
+- 优化调试会话与采样：后台调试会话仅在暂停状态变化时刷新状态；侧栏与波形窗口状态栏布局优化；CPU 负载采样在不限速模式下通过独占仲裁让出探针。
+- Improve debug sessions and sampling: background debug sessions refresh status only when their paused state changes, sidebar and waveform status layout is polished, and CPU-load sampling yields the probe through the exclusive arbiter in max-rate mode.
+
 - 修复大型复合波形变量在首批样本耗尽内存历史预算并停止实验记录的问题：历史块按需扩容，预算压力下优先保留正在显示的曲线并批量释放余量；预算或队列不足时缩短保留范围或整批跳过内存写入，保持冻结快照、采样和磁盘归档，每次采样或清空后仅提示一次。新开启的已淘汰曲线可从归档恢复，历史 Worker 故障自动有限重试并重建。
 - Fix large composite waveform variables exhausting the memory history budget on the first sample and stopping experiment recording: grow history blocks on demand, favor displayed curves and free headroom under budget pressure, shorten retention or skip whole memory batches under budget or queue pressure, preserve frozen snapshots, sampling and disk archiving, and warn once per sampling run or history clear. Restore newly displayed evicted curves from the archive and automatically rebuild after history-worker failures with bounded retries.
 
