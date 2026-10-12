@@ -64,6 +64,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         messages.every((samples) => samples.length === 1),
         "silent leaf points stay out of Webview messages"
     );
+    await p._flushPendingChartHistorySamples();
     const frozen = store.freeze("p");
     const page = render(getLiveWatchContent({ backendHistory: true }, "en"));
     try {
@@ -112,6 +113,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         p._handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 1495 }], 2100);
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 0));
         p._handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 2100 }], 2100);
+        await p._flushPendingChartHistorySamples();
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 1));
         watches = [];
         p._configureChartHistory(entry, 2200);

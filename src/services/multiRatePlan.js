@@ -2,10 +2,11 @@
 
 const SIDEBAR_INTERVAL_MS = 50;
 class MultiRatePlan {
-    constructor({ graphItems = [], sidebarItems = [], graphIntervalMs = 33 }) {
+    constructor({ graphItems = [], sidebarItems = [], graphIntervalMs = 33, unlimited = false }) {
         this.graphItems = graphItems;
         this.sidebarItems = sidebarItems;
         this.graphIntervalMs = graphIntervalMs;
+        this.unlimited = unlimited === true;
         this.nextGraph = 0;
         this.nextSidebar = 0;
         this.latest = new Map();
@@ -21,14 +22,20 @@ class MultiRatePlan {
         }));
         this.byName = new Map(this.items.map((item) => [item.name, item]));
     }
+    get unlimitedActive() {
+        return this.unlimited && this.graphItems.length > 0;
+    }
     get intervalMs() {
+        return this.unlimitedActive ? 0 : this.requestedIntervalMs;
+    }
+    get requestedIntervalMs() {
         return Math.min(
             this.graphItems.length ? this.graphIntervalMs : Infinity,
             this.sidebarItems.length ? 50 : Infinity
         );
     }
     due(now, effectiveIntervalMs) {
-        const graph = this.graphItems.length > 0 && now >= this.nextGraph;
+        const graph = this.graphItems.length > 0 && (this.unlimitedActive || now >= this.nextGraph);
         const sidebar = this.sidebarItems.length > 0 && now >= this.nextSidebar;
         if (graph) this.nextGraph = now + Math.max(this.graphIntervalMs, effectiveIntervalMs);
         if (sidebar) this.nextSidebar = now + Math.max(SIDEBAR_INTERVAL_MS, effectiveIntervalMs);
@@ -60,6 +67,7 @@ class MultiRatePlan {
         return [...names].map((name) => this.latest.get(name)?.sample).filter(Boolean);
     }
     delay(now) {
+        if (this.unlimitedActive) return 0;
         return Math.max(
             0,
             Math.min(
@@ -69,11 +77,13 @@ class MultiRatePlan {
         );
     }
     stats() {
-        const hz = (ticks) => (ticks.length < 2 ? 0 : ((ticks.length - 1) * 1000) / (ticks.at(-1) - ticks[0]));
+        const hz = (ticks) =>
+            ticks.length < 2 || ticks.at(-1) <= ticks[0] ? 0 : ((ticks.length - 1) * 1000) / (ticks.at(-1) - ticks[0]);
         return {
             graphHz: hz(this.graphTicks),
             sidebarHz: hz(this.sidebarTicks),
-            graphTargetHz: 1000 / this.graphIntervalMs,
+            graphTargetHz: this.unlimitedActive ? null : 1000 / this.graphIntervalMs,
+            unlimited: this.unlimitedActive,
             sidebarTargetHz: 20
         };
     }

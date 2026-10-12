@@ -391,12 +391,13 @@ function buildVariableTypes(parsed) {
     const { byName, ambiguousNames, typeCache } = createVariableTypeIndex(parsed);
     const result = new Map();
     for (const [key, variable] of byName) {
+        const source = variable.sourceFile ? { sourceFile: variable.sourceFile } : {};
         if (ambiguousNames.has(key)) {
-            result.set(key, { ambiguous: true, typeName: "", watchType: "" });
+            result.set(key, { ambiguous: true, typeName: "", watchType: "", ...source });
             continue;
         }
         const t = _resolveTypeInfo(variable.typeRef, parsed.dies, parsed.childrenMap, typeCache);
-        result.set(key, { kind: t.kind, typeName: t.typeName, watchType: t.watchType, ...typeFlags(t) });
+        result.set(key, { kind: t.kind, typeName: t.typeName, watchType: t.watchType, ...typeFlags(t), ...source });
     }
     return result;
 }

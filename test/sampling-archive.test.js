@@ -14,6 +14,144 @@ const {
     cleanupStaleSamplingArchives
 } = require("../src/services/samplingArchive");
 
+async function testDraining(parentDir) {
+    const archive = new SamplingArchive({ rootDir: path.join(parentDir, "coalescing") });
+    const writes = [];
+    let syncs = 0;
+    try {
+        await archive.ready;
+        archive.handle = await fs.promises.open(archive.dataPath, "a+", 0o600);
+        const write = archive.handle.write.bind(archive.handle);
+        archive.handle.write = (...args) => {
+            writes.push(args[0].length);
+            return write(...args);
+        };
+        archive.handle.datasync = async () => {
+            syncs++;
+        };
+        for (let i = 0; i < 20; i++) archive.append([{ name: "tick", value: i }], 1000 + i * 5);
+        assert.strictEqual(writes.length, 0, "appends coalesce before the drain timer fires");
+        assert.strictEqual(archive.drainPromise, null);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        assert.strictEqual(writes.length, 1, "the normal timer drains without an explicit flush");
+        await archive.flush();
+        assert.strictEqual(writes.length, 1, "twenty ticks share one concatenated disk write");
+        assert.strictEqual(syncs, 0, "neither a normal drain nor flush syncs the temporary archive");
+        assert.deepStrictEqual(
+            fs
+                .readFileSync(archive.dataPath, "utf8")
+                .trim()
+                .split("\n")
+                .map((line) => JSON.parse(line).v.tick),
+            Array.from({ length: 20 }, (_, i) => String(i))
+        );
+
+        let release;
+        let entered;
+        const gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        const writing = new Promise((resolve) => {
+            entered = resolve;
+        });
+        let first = true;
+        archive.handle.write = async (...args) => {
+            if (first) {
+                first = false;
+                entered();
+                await gate;
+            }
+            // Exercise short writes as well as appends arriving while a write is in flight.
+            return write(args[0], args[1], Math.min(args[2], 17));
+        };
+        archive.append([{ name: "tick", value: 20 }], 1100);
+        const flushing = archive.flush();
+        await writing;
+        const inFlightBytes = archive.queuedBytes;
+        assert.ok(inFlightBytes > 0, "in-flight bytes remain in the queue budget");
+        archive.append([{ name: "tick", value: 21 }], 1105);
+        const expectedBytes = archive.writtenBytes + archive.queuedBytes;
+        const concurrent = archive.flush();
+        release();
+        assert.deepStrictEqual(await Promise.all([flushing, concurrent]), [expectedBytes, expectedBytes]);
+        assert.strictEqual(archive.queuedBytes, 0);
+        assert.strictEqual(archive.queue.length, 0);
+        assert.strictEqual(archive.drainTimer, null);
+        assert.strictEqual(archive.writtenBytes, expectedBytes);
+        assert.strictEqual(syncs, 0);
+        assert.strictEqual(fs.readFileSync(archive.dataPath, "utf8").trim().split("\n").length, 22);
+        archive.append([{ name: "tick", value: 22 }], 1110);
+        await archive.dispose();
+        assert.strictEqual(archive.queuedBytes, 0, "dispose flushes bytes still waiting for the batching timer");
+        assert.strictEqual(fs.existsSync(archive.rootDir), false);
+    } finally {
+        await archive.dispose();
+    }
+
+    const pauses = [],
+        errors = [];
+    const bounded = new SamplingArchive({
+        rootDir: path.join(parentDir, "backpressure"),
+        maxBytes: 2 * 1024 * 1024,
+        onBackpressure: (active) => pauses.push(active),
+        onError: (error) => errors.push(error)
+    });
+    let release;
+    try {
+        await bounded.ready;
+        bounded.handle = await fs.promises.open(bounded.dataPath, "a+", 0o600);
+        const write = bounded.handle.write.bind(bounded.handle);
+        const gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        let entered;
+        const writing = new Promise((resolve) => {
+            entered = resolve;
+        });
+        bounded.handle.write = async (...args) => {
+            entered();
+            await gate;
+            return write(...args);
+        };
+        bounded.handle.datasync = async () => assert.fail("normal archive drains must not sync");
+        assert.strictEqual(bounded.append([{ name: "big", valueText: "x".repeat(1024 * 1024) }], 1), true);
+        assert.deepStrictEqual(pauses, [true]);
+        assert.ok(bounded.drainPromise, "large queues drain immediately at the byte threshold");
+        await writing;
+        assert.ok(bounded.queuedBytes > 1024 * 1024);
+        assert.strictEqual(
+            bounded.append([{ name: "big", valueText: "x".repeat(1024 * 1024) }], 2),
+            false,
+            "the file limit includes the write in flight"
+        );
+        assert.strictEqual(errors[0].code, "SAMPLING_ARCHIVE_FULL");
+        release();
+        const size = await bounded.flush();
+        assert.ok(size <= bounded.maxBytes);
+        assert.deepStrictEqual(pauses, [true, false]);
+    } finally {
+        release?.();
+        await bounded.dispose();
+    }
+
+    const failure = new SamplingArchive({ rootDir: path.join(parentDir, "drain-failure") });
+    try {
+        await failure.ready;
+        failure.handle = await fs.promises.open(failure.dataPath, "a+", 0o600);
+        failure.handle.write = async () => {
+            throw new Error("disk unavailable");
+        };
+        failure.append([{ name: "tick", value: 1 }], 1);
+        await failure.flush();
+        assert.match(failure.status().error, /disk unavailable/);
+        assert.strictEqual(failure.queuedBytes, 0);
+        assert.strictEqual(failure.backpressured, false);
+        assert.strictEqual(failure.append([{ name: "tick", value: 2 }], 2), false);
+    } finally {
+        await failure.dispose();
+    }
+}
+
 async function main() {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-sampling-archive-"));
     const archiveRoot = path.join(temporaryRoot, "history");
@@ -27,6 +165,7 @@ async function main() {
     });
 
     try {
+        await testDraining(temporaryRoot);
         assert.strictEqual(csvField("a,b"), '"a,b"');
         assert.strictEqual(csvField('a"b'), '"a""b"');
         assert.strictEqual(csvField(null), "");

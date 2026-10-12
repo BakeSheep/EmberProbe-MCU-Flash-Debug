@@ -3,8 +3,80 @@ const assert = require("assert");
 const path = require("path");
 const { SamplingSession } = require("../src/samplingSession");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { EventEmitter } = require("events");
+const { run, estimateRuntimeBytes } = require("../src/samplingWorker");
+const { MAX_COMPOSITE_BYTES } = require("../src/dwarf/layoutLimits");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function testRuntimeAccounting() {
+    const tree = {
+        kind: "class",
+        typeName: "Sensor",
+        members: Array.from({ length: 100 }, (_, i) => ({
+            kind: "scalar",
+            name: "value" + i,
+            type: "f32",
+            value: i / 3,
+            valueText: String(i / 3),
+            address: 0x20000000 + i * 4
+        }))
+    };
+    const estimate = estimateRuntimeBytes(tree);
+    assert.ok(estimate >= Buffer.byteLength(JSON.stringify(tree)));
+    assert.ok(estimate < MAX_COMPOSITE_BYTES, "valid runtime trees fit the metadata budget");
+    assert.strictEqual(estimateRuntimeBytes("中🙂"), 16 + "中🙂".length * 2);
+    const diagnostic = { code: "LIVE_ADDRESS_NOT_RAM", message: "Refusing to read an invalid address" };
+    assert.ok(estimateRuntimeBytes(diagnostic) >= Buffer.byteLength(JSON.stringify(diagnostic)));
+    const oversized = 16 * 1024 * 1024 + 1;
+    assert.strictEqual(estimateRuntimeBytes({ valueText: "x".repeat(MAX_COMPOSITE_BYTES) }), oversized);
+    assert.strictEqual(
+        estimateRuntimeBytes(Array(20000).fill(0)),
+        oversized,
+        "work is bounded even for malformed trees"
+    );
+    const cycle = {};
+    cycle.self = cycle;
+    assert.strictEqual(estimateRuntimeBytes(cycle), oversized);
+    Object.defineProperty(tree, "toJSON", { value: () => assert.fail("runtime accounting must not serialize") });
+    assert.strictEqual(estimateRuntimeBytes(tree), estimate);
+
+    const port = new EventEmitter();
+    const events = [],
+        pauses = [];
+    port.postMessage = (message) => events.push(message);
+    let handlers;
+    const session = {
+        samplingEnabled: true,
+        stopped: false,
+        stop() {},
+        setSamplingEnabled(value) {
+            this.samplingEnabled = value;
+            pauses.push(value);
+        }
+    };
+    run(port, {}, (_config, nextHandlers) => {
+        handlers = nextHandlers;
+        return session;
+    });
+    handlers.onSample([{ name: "scalar", bytes: Buffer.alloc(4) }], 1);
+    const pendingTree = { kind: "scalar", valueText: "x".repeat(512 * 1024) };
+    for (let i = 0; i < 15; i++) handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], i + 2);
+    assert.deepStrictEqual(pauses, [], "runtime batches below 16 MiB remain enabled while waiting for an ack");
+    handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], 17);
+    assert.deepStrictEqual(pauses, [false], "structural bytes still enforce sampling-worker backpressure");
+    assert.strictEqual(events.at(-1).event, "onError");
+    port.emit("message", { ack: true });
+    const delivered = events.at(-1);
+    assert.strictEqual(delivered.event, "samples");
+    assert.strictEqual(delivered.batch.length, 16);
+    assert.strictEqual(
+        delivered.batch[0].samples[0].runtimeTree,
+        pendingTree,
+        "accounting preserves the payload shape"
+    );
+    port.emit("close");
+}
 (async () => {
+    testRuntimeAccounting();
     const ticks = [],
         errors = [];
     const session = new SamplingSession(

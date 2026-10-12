@@ -8,6 +8,8 @@ const readline = require("readline");
 const fsp = fs.promises;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
 const BACKPRESSURE_BYTES = 1024 * 1024;
+const DRAIN_BATCH_BYTES = 256 * 1024;
+const DRAIN_DELAY_MS = 150;
 const AGENT_CSV_MAX_BYTES = 64 * 1024 * 1024;
 
 function codedError(code, message) {
@@ -96,13 +98,13 @@ class SamplingArchive {
         this.generations = new Map();
         this.handle = null;
         this.drainPromise = null;
+        this.drainTimer = null;
         this.exportPromise = null;
         this.activeReads = new Set();
         this.closed = false;
         this.failed = null;
         this.limitReached = false;
         this.backpressured = false;
-        this.lastSyncAt = 0;
         this.ready = this._reset().catch((error) => {
             this.failed = error;
             this.onError(error);
@@ -179,7 +181,7 @@ class SamplingArchive {
         this.firstTimestampMs = this.firstTimestampMs == null ? timestamp : Math.min(this.firstTimestampMs, timestamp);
         this.lastTimestampMs = this.lastTimestampMs == null ? timestamp : Math.max(this.lastTimestampMs, timestamp);
         if (this.queuedBytes >= BACKPRESSURE_BYTES) this._setBackpressure(true);
-        this._ensureDrain();
+        this._scheduleDrain();
         return true;
     }
 
@@ -189,8 +191,23 @@ class SamplingArchive {
         this.onBackpressure(active);
     }
 
+    _scheduleDrain() {
+        if (this.drainPromise || !this.queue.length || this.failed || this.closed) return;
+        if (this.queuedBytes >= DRAIN_BATCH_BYTES) {
+            this._ensureDrain();
+        } else if (!this.drainTimer) {
+            this.drainTimer = setTimeout(() => {
+                this.drainTimer = null;
+                this._ensureDrain();
+            }, DRAIN_DELAY_MS);
+        }
+    }
+
     _ensureDrain() {
+        if (this.drainTimer) clearTimeout(this.drainTimer);
+        this.drainTimer = null;
         if (this.drainPromise) return this.drainPromise;
+        if (!this.queue.length || this.failed) return null;
         this.drainPromise = this._drain()
             .catch((error) => {
                 this.failed = error;
@@ -201,7 +218,7 @@ class SamplingArchive {
             })
             .finally(() => {
                 this.drainPromise = null;
-                if (this.queue.length && !this.failed && !this.closed) this._ensureDrain();
+                this._scheduleDrain();
             });
         return this.drainPromise;
     }
@@ -210,28 +227,26 @@ class SamplingArchive {
         await this.ready;
         if (this.failed) throw this.failed;
         if (!this.handle) this.handle = await fsp.open(this.dataPath, "a+", 0o600);
-        while (this.queue.length) {
-            const batch = this.queue.splice(0, 64);
-            const buffer = Buffer.concat(batch);
-            this.queuedBytes -= buffer.length;
-            await this.handle.write(buffer);
-            this.writtenBytes += buffer.length;
-            if (Date.now() - this.lastSyncAt >= 1000) {
-                await this.handle.datasync();
-                this.lastSyncAt = Date.now();
-            }
+        const batch = this.queue;
+        this.queue = [];
+        const buffer = Buffer.concat(batch);
+        let offset = 0;
+        while (offset < buffer.length) {
+            const { bytesWritten } = await this.handle.write(buffer, offset, buffer.length - offset);
+            if (!bytesWritten)
+                throw codedError("SAMPLING_ARCHIVE_WRITE_FAILED", "Sampling history write made no progress");
+            offset += bytesWritten;
+            // In-flight bytes remain budgeted until the write completes.
+            this.queuedBytes -= bytesWritten;
+            this.writtenBytes += bytesWritten;
         }
-        this._setBackpressure(false);
+        this._setBackpressure(this.queuedBytes >= BACKPRESSURE_BYTES);
     }
 
     async flush() {
         await this.ready;
-        while (this.drainPromise) await this.drainPromise;
-        if (this.queue.length && !this.failed) {
-            this._ensureDrain();
-            while (this.drainPromise) await this.drainPromise;
-        }
-        if (this.handle && !this.failed) await this.handle.datasync();
+        // A flush bypasses the batching delay, including bytes appended during an active write.
+        while (this.drainPromise || (this.queue.length && !this.failed)) await this._ensureDrain();
         try {
             return (await fsp.stat(this.dataPath)).size;
         } catch (error) {

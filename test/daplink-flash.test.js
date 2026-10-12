@@ -232,7 +232,117 @@ function Get-PnpDeviceProperty { [CmdletBinding()] param([string[]]$InstanceId, 
         assert.strictEqual(parsed.length, 1);
         assert.strictEqual(parsed[0].serial, chosen.probeSerial);
         assert.strictEqual(parsed[0].interfaces.length, 4);
+
+        // Unknown VID/PID with generic Windows names: only unmatched USB roots get one batched iProduct query.
+        const horcoJson = JSON.stringify(horcoRows).replace(/'/g, "''");
+        const horcoMock = `$fixture = '${horcoJson}' | ConvertFrom-Json; $propertyCalls = 0;
+function Get-PnpDevice { [CmdletBinding()] param([switch]$PresentOnly) $fixture }
+function Get-PnpDeviceProperty { [CmdletBinding()] param([string[]]$InstanceId, [string[]]$KeyName)
+ $script:propertyCalls++;
+ if ($script:propertyCalls -eq 1 -and ($InstanceId.Count -ne 2 -or $KeyName.Count -ne 1)) { throw 'Only USB roots may be asked for iProduct' };
+ if ($script:propertyCalls -eq 2 -and $InstanceId.Count -ne 4) { throw 'Unrelated devices must be filtered out' };
+ foreach ($row in $fixture) { foreach ($key in $KeyName) {
+  if ($InstanceId -notcontains $row.instanceId) { continue };
+  $value = switch ($key) { 'DEVPKEY_Device_Parent' { $row.parentId } 'DEVPKEY_Device_ContainerId' { $row.containerId } 'DEVPKEY_Device_BusReportedDeviceDesc' { $row.reportedName } };
+  if ($value) { [pscustomobject]@{ InstanceId=$row.instanceId; KeyName=$key; Data=$value } }
+ } }
+}`;
+        const horcoQuery = spawnSync(
+            path.join(
+                process.env.SystemRoot || "C:\\Windows",
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe"
+            ),
+            ["-NoProfile", "-NonInteractive", "-Command", `${horcoMock}; ${USB_INVENTORY}`],
+            { encoding: "utf8", windowsHide: true, timeout: 10000 }
+        );
+        assert.strictEqual(horcoQuery.status, 0, horcoQuery.error?.message || horcoQuery.stderr);
+        assert.strictEqual(horcoQuery.stderr.trim(), "");
+        const horcoParsed = parseWindowsInventory(horcoQuery.stdout, "cmsis-dap");
+        assert.strictEqual(horcoParsed.length, 1);
+        assert.strictEqual(horcoParsed[0].serial, "4844332732");
+        assert.strictEqual(horcoParsed[0].name, "Horco CMSIS-DAP");
+        assert.strictEqual(horcoParsed[0].interfaces.length, 4);
     }
+}
+
+// Horco CMSIS-DAP v1 (EF1A:74E5): HID + CDC composite whose Windows names are all generic.
+const horcoRoot = "USB\\VID_EF1A&PID_74E5\\4844332732";
+const horcoRows = [
+    { instanceId: horcoRoot, name: "USB Composite Device", reportedName: "Horco CMSIS-DAP", containerId: "horco" },
+    {
+        instanceId: "USB\\VID_EF1A&PID_74E5&MI_00\\7&location&0&0000",
+        name: "USB 输入设备",
+        parentId: horcoRoot,
+        containerId: "horco"
+    },
+    {
+        instanceId: "HID\\VID_EF1A&PID_74E5&MI_00\\8&location&0&0000",
+        name: "USB 输入设备",
+        parentId: "USB\\VID_EF1A&PID_74E5&MI_00\\7&location&0&0000",
+        containerId: "horco"
+    },
+    {
+        instanceId: "USB\\VID_EF1A&PID_74E5&MI_01\\7&location&0&0001",
+        name: "USB 串行设备 (COM20)",
+        parentId: horcoRoot,
+        containerId: "horco"
+    },
+    { instanceId: "USB\\VID_A8A5&PID_2255\\keyboard", name: "USB Composite Device", reportedName: "G3 A" }
+];
+
+function unlistedCmsisDap() {
+    const config = { probe: "cmsis-dap.cfg", target: "stm32h7x.cfg" };
+    const empty = { available: true, devices: [] };
+    const devices = parseWindowsInventory(JSON.stringify(horcoRows), "all");
+    assert.strictEqual(devices.length, 1, "The bus-reported iProduct identifies a generic-named CMSIS-DAP");
+    assert.strictEqual(devices[0].family, "cmsis-dap");
+    assert.strictEqual(devices[0].name, "Horco CMSIS-DAP");
+    const unique = resolveProbeConnection(config, { available: true, devices });
+    assert.strictEqual(unique.probeSerial, "4844332732");
+    assert.strictEqual(unique.selection.probe, "unique-device");
+    assert.strictEqual(unique.deviceId, horcoRoot);
+    const without = horcoRows.map(({ reportedName: _reported, ...row }) => row);
+    assert.deepStrictEqual(parseWindowsInventory(JSON.stringify(without), "all"), []);
+
+    // An explicit CMSIS-DAP serial is passed to OpenOCD when the inventory recognizes no CMSIS-DAP at all.
+    const explicit = resolveProbeConnection({ ...config, probeSerial: "4844332732" }, empty);
+    assert.strictEqual(explicit.probeSerial, "4844332732");
+    assert.strictEqual(explicit.selection.probe, "explicit");
+    assert.strictEqual(explicit.selection.inventory, "unconfirmed");
+    assert.strictEqual(explicit.deviceId, "");
+    assert(buildOpenOcdConfigArgs(launch, "auto", explicit).includes("adapter serial 4844332732"));
+    const code = (fn) => {
+        try {
+            fn();
+        } catch (error) {
+            return error.code;
+        }
+        return "";
+    };
+    assert.strictEqual(
+        code(() => resolveProbeConnection(config, empty)),
+        "PROBE_SELECTION_REQUIRED"
+    );
+    // A visible CMSIS-DAP inventory still rejects an absent explicit serial.
+    assert.strictEqual(
+        code(() => resolveProbeConnection({ ...config, probeSerial: "missing" }, { available: true, devices })),
+        "PROBE_SELECTED_NOT_FOUND"
+    );
+    // A remembered serial is never used without inventory confirmation.
+    const remembered = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "4844332732" };
+    assert.strictEqual(
+        code(() => resolveProbeConnection({ ...config, successfulConnection: remembered }, empty)),
+        "PROBE_SELECTED_NOT_FOUND"
+    );
+    // J-Link and ST-Link have reserved USB IDs, so an empty inventory still proves the probe absent.
+    for (const probe of ["jlink.cfg", "stlink.cfg"])
+        assert.strictEqual(
+            code(() => resolveProbeConnection({ probe, target: "stm32h7x.cfg", probeSerial: "123" }, empty)),
+            "PROBE_SELECTED_NOT_FOUND"
+        );
 }
 
 async function processLifetime() {
@@ -311,6 +421,7 @@ async function processLifetime() {
 (async () => {
     await identities();
     await inventory();
+    unlistedCmsisDap();
     await processLifetime();
     const args = buildOpenOcdConfigArgs(launch, "swd", { probeSerial: serial, adapterSpeedKhz: 100 });
     assert(args.includes(`adapter serial ${serial}`));

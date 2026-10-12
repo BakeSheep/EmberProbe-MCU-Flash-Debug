@@ -90,6 +90,7 @@ class SamplingSession {
     }
     setWatch(items) {
         if (this.mode === "debug") require("./liveWatch").validateManagedReadPlan(items);
+        this._samplingPlan = null;
         this.notify("setWatch", [items]);
     }
     setSamplingPlan(plan) {
@@ -97,6 +98,7 @@ class SamplingSession {
             const { MultiRatePlan } = require("./services/multiRatePlan");
             require("./liveWatch").validateManagedReadPlan(new MultiRatePlan(plan).items);
         }
+        this._samplingPlan = plan;
         this.generation++;
         this.notify("setSamplingPlan", [plan]);
     }
@@ -105,10 +107,26 @@ class SamplingSession {
         this.notify("setIntervalMs", [this.options.intervalMs]);
     }
     stats() {
+        const unlimited = this._samplingPlan?.unlimited === true;
+        const unlimitedActive = unlimited && this.mode !== "debug" && !!this._samplingPlan?.graphItems?.length;
         return (
             this._latestStats || {
+                unlimited,
+                unlimitedActive,
+                unlimitedSuppressedReason: unlimited && this.mode === "debug" ? "debug" : null,
+                limitedBy: unlimitedActive ? "probe" : null,
+                hostHoldMs: 0,
+                consumers: this._samplingPlan
+                    ? {
+                          graphHz: 0,
+                          sidebarHz: 0,
+                          graphTargetHz: unlimitedActive ? null : 1000 / (this._samplingPlan.graphIntervalMs ?? 33),
+                          sidebarTargetHz: 20,
+                          unlimited: unlimitedActive
+                      }
+                    : undefined,
                 targetIntervalMs: this.options.intervalMs ?? 100,
-                effectiveIntervalMs: this.options.intervalMs ?? 100,
+                effectiveIntervalMs: unlimitedActive ? 0 : (this.options.intervalMs ?? 100),
                 actualHz: 0,
                 p95DurationMs: 0,
                 missedDeadlines: 0,

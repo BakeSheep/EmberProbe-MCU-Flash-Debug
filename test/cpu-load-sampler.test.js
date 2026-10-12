@@ -1,6 +1,14 @@
 "use strict";
 const assert = require("assert");
-const { samplerFixture, taskBytes } = require("./helpers/cpu-load-fixture");
+const { samplerFixture: makeFixture, taskBytes } = require("./helpers/cpu-load-fixture");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+function samplerFixture(options) {
+    const fixture = makeFixture(options);
+    fixture.owner._exclusiveWaiters = [];
+    for (const method of ["_tryAcquireExclusive", "_releaseExclusive"])
+        fixture.owner[method] = ManagedOpenOcdSession.prototype[method];
+    return fixture;
+}
 const { REGISTERS, word } = require("../src/services/cpuLoadSampler");
 
 (async () => {

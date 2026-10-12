@@ -476,6 +476,25 @@ function renderValues() {
 }
 const AVAILABLE_VARIABLE_LIMIT = 500;
 const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
+// Heuristic origin filter; the extension classifies symbols from DWARF source paths, types and names.
+let userVarsOnly = uiState.sbUserVarsOnly === true;
+function isUserVariable(symbol) {
+    return !symbol.origin || symbol.origin === "user";
+}
+function visibleAvailable() {
+    return userVarsOnly ? available.filter(isUserVariable) : available;
+}
+function availableOriginTitle(symbol) {
+    const lines = [];
+    if (!isUserVariable(symbol)) lines.push(t("sb.origin." + symbol.origin));
+    if (symbol.sourceFile) lines.push(t("sb.sourceFile", { file: symbol.sourceFile }));
+    return lines.length ? "\n" + lines.join("\n") : "";
+}
+function applyUserVarsOnly() {
+    const button = document.getElementById("varUserOnly");
+    button.classList.toggle("primary", userVarsOnly);
+    button.setAttribute("aria-pressed", String(userVarsOnly));
+}
 function needsAvailableLayout(symbol) {
     return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
 }
@@ -489,7 +508,7 @@ function scheduleAvailableMemberSearch(query) {
     availableSearchTimer = setTimeout(() => {
         availableSearchTimer = null;
         const slots = Math.max(0, 4 - availableLayoutPending.size);
-        available
+        visibleAvailable()
             .filter((symbol) => needsAvailableLayout(symbol) && !availableLayoutPending.has(symbol.name))
             .slice(0, slots)
             .forEach((symbol) => {
@@ -514,7 +533,10 @@ function renderAvailableContents(content) {
         "",
         t("common.diagnostics")
     );
-    document.getElementById("allCount").textContent = String(available.length);
+    const pool = visibleAvailable();
+    const allCount = document.getElementById("allCount");
+    allCount.textContent = userVarsOnly ? pool.length + "/" + available.length : String(available.length);
+    allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: available.length }) : "";
     if (variableError) {
         const e = document.createElement("div");
         e.className = "empty";
@@ -528,7 +550,7 @@ function renderAvailableContents(content) {
     const nameMatches = (symbol) =>
         symbol.name.toLowerCase().includes(query) || sbDisplayName(symbol).toLowerCase().includes(query);
     const memberMatches = new Map();
-    const matching = available.filter((symbol) => {
+    const matching = pool.filter((symbol) => {
         if (!query || nameMatches(symbol)) return true;
         if (!symbol.isComposite) return false;
         const runtime = EmberProbeRuntime.runtimeSelection(symbol, latest[symbol.name]);
@@ -548,11 +570,13 @@ function renderAvailableContents(content) {
         const e = document.createElement("div");
         e.className = "empty";
         e.textContent =
-            query && (!availableTypesReady || available.some(needsAvailableLayout))
+            query && (!availableTypesReady || pool.some(needsAvailableLayout))
                 ? t("sb.searchingMembers")
-                : available.length
-                  ? t("sb.noMatch")
-                  : t("sb.noImportable");
+                : !pool.length && available.length
+                  ? t("sb.noUserVars", { count: available.length })
+                  : available.length
+                    ? t("sb.noMatch")
+                    : t("sb.noImportable");
         content.appendChild(e);
         return;
     }
@@ -570,7 +594,7 @@ function renderAvailableContents(content) {
             nm.className = "available-name";
             const on = selected.has(sym.name);
             EmberProbeRuntime.renderVariableName(nm, sbDisplayName(sym), sym.name);
-            nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole"));
+            nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole")) + availableOriginTitle(sym);
             const compEntry = {
                 name: sym.name,
                 displayName: sbDisplayName(sym),
@@ -777,6 +801,7 @@ function renderAvailableContents(content) {
             const n = document.createElement("span");
             n.className = "available-name";
             EmberProbeRuntime.renderVariableName(n, sbDisplayName(sym), sym.name);
+            n.title += availableOriginTitle(sym);
             cell.appendChild(n);
             const ty = document.createElement("span");
             ty.className = "available-type";
@@ -1894,6 +1919,15 @@ document.getElementById("varSearchClear").onclick = function () {
     availableBox.scrollTop = 0;
     renderAvailable();
     v.focus();
+};
+applyUserVarsOnly();
+document.getElementById("varUserOnly").onclick = () => {
+    userVarsOnly = !userVarsOnly;
+    uiState.sbUserVarsOnly = userVarsOnly;
+    api?.setState?.(uiState);
+    applyUserVarsOnly();
+    availableBox.scrollTop = 0;
+    renderAvailable();
 };
 document.getElementById("varRefresh").onclick = function (e) {
     e.stopPropagation();

@@ -125,6 +125,33 @@ function msgText(m) {
 }
 var statusMsg = { key: "lw.ready" };
 var requestedFrequencyHz = CFG.frequencyHz;
+var unlimitedState = { available: false, enabled: false, active: false, limitedBy: null, suppressed: null };
+function rateText(hz) {
+    var value = (Number.isFinite(hz) ? hz : 0).toFixed(1);
+    return unlimitedState.active ? t("lw.unlimitedRate", { hz: value }) : value + " Hz";
+}
+function renderUnlimited() {
+    var button = $("unlimited");
+    if (!button) return;
+    button.hidden = !unlimitedState.available;
+    button.classList.toggle("ghost", !unlimitedState.enabled);
+    button.setAttribute("aria-pressed", unlimitedState.enabled ? "true" : "false");
+    // The target frequency still applies while debugging, where unlimited sampling is suppressed.
+    $("frequency").disabled = unlimitedState.enabled && !unlimitedState.suppressed;
+    if (unlimitedState.enabled && unlimitedState.suppressed) button.title = t("lw.unlimitedSuppressed");
+    else if (unlimitedState.active && unlimitedState.limitedBy)
+        button.title =
+            t("lw.unlimitedTitle") +
+            " — " +
+            t(unlimitedState.limitedBy === "host" ? "lw.unlimitedByHost" : "lw.unlimitedByProbe");
+    else button.title = t("lw.unlimitedTitle");
+}
+function applyUnlimitedStatus(m) {
+    if (typeof m.unlimitedActive === "boolean") unlimitedState.active = m.unlimitedActive;
+    if (m.limitedBy !== undefined) unlimitedState.limitedBy = m.limitedBy;
+    if (m.unlimitedSuppressedReason !== undefined) unlimitedState.suppressed = m.unlimitedSuppressedReason;
+    renderUnlimited();
+}
 function selectedFrequencyHz() {
     var value = Number($("frequency").value);
     if (!Number.isFinite(value) || value <= 0) value = requestedFrequencyHz;
@@ -324,6 +351,7 @@ function applyI18n() {
     for (i = 0; i < els.length; i++) els[i].title = t(els[i].getAttribute("data-i18n-title"));
     els = document.querySelectorAll("[data-i18n-ph]");
     for (i = 0; i < els.length; i++) els[i].placeholder = t(els[i].getAttribute("data-i18n-ph"));
+    renderUnlimited();
 }
 function updateLangToggle() {
     var b = $("langToggle");
@@ -615,7 +643,7 @@ function onSamples(samples) {
     while (expiredTicks < sampleTimes.length - 1 && sampleTimes[expiredTicks] < tick - 3000) expiredTicks++;
     if (expiredTicks) sampleTimes.splice(0, expiredTicks);
     var elapsed = sampleTimes.length > 1 ? tick - sampleTimes[0] : 0;
-    $("rate").textContent = (elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0).toFixed(1) + " Hz";
+    $("rate").textContent = rateText(elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0);
     (samples || []).forEach(function (s) {
         var time = Number(s.t) || now;
         if (samplingOrigin === null) samplingOrigin = time;
@@ -1700,7 +1728,11 @@ function showArchiveExport(info) {
     var all = $("exportRanges").querySelector("input[value=all]");
     if (all) all.checked = true;
     setExportTimelineMode();
-    $("exportWarn").textContent = info.limitReached ? t("lw.archiveTruncated") : "";
+    $("exportWarn").textContent = info.limitReached
+        ? t("lw.archiveTruncated")
+        : info.limited
+          ? t("lw.memoryHistoryLimited")
+          : "";
     $("exportOverlay").classList.remove("hidden");
 }
 function applyExport() {
@@ -2631,7 +2663,7 @@ window.EmberProbeMessages.connect(window, {
         onSamples(m.samples || []);
     },
     liveCompositeSample: function (m) {
-        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz);
         onCompositeSamples(m.samples || []);
     },
     debugSessionChanged: function () {
@@ -2648,10 +2680,21 @@ window.EmberProbeMessages.connect(window, {
                 $("rate").title = "";
             }
         }
+        applyUnlimitedStatus(m);
         if (typeof m.actualHz === "number" && running) {
-            $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
+            $("rate").textContent = rateText(m.actualHz);
         }
-        if (m.effectiveIntervalMs !== undefined) {
+        if (m.effectiveIntervalMs === 0) {
+            $("rate").title =
+                "Target: unlimited | P95: " +
+                (m.p95DurationMs || 0) +
+                "ms | Limited by: " +
+                (m.limitedBy || "-") +
+                " | Host hold: " +
+                (m.hostHoldMs || 0) +
+                "ms" +
+                (m.pauseReason ? " | Paused: " + m.pauseReason : "");
+        } else if (m.effectiveIntervalMs !== undefined) {
             var targetHz = m.frequencyHz || requestedFrequencyHz;
             $("rate").title =
                 "Target: " +
@@ -2751,6 +2794,10 @@ $("timeWindow").onchange = function () {
         saveUi();
     }
 };
+$("unlimited").onclick = function () {
+    if (!unlimitedState.available) return;
+    post({ type: "setUnlimitedSampling", enabled: !unlimitedState.enabled });
+};
 $("frequency").onchange = function () {
     requestedFrequencyHz = selectedFrequencyHz();
     $("frequency").value = String(requestedFrequencyHz);
@@ -2806,11 +2853,17 @@ window.EmberProbeMessages.connect(window, {
             latestEnum[sample.name] = sample.enumText ?? null;
         });
         scheduleValueRefresh();
-        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = m.actualHz.toFixed(1) + " Hz";
+        applyUnlimitedStatus(m);
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz);
     },
     chartHistoryStatus: function (m) {
         if (!CFG.backendHistory || historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
+        if (m.limited && !remoteHistory.liveStatus?.limited) setStatusKey("lw.memoryHistoryLimited", null, "warning");
         remoteHistory.liveStatus = m;
+        if (!m.bounds && m.limited && !frozen) {
+            remoteHistory.series = [];
+            remoteHistory.cachedKey = null;
+        }
         if (!frozen) {
             remoteHistory.status = m;
             dirty = true;
@@ -2871,7 +2924,12 @@ window.EmberProbeMessages.connect(window, {
             setStatusMsg({ message: m.error }, "error");
             return;
         }
-        showArchiveExport({ variables: m.variables, firstTimestampMs: m.bounds?.min, lastTimestampMs: m.bounds?.max });
+        showArchiveExport({
+            variables: m.variables,
+            firstTimestampMs: m.bounds?.min,
+            lastTimestampMs: m.bounds?.max,
+            limited: m.limited
+        });
     },
     samplingHistoryCleared: function (m) {
         if (m.historyRevision === historyRevision) historyClearPending = false;
@@ -2880,6 +2938,12 @@ window.EmberProbeMessages.connect(window, {
         if (m.ok) {
             setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
         }
+    },
+    liveUnlimited: function (m) {
+        unlimitedState.available = m.available === true;
+        unlimitedState.enabled = m.enabled === true;
+        if (!unlimitedState.enabled) unlimitedState.active = false;
+        renderUnlimited();
     },
     liveFrequency: function (m) {
         requestedFrequencyHz = m.frequencyHz;

@@ -371,11 +371,16 @@ class DebugSessionBridge {
 
     handleMessage(session, message) {
         if (!session || (!this.allSessions.has(session.id) && !this.sessions.has(session.id)) || !message) return;
-        this.sessionContexts?.get(session.id)?.handleMessage(session, message);
+        const context = this.sessionContexts?.get(session.id);
+        const wasPaused = context?.paused;
+        context?.handleMessage(session, message);
         if (!this.sessions.has(session.id)) return;
         if (this.sessionContexts && this.activeSession?.id !== session.id) {
-            this.onStatus(this.status());
-            this._notifyState();
+            // Background sessions only expose their paused flag in agentStatus().
+            if (context?.paused !== wasPaused) {
+                this.onStatus(this.status());
+                this._notifyState();
+            }
             return;
         }
         const failedTransition =

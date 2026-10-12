@@ -137,6 +137,8 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     assert.strictEqual(archives[0][0].length, 0);
     assert.strictEqual(sidebar[0][0].t, 100, "cached acquisition timestamps survive delivery");
     p._handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
+    assert.strictEqual(histories.length, 0, "history ticks wait for the short host batch");
+    await p._flushPendingChartHistorySamples();
     assert.strictEqual(histories.length, 1);
     assert.deepStrictEqual(
         archives[1][0].map((entry) => entry.name),
@@ -152,6 +154,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         "late delivery acquired before clear cannot enter the new archive generation"
     );
     p._handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
+    await p._flushPendingChartHistorySamples();
     assert.strictEqual(histories.length, 2, "new acquisitions resume in the cleared panel");
     console.log("Layered consumer scheduling, timestamp and archive isolation tests passed");
 })().catch((error) => {

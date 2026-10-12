@@ -81,12 +81,33 @@ async function exportHistory(store, request) {
 
 async function restoreHistory(store, request) {
     if (!request.cutoff || !Number.isFinite(request.lastTimestampMs)) return store.status(request.scope);
-    const names = new Map(
-        [...store._scope(request.scope).series].map(([name, s]) => [`${name} [${s.item.type}]`, name])
-    );
     const state = store._scope(request.scope);
+    const selected = request.names && new Set(request.names);
+    store.latestTick = Math.max(store.latestTick, request.lastTimestampMs);
+    for (const series of state.series.values()) if (series.viewed) series.lastViewportUse = store.latestTick;
+    if (selected && !request.fromOffset) {
+        // Replace only newly plotted, evicted channels; frozen/export references remain intact.
+        for (const name of selected) {
+            const series = state.series.get(name);
+            if (!series) continue;
+            const viewed = !!series.viewed;
+            store._release(series, true);
+            series.parts = [];
+            series.count = 0;
+            series.discontinuous = false;
+            series.evicted = false;
+            store._viewed(series, viewed);
+        }
+        state.revision++;
+    }
+    const names = new Map(
+        [...state.series]
+            .filter(([name]) => !selected || selected.has(name))
+            .map(([name, s]) => [`${name} [${s.item.type}]`, name])
+    );
     let expectedRevision = state.revision;
-    const input = fs.createReadStream(request.dataPath, { end: request.cutoff - 1 });
+    if ((request.fromOffset || 0) >= request.cutoff) return store.status(request.scope);
+    const input = fs.createReadStream(request.dataPath, { start: request.fromOffset || 0, end: request.cutoff - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
         for await (const line of lines) {
@@ -155,6 +176,7 @@ function run(port, options = {}) {
                 [
                     "configure",
                     "append",
+                    "markLimited",
                     "status",
                     "viewport",
                     "freeze",
@@ -165,7 +187,9 @@ function run(port, options = {}) {
                 ].includes(method)
             ) {
                 result = store[method](...args);
-                if (["append", "configure", "clear"].includes(method)) update(args[0]);
+                if (["markLimited", "configure", "clear"].includes(method)) update(args[0]);
+                // An append can evict live blocks belonging to another panel under the shared budget.
+                if (["append", "setBudget"].includes(method)) for (const scope of store.scopes.keys()) update(scope);
                 if (method === "remove" && timers.has(args[0])) {
                     clearTimeout(timers.get(args[0]));
                     timers.delete(args[0]);

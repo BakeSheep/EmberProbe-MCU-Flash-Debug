@@ -124,6 +124,12 @@
 | `lw.samplingSelectionHint` | 此波形图所选变量都将以选定频率采样 | All variables selected for this waveform will be sampled at the selected frequency. | [src/liveWatchView.js:81](../src/liveWatchView.js) |
 | `lw.historyLoading` | 正在加载已记录的历史… | Loading recorded history… | [src/webview/liveWatch/renderer.js:2145](../src/webview/liveWatch/renderer.js)，[src/webview/liveWatch/renderer.js:2166](../src/webview/liveWatch/renderer.js) |
 | `lw.targetFrequency` | 波形目标频率 | Waveform target frequency | [src/liveWatchView.js:88](../src/liveWatchView.js) |
+| `lw.unlimited` | 不限速 | Max rate | [src/liveWatchView.js](../src/liveWatchView.js) |
+| `lw.unlimitedTitle` | 实验性：按探针吞吐背靠背采样，不受 200 Hz 上限约束；调试会话中不生效 | Experimental: sample back-to-back at probe throughput without the 200 Hz cap; inactive during debug sessions | [src/liveWatchView.js](../src/liveWatchView.js) |
+| `lw.unlimitedRate` | 不限速 · 实际 {hz} Hz | Max rate · actual {hz} Hz | [src/webview/liveWatch/renderer.js](../src/webview/liveWatch/renderer.js) |
+| `lw.unlimitedByProbe` | 受探针吞吐限制 | Limited by probe throughput | [src/webview/liveWatch/renderer.js](../src/webview/liveWatch/renderer.js) |
+| `lw.unlimitedByHost` | 受插件处理速度限制 | Limited by extension processing | [src/webview/liveWatch/renderer.js](../src/webview/liveWatch/renderer.js) |
+| `lw.unlimitedSuppressed` | 调试会话中不限速不生效，按目标频率采样 | Max rate is inactive during debug sessions; using the target frequency | [src/webview/liveWatch/renderer.js](../src/webview/liveWatch/renderer.js) |
 | `sb.samplingRate` | 侧栏目标 20 Hz；实际 {hz} Hz | Sidebar target 20 Hz; actual {hz} Hz | [src/webview/sidebar/renderer.js:1522](../src/webview/sidebar/renderer.js) |
 | `memory.title` | 内存占用 | Memory usage | [src/modernView.js:25](../src/modernView.js) |
 | `memory.refresh` | 刷新 | Refresh | [src/modernView.js:25](../src/modernView.js) |
@@ -202,6 +208,10 @@
 | `probe.speedDefault` | 0 使用接口/目标脚本的默认速度 | 0 uses the interface/target script default |  |
 | `probe.manualSerial` | 手动输入序列号 | Enter serial number |  |
 | `probe.serialRequired` | 选择 J-Link 序列号 | Select J-Link serial |  |
+| `probe.pickTitle` | 选择物理调试探针 | Select physical debug probe | [src/services/probeConnectionService.js](../src/services/probeConnectionService.js) |
+| `probe.pickStaleTitle` | 上次使用的探针 {serial} 未连接，请选择一个物理调试探针 | Previously used probe {serial} is not connected; select a physical debug probe | [src/services/probeConnectionService.js](../src/services/probeConnectionService.js) |
+| `probe.selectedNotFound` | 所选 {label} 未连接，不会改用其他设备 | The selected {label} is not present; no other device will be selected | [skills/_emberprobe/probe-connection.js](../skills/_emberprobe/probe-connection.js) |
+| `probe.rememberedNotFound` | 上次使用的 {label}（{serial}）未连接，不会自动改用其他设备 | The previously used {label} ({serial}) is not present; no other device will be selected automatically | [skills/_emberprobe/probe-connection.js](../skills/_emberprobe/probe-connection.js) |
 | `probe.diagnostic` | 连接诊断 | Connection diagnostic | [src/modernView.js:26](../src/modernView.js) |
 | `probe.activeConnection` | 当前连接 | Active connection |  |
 | `probe.staleConnection` | 配置已变更，重新连接后才能写入 | Settings changed — restart before writing |  |
@@ -323,8 +333,8 @@
 | `sb.selectDebugger` | 选择调试器 | Select Debugger | [src/modernView.js:16](../src/modernView.js) |
 | `sb.selectMcu` | 选择 MCU 目标 | Select MCU Target | [src/modernView.js:25](../src/modernView.js) |
 | `sb.otherConfig` | 其他配置 | Other Configuration | [src/modernView.js:25](../src/modernView.js) |
-| `sb.debug` | 调试 | Debug | [src/modernView.js:25](../src/modernView.js) |
-| `sb.attachDebug` | 不复位调试（保留现场） | Debug Without Reset | [src/modernView.js:25](../src/modernView.js) |
+| `sb.debug` | 复位调试 | Debug With Reset | [src/modernView.js:25](../src/modernView.js) |
+| `sb.attachDebug` | 不复位调试 | Debug Without Reset | [src/modernView.js:25](../src/modernView.js) |
 | `sb.attachDebugTitle` | 附加到正在运行的芯片并暂停，不复位、不下载固件；ELF 必须与芯片中的固件一致 | Attach to the running chip and halt it without reset or download; the ELF must match the firmware on the chip | [src/modernView.js:25](../src/modernView.js) |
 | `svd.selectConfig` | 选择 SVD 文件 | Select SVD File | [src/modernView.js:19](../src/modernView.js) |
 | `svd.notConfigured` | SVD 未配置 | SVD not configured | [src/modernView.js:19](../src/modernView.js)，[src/services/svdManager.js:213](../src/services/svdManager.js)，[src/services/svdManager.js:310](../src/services/svdManager.js)，[src/services/svdManager.js:380](../src/services/svdManager.js) |
@@ -506,6 +516,8 @@
 | `lw.exportCsv` | 导出 CSV | Export CSV | [src/liveWatchView.js:90](../src/liveWatchView.js) |
 | `lw.exportCsvTitle` | 将采样历史导出为 CSV 文件 | Export the sampled history to a CSV file | [src/liveWatchView.js:90](../src/liveWatchView.js) |
 | `lw.noDataToExport` | 暂无采样数据可导出 | No sampled data to export | [src/webview/liveWatch/renderer.js:1584](../src/webview/liveWatch/renderer.js)，[src/webview/liveWatch/renderer.js:1586](../src/webview/liveWatch/renderer.js)，[src/webview/liveWatch/renderer.js:2643](../src/webview/liveWatch/renderer.js) |
+| `lw.memoryHistoryLimited` | 内存历史已受限或不完整；磁盘归档继续记录。 | Memory history is limited or incomplete; the disk archive keeps recording. | [src/mainViewProvider.js](../src/mainViewProvider.js)、[src/webview/liveWatch/renderer.js](../src/webview/liveWatch/renderer.js) |
+| `lw.historyRecoveryFailed` | 波形历史恢复失败；采样与磁盘归档继续记录。 | Chart history recovery failed; sampling and the disk archive keep recording. | [src/mainViewProvider.js](../src/mainViewProvider.js) |
 | `lw.archiveTruncated` | 采样历史已达大小上限，此后的样本未再归档 | Sampling history reached its size limit; later samples were not archived | [src/webview/liveWatch/renderer.js:1618](../src/webview/liveWatch/renderer.js) |
 | `lw.exportTitle` | 导出 CSV | Export CSV | [src/liveWatchView.js:93](../src/liveWatchView.js) |
 | `lw.exportSeries` | 曲线 | Series | [src/liveWatchView.js:93](../src/liveWatchView.js) |

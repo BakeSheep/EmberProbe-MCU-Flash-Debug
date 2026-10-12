@@ -2,6 +2,233 @@
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
+const { MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
+async function testHistoryBatches(p, entry, panel, history, requests, values) {
+    const other = p._livePanels.get(1);
+    p._configureChartHistory(other, 1);
+    history.clear(entry.watchKey);
+    requests.length = 0;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 3, t: 15 }], 25);
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 5 }], 20);
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 2, t: 10 }], 15);
+    p._queueChartHistoryAppend(other, [{ name: "shared", value: 99, t: 8 }], 10);
+    assert.strictEqual(requests.filter((method) => method === "append").length, 0);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await p._flushPendingChartHistorySamples();
+    assert.strictEqual(requests.filter((method) => method === "append").length, 2, "one batch per scope");
+    assert.strictEqual(history._scope(entry.watchKey).tick, 25, "a batch uses its maximum tick");
+    assert.deepStrictEqual(
+        [...history.points(history._scope(entry.watchKey).series.get("shared"))].map((point) => [point.t, point.v]),
+        [
+            [5, 1],
+            [10, 2],
+            [15, 3]
+        ],
+        "multi-tick samples stay in time order"
+    );
+    assert.strictEqual(history._scope(other.watchKey).series.get("shared").count, 1);
+    assert.strictEqual(p._queuedChartHistoryBytes, 0);
+
+    const request = p._chartHistory.request;
+    let finishAppend;
+    p._chartHistory.request = (method, args) => {
+        if (method !== "append") return request(method, args);
+        request(method, args);
+        return new Promise((resolve) => {
+            finishAppend = resolve;
+        });
+    };
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 4, t: 30 }], 30);
+    const inFlight = p._flushChartHistoryAppend(entry);
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 5, t: 35 }], 35);
+    await panel.receive({ type: "clearSamplingHistory", panelId: 2, historyRevision: 2 });
+    assert.strictEqual(entry._historyBatch, null, "clear drops old samples still waiting for a timer");
+    assert.strictEqual(entry._historyBatchTimer, null);
+    finishAppend();
+    await inFlight;
+    p._chartHistory.request = request;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 6, t: 40 }], 40);
+    await p._flushPendingChartHistorySamples();
+    assert.deepStrictEqual(
+        [...history.points(history._scope(entry.watchKey).series.get("shared"))].map((point) => [point.t, point.v]),
+        [[40, 6]],
+        "an old acknowledgement cannot replay samples across clear"
+    );
+
+    requests.length = 0;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 7, t: 45 }], 45);
+    await panel.receive({ type: "chartFreeze", historyRevision: 2, requestId: 1 });
+    assert.deepStrictEqual(requests, ["append", "freeze"], "freeze fences the pending append before capturing history");
+    const frozen = panel.messages.at(-1);
+    assert.strictEqual(history._source(entry.watchKey, frozen.snapshotId).series.get("shared").count, 2);
+    requests.length = 0;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 8, t: 50 }], 50);
+    await panel.receive({
+        type: "chartViewport",
+        historyRevision: 2,
+        names: ["shared"],
+        range: { min: 0, max: 60 },
+        width: 100
+    });
+    assert.deepStrictEqual(requests, ["append", "viewport"]);
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 9, t: 55 }], 55);
+    entry.historyRevision++;
+    await p._flushPendingChartHistorySamples();
+    assert.strictEqual(
+        history._scope(entry.watchKey).series.get("shared").count,
+        3,
+        "revision changes fence pending samples"
+    );
+
+    const previousItems = values.get(entry.watchKey);
+    requests.length = 0;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 10, t: 60 }], 60);
+    values.set(entry.watchKey, [{ name: "shared", type: "u8", address: 0x20000000 }]);
+    p._configureChartHistory(entry, 61);
+    await p._flushPendingChartHistorySamples();
+    assert.deepStrictEqual(requests, ["append", "configure"], "old samples reach the old type before reconfiguration");
+    assert.strictEqual(history._scope(entry.watchKey).series.get("shared").count, 0);
+    requests.length = 0;
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 11, t: 65 }], 65);
+    p._debugSamplingScope = (key) => key + ":next-session";
+    p._configureChartHistory(entry, 66);
+    assert.deepStrictEqual(requests, ["remove", "configure"], "a scope change discards the old pending batch");
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 12, t: 70 }], 70);
+    await p._flushPendingChartHistorySamples();
+    assert.strictEqual(history._scope(entry.historyScope).series.get("shared").count, 1);
+    p._debugSamplingScope = (key) => key;
+    values.set(entry.watchKey, previousItems);
+    p._configureChartHistory(entry, 71);
+    await p._flushPendingChartHistorySamples();
+
+    requests.length = 0;
+    p._liveConsumers = new Set();
+    p._debugBridge = { setIntent() {} };
+    p._postConsumerStatuses = () => {};
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 13, t: 75 }], 75);
+    p.stopLiveWatch();
+    await p._flushPendingChartHistorySamples();
+    assert.deepStrictEqual(requests, ["append"], "stop flushes a batch without waiting for its timer");
+    assert.strictEqual(entry._historyBatchTimer, null);
+
+    p._webviewAssetRootUri = {
+        fsPath: require("path").join(require("os").tmpdir(), "chart-host-" + require("crypto").randomUUID())
+    };
+    p._refreshSamplingPlan = async () => {};
+    p.openLiveWatchPanel();
+    const closing = p._livePanels.get(3);
+    values.set(closing.watchKey, [{ name: "shared" }]);
+    p._configureChartHistory(closing, 1);
+    requests.length = 0;
+    p._queueChartHistoryAppend(closing, [{ name: "shared", value: 1, t: 1 }], 1);
+    closing._batchTimer = setTimeout(() => assert.fail("closed panel delivered a pending value"), 1000);
+    closing.panel.dispose();
+    await p._flushPendingChartHistorySamples();
+    assert.deepStrictEqual(requests, ["append", "remove"], "panel disposal flushes before removing its history scope");
+    assert.strictEqual(closing._historyBatchTimer, null);
+    assert.strictEqual(p._livePanels.has(3), false);
+    assert.strictEqual(history.scopes.has(closing.watchKey), false);
+}
+
+async function testHistoryFailures(Provider) {
+    const p = Object.create(Provider.prototype);
+    const entry = { watchKey: "scope", historyRevision: 0 };
+    const messages = [];
+    let stopped = 0;
+    p._livePanels = new Map([[1, entry]]);
+    p.stopLiveWatch = () => stopped++;
+    p._postLive = (message) => messages.push(message);
+    p._t = (key) => key;
+    p._warnChartHistoryLimited = function () {
+        if (this._chartHistoryLimitedWarned) return;
+        this._chartHistoryLimitedWarned = true;
+        messages.push({ key: "lw.memoryHistoryLimited" });
+    };
+    p._chartHistory = {
+        request: async (method) => {
+            if (method === "append") throw Object.assign(new Error("budget full"), { code: "CHART_HISTORY_FULL" });
+            return { limited: true };
+        },
+        fail: assert.fail
+    };
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
+    await p._flushPendingChartHistorySamples();
+    assert.strictEqual(stopped, 0);
+    assert.strictEqual(messages[0].key, "lw.memoryHistoryLimited");
+    let failure, finishMarker;
+    let markers = 0;
+    p._chartHistory = {
+        queuedBytes: MAX_BACKLOG_BYTES - 1,
+        request: (method) => {
+            assert.strictEqual(method, "markLimited");
+            markers++;
+            return new Promise((resolve) => {
+                finishMarker = resolve;
+            });
+        },
+        fail: (error) => {
+            failure = error;
+        }
+    };
+    for (let t = 2; t <= 20; t++) p._queueChartHistoryAppend(entry, [{ name: "shared", value: t, t }], t);
+    assert.strictEqual(markers, 1, "host queue pressure coalesces gap markers");
+    assert.strictEqual(p._pendingChartHistoryAppends.size, 1, "dropped batches do not accumulate tracking promises");
+    finishMarker({ limited: true });
+    await p._flushPendingChartHistorySamples();
+    assert.strictEqual(failure, undefined);
+    assert.strictEqual(stopped, 0);
+    assert.strictEqual(messages.length, 1, "memory limit warning is not repeated");
+    assert.strictEqual(entry._historyBatch, null, "host batching shares the 16 MiB IPC limit");
+}
+
+async function testShutdownFence(Provider) {
+    const p = Object.create(Provider.prototype);
+    const entry = { watchKey: "scope" };
+    let resolveAppend, entered;
+    const writing = new Promise((resolve) => {
+        entered = resolve;
+    });
+    let appended = false,
+        disposed = false;
+    Object.assign(p, {
+        _livePanels: new Map([[1, entry]]),
+        _liveConsumers: new Set(),
+        _debugBridge: { setIntent() {} },
+        _elfService: { invalidate() {} },
+        _cubemxService: { cancel() {} },
+        finishForeignDebug() {},
+        _clearDebugStartupWatchdog() {},
+        _postConsumerStatuses() {},
+        disposeDebugBridge() {},
+        _stopManagedDebugServer: async () => {},
+        stopAgentReadIfRunning: () => null,
+        stopAgentBridge: async () => {},
+        _samplingArchive: {
+            dispose: async () => assert.ok(appended, "archive disposal follows the history acknowledgement")
+        },
+        _chartHistory: {
+            request: () =>
+                new Promise((resolve) => {
+                    resolveAppend = resolve;
+                    entered();
+                }),
+            fail: assert.fail,
+            dispose: async () => {
+                assert.ok(appended);
+                disposed = true;
+            }
+        }
+    });
+    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
+    const shuttingDown = p.shutdown();
+    await writing;
+    assert.strictEqual(disposed, false);
+    appended = true;
+    resolveAppend();
+    await shuttingDown;
+    assert.strictEqual(disposed, true, "shutdown waits for pending history appends before terminating the worker");
+}
+
 (async () => {
     const panels = [],
         writes = [],
@@ -26,7 +253,9 @@ const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
                             p.receive = handler;
                         }
                     },
-                    onDidDispose() {},
+                    onDidDispose(handler) {
+                        p.dispose = handler;
+                    },
                     onDidChangeViewState() {}
                 };
                 panels.push(p);
@@ -39,6 +268,8 @@ const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
     };
     const P = loadProvider(vscode),
         p = Object.create(P.prototype);
+    await testHistoryFailures(P);
+    await testShutdownFence(P);
     p._context = {
         workspaceState: {
             get: (key) => values.get(key),
@@ -134,6 +365,7 @@ const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
     const handshakeIndex = panels[1].messages.findLastIndex((message) => message.type === "chartHistoryReady");
     assert.ok(handshakeIndex < panels[1].messages.length - 1);
     assert.strictEqual(panels[1].messages[handshakeIndex].historyRevision, 1);
+    await testHistoryBatches(p, entry, panels[1], history, historyRequests, values);
     let finishStatus;
     p._chartHistory.request = () =>
         new Promise((resolve) => {
@@ -185,9 +417,19 @@ const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
     assert.deepStrictEqual(saved, ["mcu.watchList.2"], "importing twice must not duplicate or resave watches");
     assert.deepStrictEqual(panels[1].messages.at(-1), { type: "sidebarImportResult", added: 0, sourceCount: 2 });
     p._chartHistory = {};
-    p._samplingStatus = () => ({ actualHz: 30.3 });
-    p._postWebviewBatch(entry, [], [{ name: "sensor", tree: { kind: "struct", members: [] }, t: 2000 }], 2000);
+    let statusCalls = 0;
+    p._samplingStatus = () => {
+        statusCalls++;
+        return { actualHz: 30.3 };
+    };
+    p._postWebviewBatch(
+        entry,
+        [{ name: "shared", value: 1, t: 2000 }],
+        [{ name: "sensor", tree: { kind: "struct", members: [] }, t: 2000 }],
+        2000
+    );
     await new Promise((resolve) => setTimeout(resolve, 70));
+    assert.strictEqual(statusCalls, 1, "scalar and composite deliveries share one status calculation");
     const compositeBatch = panels[1].messages.at(-1);
     assert.strictEqual(compositeBatch.type, "liveCompositeSample");
     assert.strictEqual(compositeBatch.actualHz, 30.3, "host forwards acquisition rate even when no scalar is plotted");

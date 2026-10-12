@@ -3,12 +3,110 @@ const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
-const { ChartHistoryStore, BLOCK_BYTES, WINDOW_MS, MAX_POINTS } = require("../src/services/chartHistoryStore");
-const { ChartHistoryService } = require("../src/services/chartHistoryService");
+const {
+    ChartHistoryStore,
+    BLOCK_BYTES,
+    INITIAL_BLOCK_POINTS,
+    blockBytes,
+    WINDOW_MS,
+    MAX_POINTS
+} = require("../src/services/chartHistoryStore");
+const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
 const { SamplingArchive } = require("../src/services/samplingArchive");
 const { exportHistory } = require("../src/chartHistoryWorker");
+async function testServiceLimits() {
+    const dormant = new ChartHistoryService({ workerPath: "missing-worker.js" });
+    assert.strictEqual(dormant.worker, null, "construction does not create a worker");
+    assert.strictEqual(dormant.failed, null);
+    await dormant.dispose();
+    await assert.rejects(dormant.request("status", ["p"]), /disposed/);
+    const recovering = new ChartHistoryService();
+    const failure = new Error("failed before first request");
+    recovering.fail(failure);
+    await recovering.termination;
+    assert.strictEqual(recovering.worker, null);
+    await assert.rejects(recovering.request("status", ["p"]), failure);
+    await recovering.restart();
+    assert.strictEqual(recovering.worker, null, "an unused service remains lazy after recovery");
+    await recovering.request("status", ["p"]);
+    assert.ok(recovering.worker.threadId > 0);
+    await recovering.dispose();
+
+    const samples = Array.from({ length: 100 }, (_, i) => ({
+        name: "value",
+        value: i / 3,
+        valueText: String(i / 3),
+        t: i
+    }));
+    const args = ["scope", samples, 99];
+    const estimate = estimateHistoryBytes(args);
+    assert.ok(estimate >= samples.length * 24 + 2 * "scope".length);
+    assert.ok(
+        estimate >= Buffer.byteLength(JSON.stringify(args)),
+        "ordinary batches include container/property overhead"
+    );
+    assert.ok(estimate < MAX_BACKLOG_BYTES);
+    assert.strictEqual(estimateHistoryBytes("中🙂"), 16 + "中🙂".length * 2);
+    assert.strictEqual(estimateHistoryBytes(1e100), 8, "numbers are accounted as cloned doubles");
+    assert.strictEqual(estimateHistoryBytes(Buffer.alloc(123)), 32 + 123);
+    const cycle = {};
+    cycle.self = cycle;
+    assert.strictEqual(estimateHistoryBytes(cycle), MAX_BACKLOG_BYTES + 1, "cycles saturate within a depth bound");
+    assert.strictEqual(estimateHistoryBytes(Array(300000).fill(0)), MAX_BACKLOG_BYTES + 1);
+    assert.strictEqual(estimateHistoryBytes("x".repeat(MAX_BACKLOG_BYTES)), MAX_BACKLOG_BYTES + 1);
+    const noJson = { value: 1 };
+    Object.defineProperty(noJson, "toJSON", { value: () => assert.fail("estimates must not serialize") });
+    assert.ok(estimateHistoryBytes(noJson) >= 8);
+
+    const stalled = new ChartHistoryService();
+    let terminations = 0;
+    stalled.worker = {
+        postMessage() {},
+        terminate: async () => {
+            terminations++;
+        }
+    };
+    const large = ["scope", [{ name: "value", valueText: "x".repeat(4 * 1024 * 1024) }], 1];
+    const first = stalled.request("append", large);
+    assert.ok(stalled.queuedBytes > 8 * 1024 * 1024);
+    const dropped = stalled.request("append", large);
+    const repeated = stalled.request("append", large);
+    assert.strictEqual(stalled.failed, null);
+    assert.strictEqual(stalled.pending.size, 2, "backpressure adds one coalesced gap marker");
+    assert.strictEqual(stalled.limitedScopes.size, 1);
+    assert.strictEqual(terminations, 0, "backpressure preserves the worker and accepted appends");
+    const accepted = stalled.pending.get(1);
+    stalled.pending.delete(1);
+    stalled.queuedBytes -= accepted.bytes;
+    accepted.resolve({ limited: false });
+    const marker = stalled.pending.get(2);
+    stalled.pending.delete(2);
+    marker.resolve({ limited: true });
+    await first;
+    assert.deepStrictEqual(await dropped, { limited: true });
+    assert.deepStrictEqual(await repeated, { limited: true });
+    assert.strictEqual(stalled.queuedBytes, 0);
+    const generation = new ChartHistoryService();
+    generation.worker = { postMessage() {}, terminate: async () => {} };
+    generation.queuedBytes = MAX_BACKLOG_BYTES;
+    const oldDrop = generation.request("append", ["scope", samples, 100]);
+    const clearing = generation.request("clear", ["scope"]);
+    const newDrop = generation.request("append", ["scope", samples, 200]);
+    assert.strictEqual(generation.pending.size, 3, "clear fences the old marker and starts a new one");
+    generation.pending.get(1).resolve({ limited: true });
+    await oldDrop;
+    assert.strictEqual(generation.limitedScopes.size, 1, "the old acknowledgement cannot erase the new gap marker");
+    generation.pending.get(2).resolve({ limited: false });
+    generation.pending.get(3).resolve({ limited: true });
+    await Promise.all([clearing, newDrop]);
+    generation.pending.clear();
+    await generation.dispose();
+    await stalled.dispose();
+}
+
 const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address: 0x20000000 }));
 (async () => {
+    await testServiceLimits();
     const store = new ChartHistoryStore();
     store.configure("panel", items);
     for (let i = 0; i <= 360100; i++)
@@ -57,20 +155,18 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
     const precision = store.viewport("panel", ["silent"], { min: 1, max: 5 }, 1);
     assert.strictEqual(precision.series.length, 2);
     assert.ok(precision.series[0].arr.some((point) => point.valueText === exact[1]));
-    const bounded = new ChartHistoryStore(BLOCK_BYTES);
+    const bounded = new ChartHistoryStore(blockBytes(INITIAL_BLOCK_POINTS));
     bounded.configure("p", items);
-    assert.throws(
-        () =>
-            bounded.append(
-                "p",
-                items.map((item) => ({ name: item.name, value: 1 })),
-                1
-            ),
-        /budget/
+    const limited = bounded.append(
+        "p",
+        items.map((item) => ({ name: item.name, value: 1 })),
+        1
     );
-    assert.strictEqual(bounded.bytes, 0, "failed batch is atomic");
+    assert.strictEqual(limited.limited, true);
+    assert.strictEqual(bounded.bytes, 0, "skipped batch is atomic");
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "chart-history-"));
     const worker = new ChartHistoryService();
+    assert.strictEqual(worker.worker, null);
     const archive = new SamplingArchive({ rootDir: path.join(dir, "archive") });
     try {
         const outputPath = path.join(dir, "retained.csv");
@@ -82,6 +178,37 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
         archive.clear("panel");
         archive.append([{ name: "silent [u64]", value: Number(exact[1]), valueText: exact[1] }], 2000, "panel");
         archive.append([{ name: "silent [u64]", value: 99 }], 2000, "other");
+        assert.strictEqual(worker.worker, null, "unrelated archive/export work does not start history IPC");
+        await worker.request("configure", ["multi", items]);
+        assert.ok(worker.worker.threadId > 0, "the first request starts the worker");
+        await worker.request("append", [
+            "multi",
+            [
+                { name: "silent", value: 1, t: 10 },
+                { name: "visible", value: 2, t: 10 },
+                { name: "silent", value: 3, t: 15 },
+                { name: "silent", value: 4, t: 20 }
+            ],
+            20
+        ]);
+        const multi = await worker.request("viewport", ["multi", ["silent"], { min: 0, max: 25 }, 100]);
+        assert.deepStrictEqual(
+            multi.series[0].arr.map((point) => [point.t, point.v]),
+            [
+                [10, 1],
+                [15, 3],
+                [20, 4]
+            ]
+        );
+        const oldAppend = worker.request("append", ["multi", [{ name: "silent", value: 5, t: 25 }], 25]);
+        const clearing = worker.request("clear", ["multi"]);
+        const newAppend = worker.request("append", ["multi", [{ name: "silent", value: 6, t: 30 }], 30]);
+        await Promise.all([oldAppend, clearing, newAppend]);
+        const afterClear = await worker.request("viewport", ["multi", ["silent"], { min: 0, max: 40 }, 100]);
+        assert.deepStrictEqual(
+            afterClear.series[0].arr.map((point) => [point.t, point.v]),
+            [[30, 6]]
+        );
         await worker.request("configure", ["panel", items]);
         const restored = await worker.request("restore", [await archive.historySource("panel")]);
         assert.strictEqual(restored.bounds.min, 2000);

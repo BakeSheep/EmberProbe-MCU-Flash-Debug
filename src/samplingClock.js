@@ -8,6 +8,10 @@ const HIGH_RESOLUTION_LEAD_MS = 1.5;
 // yield with setImmediate for the short remainder. This runs only in the
 // sampling Worker and keeps its message queue responsive to pause/stop.
 function scheduleSamplingTick(delayMs, callback, options = {}) {
+    if (options.immediate === true) {
+        const handle = setImmediate(callback);
+        return { cancel: () => clearImmediate(handle) };
+    }
     const platform = options.platform || process.platform;
     const highResolution = options.highResolution === true;
     if (platform !== "win32") {

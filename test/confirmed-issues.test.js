@@ -152,6 +152,7 @@ function providerFixture() {
         probe.resolve({ path: "valid-openocd" });
         assert.deepStrictEqual(await Promise.all([resolving, refreshing]), ["valid-openocd", "valid-openocd"]);
         const history = new ChartHistoryService();
+        await history.request("status", ["panel"]);
         history.fail(Error("Forced failure"));
         await history.termination;
         assert.strictEqual(history.worker.threadId, -1);

@@ -13,8 +13,140 @@ const { FakeClock } = require("./helpers/fake-clock");
 const clock = new FakeClock();
 const delay = (ms) => clock.advance(ms);
 
+async function testBackgroundStatusBroadcasts(debugType) {
+    const statuses = [];
+    const bridge = new DebugSessionBridge({
+        schedule: clock.schedule,
+        cancel: clock.cancel,
+        now: clock.now,
+        onStatus: (value) => statuses.push(value)
+    });
+    const selected = {
+        id: "selected",
+        type: debugType,
+        configuration: { serverGroup: "dual", targetProcessor: 0 }
+    };
+    const background = {
+        ...selected,
+        id: "background",
+        configuration: { serverGroup: "dual", targetProcessor: 1 }
+    };
+    bridge.attach(selected);
+    bridge.attach(background);
+    const conflictStatusCount = statuses.length;
+    bridge.handleMessage(background, { type: "event", event: "output" });
+    assert.strictEqual(statuses.length, conflictStatusCount, "background output must not rebroadcast a conflict");
+    bridge.selectSession({ sessionId: selected.id });
+    const statusCount = statuses.length;
+    const selectedStatus = bridge.status();
+    const selectedAgentStatus = bridge.agentStatus();
+    let waiterChecks = 0;
+    const stopped = bridge.waitForState((status) => {
+        waiterChecks++;
+        return status.sessions.some((session) => session.id === background.id && session.paused);
+    });
+    const messages = [
+        ...["stackTrace", "scopes", "variables", "threads", "evaluate", "readMemory", "launch", "attach"].map(
+            (command) => ({ type: "response", command, success: true })
+        ),
+        { type: "response", command: "variables", success: false },
+        { type: "event", event: "output", body: { category: "console", output: "background step" } },
+        { type: "event", event: "invalidated" },
+        { type: "event", event: "thread", body: { reason: "started", threadId: 19 } }
+    ];
+    for (let index = 0; index < 20; index++) for (const message of messages) bridge.handleMessage(background, message);
+    assert.strictEqual(statuses.length, statusCount, "background DAP traffic must not rebroadcast identical status");
+    assert.strictEqual(waiterChecks, 1, "background traffic with no state change must not recheck state waiters");
+    assert.deepStrictEqual(bridge.status(), selectedStatus);
+    assert.deepStrictEqual(bridge.agentStatus(), selectedAgentStatus);
+    bridge.handleMessage(background, {
+        type: "event",
+        event: "stopped",
+        body: { reason: "breakpoint", threadId: 19 }
+    });
+    assert.strictEqual(statuses.length, statusCount + 1, "a background pause must publish its session-list change");
+    assert.strictEqual(bridge.stateWaiters.size, 0, "the background pause must settle waiters synchronously");
+    const pausedStatus = await stopped;
+    assert.strictEqual(waiterChecks, 2);
+    assert(pausedStatus.sessions.find((session) => session.id === background.id).paused);
+    assert.strictEqual(pausedStatus.session.id, selected.id);
+    assert.deepStrictEqual(bridge.status(), selectedStatus, "the selected sampling status remains unchanged");
+
+    bridge.handleMessage(background, {
+        type: "event",
+        event: "stopped",
+        body: { reason: "step", threadId: 20 }
+    });
+    bridge.handleMessage(background, {
+        type: "response",
+        command: "initialize",
+        success: true,
+        body: { supportsReadMemoryRequest: true, supportsWriteMemoryRequest: true, supportsRestartRequest: true }
+    });
+    bridge.handleMessage(background, {
+        type: "event",
+        event: "capabilities",
+        body: { capabilities: { supportsRestartRequest: false } }
+    });
+    bridge.handleMessage(background, { type: "event", event: "thread", body: { reason: "exited", threadId: 20 } });
+    bridge.handleRequest(background, { type: "request", command: "next", seq: 42 });
+    bridge.handleMessage(background, { type: "response", command: "next", request_seq: 42, success: false });
+    assert.strictEqual(
+        statuses.length,
+        statusCount + 1,
+        "background context details must not broadcast when their observable pause flag is unchanged"
+    );
+    bridge.selectSession({ sessionId: background.id });
+    assert(bridge.paused);
+    assert.strictEqual(bridge.stopReason, "step", "background stop reasons remain available on selection");
+    assert.strictEqual(bridge.threadId, null, "background thread exit still invalidates its cached task");
+    assert.strictEqual(bridge.transitionKind, "", "background failed transitions still restore their context");
+    assert.deepStrictEqual(bridge.capabilities, {
+        read: true,
+        write: true,
+        restart: false,
+        functionBreakpoints: false
+    });
+    bridge.selectSession({ sessionId: selected.id });
+    const resumeStatusCount = statuses.length;
+    const reselectedAgentStatus = bridge.agentStatus();
+    const continued = bridge.waitForState((status) =>
+        status.sessions.some((session) => session.id === background.id && !session.paused)
+    );
+    bridge.handleMessage(background, { type: "event", event: "continued" });
+    assert.strictEqual(
+        statuses.length,
+        resumeStatusCount + 1,
+        "a background resume must publish its session-list change"
+    );
+    assert.strictEqual(bridge.stateWaiters.size, 0, "the background resume must settle waiters synchronously");
+    assert.strictEqual((await continued).sessions.find((session) => session.id === background.id).paused, false);
+    bridge.handleMessage(background, { type: "event", event: "continued" });
+    assert.strictEqual(statuses.length, resumeStatusCount + 1, "repeated background running status must be suppressed");
+    assert.deepStrictEqual(bridge.agentStatus(), {
+        ...reselectedAgentStatus,
+        sessions: reselectedAgentStatus.sessions.map((session) =>
+            session.id === background.id ? { ...session, paused: false } : session
+        )
+    });
+
+    for (const event of ["terminated", "exited"]) {
+        bridge.handleMessage(background, { type: "event", event: "stopped" });
+        const beforeExit = statuses.length;
+        const exited = bridge.waitForState((status) =>
+            status.sessions.some((session) => session.id === background.id && !session.paused)
+        );
+        bridge.handleMessage(background, { type: "event", event });
+        assert.strictEqual(statuses.length, beforeExit + 1, event + " must publish a background pause-state change");
+        assert.strictEqual(bridge.stateWaiters.size, 0);
+        assert.strictEqual((await exited).sessions.find((session) => session.id === background.id).paused, false);
+    }
+    bridge.dispose();
+}
+
 (async () => {
     for (const debugType of ["cortex-debug", "emberprobe"]) {
+        await testBackgroundStatusBroadcasts(debugType);
         const groups = mergeReadPlan([
             { name: "b", address: 0x20000002, size: 2 },
             { name: "a", address: 0x20000000, size: 4 },

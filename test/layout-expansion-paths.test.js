@@ -206,11 +206,12 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ember-layout-writes-"));
     try {
         const file = path.join(temp, "firmware.elf");
-        fs.writeFileSync(
-            file,
-            buildElf32({ sections: [{ name: ".data", flags: 3, addr: f.symbol.address, data: Buffer.alloc(256) }] })
-        );
+        const image = buildElf32({
+            sections: [{ name: ".data", flags: 3, addr: f.symbol.address, data: Buffer.alloc(256) }]
+        });
+        fs.writeFileSync(file, image);
         f.service.cache.elf.path = file;
+        f.service.cache.memory = elf.parseElfSections(image);
         const provider = Object.create(loadProvider().prototype);
         Object.assign(provider, { _elfService: f.service, readElfSymbols: () => f.service.cache });
         const write = (value) => provider._agentWritePlan([{ name: gain, value }], { refreshSymbols: false });

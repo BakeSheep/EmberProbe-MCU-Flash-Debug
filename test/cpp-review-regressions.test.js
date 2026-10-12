@@ -60,6 +60,7 @@ try {
         const file = path.join(temporary, `dwarf${version}.elf`);
         fs.writeFileSync(file, buffer);
         result.elf = { path: file };
+        result.memory = elf.parseElfSections(buffer);
         const Provider = loadProvider();
         const provider = Object.create(Provider.prototype);
         provider.readElfSymbols = () => result;

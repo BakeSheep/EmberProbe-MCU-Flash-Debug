@@ -23,6 +23,7 @@ const MAX_DEBUG_READ_COMMANDS = 32;
 const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_BATCH_GROUPS = 8;
 const MAX_BATCH_BYTES = 1024;
+const MAX_READ_BATCH_CACHE_ENTRIES = 8;
 
 // 让操作系统分配一个当前空闲的临时端口。OpenOCD 的 Tcl 端口无认证，固定端口会让
 // 采样期间的任意本机进程都能连接并下发 halt/write_memory；未显式配置端口时应随机选用。
@@ -192,6 +193,13 @@ class ManagedOpenOcdSession {
         this.connectingSocket = null;
         this.timer = null;
         this.busy = false;
+        this._exclusiveWaiters = [];
+        this._samplingTickDeferred = false;
+        this.unlimited = false;
+        this._hostHold = false;
+        this._hostHoldSince = null;
+        this._hostHoldSpans = [];
+        this._hostWindowStartedAt = Number(process.hrtime.bigint()) / 1e6;
         this.stopped = false;
         this.pending = ""; // socket 响应缓冲
         this.queue = []; // 待响应的命令（串行，单条在途）
@@ -236,12 +244,116 @@ class ManagedOpenOcdSession {
         this._missedDeadlines = 0;
         this._pauseReason = null;
         this._compiledBatches = [];
+        this._readBatchCache = [];
         this._batchUnsupported = false;
         this._recentCycleTimestamps = [];
         this._timerResolutionHeld = false;
         this.cpuDeliveryBlocked = false;
         this._recentTclCosts = [];
         this.cpuLoad = new CpuLoadSampler(this);
+    }
+
+    get unlimitedActive() {
+        return this.unlimited && this.mode !== "debug" && !!this.ratePlan?.graphItems.length;
+    }
+
+    _tryAcquireExclusive() {
+        if (this.busy || this._exclusiveWaiters.length || this.stopped || this.connectionFailed) return false;
+        this.busy = true;
+        return true;
+    }
+
+    _acquireExclusive(deadlineMs) {
+        if (this.stopped || this.connectionFailed)
+            return Promise.reject(this.connectionError || new Error("Sampling session stopped"));
+        if (this._tryAcquireExclusive()) return Promise.resolve();
+        const timeoutError = () =>
+            Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+            });
+        const remainingMs = deadlineMs - Date.now();
+        if (remainingMs <= 0) return Promise.reject(timeoutError());
+        return new Promise((resolve, reject) => {
+            const waiter = { resolve, reject, timer: null, deadlineMs };
+            waiter.timer = setTimeout(() => {
+                const index = this._exclusiveWaiters.indexOf(waiter);
+                if (index < 0) return;
+                this._exclusiveWaiters.splice(index, 1);
+                reject(timeoutError());
+                if (this._samplingTickDeferred) this._resumeDeferredSamplingTick();
+            }, remainingMs);
+            this._exclusiveWaiters.push(waiter);
+        });
+    }
+
+    _releaseExclusive() {
+        // Keep busy true during handoff: neither a tick nor a new caller can steal ownership.
+        while (this._exclusiveWaiters.length) {
+            const waiter = this._exclusiveWaiters.shift();
+            clearTimeout(waiter.timer);
+            if (Date.now() >= waiter.deadlineMs) {
+                waiter.reject(
+                    Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
+                        code: "PROBE_CONNECTION_BUSY_TIMEOUT"
+                    })
+                );
+                continue;
+            }
+            waiter.resolve();
+            return;
+        }
+        this.busy = false;
+        if (this._samplingTickDeferred) this._resumeDeferredSamplingTick();
+    }
+
+    _resumeDeferredSamplingTick() {
+        if (!this._samplingTickDeferred || this.busy || this._exclusiveWaiters.length) return;
+        this._samplingTickDeferred = false;
+        this._scheduleNext(0);
+    }
+
+    _rejectExclusiveWaiters(error) {
+        for (const waiter of this._exclusiveWaiters.splice(0)) {
+            clearTimeout(waiter.timer);
+            waiter.reject(error);
+        }
+        if (this._samplingTickDeferred) this._resumeDeferredSamplingTick();
+    }
+
+    _resetHostHold() {
+        this._hostHold = false;
+        this._hostHoldSince = null;
+        this._hostHoldSpans = [];
+        this._hostWindowStartedAt = Number(process.hrtime.bigint()) / 1e6;
+    }
+
+    setHostHold(held) {
+        const next = held === true && this.unlimitedActive && this.samplingEnabled && !this.stopped;
+        if (next === this._hostHold) return;
+        const now = Number(process.hrtime.bigint()) / 1e6;
+        if (next) {
+            this._hostHoldSince = now;
+            this._clearSamplingTimer();
+        } else {
+            this._hostHoldSpans.push({ start: this._hostHoldSince, end: now });
+            this._hostHoldSince = null;
+        }
+        this._hostHold = next;
+        this._hostHoldSpans = this._hostHoldSpans.filter((span) => span.end > now - 1000);
+        if (!next) this._scheduleNext(0);
+    }
+
+    _hostHoldStats() {
+        if (!this.unlimitedActive) return { hostHoldMs: 0, limitedBy: null };
+        const now = Number(process.hrtime.bigint()) / 1e6;
+        const cutoff = Math.max(now - 1000, this._hostWindowStartedAt);
+        this._hostHoldSpans = this._hostHoldSpans.filter((span) => span.end > cutoff);
+        let heldMs = this._hostHoldSpans.reduce((total, span) => total + span.end - Math.max(span.start, cutoff), 0);
+        if (this._hostHoldSince !== null) heldMs += now - Math.max(this._hostHoldSince, cutoff);
+        return {
+            hostHoldMs: Number(heldMs.toFixed(2)),
+            limitedBy: heldMs >= Math.max(1, now - cutoff) * 0.2 ? "host" : "probe"
+        };
     }
 
     setCpuLoadPlan(plan) {
@@ -257,10 +369,10 @@ class ManagedOpenOcdSession {
     }
 
     _warmUp() {
-        this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
+        this.effectiveIntervalMs = this.unlimitedActive ? 0 : Math.max(100, this.targetIntervalMs);
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
-        this._warmingUp = true;
+        this._warmingUp = !this.unlimitedActive;
         const nowMonoMs = Number(process.hrtime.bigint() / 1000000n);
         this._lastAdaptiveEvalAt = nowMonoMs;
         this._lastBackoffOrErrorAt = nowMonoMs;
@@ -268,6 +380,7 @@ class ManagedOpenOcdSession {
     }
 
     _clearSamplingTimer() {
+        this._samplingTickDeferred = false;
         if (this.timer) {
             this.timer.cancel();
             this.timer = null;
@@ -282,8 +395,11 @@ class ManagedOpenOcdSession {
 
     _scheduleNext(delayMs) {
         this._clearSamplingTimer();
-        if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
-        if (!this._timerResolutionHeld) this._timerResolutionHeld = windowsTimerResolution.acquire();
+        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;
+        if (this.unlimitedActive) {
+            delayMs = 0;
+            this._releaseTimerResolution();
+        } else if (!this._timerResolutionHeld) this._timerResolutionHeld = windowsTimerResolution.acquire();
         this._variableDeadline = Number(process.hrtime.bigint()) / 1e6 + delayMs;
         this.timer = scheduleSamplingTick(
             delayMs,
@@ -291,16 +407,21 @@ class ManagedOpenOcdSession {
                 this.timer = null;
                 this._sampleTick(true);
             },
-            { highResolution: this._timerResolutionHeld }
+            { highResolution: this._timerResolutionHeld, immediate: this.unlimitedActive }
         );
     }
 
     setWatch(list) {
+        const deferred = this._samplingTickDeferred;
+        if (deferred) this._clearSamplingTimer();
         this.ratePlan = null;
+        this.unlimited = false;
+        this._resetHostHold();
         const next = Array.isArray(list) ? list.slice() : [];
         if (this.mode === "debug") validateManagedReadPlan(next);
         this.watch = next;
-        this._compiledBatches = compileReadBatches(this.watch);
+        this._readBatchCache = [];
+        this._compiledBatches = this._getReadBatches(this.watch.filter((entry) => !entry.runtimeLayout));
         this._warmUp();
         if (
             this.samplingEnabled &&
@@ -308,7 +429,7 @@ class ManagedOpenOcdSession {
             this.socket &&
             !this.socket.destroyed &&
             !this.timer &&
-            !this.busy
+            (!this.busy || deferred)
         ) {
             this._scheduleNext(0);
         }
@@ -321,19 +442,21 @@ class ManagedOpenOcdSession {
                 this.ratePlan.graphIntervalMs = interval;
                 this.ratePlan.nextGraph = 0;
             }
-            return this._setClockInterval(this.ratePlan.intervalMs);
+            return this._setClockInterval(this.ratePlan.requestedIntervalMs);
         }
         return this._setClockInterval(ms);
     }
 
     setSamplingPlan(plan) {
-        const ratePlan = new MultiRatePlan(plan);
+        const ratePlan = new MultiRatePlan({ ...plan, unlimited: plan.unlimited === true && this.mode !== "debug" });
         this.sampleEpoch++;
         this.setWatch(ratePlan.items);
         this.ratePlan = ratePlan;
-        this._setClockInterval(ratePlan.intervalMs === Infinity ? 50 : ratePlan.intervalMs);
-        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed && !this.timer)
-            this._scheduleNext(0);
+        this.unlimited = plan.unlimited === true;
+        this._setClockInterval(ratePlan.requestedIntervalMs === Infinity ? 50 : ratePlan.requestedIntervalMs);
+        this._warmUp();
+        this._clearSamplingTimer();
+        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) this._scheduleNext(0);
     }
 
     _setClockInterval(ms) {
@@ -343,11 +466,12 @@ class ManagedOpenOcdSession {
         this.targetIntervalMs = interval;
         const p95 = this._computeP95Duration();
         const threshold = this.mode === "debug" ? 0.4 : 0.7;
-        this.effectiveIntervalMs =
-            this._recentDurations.length >= 4
-                ? Math.min(10000, Math.max(interval, Math.ceil(p95 / threshold)))
-                : Math.max(100, interval);
-        this._warmingUp = this._recentDurations.length < 4;
+        this.effectiveIntervalMs = this.unlimitedActive
+            ? 0
+            : this._recentDurations.length >= 4
+              ? Math.min(10000, Math.max(interval, Math.ceil(p95 / threshold)))
+              : Math.max(100, interval);
+        this._warmingUp = !this.unlimitedActive && this._recentDurations.length < 4;
         this._consecutiveSuccesses = 0;
         this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
         this._recentCycleTimestamps = [];
@@ -360,8 +484,14 @@ class ManagedOpenOcdSession {
     setSamplingEnabled(enabled) {
         if (enabled && this._pollFailureLocked) return false;
         const nextEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
-        if (enabled && this._samplingRequested && this.samplingEnabled === nextEnabled && this.timer)
+        if (
+            enabled &&
+            this._samplingRequested &&
+            this.samplingEnabled === nextEnabled &&
+            (this.timer || this._hostHold || this._samplingTickDeferred)
+        )
             return this.samplingEnabled;
+        this._resetHostHold();
         this._samplingRequested = !!enabled;
         this.sampleEpoch++;
         this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
@@ -416,6 +546,10 @@ class ManagedOpenOcdSession {
         const consumers = this.ratePlan?.stats();
         const actualHz = consumers ? consumers.graphHz : this._computeActualHz();
         return {
+            unlimited: this.unlimited,
+            unlimitedActive: this.unlimitedActive,
+            unlimitedSuppressedReason: this.unlimited && this.mode === "debug" ? "debug" : null,
+            ...this._hostHoldStats(),
             targetIntervalMs: this.targetIntervalMs,
             effectiveIntervalMs: this.effectiveIntervalMs,
             actualHz,
@@ -438,7 +572,7 @@ class ManagedOpenOcdSession {
         this._recentDurations.push(durationMs);
         if (this._recentDurations.length > 32) this._recentDurations.shift();
 
-        if (durationMs > this.effectiveIntervalMs) {
+        if (!this.unlimitedActive && durationMs > this.effectiveIntervalMs) {
             this._missedDeadlines++;
         }
 
@@ -456,7 +590,7 @@ class ManagedOpenOcdSession {
     }
 
     _evaluateAdaptiveSchedule(nowMonoMs = Number(process.hrtime.bigint() / 1000000n)) {
-        if (this._recentDurations.length < 4) return;
+        if (this.unlimitedActive || this._recentDurations.length < 4) return;
         const p95 = this._computeP95Duration();
         const threshold = this.mode === "debug" ? 0.4 : 0.7;
         const target = this.targetIntervalMs;
@@ -907,6 +1041,8 @@ class ManagedOpenOcdSession {
         if (this.connectionFailed) return;
         this.connectionFailed = true;
         this.connectionError = err;
+        this._rejectExclusiveWaiters(err);
+        this._resetHostHold();
         if (
             this.mode === "debug" &&
             this.child &&
@@ -1190,16 +1326,44 @@ class ManagedOpenOcdSession {
         return result;
     }
 
+    _getReadBatches(items) {
+        // Multi-rate ticks allocate new arrays but retain the ordered watch-item identities.
+        const cached = this._readBatchCache.find(
+            (entry) =>
+                entry.items.length === items.length &&
+                entry.items.every((saved, index) => {
+                    const item = items[index];
+                    return (
+                        saved.item === item &&
+                        saved.name === item.name &&
+                        saved.address === item.address &&
+                        saved.size === item.size
+                    );
+                })
+        );
+        if (cached) return cached.batches;
+        const batches = compileReadBatches(items);
+        if (this._readBatchCache.length >= MAX_READ_BATCH_CACHE_ENTRIES) this._readBatchCache.shift();
+        this._readBatchCache.push({
+            items: items.map((item) => ({ item, name: item.name, address: item.address, size: item.size })),
+            batches
+        });
+        return batches;
+    }
+
     async _readItems(items, t, guard = null) {
         const samples = [];
         let ok = 0;
         const fixedItems = items.filter((entry) => !entry.runtimeLayout);
-        const runtimeBudget = {
-            bytes: fixedItems.reduce((total, entry) => total + entry.size, 0),
-            commands: compileReadBatches(fixedItems).reduce((total, batch) => total + batch.length, 0),
-            deadline: guard?.deadline || Date.now() + MAX_DEBUG_CYCLE_MS
-        };
-        for (const item of items.filter((entry) => entry.runtimeLayout)) {
+        const runtimeItems = items.filter((entry) => entry.runtimeLayout);
+        const runtimeBudget = runtimeItems.length
+            ? {
+                  bytes: fixedItems.reduce((total, entry) => total + entry.size, 0),
+                  commands: this._getReadBatches(fixedItems).reduce((total, batch) => total + batch.length, 0),
+                  deadline: guard?.deadline || Date.now() + MAX_DEBUG_CYCLE_MS
+              }
+            : null;
+        for (const item of runtimeItems) {
             this._assertReadGuard(guard);
             try {
                 const runtimeTree = await new RuntimeObjectReader(
@@ -1223,9 +1387,7 @@ class ManagedOpenOcdSession {
                 ok++;
             }
         }
-        items = items.filter((entry) => !entry.runtimeLayout);
-        const batches =
-            items === this.watch && this._compiledBatches?.length ? this._compiledBatches : compileReadBatches(items);
+        const batches = this._getReadBatches(fixedItems);
         const assembled = new Map();
         for (const batch of batches) {
             this._assertReadGuard(guard);
@@ -1303,15 +1465,10 @@ class ManagedOpenOcdSession {
             throw new Error("OpenOCD Tcl service is not connected");
         const requestEpoch = this.sampleEpoch;
         const deadline = Date.now() + timeoutMs;
-        while (this.busy) {
-            if (Date.now() >= deadline)
-                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
-                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
-                });
-            await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        this.busy = true;
+        await this._acquireExclusive(deadline);
         try {
+            if (this.stopped || !this.socket || this.socket.destroyed)
+                throw new Error("OpenOCD Tcl service is not connected");
             const guard =
                 this.mode === "debug"
                     ? {
@@ -1322,7 +1479,7 @@ class ManagedOpenOcdSession {
                     : null;
             return (await this._readItems(items, Date.now(), guard)).samples;
         } finally {
-            this.busy = false;
+            this._releaseExclusive();
         }
     }
 
@@ -1372,14 +1529,8 @@ class ManagedOpenOcdSession {
     }
 
     async _waitUntilIdle(timeoutMs) {
-        const deadline = Date.now() + timeoutMs;
-        while (this.busy) {
-            if (Date.now() >= deadline)
-                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
-                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
-                });
-            await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await this._acquireExclusive(Date.now() + timeoutMs);
+        this._releaseExclusive();
     }
 
     async waitForIdle(timeoutMs = 2000) {
@@ -1402,21 +1553,14 @@ class ManagedOpenOcdSession {
         if (this.stopped || !this.socket || this.socket.destroyed)
             throw new Error("OpenOCD Tcl service is not connected");
         const deadline = Date.now() + timeoutMs;
-        while (this.busy) {
-            if (Date.now() >= deadline)
-                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
-                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
-                });
-            await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        // Check and acquire without yielding, including when multiple writers arrive while idle.
-        if (this.stopped || !this.socket || this.socket.destroyed)
-            throw new Error("OpenOCD Tcl service is not connected");
-        this.busy = true;
+        await this._acquireExclusive(deadline);
         let haltedByUs = false;
         let primaryError = null;
         let result = null;
         try {
+            // Ownership is reserved synchronously by the arbiter before connection checks.
+            if (this.stopped || !this.socket || this.socket.destroyed)
+                throw new Error("OpenOCD Tcl service is not connected");
             const state = (await this._sendCheckedCommand("[target current] curstate")).trim();
             if (state !== "halted") {
                 await this._sendCheckedCommand("halt");
@@ -1434,14 +1578,17 @@ class ManagedOpenOcdSession {
         } catch (error) {
             primaryError = error;
         }
-        if (haltedByUs) {
-            try {
-                await this._sendCheckedCommand("resume");
-            } catch (resumeError) {
-                if (!primaryError) primaryError = resumeError;
+        try {
+            if (haltedByUs) {
+                try {
+                    await this._sendCheckedCommand("resume");
+                } catch (resumeError) {
+                    if (!primaryError) primaryError = resumeError;
+                }
             }
+        } finally {
+            this._releaseExclusive();
         }
-        this.busy = false;
         if (primaryError) throw primaryError;
         return result;
     }
@@ -1457,15 +1604,10 @@ class ManagedOpenOcdSession {
         if (this.stopped || !this.socket || this.socket.destroyed)
             throw new Error("OpenOCD Tcl service is not connected");
         const deadline = Date.now() + timeoutMs;
-        while (this.busy) {
-            if (Date.now() >= deadline)
-                throw Object.assign(new Error("Timed out waiting for the sampling connection to become idle"), {
-                    code: "PROBE_CONNECTION_BUSY_TIMEOUT"
-                });
-            await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        this.busy = true;
+        await this._acquireExclusive(deadline);
         try {
+            if (this.stopped || !this.socket || this.socket.destroyed)
+                throw new Error("OpenOCD Tcl service is not connected");
             let written = 0;
             for (const item of items) {
                 await this._writeMemoryBytes(item.address, item.bytes);
@@ -1473,28 +1615,30 @@ class ManagedOpenOcdSession {
             }
             return written;
         } finally {
-            this.busy = false;
+            this._releaseExclusive();
         }
     }
 
     async _sampleTick(fromScheduler = false) {
-        if (!this.samplingEnabled || this.stopped || !this.socket || this.socket.destroyed) return;
-        if (this.busy) {
+        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;
+        if (!this.watch.length) return;
+        if (!this._tryAcquireExclusive()) {
             // A read/write transaction owns the Tcl connection. Dropping the tick here would
             // break the self-rescheduling chain, freezing the watch list until sampling restarts.
-            if (fromScheduler) this._scheduleNext(this.effectiveIntervalMs);
+            if (fromScheduler) {
+                if (this.unlimitedActive) this._samplingTickDeferred = true;
+                else this._scheduleNext(this.effectiveIntervalMs);
+            }
             return;
         }
-        if (!this.watch.length) return;
-        this.busy = true;
         const epoch = this.sampleEpoch;
         const startNs = process.hrtime.bigint();
         const t = Date.now();
         const clockMs = Number(startNs / 1000000n);
-        const due = this.ratePlan?.due(clockMs, this.effectiveIntervalMs);
-        const items = due ? due.items : this.watch;
         let readSuccess = false;
         try {
+            const due = this.ratePlan?.due(clockMs, this.effectiveIntervalMs);
+            const items = due ? due.items : this.watch;
             const guard =
                 this.mode === "debug" ? { epoch, requireSampling: true, deadline: t + MAX_DEBUG_CYCLE_MS } : null;
             const { samples, ok } = items.length ? await this._readItems(items, t, guard) : { samples: [], ok: 0 };
@@ -1525,9 +1669,9 @@ class ManagedOpenOcdSession {
         } catch (e) {
             if (epoch === this.sampleEpoch && this.samplingEnabled && !this.connectionFailed) this._error(e.message);
         } finally {
-            this.busy = false;
+            this._releaseExclusive();
             const durationMs = Number(process.hrtime.bigint() - startNs) / 1e6;
-            this._recordCycle(durationMs, readSuccess, t);
+            if (epoch === this.sampleEpoch) this._recordCycle(durationMs, readSuccess, t);
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
                 const nextDelay = this.ratePlan
                     ? this.ratePlan.delay(Number(process.hrtime.bigint() / 1000000n))
@@ -1551,7 +1695,10 @@ class ManagedOpenOcdSession {
         this.connectionFailed = true;
         this._clearSamplingTimer();
         this._releaseTimerResolution();
-        this._rejectQueue(new Error("采样Stopped"));
+        this._resetHostHold();
+        const stoppedError = new Error("采样Stopped");
+        this._rejectExclusiveWaiters(stoppedError);
+        this._rejectQueue(stoppedError);
         if (this.connectingSocket && !this.connectingSocket.destroyed) {
             try {
                 this.connectingSocket.destroy();

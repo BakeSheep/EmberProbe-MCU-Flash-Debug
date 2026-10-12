@@ -14,7 +14,9 @@ const MAIN_DOCS = new Set([
     "PROBE-RS-EMBASSY.md",
     "RELEASING.md",
     "RTOS-AWARENESS.md",
-    "SHARED-DEBUG-GROUPS.md"
+    "SHARED-DEBUG-GROUPS.md",
+    "UNLIMITED-SAMPLING.md",
+    "VARIABLE-ORIGIN-FILTER.md"
 ]);
 
 function cleanDocs(root, { dryRun = true } = {}) {

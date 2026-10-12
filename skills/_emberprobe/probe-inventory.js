@@ -8,7 +8,7 @@ const { listWindowsProbeRows } = require("./windows-probe-inventory");
 // Only OS metadata is read. No SEGGER tool, OpenOCD init or driver installer is invoked.
 const WINDOWS_INVENTORY = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
 $keys = @('DEVPKEY_Device_Parent', 'DEVPKEY_Device_ContainerId', 'DEVPKEY_Device_Service',
- 'DEVPKEY_Device_DriverProvider', 'DEVPKEY_Device_DriverInfPath');
+ 'DEVPKEY_Device_DriverProvider', 'DEVPKEY_Device_DriverInfPath', 'DEVPKEY_Device_BusReportedDeviceDesc');
 $devices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'USB\\VID_1366*' });
 $properties = @{};
 if ($devices.Count) {
@@ -22,7 +22,7 @@ if ($devices.Count) {
  if (!$p['DEVPKEY_Device_Parent']) {
   Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName @('DEVPKEY_Device_Parent', 'DEVPKEY_Device_ContainerId') -ErrorAction SilentlyContinue | ForEach-Object { $p[$_.KeyName] = $_.Data }
  };
- [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath'] }
+ [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; reportedName=$p['DEVPKEY_Device_BusReportedDeviceDesc']; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath'] }
 }) | ConvertTo-Json -Depth 4 -Compress`;
 const USB_INVENTORY = WINDOWS_INVENTORY.replace(
     "$_.InstanceId -like 'USB\\VID_1366*'",
@@ -30,11 +30,19 @@ const USB_INVENTORY = WINDOWS_INVENTORY.replace(
 ).replace(
     "$properties = @{};",
     // Keep every interface/root of matching VID/PID pairs, including unnamed composite parents.
-    // Querying properties for keyboards, mice and cameras can exhaust the bounded query budget.
+    // Querying properties for keyboards, mice and cameras can exhaust the bounded query budget, so only
+    // unmatched USB roots get one batched iProduct query (CMSIS-DAP clones often have generic Windows names).
     `$prefixes = @{};
+$pattern = 'j[- ]?link|cmsis[- _]?dap|daplink|mcu[- ]?link|picoprobe|st[- ]?link';
 foreach ($d in $devices) {
- if ($d.InstanceId -match '^(USB|HID)\\\\VID_(1366&PID_[0-9A-F]{4}|0D28&PID_0204|C251&PID_(F001|F002|2722|2750)|0483&PID_(374[48BDEF]|375[23457]))' -or $d.FriendlyName -match 'j[- ]?link|cmsis[- _]?dap|daplink|mcu[- ]?link|picoprobe|st[- ]?link') {
+ if ($d.InstanceId -match '^(USB|HID)\\\\VID_(1366&PID_[0-9A-F]{4}|0D28&PID_0204|C251&PID_(F001|F002|2722|2750)|0483&PID_(374[48BDEF]|375[23457]))' -or $d.FriendlyName -match $pattern) {
   if ($d.InstanceId -match '^(USB|HID)\\\\(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') { $prefixes[$Matches[2]] = $true }
+ }
+};
+$roots = @($devices | Where-Object { $_.InstanceId -match '^USB\\\\(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})\\\\' -and !$prefixes.ContainsKey($Matches[1]) });
+if ($roots.Count) {
+ Get-PnpDeviceProperty -InstanceId $roots.InstanceId -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc' -ErrorAction SilentlyContinue | ForEach-Object {
+  if ([string]$_.Data -match $pattern -and $_.InstanceId -match '^USB\\\\(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') { $prefixes[$Matches[1]] = $true }
  }
 };
 $devices = @($devices | Where-Object { $_.InstanceId -match '^(USB|HID)\\\\(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})' -and $prefixes.ContainsKey($Matches[2]) });
@@ -215,10 +223,13 @@ function parseWindowsInventory(text, family = "jlink") {
         const group =
             groups.get(groupKey) ||
             deviceRecord({ id: physicalId, vid: usbId[1].toLowerCase(), pid: usbId[2].toLowerCase(), family: "" });
-        const classified = usbFamily(group.vid, group.pid, row.name || "");
+        const classified = usbFamily(group.vid, group.pid, [row.name, row.reportedName].filter(Boolean).join("\n"));
         if (classified) group.family = classified;
-        if (row.name && /j[- ]?link/i.test(row.name)) group.name = row.name;
-        if (row.name && /cmsis|daplink|st[- ]?link/i.test(row.name)) group.name = row.name;
+        for (const name of [row.name, row.reportedName])
+            if (name && /j[- ]?link|cmsis|daplink|st[- ]?link/i.test(name)) {
+                group.name = name;
+                break;
+            }
         const serialId = physicalId;
         const serial = /^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\[^&\\]+$/i.test(serialId)
             ? serialOrUnknown(serialId.split("\\").pop(), group.family)
@@ -227,6 +238,7 @@ function parseWindowsInventory(text, family = "jlink") {
         group.interfaces.push({
             instanceId: id,
             name: row.name || "",
+            ...(row.reportedName ? { reportedName: row.reportedName } : {}),
             interfaceNumber: id.match(/&MI_([0-9A-F]{2})/i)?.[1] || "",
             service: row.service || "",
             driverProvider: row.driverProvider || "",

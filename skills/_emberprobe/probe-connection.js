@@ -101,12 +101,26 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
                 devices: matches
             }
         );
-    if (inventory.available && !matches.length && devices.every((device) => device.serial))
-        throw connectionError(
-            "PROBE_SELECTED_NOT_FOUND",
-            `The selected ${label} is not present; no other device will be selected`,
-            { probeSerial: result.probeSerial }
+    // CMSIS-DAP has no reserved VID/PID, so an empty CMSIS-DAP inventory cannot prove an explicit serial absent;
+    // OpenOCD's `adapter serial` still rejects a missing probe. Remembered selections stay strictly verified.
+    const unconfirmed = family === "cmsis-dap" && result.selection.probe === "explicit" && !devices.length;
+    if (unconfirmed) result.selection.inventory = "unconfirmed";
+    else if (inventory.available && !matches.length && devices.every((device) => device.serial)) {
+        const remembered = result.selection.probe === "remembered";
+        throw Object.assign(
+            connectionError(
+                "PROBE_SELECTED_NOT_FOUND",
+                remembered
+                    ? `The previously used ${label} (${result.probeSerial}) is not present; no other device will be selected automatically`
+                    : `The selected ${label} is not present; no other device will be selected`,
+                { probeSerial: result.probeSerial, remembered, devices }
+            ),
+            {
+                i18nKey: remembered ? "probe.rememberedNotFound" : "probe.selectedNotFound",
+                i18nParams: { label, serial: result.probeSerial }
+            }
         );
+    }
     if (devices.length > 1 && devices.some((device) => !device.serial))
         throw connectionError(
             "PROBE_IDENTITY_AMBIGUOUS",

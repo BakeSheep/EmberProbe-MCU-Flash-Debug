@@ -75,7 +75,7 @@ const { RtosViewService } = require("./services/rtosViewService");
 const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegration");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
-const { ChartHistoryService } = require("./services/chartHistoryService");
+const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
 const { ensureDebugTools } = require("./services/cortexDebugPreflight");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
@@ -94,6 +94,9 @@ const CACHE_KEYS = {
     sidebarWatchList: "mcu.sidebarWatchList",
     sidebarWriteList: "mcu.sidebarWriteList"
 };
+// Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
+const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
+const UNLIMITED_SAMPLING_SETTING = "experimental.unlimitedSampling.enabled";
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
@@ -141,6 +144,11 @@ class MainViewProvider {
         this._runtimeDeniedKey = "";
         this._runtimeRamCache = null;
         this._livePanels = new Map();
+        /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
+        this._symbolNameIndexes = new WeakMap();
+        /** @type {Set<Promise<void>>} */
+        this._pendingChartHistoryAppends = new Set();
+        this._queuedChartHistoryBytes = 0;
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
         this._liveWatchService = new LiveWatchService(elfSymbols);
@@ -154,6 +162,7 @@ class MainViewProvider {
         this._shutdownPromise = null;
         this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
         this._liveIntervalMs = intervalMsFromHz(this._liveFrequencyHz);
+        this._unlimitedSamplingRequested = context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true;
         this._liveConsumers = new Set();
         this._consumerTypesCache = null;
         this._watchLists = new WatchListStore({
@@ -228,6 +237,7 @@ class MainViewProvider {
                 1024 *
                 1024,
             onUpdated: (message) => {
+                if (message.limited) this._warnChartHistoryLimited();
                 for (const entry of this._livePanels.values())
                     if (this._debugSamplingScope(entry.watchKey) === message.scope && entry.ready)
                         entry.post({
@@ -236,10 +246,7 @@ class MainViewProvider {
                             historyRevision: entry.historyRevision || 0
                         });
             },
-            onError: (error) => {
-                this.stopLiveWatch();
-                this._postLive({ type: "liveError", ...toUiError(error) });
-            }
+            onError: (error) => this._handleChartHistoryError(error)
         });
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
         this._peripheralWriteAuthorization = new PeripheralWriteAuthorization();
@@ -282,7 +289,8 @@ class MainViewProvider {
             },
             driverService: this._probeDriverService,
             beforePrepare: () => this._assertProbeDriverIdle(),
-            window: vscode.window
+            window: vscode.window,
+            t: (key, params) => this._t(key, params)
         });
         this._cubemxFirmware = new CubeMxFirmware({
             vscode,
@@ -1147,7 +1155,7 @@ class MainViewProvider {
             });
         await this._prepareRequestedLayouts(names);
         const symbols = this.readElfSymbols().symbols;
-        const byName = buildSymbolNameIndex(symbols);
+        const byName = this._symbolNameIndex(symbols);
         const resolved = [];
         const resolvedNames = new Set();
         const appendResolved = (item) => {
@@ -1257,7 +1265,7 @@ class MainViewProvider {
         );
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         const elfResult = this.readElfSymbols();
-        const byName = buildSymbolNameIndex(elfResult.symbols);
+        const byName = this._symbolNameIndex(elfResult.symbols);
         const folded = new Map();
         for (const s of elfResult.symbols) {
             const key = String(s.name || "").toLowerCase();
@@ -1836,6 +1844,7 @@ class MainViewProvider {
             entry._batchTimer = null;
             entry._pendingScalars = [];
             entry._pendingComposites = [];
+            this._discardChartHistoryAppend(entry);
             entry.historyRevision = (entry.historyRevision || 0) + 1;
             entry.post({ type: "debugSessionChanged", sessionId });
             this._configureChartHistory(entry);
@@ -2254,12 +2263,13 @@ class MainViewProvider {
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         if (options.refreshSymbols !== false) this._elfService.invalidate();
         const elfResult = this.readElfSymbols();
-        const byName = buildSymbolNameIndex(elfResult.symbols);
+        const byName = this._symbolNameIndex(elfResult.symbols);
         const SHF_WRITE = 1,
             SHF_ALLOC = 2;
         let writable = [];
         try {
-            const parsed = elfSymbols.parseElfSections(fs.readFileSync(elfResult.elf.path));
+            // ElfService.read() identity-checks the result, including these cached sections.
+            const parsed = elfResult.memory;
             writable = parsed.sections.filter(
                 (s) => (s.flags & (SHF_WRITE | SHF_ALLOC)) === (SHF_WRITE | SHF_ALLOC) && s.size > 0
             );
@@ -2737,6 +2747,8 @@ class MainViewProvider {
             if (event.webviewPanel.active) entry.focusOrder = ++this._livePanelFocusOrder;
         });
         panel.onDidDispose(() => {
+            this._flushChartHistoryAppend(entry);
+            if (entry._batchTimer) clearTimeout(entry._batchTimer);
             this._chartHistory?.request("remove", [this._debugSamplingScope(watchKey)]).catch(() => {});
             this._webviewRenders?.delete(panelWebview);
             this._livePanels.delete(panelId);
@@ -2771,6 +2783,7 @@ class MainViewProvider {
                                 .map((key) => this._context.workspaceState.get(key) || [])
                         );
                         post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
+                        post(this._unlimitedSamplingState());
                         post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
                         this._syncGraphTarget(entry);
                         if (this._liveSession) {
@@ -2780,6 +2793,7 @@ class MainViewProvider {
                         if (this._chartHistory) {
                             const scope = this._debugSamplingScope(watchKey);
                             const revision = entry.historyRevision || 0;
+                            this._flushChartHistoryAppend(entry);
                             const status = await this._chartHistory.request("status", [scope]);
                             if (
                                 scope === this._debugSamplingScope(watchKey) &&
@@ -2882,6 +2896,14 @@ class MainViewProvider {
                     case "setFrequency":
                         await this._saveLiveFrequency(message.frequencyHz);
                         break;
+                    case "setUnlimitedSampling":
+                        try {
+                            await this._setUnlimitedSampling(message.enabled);
+                        } finally {
+                            // Resynchronise the toggle even when the request was rejected.
+                            post(this._unlimitedSamplingState());
+                        }
+                        break;
                     case "samplingArchiveInfo": {
                         const history = this._samplingArchive.status(this._debugSamplingScope(watchKey));
                         post({
@@ -2894,6 +2916,8 @@ class MainViewProvider {
                         break;
                     }
                     case "clearSamplingHistory": {
+                        this._resetChartHistoryWarnings();
+                        this._discardChartHistoryAppend(entry);
                         entry.historyClearedAt = Date.now();
                         entry.historyRevision = message.historyRevision;
                         this._samplingArchive.clear(this._debugSamplingScope(watchKey));
@@ -2915,12 +2939,17 @@ class MainViewProvider {
                         if ((message.historyRevision || 0) !== (entry.historyRevision || 0)) break;
                         const scope = this._debugSamplingScope(watchKey);
                         const revision = entry.historyRevision || 0;
+                        this._flushChartHistoryAppend(entry);
                         let result;
                         if (message.type === "chartViewport") {
-                            const watched = new Set(this._scalarWatchList(watchKey).map((item) => item.name));
+                            const watched = new Set(
+                                (entry.historyItems || this._scalarWatchList(watchKey)).map((item) => item.name)
+                            );
                             const names = Array.isArray(message.names)
                                 ? message.names.filter((name) => watched.has(name))
                                 : [];
+                            const previousNames = new Set(entry.historyViewportNames || []);
+                            if (!message.snapshotId) entry.historyViewportNames = names;
                             result = await this._chartHistory.request("viewport", [
                                 scope,
                                 names,
@@ -2928,6 +2957,16 @@ class MainViewProvider {
                                 message.width,
                                 message.snapshotId
                             ]);
+                            const restoreNames = (result.evictedNames || []).filter((name) => !previousNames.has(name));
+                            if (!message.snapshotId && restoreNames.length && !this._chartHistoryRecovery) {
+                                await this._restoreChartHistory(entry, restoreNames);
+                                result = await this._chartHistory.request("viewport", [
+                                    scope,
+                                    names,
+                                    message.range,
+                                    message.width
+                                ]);
+                            }
                         } else if (message.type === "chartFreeze")
                             result = await this._chartHistory.request("freeze", [scope]);
                         else if (message.type === "chartResume")
@@ -2977,6 +3016,7 @@ class MainViewProvider {
                                     archiveScope !== this._debugSamplingScope(watchKey)
                                 )
                                     throw new Error("History changed before export");
+                                this._flushChartHistoryAppend(entry);
                                 result = await this._chartHistory.request("export", [
                                     {
                                         scope: archiveScope,
@@ -3027,6 +3067,11 @@ class MainViewProvider {
                     }
                 }
             } catch (error) {
+                if (
+                    ["chartViewport", "chartFreeze", "chartResume", "chartExportInfo"].includes(message.type) &&
+                    (this._chartHistory?.failed || this._chartHistoryRecovery)
+                )
+                    return;
                 if (["chartViewport", "chartFreeze", "chartResume", "chartExportInfo"].includes(message.type))
                     post({
                         type: message.type + "Result",
@@ -3103,6 +3148,15 @@ class MainViewProvider {
     readElfSymbols() {
         return this._elfService.read();
     }
+    _symbolNameIndex(symbols) {
+        if (!Array.isArray(symbols)) return new Map();
+        this._symbolNameIndexes ||= new WeakMap();
+        const cached = this._symbolNameIndexes.get(symbols);
+        if (cached?.length === symbols.length) return cached.index;
+        const index = buildSymbolNameIndex(symbols);
+        this._symbolNameIndexes.set(symbols, { length: symbols.length, index });
+        return index;
+    }
     async _prepareRequestedLayouts(requests) {
         const result = await this._elfService.ready();
         const byName = this._elfService.symbolByName || new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
@@ -3138,6 +3192,8 @@ class MainViewProvider {
             });
     }
     _onElfChange(phase, result, entries) {
+        // Worker chunks and DWARF display-name enrichment mutate the same symbols array.
+        this._symbolNameIndexes?.delete(result.symbols);
         const version = this._elfVersion(result);
         const sidebarPost = (message) => this._webviewView?.webview.postMessage(message);
         const graphPosts = Array.from(this._livePanels.values())
@@ -3180,6 +3236,8 @@ class MainViewProvider {
                 hasRuntimeLayout: symbol.hasRuntimeLayout,
                 unsupportedReason: symbol.unsupportedReason || "",
                 hasDwarfWriteType: symbol.hasDwarfWriteType,
+                sourceFile: symbol.sourceFile || "",
+                origin: symbol.origin || "user",
                 ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
                 ...(symbol.isEnum ? { isEnum: true } : {}),
                 ...(symbol.isBoolean ? { isBoolean: true } : {}),
@@ -3333,7 +3391,7 @@ class MainViewProvider {
         const watched = new Map((this._scalarWatchList(watchKey) || []).map((item) => [item.name, item]));
         let symbols = new Map();
         try {
-            symbols = buildSymbolNameIndex(this.readElfSymbols().symbols);
+            symbols = this._symbolNameIndex(this.readElfSymbols().symbols);
         } catch {
             // Cached watch labels are still available if ELF metadata is loading or unavailable.
         }
@@ -3356,7 +3414,7 @@ class MainViewProvider {
         if (!Array.isArray(items) || !items.length) return items;
         let byName = null;
         try {
-            byName = buildSymbolNameIndex(this.readElfSymbols().symbols);
+            byName = this._symbolNameIndex(this.readElfSymbols().symbols);
         } catch {
             byName = null;
         }
@@ -3507,8 +3565,162 @@ class MainViewProvider {
         const graphItems = active.filter((item) => graphNames.has(item.name) || graphNames.has(item.parentName));
         const sidebarItems = active.filter((item) => sidebar.has(item.name) || sidebar.has(item.parentName));
         if (typeof session.setSamplingPlan === "function")
-            session.setSamplingPlan({ graphItems, sidebarItems, graphIntervalMs: this._liveIntervalMs });
+            session.setSamplingPlan({
+                graphItems,
+                sidebarItems,
+                graphIntervalMs: this._liveIntervalMs,
+                unlimited: this._unlimitedSamplingEnabled()
+            });
         else session.setWatch(active);
+    }
+    _unlimitedSamplingAvailable() {
+        return vscode.workspace.getConfiguration("emberprobe").get(UNLIMITED_SAMPLING_SETTING) === true;
+    }
+    _unlimitedSamplingEnabled() {
+        return this._unlimitedSamplingRequested === true && this._unlimitedSamplingAvailable();
+    }
+    _unlimitedSamplingState() {
+        return {
+            type: "liveUnlimited",
+            available: this._unlimitedSamplingAvailable(),
+            enabled: this._unlimitedSamplingEnabled()
+        };
+    }
+    async _setUnlimitedSampling(enabled) {
+        if (typeof enabled !== "boolean")
+            throw Object.assign(new Error("Unlimited sampling state must be a boolean"), { code: "INVALID_PARAMS" });
+        if (enabled && !this._unlimitedSamplingAvailable())
+            throw Object.assign(
+                new Error(`Unlimited sampling is disabled; enable emberprobe.${UNLIMITED_SAMPLING_SETTING} first`),
+                { code: "UNLIMITED_SAMPLING_DISABLED" }
+            );
+        this._unlimitedSamplingRequested = enabled;
+        await this._context.workspaceState.update(UNLIMITED_SAMPLING_STATE_KEY, enabled);
+        this._unlimitedSamplingChanged();
+        return this._unlimitedSamplingEnabled();
+    }
+    unlimitedSamplingConfigurationChanged() {
+        this._unlimitedSamplingChanged();
+    }
+    _unlimitedSamplingChanged() {
+        // Only the standalone OpenOCD session honours the flag; debug sessions keep their adaptive budget.
+        if (this._liveSession && !this._debugBridge.hasSession) {
+            const active = this._activeReadPlan();
+            if (active.length) this._applySamplingPlan(this._liveSession, active);
+        }
+        const state = this._unlimitedSamplingState();
+        for (const entry of this._livePanels.values()) entry.post(state);
+    }
+    _resetChartHistoryWarnings() {
+        this._chartHistoryLimitedWarned = false;
+        this._chartHistoryRecoveryErrorWarned = false;
+        this._chartHistoryRecoveryAttempts = 0;
+    }
+    _handleChartHistoryError(error) {
+        if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code)) {
+            this._warnChartHistoryLimited();
+            return;
+        }
+        // Sampling and the archive of record continue while the cache is unavailable.
+        for (const entry of this._livePanels.values()) {
+            entry._historyRecoveryReady = false;
+            this._discardChartHistoryAppend(entry);
+        }
+        void this._recoverChartHistory();
+    }
+    _warnChartHistoryLimited() {
+        if (this._chartHistoryLimitedWarned) return;
+        this._chartHistoryLimitedWarned = true;
+        vscode.window.showWarningMessage(this._t("lw.memoryHistoryLimited"));
+    }
+    _limitChartHistory(entry, scope, tick) {
+        this._discardChartHistoryAppend(entry);
+        this._warnChartHistoryLimited();
+        const revision = entry.historyRevision || 0;
+        const marker = entry._historyLimit;
+        if (marker?.scope === scope && marker.revision === revision) return marker.task;
+        const task = this._chartHistory.limit
+            ? this._chartHistory.limit(scope, tick)
+            : this._chartHistory.request("markLimited", [scope, tick]);
+        const pending = (this._pendingChartHistoryAppends ||= new Set());
+        const tracked = task
+            .catch((error) => this._chartHistory.fail(error))
+            .finally(() => {
+                pending.delete(tracked);
+                if (entry._historyLimit?.task === tracked) entry._historyLimit = null;
+            });
+        entry._historyLimit = { scope, revision, task: tracked };
+        pending.add(tracked);
+        return tracked;
+    }
+    _discardChartHistoryAppend(entry) {
+        if (entry._historyBatchTimer) clearTimeout(entry._historyBatchTimer);
+        entry._historyBatchTimer = null;
+        this._queuedChartHistoryBytes = Math.max(
+            0,
+            (this._queuedChartHistoryBytes || 0) - (entry._historyBatch?.bytes || 0)
+        );
+        entry._historyBatch = null;
+    }
+    _queueChartHistoryAppend(entry, samples, tick) {
+        if (!this._chartHistory || !samples.length) return;
+        if (entry._historyRestoreTask || (this._chartHistoryRecovery && !entry._historyRecoveryReady)) {
+            entry._historyRestoreGapTick = tick;
+            return;
+        }
+        if (this._chartHistory.failed) return;
+        const scope = this._debugSamplingScope(entry.watchKey);
+        const revision = entry.historyRevision || 0;
+        if (entry._historyBatch && (entry._historyBatch.scope !== scope || entry._historyBatch.revision !== revision))
+            this._discardChartHistoryAppend(entry);
+        const bytes = estimateHistoryBytes([scope, samples, tick]);
+        const queuedBytes = (this._queuedChartHistoryBytes || 0) + bytes;
+        // Host batching and worker IPC share the existing backlog budget.
+        if (queuedBytes + (this._chartHistory.queuedBytes || 0) > MAX_BACKLOG_BYTES) {
+            this._limitChartHistory(entry, scope, tick);
+            return;
+        }
+        const batch = (entry._historyBatch ||= { scope, revision, samples: [], tick, bytes: 0 });
+        batch.tick = Math.max(batch.tick, tick);
+        batch.bytes += bytes;
+        this._queuedChartHistoryBytes = queuedBytes;
+        for (const sample of samples) batch.samples.push(sample.t == null ? { ...sample, t: tick } : sample);
+        if (batch.bytes >= 256 * 1024) this._flushChartHistoryAppend(entry);
+        else if (!entry._historyBatchTimer)
+            entry._historyBatchTimer = setTimeout(() => this._flushChartHistoryAppend(entry), 50);
+    }
+    _flushChartHistoryAppend(entry) {
+        const batch = entry._historyBatch;
+        this._discardChartHistoryAppend(entry);
+        if (
+            !batch ||
+            !this._chartHistory ||
+            this._chartHistory.failed ||
+            entry._historyRestoreTask ||
+            (this._chartHistoryRecovery && !entry._historyRecoveryReady) ||
+            batch.scope !== this._debugSamplingScope(entry.watchKey) ||
+            batch.revision !== (entry.historyRevision || 0)
+        )
+            return;
+        batch.samples.sort((a, b) => a.t - b.t);
+        const pending = (this._pendingChartHistoryAppends ||= new Set());
+        const task = this._chartHistory
+            .request("append", [batch.scope, batch.samples, batch.tick])
+            .then((status) => {
+                if (status?.limited) this._warnChartHistoryLimited();
+            })
+            .catch((error) => {
+                if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code))
+                    return this._limitChartHistory(entry, batch.scope, batch.tick);
+                this._chartHistory.fail(error);
+            })
+            .finally(() => pending.delete(task));
+        pending.add(task);
+        return task;
+    }
+    _flushPendingChartHistorySamples() {
+        for (const entry of this._livePanels?.values() || []) this._flushChartHistoryAppend(entry);
+        return Promise.all([...(this._pendingChartHistoryAppends || [])]);
     }
     _configureChartHistory(entry, acquisitionTime = Date.now()) {
         if (!this._chartHistory) return;
@@ -3518,11 +3730,14 @@ class MainViewProvider {
         const previous = new Map(
             (entry.historyScope === scope ? entry.historyItems || [] : []).map((item) => [item.name, item])
         );
-        if (entry.historyScope && entry.historyScope !== scope)
+        if (entry.historyScope && entry.historyScope !== scope) {
+            this._discardChartHistoryAppend(entry);
             this._chartHistory.request("remove", [entry.historyScope]).catch((error) => this._chartHistory.fail(error));
+        }
         entry.historyScope = scope;
         const signature = JSON.stringify([scope, items]);
         if (entry.historySignature === signature) return;
+        this._flushChartHistoryAppend(entry);
         entry.historySignature = signature;
         entry.historyItems = items.map((item) => ({
             ...item,
@@ -3541,28 +3756,142 @@ class MainViewProvider {
             })
             .catch((error) => this._chartHistory.fail(error));
     }
-    async _recoverChartHistory() {
-        if (!this._chartHistory?.failed) return;
-        await this._chartHistory.restart();
-        try {
-            for (const entry of this._livePanels.values()) {
-                const scope = this._debugSamplingScope(entry.watchKey);
-                entry.historyRevision = (entry.historyRevision || 0) + 1;
-                entry.post({ type: "debugSessionChanged" });
-                await this._chartHistory.request("configure", [
-                    scope,
-                    entry.historyItems || this._scalarWatchList(entry.watchKey)
-                ]);
+    _restoreChartHistory(entry, names, recoveryToken) {
+        if (entry._historyRestoreTask) return entry._historyRestoreTask;
+        this._flushChartHistoryAppend(entry);
+        const scope = this._debugSamplingScope(entry.watchKey);
+        const revision = entry.historyRevision || 0;
+        const signature = entry.historySignature;
+        const current = () =>
+            (!recoveryToken || recoveryToken.active) &&
+            !this._chartHistory.disposed &&
+            !this._shutdownPromise &&
+            [...this._livePanels.values()].includes(entry) &&
+            scope === this._debugSamplingScope(entry.watchKey) &&
+            revision === (entry.historyRevision || 0) &&
+            signature === entry.historySignature;
+        let restoredThrough = -Infinity;
+        const task = (async () => {
+            await this._flushPendingChartHistorySamples();
+            if (!current()) return;
+            const source = await this._samplingArchive.historySource(scope);
+            if (!current()) return;
+            await this._chartHistory.request("restore", [{ ...source, names }]);
+            if (!current()) return;
+            // One bounded catch-up pass includes samples archived during the first scan.
+            const catchup = await this._samplingArchive.historySource(scope);
+            if (!current()) return;
+            if (catchup.generation !== source.generation) return;
+            if (catchup.cutoff > source.cutoff)
+                await this._chartHistory.request("restore", [{ ...catchup, names, fromOffset: source.cutoff }]);
+            if (!current()) return;
+            restoredThrough = catchup.lastTimestampMs;
+            const status = await this._chartHistory.request("status", [scope]);
+            if (current()) {
+                if (status.limited) this._warnChartHistoryLimited();
+                entry.post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
+            }
+        })()
+            .catch((error) => {
+                if (error.code !== "CHART_HISTORY_RESTORE_CANCELLED") throw error;
+            })
+            .finally(async () => {
+                if (entry._historyRestoreTask !== task) return;
+                entry._historyRestoreTask = null;
+                if (!current()) return;
+                entry._historyRecoveryReady = true;
+                const gapTick = entry._historyRestoreGapTick;
+                entry._historyRestoreGapTick = null;
+                // Partial restores also leave other channels' skipped samples missing.
+                if (Number.isFinite(gapTick) && (names || gapTick > restoredThrough)) {
+                    const status = await this._chartHistory.request("markLimited", [scope, gapTick]);
+                    if (current()) {
+                        this._warnChartHistoryLimited();
+                        entry.post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
+                    }
+                }
+            });
+        entry._historyRestoreTask = task;
+        entry._historyRestoreToken = recoveryToken;
+        return task;
+    }
+    _recoverChartHistory() {
+        if (this._chartHistoryRecovery) return this._chartHistoryRecovery;
+        if (!this._chartHistory?.failed || this._chartHistory.disposed || this._shutdownPromise)
+            return Promise.resolve();
+        const task = (async () => {
+            let error = this._chartHistory.failed;
+            // At most three restarts per run/clear, including recurring failures after a successful recovery.
+            while ((this._chartHistoryRecoveryAttempts || 0) < 3) {
+                const attempt = (this._chartHistoryRecoveryAttempts = (this._chartHistoryRecoveryAttempts || 0) + 1);
+                await new Promise((resolve) => setTimeout(resolve, [250, 1000, 3000][attempt - 1]));
+                if (this._chartHistory.disposed || this._shutdownPromise) return;
+                let timer;
+                const token = { active: true };
                 try {
-                    await this._chartHistory.request("restore", [await this._samplingArchive.historySource(scope)]);
-                } catch (error) {
-                    if (error.code !== "CHART_HISTORY_RESTORE_CANCELLED") throw error;
+                    await Promise.race([
+                        (async () => {
+                            for (const entry of this._livePanels.values()) entry._historyRecoveryReady = false;
+                            await this._flushPendingChartHistorySamples();
+                            await this._chartHistory.restart();
+                            if (!token.active) return;
+                            for (const entry of this._livePanels.values()) {
+                                if (!token.active) return;
+                                entry.historyRevision = (entry.historyRevision || 0) + 1;
+                                entry.post({ type: "debugSessionChanged" });
+                                const scope = this._debugSamplingScope(entry.watchKey);
+                                await this._chartHistory.request("configure", [
+                                    scope,
+                                    entry.historyItems || this._scalarWatchList(entry.watchKey)
+                                ]);
+                                if (!token.active) return;
+                                if (entry.historyViewportNames?.length)
+                                    await this._chartHistory.request("viewport", [
+                                        scope,
+                                        entry.historyViewportNames,
+                                        { min: 0, max: 1 },
+                                        1
+                                    ]);
+                                if (!token.active) return;
+                                await this._restoreChartHistory(entry, undefined, token);
+                            }
+                            if (this._chartHistory.failed) throw this._chartHistory.failed;
+                        })(),
+                        new Promise((resolve, reject) => {
+                            timer = setTimeout(() => {
+                                token.active = false;
+                                reject(new Error("History recovery timed out"));
+                            }, 30000);
+                        })
+                    ]);
+                    return;
+                } catch (failure) {
+                    error = failure;
+                    token.active = false;
+                    for (const entry of this._livePanels.values())
+                        if (entry._historyRestoreToken === token) entry._historyRestoreTask = null;
+                    this._chartHistory.fail(failure);
+                } finally {
+                    clearTimeout(timer);
                 }
             }
-        } catch (error) {
-            this._chartHistory.fail(error);
-            throw error;
-        }
+            if (!this._chartHistoryRecoveryErrorWarned) {
+                this._chartHistoryRecoveryErrorWarned = true;
+                this._postLive({
+                    type: "liveError",
+                    ...toUiError(
+                        Object.assign(new Error(this._t("lw.historyRecoveryFailed")), {
+                            i18nKey: "lw.historyRecoveryFailed",
+                            details: { cause: serializeError(error) }
+                        })
+                    )
+                });
+            }
+        })().finally(() => {
+            if (this._chartHistoryRecovery === task) this._chartHistoryRecovery = null;
+        });
+        this._chartHistoryRecovery = task;
+        return task;
     }
     // 各消费者对每个变量的观察类型，用于把同一份原始字节按各自类型解码后分别推送。
     _consumerTypes() {
@@ -3663,19 +3992,22 @@ class MainViewProvider {
                         composites = entry._pendingComposites;
                     entry._pendingScalars = [];
                     entry._pendingComposites = [];
+                    const status = this._samplingStatus();
                     if (scalars.length)
                         entry.post({
                             type: "chartValues",
                             samples: scalars,
                             t,
-                            actualHz: this._samplingStatus().actualHz
+                            actualHz: status.actualHz,
+                            unlimitedActive: status.unlimitedActive,
+                            limitedBy: status.limitedBy
                         });
                     if (composites.length)
                         entry.post({
                             type: "liveCompositeSample",
                             samples: composites,
                             t,
-                            actualHz: this._samplingStatus().actualHz
+                            actualHz: status.actualHz
                         });
                 }, 50);
             return;
@@ -3824,15 +4156,7 @@ class MainViewProvider {
                     ? entry.historyItems.map((item) => [item.name, item.type])
                     : types.graphs.get(entry.watchKey)
             );
-            if (recorded.length && this._chartHistory)
-                this._chartHistory
-                    .request("append", [this._debugSamplingScope(entry.watchKey), recorded, t])
-                    .catch((error) => {
-                        if (error.code === "CHART_HISTORY_FULL") {
-                            this.stopLiveWatch();
-                            this._postLive({ type: "liveError", ...toUiError(error) });
-                        } else this._chartHistory.fail(error);
-                    });
+            if (recorded.length && this._chartHistory) this._queueChartHistoryAppend(entry, recorded, t);
             this._samplingArchive.append(
                 recorded.map((sample) => {
                     const spec = graphTypes.get(sample.name);
@@ -3958,6 +4282,14 @@ class MainViewProvider {
         status.sidebarTargetHz = 20;
         status.p95DurationMs = stats?.p95DurationMs ?? 0;
         status.missedDeadlines = stats?.missedDeadlines ?? 0;
+        status.unlimited = stats?.unlimited ?? this._unlimitedSamplingEnabled();
+        status.unlimitedActive = stats?.unlimitedActive === true;
+        // DAP-driven debug sessions have no worker statistics but still ignore unlimited sampling.
+        status.unlimitedSuppressedReason =
+            stats?.unlimitedSuppressedReason ??
+            (this._unlimitedSamplingEnabled() && this._debugBridge?.hasSession ? "debug" : null);
+        status.limitedBy = stats?.limitedBy ?? null;
+        status.hostHoldMs = stats?.hostHoldMs ?? 0;
         status.pauseReason =
             stats?.pauseReason ?? (this._samplingCoordinator.backpressured ? "archive_backpressure" : null);
         return status;
@@ -4156,6 +4488,7 @@ class MainViewProvider {
         this._assertCpuIdle();
         if (this._liveStopPromise || this._liveStartPromise)
             return Promise.reject(Object.assign(new Error(this._t("live.starting")), { code: "PROBE_BUSY" }));
+        this._resetChartHistoryWarnings();
         const generation = (this._liveStartGeneration = (this._liveStartGeneration || 0) + 1);
         this._liveStartPromise = this._startLiveWatch(items, intervalMs, consumer, interactive, generation).finally(
             () => {
@@ -4189,10 +4522,12 @@ class MainViewProvider {
                 this._chartHistory.options.maxBytes = maxBytes;
                 if (!this._chartHistory.failed) {
                     try {
-                        await this._chartHistory.request("setBudget", [maxBytes]);
+                        const status = await this._chartHistory.request("setBudget", [maxBytes]);
+                        if (status?.limited) this._warnChartHistoryLimited();
                     } catch (error) {
-                        this.stopLiveWatch();
-                        throw error;
+                        if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code))
+                            this._warnChartHistoryLimited();
+                        else throw error;
                     }
                 }
             }
@@ -4412,6 +4747,7 @@ class MainViewProvider {
             this._pendingSidebarScalars = [];
             this._pendingSidebarComposites = [];
         }
+        const historyFlushed = this._flushPendingChartHistorySamples();
         this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
         this._liveConsumers.clear();
@@ -4449,6 +4785,7 @@ class MainViewProvider {
                     code: "PROBE_EXIT_UNCONFIRMED",
                     i18nKey: "cpu.exitUnconfirmed"
                 });
+            await historyFlushed;
             if (this._liveSession === session) this._liveSession = null;
             this._liveStartLease?.release();
             this._liveWatchLease?.release();
@@ -4764,6 +5101,7 @@ class MainViewProvider {
             await this._stopManagedDebugServer();
             const stopped = this.stopLiveWatch();
             if (stopped) await stopped;
+            await this._flushPendingChartHistorySamples();
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
             this.disposeDebugBridge();

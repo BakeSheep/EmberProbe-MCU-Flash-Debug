@@ -5,6 +5,7 @@ const { companionsUnchanged } = require("../dwarf/files");
 const { validateLayoutExpansionRequest, validateLayoutExpansionTarget } = require("../validation");
 const { resolveLayoutPath, expandCompositeLeaves } = require("../elfSymbols");
 const { validateComposite } = require("../compositeValidation");
+const { classifyVariableOrigin } = require("../variableOrigin");
 const MAX_LAYOUT_EXPANSIONS = 32;
 const MAX_LAYOUT_EXPANSION_BYTES = 8 * 1024 * 1024;
 
@@ -81,7 +82,11 @@ class ElfService {
         return this.cleanPath(selected);
     }
 
-    _enrich(result, types, layouts = new Map(), displayNames = new Map()) {
+    // debugComplete: every DWARF type record is known, so a missing record is meaningful.
+    // Returns the symbols whose filter origin changed.
+    _enrich(result, types, layouts = new Map(), displayNames = new Map(), { debugComplete = false } = {}) {
+        const originChanged = [];
+        const hasDebugInfo = debugComplete && types.size > 0;
         for (const symbol of result.symbols) {
             const info = types.get(symbol.name);
             const looksCpp = isItaniumMangled(symbol.name);
@@ -91,6 +96,10 @@ class ElfService {
             symbol.displayName = displayNames.get(symbol.name) || symbol.displayName || symbol.name;
             symbol.qualifiedName = symbol.displayName;
             symbol.typeName = info?.typeName || "";
+            symbol.sourceFile = info?.sourceFile || "";
+            const origin = classifyVariableOrigin(symbol, { debugComplete: hasDebugInfo, hasDebugInfo: !!info });
+            if (symbol.origin !== undefined && symbol.origin !== origin) originChanged.push(symbol);
+            symbol.origin = origin;
             const layout = layouts.get(symbol.name);
             const hasLayout = !!layout && !info?.ambiguous && info?.kind !== "scalar";
             if (layout?.runtimeLayout) symbol.runtimeLayout = layout.runtimeLayout;
@@ -140,6 +149,7 @@ class ElfService {
                         : this.t("lw.compositeNoLayout");
             }
         }
+        return originChanged;
     }
 
     _recordCppDiagnostics(result, types) {
@@ -316,7 +326,10 @@ class ElfService {
                     result.companions = message.companions || [];
                     result.diagnostics.push(...message.diagnostics);
                     result.typeMetadataIncomplete = message.diagnostics.some((entry) => entry.code !== "DWARF_MISSING");
-                    this._enrich(result, types);
+                    // Symbols without DWARF records are reclassified only now; publish them as type updates.
+                    const originChanged = this._enrich(result, types, undefined, undefined, { debugComplete: true });
+                    for (let i = 0; i < originChanged.length; i += 1000)
+                        this.onChange("types", result, originChanged.slice(i, i + 1000));
                     this._recordCppDiagnostics(result, types);
                     result.workerHeapUsed = message.heapUsed;
                     result.warnings.push(...message.diagnostics.map((d) => `${d.code}: ${d.message}`));
@@ -605,7 +618,9 @@ class ElfService {
         const typeMap = parsed?.types || null;
         const layouts = parsed?.layouts || null;
         const displayNames = parsed?.displayNames || null;
-        this._enrich(result, typeMap || new Map(), layouts || new Map(), displayNames || new Map());
+        this._enrich(result, typeMap || new Map(), layouts || new Map(), displayNames || new Map(), {
+            debugComplete: true
+        });
         this._recordCppDiagnostics(result, typeMap || new Map());
         for (const fn of result.functions || []) fn.displayName = displayNames?.get(fn.name) || fn.name;
         if (!typeMap || typeMap.size === 0) result.warnings.push(this.t("warn.noDwarf"));

@@ -55,10 +55,13 @@ function mockApi(rows = fixture) {
             assert.strictEqual(flags, 0);
             assert.strictEqual(size.readUInt32LE(), buffer.length);
             propertyCalls++;
-            const deviceKey = key.subarray(0, 16).toString("hex") === "4e255ca41cdffd4e802067d146a850e0";
-            const field = deviceKey
-                ? { 14: "name", 2: "description", 6: "service" }[key.readUInt32LE(16)]
-                : { 9: "driverProvider", 5: "driverInf" }[key.readUInt32LE(16)];
+            const guid = key.subarray(0, 16).toString("hex");
+            const field =
+                guid === "4e255ca41cdffd4e802067d146a850e0"
+                    ? { 14: "name", 2: "description", 6: "service" }[key.readUInt32LE(16)]
+                    : guid === "7e940b54408bbc45a8a26a0b894cbda2" && key.readUInt32LE(16) === 4
+                      ? "reportedName"
+                      : { 9: "driverProvider", 5: "driverInf" }[key.readUInt32LE(16)];
             const value = rows[node - 1][field];
             if (!value) return 0x25;
             type.writeUInt32LE(0x12);
@@ -78,7 +81,12 @@ async function main() {
     assert.strictEqual(parsed.length, 1);
     assert.strictEqual(parsed[0].serial, "0001A0000000");
     assert.strictEqual(parsed[0].interfaces.length, 3);
-    assert.strictEqual(api.propertyCalls, 13, "Only candidate probes need driver/parent metadata");
+    assert.strictEqual(
+        api.propertyCalls,
+        14,
+        "Only candidate probes need driver/parent metadata; an unmatched USB device gets one iProduct query"
+    );
+    assert(!rows.some((row) => "reportedName" in row), "Classified names need no iProduct query");
 
     // Every call queries present devices afresh, including unplug/replug with a different serial.
     const replacement = fixture.map((row) => ({
@@ -96,6 +104,37 @@ async function main() {
     const namedRows = listWindowsProbeRows((_vid, _pid, name) => /CMSIS-DAP/.test(name), { api: mockApi(named) });
     assert.strictEqual(namedRows.length, 3, "An identified interface must retain its unnamed composite root");
     assert.strictEqual(parseWindowsInventory(JSON.stringify(namedRows), "all")[0].serial, "0001A0000000");
+
+    // Horco CMSIS-DAP (EF1A:74E5): Windows names are generic; only the bus-reported iProduct identifies it.
+    const horcoRoot = "USB\\VID_EF1A&PID_74E5\\4844332732";
+    const horco = [
+        { instanceId: horcoRoot, name: "USB Composite Device", reportedName: "Horco CMSIS-DAP", parent: 6 },
+        { instanceId: "USB\\VID_EF1A&PID_74E5&MI_00\\location", name: "USB 输入设备", parent: 1 },
+        { instanceId: "HID\\VID_EF1A&PID_74E5&MI_00\\location", name: "USB 输入设备", parent: 2 },
+        { instanceId: "USB\\VID_EF1A&PID_74E5&MI_01\\location", name: "USB 串行设备 (COM20)", parent: 1 },
+        {
+            instanceId: "USB\\VID_A8A5&PID_2255\\keyboard",
+            name: "USB Composite Device",
+            reportedName: "G3 A",
+            parent: 6
+        },
+        { instanceId: "USB\\ROOT_HUB30\\location", name: "USB hub" }
+    ];
+    const horcoApi = mockApi(horco);
+    const horcoProbes = await listProbes({
+        platform: "win32",
+        family: "cmsis-dap",
+        nativeList: (usbFamily) => listWindowsProbeRows(usbFamily, { api: horcoApi }),
+        run: () => {
+            throw new Error("PowerShell must not start");
+        }
+    });
+    assert.strictEqual(horcoProbes.devices.length, 1, "An unrelated generic composite device must stay excluded");
+    assert.strictEqual(horcoProbes.devices[0].family, "cmsis-dap");
+    assert.strictEqual(horcoProbes.devices[0].serial, "4844332732");
+    assert.strictEqual(horcoProbes.devices[0].name, "Horco CMSIS-DAP");
+    assert.strictEqual(horcoProbes.devices[0].interfaces.length, 4);
+    assert.strictEqual(horcoProbes.devices[0].id, horcoRoot);
 
     let calls = 0;
     const originalList = api.list;

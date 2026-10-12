@@ -40,6 +40,8 @@ const driverGuid = "a8b865dd-2e3d-4094-ad97-e593a70c75d6";
 const keys = {
     name: propertyKey(deviceGuid, 14),
     description: propertyKey(deviceGuid, 2),
+    // DEVPKEY_Device_BusReportedDeviceDesc: the USB iProduct/iInterface string reported by the device.
+    reportedName: propertyKey("540b947e-8b40-45bc-a8a2-6a0b894cbda2", 4),
     service: propertyKey(deviceGuid, 6),
     driverProvider: propertyKey(driverGuid, 9),
     driverInf: propertyKey(driverGuid, 5)
@@ -94,8 +96,16 @@ function listWindowsProbeRows(classify, options = {}) {
         const node = number.readUInt32LE();
         const name = stringProperty(node, keys.name) || stringProperty(node, keys.description);
         const prefix = match[1].toUpperCase();
-        if (classify(match[2].toLowerCase(), match[3].toLowerCase(), name)) prefixes.add(prefix);
-        rows.push({ instanceId: id, name, node, prefix });
+        const vid = match[2].toLowerCase();
+        const pid = match[3].toLowerCase();
+        let reportedName = "";
+        if (classify(vid, pid, name)) prefixes.add(prefix);
+        else if (!prefixes.has(prefix) && /^USB\\/i.test(id)) {
+            // Windows gives CMSIS-DAP clones generic names; the spec requires "CMSIS-DAP" in iProduct.
+            reportedName = stringProperty(node, keys.reportedName);
+            if (reportedName && classify(vid, pid, reportedName)) prefixes.add(prefix);
+        }
+        rows.push({ instanceId: id, name, ...(reportedName ? { reportedName } : {}), node, prefix });
     }
     return rows
         .filter((row) => prefixes.has(row.prefix))

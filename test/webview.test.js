@@ -82,7 +82,7 @@ try {
     assert.strictEqual(sidebar.document.getElementById("feedbackPrompt"), null);
     assert.strictEqual(
         sidebar.document.querySelector(".primary-actions [data-command='mcu-vscode.debug']").textContent,
-        "Debug"
+        "Debug With Reset"
     );
     assert.strictEqual(sidebar.document.getElementById("githubLink").textContent, "");
     click("githubLink");

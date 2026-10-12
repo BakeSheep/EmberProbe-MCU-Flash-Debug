@@ -359,6 +359,8 @@ class CpuLoadSampler {
         const nextDeadline = slotEnd;
         let classification = /** @type {any} */ ({ kind: "unknown", reason: "backpressure" });
         let owned = false;
+        let acquiredAt = start;
+        const unlimited = this.owner.unlimitedActive === true;
         this.costs = this.costs.filter((cost) => cost.time > start - 1000);
         const spent = this.costs.reduce((sum, cost) => sum + cost.duration, 0);
         const sharedSpent = (this.owner._recentTclCosts || [])
@@ -371,11 +373,11 @@ class CpuLoadSampler {
                 ? this.owner.ratePlan.delay(start) <= Math.max(1, this.lastDuration)
                 : start >= (this.owner._variableDeadline || 0));
         try {
-            if (this.owner.busy || this.owner.queue.length || variableDue)
+            if (!unlimited && (this.owner.busy || this.owner.queue.length || variableDue))
                 classification.reason = "transaction-or-variable";
             else if (!this.owner.socket || this.owner.socket.destroyed) classification.reason = "disconnected";
             else if (spent + this.lastDuration > 200) classification.reason = "cpu-budget";
-            else if (sharedSpent + this.lastDuration > (this.owner.mode === "debug" ? 400 : 700))
+            else if (!unlimited && sharedSpent + this.lastDuration > (this.owner.mode === "debug" ? 400 : 700))
                 classification.reason = "shared-budget";
             else if (
                 (this.owner._pauseReason && !["paused", "debug_paused"].includes(this.owner._pauseReason)) ||
@@ -384,28 +386,46 @@ class CpuLoadSampler {
             )
                 classification.reason = "backpressure";
             else {
-                this.owner.busy = owned = true;
-                if (!this.capabilities) await this.check();
-                if (epoch !== this.epoch) return;
-                const ready = await this.refreshIdle(start);
-                if (epoch !== this.epoch) return;
-                classification =
-                    ready === false
-                        ? { kind: "unknown", reason: "scheduler-not-running" }
-                        : await this.collect(period, start);
+                if (unlimited) {
+                    // Convert this monotonic slot's remaining time into the arbiter's wall-clock deadline.
+                    await this.owner._acquireExclusive(Date.now() + Math.max(0, slotEnd - this.now()));
+                    owned = true;
+                } else owned = this.owner._tryAcquireExclusive();
+                if (!owned) classification.reason = "transaction-or-variable";
+                else {
+                    acquiredAt = this.now();
+                    if (epoch !== this.epoch) return;
+                    if (!this.owner.socket || this.owner.socket.destroyed) classification.reason = "disconnected";
+                    else if (unlimited && acquiredAt >= slotEnd) classification.reason = "transaction-or-variable";
+                    else {
+                        if (!this.capabilities) await this.check();
+                        if (epoch !== this.epoch) return;
+                        const ready = await this.refreshIdle(start);
+                        if (epoch !== this.epoch) return;
+                        classification =
+                            ready === false
+                                ? { kind: "unknown", reason: "scheduler-not-running" }
+                                : await this.collect(period, start);
+                    }
+                }
             }
         } catch (error) {
             if (epoch !== this.epoch) return;
-            classification = { kind: "unknown", reason: "read-failed" };
-            if (!this.capabilities) {
+            classification = {
+                kind: "unknown",
+                reason: ["PROBE_CONNECTION_BUSY_TIMEOUT", "LIVE_READ_CANCELLED"].includes(error.code)
+                    ? "transaction-or-variable"
+                    : "read-failed"
+            };
+            if (!this.capabilities && classification.reason === "read-failed") {
                 this.emit("unavailable", { reason: error.message });
                 this.paused = true;
                 this.cancel();
             }
         } finally {
             if (owned) {
-                this.owner.busy = false;
-                const duration = this.now() - start;
+                this.owner._releaseExclusive();
+                const duration = this.now() - acquiredAt;
                 if (epoch === this.epoch) {
                     this.costs.push({ time: this.now(), duration });
                     this.lastDuration = Math.max(0.1, duration);

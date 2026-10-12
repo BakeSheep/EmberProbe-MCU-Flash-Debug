@@ -2,6 +2,7 @@
 const assert = require("assert");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
+const i18n = require("../src/i18n");
 
 async function main() {
     let config = { transport: "auto", probeSerial: "", adapterSpeedKhz: 0 };
@@ -9,6 +10,7 @@ async function main() {
     let saved = null,
         writes = 0,
         prompts = 0,
+        title = "",
         selected = { value: "5678" };
     const service = new ProbeConnectionService({
         getConfig: () => config,
@@ -18,8 +20,9 @@ async function main() {
             saved = value;
         },
         window: {
-            showQuickPick: async () => {
+            showQuickPick: async (choices, options) => {
                 prompts++;
+                title = options.title;
                 return selected;
             }
         },
@@ -85,7 +88,53 @@ async function main() {
     });
 
     devices = [{ family: "jlink", serial: "5678", id: "usb-2" }];
-    await assert.rejects(service.prepare(options), { code: "PROBE_SELECTED_NOT_FOUND" });
+    await assert.rejects(service.prepare(options), {
+        code: "PROBE_SELECTED_NOT_FOUND",
+        details: { probeSerial: "1234", remembered: true, devices },
+        i18nKey: "probe.rememberedNotFound",
+        i18nParams: { label: "J-Link", serial: "1234" }
+    });
+    assert.strictEqual(
+        i18n.t("zh", "probe.rememberedNotFound", { label: "J-Link", serial: "1234" }),
+        "上次使用的 J-Link（1234）未连接，不会自动改用其他设备"
+    );
+    const localized = new ProbeConnectionService({
+        getConfig: () => config,
+        getSuccessfulConnection: () => saved,
+        window: {
+            showQuickPick: async (choices, pickOptions) => {
+                title = pickOptions.title;
+                return undefined;
+            }
+        },
+        t: (key, params) => i18n.t("zh", key, params),
+        prepareConnection: async (request) => ({
+            ...resolveProbeConnection(request, { available: true, devices }),
+            adapterFamily: "jlink"
+        })
+    });
+    await assert.rejects(localized.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
+    assert.strictEqual(title, "上次使用的探针 1234 未连接，请选择一个物理调试探针");
+    // A stale remembered probe is re-picked by the user, never replaced silently.
+    const repicked = await service.prepare(options, true);
+    assert.strictEqual(prompts, 1);
+    assert.strictEqual(title, "Previously used probe 1234 is not connected; select a physical debug probe");
+    assert.strictEqual(repicked.probeSerial, "5678");
+    assert.strictEqual(repicked.selection.probe, "explicit");
+    assert.strictEqual(config.probeSerial, "", "re-picking does not rewrite settings");
+    selected = undefined;
+    await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
+    selected = { value: "5678" };
+    // An explicitly configured serial stays strict even for interactive callers.
+    config = { ...config, probeSerial: "9999" };
+    await assert.rejects(service.prepare(options, true), {
+        code: "PROBE_SELECTED_NOT_FOUND",
+        details: { probeSerial: "9999", remembered: false, devices },
+        i18nKey: "probe.selectedNotFound"
+    });
+    assert.strictEqual(prompts, 2);
+    config = { ...config, probeSerial: "" };
+    prompts = 0;
     config = { ...config, probeSerial: "5678", transport: "jtag" };
     const explicit = await service.prepare(options);
     assert.strictEqual(explicit.transport, "jtag");

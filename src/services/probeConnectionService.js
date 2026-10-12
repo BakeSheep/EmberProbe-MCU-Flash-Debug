@@ -2,6 +2,7 @@
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 const { detectProbe } = require("../../skills/_emberprobe/probe-detection");
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
+const i18n = require("../i18n");
 const {
     normalizeProbeSerial,
     connectionIdentity,
@@ -13,6 +14,7 @@ class ProbeConnectionService {
     constructor(options) {
         this.getConfig = options.getConfig;
         this.window = options.window;
+        this.t = options.t || ((key, params) => i18n.t("en", key, params));
         this.prepareConnection =
             options.prepareConnection ||
             ((request) =>
@@ -84,7 +86,9 @@ class ProbeConnectionService {
             } catch (error) {
                 if (!interactive) throw error;
                 let values;
-                if (error.code === "PROBE_SELECTION_REQUIRED") {
+                // A stale remembered probe is never replaced silently; the user picks a present one instead.
+                const staleRemembered = error.code === "PROBE_SELECTED_NOT_FOUND" && error.details?.remembered === true;
+                if (error.code === "PROBE_SELECTION_REQUIRED" || staleRemembered) {
                     const choices = (error.details?.devices || [])
                         .filter((device) => device.serial)
                         .map((device) => ({
@@ -93,7 +97,11 @@ class ProbeConnectionService {
                             value: device.serial
                         }));
                     if (!choices.length) throw error;
-                    const selected = await this.window.showQuickPick(choices, { title: "Select physical debug probe" });
+                    const selected = await this.window.showQuickPick(choices, {
+                        title: staleRemembered
+                            ? this.t("probe.pickStaleTitle", { serial: error.details.probeSerial })
+                            : this.t("probe.pickTitle")
+                    });
                     if (selected) {
                         const serial = selected.value;
                         if (serial) values = { probeSerial: normalizeProbeSerial(serial) };

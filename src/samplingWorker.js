@@ -2,6 +2,43 @@
 const { parentPort, workerData, isMainThread } = require("worker_threads");
 const { ManagedOpenOcdSession } = require("./liveWatch");
 const { serializeError } = require("./services/errorEnvelope");
+const { MAX_COMPOSITE_DEPTH, MAX_COMPOSITE_NODES, MAX_COMPOSITE_BYTES } = require("./dwarf/layoutLimits");
+
+const MAX_BACKLOG_BYTES = 16 * 1024 * 1024;
+const SOFT_BACKLOG_BYTES = 1024 * 1024;
+const SOFT_BACKLOG_BATCHES = 8;
+
+function estimateRuntimeBytes(value) {
+    let bytes = 0;
+    let visits = 0;
+    const visit = (entry, depth) => {
+        if (bytes > MAX_COMPOSITE_BYTES) return;
+        // Member/element arrays add one container edge per runtime tree level.
+        if (++visits > MAX_COMPOSITE_NODES || depth > MAX_COMPOSITE_DEPTH * 2 + 4) {
+            bytes = MAX_BACKLOG_BYTES + 1;
+            return;
+        }
+        if (typeof entry === "string") bytes += 16 + entry.length * 2;
+        else if (!entry || typeof entry !== "object") bytes += 8;
+        else if (Array.isArray(entry)) {
+            bytes += 32 + entry.length * 8;
+            for (const child of entry) {
+                visit(child, depth + 1);
+                if (bytes > MAX_COMPOSITE_BYTES) break;
+            }
+        } else {
+            bytes += 32;
+            for (const key in entry) {
+                if (!Object.hasOwn(entry, key)) continue;
+                bytes += 16 + key.length * 2;
+                visit(entry[key], depth + 1);
+                if (bytes > MAX_COMPOSITE_BYTES) break;
+            }
+        }
+    };
+    visit(value, 0);
+    return bytes > MAX_COMPOSITE_BYTES ? MAX_BACKLOG_BYTES + 1 : bytes;
+}
 
 // The socket, command queue, sampling clock and write exclusion all have one owner.
 function run(port, options, makeSession = (config, handlers) => new ManagedOpenOcdSession(null, config, handlers)) {
@@ -37,8 +74,8 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                         (s.bytes?.length || 0) +
                         s.name.length * 2 +
                         64 +
-                        (s.runtimeTree ? Buffer.byteLength(JSON.stringify(s.runtimeTree)) : 0) +
-                        (s.diagnostic ? Buffer.byteLength(JSON.stringify(s.diagnostic)) : 0),
+                        (s.runtimeTree ? estimateRuntimeBytes(s.runtimeTree) : 0) +
+                        (s.diagnostic ? estimateRuntimeBytes(s.diagnostic) : 0),
                     0
                 );
                 queued.push({
@@ -47,12 +84,13 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     generation,
                     consumers: consumers && { graphNames: consumers.graphNames, sidebarNames: consumers.sidebarNames }
                 });
-                if (queuedBytes > 16 * 1024 * 1024 || queued.length > 4096) {
+                if (queuedBytes > MAX_BACKLOG_BYTES || queued.length > 4096) {
                     session.setSamplingEnabled(false);
                     event("onError", [
                         "Sampling paused: extension host is not consuming samples; restart sampling after the busy operation."
                     ]);
                 }
+                updateHostHold();
                 flush();
             },
             onStatus: (...args) => event("onStatus", args),
@@ -67,12 +105,18 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
             onDisconnect: (...args) => event("onDisconnect", args)
         }
     );
+    function updateHostHold() {
+        session.setHostHold?.(
+            session.unlimitedActive && (queued.length >= SOFT_BACKLOG_BATCHES || queuedBytes >= SOFT_BACKLOG_BYTES)
+        );
+    }
     function flush() {
         if (waiting || !queued.length) return;
         waiting = true;
         port.postMessage({ event: "samples", batch: queued, state: state() });
         queued = [];
         queuedBytes = 0;
+        updateHostHold();
     }
     function flushCpu() {
         if (cpuWaiting || !cpuLatest) return;
@@ -117,7 +161,15 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
             )
                 throw new Error("Unknown sampling operation");
             if (["setSamplingEnabled", "setSamplingPlan"].includes(method)) generation = message.generation;
+            // setSamplingPlan changes the host generation, so its queued old-generation batches are stale.
+            // setWatch keeps the generation: retain its queued batches until the host acknowledges them.
+            if (session.unlimitedActive && ["stop", "setSamplingPlan"].includes(method)) {
+                queued = [];
+                queuedBytes = 0;
+                session.setHostHold?.(false);
+            }
             const result = await session[method](...args);
+            updateHostHold();
             port.postMessage({ id, result, state: state() });
         } catch (error) {
             port.postMessage({
@@ -127,7 +179,12 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
             });
         }
     });
-    port.on("close", () => session.stop());
+    port.on("close", () => {
+        queued = [];
+        queuedBytes = 0;
+        session.setHostHold?.(false);
+        session.stop();
+    });
 }
 if (!isMainThread && require.main === module) run(parentPort, workerData);
-module.exports = { run };
+module.exports = { run, estimateRuntimeBytes };
