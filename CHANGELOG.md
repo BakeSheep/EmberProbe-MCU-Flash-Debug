@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-12
+
 - 修复大型复合波形变量在首批样本耗尽内存历史预算并停止实验记录的问题：历史块按需扩容，预算压力下优先保留正在显示的曲线并批量释放余量；预算或队列不足时缩短保留范围或整批跳过内存写入，保持冻结快照、采样和磁盘归档，每次采样或清空后仅提示一次。新开启的已淘汰曲线可从归档恢复，历史 Worker 故障自动有限重试并重建。
 - Fix large composite waveform variables exhausting the memory history budget on the first sample and stopping experiment recording: grow history blocks on demand, favor displayed curves and free headroom under budget pressure, shorten retention or skip whole memory batches under budget or queue pressure, preserve frozen snapshots, sampling and disk archiving, and warn once per sampling run or history clear. Restore newly displayed evicted curves from the archive and automatically rebuild after history-worker failures with bounded retries.
 
