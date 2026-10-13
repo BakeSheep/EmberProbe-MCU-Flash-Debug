@@ -9,6 +9,7 @@ const { parseDwarfInternal } = require("../src/dwarf/parser");
 const { createRuntimeLayoutResolver } = require("../src/dwarf/runtimeTypes");
 const { bindVariableSymbols } = require("../src/dwarf/types");
 const elfSymbols = require("../src/elfSymbols");
+const { createWorkerElfService } = require("./helpers/elf-service");
 
 function firmware(version) {
     const abbrev = Buffer.from([
@@ -61,16 +62,7 @@ function firmware(version) {
 (async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-cpu-elf-"));
     const file = path.join(directory, "firmware.elf");
-    const service = new ElfService({
-        context: { workspaceState: { get: () => file } },
-        cacheKey: "elf",
-        fs,
-        crypto: require("crypto"),
-        elfSymbols,
-        cleanPath: (value) => value,
-        t: (key) => key,
-        workerPath: path.resolve(__dirname, "../src/elfWorker.js")
-    });
+    const service = createWorkerElfService(file);
     try {
         for (const version of [4, 5]) {
             service.invalidate();

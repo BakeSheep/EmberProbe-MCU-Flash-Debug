@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -103,6 +106,57 @@ const { createFixture } = require("./helpers/service-fixture");
         fixture.dispose();
         fs.rmSync(outside, { recursive: true, force: true });
     }
+
+    await scenario("Snapshot unbound SVD without resolving its path", async () => {
+        const { loadProvider } = require("./helpers/load-provider");
+        const Provider = loadProvider();
+        const provider = Object.create(Provider.prototype);
+        provider._configurationStore = { snapshot: () => ({}) };
+        provider._svdManager = {
+            peekBound: async () => null,
+            currentPath: () => {
+                throw new Error("must not resolve");
+            }
+        };
+        assert.deepStrictEqual(await provider._configurationSnapshot(), { svd: "" });
+    });
+
+    await scenario("Roll back failed configuration updates and serialize settings writes", async () => {
+        const fixture = createFixture();
+        const original = fixture.context.workspaceState.update;
+        try {
+            const { store, state, settings, context } = fixture;
+            await assert.rejects(
+                store.update({ debugger: "stlink.cfg", sampleIntervalMs: 0 }),
+                (error) => error.code === "INVALID_CONFIG_VALUE"
+            );
+            assert.strictEqual(state.size, 0);
+            context.workspaceState.update = async (key, value) => {
+                if (key === "mcu" && value === "bad.cfg") throw Error("disk error");
+                return original(key, value);
+            };
+            await assert.rejects(
+                store.update({ debugger: "stlink.cfg", mcu: "bad.cfg" }),
+                (error) => error.code === "CONFIG_UPDATE_FAILED" && error.details.rollbackErrors.length === 0
+            );
+            assert.strictEqual(state.get("debugger"), undefined);
+            context.workspaceState.update = async (key, value) => {
+                if (key === "mcu" || value === undefined) throw Error("disk error");
+                return original(key, value);
+            };
+            await assert.rejects(
+                store.update({ debugger: "stlink.cfg", mcu: "bad.cfg" }),
+                (error) => error.details.rollbackErrors.length === 2 && error.details.actual.debugger === "stlink.cfg"
+            );
+            context.workspaceState.update = original;
+            await Promise.all([store.update({ sampleIntervalMs: 25 }), store.update({ sampleIntervalMs: 50 })]);
+            assert.strictEqual(settings.get("sampleIntervalMs"), 50);
+            await assert.rejects(store.update(null), (error) => error.code === "INVALID_CONFIG_VALUE");
+        } finally {
+            fixture.context.workspaceState.update = original;
+            fixture.dispose();
+        }
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

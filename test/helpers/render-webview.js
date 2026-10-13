@@ -1,7 +1,7 @@
 "use strict";
 const { JSDOM, VirtualConsole } = require("jsdom");
 const assert = require("assert");
-function render(html, initialState = {}) {
+function render(html, initialState = {}, options = {}) {
     let uiState = JSON.parse(JSON.stringify(initialState));
     const messages = [],
         errors = [];
@@ -39,6 +39,8 @@ function render(html, initialState = {}) {
                                   : () => {}
                     }
                 );
+            // Lets a test replace window globals (e.g. timers) before page scripts run.
+            if (options.beforeParse) options.beforeParse(window);
         }
     });
     return {

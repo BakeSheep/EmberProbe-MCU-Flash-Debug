@@ -1,9 +1,7 @@
 "use strict";
 
 const assert = require("assert");
-const fs = require("fs");
 const path = require("path");
-const vm = require("vm");
 const c = require("../src/dwarf/constants");
 const { buildCompositeLayouts, createCompositeLayoutResolver, buildVariableTypes } = require("../src/dwarf/types");
 const {
@@ -17,6 +15,9 @@ const elf = require("../src/elfSymbols");
 const { normalizeWatchList } = require("../src/validation");
 const runtime = require("../src/webview/runtime");
 const { buildActiveReadPlan } = require("../src/services/liveWatchService");
+const { getModernWebviewContent } = require("../src/modernView");
+const { getLiveWatchContent } = require("../src/liveWatchView");
+const { render } = require("./helpers/render-webview");
 
 function fixture() {
     const dies = new Map();
@@ -317,28 +318,23 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
     assert.deepStrictEqual(elf.expandCompositeLeaves(symbol(array), array, elf.parseMemberPath("root[0]")), []);
     assert.deepStrictEqual(buildActiveReadPlan([[symbol(array)]], elf), []);
     assert.strictEqual(elf.decodeComposite(Buffer.alloc(4), array).elements.length, 0);
-    for (const [file, fn, next] of [
-        ["sidebar/renderer.js", "sbCollectLeaves", "sbApplyWriteDiff"],
-        ["liveWatch/renderer.js", "collectLeaves", "onCompositeSamples"]
+    // Both webviews' leaf collectors skip unobservable members, exercised on the rendered pages.
+    for (const [view, fn] of [
+        [render(getModernWebviewContent({}, "en")), "sbCollectLeaves"],
+        [render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en")), "collectLeaves"]
     ]) {
-        const source = fs.readFileSync(path.join(__dirname, "../src/webview", file), "utf8");
-        const start = source.indexOf("function " + fn + "(");
-        const end = source.indexOf("\nfunction ", start + 1);
-        assert.ok(end > start, next);
-        const context = {
-            EmberProbeRuntime: runtime,
-            LEAF_W: { i32: 4 },
-            MAX_ARR_SHOWN: 16,
-            sbLayoutSymbol: () => null,
-            layoutSymbol: () => null
-        };
-        vm.createContext(context);
-        vm.runInContext(source.slice(start, end), context);
-        assert.deepStrictEqual(
-            JSON.parse(JSON.stringify(context[fn](layout, "root", 0x20000000))).map((entry) => entry.path),
-            ["root.good"]
-        );
-        assert.strictEqual(context[fn](array, "root", 0x20000000).length, 0);
+        try {
+            const collect = view.window[fn];
+            assert.strictEqual(typeof collect, "function", fn);
+            assert.deepStrictEqual(
+                JSON.parse(JSON.stringify(collect(layout, "root", 0x20000000))).map((entry) => entry.path),
+                ["root.good"]
+            );
+            assert.strictEqual(collect(array, "root", 0x20000000).length, 0);
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
     }
     assert.strictEqual(runtime.MAX_COMPOSITE_DEPTH, MAX_COMPOSITE_DEPTH);
     assert.strictEqual(
@@ -349,9 +345,6 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
 
 // Both localized views expose unavailable rows without leaf controls, including imports.
 {
-    const { render } = require("./helpers/render-webview");
-    const { getModernWebviewContent } = require("../src/modernView");
-    const { getLiveWatchContent } = require("../src/liveWatchView");
     const layout = {
         kind: "struct",
         typeName: "struct Partial",

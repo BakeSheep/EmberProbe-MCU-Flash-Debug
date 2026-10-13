@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 // 合成 DWARF v4 覆盖 C++ 符号身份：linkage name 唯一匹配、作用域链限定名、
 // 歧义诊断、mangled 名无 DWARF 类型时不猜标量。程序化构造 ELF32 + .debug_info/.debug_abbrev。
 const assert = require("assert");
@@ -273,5 +276,248 @@ function makeService(symbols, functions, dwarfResult) {
     assert.strictEqual(res.symbols[0].watchType, "");
     assert.ok(res.diagnostics.some((d) => d.code === "CPP_TYPE_UNRESOLVED"));
 }
+
+scenario("Resolve structurally identical inline objects across compilation units", () => {
+    const c = require("../src/dwarf/constants");
+    const { createCompositeLayoutResolver } = require("../src/dwarf/types");
+    {
+        // CU1 和 CU2 各有相同名称和结构的 Widget DIE，但 typeRef 不同
+        const dies = new Map([
+            [1, { tag: c.DW_TAG_base_type, name: "int", encoding: c.DW_ATE_signed, byteSize: 4 }],
+            // CU1 中的 Widget
+            [100, { tag: c.DW_TAG_structure_type, name: "Widget", byteSize: 8 }],
+            [101, { tag: c.DW_TAG_member, name: "w", typeRef: 1, memberOffset: 0 }],
+            [102, { tag: c.DW_TAG_member, name: "h", typeRef: 1, memberOffset: 4 }],
+            // CU2 中的 Widget
+            [200, { tag: c.DW_TAG_structure_type, name: "Widget", byteSize: 8 }],
+            [201, { tag: c.DW_TAG_member, name: "w", typeRef: 1, memberOffset: 0 }],
+            [202, { tag: c.DW_TAG_member, name: "h", typeRef: 1, memberOffset: 4 }]
+        ]);
+        const childrenMap = new Map([
+            [100, [101, 102]],
+            [200, [201, 202]]
+        ]);
+        const parsed = {
+            dies,
+            childrenMap,
+            variables: [
+                { name: "state", typeRef: 100 },
+                { name: "state", typeRef: 200 }
+            ]
+        };
+        const resolver = createCompositeLayoutResolver(parsed);
+        const layout = resolver("state");
+        assert.ok(layout, "identical inline objects across CUs must not be marked ambiguous or dropped");
+        assert.strictEqual(layout.members.length, 2);
+        for (const [index, name] of ["w", "h"].entries()) {
+            assert.strictEqual(layout.members[index].name, name, `cross-CU inline member: ${index}`);
+        }
+    }
+});
+
+scenario("Preserve cross-CU ambiguity and independent type comparison budgets", () => {
+    const c = require("../src/dwarf/constants");
+    const { createTypeComparer } = require("../src/dwarf/typeIdentity");
+    const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
+    function fixed(value, width = 4) {
+        const bytes = Buffer.alloc(8);
+        bytes.writeBigUInt64LE(BigInt.asUintN(64, BigInt(value)));
+        return Array.from(bytes.subarray(0, width));
+    }
+    function leb(value, signed = false) {
+        let remaining = BigInt(value);
+        const bytes = [];
+        do {
+            let byte = Number(remaining & 127n);
+            remaining >>= 7n;
+            const last = signed
+                ? (remaining === 0n && !(byte & 64)) || (remaining === -1n && !!(byte & 64))
+                : remaining === 0n;
+            if (!last) byte |= 128;
+            bytes.push(byte);
+            if (last) break;
+        } while (true);
+        return bytes;
+    }
+    const node = (id, tag, attrs = [], children = []) => ({ id, tag, attrs, children });
+    const attr = (at, form, value) => [at, form, value];
+    const nameAttr = (name) => attr(c.DW_AT_name, 8, name);
+    const typeAttr = (ref) => attr(c.DW_AT_type, 0x13, ref);
+    const base = (id, name = "int", size = 4, encoding = c.DW_ATE_signed) =>
+        node(id, c.DW_TAG_base_type, [
+            nameAttr(name),
+            attr(c.DW_AT_byte_size, 0x0b, size),
+            attr(c.DW_AT_encoding, 0x0b, encoding)
+        ]);
+    const composite = (id, name, size, children = [], tag = c.DW_TAG_class_type) =>
+        node(id, tag, [...(name ? [nameAttr(name)] : []), attr(c.DW_AT_byte_size, 6, size)], children);
+    const member = (id, name, type, offset) =>
+        node(id, c.DW_TAG_member, [nameAttr(name), typeAttr(type), attr(c.DW_AT_data_member_location, 6, offset)]);
+    const variable = (name, type, address = 0x20000000, expression) =>
+        node("var-" + name, c.DW_TAG_variable, [
+            nameAttr(name),
+            typeAttr(type),
+            attr(c.DW_AT_location, 0x18, expression || [3, ...fixed(address)])
+        ]);
+    function fixture(units, { version = 4, symbols = [], sections = [] } = {}) {
+        const info = [],
+            abbrev = [],
+            definitions = new Map(),
+            offsets = new Map(),
+            references = [];
+        const value = (form, input, cuStart) => {
+            if ([0x13, 0x10].includes(form)) {
+                references.push({ offset: info.length, label: input, cuStart: form === 0x13 ? cuStart : 0 });
+                info.push(0, 0, 0, 0);
+            } else if ([0x0b, 5, 6, 7].includes(form)) info.push(...fixed(input, { 0x0b: 1, 5: 2, 6: 4, 7: 8 }[form]));
+            else if (form === 8) info.push(...Buffer.from(input + "\0"));
+            else if (form === 0x18) info.push(...leb(input.length), ...input);
+            else if ([0x0f, 0x0d].includes(form)) info.push(...leb(input, form === 0x0d));
+            else if (form === 0x16) {
+                info.push(...leb(input.form));
+                value(input.form, input.value, cuStart);
+            } else if (![0x19, 0x21].includes(form)) throw new Error("Unsupported fixture form " + form);
+        };
+        const emit = (die, cuStart) => {
+            offsets.set(die.id, info.length);
+            const key = JSON.stringify([
+                die.tag,
+                !!die.children.length,
+                die.attrs.map(([at, form, v]) => [at, form, form === 0x21 ? v : null])
+            ]);
+            if (!definitions.has(key)) {
+                const code = definitions.size + 1;
+                definitions.set(key, code);
+                abbrev.push(...leb(code), ...leb(die.tag), Number(!!die.children.length));
+                for (const [at, form, v] of die.attrs) {
+                    abbrev.push(...leb(at), ...leb(form));
+                    if (form === 0x21) abbrev.push(...leb(v, true));
+                }
+                abbrev.push(0, 0);
+            }
+            info.push(...leb(definitions.get(key)));
+            for (const [, form, v] of die.attrs) value(form, v, cuStart);
+            for (const child of die.children) emit(child, cuStart);
+            if (die.children.length) info.push(0);
+        };
+        for (let index = 0; index < units.length; index++) {
+            const cuStart = info.length;
+            info.push(0, 0, 0, 0, version, 0);
+            if (version === 5) info.push(1, 4, 0, 0, 0, 0);
+            else info.push(0, 0, 0, 0, 4);
+            const unit = Array.isArray(units[index]) ? node("cu-" + index, 0x11, [], units[index]) : units[index];
+            emit(unit, cuStart);
+            fixed(info.length - cuStart - 4).forEach((byte, offset) => {
+                info[cuStart + offset] = byte;
+            });
+        }
+        for (const ref of references) {
+            assert(offsets.has(ref.label), "Unknown reference " + ref.label);
+            fixed(offsets.get(ref.label) - ref.cuStart).forEach((byte, offset) => {
+                info[ref.offset + offset] = byte;
+            });
+        }
+        abbrev.push(0);
+        return {
+            buffer: buildElf32({
+                sections: [
+                    ...buildDebugSections({ info: Buffer.from(info), abbrev: Buffer.from(abbrev) }),
+                    ...sections
+                ],
+                symbols
+            }),
+            offsets
+        };
+    }
+    function ambiguityTests() {
+        for (const sameSize of [false, true]) {
+            const f = fixture([
+                [
+                    base("int"),
+                    composite("a", "", 4, [member("x", "x", "int", 0)], c.DW_TAG_structure_type),
+                    variable("ctx", "a")
+                ],
+                [
+                    base("double", "double", sameSize ? 4 : 8, c.DW_ATE_float),
+                    composite("b", "", sameSize ? 4 : 16, [member("y", "y", "double", 0)], c.DW_TAG_structure_type),
+                    variable("ctx", "b", 0x20000000)
+                ]
+            ]);
+            const result = parseDwarf(f.buffer);
+            assert.strictEqual(result.types.get("ctx").ambiguous, true);
+            assert.strictEqual(result.layouts.has("ctx"), false);
+            const enriched = { symbols: [{ name: "ctx", address: 0x20000000, size: 16 }] };
+            new ElfService({ t: (key) => key })._enrich(enriched, result.types, result.layouts);
+            assert.match(enriched.symbols[0].unsupportedReason, /ambiguous/i);
+        }
+        // Same-named, same-typed statics in different CUs (static int state;) keep their type.
+        const statics = fixture([
+            [base("int"), variable("state", "int", 0x20000000)],
+            [base("int"), variable("state", "int", 0x20000004)]
+        ]);
+        const staticResult = parseDwarf(statics.buffer);
+        assert.strictEqual(staticResult.types.get("state").ambiguous, undefined);
+        assert.strictEqual(staticResult.types.get("state").watchType, "i32");
+    }
+    function comparisonBudgetTests() {
+        // One oversized comparison must not starve later, unrelated comparisons.
+        const dies = new Map();
+        const childrenMap = new Map();
+        for (const root of [1, 2]) {
+            dies.set(root, { tag: c.DW_TAG_structure_type, name: "Big", byteSize: 4 });
+            const kids = [];
+            for (let index = 0; index < 20000; index++) {
+                const off = root * 100000 + index;
+                dies.set(off, { tag: c.DW_TAG_member, name: "m" + index, memberOffset: 0 });
+                kids.push(off);
+            }
+            childrenMap.set(root, kids);
+        }
+        dies.set(3, { tag: c.DW_TAG_base_type, name: "int", byteSize: 4, encoding: c.DW_ATE_signed });
+        dies.set(4, { tag: c.DW_TAG_base_type, name: "int", byteSize: 4, encoding: c.DW_ATE_signed });
+        const equivalent = createTypeComparer({ dies, childrenMap });
+        assert.strictEqual(equivalent(1, 2), false, "oversized comparison falls back");
+        assert.strictEqual(equivalent(3, 4), true, "later comparison has its own budget");
+    }
+    scenario("Conflicting anonymous types and same-named statics", ambiguityTests);
+    scenario("Independent type comparison budgets", comparisonBudgetTests);
+});
+
+scenario("Reject conflicting CU layouts and unknown member addresses", () => {
+    const c = require("../src/dwarf/constants");
+    const elf = require("../src/elfSymbols");
+    const { buildCompositeLayouts } = require("../src/dwarf/types");
+    // Equal outer names and sizes do not make conflicting CU definitions interchangeable.
+    const dies = new Map([
+        [1, { tag: c.DW_TAG_base_type, name: "int", encoding: c.DW_ATE_signed, byteSize: 4 }],
+        [10, { tag: c.DW_TAG_structure_type, name: "Same", byteSize: 8 }],
+        [11, { tag: c.DW_TAG_member, name: "value", typeRef: 1, memberOffset: 0 }],
+        [20, { tag: c.DW_TAG_structure_type, name: "Same", byteSize: 8 }],
+        [21, { tag: c.DW_TAG_member, name: "value", typeRef: 1, memberOffset: 4 }]
+    ]);
+    const parsed = {
+        dies,
+        childrenMap: new Map([
+            [10, [11]],
+            [20, [21]]
+        ]),
+        variables: [
+            { name: "state", typeRef: 10 },
+            { name: "state", typeRef: 20 }
+        ]
+    };
+    assert.strictEqual(buildCompositeLayouts(parsed).has("state"), false);
+    dies.set(30, { tag: c.DW_TAG_structure_type, name: "UnknownLocation", byteSize: 4 });
+    dies.set(31, { tag: c.DW_TAG_member, name: "value", typeRef: 1 });
+    parsed.childrenMap.set(30, [31]);
+    parsed.variables = [{ name: "unknown", typeRef: 30 }];
+    assert.deepStrictEqual(
+        elf.expandCompositeLeaves(
+            { name: "unknown", size: 4, address: 0x20000000 },
+            buildCompositeLayouts(parsed).get("unknown")
+        ),
+        []
+    );
+});
 
 console.log("C++ symbol identity tests passed");

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 // 验证复合类型（结构体/数组）的路径解析、叶子展开、解码与树形导航。
 // 全部为纯函数测试，无需构造 ELF/DWARF，直接以手写布局与字节缓冲驱动。
 const assert = require("assert");
@@ -289,5 +292,237 @@ assert.deepStrictEqual(liveSkill.variableSpecs("ns::value,ns::Foo::member,ns::co
     { name: "ns::Foo::member" },
     { name: "ns::count", type: "u32" }
 ]);
+
+scenario("Reject invalid composite paths and out-of-bounds expansion", () => {
+    const { expandCompositeLeaves, parseMemberPath } = require("../src/elfSymbols");
+    const symbol = { name: "sensor", address: 0x20000000, size: 4 };
+    const layout = { kind: "struct", byteSize: 4, members: [{ name: "x", offset: 0, byteSize: 4, watchType: "u32" }] };
+    assert.deepStrictEqual(expandCompositeLeaves(symbol, layout, parseMemberPath("sensor.x.invalid")), []);
+    const array = {
+        kind: "array",
+        byteSize: 4,
+        totalElements: 4,
+        elementType: { byteSize: 1, watchType: "u8", kind: "scalar" }
+    };
+    assert.deepStrictEqual(expandCompositeLeaves(symbol, array, parseMemberPath("sensor[0].x")), []);
+    assert.throws(() => expandCompositeLeaves(symbol, { ...array, totalElements: 100000000 }, null), /budget/);
+    assert.throws(() => expandCompositeLeaves({ ...symbol, address: 0xffffffff }, layout, null), /budget/);
+    assert.throws(
+        () => expandCompositeLeaves(symbol, { ...layout, members: [{ ...layout.members[0], offset: 4 }] }, null),
+        /budget/
+    );
+});
+
+scenario("Navigate template-qualified and promoted anonymous union paths", () => {
+    const {
+        parseMemberPath,
+        expandCompositeLeaves,
+        decodeComposite,
+        navigateCompositeTree
+    } = require("../src/elfSymbols");
+    {
+        // 模板成员路径
+        const parsedTmpl = parseMemberPath("Holder<int>::object.a");
+        assert.deepStrictEqual(parsedTmpl, {
+            base: "Holder<int>::object",
+            segments: [{ kind: "member", name: "a" }]
+        });
+
+        const parsedComplex = parseMemberPath("ns::Matrix<float, 3, 3>::identity[0][1]");
+        assert.deepStrictEqual(parsedComplex, {
+            base: "ns::Matrix<float, 3, 3>::identity",
+            segments: [
+                { kind: "index", index: 0 },
+                { kind: "index", index: 1 }
+            ]
+        });
+
+        // 匿名 union 展开与路径导航
+        const anonLayout = {
+            kind: "struct",
+            typeName: "struct Container",
+            byteSize: 8,
+            members: [
+                { name: "id", offset: 0, byteSize: 4, watchType: "u32", typeName: "unsigned int" },
+                {
+                    name: "",
+                    offset: 4,
+                    byteSize: 4,
+                    kind: "union",
+                    typeName: "union",
+                    compositeLayout: {
+                        kind: "union",
+                        typeName: "union",
+                        byteSize: 4,
+                        members: [
+                            { name: "a", offset: 0, byteSize: 4, watchType: "i32", typeName: "int" },
+                            { name: "b", offset: 0, byteSize: 4, watchType: "f32", typeName: "float" }
+                        ]
+                    }
+                }
+            ]
+        };
+
+        const sym = { name: "anon", address: 0x20000000, size: 8 };
+
+        // 全量展开叶子：不应包含 '?'
+        const allLeaves = expandCompositeLeaves(sym, anonLayout, null);
+        assert.deepStrictEqual(
+            allLeaves.map((l) => l.path),
+            ["anon.id", "anon.a", "anon.b"],
+            "anonymous union leaves must have natural paths without '?'"
+        );
+
+        // 自然路径导航: anon.a
+        const leafA = expandCompositeLeaves(sym, anonLayout, parseMemberPath("anon.a"));
+        assert.strictEqual(leafA.length, 1);
+        assert.strictEqual(leafA[0].path, "anon.a");
+        assert.strictEqual(leafA[0].address, 0x20000004);
+        assert.strictEqual(leafA[0].type, "i32");
+
+        // 显式匿名段导航兼容: anon.?.a
+        const leafAnonA = expandCompositeLeaves(sym, anonLayout, parseMemberPath("anon.?.a"));
+        assert.strictEqual(leafAnonA.length, 1);
+        assert.strictEqual(leafAnonA[0].address, 0x20000004);
+
+        // 树形导航
+        const tree = decodeComposite([1, 0, 0, 0, 42, 0, 0, 0], anonLayout);
+        const nodeA = navigateCompositeTree(tree, parseMemberPath("anon.a"));
+        assert.ok(nodeA);
+        assert.strictEqual(nodeA.value, 42);
+
+        const nodeAnonA = navigateCompositeTree(tree, parseMemberPath("anon.?.a"));
+        assert.ok(nodeAnonA);
+        assert.strictEqual(nodeAnonA.value, 42);
+    }
+});
+
+scenario("Decode real ARM bitfields, UTF characters and anonymous union members", () => {
+    const zlib = require("zlib");
+    const dwarf = require("../src/dwarf");
+    const elf = require("../src/elfSymbols");
+    const { ElfService } = require("../src/services/elfService");
+    const fixtures = require("./fixtures/cpp-review/elf.json");
+    // Use real GCC DWARF output without requiring a compiler or connected board in CI.
+    for (const version of [4, 5]) {
+        const buffer = zlib.inflateSync(Buffer.from(fixtures[`dwarf${version}`], "base64"));
+        const parsed = dwarf.parseDwarf(buffer);
+        const result = elf.parseElfSymbols(buffer);
+        new ElfService({ elfSymbols: elf, t: (key) => key })._enrich(
+            result,
+            parsed.types,
+            parsed.layouts,
+            parsed.displayNames
+        );
+        const byName = new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
+        const bytesOf = (name) => {
+            const symbol = byName.get(name);
+            const section = elf
+                .parseElfSections(buffer)
+                .sections.find(
+                    (section) => symbol.address >= section.addr && symbol.address < section.addr + section.size
+                );
+            const offset = section.offset + symbol.address - section.addr;
+            return buffer.subarray(offset, offset + symbol.size);
+        };
+        assert.deepStrictEqual(
+            elf.decodeComposite(bytesOf("bits"), parsed.layouts.get("bits")).members.map((member) => member.value),
+            [1, 2, 3]
+        );
+        assert.deepStrictEqual(
+            elf.decodeComposite(bytesOf("packed"), parsed.layouts.get("packed")).members.map((member) => member.value),
+            [3, -2]
+        );
+        assert.deepStrictEqual(
+            elf.decodeComposite(bytesOf("utfbox"), parsed.layouts.get("utfbox")).members.map((member) => member.value),
+            [90, 90]
+        );
+        const anon = byName.get("anon");
+        assert.strictEqual(
+            elf.expandCompositeLeaves(anon, anon.compositeLayout, elf.parseMemberPath("anon.a"))[0].address,
+            anon.address
+        );
+        assert.strictEqual(
+            elf.navigateCompositeTree(
+                elf.decodeComposite(bytesOf("anon"), anon.compositeLayout),
+                elf.parseMemberPath("anon.a")
+            ).value,
+            7
+        );
+    }
+});
+
+scenario("Retain array constness and nested anonymous member identity", () => {
+    const c = require("../src/dwarf/constants");
+    const elf = require("../src/elfSymbols");
+    const { buildCompositeLayouts, buildVariableTypes } = require("../src/dwarf/types");
+    const dies = new Map([
+        [1, { tag: c.DW_TAG_base_type, name: "int", encoding: c.DW_ATE_signed, byteSize: 4 }],
+        [10, { tag: c.DW_TAG_structure_type, name: "Same", byteSize: 8 }],
+        [11, { tag: c.DW_TAG_member, name: "value", typeRef: 1, memberOffset: 0 }],
+        [20, { tag: c.DW_TAG_structure_type, name: "Same", byteSize: 8 }],
+        [21, { tag: c.DW_TAG_member, name: "value", typeRef: 1, memberOffset: 4 }]
+    ]);
+    const parsed = {
+        dies,
+        childrenMap: new Map([
+            [10, [11]],
+            [20, [21]]
+        ]),
+        variables: [
+            { name: "state", typeRef: 10 },
+            { name: "state", typeRef: 20 }
+        ]
+    };
+    // Array element constness must survive layout construction, including explicit index paths.
+    dies.set(40, { tag: c.DW_TAG_const_type, typeRef: 1 });
+    dies.set(41, { tag: c.DW_TAG_array_type, typeRef: 40 });
+    dies.set(42, { tag: c.DW_TAG_subrange_type, subrangeCount: 2 });
+    parsed.childrenMap.set(41, [42]);
+    parsed.variables = [{ name: "array", typeRef: 41 }];
+    assert.strictEqual(buildVariableTypes(parsed).get("array").isConst, true);
+    const array = buildCompositeLayouts(parsed).get("array");
+    const arraySymbol = { name: "array", size: 8, address: 0x20000000 };
+    assert.ok(elf.expandCompositeLeaves(arraySymbol, array).every((leaf) => leaf.isConst));
+    assert.strictEqual(elf.expandCompositeLeaves(arraySymbol, array, elf.parseMemberPath("array[1]"))[0].isConst, true);
+
+    const scalar = { name: "value", offset: 0, byteSize: 4, watchType: "i32" };
+    const innermost = { kind: "union", byteSize: 4, members: [scalar] };
+    const anonymous = {
+        kind: "struct",
+        byteSize: 4,
+        members: [{ name: "", offset: 0, byteSize: 4, compositeLayout: innermost }]
+    };
+    const root = {
+        kind: "struct",
+        byteSize: 8,
+        isConst: true,
+        members: [{ name: "", offset: 4, byteSize: 4, compositeLayout: anonymous }]
+    };
+    const rootSymbol = { name: "root", size: 8, address: 0x20000000 };
+    assert.strictEqual(
+        elf.expandCompositeLeaves(rootSymbol, root, elf.parseMemberPath("root.value"))[0].address,
+        0x20000004
+    );
+    assert.strictEqual(elf.expandCompositeLeaves(rootSymbol, root, elf.parseMemberPath("root.value"))[0].isConst, true);
+    assert.strictEqual(
+        elf.navigateCompositeTree(
+            elf.decodeComposite([0, 0, 0, 0, 7, 0, 0, 0], root),
+            elf.parseMemberPath("root.value")
+        ).value,
+        7
+    );
+    const ambiguous = { ...root, members: [...root.members, { ...root.members[0], offset: 0 }] };
+    assert.deepStrictEqual(elf.expandCompositeLeaves(rootSymbol, ambiguous, elf.parseMemberPath("root.value")), []);
+    assert.strictEqual(
+        elf.navigateCompositeTree(
+            elf.decodeComposite([0, 0, 0, 0, 7, 0, 0, 0], ambiguous),
+            elf.parseMemberPath("root.value")
+        ),
+        null
+    );
+    assert.strictEqual(elf.parseMemberPath("name+1"), null);
+    assert.ok(elf.parseMemberPath("ns::Holder<std::array<std::array<int, 2>, 3>>::object.value"));
+});
 
 console.log("Composite decode & navigation tests passed");

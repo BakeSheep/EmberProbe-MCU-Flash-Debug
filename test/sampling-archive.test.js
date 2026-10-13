@@ -6,6 +6,8 @@ const os = require("os");
 const path = require("path");
 const elfSymbols = require("../src/elfSymbols");
 const { LiveWatchService } = require("../src/services/liveWatchService");
+const { getLiveWatchContent } = require("../src/liveWatchView");
+const { render } = require("./helpers/render-webview");
 const {
     SamplingArchive,
     csvField,
@@ -318,20 +320,54 @@ async function main() {
             },
             { rows: 3, firstTimestampMs: 1000, lastTimestampMs: 4 * 60 * 60 * 1000 + 1000 }
         );
-
-        const rendererSource = fs.readFileSync(
-            path.join(__dirname, "..", "src", "webview", "liveWatch", "renderer.js"),
-            "utf8"
-        );
-        assert.match(rendererSource, /post\(\{\s*type:\s*["']samplingArchiveInfo["'],\s*historyRevision:/);
-        assert.match(rendererSource, /firstTimestampMs/);
-        assert.match(rendererSource, /lastTimestampMs/);
-        assert.match(rendererSource, /chartState\.bounds\.min\s*-\s*origin/);
-        assert.match(rendererSource, /chartState\.bounds\.max\s*-\s*origin/);
     } finally {
         await archive.dispose();
         assert.strictEqual(fs.existsSync(archiveRoot), false, "temporary history must be deleted on exit");
         fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+
+    // The live-watch webview asks for the archive bounds of its own history revision and labels the
+    // timeline relative to the archive's first sample, not the oldest point still retained in the chart.
+    {
+        const view = render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en"));
+        try {
+            const doc = view.document;
+            const axis = () => {
+                view.window.syncTimeBounds();
+                view.window.refreshChartTimeline();
+                return [
+                    doc.getElementById("chartAxisStart").textContent,
+                    doc.getElementById("chartAxisEnd").textContent
+                ];
+            };
+            Object.defineProperty(doc.getElementById("chartTimeline"), "clientWidth", { value: 500 });
+            assert.deepStrictEqual(
+                view.messages.filter((message) => message.type === "samplingArchiveInfo").map((m) => m.historyRevision),
+                [0],
+                "the webview requests archive info once on load"
+            );
+            view.send({ type: "chartHistoryReady", historyRevision: 4 });
+            assert.strictEqual(view.messages.at(-1).type, "samplingArchiveInfo");
+            assert.strictEqual(view.messages.at(-1).historyRevision, 4);
+            view.send({ type: "watchList", items: [{ name: "tick", address: 0x20000000, type: "u32", size: 4 }] });
+            const origin = 1000000;
+            for (const time of [60000, 70000])
+                view.send({ type: "liveSample", samples: [{ name: "tick", value: time, t: origin + time }] });
+            assert.deepStrictEqual(axis(), ["00:00", "00:10"], "without archive info the chart start is the origin");
+            view.send({ type: "samplingArchiveInfo", historyRevision: 3, rows: 2, firstTimestampMs: origin });
+            assert.deepStrictEqual(axis(), ["00:00", "00:10"], "archive info for an old revision is ignored");
+            view.send({
+                type: "samplingArchiveInfo",
+                historyRevision: 4,
+                rows: 2,
+                firstTimestampMs: origin,
+                lastTimestampMs: origin + 70000
+            });
+            assert.deepStrictEqual(axis(), ["01:00", "01:10"], "elapsed labels are measured from the archive start");
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
     }
 
     // A failed export must not leave either a target CSV or an internal temporary file.

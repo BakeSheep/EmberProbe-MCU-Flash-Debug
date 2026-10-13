@@ -97,6 +97,8 @@ const CACHE_KEYS = {
 // Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 const UNLIMITED_SAMPLING_SETTING = "experimental.unlimitedSampling.enabled";
+// Backoff before each chart-history worker restart attempt (at most three per run/clear).
+const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
@@ -123,6 +125,8 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
+        /** @type {readonly number[]} */
+        this._chartHistoryRecoveryDelaysMs = CHART_HISTORY_RECOVERY_DELAYS_MS;
         this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
         // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
         const savedLang = context.globalState.get("emberprobe.lang");
@@ -3824,7 +3828,8 @@ class MainViewProvider {
             // At most three restarts per run/clear, including recurring failures after a successful recovery.
             while ((this._chartHistoryRecoveryAttempts || 0) < 3) {
                 const attempt = (this._chartHistoryRecoveryAttempts = (this._chartHistoryRecoveryAttempts || 0) + 1);
-                await new Promise((resolve) => setTimeout(resolve, [250, 1000, 3000][attempt - 1]));
+                const delays = this._chartHistoryRecoveryDelaysMs || CHART_HISTORY_RECOVERY_DELAYS_MS;
+                await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1]));
                 if (this._chartHistory.disposed || this._shutdownPromise) return;
                 let timer;
                 const token = { active: true };

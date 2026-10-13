@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { parseAbbrev } = require("../src/dwarf/binary");
 const { buildCompositeLayouts, buildVariableTypes, createCompositeLayoutResolver } = require("../src/dwarf/types");
@@ -75,4 +78,24 @@ assert.strictEqual(
     "",
     "deep alias chains degrade safely without exhausting the JavaScript stack"
 );
+
+scenario("Bound excessive compilation units", () => {
+    const { buildElf32 } = require("./helpers/elf-fixture");
+    const { parseDwarfInternal } = require("../src/dwarf/parser");
+    const unit = Buffer.alloc(6);
+    unit.writeUInt32LE(2);
+    assert.throws(
+        () =>
+            parseDwarfInternal(
+                buildElf32({
+                    sections: [
+                        { name: ".debug_info", data: Buffer.concat(Array(20000).fill(unit)) },
+                        { name: ".debug_abbrev", data: Buffer.from([0]) }
+                    ]
+                })
+            ),
+        { code: "DWARF_BUDGET_EXCEEDED" }
+    );
+});
+
 console.log("DWARF budget tests passed");

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const path = require("path");
@@ -208,6 +211,88 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
     } finally {
         await fs.rm(root, { recursive: true, force: true });
     }
+
+    await scenario("Hold probe ownership and verify approved flash images", async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-flash-ownership-"));
+        let running;
+        let release;
+        try {
+            const elf = path.join(root, "firmware.elf");
+            await fs.writeFile(elf, minimalElf());
+            const params = {
+                elf,
+                elfSha256: crypto.createHash("sha256").update(minimalElf()).digest("hex"),
+                target: "t.cfg",
+                probe: "p.cfg",
+                openocd: require("../src/openocdScripts").resolveExecutablePath("openocd")
+            };
+            const coordinator = new ProbeCoordinator();
+            const authorization = new FlashAuthorization();
+            const gate = new Promise((resolve) => {
+                release = resolve;
+            });
+            let entered;
+            const started = new Promise((resolve) => {
+                entered = resolve;
+            });
+            const service = new AgentFlashService({
+                getConfig: () => ({ openocdPath: "openocd" }),
+                coordinator,
+                authorization,
+                isDebugActive: () => false,
+                resolveLaunch: () => ({ executable: "openocd" }),
+                check: async () => ({ compatible: true }),
+                prepare: async (params) => params,
+                run: async (options) => {
+                    const commands = options.buildCommands().join(" ");
+                    assert(commands.includes("verify_image"));
+                    // 校验前将 work-area 置 0，促使 OpenOCD 回退到主机侧分块比对。
+                    assert(commands.includes("-work-area-size 0"));
+                    entered();
+                    await gate;
+                    return { exitCode: 0, openocdTail: ["EP_VERIFY OK"] };
+                }
+            });
+            const active = coordinator.acquire("liveWatch");
+            try {
+                await assert.rejects(service.execute(params, true), (error) => error.code === "PROBE_BUSY");
+            } finally {
+                active.release();
+            }
+            await assert.rejects(service.execute({ ...params, elfSha256: "changed" }, true), /ELF changed/);
+            await assert.rejects(service.execute(params), /confirmation/);
+            running = service.execute(params, true);
+            await Promise.race([started, running]);
+            assert.throws(
+                () => coordinator.acquire("chipInfo"),
+                (error) => error.code === "PROBE_BUSY"
+            );
+            release();
+            assert.strictEqual((await running).verified, true);
+            assert.strictEqual(coordinator.anyActive(), false);
+            params.confirmationId = authorization.authorize({
+                elf: { path: await fs.realpath(elf), sha256: params.elfSha256 },
+                target: params.target,
+                probe: params.probe,
+                openocd: params.openocd
+            }).confirmationId;
+            service.run = async (options) => {
+                const commands = options.buildCommands().join(" ");
+                assert(commands.includes("program"));
+                // program 自带 verify 与 reset；work-area backup 保护被用作缓冲区的目标 RAM。
+                assert(commands.includes("verify reset exit"));
+                assert(commands.includes("-work-area-backup 1"));
+                return { exitCode: 0, openocdTail: [] };
+            };
+            assert.strictEqual((await service.execute(params)).verified, true);
+            await assert.rejects(service.execute(params), /invalid/);
+        } finally {
+            release?.();
+            await running?.catch(() => {});
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
     console.log("Flash executable policy and bounded ELF tests passed");
 })().catch((error) => {
     console.error(error);

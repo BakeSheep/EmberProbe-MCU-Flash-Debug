@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { parseLine, quoteTclWord, diagnoseOpenOcdFailure, isSafeCfg } = require("../src/openocdRunner");
 
@@ -78,5 +81,14 @@ assert.strictEqual(noPower.code, "TARGET_UNPOWERED");
 const portBusy = diagnoseOpenOcdFailure(["Error: couldn't bind tcl socket: Address already in use"], { port: 6666 });
 assert.strictEqual(portBusy.code, "TCL_PORT_IN_USE");
 assert.strictEqual(portBusy.details.port, 6666);
+
+scenario("Diagnose Linux USB permission failures with udev guidance", () => {
+    const { diagnoseOpenOcdFailure } = require("../skills/_emberprobe/openocd-diagnostics");
+    const denied = diagnoseOpenOcdFailure(["Error: libusb_open() failed with LIBUSB_ERROR_ACCESS"], {
+        platform: "linux"
+    });
+    assert.strictEqual(denied.code, "PROBE_PERMISSION_DENIED");
+    assert(denied.suggestedActions.some((action) => action.includes("udev")));
+});
 
 console.log("OpenOCD parser tests passed");

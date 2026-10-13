@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
 const { runtimeWatchEntry } = require("../src/services/runtimeWatch");
@@ -201,6 +203,62 @@ const elf = require("../src/elfSymbols");
         ["dereference", "member", "dereference", "member"]
     );
     assert(reads > 0);
+
+    await scenario("Display opaque MMIO pointers and retain static scalar watches", async () => {
+        const pointerMemory = Buffer.alloc(8);
+        pointerMemory.writeUInt32LE(0x40000000, 0);
+        pointerMemory.writeInt32LE(7, 4);
+        const pointerGraph = {
+            root: 2,
+            types: [
+                { kind: "scalar", typeName: "int", byteSize: 4, watchType: "i32" },
+                { kind: "pointer", typeName: "Driver", byteSize: 4, target: 0 },
+                {
+                    kind: "class",
+                    typeName: "Ina226",
+                    byteSize: 8,
+                    fields: [
+                        { name: "driver", type: 1, offset: 0 },
+                        { name: "reading", type: 0, offset: 4 }
+                    ]
+                }
+            ]
+        };
+        const pointerTree = await new RuntimeObjectReader(
+            {
+                name: "pwr",
+                address: 0x20000000,
+                size: 8,
+                runtimeLayout: pointerGraph,
+                runtimeRanges: [{ start: 0x20000000, end: 0x20000008 }]
+            },
+            async (address, size) => pointerMemory.subarray(address - 0x20000000, address - 0x20000000 + size)
+        ).sample();
+        assert.strictEqual(pointerTree.members[0].valueText, "0x40000000");
+        assert.strictEqual(pointerTree.members[0].value, 0x40000000);
+        assert.strictEqual(pointerTree.members[1].value, 7);
+
+        const pointerSymbol = {
+            name: "pwr",
+            address: 0x20000000,
+            size: 8,
+            isComposite: true,
+            compositeLayout: {
+                kind: "class",
+                members: [
+                    { name: "driver", offset: 0, byteSize: 4, watchType: "u32" },
+                    { name: "reading", offset: 4, byteSize: 4, watchType: "i32" }
+                ]
+            },
+            runtimeLayout: pointerGraph
+        };
+        assert.strictEqual(runtimeWatchEntry("pwr", pointerSymbol), null);
+        const staticItems = normalizeWatchList([{ name: "pwr" }], [pointerSymbol]);
+        assert.strictEqual(staticItems.length, 1);
+        assert.ok(staticItems[0].compositeLayout);
+        assert.strictEqual(staticItems[0].runtimeLayout, undefined);
+    });
+
     console.log("Runtime C++ relocation, references, pointer chains, virtual offsets, races and read limits passed");
 })().catch((error) => {
     console.error(error);

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { SkillStatusService } = require("../src/services/skillStatusService");
 const { hasWorkspaceSkills } = require("../src/services/skillStatusService");
@@ -105,6 +108,38 @@ const { createFixture } = require("./helpers/service-fixture");
     } finally {
         fixture.dispose();
     }
+
+    await scenario("Invalidate skill approval when its fingerprint changes", async () => {
+        let skillHash = "one",
+            skillDialogs = 0;
+        const skills = new SkillStatusService({
+            installer: {
+                inspectSkills: async () => ({ state: "modified", scopes: { workspace: { fingerprint: skillHash } } })
+            },
+            onStatus() {},
+            t: (key) => key,
+            vscode: {
+                window: {
+                    showWarningMessage: async () => {
+                        skillDialogs++;
+                        return "approval.skillsAllow";
+                    }
+                }
+            }
+        });
+        await skills.checkForCall();
+        await skills.checkForCall();
+        assert.strictEqual(skillDialogs, 1);
+        skillHash = "two";
+        await skills.checkForCall();
+        assert.strictEqual(skillDialogs, 2);
+        skills.vscode.window.showWarningMessage = async () => {
+            skillHash = "changed-in-dialog";
+            return "approval.skillsAllow";
+        };
+        skillHash = "three";
+        await assert.rejects(skills.checkForCall(), { code: "SKILLS_CHANGED_DURING_APPROVAL" });
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

@@ -7,6 +7,7 @@ const os = require("os");
 const http = require("http");
 const vm = require("vm");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
 const csvTools = require("../src/liveWatchView");
 const sidebarData = require("../mockup/mock/sidebar-data");
@@ -397,7 +398,18 @@ function shellHtml() {
 }
 
 async function testShell() {
-    const view = render(shellHtml());
+    // The shell simulates multi-second debug starts with page timers; drive them virtually.
+    const clock = new FakeClock();
+    const view = render(
+        shellHtml(),
+        {},
+        {
+            beforeParse(window) {
+                window.setTimeout = (fn, ms, ...args) => clock.schedule(() => fn(...args), ms || 0);
+                window.clearTimeout = clock.cancel;
+            }
+        }
+    );
     const doc = view.document;
     function hostMessage(frameId, message) {
         view.window.dispatchEvent(
@@ -451,7 +463,7 @@ async function testShell() {
         assert.ok(doc.getElementById("debug-toolbar").classList.contains("hidden"));
         assert.equal(doc.getElementById("debugStartButton").disabled, true);
         assert.ok(doc.getElementById("emberprobeStatus").textContent.includes("正在执行"));
-        await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
+        await clock.advance(2300);
         assert.equal(doc.getElementById("debugStartButton").disabled, false);
         const activeGlyph = doc.querySelector(".gutter-line.active .glyph-margin");
         assert.ok(activeGlyph.querySelector(".codicon-debug-stackframe"));
@@ -499,10 +511,10 @@ async function testShell() {
         doc.getElementById("debugStartButton").click();
         assert.equal(doc.querySelector(".editor-pane.active"), null, "waiting leaves the current editor unchanged");
         doc.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "F5", shiftKey: true, bubbles: true }));
-        await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
+        await clock.advance(2300);
         assert.equal(doc.querySelector(".editor-pane.active"), null, "cancellation preserves the current editor");
         doc.getElementById("debugStartButton").click();
-        await new Promise((resolve) => view.window.setTimeout(resolve, 2300));
+        await clock.advance(2300);
         assert.ok(doc.querySelector('[data-tab="main.c"].active'));
         view.assertHealthy();
     } finally {

@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -270,6 +272,308 @@ class FakeDebugBridge {
         () => missing.list(),
         (error) => error.code === "SVD_NOT_CONFIGURED"
     );
+
+    await scenario("Cross-peripheral derivation preserves read-only register access", async () => {
+        const { parseSvd, assertWritable } = require("../src/services/svdPeripheralService");
+        const model = parseSvd(`<device><name>T</name><size>32</size><peripherals>
+        <peripheral><name>A</name><baseAddress>0x40000000</baseAddress><registers>
+        <register><name>R</name><addressOffset>0</addressOffset><access>read-only</access></register>
+        </registers></peripheral><peripheral><name>B</name><baseAddress>0x40001000</baseAddress><registers>
+        <register><name>R</name><addressOffset>0</addressOffset><access>read-write</access></register>
+        <register derivedFrom="A.R"><name>C</name><addressOffset>4</addressOffset></register>
+        </registers></peripheral></peripherals></device>`);
+        const inherited = model.registersByPath.get("b.c");
+        assert.strictEqual(inherited.access, "read-only");
+        assert.throws(() => assertWritable(inherited), { code: "PERIPHERAL_WRITE_NOT_ALLOWED" });
+    });
+
+    await scenario("Reject unaligned peripheral reads", async () => {
+        const { assertReadable } = require("../src/services/svdPeripheralService");
+        assert.throws(() => assertReadable({ size: 32, address: 0x40000001, fields: [] }), {
+            code: "PERIPHERAL_ADDRESS_UNALIGNED"
+        });
+    });
+
+    await scenario("Resolve cross-scope derivation and reject invalid SVD identities", async () => {
+        const { parseSvd } = require("../src/services/svdPeripheralService");
+        const device = (content) =>
+            `<device><name>T</name><size>32</size><peripherals>${content}</peripherals></device>`;
+        const peripheral = (name, registers) =>
+            `<peripheral><name>${name}</name><baseAddress>0x40000000</baseAddress><registers>${registers}</registers></peripheral>`;
+        const register = (content = "", name = "R", offset = 0) =>
+            `<register><name>${name}</name><addressOffset>${offset}</addressOffset><access>read-write</access>${content}</register>`;
+        const field = (content = "", name = "F", offset = 0) =>
+            `<field><name>${name}</name><bitOffset>${offset}</bitOffset><bitWidth>8</bitWidth>${content}</field>`;
+        const enumeration = (usage, name, value) =>
+            `<enumeratedValues><usage>${usage}</usage><enumeratedValue><name>${name}</name><value>${value}</value></enumeratedValue></enumeratedValues>`;
+        // Cross-scope register, cluster and field references, including inherited descendants.
+        const model = parseSvd(
+            device(
+                peripheral(
+                    "A",
+                    `<cluster><name>C</name><addressOffset>0</addressOffset>${register(`<fields>${field("<access>read-only</access>")}</fields>`)}</cluster>`
+                ) +
+                    peripheral(
+                        "B",
+                        `<cluster derivedFrom="A.C"><name>D</name><addressOffset>16</addressOffset></cluster>
+        <register derivedFrom="B.D.R"><name>X</name><addressOffset>24</addressOffset></register>
+        ${register(`<fields><field derivedFrom="A.C.R.F"><name>G</name><bitOffset>8</bitOffset></field></fields>`, "Y", 28)}`
+                    )
+            )
+        );
+        assert.strictEqual(model.fieldsByPath.get("b.y.g").field.access, "read-only");
+        assert.strictEqual(model.fieldsByPath.get("b.x.f").field.access, "read-only");
+        assert.strictEqual(model.registersByPath.get("b.d.r").address, 0x40000010);
+        for (const registers of [
+            register() + '<register derivedFrom="Missing.R"><name>X</name><addressOffset>4</addressOffset></register>',
+            '<register derivedFrom="Y"><name>X</name></register><register derivedFrom="X"><name>Y</name></register>',
+            register() + register(),
+            '<register derivedFrom="A"><name>X</name><addressOffset>0</addressOffset></register>'
+        ])
+            assert.throws(() => parseSvd(device(peripheral("A", registers))), { code: "INVALID_SVD_DERIVATION" });
+        assert.throws(
+            () => parseSvd(device(peripheral("A", register()).replace("<name>R</name>", "<name>R.X</name>"))),
+            {
+                code: "INVALID_SVD_DERIVATION"
+            }
+        );
+        assert.throws(
+            () =>
+                parseSvd(
+                    device(
+                        peripheral("A", register("<fields>" + field(enumeration("invalid", "Bad", 0)) + "</fields>"))
+                    )
+                ),
+            { code: "INVALID_SVD_VALUE" }
+        );
+    });
+
+    await scenario("Validate entire write batches, approval identity and read/write constraints", async () => {
+        const { parseSvd } = require("../src/services/svdPeripheralService");
+        const device = (content) =>
+            `<device><name>T</name><size>32</size><peripherals>${content}</peripherals></device>`;
+        const peripheral = (name, registers) =>
+            `<peripheral><name>${name}</name><baseAddress>0x40000000</baseAddress><registers>${registers}</registers></peripheral>`;
+        const register = (content = "", name = "R", offset = 0) =>
+            `<register><name>${name}</name><addressOffset>${offset}</addressOffset><access>read-write</access>${content}</register>`;
+        const constraint = (content) => `<writeConstraint>${content}</writeConstraint>`;
+        const field = (content = "", name = "F", offset = 0) =>
+            `<field><name>${name}</name><bitOffset>${offset}</bitOffset><bitWidth>8</bitWidth>${content}</field>`;
+        const enumeration = (usage, name, value) =>
+            `<enumeratedValues><usage>${usage}</usage><enumeratedValue><name>${name}</name><value>${value}</value></enumeratedValue></enumeratedValues>`;
+        const createdServices = [];
+        function fixture(xml, options = {}) {
+            let epoch = 1,
+                reads = 0,
+                loads = 0;
+            const writes = [];
+            const memory = new Map();
+            const bridge = {
+                activeSession: { id: "test" },
+                assertPausedAccess() {},
+                agentStatus: () => ({ epoch, session: { id: "test" } }),
+                readPausedMemory: async (address, bytes) => {
+                    reads++;
+                    return memory.get(address) || Buffer.alloc(bytes);
+                },
+                writePausedMemory: async (address, bytes) => {
+                    writes.push(address);
+                    memory.set(address, bytes);
+                }
+            };
+            const service = new SvdPeripheralService({
+                loadBoundSvd: async () => {
+                    loads++;
+                    return { path: "test.svd", buffer: Buffer.from(xml) };
+                },
+                debugBridge: bridge,
+                authorization: new PeripheralWriteAuthorization(),
+                ...options
+            });
+            createdServices.push(service);
+            return { service, bridge, writes, memory, counts: () => ({ loads, reads }), resume: () => epoch++ };
+        }
+        try {
+            const range = constraint("<range><minimum>0</minimum><maximum>3</maximum></range>");
+            let f = fixture(device(peripheral("P", register(range) + register(range, "S", 4))));
+            await assert.rejects(f.service.writeFromUi({ writes: [{ target: "P.R", value: "255" }] }), {
+                code: "PERIPHERAL_WRITE_CONSTRAINT_VIOLATION"
+            });
+            await assert.rejects(
+                f.service.writeFromUi({
+                    writes: [
+                        { target: "P.R", value: "2" },
+                        { target: "P.S", value: "4" }
+                    ]
+                }),
+                { code: "PERIPHERAL_WRITE_CONSTRAINT_VIOLATION" }
+            );
+            assert.strictEqual(f.writes.length, 0, "validate the entire batch before its first write");
+            const request = { writes: [{ target: "P.R", value: "3" }] };
+            const permission = await f.service.write(request);
+            assert(
+                (await f.service.write({ ...request, confirmationId: permission.confirmationId })).results[0].verified
+            );
+            assert.strictEqual(f.writes.length, 1);
+            const humanRequest = await f.service.write(request);
+            f.service.approve = async () => {
+                throw Object.assign(new Error("User denied"), { code: "HUMAN_APPROVAL_DENIED" });
+            };
+            await assert.rejects(f.service.write({ ...request, confirmationId: humanRequest.confirmationId }), {
+                code: "HUMAN_APPROVAL_DENIED"
+            });
+            assert.strictEqual(f.writes.length, 1);
+            f.service.approve = async () => {
+                f.memory.set(0x40000000, Buffer.from([2, 0, 0, 0]));
+            };
+            await assert.rejects(f.service.write({ ...request, confirmationId: humanRequest.confirmationId }), {
+                code: "PERIPHERAL_WRITE_CONFIRMATION_INVALID"
+            });
+            assert.strictEqual(f.writes.length, 1, "register changes while approving must invalidate the old plan");
+            f.service.approve = async () => {};
+            const fresh = await f.service.write(request);
+            await f.service.write({ ...request, confirmationId: fresh.confirmationId });
+            assert.strictEqual(f.writes.length, 2);
+            f.service.approve = null;
+            const listed = await f.service.list();
+            assert.strictEqual(listed.peripherals[0].registers[0].writeConstraint.maximum, "3");
+            assert.doesNotThrow(() => JSON.stringify(listed));
+
+            f = fixture(device(peripheral("P", register(constraint("<writeAsRead>true</writeAsRead>")))));
+            await assert.rejects(f.service.writeFromUi({ writes: [{ target: "P.R", value: "1" }] }), {
+                code: "PERIPHERAL_WRITE_CONSTRAINT_VIOLATION"
+            });
+            await f.service.writeFromUi({ writes: [{ target: "P.R", value: "0" }] });
+
+            const enums = enumeration("read", "State", 1) + enumeration("write", "State", 2);
+            f = fixture(
+                device(
+                    peripheral(
+                        "P",
+                        register(
+                            constraint("<useEnumeratedValues>true</useEnumeratedValues>") +
+                                `<fields>${field(enums)}</fields>`
+                        )
+                    )
+                )
+            );
+            await f.service.writeFromUi({ writes: [{ target: "P.R.F", value: "State" }] });
+            assert.strictEqual(f.memory.get(0x40000000)[0], 2, "write selects the write enumeration");
+            assert.strictEqual((await f.service.read({ targets: ["P.R"] })).registers[0].fields[0].enum, undefined);
+            f.memory.set(0x40000000, Buffer.from([1, 0, 0, 0]));
+            assert.strictEqual((await f.service.read({ targets: ["P.R"] })).registers[0].fields[0].enum, "State");
+            await assert.rejects(f.service.writeFromUi({ writes: [{ target: "P.R", value: "1" }] }), {
+                code: "PERIPHERAL_WRITE_CONSTRAINT_VIOLATION"
+            });
+            f = fixture(
+                device(
+                    peripheral(
+                        "P",
+                        register(
+                            range +
+                                `<fields>${field(constraint("<range><minimum>5</minimum><maximum>7</maximum></range>"))}${field("", "G", 8)}</fields>`
+                        )
+                    )
+                )
+            );
+            await f.service.writeFromUi({ writes: [{ target: "P.R", value: "0x307" }] });
+            await assert.rejects(f.service.writeFromUi({ writes: [{ target: "P.R", value: "0x407" }] }), {
+                code: "PERIPHERAL_WRITE_CONSTRAINT_VIOLATION"
+            });
+            JSON.stringify(await f.service.list());
+            for (const content of [
+                "<range><minimum>4</minimum><maximum>1</maximum></range>",
+                "<writeAsRead>bad</writeAsRead>",
+                "<unknown>true</unknown>",
+                "<writeAsRead>true</writeAsRead><useEnumeratedValues>true</useEnumeratedValues>"
+            ])
+                assert.throws(() => parseSvd(device(peripheral("P", register(constraint(content))))), {
+                    code: "INVALID_SVD_WRITE_CONSTRAINT"
+                });
+            parseSvd(device(peripheral("P", register(constraint("<writeAsRead>false</writeAsRead>")))));
+        } finally {
+            for (const service of createdServices) service.dispose();
+        }
+    });
+
+    await scenario("Share enum storage without exceeding logical node budgets", async () => {
+        const { parseSvd } = require("../src/services/svdPeripheralService");
+        const device = (content) =>
+            `<device><name>T</name><size>32</size><peripherals>${content}</peripherals></device>`;
+        const peripheral = (name, registers) =>
+            `<peripheral><name>${name}</name><baseAddress>0x40000000</baseAddress><registers>${registers}</registers></peripheral>`;
+        const register = (content = "", name = "R", offset = 0) =>
+            `<register><name>${name}</name><addressOffset>${offset}</addressOffset><access>read-write</access>${content}</register>`;
+        const field = (content = "", name = "F", offset = 0) =>
+            `<field><name>${name}</name><bitOffset>${offset}</bitOffset><bitWidth>8</bitWidth>${content}</field>`;
+        // A small input cannot multiply enum objects beyond the logical node budget.
+        const enums256 = Array.from(
+            { length: 256 },
+            (_, i) => `<enumeratedValue><name>E${i}</name><value>${i}</value></enumeratedValue>`
+        ).join("");
+        const amplified = (count) =>
+            device(
+                peripheral(
+                    "P",
+                    register(
+                        `<dim>${count}</dim><dimIncrement>4</dimIncrement><fields>${field(`<enumeratedValues>${enums256}</enumeratedValues>`)}</fields>`,
+                        "R%s"
+                    )
+                )
+            );
+        const shared = parseSvd(amplified(2)).peripherals[0].registers;
+        assert.strictEqual(shared[0].fields[0].enumerations, shared[1].fields[0].enumerations);
+        assert.throws(() => parseSvd(amplified(4096)), { code: "SVD_BUDGET_EXCEEDED" });
+    });
+
+    await scenario("Parse peripheral service models through the SVD worker", async () => {
+        const { SvdPeripheralService } = require("../src/services/svdPeripheralService");
+        const device = (content) =>
+            `<device><name>T</name><size>32</size><peripherals>${content}</peripherals></device>`;
+        const peripheral = (name, registers) =>
+            `<peripheral><name>${name}</name><baseAddress>0x40000000</baseAddress><registers>${registers}</registers></peripheral>`;
+        const register = (content = "", name = "R", offset = 0) =>
+            `<register><name>${name}</name><addressOffset>${offset}</addressOffset><access>read-write</access>${content}</register>`;
+        function fixture(xml, options = {}) {
+            let epoch = 1,
+                reads = 0,
+                loads = 0;
+            const writes = [];
+            const memory = new Map();
+            const bridge = {
+                activeSession: { id: "test" },
+                assertPausedAccess() {},
+                agentStatus: () => ({ epoch, session: { id: "test" } }),
+                readPausedMemory: async (address, bytes) => {
+                    reads++;
+                    return memory.get(address) || Buffer.alloc(bytes);
+                },
+                writePausedMemory: async (address, bytes) => {
+                    writes.push(address);
+                    memory.set(address, bytes);
+                }
+            };
+            const service = new SvdPeripheralService({
+                loadBoundSvd: async () => {
+                    loads++;
+                    return { path: "test.svd", buffer: Buffer.from(xml) };
+                },
+                debugBridge: bridge,
+                authorization: new PeripheralWriteAuthorization(),
+                ...options
+            });
+            return { service, bridge, writes, memory, counts: () => ({ loads, reads }), resume: () => epoch++ };
+        }
+        const workerPath = path.resolve(__dirname, "../src/svdWorker.js");
+        const xml = Buffer.from(device(peripheral("P", register())));
+        const f = fixture(xml, { workerPath });
+        try {
+            assert.strictEqual((await f.service.model()).registersByPath.size, 1);
+        } finally {
+            f.service.dispose();
+        }
+    });
+
     console.log("SVD peripheral tests passed");
 })().catch((error) => {
     console.error(error);

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const {
     buildChipInfoCommands,
@@ -272,5 +275,15 @@ assert.strictEqual(m35p.coreRevision, "r1p0");
 const l5 = parseChip("stm32l5x.cfg", ["0xe000ed00: 410fd214", "0xe0042000: 10006472", "0x1fff7a22: 00000400"]);
 assert.strictEqual(l5.series, "STM32L5x");
 assert.strictEqual(l5.flashSize, "");
+
+scenario("Report fresh unknown H7 target state and polling diagnostics", () => {
+    const parser = createChipParser("stm32h7x.cfg");
+    parser.handleLine("0xe000ed00: 411fc271");
+    parser.handleLine("EP_KV state unknown");
+    parser.handleLine("EP_KV stateError target polling failed");
+    const info = parser.finish(0);
+    assert.strictEqual(info.targetState, "unknown");
+    assert.strictEqual(info.stateError, "target polling failed");
+});
 
 console.log("Chip info tests passed");

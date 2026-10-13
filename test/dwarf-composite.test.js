@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 // 验证 DWARF 复合类型布局解析：结构体成员名/偏移/类型、数组维度与元素类型。
 // 程序化构造最小 ELF32 + DWARF v4 调试段（.debug_info/.debug_abbrev），无需外部工具链。
 const assert = require("assert");
@@ -595,4 +598,276 @@ const partial = parseDwarf(dwarfElf(Buffer.concat([debugInfo, Buffer.from([1, 0,
 assert.ok(partial.layouts.has("sensorAlias"));
 assert.ok(partial.diagnostics.some((item) => item.code === "DWARF_CU_INVALID" && item.offset >= debugInfo.length));
 assert.ok(parseDwarf(null).diagnostics.some((item) => item.code === "DWARF_PARSE_FAILED"));
+
+scenario("Decode ordinary and packed bitfield layouts", () => {
+    const c = require("../src/dwarf/constants");
+    const { buildCompositeLayouts } = require("../src/dwarf/types");
+    const { decodeComposite } = require("../src/elfSymbols");
+    const { validateComposite } = require("../src/compositeValidation");
+    {
+        // 测试常见 8+8+16 位域（总计 4 字节）
+        const dies8816 = new Map([
+            [1, { tag: c.DW_TAG_base_type, name: "unsigned int", encoding: c.DW_ATE_unsigned, byteSize: 4 }],
+            [10, { tag: c.DW_TAG_structure_type, name: "Reg", byteSize: 4 }],
+            [11, { tag: c.DW_TAG_member, name: "a", typeRef: 1, dataBitOffset: 0, bitSize: 8 }],
+            [12, { tag: c.DW_TAG_member, name: "b", typeRef: 1, dataBitOffset: 8, bitSize: 8 }],
+            [13, { tag: c.DW_TAG_member, name: "c", typeRef: 1, dataBitOffset: 16, bitSize: 16 }]
+        ]);
+        const parsed8816 = {
+            dies: dies8816,
+            childrenMap: new Map([[10, [11, 12, 13]]]),
+            variables: [{ name: "reg", typeRef: 10 }]
+        };
+        const regLayout = buildCompositeLayouts(parsed8816).get("reg");
+        assert.ok(regLayout, "reg layout must be created");
+        // 验证 validateComposite 不会抛出 INVALID_COMPOSITE_LAYOUT
+        assert.doesNotThrow(() => validateComposite(regLayout, 4, 0x20000000));
+
+        // 解码验证
+        const regBytes = [0x12, 0x34, 0x78, 0x56];
+        const regTree = decodeComposite(regBytes, regLayout);
+        for (const [index, value] of [0x12, 0x34, 0x5678].entries()) {
+            assert.strictEqual(regTree.members[index].value, value, `8+8+16 bitfield member: ${index}`);
+        }
+
+        // 测试 1 字节 packed 位域 (3 + 5 位)
+        const diesPacked = new Map([
+            [1, { tag: c.DW_TAG_base_type, name: "unsigned int", encoding: c.DW_ATE_unsigned, byteSize: 4 }],
+            [20, { tag: c.DW_TAG_structure_type, name: "Packed", byteSize: 1 }],
+            [21, { tag: c.DW_TAG_member, name: "f1", typeRef: 1, dataBitOffset: 0, bitSize: 3 }],
+            [22, { tag: c.DW_TAG_member, name: "f2", typeRef: 1, dataBitOffset: 3, bitSize: 5 }]
+        ]);
+        const parsedPacked = {
+            dies: diesPacked,
+            childrenMap: new Map([[20, [21, 22]]]),
+            variables: [{ name: "pk", typeRef: 20 }]
+        };
+        const pkLayout = buildCompositeLayouts(parsedPacked).get("pk");
+        assert.ok(pkLayout, "packed layout must be created");
+        assert.doesNotThrow(() => validateComposite(pkLayout, 1, 0x20000000));
+
+        // 0x2b = 00101 011 -> f1 = 3, f2 = 5
+        const pkTree = decodeComposite([0x2b], pkLayout);
+        for (const [index, value] of [3, 5].entries()) {
+            assert.strictEqual(pkTree.members[index].value, value, `packed bitfield member: ${index}`);
+        }
+    }
+});
+
+scenario("Distinguish empty-array sentinels from ordinary form-width bounds", () => {
+    const c = require("../src/dwarf/constants");
+    const { parseDwarf } = require("../src/dwarf");
+    const { parseDwarfInternal } = require("../src/dwarf/parser");
+    const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
+    const { validateComposite } = require("../src/compositeValidation");
+    const { expandCompositeLeaves } = require("../src/elfSymbols");
+    function fixed(value, width = 4) {
+        const bytes = Buffer.alloc(8);
+        bytes.writeBigUInt64LE(BigInt.asUintN(64, BigInt(value)));
+        return Array.from(bytes.subarray(0, width));
+    }
+    function leb(value, signed = false) {
+        let remaining = BigInt(value);
+        const bytes = [];
+        do {
+            let byte = Number(remaining & 127n);
+            remaining >>= 7n;
+            const last = signed
+                ? (remaining === 0n && !(byte & 64)) || (remaining === -1n && !!(byte & 64))
+                : remaining === 0n;
+            if (!last) byte |= 128;
+            bytes.push(byte);
+            if (last) break;
+        } while (true);
+        return bytes;
+    }
+    const node = (id, tag, attrs = [], children = []) => ({ id, tag, attrs, children });
+    const attr = (at, form, value) => [at, form, value];
+    const nameAttr = (name) => attr(c.DW_AT_name, 8, name);
+    const typeAttr = (ref) => attr(c.DW_AT_type, 0x13, ref);
+    const base = (id, name = "int", size = 4, encoding = c.DW_ATE_signed) =>
+        node(id, c.DW_TAG_base_type, [
+            nameAttr(name),
+            attr(c.DW_AT_byte_size, 0x0b, size),
+            attr(c.DW_AT_encoding, 0x0b, encoding)
+        ]);
+    const composite = (id, name, size, children = [], tag = c.DW_TAG_class_type) =>
+        node(id, tag, [...(name ? [nameAttr(name)] : []), attr(c.DW_AT_byte_size, 6, size)], children);
+    const member = (id, name, type, offset) =>
+        node(id, c.DW_TAG_member, [nameAttr(name), typeAttr(type), attr(c.DW_AT_data_member_location, 6, offset)]);
+    const pointer = (id, type) => node(id, c.DW_TAG_pointer_type, [typeAttr(type)]);
+    const variable = (name, type, address = 0x20000000, expression) =>
+        node("var-" + name, c.DW_TAG_variable, [
+            nameAttr(name),
+            typeAttr(type),
+            attr(c.DW_AT_location, 0x18, expression || [3, ...fixed(address)])
+        ]);
+    function fixture(units, { version = 4, symbols = [], sections = [] } = {}) {
+        const info = [],
+            abbrev = [],
+            definitions = new Map(),
+            offsets = new Map(),
+            references = [];
+        const value = (form, input, cuStart) => {
+            if ([0x13, 0x10].includes(form)) {
+                references.push({ offset: info.length, label: input, cuStart: form === 0x13 ? cuStart : 0 });
+                info.push(0, 0, 0, 0);
+            } else if ([0x0b, 5, 6, 7].includes(form)) info.push(...fixed(input, { 0x0b: 1, 5: 2, 6: 4, 7: 8 }[form]));
+            else if (form === 8) info.push(...Buffer.from(input + "\0"));
+            else if (form === 0x18) info.push(...leb(input.length), ...input);
+            else if ([0x0f, 0x0d].includes(form)) info.push(...leb(input, form === 0x0d));
+            else if (form === 0x16) {
+                info.push(...leb(input.form));
+                value(input.form, input.value, cuStart);
+            } else if (![0x19, 0x21].includes(form)) throw new Error("Unsupported fixture form " + form);
+        };
+        const emit = (die, cuStart) => {
+            offsets.set(die.id, info.length);
+            const key = JSON.stringify([
+                die.tag,
+                !!die.children.length,
+                die.attrs.map(([at, form, v]) => [at, form, form === 0x21 ? v : null])
+            ]);
+            if (!definitions.has(key)) {
+                const code = definitions.size + 1;
+                definitions.set(key, code);
+                abbrev.push(...leb(code), ...leb(die.tag), Number(!!die.children.length));
+                for (const [at, form, v] of die.attrs) {
+                    abbrev.push(...leb(at), ...leb(form));
+                    if (form === 0x21) abbrev.push(...leb(v, true));
+                }
+                abbrev.push(0, 0);
+            }
+            info.push(...leb(definitions.get(key)));
+            for (const [, form, v] of die.attrs) value(form, v, cuStart);
+            for (const child of die.children) emit(child, cuStart);
+            if (die.children.length) info.push(0);
+        };
+        for (let index = 0; index < units.length; index++) {
+            const cuStart = info.length;
+            info.push(0, 0, 0, 0, version, 0);
+            if (version === 5) info.push(1, 4, 0, 0, 0, 0);
+            else info.push(0, 0, 0, 0, 4);
+            const unit = Array.isArray(units[index]) ? node("cu-" + index, 0x11, [], units[index]) : units[index];
+            emit(unit, cuStart);
+            fixed(info.length - cuStart - 4).forEach((byte, offset) => {
+                info[cuStart + offset] = byte;
+            });
+        }
+        for (const ref of references) {
+            assert(offsets.has(ref.label), "Unknown reference " + ref.label);
+            fixed(offsets.get(ref.label) - ref.cuStart).forEach((byte, offset) => {
+                info[ref.offset + offset] = byte;
+            });
+        }
+        abbrev.push(0);
+        return {
+            buffer: buildElf32({
+                sections: [
+                    ...buildDebugSections({ info: Buffer.from(info), abbrev: Buffer.from(abbrev) }),
+                    ...sections
+                ],
+                symbols
+            }),
+            offsets
+        };
+    }
+    function zeroArrayTests() {
+        const bounds = [
+            [6, 4294967295],
+            [7, 18446744073709551615n],
+            [0x0d, -1],
+            [0x21, -1],
+            [0x16, { form: 6, value: 4294967295 }]
+        ];
+        for (const version of [4, 5])
+            for (const [form, upper] of bounds) {
+                const f = fixture(
+                    [
+                        [
+                            base("int"),
+                            base("char", "char", 1, c.DW_ATE_signed_char),
+                            pointer("ptr", "int"),
+                            node(
+                                "empty",
+                                c.DW_TAG_array_type,
+                                [typeAttr("char")],
+                                [node("range", c.DW_TAG_subrange_type, [attr(c.DW_AT_upper_bound, form, upper)])]
+                            ),
+                            composite(
+                                "Z",
+                                "Z",
+                                4,
+                                [member("n", "n", "int", 0), member("tail", "tail", "empty", 4)],
+                                c.DW_TAG_structure_type
+                            ),
+                            composite("Outer", "Outer", 8, [member("z", "z", "Z", 0), member("p", "p", "ptr", 4)]),
+                            variable("zl", "Z"),
+                            variable("outer", "Outer", 0x20000010)
+                        ]
+                    ],
+                    { version }
+                );
+                const parsed = parseDwarfInternal(f.buffer);
+                assert.strictEqual(parsed.dies.get(f.offsets.get("range")).subrangeCount, 0, "all-ones upper bound");
+                const result = parseDwarf(f.buffer, { runtime: true });
+                assert.deepStrictEqual(result.diagnostics, []);
+                const layout = result.layouts.get("zl");
+                const tail = layout.members.find((entry) => entry.name === "tail");
+                assert.strictEqual(tail.byteSize, 0);
+                assert.deepStrictEqual(tail.compositeLayout.dimensions, [0]);
+                assert.strictEqual(tail.compositeLayout.totalElements, 0);
+                validateComposite(layout, 4);
+                assert.deepStrictEqual(
+                    expandCompositeLeaves({ name: "zl", address: 0x20000000, size: 4 }, layout).map(
+                        (entry) => entry.path
+                    ),
+                    ["zl.n"]
+                );
+                const outer = result.layouts.get("outer");
+                assert.strictEqual(outer.members[0].compositeLayout.members.length, 2);
+                assert.strictEqual(outer.members[1].name, "p");
+                const empty = outer.runtimeLayout.types.find((entry) => entry.kind === "array");
+                assert.strictEqual(empty.count, 0);
+                assert.strictEqual(empty.byteSize, 0);
+            }
+        // The sentinel is form-width-specific, not any integer ending in FF. GCC emits
+        // uint8_t a[256] as data1 0xff and a[65536] as data2 0xffff: ordinary bounds.
+        for (const [form, upper, count] of [
+            [6, 255, 256],
+            [0x0b, 255, 256],
+            [5, 65535, 65536]
+        ]) {
+            const f = fixture([
+                [
+                    base("char", "char", 1, c.DW_ATE_signed_char),
+                    pointer("ptr", "char"),
+                    node(
+                        "a",
+                        c.DW_TAG_array_type,
+                        [typeAttr("char")],
+                        [node("r", c.DW_TAG_subrange_type, [attr(c.DW_AT_upper_bound, form, upper)])]
+                    ),
+                    node(
+                        "pa",
+                        c.DW_TAG_array_type,
+                        [typeAttr("ptr")],
+                        [node("pr", c.DW_TAG_subrange_type, [attr(c.DW_AT_upper_bound, form, upper)])]
+                    ),
+                    variable("a", "a"),
+                    variable("pa", "pa", 0x20010000)
+                ]
+            ]);
+            const result = parseDwarf(f.buffer, { runtime: true });
+            assert.strictEqual(result.layouts.get("a").totalElements, count, "form 0x" + form.toString(16));
+            assert.strictEqual(result.layouts.get("a").byteSize, count);
+            // Runtime nodes describe large arrays without expanding them.
+            const runtimeArray = result.layouts.get("pa").runtimeLayout.types.find((entry) => entry.kind === "array");
+            assert.strictEqual(runtimeArray.count, count);
+            assert.ok(!result.diagnostics.some((entry) => entry.stage === "runtime-layouts"));
+        }
+    }
+    zeroArrayTests();
+});
+
 console.log("DWARF composite layout tests passed");

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
@@ -157,6 +160,170 @@ const parseLog = (stdout, stderr = "") => {
     } finally {
         await fs.rm(root, { recursive: true, force: true });
     }
+
+    await scenario("Stream classified CubeMX logs and close failed spawn log handles", async () => {
+        const { EventEmitter } = require("events");
+        const { runCubeMx } = require("../src/services/cubemxRunner");
+        {
+            const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-log-stream-"));
+            try {
+                const logPath = path.join(tmp, "streamed.log");
+                const monitor = createLogMonitor({ logPath });
+                // Normal WARN containing 'not found' must NOT set failureLine
+                monitor.stdout(Buffer.from("[WARN] BankMapConfig not found\n"));
+                monitor.stdout(Buffer.from("Some non-leveled file not found\n"));
+                let result = monitor.finish();
+                assert.strictEqual(result.failureLine, "");
+                assert(result.warnings.some((w) => w.includes("BankMapConfig")));
+
+                // Missing required firmware/dependency must set failureLine
+                const monitor2 = createLogMonitor();
+                monitor2.stdout(
+                    Buffer.from("Firmware package STM32Cube_FW_F4_V1.28.0 not installed, please download\n")
+                );
+                assert(monitor2.finish().failureLine.includes("not installed"));
+
+                // ERROR followed later by OK: failureLine is still set
+                const monitor3 = createLogMonitor();
+                monitor3.stdout(Buffer.from("[ERROR] compilation error\nproject generate\nOK\nexit\n"));
+                const res3 = monitor3.finish();
+                assert(res3.failureLine.includes("[ERROR]"));
+                assert(res3.confirmed); // confirmed generate, but failureLine prevents clean success
+
+                // Verify streaming to disk exists
+                assert((await fs.readFile(logPath, "utf8")).includes("BankMapConfig"));
+
+                // Overlong line
+                const monitor4 = createLogMonitor();
+                monitor4.stdout(Buffer.from("A".repeat(70000) + "\n"));
+                assert(monitor4.finish().failureLine.includes("exceeds 64 KiB"));
+
+                // runCubeMx process spawn error cleans up log fd
+                const spawnErrLog = path.join(tmp, "spawn-err.log");
+                const mockChild = new EventEmitter();
+                mockChild.stdout = new EventEmitter();
+                mockChild.stderr = new EventEmitter();
+                mockChild.kill = () => {};
+                const fakeSpawn = () => {
+                    process.nextTick(() => mockChild.emit("error", new Error("java ENOENT")));
+                    return mockChild;
+                };
+                await assert.rejects(
+                    runCubeMx({ java: "java", executable: "cube.jar" }, tmp, "test.ioc", {
+                        logPath: spawnErrLog,
+                        spawn: fakeSpawn
+                    }),
+                    (err) => err.code === "CUBEMX_START_FAILED"
+                );
+                // File handle must be closed, so unlink will succeed without EBUSY on Windows
+                await fs.unlink(spawnErrLog);
+            } finally {
+                await fs.rm(tmp, { recursive: true, force: true });
+            }
+        }
+    });
+
+    await scenario("Distinguish user code edits from generated edits and corrupt markers", async () => {
+        const { classifyUserCodeChanges } = require("../src/services/cubemxOperations");
+        {
+            const validC = [
+                "/* USER CODE BEGIN 0 */",
+                "int a = 1;",
+                "/* USER CODE END 0 */",
+                "void init() {}",
+                "/* USER CODE BEGIN 1 */",
+                "int b = 2;",
+                "/* USER CODE END 1 */"
+            ].join("\n");
+
+            const userModifiedC = [
+                "/* USER CODE BEGIN 0 */",
+                "int a = 999;",
+                "/* USER CODE END 0 */",
+                "void init() {}",
+                "/* USER CODE BEGIN 1 */",
+                "int b = 2;",
+                "/* USER CODE END 1 */"
+            ].join("\n");
+
+            const generatedModifiedC = [
+                "/* USER CODE BEGIN 0 */",
+                "int a = 1;",
+                "/* USER CODE END 0 */",
+                "void init_renamed() {}",
+                "/* USER CODE BEGIN 1 */",
+                "int b = 2;",
+                "/* USER CODE END 1 */"
+            ].join("\n");
+
+            const corruptedC = [
+                "/* USER CODE BEGIN 0 */",
+                "int a = 1;",
+                "/* USER CODE BEGIN 0 */" // Duplicate
+            ].join("\n");
+
+            for (const { name, content, expected } of [
+                {
+                    name: "user code edit",
+                    content: userModifiedC,
+                    expected: { classifiable: true, generatedChanged: false, userChanged: true }
+                },
+                {
+                    name: "generated code edit",
+                    content: generatedModifiedC,
+                    expected: { classifiable: true, generatedChanged: true }
+                },
+                { name: "duplicate user code marker", content: corruptedC, expected: { classifiable: false } }
+            ]) {
+                const result = classifyUserCodeChanges(validC, content);
+                for (const [key, value] of Object.entries(expected)) {
+                    assert.strictEqual(result[key], value, `${name}: ${key}`);
+                }
+            }
+        }
+    });
+
+    await scenario("Recover interrupted operations after an extension restart", async () => {
+        const { CubeMxOperationStore } = require("../src/services/cubemxOperations");
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-operation-restart-"));
+        try {
+            const project = path.join(root, "project");
+            const storageDir = path.join(root, "storage");
+            await fs.mkdir(project);
+
+            // Extension restart: uncompleted operations marked interrupted
+            const store = new CubeMxOperationStore(storageDir);
+            const restartedOp = await store.createOperation(project, {
+                type: "generate",
+                stage: "baseline"
+            });
+            const restartedWritingOp = await store.createOperation(project, {
+                type: "generate",
+                stage: "writing"
+            });
+            // Create new store instance pointing to same storage to simulate restart
+            const store2 = new CubeMxOperationStore(storageDir);
+            const op1 = await store2.getOperation(project, restartedOp.operationId);
+            assert.strictEqual(op1.status, "interrupted");
+            assert.strictEqual(op1.sourceProjectStatus, "unchanged");
+
+            const op2 = await store2.getOperation(project, restartedWritingOp.operationId);
+            assert.strictEqual(op2.status, "interrupted");
+            assert.strictEqual(op2.sourceProjectStatus, "unknown");
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+    await scenario("Identify changed user code block names", async () => {
+        const { changedUserCodeBlockNames } = require("../src/services/cubemxOperations");
+        assert.deepStrictEqual(
+            changedUserCodeBlockNames(
+                "/* USER CODE BEGIN 0 */\nint a = 1;\n/* USER CODE END 0 */",
+                "/* USER CODE BEGIN 0 */\nint a = 2;\n/* USER CODE END 0 */"
+            ),
+            ["0"]
+        );
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

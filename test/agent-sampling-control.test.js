@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
@@ -179,6 +182,125 @@ function fixture() {
     assert.strictEqual(q._debugBridge.intentEnabled, false);
     assert.strictEqual(q._managedDebugServer.samplingEnabled, false);
     assert.strictEqual((await q._controlAgentSampling("status")).running, false);
+
+    await scenario("Cancel Agent reads during connection preparation and port resolution", async () => {
+        const { DebugLifecycle } = require("../src/services/debugLifecycle");
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        function deferred() {
+            let resolve;
+            const promise = new Promise((done) => {
+                resolve = done;
+            });
+            return { promise, resolve };
+        }
+        function providerFixture() {
+            const sessions = [],
+                statuses = [];
+            class Session {
+                constructor(_vscode, _options, events) {
+                    this.events = events;
+                    sessions.push(this);
+                }
+                setWatch() {}
+                setSamplingEnabled(value) {
+                    this.enabled = value;
+                }
+                async start() {
+                    this.started = true;
+                }
+                async stop() {
+                    return true;
+                }
+            }
+            const P = loadProvider(
+                { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
+                { "./liveWatch": { LiveWatchSession: Session } }
+            );
+            const p = Object.create(P.prototype);
+            Object.assign(p, {
+                _probeCoordinator: new ProbeCoordinator(),
+                _samplingCoordinator: new SamplingCoordinator(),
+                _debugLifecycle: new DebugLifecycle(),
+                _probeConnectionService: { prepare: async () => ({}) },
+                _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
+                _context: { workspaceState: { get: () => "configured" } },
+                _liveConsumers: new Set(),
+                _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
+                _setLiveInterval() {},
+                _commandContext: () => ({}),
+                _t: (key) => key,
+                _resolveTclPort: async () => 1234,
+                _resolveOpenOcdPath: async () => "fake",
+                _postConsumerStatuses: (status) => statuses.push(status),
+                _postLive() {},
+                _postAgentSampling() {},
+                _handleRawSamples: () => {
+                    throw Error("Late sample accepted");
+                }
+            });
+            return { p, sessions, statuses };
+        }
+        for (const phase of ["prepare", "port"]) {
+            const fixture = providerFixture(),
+                gate = deferred();
+            if (phase === "prepare") fixture.p._probeConnectionService.prepare = () => gate.promise;
+            else fixture.p._resolveTclPort = () => gate.promise;
+            const read = fixture.p._withAgentProbe(async () => {
+                throw Error("Cancelled handler ran");
+            });
+            const rejected = assert.rejects(read, { code: "AGENT_READ_CANCELLED" });
+            await tick();
+            const cancelled = fixture.p.stopAgentReadIfRunning();
+            gate.resolve(phase === "prepare" ? {} : 1234);
+            await Promise.all([rejected, cancelled]);
+            assert.strictEqual(fixture.sessions.length, 0);
+            assert.strictEqual(fixture.p._probeCoordinator.anyActive(), false);
+        }
+    });
+
+    await scenario("Respect backpressure, pause and continue transitions", async () => {
+        const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
+        const sampling = new SamplingCoordinator();
+        const bridge = new DebugSessionBridge();
+        try {
+            bridge.sessions.set("session", { id: "session" });
+            bridge.intentEnabled = true;
+            bridge.capabilities.read = true;
+            const server = {
+                samplingEnabled: true,
+                setSamplingEnabled(value) {
+                    this.samplingEnabled = value;
+                    return value;
+                }
+            };
+            const status = () => sampling.status({ intent: true, bridge, managedServer: server });
+            assert.strictEqual(status().mode, "debug-running-sampling");
+            sampling.setBackpressure(true);
+            sampling.setDebugIntent(bridge, true);
+            sampling.setRuntimeEnabled(server, true, bridge);
+            assert.strictEqual(bridge.intentEnabled, false);
+            assert.strictEqual(server.samplingEnabled, false);
+            sampling.setDebugIntent(bridge, true);
+            assert.strictEqual(bridge.intentEnabled, false);
+            assert.strictEqual(status().canRead, false);
+            sampling.setBackpressure(false);
+            bridge.paused = true;
+            assert.strictEqual(sampling.setRuntimeEnabled(server, true, bridge), false);
+            bridge.paused = false;
+            bridge.transitionKind = "continue";
+            assert.strictEqual(sampling.setRuntimeEnabled(server, true, bridge), false);
+            bridge.transitionKind = "";
+            assert.strictEqual(sampling.setRuntimeEnabled(server, true, bridge), true);
+            assert.strictEqual(status().source, "openocd");
+            assert.strictEqual(
+                sampling.status({ intent: false, bridge: { hasSession: false }, standaloneRunning: false }).mode,
+                "stopped"
+            );
+        } finally {
+            bridge.dispose();
+        }
+    });
+
     console.log("Agent sampling control and shared UI state tests passed");
 })().catch((error) => {
     console.error(error);

@@ -6,11 +6,11 @@ const os = require("os");
 const path = require("path");
 const c = require("../src/dwarf/constants");
 const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
-const { ElfService } = require("../src/services/elfService");
 const { loadProvider } = require("./helpers/load-provider");
 const elf = require("../src/elfSymbols");
 const { createLayoutExpansion } = require("../src/dwarf/layoutExpansion");
 const { EXPANSION_TYPE_REF, createCompositeLayoutResolver } = require("../src/dwarf/types");
+const { createWorkerElfService } = require("./helpers/elf-service");
 
 function deepElf(count = 50) {
     const info = [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 1];
@@ -56,16 +56,7 @@ function limitedMember(layout) {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ember-deep-layout-"));
     const file = path.join(temp, "deep.elf");
     fs.writeFileSync(file, deepElf());
-    const service = new ElfService({
-        context: { workspaceState: { get: () => file } },
-        cacheKey: "elf",
-        fs,
-        crypto: require("crypto"),
-        elfSymbols: elf,
-        cleanPath: (value) => value,
-        t: (key) => key,
-        workerPath: path.join(__dirname, "../src/elfWorker.js")
-    });
+    const service = createWorkerElfService(file);
     try {
         await service.ready();
         const layout = await service.layout("root");

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 const { resolveInterfaceTransport, prepareProbeConnection } = require("../skills/_emberprobe/probe-preflight");
@@ -161,6 +164,79 @@ async function main() {
         code: "LIVE_READ_CANCELLED"
     });
     assert.strictEqual(confirmations, 1);
+
+    await scenario("Reuse sysfs discovery and preserve ambiguity across adapter families", async () => {
+        const path = require("path");
+        const { listProbes } = require("../skills/_emberprobe/probe-inventory");
+        function sysfs(devices, entries = Object.keys(devices)) {
+            const reads = [];
+            return {
+                platform: "linux",
+                family: "all",
+                readdir: async () => entries,
+                readFile: async (filename) => {
+                    const id = path.basename(path.dirname(filename));
+                    const key = path.basename(filename);
+                    reads.push(`${id}/${key}`);
+                    const value = devices[id]?.[key];
+                    if (value instanceof Error) throw value;
+                    if (value === undefined) throw Object.assign(new Error("No attribute"), { code: "ENOENT" });
+                    return value;
+                },
+                reads
+            };
+        }
+        const fixture = sysfs(
+            {
+                "1-2": { idVendor: "1FC9\n", idProduct: "ABCD\n", product: "Development board\n", serial: "000Aa1\n" },
+                "1-2:1.0": { interface: "CMSIS-DAP v2\n" },
+                "1-2:1.1": { interface: "Virtual serial port\n" },
+                "1-3": { idVendor: "1366", idProduct: "0101", product: "J-Link", serial: "000123\n" },
+                "1-4": { idVendor: "0483", idProduct: "374b", product: "USB Composite Device", serial: "000Bc2\n" },
+                "1-5": { idVendor: "0451", idProduct: "bef3", product: "XDS110\n" },
+                "1-6": { idVendor: "0416", idProduct: "511b", product: "Nu-Link\n" }
+            },
+            ["1-2", "1-2:1.0", "1-2:1.1", "1-3", "1-4", "1-5", "1-6", "usb1", "../../outside", "1-2.bad", "1-7:1.0"]
+        );
+        const inventory = await listProbes(fixture);
+        const detected = await detectProbe({
+            platform: "linux",
+            usbInventory: () => assert.fail("Reuse sysfs names without a second enumeration"),
+            listProbes: async () => inventory
+        });
+        assert.strictEqual(detected.probe, "");
+        assert.strictEqual(detected.candidates.length, 5, "Mixed supported adapter families must remain ambiguous");
+    });
+
+    await scenario("Use platform inventory fallbacks only when primary enumeration fails", async () => {
+        const { usbInventory } = require("../skills/_emberprobe/probe-detection");
+        const fallback = await usbInventory({
+            platform: "linux",
+            readdir: async () => {
+                throw new Error("No sysfs");
+            },
+            run: async (command) => {
+                assert.strictEqual(command, "lsusb");
+                return { stdout: "CMSIS-DAP" };
+            }
+        });
+        assert.strictEqual(fallback, "CMSIS-DAP");
+        const winNames = await usbInventory({
+            platform: "win32",
+            nativeList: () => [{ name: "ST-LINK" }, { name: "XDS110" }],
+            run: () => assert.fail("No PowerShell after native enumeration")
+        });
+        assert(winNames.includes("ST-LINK") && winNames.includes("XDS110"));
+        const winFallback = await usbInventory({
+            platform: "win32",
+            nativeList: () => {
+                throw new Error("No native runtime");
+            },
+            run: async () => ({ stdout: "J-Link" })
+        });
+        assert.strictEqual(winFallback, "J-Link");
+    });
+
     console.log("Automatic transport, streamlined history, discovery and read confirmation tests passed");
 }
 main().catch((error) => {

@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { PeripheralViewService } = require("../src/services/peripheralViewService");
 const { getModernWebviewContent } = require("../src/modernView");
@@ -262,6 +264,73 @@ const { loadProvider } = require("./helpers/load-provider");
         value: ""
     });
     assert.strictEqual(posted[1].type, "peripheralError");
+
+    await scenario("Batch peripheral reads without reloading or hiding per-target failures", async () => {
+        const { SvdPeripheralService } = require("../src/services/svdPeripheralService");
+        const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthorization");
+        const device = (content) =>
+            `<device><name>T</name><size>32</size><peripherals>${content}</peripherals></device>`;
+        const peripheral = (name, registers) =>
+            `<peripheral><name>${name}</name><baseAddress>0x40000000</baseAddress><registers>${registers}</registers></peripheral>`;
+        const register = (content = "", name = "R", offset = 0) =>
+            `<register><name>${name}</name><addressOffset>${offset}</addressOffset><access>read-write</access>${content}</register>`;
+        const field = (content = "", name = "F", offset = 0) =>
+            `<field><name>${name}</name><bitOffset>${offset}</bitOffset><bitWidth>8</bitWidth>${content}</field>`;
+        function fixture(xml, options = {}) {
+            let epoch = 1,
+                reads = 0,
+                loads = 0;
+            const writes = [];
+            const memory = new Map();
+            const bridge = {
+                activeSession: { id: "test" },
+                assertPausedAccess() {},
+                agentStatus: () => ({ epoch, session: { id: "test" } }),
+                readPausedMemory: async (address, bytes) => {
+                    reads++;
+                    return memory.get(address) || Buffer.alloc(bytes);
+                },
+                writePausedMemory: async (address, bytes) => {
+                    writes.push(address);
+                    memory.set(address, bytes);
+                }
+            };
+            const service = new SvdPeripheralService({
+                loadBoundSvd: async () => {
+                    loads++;
+                    return { path: "test.svd", buffer: Buffer.from(xml) };
+                },
+                debugBridge: bridge,
+                authorization: new PeripheralWriteAuthorization(),
+                ...options
+            });
+            return { service, bridge, writes, memory, counts: () => ({ loads, reads }), resume: () => epoch++ };
+        }
+        // View batching preserves per-target failures but does not reload the model.
+        const f = fixture(
+            device(
+                peripheral(
+                    "P",
+                    register(`<fields>${field()}</fields>`) + register("<readAction>clear</readAction>", "S", 4)
+                )
+            )
+        );
+        try {
+            const view = new PeripheralViewService({ peripherals: f.service, debugBridge: f.bridge });
+            const result = await view.read(["P.R", "P.R.F", "P.S", "missing"]);
+            assert.deepStrictEqual(f.counts(), { loads: 1, reads: 1 });
+            assert.strictEqual(result.registers[0], result.registers[1]);
+            assert.strictEqual(result.registers[2].code, "PERIPHERAL_READ_SIDE_EFFECT");
+            assert.strictEqual(result.registers[3].code, "SVD_TARGET_NOT_FOUND");
+            f.bridge.readPausedMemory = async () => {
+                f.resume();
+                return Buffer.alloc(4);
+            };
+            await assert.rejects(view.read(["P.R"]), { code: "DEBUG_STATE_CHANGED" });
+        } finally {
+            f.service.dispose();
+        }
+    });
 
     console.log("Native peripheral tree, DAP read guards and value controls passed");
 })().catch((error) => {
