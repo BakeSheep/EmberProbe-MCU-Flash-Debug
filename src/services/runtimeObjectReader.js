@@ -2,9 +2,21 @@
 
 const elf = require("../elfSymbols");
 const { MAX_COMPOSITE_DEPTH, MAX_TYPE_ALIASES } = require("../dwarf/layoutLimits");
+const { formatPointer } = require("../webview/runtime");
 
 function failure(code, message) {
     return Object.assign(new Error(message), { code });
+}
+
+function pointerFailureReason(code) {
+    return (
+        {
+            LIVE_ADDRESS_NOT_RAM: "not-ram",
+            LIVE_MEMORY_UNAVAILABLE: "memory-unavailable",
+            LIVE_POINTER_CYCLE: "cycle",
+            LIVE_READ_BUDGET_EXCEEDED: "expansion-budget"
+        }[code] || code.slice(5).toLowerCase().replace(/_/g, "-")
+    );
 }
 
 class RuntimeObjectReader {
@@ -16,6 +28,8 @@ class RuntimeObjectReader {
         this.budget = budget;
         this.cache = [];
         this.descriptors = new Map();
+        this.verificationBudget = { bytes: 0, commands: 0 };
+        this.pointerExpansionStopped = false;
         this.nodes = 0;
     }
     type(id) {
@@ -39,7 +53,7 @@ class RuntimeObjectReader {
             throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime object size is unavailable or oversized");
         return size;
     }
-    async memory(address, size, fresh = false) {
+    async memory(address, size, fresh = false, descriptor = false) {
         this.guard();
         if (Date.now() > this.budget.deadline)
             throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object time budget exceeded");
@@ -52,24 +66,40 @@ class RuntimeObjectReader {
             !this.item.runtimeRanges?.some((range) => address >= range.start && address + size <= range.end)
         )
             throw failure("LIVE_ADDRESS_NOT_RAM", "Runtime object points outside verified ELF memory ranges");
-        if (!fresh) {
-            const cached = this.cache.find(
+        const cached =
+            !fresh &&
+            this.cache.find(
                 (entry) => address >= entry.address && address + size <= entry.address + entry.bytes.length
             );
-            if (cached) return cached.bytes.subarray(address - cached.address, address - cached.address + size);
-        }
-        if ((this.budget.bytes += size) > 4096 || ++this.budget.commands > 32)
+        const previous = descriptor ? this.descriptors.get(address) : null;
+        // Every descriptor needs a fresh read at the end, even when its initial bytes were cached.
+        const verificationBytes = this.verificationBudget.bytes + (descriptor ? size - (previous?.length || 0) : 0);
+        const verificationCommands = this.verificationBudget.commands + (descriptor && !previous ? 1 : 0);
+        if (
+            this.budget.bytes + (cached ? 0 : size) + verificationBytes > 4096 ||
+            this.budget.commands + (cached ? 0 : 1) + verificationCommands > 32
+        )
             throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object exceeds 4096 bytes / 32 reads per cycle");
-        const bytes = Buffer.from((await this.readRaw(address, size)) || []);
-        this.guard();
-        if (bytes.length !== size)
-            throw failure("LIVE_MEMORY_UNAVAILABLE", "Runtime object memory read was incomplete");
-        if (!fresh) this.cache.push({ address, bytes });
+        let bytes;
+        if (cached) bytes = cached.bytes.subarray(address - cached.address, address - cached.address + size);
+        else {
+            this.budget.bytes += size;
+            this.budget.commands++;
+            bytes = Buffer.from((await this.readRaw(address, size)) || []);
+            this.guard();
+            if (bytes.length !== size)
+                throw failure("LIVE_MEMORY_UNAVAILABLE", "Runtime object memory read was incomplete");
+            if (!fresh) this.cache.push({ address, bytes });
+        }
+        if (descriptor) {
+            this.descriptors.set(address, bytes);
+            this.verificationBudget.bytes = verificationBytes;
+            this.verificationBudget.commands = verificationCommands;
+        }
         return bytes;
     }
     async word(address, descriptor = false, signed = false) {
-        const bytes = await this.memory(address, 4);
-        if (descriptor) this.descriptors.set(address, bytes);
+        const bytes = await this.memory(address, 4, false, descriptor);
         return signed ? bytes.readInt32LE() : bytes.readUInt32LE();
     }
     async expression(address, expression) {
@@ -153,11 +183,10 @@ class RuntimeObjectReader {
     }
     async number(object, descriptor = false) {
         const type = this.type(object.type);
-        const bytes = await this.memory(object.address, this.size(object.type));
+        const bytes = await this.memory(object.address, this.size(object.type), false, descriptor);
         const value = elf.decodeValue(bytes, type.watchType);
         if (!Number.isSafeInteger(value) || value < 0)
             throw failure("LIVE_LAYOUT_UNSUPPORTED", "Invalid runtime discriminator");
-        if (descriptor) this.descriptors.set(object.address, bytes);
         return value;
     }
     nodeType(pattern, valueType, mapArgs) {
@@ -524,8 +553,6 @@ class RuntimeObjectReader {
                 object = { address: object.address + segment.index * this.size(current.target), type: current.target };
             else throw failure("LIVE_MEMBER_MISSING", "Runtime path is not a single typed member");
         }
-        if (this.type(object.type).kind === "reference" && !this.item.runtimeStaticPointers)
-            object = await this.dereference(object);
         return object;
     }
     async tree(
@@ -535,6 +562,8 @@ class RuntimeObjectReader {
         followPointers = !this.item.runtimeStaticPointers,
         maxNodes = 256
     ) {
+        const key = object.type + ":" + object.address;
+        if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
         if (depth > MAX_COMPOSITE_DEPTH || this.nodes >= maxNodes)
             return {
                 kind: "unavailable",
@@ -542,8 +571,6 @@ class RuntimeObjectReader {
             };
         this.nodes++;
         try {
-            const key = object.type + ":" + object.address;
-            if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
             const next = new Set(ancestors).add(key);
             let type = this.type(object.type);
             if (type.unobservable)
@@ -555,44 +582,33 @@ class RuntimeObjectReader {
                 typeName: type.typeName,
                 unobservable: "expansion-budget"
             });
-            if (!followPointers && ["pointer", "reference"].includes(type.kind)) {
-                const address = await this.pointer(object);
-                return {
+            if (["pointer", "reference"].includes(type.kind)) {
+                const pointerValue = await this.pointer(object);
+                const identity = {
+                    typeName: type.typeName || type.kind,
+                    isPointer: true,
+                    pointerTarget: type.pointerTarget,
+                    address: object.address,
+                    valueText: formatPointer(pointerValue)
+                };
+                const leaf = (reason = undefined) => ({
                     kind: "scalar",
                     type: "u32",
-                    typeName: type.typeName || "pointer",
-                    address: object.address,
-                    value: address,
-                    valueText: `0x${address.toString(16)}`
-                };
-            }
-            if (type.kind === "reference") {
+                    ...identity,
+                    value: pointerValue,
+                    ...(reason ? { unavailable: reason } : {})
+                });
+                if (!followPointers || !pointerValue) return leaf();
+                if (["void", "function", "incomplete"].includes(type.pointerTarget)) return leaf("opaque-pointee");
+                if (this.pointerExpansionStopped) return leaf("expansion-budget");
                 try {
-                    return this.tree(await this.dereference(object), depth + 1, next, followPointers, maxNodes);
-                } catch (error) {
-                    if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
-                    const address = await this.pointer(object);
-                    return {
-                        kind: "scalar",
-                        type: "pointer",
-                        typeName: type.typeName,
-                        address: object.address,
-                        value: address,
-                        valueText: `0x${address.toString(16)}`,
-                        unavailable: error.message
-                    };
-                }
-            }
-            if (type.kind === "pointer") {
-                const address = await this.pointer(object);
-                if (!address)
-                    return {
-                        kind: "class",
-                        typeName: type.typeName || "pointer",
-                        members: [],
-                        valueText: "nullptr"
-                    };
-                try {
+                    const target = this.type(type.target);
+                    if (
+                        target.unobservable ||
+                        !["scalar", "class", "union", "array", "pointer", "reference"].includes(target.kind) ||
+                        (target.kind === "scalar" && !target.watchType)
+                    )
+                        return leaf("opaque-pointee");
                     const value = await this.tree(
                         await this.dereference(object),
                         depth + 1,
@@ -600,23 +616,18 @@ class RuntimeObjectReader {
                         followPointers,
                         maxNodes
                     );
+                    if (value.kind === "unavailable") return leaf(value.unobservable || "opaque-pointee");
+                    if (type.kind === "reference") return value;
                     return {
                         kind: "class",
-                        typeName: type.typeName || "pointer",
-                        members: [{ name: "value", ...value }],
-                        valueText: `0x${address.toString(16)}`
+                        ...identity,
+                        pointerValue,
+                        members: [{ name: "value", ...value }]
                     };
                 } catch (error) {
-                    if (!["LIVE_ADDRESS_NOT_RAM", "LIVE_MEMORY_UNAVAILABLE"].includes(error.code)) throw error;
-                    return {
-                        kind: "scalar",
-                        type: "pointer",
-                        typeName: type.typeName || "pointer",
-                        address: object.address,
-                        value: address,
-                        valueText: `0x${address.toString(16)}`,
-                        unavailable: error.message
-                    };
+                    if (!error.code?.startsWith("LIVE_")) throw error;
+                    if (error.code === "LIVE_READ_BUDGET_EXCEEDED") this.pointerExpansionStopped = true;
+                    return leaf(pointerFailureReason(error.code));
                 }
             }
             if (type.byteSize && type.byteSize <= 256) await this.memory(object.address, type.byteSize);
@@ -643,6 +654,7 @@ class RuntimeObjectReader {
                     ? {
                           kind: "class",
                           typeName: type.typeName,
+                          ...(type.stdSummary ? { stdSummary: type.stdSummary } : {}),
                           members: values,
                           partial: count < storage.count,
                           ...(truncated ? { truncated: true } : {})
@@ -687,19 +699,34 @@ class RuntimeObjectReader {
                 const fields = (type.fields || []).filter((field) => !field.name.startsWith("_vptr"));
                 if (this.nodes + fields.length > maxNodes) return unavailable();
                 this.nodes += fields.length;
+                const objects = new Map();
+                // Reserve sibling pointer descriptors before an optional expansion can consume their read budget.
+                for (const field of fields) {
+                    const fieldType = this.type(field.type);
+                    if (field.unobservable || fieldType.unobservable) continue;
+                    const member = await this.member(object, field);
+                    objects.set(field, member);
+                    if (["pointer", "reference"].includes(fieldType.kind)) await this.pointer(member);
+                }
                 const members = [];
                 let remaining = fields.length;
                 for (const field of fields) {
                     const code = field.unobservable || this.type(field.type).unobservable;
                     if (code) {
-                        members.push({ name: field.name, kind: "unavailable", unobservable: code });
+                        members.push({
+                            name: field.name,
+                            ...(field.memberRole ? { memberRole: field.memberRole } : {}),
+                            kind: "unavailable",
+                            unobservable: code
+                        });
                         remaining--;
                         continue;
                     }
                     members.push({
                         name: field.name,
+                        ...(field.memberRole ? { memberRole: field.memberRole } : {}),
                         ...(await this.tree(
-                            await this.member(object, field),
+                            objects.get(field),
                             depth + 1,
                             next,
                             followPointers,
@@ -710,6 +737,7 @@ class RuntimeObjectReader {
                 return {
                     kind: type.kind,
                     typeName: type.typeName,
+                    ...(type.stdSummary ? { stdSummary: type.stdSummary } : {}),
                     members,
                     ...(members.some((member) => member.unobservable || member.truncated) ? { truncated: true } : {})
                 };
@@ -745,6 +773,8 @@ class RuntimeObjectReader {
         );
         const tree = await this.tree(object);
         for (const [address, original] of this.descriptors) {
+            this.verificationBudget.bytes -= original.length;
+            this.verificationBudget.commands--;
             const actual = await this.memory(address, original.length, true);
             if (!actual.equals(original))
                 throw failure("LIVE_OBJECT_CHANGED", "Runtime object storage changed during sampling");

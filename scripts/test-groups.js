@@ -163,6 +163,7 @@ const TEST_GROUPS = Object.freeze({
         "runtime-native-layouts.test.js",
         "runtime-nested-selection.test.js",
         "runtime-objects.test.js",
+        "runtime-pointer-fallback.test.js",
         "runtime-refresh.test.js",
         "runtime-selection.test.js",
         "sampling-archive.test.js",
