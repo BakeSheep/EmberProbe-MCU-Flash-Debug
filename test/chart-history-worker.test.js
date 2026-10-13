@@ -1,8 +1,11 @@
 "use strict";
 const assert = require("assert");
 const fs = require("fs/promises");
+const fsSync = require("fs");
 const os = require("os");
 const path = require("path");
+const { PassThrough } = require("stream");
+const { MessageChannel } = require("worker_threads");
 const {
     ChartHistoryStore,
     BLOCK_BYTES,
@@ -13,7 +16,8 @@ const {
 } = require("../src/services/chartHistoryStore");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
 const { SamplingArchive } = require("../src/services/samplingArchive");
-const { exportHistory } = require("../src/chartHistoryWorker");
+const { exportHistory, run } = require("../src/chartHistoryWorker");
+const { deserializeError } = require("../src/services/errorEnvelope");
 async function testServiceLimits() {
     const dormant = new ChartHistoryService({ workerPath: "missing-worker.js" });
     assert.strictEqual(dormant.worker, null, "construction does not create a worker");
@@ -102,6 +106,80 @@ async function testServiceLimits() {
     generation.pending.clear();
     await generation.dispose();
     await stalled.dispose();
+}
+
+// Runs the worker's message loop in-process with a gated archive reader, so `clear` is guaranteed
+// to be handled while the restore is in flight instead of racing the file read.
+async function testRestoreCancellation(source, configuredItems) {
+    const archived = (await fs.readFile(source.dataPath)).subarray(0, source.cutoff);
+    const { port1, port2 } = new MessageChannel();
+    const pending = new Map();
+    let nextId = 0;
+    port1.on("message", ({ id, result, error }) => {
+        const request = pending.get(id);
+        if (!request) return;
+        pending.delete(id);
+        if (error) request.reject(deserializeError(error));
+        else request.resolve(result);
+    });
+    const request = (method, args) =>
+        new Promise((resolve, reject) => {
+            const id = ++nextId;
+            pending.set(id, { resolve, reject });
+            port1.postMessage({ id, method, args });
+        });
+    let onOpen = null;
+    const opened = () => new Promise((resolve) => (onOpen = resolve));
+    const createReadStream = fsSync.createReadStream;
+    fsSync.createReadStream = (file) => {
+        assert.strictEqual(file, source.dataPath);
+        const gate = new PassThrough();
+        onOpen(gate);
+        return gate;
+    };
+    const cancelled = (error) => error.code === "CHART_HISTORY_RESTORE_CANCELLED";
+    run(port2);
+    try {
+        await request("configure", ["panel", configuredItems]);
+        let reading = opened();
+        const control = request("restore", [source]);
+        (await reading).end(archived);
+        assert.strictEqual(
+            (await control).bounds.min,
+            source.lastTimestampMs,
+            "the gated reader restores archive data"
+        );
+
+        await request("clear", ["panel"]);
+        reading = opened();
+        const beforeLines = request("restore", [source]);
+        let gate = await reading;
+        await request("clear", ["panel"]);
+        gate.end(archived);
+        await assert.rejects(beforeLines, cancelled);
+        assert.strictEqual(
+            (await request("status", ["panel"])).bounds,
+            null,
+            "clear cancels asynchronous archive reconstruction"
+        );
+
+        reading = opened();
+        const afterLines = request("restore", [source]);
+        gate = await reading;
+        gate.write(archived);
+        assert.strictEqual(
+            (await request("status", ["panel"])).bounds?.min,
+            source.lastTimestampMs,
+            "every archived line is applied before end-of-file"
+        );
+        await request("clear", ["panel"]);
+        gate.end();
+        await assert.rejects(afterLines, cancelled, "a clear before end-of-file still cancels the restore");
+        assert.strictEqual((await request("status", ["panel"])).bounds, null);
+    } finally {
+        fsSync.createReadStream = createReadStream;
+        port1.close();
+    }
 }
 
 const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address: 0x20000000 }));
@@ -233,16 +311,9 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
             [42],
             "recovery excludes old observations and changed addresses"
         );
-        await worker.request("clear", ["panel"]);
-        const restoreSource = await archive.historySource("panel");
-        const restoring = worker.request("restore", [restoreSource]);
-        const cancelled = assert.rejects(restoring, (error) => error.code === "CHART_HISTORY_RESTORE_CANCELLED");
-        await worker.request("clear", ["panel"]);
-        await cancelled;
-        assert.strictEqual(
-            (await worker.request("status", ["panel"])).bounds,
-            null,
-            "clear cancels asynchronous archive reconstruction"
+        await testRestoreCancellation(
+            await archive.historySource("panel"),
+            items.map((item) => ({ ...item, historyFromMs: 2600 }))
         );
         await assert.rejects(worker.request("invalid"), /Unknown/);
         await worker.worker.terminate();
