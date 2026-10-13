@@ -588,7 +588,7 @@ class RuntimeObjectReader {
                 if (!address)
                     return {
                         kind: "class",
-                        typeName: type.typeName + " *",
+                        typeName: type.typeName || "pointer",
                         members: [],
                         valueText: "nullptr"
                     };
@@ -602,7 +602,7 @@ class RuntimeObjectReader {
                     );
                     return {
                         kind: "class",
-                        typeName: type.typeName + " *",
+                        typeName: type.typeName || "pointer",
                         members: [{ name: "value", ...value }],
                         valueText: `0x${address.toString(16)}`
                     };
@@ -611,7 +611,7 @@ class RuntimeObjectReader {
                     return {
                         kind: "scalar",
                         type: "pointer",
-                        typeName: type.typeName + " *",
+                        typeName: type.typeName || "pointer",
                         address: object.address,
                         value: address,
                         valueText: `0x${address.toString(16)}`,

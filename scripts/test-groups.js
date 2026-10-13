@@ -14,6 +14,7 @@ const TEST_GROUPS = Object.freeze({
         "elf-analyze.test.js",
         "elf-symbols.test.js",
         "enum-variables.test.js",
+        "member-roles.test.js",
         "validation.test.js"
     ]),
     integration: Object.freeze([

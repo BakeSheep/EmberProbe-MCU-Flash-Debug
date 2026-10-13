@@ -93,6 +93,32 @@
         const { unobservable, expansionHandle, ...identity } = node;
         return { ...identity, compositeLayout: expanded, expansionRoot: true };
     }
+    function formatPointer(value) {
+        const number = typeof value === "number" || typeof value === "bigint" ? Number(value) : NaN;
+        if (!Number.isSafeInteger(number) || number < 0 || number > 0xffffffff) return null;
+        return "0x" + number.toString(16).toUpperCase().padStart(8, "0");
+    }
+    // Library objects (std::atomic, std::array, std::function...) keep their meaningful value
+    // in one internal member. Return the member route to it, through bases and internal members.
+    function summaryRoute(node, summary = (node?.compositeLayout || node)?.stdSummary) {
+        if (!summary?.targets?.length) return null;
+        const pending = [{ node, route: [] }];
+        let visits = 0;
+        while (pending.length && ++visits <= 256) {
+            const { node: current, route } = pending.shift();
+            const container = current?.compositeLayout || current;
+            for (const member of container?.members || []) {
+                if (summary.targets.includes(member.name)) return [...route, member];
+                if (
+                    (member.isBase || member.memberRole || member.name === "") &&
+                    (member.compositeLayout || member.members) &&
+                    route.length < 8
+                )
+                    pending.push({ node: member, route: [...route, member] });
+            }
+        }
+        return null;
+    }
     function layoutMemberPath(path, member) {
         return member.name
             ? path + "." + member.name
@@ -548,6 +574,8 @@
         layoutUnavailableRows,
         layoutBranch,
         layoutMemberPath,
+        formatPointer,
+        summaryRoute,
         layoutArrayIndices,
         layoutExpansionError,
         createLayoutExpansionUi,

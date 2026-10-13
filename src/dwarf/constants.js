@@ -37,7 +37,8 @@ const DW_AT_name = 0x03,
     DW_AT_count = 0x37,
     DW_AT_upper_bound = 0x2f,
     DW_AT_linkage_name = 0x6e,
-    DW_AT_virtuality = 0x4c;
+    DW_AT_virtuality = 0x4c,
+    DW_AT_artificial = 0x34;
 const DW_ATE_boolean = 0x02,
     DW_ATE_float = 0x04,
     DW_ATE_signed = 0x05,
@@ -85,6 +86,7 @@ module.exports = {
     DW_AT_upper_bound,
     DW_AT_linkage_name,
     DW_AT_virtuality,
+    DW_AT_artificial,
     DW_ATE_boolean,
     DW_ATE_float,
     DW_ATE_signed,
