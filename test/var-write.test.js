@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { encodeValue, decodeValue, decodeValueText } = require("../src/elfSymbols");
 const { LiveWatchSession } = require("../src/liveWatch");
@@ -224,6 +227,14 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     });
     assert.deepStrictEqual(writeSkill.args(["--reset-permission"]), { "reset-permission": true });
     assert.throws(() => writeSkill.args(["--force"]), /Unknown argument/);
+
+    await scenario("Reject overflowing float writes", async () => {
+        const { encodeValue } = require("../src/elfSymbols");
+        assert.throws(
+            () => encodeValue("1e39", "f32"),
+            (error) => error.code === "INVALID_WRITE_VALUE"
+        );
+    });
 
     console.log("Variable write tests passed");
 })().catch((error) => {

@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const path = require("path");
 
 const assert = require("assert");
@@ -53,6 +56,21 @@ const { createFixture } = require("./helpers/service-fixture");
     } finally {
         fixture.dispose();
     }
+
+    await scenario("Reject calls and startup in untrusted workspaces", async () => {
+        let attemptedWrites = 0;
+        const untrusted = new AgentService({
+            isTrusted: () => false,
+            handlers: {
+                write: () => {
+                    attemptedWrites++;
+                }
+            }
+        });
+        await assert.rejects(untrusted.call("write"), { code: "WORKSPACE_UNTRUSTED" });
+        await assert.rejects(untrusted.start(), { code: "WORKSPACE_UNTRUSTED" });
+        assert.strictEqual(attemptedWrites, 0);
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

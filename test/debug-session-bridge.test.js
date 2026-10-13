@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const {
     DebugSessionBridge,
@@ -504,6 +506,28 @@ async function testBackgroundStatusBroadcasts(debugType) {
         quiesceBridge.dispose();
         console.log("debug session bridge tests passed");
     }
+
+    await scenario("Reject short memory reads and changed stop epochs", async () => {
+        const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
+        const bridge = new DebugSessionBridge();
+        try {
+            const session = { id: "one", customRequest: async () => ({ data: "AQ==" }) };
+            bridge.sessions.set(session.id, session);
+            bridge.paused = true;
+            bridge.capabilities.read = true;
+            await assert.rejects(bridge.readPausedMemory(0x20000000, 4), /incomplete/);
+            session.customRequest = async () => {
+                bridge.stopEpoch++;
+                return { data: "AQIDBA==" };
+            };
+            await assert.rejects(
+                bridge.readPausedMemory(0x20000000, 4),
+                (error) => error.code === "DEBUG_STATE_CHANGED"
+            );
+        } finally {
+            bridge.dispose();
+        }
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

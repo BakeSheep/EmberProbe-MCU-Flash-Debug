@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { FlashService } = require("../src/services/flashService");
 const fs = require("fs");
@@ -35,6 +38,38 @@ const { createFixture } = require("./helpers/service-fixture");
     } finally {
         fixture.dispose();
     }
+
+    await scenario("Download the selected image even when preparation replaces its file", async () => {
+        const fs = require("fs/promises");
+        const os = require("os");
+        const path = require("path");
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-flash-image-"));
+        try {
+            const image = path.join(root, "selected.elf"),
+                before = minimalElf("approved"),
+                after = minimalElf("replaced");
+            await fs.writeFile(image, before);
+            let consumed;
+            const flash = new FlashService({
+                runOpenOcd: async (_vscode, options) => {
+                    consumed = await fs.readFile(options.elf);
+                }
+            });
+            await flash.download(
+                {},
+                {
+                    elf: image,
+                    prepare: async () => {
+                        await fs.writeFile(image, after);
+                        return {};
+                    }
+                }
+            );
+            assert.deepStrictEqual(consumed, before);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

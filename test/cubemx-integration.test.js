@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
@@ -148,6 +151,45 @@ const exec = promisify(execFile);
         await bridge.stop();
         await fs.rm(root, { recursive: true, force: true });
     }
+
+    await scenario("Parse CubeMX CLI query and candidate options", async () => {
+        const { args } = require("../skills/mcu-cubemx/scripts/cubemx");
+        // CLI args validation
+        assert.strictEqual(args(["--check", "--deep"]).deep, true);
+        assert.strictEqual(args(["--status", "--operation-id", "op_123"])["operation-id"], "op_123");
+        assert.strictEqual(args(["--inspect", "--prefix", "USART"]).prefix, "USART");
+        assert.strictEqual(
+            args(["--generate-candidate", "--output", "out.ioc", "--changes-file", "c.json"])["changes-file"],
+            "c.json"
+        );
+    });
+
+    await scenario("Persist CLI request identity until its outcome is acknowledged", async () => {
+        const { resolveRequestId, requestFingerprint, finishRequest } = require("../skills/mcu-cubemx/scripts/cubemx");
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-cli-requests-"));
+        try {
+            const cliWorkspace = path.join(root, "cli-workspace");
+            await fs.mkdir(cliWorkspace, { recursive: true });
+            const cliParams = { candidatePath: "/x/candidate.ioc", confirmationId: "c1", remember: false };
+            const firstId = resolveRequestId(cliWorkspace, "start", cliParams, 1000000);
+            const retryId = resolveRequestId(cliWorkspace, "start", cliParams, 1000000 + 60 * 1000);
+            assert.strictEqual(retryId, firstId); // reused inside the TTL window
+            const expiredId = resolveRequestId(cliWorkspace, "start", cliParams, 1000000 + 16 * 60 * 1000);
+            assert.strictEqual(expiredId, firstId); // unknown outcomes never expire into a new operation
+            finishRequest(cliWorkspace, "start", cliParams);
+            assert.notStrictEqual(resolveRequestId(cliWorkspace, "start", cliParams), firstId);
+            const otherParams = { ...cliParams, confirmationId: "c2" };
+            const otherId = resolveRequestId(cliWorkspace, "start", otherParams, 1000000 + 16 * 60 * 1000 + 1);
+            assert.notStrictEqual(otherId, expiredId); // different parameters -> different fingerprint
+            const storedRequests = JSON.parse(
+                await fs.readFile(path.join(cliWorkspace, ".emberprobe-cubemx-audit", "cubemx-requests.json"), "utf8")
+            );
+            assert(storedRequests[requestFingerprint("start", otherParams)]);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
     console.log("CubeMX sidebar, startup detection and Bridge CLI integration tests passed");
 })().catch((error) => {
     console.error(error);

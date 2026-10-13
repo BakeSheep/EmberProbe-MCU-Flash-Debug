@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { MAX_COMPOSITE_DEPTH } = require("../src/dwarf/layoutLimits");
 const { render } = require("./helpers/render-webview");
@@ -413,6 +415,94 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
     } finally {
         lazy.close();
     }
+
+    await scenario("Refresh graph import choices and retain selections or show ELF failures", async () => {
+        const graph = render(getLiveWatchContent({}, "en"));
+        try {
+            const P = loadProvider();
+            const p = Object.create(P.prototype);
+            const scalar = (name) => ({ name, address: 0x20000000, size: 4, type: "u32", watchType: "u32" });
+            const entry = { ready: true, watchKey: "graph", latestSamples: new Map(), post: (m) => graph.send(m) };
+            p._scalarWatchList = () => [];
+            p._samplingStatus = () => ({});
+            p.readElfSymbols = () => ({ symbols: [scalar("old"), scalar("new")], warnings: [] });
+            graph.document.getElementById("import").click();
+            graph.send({ type: "variablesList", symbols: [scalar("old")] });
+            graph.document.querySelector("#impList input").checked = true;
+            p._syncGraphTarget(entry);
+            assert.deepStrictEqual(
+                Array.from(graph.window.allSymbols, (s) => s.name),
+                ["old", "new"]
+            );
+            assert.ok(graph.document.getElementById("impList").textContent.includes("new"));
+            assert.ok(graph.document.querySelector("#impList input").checked, "refresh retains selected names");
+            p.readElfSymbols = () => {
+                throw Error("ELF unavailable");
+            };
+            p._syncGraphTarget(entry);
+            assert.equal(graph.document.querySelectorAll("#impList input").length, 0);
+            assert.equal(graph.document.getElementById("importDiagnostics").hidden, false);
+            assert.ok(graph.document.getElementById("importDiagnostics").textContent.includes("ELF unavailable"));
+            assert.ok(graph.document.getElementById("elfDiagnostics").textContent.includes("ELF unavailable"));
+            graph.assertHealthy();
+        } finally {
+            graph.close();
+        }
+    });
+
+    await scenario("Plot a composite bitfield through member selection and scalar decoding", async () => {
+        const { LiveWatchService } = require("../src/services/liveWatchService");
+        const { normalizeWatchList } = require("../src/validation");
+        const elf = require("../src/elfSymbols");
+        const graph = render(getLiveWatchContent({}, "en"));
+        try {
+            // Exercise the member button, host normalization and actual scalar decoding, including bitfields.
+            const symbol = {
+                name: "sensor",
+                address: 0x20000000,
+                size: 4,
+                isComposite: true,
+                compositeLayout: {
+                    kind: "struct",
+                    byteSize: 4,
+                    members: [{ name: "x", offset: 0, watchType: "u32", byteSize: 4, bitSize: 3, bitOffset: 4 }]
+                }
+            };
+            graph.window.addSymbol(symbol);
+            graph.send({
+                type: "liveCompositeSample",
+                samples: [
+                    {
+                        name: "sensor",
+                        tree: {
+                            kind: "struct",
+                            members: [{ name: "x", value: 5 }]
+                        }
+                    }
+                ]
+            });
+            assert.equal(graph.window.chartData().length, 0);
+            graph.document.querySelector(".member-swatch").click();
+            const watch = normalizeWatchList(graph.messages.at(-1).items, [symbol]);
+            const leaf = watch.find((item) => item.name === "sensor.x");
+            assert.equal(leaf.bitSize, 3);
+            graph.send({ type: "watchList", items: watch });
+            const service = new LiveWatchService(elf);
+            const decoded = service.decodeConsumerSamples(
+                [{ name: leaf.name, bytes: [80, 0, 0, 0] }],
+                1000,
+                new Map([[leaf.name, leaf]]),
+                null,
+                new Map()
+            );
+            graph.send({ type: "liveSample", samples: decoded.scalarSamples });
+            assert.equal(graph.window.chartData()[0].arr[0].v, 5);
+            graph.assertHealthy();
+        } finally {
+            graph.close();
+        }
+    });
+
     console.log("Live-watch recursive member search and bounded lazy layout tests passed");
 })().catch((error) => {
     console.error(error);

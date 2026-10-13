@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
@@ -58,6 +61,85 @@ const { args } = require("../skills/mcu-cubemx/scripts/cubemx");
     } finally {
         await fs.rm(root, { recursive: true, force: true });
     }
+
+    await scenario("Validate IP and pin sequences, categorized diffs and candidate deletions", async () => {
+        const {
+            deriveCandidate,
+            categorizeChanges,
+            validateStructuralIoc
+        } = require("../src/services/cubemxCandidate");
+        {
+            const structuralCases = [
+                {
+                    name: "contiguous IP sequence",
+                    values: { "Mcu.IPNb": "2", "Mcu.IP0": "RCC", "Mcu.IP1": "USART1" },
+                    valid: true
+                },
+                { name: "gap in IP sequence", values: { "Mcu.IPNb": "2", "Mcu.IP0": "RCC" }, valid: false },
+                {
+                    name: "duplicate IP",
+                    values: { "Mcu.IPNb": "2", "Mcu.IP0": "RCC", "Mcu.IP1": "RCC" },
+                    valid: false
+                },
+                {
+                    name: "orphaned IP",
+                    values: { "Mcu.IPNb": "1", "Mcu.IP0": "RCC", "Mcu.IP1": "USART1" },
+                    valid: false
+                },
+                {
+                    name: "contiguous pin sequence",
+                    values: { "Mcu.PinsNb": "2", "Mcu.Pin0": "PA9", "Mcu.Pin1": "PA10" },
+                    valid: true
+                },
+                { name: "gap in pin sequence", values: { "Mcu.PinsNb": "2", "Mcu.Pin0": "PA9" }, valid: false },
+                {
+                    name: "duplicate pin",
+                    values: { "Mcu.PinsNb": "2", "Mcu.Pin0": "PA9", "Mcu.Pin1": "PA9" },
+                    valid: false
+                },
+                {
+                    name: "orphaned pin",
+                    values: { "Mcu.PinsNb": "1", "Mcu.Pin0": "PA9", "Mcu.Pin1": "PA10" },
+                    valid: false
+                }
+            ];
+            for (const { name, values, valid } of structuralCases) {
+                if (valid) assert.doesNotThrow(() => validateStructuralIoc(values), name);
+                else
+                    assert.throws(
+                        () => validateStructuralIoc(values),
+                        (err) => err.code === "CUBEMX_IOC_INVALID",
+                        name
+                    );
+            }
+
+            // Categorized diff summary
+            const diffList = [
+                { key: "Mcu.IP0", previous: null, requested: "RCC" },
+                { key: "PA9.Signal", previous: null, requested: "USART1_TX" },
+                { key: "RCC.Clock", previous: null, requested: "168MHz" },
+                { key: "ProjectManager.TargetToolchain", previous: null, requested: "CMake" },
+                { key: "Custom.Setting", previous: null, requested: "1" }
+            ];
+            const categorized = categorizeChanges(diffList);
+            for (const category of ["ips", "pins", "clock", "metadata", "other"]) {
+                assert.strictEqual(categorized[category].length, 1, `categorized diff: ${category}`);
+            }
+
+            // deriveCandidate with deletions
+            const orig = "a=1\nb=2\nc=3\n";
+            const candidateResult = deriveCandidate(orig, { d: "4" }, ["b"]);
+            assert.strictEqual(candidateResult.content, "a=1\nc=3\nd=4\n");
+            assert(candidateResult.changes.some((c) => c.key === "b" && c.action === "deleted"));
+
+            // Reject updating and deleting the same key
+            assert.throws(
+                () => deriveCandidate(orig, { a: "new" }, ["a"]),
+                (err) => err.code === "INVALID_ARGUMENT"
+            );
+        }
+    });
+
     console.log("Candidate preservation and independent permission queries passed");
 })().catch((error) => {
     console.error(error);

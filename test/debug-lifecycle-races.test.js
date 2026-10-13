@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { EventEmitter } = require("events");
 const { MiClient } = require("../src/debug/mi");
@@ -250,6 +252,28 @@ const running = '*running,thread-id="all"';
         assert.strictEqual(initialized.body.supportsFunctionBreakpoints, true);
         assert.deepStrictEqual(commands, ["-gdb-exit"]);
     }
+
+    await scenario("Escalate failed MI child termination from SIGTERM to SIGKILL", async () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = new EventEmitter();
+        child.exitCode = null;
+        child.pid = 100;
+        const kills = [];
+        child.kill = (signal) => {
+            kills.push(signal || "SIGTERM");
+        };
+        const mi = new MiClient({ spawn: () => child, killGraceMs: 5 });
+        try {
+            mi.start("fake");
+            mi.fail(Error("Failed"));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            assert.deepStrictEqual(kills, ["SIGTERM", "SIGKILL"]);
+        } finally {
+            child.emit("exit");
+        }
+    });
 
     console.log("Debug execution epochs, bounded stack paging and shutdown cancellation passed");
 })().catch((error) => {

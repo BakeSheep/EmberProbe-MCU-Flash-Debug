@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const os = require("os");
@@ -463,6 +466,641 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
     } finally {
         await fs.rm(root, { recursive: true, force: true });
     }
+
+    await scenario("Retain project ownership while CubeMX process exit is unconfirmed", async () => {
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-cubemx-exit-"));
+        try {
+            const cubeChild = new EventEmitter();
+            cubeChild.stdout = new EventEmitter();
+            cubeChild.stderr = new EventEmitter();
+            cubeChild.pid = 101;
+            const cubeKills = [];
+            cubeChild.kill = (signal) => cubeKills.push(signal || "SIGTERM");
+            const cube = new CubeMxService({ storage: { get() {} }, storageDir: root });
+            cube.jobs.set(root, { controller: new AbortController() });
+            await assert.rejects(
+                runCubeMx({ executable: "fake", platform: "linux" }, root, "project.ioc", {
+                    spawn: () => cubeChild,
+                    timeoutMs: 5,
+                    killGraceMs: 5,
+                    exitTimeoutMs: 30,
+                    onExitUnconfirmed: (exited, retry) => cube._retainProcess(root, exited, retry)
+                }),
+                { code: "CUBEMX_EXIT_UNCONFIRMED" }
+            );
+            await cube._finishJob(root, "operation");
+            assert.ok(cube.jobs.has(root), "retain project ownership while process is alive");
+            cube.cancel();
+            assert.ok(cubeKills.includes("SIGKILL"));
+            cubeChild.emit("close", 1);
+            await tick();
+            assert.strictEqual(cube.jobs.has(root), false);
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
+    await scenario(
+        "Query asynchronous operations, generation failures, project drift and request deduplication",
+        async () => {
+            const { createLogMonitor } = require("../src/services/cubemxLog");
+            const { applyFiles } = require("../src/services/cubemxProject");
+            const paramsHash = (params) =>
+                hash(
+                    JSON.stringify({
+                        candidatePath: params.candidatePath || "",
+                        content: params.content || "",
+                        mode: params.mode || "",
+                        confirmationId: params.confirmationId || "",
+                        remember: !!params.remember
+                    })
+                );
+            async function until(condition, timeoutMs = 2000) {
+                const startedAt = Date.now();
+                while (!condition()) {
+                    if (Date.now() - startedAt > timeoutMs) throw new Error("condition not met in time");
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+            }
+            const sampleIoc = [
+                "Mcu.Name=STM32F407VGTx",
+                "Mcu.CPN=STM32F407VGT6",
+                "Mcu.IPNb=2",
+                "Mcu.IP0=RCC",
+                "Mcu.IP1=USART1",
+                "Mcu.PinNb=2",
+                "Mcu.Pin0=PA9",
+                "Mcu.Pin1=PA10",
+                "PA9.Signal=USART1_TX",
+                "PA10.Signal=USART1_RX",
+                "MxCube.Version=6.12.0",
+                "ProjectManager.ProjectName=demo",
+                "ProjectManager.TargetToolchain=CMake",
+                "ProjectManager.KeepUserCode=true",
+                "ProjectManager.UnderRoot=true",
+                "ProjectManager.FirmwarePackage=STM32Cube_FW_F4_V1.28.0",
+                "USART1.BaudRate=115200",
+                ""
+            ].join("\n");
+            const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cubemx-operations-")));
+            try {
+                const project = path.join(root, "demo");
+                await fs.mkdir(path.join(project, "Core", "Src"), { recursive: true });
+                const ioc = path.join(project, "demo.ioc");
+                await fs.writeFile(ioc, sampleIoc);
+                const main = path.join(project, "Core", "Src", "main.c");
+                const userCode = "/* USER CODE BEGIN 0 */\nint count = 0;\n/* USER CODE END 0 */\n";
+                await fs.writeFile(main, userCode + "int main() { return 0; }\n");
+                await fs.writeFile(path.join(project, ".mxproject"), "SourceFiles=Core/Src/main.c;\n");
+
+                const storageDir = path.join(root, "storage");
+                await fs.mkdir(storageDir, { recursive: true });
+
+                const service = new CubeMxService({
+                    platform: "win32",
+                    storage: { get: () => undefined, update: async () => {} },
+                    storageDir,
+                    config: () => ({ iocPath: ioc }),
+                    roots: () => [project],
+                    installation: async () => ({ version: "6.12.0", executable: "STM32CubeMX.exe" }),
+                    run: async (_tool, directory) => {
+                        const target = path.join(directory, "Core", "Src", "main.c");
+                        await fs.mkdir(path.dirname(target), { recursive: true });
+                        await fs.writeFile(target, userCode + "int main() { return 0; }\n");
+                        const logPath = path.join(directory, ".emberprobe-cubemx-output.log");
+                        await fs.writeFile(logPath, "early warning\n" + "x".repeat(1024 * 1024 + 100));
+                        return {
+                            generatedFiles: [target],
+                            logPath,
+                            warnings: ["ordinary warning"],
+                            log: "project generate\nOK\nexit\n"
+                        };
+                    }
+                });
+
+                for (const message of [
+                    "[WARN] Required firmware package not installed",
+                    "[ERROR] generation failed; see warning details"
+                ]) {
+                    const monitor = createLogMonitor();
+                    monitor.stdout(Buffer.from(message + "\nproject generate\nOK\nexit\n"));
+                    assert(monitor.finish().failureLine, "blocking semantics must win over warnings");
+                }
+                const appFile = path.join(project, "application.c");
+                await fs.writeFile(appFile, "int app = 1;\n");
+                // Quick check with no manifest -> status: unknown
+                const checkNoManifest = await service.check({ mode: "quick" });
+                assert.strictEqual(checkNoManifest.status, "unknown");
+
+                // Inspect with summary: true (default for CLI) — summary stays compact without a prefix
+                const summaryInspect = await service.inspect({ summary: true });
+                assert(summaryInspect.summary);
+                assert.strictEqual(summaryInspect.full, false);
+                assert.strictEqual(summaryInspect.content, undefined);
+                assert.strictEqual(summaryInspect.values, undefined);
+
+                // Inspect with prefix filter
+                const prefixInspect = await service.inspect({ prefix: "USART1" });
+                assert.strictEqual(prefixInspect.values["USART1.BaudRate"], "115200");
+                assert.strictEqual(prefixInspect.values["Mcu.Name"], undefined);
+
+                // Prepare with summary
+                const prep = await service.prepare({ summary: true });
+                assert(prep.changesSummary);
+                assert.strictEqual(prep.verification.propertiesSyntax, "passed");
+                assert.strictEqual(prep.verification.structuralCheck, "passed");
+
+                // Test start -> status asynchronous flow
+                const startResult = await service.start({
+                    confirmationId: prep.confirmationId,
+                    requestId: "req_test_001"
+                });
+                assert(startResult.operationId);
+                assert.strictEqual(startResult.status, "in_progress");
+
+                // Deduplication: same requestId with same params returns existing operation
+                const deduplicated = await service.start({
+                    confirmationId: prep.confirmationId,
+                    requestId: "req_test_001"
+                });
+                assert.strictEqual(deduplicated.deduplicated, true);
+                assert.strictEqual(deduplicated.operationId, startResult.operationId);
+
+                // Same requestId with different params rejected
+                await assert.rejects(
+                    service.start({
+                        confirmationId: "different_id",
+                        requestId: "req_test_001"
+                    }),
+                    (err) => err.code === "CUBEMX_REQUEST_CONFLICT"
+                );
+
+                // Wait for active execution to finish
+                if (service.activeExecutions.has(startResult.operationId)) {
+                    await service.activeExecutions.get(startResult.operationId);
+                }
+
+                // Query status by operationId
+                const statusResult = await service.status({ operationId: startResult.operationId });
+                assert.strictEqual(statusResult.status, "succeeded");
+                assert.strictEqual(statusResult.sourceProjectStatus, "committed");
+
+                // Quick check after generation commit -> consistent
+                const checkAfter = await service.check({ mode: "quick" });
+                assert.strictEqual(checkAfter.status, "consistent");
+                assert.strictEqual(checkAfter.drift.length, 0);
+
+                // Edit user code block in main.c
+                await fs.writeFile(
+                    main,
+                    "/* USER CODE BEGIN 0 */\nint count = 999;\n/* USER CODE END 0 */\nint main() { return 0; }\n"
+                );
+                const checkUserEdit = await service.check({ mode: "quick" });
+                assert.strictEqual(checkUserEdit.status, "consistent");
+                assert.strictEqual(checkUserEdit.drift.length, 0);
+                assert.strictEqual(checkUserEdit.userCodeChanges.length, 1);
+                assert.strictEqual(checkUserEdit.userCodeChanges[0].file, path.join("Core", "Src", "main.c"));
+                assert.deepStrictEqual(checkUserEdit.userCodeChanges[0].blocks, ["0"]);
+
+                // Quick check detects .ioc configuration changes against manifest
+                const iocFilePath = path.join(project, "demo.ioc");
+                const origIocContent = await fs.readFile(iocFilePath, "utf8");
+                await fs.writeFile(iocFilePath, origIocContent + "Custom.Setting=changed\n");
+                const checkIocEdit = await service.check({ mode: "quick" });
+                assert.strictEqual(checkIocEdit.status, "drift_detected");
+                assert.strictEqual(checkIocEdit.iocChanged, true);
+                assert(checkIocEdit.configChanges.some((c) => c.key === "Custom.Setting" && c.requested === "changed"));
+                await fs.writeFile(iocFilePath, origIocContent);
+
+                // Deep check (synchronous wait mode) and verify stored result completeness
+                const deepCheck = await service.check({ mode: "deep", wait: true });
+                assert.strictEqual(deepCheck.status, "consistent");
+                const deepOp = await service.store.getOperation(project, deepCheck.operationId);
+                assert(Array.isArray(deepOp.result.userCodeChanges));
+                assert(Array.isArray(deepOp.result.unclassifiedChanges));
+                assert(Array.isArray(deepOp.result.staleCandidates));
+
+                // Decoupled status: works even if platform is linux or toolchain not installed
+                const nonWinService = new CubeMxService({
+                    ...service.options,
+                    platform: "linux",
+                    installation: async () => {
+                        throw new Error("Toolchain should not be queried for status");
+                    }
+                });
+                const nonWinStatus = await nonWinService.status();
+                assert.strictEqual(nonWinStatus.operationId, deepCheck.operationId);
+
+                // Concurrency project lock check
+                service.jobs.set(project, { controller: new AbortController(), operationId: "fake", type: "generate" });
+                await assert.rejects(service.check({ mode: "deep" }), (err) => err.code === "CUBEMX_BUSY");
+                service.jobs.delete(project);
+
+                // Test cancel by operation ID
+                const fakeController = new AbortController();
+                service.jobs.set(project, {
+                    controller: fakeController,
+                    operationId: "op_cancel_me",
+                    type: "generate"
+                });
+                const cancelRes = service.cancel({ operationId: "op_cancel_me" });
+                assert.strictEqual(cancelRes.cancelled, 1);
+                assert.strictEqual(fakeController.signal.aborted, true);
+                service.jobs.delete(project);
+
+                await scenario("Merge candidate updates and deletions from changes files", async () => {
+                    // Candidate generation with --changes-file
+                    const changesFile = path.join(project, "my-changes.json");
+                    await fs.writeFile(changesFile, JSON.stringify({ "USART1.BaudRate": "9600" }));
+                    const candidateOutput = await service.generateCandidate({
+                        outputPath: "cand_output.ioc",
+                        changesFile: "my-changes.json"
+                    });
+                    assert(candidateOutput.candidatePath);
+                    assert(candidateOutput.changes.some((c) => c.key === "USART1.BaudRate" && c.requested === "9600"));
+
+                    // Candidate generation with --changes-file updates object and CLI deletions merged
+                    const changesFileWithUpdates = path.join(project, "updates-only.json");
+                    await fs.writeFile(
+                        changesFileWithUpdates,
+                        JSON.stringify({ updates: { "USART1.BaudRate": "19200" } })
+                    );
+                    const candidateMerged = await service.generateCandidate({
+                        outputPath: "cand_merged.ioc",
+                        changesFile: "updates-only.json",
+                        deletions: ["PA10.Signal"]
+                    });
+                    assert(candidateMerged.changes.some((c) => c.key === "USART1.BaudRate"));
+                    assert(candidateMerged.changes.some((c) => c.key === "PA10.Signal" && c.action === "deleted"));
+                });
+                await scenario("Replay a failed request without creating a duplicate operation", async () => {
+                    // Idempotency: execute with already failed requestId rejects rather than creating duplicate
+                    const { hash } = require("../src/services/cubemxProject");
+                    const failedParams = {
+                        requestId: "req_failed_retry",
+                        confirmationId: "auto-trusted"
+                    };
+                    const failedParamsHash = hash(
+                        JSON.stringify({
+                            candidatePath: "",
+                            content: "",
+                            mode: "",
+                            confirmationId: "auto-trusted",
+                            remember: false
+                        })
+                    );
+                    await service.store.createOperation(project, {
+                        type: "generate",
+                        requestId: "req_failed_retry",
+                        requestParamsHash: failedParamsHash,
+                        status: "failed",
+                        diagnostic: "Simulated prior failure"
+                    });
+                    await assert.rejects(
+                        service.execute(failedParams),
+                        (err) =>
+                            err.code === "CUBEMX_GENERATION_FAILED" && err.message.includes("Simulated prior failure")
+                    );
+                    const allOps = await service.store.getOperations(project);
+                    assert.strictEqual(allOps.filter((o) => o.requestId === "req_failed_retry").length, 1);
+                });
+
+                // Quick-check classification branches (against the committed manifest)
+
+                const latest = await service.status({ operationId: startResult.operationId });
+                assert((await fs.stat(latest.logPath)).size > 1024 * 1024, "full streamed log survives success");
+                assert.deepStrictEqual(latest.result.warnings, ["ordinary warning"]);
+                const mainRel = path.join("Core", "Src", "main.c");
+                const mainCOriginal = await fs.readFile(main, "utf8"); // user code already edited (count=999)
+                const mxprojectPath = path.join(project, ".mxproject");
+                const mxprojectOriginal = await fs.readFile(mxprojectPath, "utf8");
+
+                await fs.writeFile(appFile, "int app = 2;\n");
+                assert.strictEqual(
+                    (await service.check()).status,
+                    "consistent",
+                    "ordinary application changes are not generation drift"
+                );
+                await scenario("Detect missing files recorded by the generation manifest", async () => {
+                    // Missing manifest file
+                    await fs.rm(mxprojectPath);
+                    const checkMissing = await service.check({ mode: "quick" });
+                    assert.strictEqual(checkMissing.status, "drift_detected");
+                    assert(
+                        checkMissing.drift.some((entry) => entry.file === ".mxproject" && entry.action === "missing")
+                    );
+                    await fs.writeFile(mxprojectPath, mxprojectOriginal);
+                });
+                await scenario("Classify corrupt user code markers without guessing", async () => {
+                    // Corrupted USER CODE markers -> unclassifiable, never guessed
+                    await fs.writeFile(main, mainCOriginal.replace("/* USER CODE END 0 */\n", ""));
+                    const checkCorrupted = await service.check({ mode: "quick" });
+                    assert.strictEqual(checkCorrupted.status, "drift_detected");
+                    assert.strictEqual(checkCorrupted.unclassifiedChanges.length, 1);
+                    assert.strictEqual(checkCorrupted.unclassifiedChanges[0].reason, "mismatched_marker_count");
+                    await fs.writeFile(main, mainCOriginal);
+                });
+                await scenario("Distinguish generated-region drift from user edits", async () => {
+                    // Generated-region edit -> drift (not a user-code change)
+                    await fs.writeFile(main, mainCOriginal.replace("int main()", "int main_renamed()"));
+                    const checkGeneratedEdit = await service.check({ mode: "quick" });
+                    assert.strictEqual(checkGeneratedEdit.status, "drift_detected");
+                    assert(
+                        checkGeneratedEdit.drift.some((entry) => entry.file === mainRel && entry.action === "modified")
+                    );
+                    assert.strictEqual(checkGeneratedEdit.userCodeChanges.length, 0);
+                    await fs.writeFile(main, mainCOriginal);
+                });
+                await scenario("Identify changed user code blocks", async () => {
+                    // User-code edit names the changed block(s)
+                    await fs.writeFile(
+                        main,
+                        mainCOriginal.replace("int count = 999;", "int count = 777;\nint added = 1;")
+                    );
+                    const checkBlocks = await service.check({ mode: "quick" });
+                    assert.strictEqual(checkBlocks.status, "consistent");
+                    assert.deepStrictEqual(checkBlocks.userCodeChanges[0].blocks, ["0"]);
+                    await fs.writeFile(main, mainCOriginal);
+                });
+                // Quick check must work without a usable CubeMX installation and off Windows
+                const noToolService = new CubeMxService({
+                    ...service.options,
+                    platform: "linux",
+                    installation: async () => {
+                        throw new Error("CubeMX must not be required for a quick check");
+                    }
+                });
+                const quickNoTool = await noToolService.check({ mode: "quick" });
+                assert.strictEqual(quickNoTool.status, "consistent");
+
+                // Deep check as a queryable background operation
+
+                const startedDeep = await service.check({ mode: "deep" });
+                assert.strictEqual(startedDeep.status, "in_progress");
+                assert(startedDeep.operationId);
+                await service.activeExecutions.get(startedDeep.operationId);
+                const deepBackgroundRecord = await service.store.getOperation(project, startedDeep.operationId);
+                assert.strictEqual(deepBackgroundRecord.status, "succeeded");
+                assert.strictEqual(deepBackgroundRecord.result.status, "consistent");
+
+                await assert.rejects(service.check({ mode: "bogus" }), (err) => err.code === "INVALID_ARGUMENT");
+
+                // Generation failure paths on an isolated second project
+
+                const project2 = path.join(root, "demo2");
+                await fs.mkdir(path.join(project2, "Core", "Src"), { recursive: true });
+                const ioc2 = path.join(project2, "demo2.ioc");
+                const sampleIoc2 = sampleIoc.replace("demo", "demo2");
+                await fs.writeFile(ioc2, sampleIoc2);
+                const main2 = path.join(project2, "Core", "Src", "main.c");
+                await fs.writeFile(main2, userCode + "int main() { return 0; }\n");
+                await fs.writeFile(path.join(project2, ".mxproject"), "SourceFiles=Core/Src/main.c;\n");
+                await fs.writeFile(path.join(project2, "notes.txt"), "user notes\n");
+
+                const standardRun = async (_tool, directory) => {
+                    const target = path.join(directory, "Core", "Src", "main.c");
+                    await fs.mkdir(path.dirname(target), { recursive: true });
+                    await fs.writeFile(target, userCode + "int main() { return 0; }\n");
+                    return { generatedFiles: [target], log: "project generate\nOK\nexit\n" };
+                };
+
+                const service2 = new CubeMxService({
+                    platform: "win32",
+                    storage: { get: () => undefined, update: async () => {} },
+                    storageDir: path.join(root, "storage2"),
+                    config: () => ({ iocPath: ioc2 }),
+                    roots: () => [project2],
+                    installation: async () => ({ version: "6.12.0", executable: "STM32CubeMX.exe" }),
+                    run: standardRun
+                });
+
+                await scenario("Report committed sources when saving the manifest fails", async () => {
+                    // Manifest save failure: source files are committed, report must not pretend retry
+                    const recordFailService = new CubeMxService({ ...service2.options });
+                    recordFailService.store.saveManifest = async () => {
+                        throw new Error("disk full");
+                    };
+                    const candidateIocRecordFail = sampleIoc2.replace("115200", "9600");
+                    const prepRecordFail = await recordFailService.prepare({ content: candidateIocRecordFail });
+                    await assert.rejects(
+                        recordFailService.execute({
+                            content: candidateIocRecordFail,
+                            confirmationId: prepRecordFail.confirmationId
+                        }),
+                        (err) => err.code === "CUBEMX_RECORD_SAVE_FAILED" && err.details?.committed === true
+                    );
+                    assert.strictEqual(await fs.readFile(ioc2, "utf8"), candidateIocRecordFail);
+                    const recordFailOps = await recordFailService.store.getOperations(project2);
+                    const recordFailRec = recordFailOps[recordFailOps.length - 1];
+                    assert.strictEqual(recordFailRec.status, "failed");
+                    assert.strictEqual((await recordFailService.status()).error.code, "CUBEMX_RECORD_SAVE_FAILED");
+                    assert.strictEqual(recordFailRec.sourceProjectStatus, "committed");
+                });
+                await scenario("Report unknown source state after readback verification fails", async () => {
+                    // Readback verification failure -> source project status unknown
+                    const readbackService = new CubeMxService({ ...service2.options });
+                    readbackService.options.applyFiles = async (rootDir, before, after, backup) => {
+                        const changed = await applyFiles(rootDir, before, after, backup);
+                        await fs.writeFile(path.join(rootDir, "Core", "Src", "main.c"), "tampered content\n");
+                        return changed;
+                    };
+                    const candidateIocReadback = sampleIoc2.replace("115200", "4800");
+                    const prepReadback = await readbackService.prepare({ content: candidateIocReadback });
+                    await assert.rejects(
+                        readbackService.execute({
+                            content: candidateIocReadback,
+                            confirmationId: prepReadback.confirmationId
+                        }),
+                        (err) => err.code === "CUBEMX_WRITE_FAILED" && err.details?.file === mainRel
+                    );
+                    const readbackOps = await readbackService.store.getOperations(project2);
+                    const readbackRec = readbackOps[readbackOps.length - 1];
+                    assert.strictEqual(readbackRec.status, "failed");
+                    assert.strictEqual(readbackRec.sourceProjectStatus, "unknown");
+                    await fs.writeFile(main2, userCode + "int main() { return 0; }\n");
+                });
+                await scenario("Preserve concurrent pre-write changes without claiming rollback", async () => {
+                    // Pre-write project change is "unchanged", never misreported as rolledBack
+                    const preWriteService = new CubeMxService({ ...service2.options });
+                    const originalRun2 = preWriteService.options.run;
+                    preWriteService.options.run = async (...runArgs) => {
+                        await fs.appendFile(path.join(project2, "notes.txt"), "concurrent edit during run\n");
+                        return originalRun2(...runArgs);
+                    };
+                    const candidateIocPreWrite = sampleIoc2.replace("115200", "19200");
+                    const prepPreWrite = await preWriteService.prepare({ content: candidateIocPreWrite });
+                    await assert.rejects(
+                        preWriteService.execute({
+                            content: candidateIocPreWrite,
+                            confirmationId: prepPreWrite.confirmationId
+                        }),
+                        (err) => err.code === "CUBEMX_PROJECT_CHANGED" && err.details?.condition === "pre_write_change"
+                    );
+                    const preWriteOps = await preWriteService.store.getOperations(project2);
+                    const preWriteRec = preWriteOps[preWriteOps.length - 1];
+                    assert.strictEqual(preWriteRec.status, "failed");
+                    assert.strictEqual(preWriteRec.sourceProjectStatus, "unchanged");
+                });
+                await scenario("Claim the project lock before awaiting operation persistence", async () => {
+                    // Project lock is claimed synchronously: a concurrent start is deterministically busy
+                    const raceService = new CubeMxService({ ...service2.options });
+                    const origCreate = raceService.store.createOperation.bind(raceService.store);
+                    raceService.store.createOperation = async (...createArgs) => {
+                        await new Promise((resolve) => setTimeout(resolve, 50));
+                        return origCreate(...createArgs);
+                    };
+                    const candidateIocRace = sampleIoc2.replace("115200", "2400");
+                    const prepRace = await raceService.prepare({ content: candidateIocRace });
+                    const firstStart = raceService.start({
+                        content: candidateIocRace,
+                        confirmationId: prepRace.confirmationId,
+                        requestId: "req_race_a"
+                    });
+                    await until(() => raceService.jobs.has(project2));
+                    await assert.rejects(
+                        raceService.start({
+                            content: candidateIocRace,
+                            confirmationId: prepRace.confirmationId,
+                            requestId: "req_race_b"
+                        }),
+                        (err) => err.code === "CUBEMX_BUSY"
+                    );
+                    const raceStarted = await firstStart;
+                    assert(raceStarted.operationId);
+                    await raceService.activeExecutions.get(raceStarted.operationId);
+                });
+
+                // Deep-check drift, invalidation, and failure diagnostics
+
+                await fs.writeFile(main2, userCode + "int main() { return 0; }\nint drifted = 1;\n");
+                await fs.writeFile(
+                    path.join(project2, "Core", "Src", "usart.c"),
+                    "leftover from a removed peripheral\n"
+                );
+                await fs.writeFile(path.join(project2, "README.md"), "root user doc\n");
+                // CubeMX regenerates in the staged copy and removes sources it no longer generates.
+                service2.options.run = async (_tool, directory) => {
+                    const target = path.join(directory, "Core", "Src", "main.c");
+                    await fs.mkdir(path.dirname(target), { recursive: true });
+                    await fs.writeFile(target, userCode + "int main() { return 0; }\n");
+                    await fs.rm(path.join(directory, "Core", "Src", "usart.c"), { force: true });
+                    return { generatedFiles: [target], log: "project generate\nOK\nexit\n" };
+                };
+                const deepDrift = await service2.check({ mode: "deep", wait: true });
+                assert.strictEqual(deepDrift.status, "drift_detected");
+                assert(deepDrift.drift.some((entry) => entry.file === mainRel && entry.action === "modified"));
+                assert.deepStrictEqual(deepDrift.staleCandidates, [
+                    { file: path.join("Core", "Src", "usart.c"), action: "not_regenerated" }
+                ]);
+                service2.options.run = standardRun;
+
+                await scenario("Invalidate a deep check when its source changes concurrently", async () => {
+                    // Concurrent source edit during the check invalidates the result
+                    await fs.writeFile(main2, userCode + "int main() { return 0; }\n");
+                    await fs.rm(path.join(project2, "Core", "Src", "usart.c"));
+                    service2.options.run = async (_tool, directory) => {
+                        const target = path.join(directory, "Core", "Src", "main.c");
+                        await fs.mkdir(path.dirname(target), { recursive: true });
+                        await fs.writeFile(target, userCode + "int main() { return 0; }\n");
+                        await fs.appendFile(main2, "/* concurrent edit */\n");
+                        return { generatedFiles: [target], log: "project generate\nOK\nexit\n" };
+                    };
+                    const deepInvalidated = await service2.check({ mode: "deep", wait: true });
+                    assert.strictEqual(deepInvalidated.status, "invalidated");
+                    assert.strictEqual(deepInvalidated.message, "Source project changed during deep check");
+                    const invalidatedRec = await service2.store.getOperation(project2, deepInvalidated.operationId);
+                    assert.strictEqual(invalidatedRec.status, "succeeded");
+                    assert.strictEqual(invalidatedRec.result.status, "invalidated");
+                });
+                await scenario("Retain deep-check diagnostics after removing staged files", async () => {
+                    // Deep-check failure keeps its CubeMX log after the stage directory is removed
+                    await fs.writeFile(main2, userCode + "int main() { return 0; }\n");
+                    service2.options.run = async (_tool, directory) => {
+                        await fs.writeFile(
+                            path.join(directory, ".emberprobe-cubemx-output.log"),
+                            "deep run exploded\n"
+                        );
+                        throw new Error("CubeMX exploded");
+                    };
+                    await assert.rejects(service2.check({ mode: "deep", wait: true }), /CubeMX exploded/);
+                    service2.options.run = standardRun;
+                    const failureOps = await service2.store.getOperations(project2);
+                    const failureRec = failureOps[failureOps.length - 1];
+                    assert.strictEqual(failureRec.status, "failed");
+                    assert(failureRec.error?.details?.logPath, "persisted deep-check log path recorded");
+                    assert.strictEqual(
+                        await fs.readFile(failureRec.error.details.logPath, "utf8"),
+                        "deep run exploded\n"
+                    );
+                });
+
+                // Request dedup replays: in-progress, failed and interrupted operations
+
+                await scenario("Wait for a successful in-progress request replay", async () => {
+                    const replayParams = { requestId: "req_replay_ok", confirmationId: "auto-trusted" };
+                    const replayOp = await service.store.createOperation(project, {
+                        type: "generate",
+                        requestId: "req_replay_ok",
+                        requestParamsHash: paramsHash(replayParams)
+                    });
+                    service.activeExecutions.set(
+                        replayOp.operationId,
+                        (async () => {
+                            await service.store.updateOperation(project, replayOp.operationId, {
+                                status: "succeeded",
+                                result: { generated: true, operationId: replayOp.operationId }
+                            });
+                        })()
+                    );
+                    const replayed = await service.execute(replayParams);
+                    assert.strictEqual(replayed.generated, true);
+                    assert.strictEqual(replayed.operationId, replayOp.operationId);
+                });
+                await scenario("Propagate the original failure from an in-progress request replay", async () => {
+                    const replayFailParams = { requestId: "req_replay_fail", confirmationId: "auto-trusted" };
+                    const replayFailOp = await service.store.createOperation(project, {
+                        type: "generate",
+                        requestId: "req_replay_fail",
+                        requestParamsHash: paramsHash(replayFailParams)
+                    });
+                    service.activeExecutions.set(
+                        replayFailOp.operationId,
+                        (async () => {
+                            await service.store.updateOperation(project, replayFailOp.operationId, {
+                                status: "failed",
+                                diagnostic: "Generation exceeded five minutes",
+                                error: { code: "CUBEMX_TIMEOUT", message: "Generation exceeded five minutes" }
+                            });
+                        })()
+                    );
+                    await assert.rejects(
+                        service.execute(replayFailParams),
+                        (err) => err.code === "CUBEMX_TIMEOUT" && err.message === "Generation exceeded five minutes"
+                    );
+                });
+                await scenario("Reject replay of interrupted operations", async () => {
+                    const interruptedParams = { requestId: "req_interrupted", confirmationId: "auto-trusted" };
+                    await service.store.createOperation(project, {
+                        type: "generate",
+                        requestId: "req_interrupted",
+                        requestParamsHash: paramsHash(interruptedParams),
+                        status: "interrupted"
+                    });
+                    await assert.rejects(
+                        service.execute(interruptedParams),
+                        (err) => err.code === "CUBEMX_OPERATION_INTERRUPTED"
+                    );
+                });
+                // Cancel with an unknown operation id reports zero cancellations
+                const unknownCancel = service.cancel({ operationId: "op_missing" });
+                assert.strictEqual(unknownCancel.cancelled, 0);
+                assert(unknownCancel.message);
+            } finally {
+                await fs.rm(root, { recursive: true, force: true });
+            }
+        }
+    );
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

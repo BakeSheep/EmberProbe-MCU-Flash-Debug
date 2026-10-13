@@ -122,10 +122,12 @@ for (const count of [7800, 20000]) {
     assert.strictEqual(store.status("p").limited, false);
 }
 
-// The full three-minute, 100 Hz workload can be run with --stress (360 million leaf points).
-// CI runs the same 20k-series path through its first steady-pressure cycles within the test timeout.
+// The full three-minute, 100 Hz workload can be run with --stress (360 million leaf points, 512 MB).
+// Normal runs drive the same 20k-series path with a 24 MB budget, which reaches steady eviction
+// pressure after 64 frames instead of 1024.
 {
-    const store = new ChartHistoryStore(512 * 1024 * 1024);
+    const stress = process.argv.includes("--stress");
+    const store = new ChartHistoryStore((stress ? 512 : 24) * 1024 * 1024);
     const items = itemsFor(20000);
     const viewed = items.slice(0, 3).map((item) => item.name);
     const samples = samplesFor(items, 0);
@@ -134,7 +136,7 @@ for (const count of [7800, 20000]) {
     store.append("frozen", [{ name: items[0].name, t: 0, value: 7 }], 0);
     const frozen = store.freeze("frozen", "export");
     const original = points(store, "frozen", items[0].name, frozen.snapshotId);
-    const frames = process.argv.includes("--stress") ? 18000 : 1400;
+    const frames = stress ? 18000 : 160;
     let pressureFrames = 0;
     for (let frame = 0; frame < frames; frame++) {
         const tick = frame * 10; // Virtual 100 Hz, with all 20,000 leaves in every frame.
@@ -150,15 +152,14 @@ for (const count of [7800, 20000]) {
             store.evictionWork - work < (items.length + removed + 1) * 64,
             "per-append heap work is bounded by new/removed candidates, with no global sort"
         );
-        if (process.argv.includes("--stress") && frame % 2000 === 0)
-            console.log("History stress: " + frame + "/" + frames + " frames");
+        if (stress && frame % 2000 === 0) console.log("History stress: " + frame + "/" + frames + " frames");
     }
     const state = store._scope("steady");
     const viewedStart = state.series.get(viewed[0]).parts[0].block.times[0];
     const unviewed = items.slice(3).map((item) => state.series.get(item.name));
     assert.strictEqual(viewedStart, 0, "displayed curves retain the beginning of the run");
     assert.ok(
-        unviewed.some((series) => series.parts[0].block.times[series.parts[0].start] > 10000),
+        unviewed.some((series) => series.parts[0].block.times[series.parts[0].start] > (stress ? 10000 : 0)),
         "unviewed curves lose old history first"
     );
     assert.ok(store.evictedBlocks > 0);

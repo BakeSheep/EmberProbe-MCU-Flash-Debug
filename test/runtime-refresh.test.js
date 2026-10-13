@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
@@ -172,5 +174,61 @@ try {
 } finally {
     sidebar.close();
 }
+
+scenario("Render runtime members ahead of overlapping static layouts", () => {
+    const runtimeItem = {
+        name: "values",
+        address: 0x20000000,
+        size: 12,
+        isComposite: true,
+        typeName: "std::vector<int>",
+        compositeLayout: {
+            kind: "class",
+            members: [{ name: "staticField", offset: 0, byteSize: 4, watchType: "u32" }]
+        },
+        runtimeLayout: { root: 1, types: [] }
+    };
+    const runtimeSample = {
+        name: "values",
+        tree: { members: [{ name: "value", value: 42, type: "i32" }] }
+    };
+
+    for (const { name, html, listType, nameSelector, rowSelector, valueSelector } of [
+        {
+            name: "sidebar",
+            html: getModernWebviewContent({}, "en"),
+            listType: "sidebarWatchList",
+            nameSelector: ".sb-mname",
+            rowSelector: null,
+            valueSelector: ".sb-mval"
+        },
+        {
+            name: "live watch",
+            html: getLiveWatchContent({ panelId: 1 }, "en"),
+            listType: "watchList",
+            nameSelector: ".member-name",
+            rowSelector: ".member-row",
+            valueSelector: ".member-value"
+        }
+    ]) {
+        const view = render(html);
+        try {
+            view.send({ type: listType, items: [runtimeItem] });
+            view.send({ type: "liveCompositeSample", samples: [runtimeSample] });
+            const cell = view.document.querySelector(`${nameSelector}[title="values.value"]`);
+            assert.ok(cell, `${name} should render runtime members when a static layout is also present`);
+            const row = rowSelector ? cell.closest(rowSelector) : cell.parentElement;
+            assert.strictEqual(row.querySelector(valueSelector).textContent, "42", `${name}: runtime value`);
+            assert.strictEqual(
+                view.document.querySelector(`${nameSelector}[title="values.staticField"]`),
+                null,
+                `${name}: overlapping static member`
+            );
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
+});
 
 console.log("Runtime sampling refresh, layout changes, focus retention and invalid write values passed");

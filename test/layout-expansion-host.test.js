@@ -4,10 +4,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const elf = require("../src/elfSymbols");
-const { ElfService } = require("../src/services/elfService");
 const { loadProvider } = require("./helpers/load-provider");
 const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
 const { fixture, handle } = require("./helpers/layout-expansion-fixture");
+const { createWorkerElfService } = require("./helpers/elf-service");
 function deepElf(count = 100) {
     const info = [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 1];
     const u32 = (value) => [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, value >>> 24];
@@ -105,16 +105,7 @@ function deepElf(count = 100) {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "ember-layout-host-"));
     const file = path.join(temp, "deep.elf");
     fs.writeFileSync(file, deepElf());
-    const service = new ElfService({
-        context: { workspaceState: { get: () => file } },
-        cacheKey: "elf",
-        fs,
-        crypto: require("crypto"),
-        elfSymbols: elf,
-        cleanPath: (value) => value,
-        t: (key) => key,
-        workerPath: path.join(__dirname, "../src/elfWorker.js")
-    });
+    const service = createWorkerElfService(file);
     try {
         await service.ready();
         await service.layout("root");

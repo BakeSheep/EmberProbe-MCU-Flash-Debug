@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { EventEmitter } = require("events");
 const {
@@ -274,6 +277,58 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     busySession.setSamplingEnabled(false);
     busySession._clearSamplingTimer();
     busySession._releaseTimerResolution();
+
+    await scenario("Repeated H7 polling failures stop standalone sampling and degrade managed sampling", async () => {
+        const { LiveWatchSession, ManagedOpenOcdSession } = require("../src/liveWatch");
+        let now = 0;
+        const errors = [],
+            statuses = [],
+            disconnected = [];
+        const session = new LiveWatchSession(
+            null,
+            { now: () => now },
+            {
+                onError: (error) => errors.push(error),
+                onStatus: (status) => statuses.push(status),
+                onDisconnect: (error) => disconnected.push(error)
+            }
+        );
+        session.socket = {
+            destroyed: false,
+            destroy() {
+                this.destroyed = true;
+            }
+        };
+        session.watch = [{ name: "count", address: 0x20000000, size: 4 }];
+        session._readItems = async () => ({ samples: [], ok: 1 });
+        const message = "[stm32h7x.cpu0] Polling failed, trying to reexamine";
+        session._handlePollingFailure(message);
+        await session._sampleTick();
+        now = 1000;
+        session._handlePollingFailure(message);
+        await session._sampleTick();
+        now = 3100;
+        session._handlePollingFailure(message);
+        assert.strictEqual(errors.length, 1, "identical polling errors are shown once");
+        assert.strictEqual(statuses.length, 0, "successful RAM reads must not clear repeated target polling errors");
+        assert.strictEqual(session.stopped, true);
+        assert.strictEqual(disconnected[0].code, "LIVE_TARGET_POLL_FAILED");
+        assert.strictEqual(session.setSamplingEnabled(true), false);
+
+        let degraded = 0,
+            killed = 0;
+        now = 0;
+        const managed = new ManagedOpenOcdSession(
+            null,
+            { mode: "debug", now: () => now },
+            { onDegraded: () => degraded++ }
+        );
+        managed.child = { kill: () => killed++ };
+        for (now of [0, 1000, 3100, 4000]) managed._handlePollingFailure(message);
+        assert.strictEqual(degraded, 1);
+        assert.strictEqual(killed, 0, "sampling degradation must not kill GDB's OpenOCD server");
+        assert.strictEqual(managed.setSamplingEnabled(true), false);
+    });
 
     console.log("Live watch Tcl-RPC integration tests passed");
 })().catch((error) => {

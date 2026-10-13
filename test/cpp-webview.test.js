@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
@@ -82,5 +85,45 @@ try {
 } finally {
     graph.close();
 }
+
+scenario("Share promoted anonymous paths and const write controls across views", () => {
+    const scalar = { name: "value", offset: 0, byteSize: 4, watchType: "i32" };
+    const innermost = { kind: "union", byteSize: 4, members: [scalar] };
+    const anonymous = {
+        kind: "struct",
+        byteSize: 4,
+        members: [{ name: "", offset: 0, byteSize: 4, compositeLayout: innermost }]
+    };
+    const root = {
+        kind: "struct",
+        byteSize: 8,
+        isConst: true,
+        members: [{ name: "", offset: 4, byteSize: 4, compositeLayout: anonymous }]
+    };
+    const rootSymbol = { name: "root", size: 8, address: 0x20000000 };
+    // The UI must use the same promoted anonymous paths and bitfield metadata as the backend.
+    const symbol = { ...rootSymbol, isComposite: true, compositeLayout: root };
+    const sidebar = render(getModernWebviewContent({}, "en"));
+    try {
+        sidebar.send({ type: "availableVariables", symbols: [symbol] });
+        sidebar.document.querySelector(".available-row.comp .av-arrow").click();
+        assert.strictEqual(sidebar.document.querySelector(".available-row.leaf .av-write").disabled, true);
+        assert.strictEqual(sidebar.window.sbCollectLeaves(root, "root", rootSymbol.address)[0].path, "root.value");
+        sidebar.send({ type: "sidebarWatchList", items: [symbol] });
+        assert.strictEqual(sidebar.document.querySelector(".sb-mname").title, "root.value");
+        sidebar.assertHealthy();
+    } finally {
+        sidebar.close();
+    }
+    const graph = render(getLiveWatchContent({ panelId: 1 }, "en"));
+    try {
+        graph.send({ type: "watchList", items: [symbol] });
+        assert.strictEqual(graph.document.querySelector(".member-name").title, "root.value");
+        assert.strictEqual(graph.window.collectLeaves(root, "root", rootSymbol.address)[0].path, "root.value");
+        graph.assertHealthy();
+    } finally {
+        graph.close();
+    }
+});
 
 console.log("C++ webview compatibility tests passed");

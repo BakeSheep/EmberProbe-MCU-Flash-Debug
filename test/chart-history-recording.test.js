@@ -103,6 +103,8 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         const errors = [];
         p._postLive = (message) => errors.push(message);
         p._resetChartHistoryWarnings();
+        // Restart backoff (250 ms, 1 s, 3 s) is not under test here; skip the real waits.
+        p._chartHistoryRecoveryDelaysMs = [0, 0, 0];
         let restarts = 0;
         let restores = 0;
         const recovering = new ChartHistoryService({

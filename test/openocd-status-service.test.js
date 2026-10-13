@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const path = require("path");
 
 const assert = require("assert");
@@ -47,6 +50,37 @@ const { createFixture } = require("./helpers/service-fixture");
     } finally {
         fixture.dispose();
     }
+
+    await scenario("Share concurrent OpenOCD resolve and refresh results", async () => {
+        function deferred() {
+            let resolve;
+            const promise = new Promise((done) => {
+                resolve = done;
+            });
+            return { promise, resolve };
+        }
+        const probe = deferred();
+        const checker = {
+            probeOpenOcd: () => probe.promise,
+            getCachedResult: () => null,
+            isCompatibleResult: () => false,
+            setCache() {},
+            resolveOpenOcdStatus: async (_target, _context, result, report) => {
+                report({ state: "ready" });
+                return result.path;
+            }
+        };
+        const status = new OpenOcdStatusService({
+            checker,
+            context: {},
+            vscode: { workspace: { getConfiguration: () => ({ get: () => "openocd" }) } },
+            onStatus() {}
+        });
+        const resolving = status.resolve("openocd"),
+            refreshing = status.refresh();
+        probe.resolve({ path: "valid-openocd" });
+        assert.deepStrictEqual(await Promise.all([resolving, refreshing]), ["valid-openocd", "valid-openocd"]);
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

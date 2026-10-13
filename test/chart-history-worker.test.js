@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs/promises");
 const fsSync = require("fs");
@@ -326,6 +329,22 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
         await archive.dispose();
         await fs.rm(dir, { recursive: true, force: true });
     }
+
+    await scenario("Await failed history worker termination before restarting", async () => {
+        const { ChartHistoryService } = require("../src/services/chartHistoryService");
+        const history = new ChartHistoryService();
+        try {
+            await history.request("status", ["panel"]);
+            history.fail(Error("Forced failure"));
+            await history.termination;
+            assert.strictEqual(history.worker.threadId, -1);
+            await history.restart();
+            assert.ok(history.worker.threadId > 0);
+        } finally {
+            await history.dispose();
+        }
+    });
+
     console.log("Packed history, silent retention, precision, budgets, worker recovery and CSV tests passed");
 })().catch((error) => {
     console.error(error);

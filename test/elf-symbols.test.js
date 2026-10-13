@@ -1,4 +1,7 @@
 "use strict";
+
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const {
     parseElfSymbols,
@@ -100,5 +103,21 @@ leb = { p: 0 };
 assert.strictEqual(readSLEB(Buffer.from([0x9b, 0xf1, 0x59]), leb), -624485);
 // DWARF：无调试段时优雅降级为空表
 assert.strictEqual(parseDwarfVariableTypes(buildElf()).size, 0);
+
+scenario("Bound oversized symbol tables", () => {
+    const { parseElfSymbols } = require("../src/elfSymbols");
+    assert.throws(
+        () =>
+            parseElfSymbols(
+                buildElf32({
+                    sections: [
+                        { name: ".strtab", type: 3, data: Buffer.from("\0a\0") },
+                        { name: ".symtab", type: 2, entsize: 16, link: 1, data: Buffer.alloc(200001 * 16) }
+                    ]
+                })
+            ),
+        { code: "ELF_SYMBOL_BUDGET_EXCEEDED" }
+    );
+});
 
 console.log("ELF symbols & liveWatch parser tests passed");

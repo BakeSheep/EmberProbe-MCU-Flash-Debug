@@ -1,5 +1,7 @@
 "use strict";
 
+const { scenario } = require("./helpers/scenario");
+
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -63,4 +65,217 @@ try {
     for (const file of fs.readdirSync(root)) fs.unlinkSync(path.join(root, file));
     fs.rmdirSync(root);
 }
+
+scenario("Reject truncated, unterminated and recursively indirect forms", () => {
+    const { createFormReader } = require("../src/dwarf/forms");
+    const reader = createFormReader({ buf: Buffer.from([10, 3, 0]), str: null, lineStr: null });
+    assert.throws(() => reader({ p: 0 }, 0x09, {}), /Truncated/);
+    assert.throws(
+        () => createFormReader({ buf: Buffer.from("name"), str: null, lineStr: null })({ p: 0 }, 0x08, {}),
+        /Unterminated/
+    );
+    const indirect = createFormReader({ buf: Buffer.alloc(100, 0x16), str: null, lineStr: null });
+    assert.throws(() => indirect({ p: 0 }, 0x16, {}), /nesting/);
+});
+
+scenario("Verify absolute location expressions and companion path containment", () => {
+    const c = require("../src/dwarf/constants");
+    const { readCompanion } = require("../src/dwarf/files");
+    const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
+    function fixed(value, width = 4) {
+        const bytes = Buffer.alloc(8);
+        bytes.writeBigUInt64LE(BigInt.asUintN(64, BigInt(value)));
+        return Array.from(bytes.subarray(0, width));
+    }
+    function leb(value, signed = false) {
+        let remaining = BigInt(value);
+        const bytes = [];
+        do {
+            let byte = Number(remaining & 127n);
+            remaining >>= 7n;
+            const last = signed
+                ? (remaining === 0n && !(byte & 64)) || (remaining === -1n && !!(byte & 64))
+                : remaining === 0n;
+            if (!last) byte |= 128;
+            bytes.push(byte);
+            if (last) break;
+        } while (true);
+        return bytes;
+    }
+    const node = (id, tag, attrs = [], children = []) => ({ id, tag, attrs, children });
+    const attr = (at, form, value) => [at, form, value];
+    const nameAttr = (name) => attr(c.DW_AT_name, 8, name);
+    const typeAttr = (ref) => attr(c.DW_AT_type, 0x13, ref);
+    const base = (id, name = "int", size = 4, encoding = c.DW_ATE_signed) =>
+        node(id, c.DW_TAG_base_type, [
+            nameAttr(name),
+            attr(c.DW_AT_byte_size, 0x0b, size),
+            attr(c.DW_AT_encoding, 0x0b, encoding)
+        ]);
+    const composite = (id, name, size, children = [], tag = c.DW_TAG_class_type) =>
+        node(id, tag, [...(name ? [nameAttr(name)] : []), attr(c.DW_AT_byte_size, 6, size)], children);
+    const member = (id, name, type, offset) =>
+        node(id, c.DW_TAG_member, [nameAttr(name), typeAttr(type), attr(c.DW_AT_data_member_location, 6, offset)]);
+    const variable = (name, type, address = 0x20000000, expression) =>
+        node("var-" + name, c.DW_TAG_variable, [
+            nameAttr(name),
+            typeAttr(type),
+            attr(c.DW_AT_location, 0x18, expression || [3, ...fixed(address)])
+        ]);
+    function fixture(units, { version = 4, symbols = [], sections = [] } = {}) {
+        const info = [],
+            abbrev = [],
+            definitions = new Map(),
+            offsets = new Map(),
+            references = [];
+        const value = (form, input, cuStart) => {
+            if ([0x13, 0x10].includes(form)) {
+                references.push({ offset: info.length, label: input, cuStart: form === 0x13 ? cuStart : 0 });
+                info.push(0, 0, 0, 0);
+            } else if ([0x0b, 5, 6, 7].includes(form)) info.push(...fixed(input, { 0x0b: 1, 5: 2, 6: 4, 7: 8 }[form]));
+            else if (form === 8) info.push(...Buffer.from(input + "\0"));
+            else if (form === 0x18) info.push(...leb(input.length), ...input);
+            else if ([0x0f, 0x0d].includes(form)) info.push(...leb(input, form === 0x0d));
+            else if (form === 0x16) {
+                info.push(...leb(input.form));
+                value(input.form, input.value, cuStart);
+            } else if (![0x19, 0x21].includes(form)) throw new Error("Unsupported fixture form " + form);
+        };
+        const emit = (die, cuStart) => {
+            offsets.set(die.id, info.length);
+            const key = JSON.stringify([
+                die.tag,
+                !!die.children.length,
+                die.attrs.map(([at, form, v]) => [at, form, form === 0x21 ? v : null])
+            ]);
+            if (!definitions.has(key)) {
+                const code = definitions.size + 1;
+                definitions.set(key, code);
+                abbrev.push(...leb(code), ...leb(die.tag), Number(!!die.children.length));
+                for (const [at, form, v] of die.attrs) {
+                    abbrev.push(...leb(at), ...leb(form));
+                    if (form === 0x21) abbrev.push(...leb(v, true));
+                }
+                abbrev.push(0, 0);
+            }
+            info.push(...leb(definitions.get(key)));
+            for (const [, form, v] of die.attrs) value(form, v, cuStart);
+            for (const child of die.children) emit(child, cuStart);
+            if (die.children.length) info.push(0);
+        };
+        for (let index = 0; index < units.length; index++) {
+            const cuStart = info.length;
+            info.push(0, 0, 0, 0, version, 0);
+            if (version === 5) info.push(1, 4, 0, 0, 0, 0);
+            else info.push(0, 0, 0, 0, 4);
+            const unit = Array.isArray(units[index]) ? node("cu-" + index, 0x11, [], units[index]) : units[index];
+            emit(unit, cuStart);
+            fixed(info.length - cuStart - 4).forEach((byte, offset) => {
+                info[cuStart + offset] = byte;
+            });
+        }
+        for (const ref of references) {
+            assert(offsets.has(ref.label), "Unknown reference " + ref.label);
+            fixed(offsets.get(ref.label) - ref.cuStart).forEach((byte, offset) => {
+                info[ref.offset + offset] = byte;
+            });
+        }
+        abbrev.push(0);
+        return {
+            buffer: buildElf32({
+                sections: [
+                    ...buildDebugSections({ info: Buffer.from(info), abbrev: Buffer.from(abbrev) }),
+                    ...sections
+                ],
+                symbols
+            }),
+            offsets
+        };
+    }
+    function addressTests() {
+        const f = fixture(
+            [
+                [
+                    base("int"),
+                    variable("plain", "int"),
+                    variable("addrExtra", "int", 0, [3, ...fixed(0x20000000), 0x23, 1]),
+                    variable("index", "int", 0, [0xa1, 0]),
+                    variable("indexExtra", "int", 0, [0xa1, 0, 0x23, 1]),
+                    variable("gnu", "int", 0, [0xfb, 0]),
+                    variable("gnuExtra", "int", 0, [0xfb, 0, 0x23, 1])
+                ]
+            ],
+            { sections: [{ name: ".debug_addr", data: Buffer.from(fixed(0x20001000)) }] }
+        );
+        const parsed = parseDwarfInternal(f.buffer);
+        assert.deepStrictEqual(
+            parsed.variables.map((entry) => entry.name),
+            ["plain", "index", "gnu"]
+        );
+        for (const name of ["addrExtra", "indexExtra", "gnuExtra"]) {
+            const die = parsed.dies.get(f.offsets.get("var-" + name));
+            assert.strictEqual(die.hasAddr, false);
+            assert.strictEqual(die.address, undefined);
+            assert.strictEqual(die.addressIndex, undefined);
+        }
+        assert.strictEqual(parsed.variables[1].address, 0x20001000);
+    }
+    function companionTests(temp) {
+        const compiled = path.join(temp, "compiled"),
+            build = path.join(compiled, "build");
+        fs.mkdirSync(build, { recursive: true });
+        const dwoId = 123456789012345n;
+        const companion = fixture([
+            node(
+                "dwo-cu",
+                0x11,
+                [attr(0x2131, 7, dwoId)],
+                [
+                    base("int"),
+                    composite("Packet", "Packet", 4, [member("value", "value", "int", 0)], c.DW_TAG_structure_type),
+                    variable("packet", "Packet")
+                ]
+            )
+        ]).buffer;
+        const name = "build/unit.dwo";
+        const skeleton = fixture([
+            node("skeleton", 0x11, [attr(0x2130, 8, name), attr(0x1b, 8, compiled), attr(0x2131, 7, dwoId)])
+        ]).buffer;
+        const file = path.join(build, "app.elf");
+        fs.writeFileSync(file, skeleton);
+        fs.writeFileSync(path.join(build, "unit.dwo"), companion);
+        const result = parseDwarf(skeleton, { filePath: file });
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert.strictEqual(result.layouts.get("packet").members[0].name, "value");
+        assert.strictEqual(result.companions[0].path, fs.realpathSync(path.join(build, "unit.dwo")));
+        assert(
+            readCompanion({ dwoName: name, compDir: path.join(temp, "absent") }, file, 65536).buffer.equals(companion),
+            "basename fallback"
+        );
+        const outside = path.join(temp, "outside");
+        fs.mkdirSync(outside);
+        fs.writeFileSync(path.join(outside, "victim.dwo"), companion);
+        assert.throws(() => readCompanion({ dwoName: "../victim.dwo" }, file, 65536), /escapes/);
+        assert.throws(() => readCompanion({ dwoName: path.join(outside, "victim.dwo") }, file, 65536), /escapes/);
+        const missing = assert.throws(
+            () => readCompanion({ dwoName: "victim.dwo", compDir: outside }, file, 65536),
+            /missing/
+        );
+        assert.strictEqual(missing, undefined);
+        const link = path.join(build, "link");
+        fs.symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+        assert.throws(() => readCompanion({ dwoName: "link/victim.dwo", compDir: compiled }, file, 65536), /escapes/);
+        assert.throws(() => readCompanion({ dwoName: name, compDir: compiled }, file, 1), {
+            code: "DWARF_BUDGET_EXCEEDED"
+        });
+    }
+    scenario("Reject trailing address expression operations", addressTests);
+    const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ember-dwarf-companions-")));
+    try {
+        scenario("Resolve and contain split DWARF companion files", () => companionTests(temp));
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+});
+
 console.log("DWARF4/5 formats, verified companions and type-loss guards passed");
