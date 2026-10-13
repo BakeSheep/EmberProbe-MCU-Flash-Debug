@@ -3,14 +3,31 @@
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const fs = require("fs");
+const path = require("path");
 const { symbolImages } = require("../services/debugImages");
 const { readElf32Header, readSectionEntries, readSectionNames } = require("../elfFormat");
 const { quote } = require("./mi");
 
 const runFile = promisify(execFile);
 const MAX_SYMBOLS = 100000;
+// The GDB catalog expands every compilation unit, and an MI timeout terminates GDB. Large firmware can
+// exceed the default MI timeout, so the catalog gets its own bound.
+const CATALOG_TIMEOUT_MS = 60000;
+const IDENTITY_BUDGET_MS = 15000;
+const NM_TIMEOUT_MS = 10000;
+const NM_ARGS = ["--defined-only", "-S", "-l", "-C"];
+// Compiler-generated C++ objects and GCC function-local statics (name.N) have no source expression.
+const ABI_OBJECT =
+    /^(?:vtable|VTT|construction vtable|typeinfo|typeinfo name|guard variable|TLS init function|TLS wrapper function|reference temporary #\d+) for /;
+const LOCAL_STATIC = /\.\d+$/;
 const asList = (value) => (Array.isArray(value) ? value : value ? [value] : []);
 const fileKey = (value) => String(value || "").replace(/\\/g, "/");
+// nm reports comp_dir-relative names unnormalized (build/../Core/Src/x.c); GDB reports them normalized.
+function sourceKey(value) {
+    const file = fileKey(value);
+    if (!file) return file;
+    return (file.startsWith("//") ? "/" : "") + path.posix.normalize(file);
+}
 const qualified = (file, name) => `'${file.replace(/'/g, "\\'")}'::${name}`;
 const identity = (entry) => `${entry.isStatic}:${entry.file}:${entry.name}`;
 
@@ -22,7 +39,7 @@ function symbolExpression(name) {
 function debugSymbols(result) {
     const entries = [];
     for (const group of asList(result.symbols?.debug)) {
-        const file = fileKey(group.fullname || group.filename);
+        const file = sourceKey(group.fullname || group.filename);
         for (const item of asList(group.symbols)) {
             if (typeof item.name !== "string" || !item.name) continue;
             const name = symbolExpression(item.name);
@@ -46,7 +63,8 @@ function nmSymbols(output) {
         const match = line.match(/^\s*([\da-fA-F]+)\s+([\da-fA-F]+)\s+([bBdDrRsSvVgGu])\s+([^\t]+)(?:\t(.+?):\d+)?$/);
         if (!match) continue;
         const name = symbolExpression(match[4].trim());
-        const file = fileKey(match[5]);
+        if (ABI_OBJECT.test(name) || LOCAL_STATIC.test(name)) continue;
+        const file = sourceKey(match[5]);
         const isStatic = /[bdrsg]/.test(match[3]);
         // Internal-linkage objects without a source file cannot be safely disambiguated.
         if (isStatic && !file) continue;
@@ -61,6 +79,32 @@ function nmSymbols(output) {
         if (entries.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
     }
     return entries;
+}
+
+function nmExecutable(config) {
+    if (config.nmPath) return config.nmPath;
+    if (config.objdumpPath) return config.objdumpPath.replace(/objdump(\.exe)?$/i, "nm$1");
+    // GNU toolchains ship nm beside GDB (arm-none-eabi-gdb -> arm-none-eabi-nm).
+    if (typeof config.gdbPath === "string" && /gdb(\.exe)?$/i.test(config.gdbPath))
+        return config.gdbPath.replace(/gdb(\.exe)?$/i, "nm$1");
+    return "";
+}
+// nm -S prints sizes only for ELF objects; other formats (host PE/COFF test images) use the GDB catalog.
+function isElf(file) {
+    let fd;
+    try {
+        fd = fs.openSync(file, "r");
+        const magic = Buffer.alloc(4);
+        return fs.readSync(fd, magic, 0, 4, 0) === 4 && magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+    } catch {
+        return false;
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
+}
+function assertNm(nm) {
+    if (typeof nm !== "string" || !nm.trim() || /[\x00-\x1f]/.test(nm))
+        throw new Error("nmPath must name an nm executable");
 }
 
 function signedInteger(value) {
@@ -110,49 +154,54 @@ class SymbolDirectory {
         const config = this.session.config || {};
         const images = symbolImages(config);
         if (!images.length) return (this.entries = []);
-        const deadline = Date.now() + 15000;
         const symbolSetup = options.symbolSetup && !this.session.ready && !this.session.running;
-        let entries;
-        let fallback = false;
-        try {
-            entries = debugSymbols(await this.session.mi.command("-symbol-info-variables"));
-        } catch (error) {
-            // Only an unsupported MI command warrants a fallback. Transport failures must propagate.
-            if (!/undefined MI command|unknown command|not supported|unrecognized/i.test(error.message)) throw error;
-            fallback = true;
-            this.session.variableDiagnostic("GDB symbol catalog unavailable; using the nm directory.\n");
-        }
-        if (fallback || images.length > 1) {
-            // MI omits objfile identity. Match its typed catalog to each configured image's nm directory.
-            const nm = config.nmPath || (config.objdumpPath && config.objdumpPath.replace(/objdump(\.exe)?$/i, "nm$1"));
-            if (!nm) throw new Error("Symbol image identity requires the matching nm/objdump toolchain");
-            if (typeof nm !== "string" || !nm.trim() || /[\x00-\x1f]/.test(nm))
-                throw new Error("nmPath must name an nm executable");
-            const catalog = new Map((entries || []).map((entry) => [identity(entry), entry]));
-            const byImage = [];
-            for (const image of images) {
-                const remaining = deadline - Date.now();
-                if (remaining <= 0) throw new Error("Symbol image directory time budget exceeded");
-                const result = await this.run(nm, ["--defined-only", "-S", "-l", "-C", image.file], {
-                    windowsHide: true,
-                    timeout: Math.min(10000, remaining),
-                    maxBuffer: 8 * 1024 * 1024
-                });
-                const sections = imageSections(image);
-                for (const entry of nmSymbols(String(result.stdout))) {
-                    const typed = catalog.get(identity(entry));
-                    if (!fallback && !typed) continue;
-                    byImage.push({
-                        ...entry,
-                        ...typed,
-                        image: fileKey(image.file),
-                        symbolAddress: relocatedAddress(entry, image, sections)
-                    });
-                    if (byImage.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
-                }
+        // A single image needs no objfile identity, so the directory comes from nm outside GDB.
+        let entries = images.length === 1 ? await this.imageDirectory(images[0], config) : null;
+        let deadline = 0;
+        if (!entries) {
+            let fallback = false;
+            try {
+                entries = debugSymbols(await this.session.mi.command("-symbol-info-variables", CATALOG_TIMEOUT_MS));
+            } catch (error) {
+                // Only an unsupported MI command warrants a fallback. Transport failures must propagate.
+                if (!/undefined MI command|unknown command|not supported|unrecognized/i.test(error.message))
+                    throw error;
+                fallback = true;
+                this.session.variableDiagnostic("GDB symbol catalog unavailable; using the nm directory.\n");
             }
-            entries = byImage;
-        } else entries = entries.map((entry) => ({ ...entry, image: fileKey(images[0].file) }));
+            // The catalog has its own bound; image identity keeps a separate budget.
+            deadline = Date.now() + IDENTITY_BUDGET_MS;
+            if (fallback || images.length > 1) {
+                // MI omits objfile identity. Match its typed catalog to each configured image's nm directory.
+                const nm = nmExecutable(config);
+                if (!nm) throw new Error("Symbol image identity requires the matching nm/objdump toolchain");
+                assertNm(nm);
+                const catalog = new Map((entries || []).map((entry) => [identity(entry), entry]));
+                const byImage = [];
+                for (const image of images) {
+                    const remaining = deadline - Date.now();
+                    if (remaining <= 0) throw new Error("Symbol image directory time budget exceeded");
+                    const result = await this.run(nm, [...NM_ARGS, image.file], {
+                        windowsHide: true,
+                        timeout: Math.min(NM_TIMEOUT_MS, remaining),
+                        maxBuffer: 8 * 1024 * 1024
+                    });
+                    const sections = imageSections(image);
+                    for (const entry of nmSymbols(String(result.stdout))) {
+                        const typed = catalog.get(identity(entry));
+                        if (!fallback && !typed) continue;
+                        byImage.push({
+                            ...entry,
+                            ...typed,
+                            image: fileKey(image.file),
+                            symbolAddress: relocatedAddress(entry, image, sections)
+                        });
+                        if (byImage.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
+                    }
+                }
+                entries = byImage;
+            } else entries = entries.map((entry) => ({ ...entry, image: fileKey(images[0].file) }));
+        }
         // Include image and source identity: repeated firmware filenames must not merge objects.
         const unique = new Map(entries.map((entry) => [`${entry.image}:${identity(entry)}`, entry]));
         const ordered = [...unique.values()].sort((left, right) => left.name.localeCompare(right.name));
@@ -171,6 +220,25 @@ class SymbolDirectory {
                 await this.verifyExpression(entry, deadline, symbolSetup);
         }
         return (this.entries = ordered);
+    }
+    async imageDirectory(image, config) {
+        // nm runs outside GDB: a slow or failed listing leaves GDB responsive and falls back to the catalog.
+        const nm = nmExecutable(config);
+        if (!nm || !isElf(image.file)) return null;
+        try {
+            assertNm(nm);
+            const result = await this.run(nm, [...NM_ARGS, image.file], {
+                windowsHide: true,
+                timeout: NM_TIMEOUT_MS,
+                maxBuffer: 8 * 1024 * 1024
+            });
+            return nmSymbols(String(result.stdout)).map((entry) => ({ ...entry, image: fileKey(image.file) }));
+        } catch (error) {
+            this.session.variableDiagnostic(
+                `nm symbol directory unavailable (${error.message}); using the GDB symbol catalog.\n`
+            );
+            return null;
+        }
     }
     async verifyExpression(entry, deadline, symbolSetup = false) {
         if (Date.now() > deadline) throw new Error("Symbol image directory time budget exceeded");
@@ -208,7 +276,7 @@ class SymbolDirectory {
     }
     async variables(kind, file) {
         const entries = (await this.load()).filter((entry) =>
-            kind === "globals" ? !entry.isStatic : entry.isStatic && fileKey(entry.file) === fileKey(file)
+            kind === "globals" ? !entry.isStatic : entry.isStatic && entry.file === sourceKey(file)
         );
         const counts = new Map();
         for (const entry of entries) counts.set(entry.name, (counts.get(entry.name) || 0) + 1);
@@ -222,4 +290,14 @@ class SymbolDirectory {
     }
 }
 
-module.exports = { SymbolDirectory, debugSymbols, nmSymbols, relocatedAddress, fileKey, asList };
+module.exports = {
+    SymbolDirectory,
+    debugSymbols,
+    nmSymbols,
+    nmExecutable,
+    relocatedAddress,
+    fileKey,
+    sourceKey,
+    asList,
+    CATALOG_TIMEOUT_MS
+};

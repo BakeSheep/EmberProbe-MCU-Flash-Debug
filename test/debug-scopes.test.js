@@ -3,6 +3,9 @@
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { EventEmitter } = require("events");
 const { EmberDebugSession } = require("../src/debug/session");
 const { SymbolDirectory, debugSymbols, nmSymbols } = require("../src/debug/symbolDirectory");
@@ -245,6 +248,91 @@ function setup() {
         mi.resume = true;
         await assert.rejects(adapter.variableStore.metadata(stale), /paused|running|Stale/);
         assert.strictEqual(stale.memoryReference, undefined);
+    });
+
+    await scenario("Build a single-image directory from nm without the GDB catalog", async () => {
+        const { nmExecutable, sourceKey, CATALOG_TIMEOUT_MS } = require("../src/debug/symbolDirectory");
+        assert.strictEqual(
+            nmExecutable({ gdbPath: "C:/tc/bin/arm-none-eabi-gdb.exe" }),
+            "C:/tc/bin/arm-none-eabi-nm.exe"
+        );
+        assert.strictEqual(nmExecutable({ gdbPath: "/usr/bin/gdb" }), "/usr/bin/nm");
+        assert.strictEqual(nmExecutable({ gdbPath: "gdb-multiarch" }), "");
+        assert.strictEqual(nmExecutable({ nmPath: "nm", gdbPath: "x-gdb" }), "nm");
+        assert.strictEqual(sourceKey("C:\\proj\\build/../Core/Src/a.c"), "C:/proj/Core/Src/a.c");
+        assert.strictEqual(sourceKey("\\\\server\\share\\x/../a.c"), "//server/share/a.c");
+
+        const images = fs.mkdtempSync(path.join(os.tmpdir(), "ep-nm-directory-"));
+        const elf = path.join(images, "app.elf");
+        fs.writeFileSync(elf, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 1, 1]));
+        const { adapter, mi } = setup();
+        adapter.config.executable = elf;
+        adapter.config.gdbPath = "C:/tc/bin/arm-none-eabi-gdb.exe";
+        const diagnostics = [];
+        adapter.variableDiagnostic = (message) => diagnostics.push(message);
+        const runs = [];
+        let nmResult = {
+            stdout: [
+                "20000000 00000004 B global0\tC:/proj/build/../Core/Src/a.c:2",
+                "20000004 00000004 b counter\tC:\\proj\\build/../Core/Src/a.c:3",
+                "20000008 00000004 b counter\tC:/proj/Core/Src/b.c:3",
+                "2000000c 00000004 b cnt.0\tC:/proj/Core/Src/a.c:9",
+                "08000100 0000000c R typeinfo for app::Sensor",
+                "08000200 00000010 V vtable for app::Sensor",
+                "20000010 00000004 B errno",
+                "08000000 00000020 T main\tC:/proj/Core/Src/a.c:12"
+            ].join("\n")
+        };
+        adapter.symbolDirectory.run = async (file, args, options) => {
+            runs.push({ file, args, options });
+            if (nmResult instanceof Error) throw nmResult;
+            return nmResult;
+        };
+        const directory = await adapter.symbolDirectory.load();
+        assert.deepStrictEqual(runs[0].args, ["--defined-only", "-S", "-l", "-C", elf]);
+        assert.strictEqual(runs[0].file, "C:/tc/bin/arm-none-eabi-nm.exe");
+        assert(runs[0].options.timeout <= 10000 && runs[0].options.windowsHide);
+        assert(!mi.commands.includes("-symbol-info-variables"), "a single image must not expand GDB's catalog");
+        assert.deepStrictEqual(
+            directory.map((entry) => entry.name),
+            ["counter", "counter", "errno", "global0"],
+            "local statics and C++ ABI objects are excluded"
+        );
+        assert(directory.every((entry) => entry.image === elf.replace(/\\/g, "/")));
+        const frame = adapter.handleFor({ kind: "frame", thread: 1, level: 0, file: "C:\\proj\\Core\\Src\\a.c" });
+        const scopes = (await adapter.handle("scopes", { frameId: frame })).scopes;
+        const statics = (await adapter.handle("variables", { variablesReference: scopes[2].variablesReference }))
+            .variables;
+        assert.deepStrictEqual(
+            statics.map((item) => item.evaluateName),
+            ["'C:/proj/Core/Src/a.c'::counter"],
+            "nm's unnormalized comp_dir path matches GDB's frame file"
+        );
+
+        // A failed nm listing keeps GDB alive and uses the catalog with its own timeout.
+        const timeouts = [];
+        const command = mi.command.bind(mi);
+        mi.command = (text, timeout) => {
+            if (text === "-symbol-info-variables") timeouts.push(timeout);
+            return command(text, timeout);
+        };
+        nmResult = Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+        adapter.symbolDirectory.reset();
+        const catalogEntries = await adapter.symbolDirectory.load();
+        assert.deepStrictEqual(timeouts, [CATALOG_TIMEOUT_MS]);
+        assert(catalogEntries.some((entry) => entry.name === "global204"));
+        assert(diagnostics.some((message) => /nm symbol directory unavailable \(spawn ENOENT\)/.test(message)));
+
+        // nm cannot size non-ELF (PE/COFF) objects, so those images never take the nm path.
+        const pe = path.join(images, "host.exe");
+        fs.writeFileSync(pe, "MZ");
+        adapter.config.executable = pe;
+        adapter.symbolDirectory.reset();
+        const before = runs.length;
+        assert((await adapter.symbolDirectory.load()).length > 0);
+        assert.strictEqual(runs.length, before);
+        assert.strictEqual(timeouts.length, 2);
+        fs.rmSync(images, { recursive: true, force: true });
     });
 
     console.log("Debug scopes, qualified symbol identity, paging, expression writes and register tests passed");

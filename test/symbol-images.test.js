@@ -103,6 +103,24 @@ const { SymbolDirectory, relocatedAddress } = require("../src/debug/symbolDirect
     directory.reset();
     await assert.rejects(directory.load(), /transport closed/);
     assert.strictEqual(directory.entries, null, "failed identity verification cannot cache a partially safe directory");
+    // A slow multi-image catalog gets its own MI bound and must not consume the identity budget.
+    const now = Date.now;
+    let clock = now();
+    const timeouts = [];
+    Date.now = () => clock;
+    try {
+        adapter.mi.command = async (command, timeout) => {
+            if (command !== "-symbol-info-variables") return { value: "536870912" };
+            timeouts.push(timeout);
+            clock += 40000;
+            return catalog;
+        };
+        directory.reset();
+        assert((await directory.load()).length > 0);
+        assert.deepStrictEqual(timeouts, [60000]);
+    } finally {
+        Date.now = now;
+    }
     const sections = [
         { name: ".data", addr: 0x20000000, size: 32, flags: 2 },
         { name: ".text", addr: 0x8000000, size: 16, flags: 6 }

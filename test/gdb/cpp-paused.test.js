@@ -22,6 +22,8 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
     const mi = new MiClient();
     const adapter = new EmberDebugSession({ mi });
     adapter.setRunAsServer(true);
+    // Launch supplies both; the Globals/Statics directory then comes from the nm beside GDB.
+    Object.assign(adapter.config, { executable, gdbPath: gdb });
     const output = [];
     adapter.sendEvent = (event) => {
         if (event.event === "output") output.push(event.body.output);
