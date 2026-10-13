@@ -1,5 +1,53 @@
 "use strict";
 
+const { formatPointer } = require("../webview/runtime");
+
+function annotatePointer(node, spec, symbolizer) {
+    if (!node.isPointer && !spec?.isPointer) return node;
+    const pointerTarget = node.pointerTarget || spec?.pointerTarget;
+    const decoded = { ...node, isPointer: true, pointerTarget, valueText: formatPointer(node.value) };
+    const isVtable =
+        (node.memberRole || spec?.memberRole) === "artificial" && /(?:^|\.)_vptr/.test(node.name || spec?.name || "");
+    const info = symbolizer?.resolve(node.value, isVtable ? "vtable" : pointerTarget || "data");
+    if (info) {
+        decoded.pointerText = info.text;
+        decoded.pointerInfo = info;
+    }
+    return decoded;
+}
+
+// Runtime samples are shared by consumers. Copy only changed nodes so annotations
+// cannot leak into another panel or change the worker's numeric values.
+function annotatePointerTree(node, symbolizer, spec = node) {
+    if (!node) return node;
+    let decoded = annotatePointer(node, spec, symbolizer);
+    if (node.members) {
+        const dynamicTypes = new Set();
+        let changed = false;
+        const members = node.members.map((member) => {
+            const child = annotatePointerTree(member, symbolizer);
+            changed ||= child !== member;
+            if (child.pointerInfo?.kind === "vtable") dynamicTypes.add(child.pointerInfo.dynamicTypeName);
+            if ((child.isBase || /^@base\d+$/.test(child.name)) && child.dynamicTypeName)
+                dynamicTypes.add(child.dynamicTypeName);
+            return child;
+        });
+        if (changed) decoded = { ...decoded, members };
+        if (dynamicTypes.size === 1 && ["class", "struct"].includes(node.kind))
+            decoded = { ...decoded, dynamicTypeName: dynamicTypes.values().next().value };
+    }
+    if (node.elements) {
+        let changed = false;
+        const elements = node.elements.map((element) => {
+            const child = annotatePointerTree(element, symbolizer, node.elementType || element);
+            changed ||= child !== element;
+            return child;
+        });
+        if (changed) decoded = { ...decoded, elements };
+    }
+    return decoded;
+}
+
 // 将多个消费者的观察列表合并为单一原始字节读取计划。
 // 同名标量取最大宽度，复合变量按整体内存范围读取。
 function buildActiveReadPlan(watchLists, elfSymbols) {
@@ -137,9 +185,18 @@ function selectPausedDebugReadSession(debugBridge) {
 
 // 单消费者解码层：同一份原始字节可按每个面板自己的类型/复合布局分别解码。
 class LiveWatchService {
-    constructor(elfSymbols) {
+    constructor(elfSymbols, pointerSymbolizer = null) {
         this.elfSymbols = elfSymbols;
+        this.pointerSymbolizer = pointerSymbolizer;
         this.latestSidebarSamples = new Map();
+        this.pointerSymbolsDirty = false;
+        this.pointerMetadataChanged = false;
+    }
+
+    setElfResult(result, metadataChanged = false) {
+        this.elfResult = result;
+        this.pointerSymbolsDirty = true;
+        this.pointerMetadataChanged ||= metadataChanged;
     }
 
     decodeHistorySamples(samples, time, items, decodedScalars = []) {
@@ -174,12 +231,17 @@ class LiveWatchService {
             }
             if (!sample) continue;
             selected.push(sample);
-            types.set(item.name, Number.isInteger(item.bitSize) || item.enumInfo ? item : item.type);
+            types.set(item.name, Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer ? item : item.type);
         }
         return result.concat(this.decodeConsumerSamples(selected, time, types, null).scalarSamples);
     }
 
     decodeConsumerSamples(samples, time, typeMap, compositeMap, latestSamples) {
+        if (this.pointerSymbolsDirty) {
+            this.pointerSymbolizer?.updateElf(this.elfResult, this.pointerMetadataChanged);
+            this.pointerSymbolsDirty = false;
+            this.pointerMetadataChanged = false;
+        }
         const scalarSamples = [];
         const compositeSamples = [];
         const latest = latestSamples || new Map();
@@ -205,25 +267,32 @@ class LiveWatchService {
                 latest.set(sample.name, decoded);
                 continue;
             }
+            const composite = compositeMap?.get(sample.name);
+            const typeSpec = typeMap?.get(sample.name);
+            this.pointerSymbolizer?.addRuntimeLayout(
+                composite?.runtimeLayout || composite?.layout?.runtimeLayout || typeSpec?.runtimeLayout
+            );
             if (sample.runtimeTree) {
-                if (sample.runtimeTree.kind === "scalar") {
+                const tree = annotatePointerTree(sample.runtimeTree, this.pointerSymbolizer, typeSpec);
+                if (tree.kind === "scalar") {
                     const decoded = {
                         name: sample.name,
-                        value: sample.runtimeTree.value,
-                        valueText: sample.runtimeTree.valueText,
-                        ...(sample.runtimeTree.enumText ? { enumText: sample.runtimeTree.enumText } : {}),
+                        value: tree.value,
+                        valueText: tree.valueText,
+                        ...(tree.isPointer ? { isPointer: true, pointerTarget: tree.pointerTarget } : {}),
+                        ...(tree.pointerText ? { pointerText: tree.pointerText, pointerInfo: tree.pointerInfo } : {}),
+                        ...(tree.enumText ? { enumText: tree.enumText } : {}),
                         t: sampleTime
                     };
                     scalarSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 } else {
-                    const decoded = { name: sample.name, tree: sample.runtimeTree, t: sampleTime };
+                    const decoded = { name: sample.name, tree, t: sampleTime };
                     compositeSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 }
                 continue;
             }
-            const composite = compositeMap?.get(sample.name);
             if (composite) {
                 const tree = sample.bytes
                     ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout, {
@@ -232,13 +301,16 @@ class LiveWatchService {
                       })
                     : null;
                 if (tree) {
-                    const decoded = { name: sample.name, tree, t: sampleTime };
+                    const decoded = {
+                        name: sample.name,
+                        tree: annotatePointerTree(tree, this.pointerSymbolizer),
+                        t: sampleTime
+                    };
                     compositeSamples.push(decoded);
                     latest.set(sample.name, decoded);
                 }
                 continue;
             }
-            const typeSpec = typeMap?.get(sample.name);
             if (!typeSpec) continue;
             const type = typeof typeSpec === "string" ? typeSpec : typeSpec.type;
             const bitfield = typeof typeSpec === "object" && Number.isInteger(typeSpec.bitSize);
@@ -261,8 +333,9 @@ class LiveWatchService {
                 t: sampleTime
             };
             if (typeSpec.enumInfo) decoded.enumText = this.elfSymbols.enumValueText(decoded, typeSpec.enumInfo);
-            scalarSamples.push(decoded);
-            latest.set(sample.name, decoded);
+            const displayed = annotatePointer(decoded, typeSpec, this.pointerSymbolizer);
+            scalarSamples.push(displayed);
+            latest.set(sample.name, displayed);
         }
         return { scalarSamples, compositeSamples };
     }
