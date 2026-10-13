@@ -2462,6 +2462,11 @@ function chartRegion(x, y) {
     if (x < g.padL && y >= g.padT && y <= g.padT + g.ph) return "y";
     return "none";
 }
+function chartYAt(py, range) {
+    var g = chartState.geometry,
+        ratio = Math.max(0, Math.min(1, (py - g.padT) / g.ph));
+    return range.max - ratio * VP.span(range);
+}
 function canvasPoint(e) {
     var rect = canvas.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -2478,6 +2483,7 @@ canvas.addEventListener("pointermove", function (e) {
             dy = p.y - chartState.drag.start.y,
             center = (chartState.drag.y.min + chartState.drag.y.max) / 2,
             minY = Math.max(Number.EPSILON, Math.abs(center) * 1e-12),
+            anchorY = chartYAt(chartState.drag.start.y, chartState.drag.y),
             factor = Math.exp(Math.max(-4, Math.min(4, (dy / g.ph) * 4)));
         chartState.x = VP.panClamped(
             chartState.drag.x,
@@ -2485,7 +2491,7 @@ canvas.addEventListener("pointermove", function (e) {
             chartState.bounds,
             minimumXSpan()
         );
-        chartState.y = VP.zoomCentered(chartState.drag.y, factor, minY);
+        chartState.y = VP.zoom(chartState.drag.y, factor, anchorY, minY);
         chartState.autoY = false;
         setWindowCustom();
         updateFollowFromView(false);
@@ -2554,7 +2560,7 @@ canvas.addEventListener(
         }
         if (region === "plot" || region === "y") {
             var minY = Math.max(Number.EPSILON, Math.abs((chartState.y.min + chartState.y.max) / 2) * 1e-12);
-            chartState.y = VP.zoomCentered(chartState.y, factor, minY);
+            chartState.y = VP.zoom(chartState.y, factor, chartYAt(p.y, chartState.y), minY);
             chartState.autoY = false;
         }
         chartState.pointer = region === "plot" ? p : null;
