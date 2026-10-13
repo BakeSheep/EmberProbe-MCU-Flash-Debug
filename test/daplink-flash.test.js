@@ -22,6 +22,8 @@ const { diagnoseOpenOcdFailure } = require("../skills/_emberprobe/openocd-diagno
 const { FlashAuthorization } = require("../src/flashAuthorization");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
+// Windows PowerShell cold starts on loaded CI runners can exceed 10 s before the mock script runs.
+const POWERSHELL_TIMEOUT_MS = 30000;
 
 const serial = "000Aa123";
 const launch = {
@@ -224,7 +226,7 @@ function Get-PnpDeviceProperty { [CmdletBinding()] param([string[]]$InstanceId, 
                 "-Command",
                 `${mock}; ${USB_INVENTORY}; if ($propertyCalls -ne 2) { exit 9 }`
             ],
-            { encoding: "utf8", windowsHide: true, timeout: 10000 }
+            { encoding: "utf8", windowsHide: true, timeout: POWERSHELL_TIMEOUT_MS }
         );
         assert.strictEqual(query.status, 0, query.error?.message || query.stderr);
         assert.strictEqual(query.stderr.trim(), "", "Missing optional properties must not produce indexing errors");
@@ -256,7 +258,7 @@ function Get-PnpDeviceProperty { [CmdletBinding()] param([string[]]$InstanceId, 
                 "powershell.exe"
             ),
             ["-NoProfile", "-NonInteractive", "-Command", `${horcoMock}; ${USB_INVENTORY}`],
-            { encoding: "utf8", windowsHide: true, timeout: 10000 }
+            { encoding: "utf8", windowsHide: true, timeout: POWERSHELL_TIMEOUT_MS }
         );
         assert.strictEqual(horcoQuery.status, 0, horcoQuery.error?.message || horcoQuery.stderr);
         assert.strictEqual(horcoQuery.stderr.trim(), "");
