@@ -93,6 +93,349 @@
         const { unobservable, expansionHandle, ...identity } = node;
         return { ...identity, compositeLayout: expanded, expansionRoot: true };
     }
+    function formatPointer(value) {
+        const number = typeof value === "number" || typeof value === "bigint" ? Number(value) : NaN;
+        if (!Number.isSafeInteger(number) || number < 0 || number > 0xffffffff) return null;
+        return "0x" + number.toString(16).toUpperCase().padStart(8, "0");
+    }
+    // Library objects (std::atomic, std::array, std::function...) keep their meaningful value
+    // in one internal member. Return the member route to it, through bases and internal members.
+    function summaryRoute(node, summary = (node?.compositeLayout || node)?.stdSummary) {
+        if (!summary?.targets?.length) return null;
+        const pending = [{ node, route: [] }];
+        let visits = 0;
+        while (pending.length && ++visits <= 256) {
+            const { node: current, route } = pending.shift();
+            const container = current?.compositeLayout || current;
+            for (const member of container?.members || []) {
+                if (summary.targets.includes(member.name)) return [...route, member];
+                if (
+                    (member.isBase || member.memberRole || member.name === "") &&
+                    (member.compositeLayout || member.members) &&
+                    route.length < 8
+                )
+                    pending.push({ node: member, route: [...route, member] });
+            }
+        }
+        return null;
+    }
+    function memberVisible(member, showRaw = false) {
+        return !!showRaw || !member?.memberRole;
+    }
+    function pointerDisplay(value, t, pointerText) {
+        const hex = formatPointer(value);
+        if (!hex) return "—";
+        const text = Number(value) === 0 ? t("lw.pointerNull") : hex;
+        return typeof pointerText === "string" && pointerText.trim() ? text + " " + pointerText.trim() : text;
+    }
+    function pointerNodeValue(node) {
+        const value = node?.pointerValue ?? node?.value;
+        if (value != null) return value;
+        if (["nullptr", "NULL"].includes(node?.valueText)) return 0;
+        return /^0x[0-9a-f]{1,8}$/i.test(node?.valueText || "") ? Number(node.valueText) : undefined;
+    }
+    // Labels may be promoted, but the returned path always addresses the original storage.
+    function summaryRow(node, path, offset = 0) {
+        const summary = (node?.compositeLayout || node)?.stdSummary;
+        const route = summaryRoute(node);
+        if (!route?.length) return null;
+        let rawPath = path;
+        for (const member of route) {
+            rawPath = layoutMemberPath(rawPath, member);
+            offset += Number(member.offset) || 0;
+        }
+        const presence = summary.presence && summaryRoute(node, { targets: summary.presence });
+        return {
+            node: route[route.length - 1],
+            path: rawPath,
+            offset,
+            isConst:
+                !!node.isConst ||
+                !!node.compositeLayout?.isConst ||
+                route.some((member) => member.isConst || member.compositeLayout?.isConst),
+            displayPath: path,
+            kind: summary.kind,
+            empty: summary.kind === "function" && presence?.[presence.length - 1]?.value === 0
+        };
+    }
+    function displayTreeShape(tree) {
+        const flags = (node, depth = 0) =>
+            node && depth <= MAX_COMPOSITE_DEPTH
+                ? [
+                      node.isPointer,
+                      node.memberRole,
+                      node.stdSummary,
+                      node.members?.map((member) => flags(member, depth + 1)),
+                      node.elements?.map((element) => flags(element, depth + 1))
+                  ]
+                : null;
+        return JSON.stringify([runtimeTreeShape(tree), flags(tree)]);
+    }
+    function displayUnavailableRows(layout, path, maxEntries = 64, symbol, showRaw = false) {
+        if (showRaw) return layoutUnavailableRows(layout, path, maxEntries, symbol);
+        const rows = [];
+        const pending = [{ node: layout, path, depth: 0 }];
+        let visits = 0;
+        while (pending.length && rows.length < maxEntries && ++visits <= MAX_LAYOUT_VISITS) {
+            const current = pending.pop();
+            const node = layoutBranch(symbol, current.node, current.path);
+            if (!node || current.depth > MAX_LAYOUT_PATH_DEPTH) continue;
+            if (node.unobservable) {
+                rows.push({
+                    path: current.path,
+                    unobservable: node.unobservable,
+                    expansionHandle: node.expansionHandle
+                });
+                continue;
+            }
+            const summary = summaryRow(node, current.path);
+            if (summary) pending.push({ node: summary.node, path: summary.path, depth: current.depth + 1 });
+            else if (node.compositeLayout)
+                pending.push({ ...current, node: node.compositeLayout, depth: current.depth + 1 });
+            else if (node.kind === "array") {
+                for (let index = Math.min(Number(node.totalElements) || 0, 16) - 1; index >= 0; index--)
+                    pending.push({ ...current, node: node.elementType, path: current.path + "[" + index + "]" });
+            } else
+                for (let index = (node.members || []).length - 1; index >= 0; index--) {
+                    const member = node.members[index];
+                    if (memberVisible(member))
+                        pending.push({
+                            node: member,
+                            path: layoutMemberPath(current.path, member),
+                            depth: current.depth
+                        });
+                }
+        }
+        return rows;
+    }
+    function hiddenMemberCount(node) {
+        let count = 0;
+        let visits = 0;
+        const walk = (current, depth = 0) => {
+            if (!current || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
+            const container = current.compositeLayout || current;
+            const promoted = summaryRoute(container)?.at(-1);
+            for (const member of container.members || container.fields || []) {
+                if (member.memberRole && member !== promoted) count++;
+                walk(member, depth + 1);
+            }
+            for (const element of container.elements || []) walk(element, depth + 1);
+            if (container.elementType) walk(container.elementType, depth + 1);
+        };
+        walk(node);
+        return count;
+    }
+    function renderMemberVisibility(container, node, name, showRaw, t, toggle) {
+        const hidden = showRaw ? 0 : hiddenMemberCount(node);
+        if (!showRaw && !hidden) return;
+        const document = container.ownerDocument;
+        const row = document.createElement("div");
+        row.className = "member-visibility";
+        row.dataset.variableName = name;
+        const note = document.createElement("span");
+        note.className = "hidden-members";
+        note.textContent = showRaw ? "" : t("lw.hiddenMembers", { n: hidden });
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "raw-members-toggle";
+        button.dataset.variableName = name;
+        button.textContent = t(showRaw ? "lw.hideRawMembers" : "lw.showRawMembers");
+        button.setAttribute("aria-pressed", String(!!showRaw));
+        button.onclick = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            toggle();
+        };
+        row.append(note, button);
+        container.appendChild(row);
+    }
+    // Display-only collection. Bulk chart collection keeps pointers and raw internals out.
+    function displayLayoutLeaves(symbol, layout, name, baseAddr, options = {}) {
+        const out = [];
+        const { showRaw = false, includePointers = false, maxArray = 16 } = options;
+        const maxDepth = symbol?.layoutExpansions ? MAX_LAYOUT_PATH_DEPTH : MAX_COMPOSITE_DEPTH;
+        let visits = 0;
+        const walk = (node, path, offset, labelPath, depth = 0, flags = {}) => {
+            if (!node || node.unobservable || depth > maxDepth || out.length >= 1000 || ++visits > MAX_LAYOUT_VISITS)
+                return;
+            flags = { ...flags, isConst: flags.isConst || !!node.isConst };
+            const promoted = !showRaw && summaryRow(node, path, offset);
+            if (promoted) {
+                walk(promoted.node, promoted.path, promoted.offset, labelPath, depth + 1, {
+                    ...flags,
+                    isConst: flags.isConst || promoted.isConst
+                });
+                return;
+            }
+            if (node.compositeLayout) {
+                walk(node.compositeLayout, path, offset, labelPath, depth, flags);
+            } else if (node.kind === "array") {
+                const elementType = node.elementType || {};
+                for (let index = 0; index < Math.min(Number(node.totalElements) || 0, maxArray); index++) {
+                    const childPath = path + "[" + index + "]";
+                    const element = layoutBranch(symbol, elementType, childPath);
+                    walk(
+                        element,
+                        childPath,
+                        offset + index * (Number(elementType.byteSize) || 0),
+                        labelPath + "[" + index + "]",
+                        depth + 1,
+                        { ...flags, layoutExpanded: flags.layoutExpanded || !!element.expansionRoot }
+                    );
+                }
+            } else if (node.members) {
+                for (const original of node.members) {
+                    if (!memberVisible(original, showRaw)) continue;
+                    const childPath = layoutMemberPath(path, original);
+                    const member = layoutBranch(symbol, original, childPath);
+                    walk(
+                        member,
+                        childPath,
+                        offset + (Number(member.offset) || 0),
+                        layoutMemberPath(labelPath, member),
+                        depth + 1,
+                        { ...flags, layoutExpanded: flags.layoutExpanded || !!member.expansionRoot }
+                    );
+                }
+            } else if (node.watchType && (includePointers || !node.isPointer)) {
+                out.push({
+                    path,
+                    label: labelPath.slice(name.length),
+                    ...(labelPath !== path ? { displayPath: labelPath, displayName: labelPath } : {}),
+                    address: (Number(baseAddr) + offset) >>> 0,
+                    size: Number(node.byteSize) || typeByteLength(node.watchType),
+                    type: node.watchType,
+                    typeName: node.typeName || node.watchType,
+                    ...(node.isPointer ? { isPointer: true, pointerTarget: node.pointerTarget } : {}),
+                    ...(flags.layoutExpanded
+                        ? { layoutExpanded: true, staticRuntimeStorage: !!symbol?.runtimeLayout }
+                        : {}),
+                    ...(node.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
+                    ...(node.isBoolean ? { isBoolean: true } : {}),
+                    ...(Number.isInteger(node.bitSize) ? { bitSize: node.bitSize, bitOffset: node.bitOffset } : {}),
+                    ...(flags.isConst ? { isConst: true } : {}),
+                    ...(node.isReference ? { isReference: true } : {}),
+                    ...(node.isMemberPointer ? { isMemberPointer: true } : {})
+                });
+            }
+        };
+        walk(layout, name, 0, name);
+        return out;
+    }
+    function displayRuntimeSelection(symbol, tree, showRaw = false) {
+        const selection = runtimeSelection(symbol, tree);
+        if (!selection) return null;
+        const metadata = new Map();
+        const promotedEntries = new Map();
+        const graph = runtimeGraph(symbol);
+        const promote = (node, segments, role) => {
+            if (!node || showRaw || role || node.unavailable || node.unobservable || promotedEntries.size >= 200)
+                return;
+            const path =
+                symbol.name +
+                segments
+                    .map((segment) => (segment.kind === "index" ? "[" + segment.index + "]" : "." + segment.name))
+                    .join("");
+            const summary = summaryRow(node, path);
+            if (!summary) return;
+            const route = summaryRoute(node);
+            const entry = runtimeWatchEntry(summary.path, symbol, [
+                ...segments,
+                ...route.filter((member) => member.name).map((member) => ({ kind: "member", name: member.name }))
+            ]);
+            // The existing semantic-path validator remains authoritative for every recipe.
+            if (!entry || entry.isComposite) return;
+            promotedEntries.set(summary.path, {
+                ...entry,
+                path: summary.path,
+                label: path.slice(symbol.name.length),
+                displayPath: path,
+                displayName: variableDisplayName({ name: path }, [symbol]),
+                typeName: summary.node.typeName || entry.type,
+                ...(summary.node.isPointer || ["pointer", "reference"].includes(summary.node.kind)
+                    ? { isPointer: true, pointerTarget: summary.node.pointerTarget }
+                    : {})
+            });
+        };
+        let summaryVisits = 0;
+        const summaryType = (id, depth = 0) => {
+            const type = runtimeType(graph, id);
+            if (!type || depth > 8 || ++summaryVisits > 256) return null;
+            return {
+                ...type,
+                members: (type.fields || []).slice(0, 256).map((field) => ({
+                    ...runtimeType(graph, field.type),
+                    ...field,
+                    ...(field.isBase || field.memberRole ? summaryType(field.type, depth + 1) : {}),
+                    name: field.name,
+                    memberRole: field.memberRole
+                }))
+            };
+        };
+        let visits = 0;
+        const walk = (node, path, role, depth = 0, segments = []) => {
+            if (!node || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
+            metadata.set(path, { ...node, memberRole: role || node.memberRole });
+            promote(node, segments, role || node.memberRole);
+            for (const member of node.members || [])
+                walk(
+                    member,
+                    member.isBase || member.name === "?" || /^@base\d+$/.test(member.name)
+                        ? path
+                        : layoutMemberPath(path, member),
+                    role || member.memberRole,
+                    depth + 1,
+                    member.name ? [...segments, { kind: "member", name: member.name }] : segments
+                );
+            for (const element of node.elements || [])
+                walk(element, path + "[" + element.index + "]", role, depth + 1, [
+                    ...segments,
+                    { kind: "index", index: element.index }
+                ]);
+        };
+        const walkType = (id, path, role, depth = 0, segments = []) => {
+            const type = runtimeType(graph, id);
+            if (!type || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
+            metadata.set(path, {
+                memberRole: role,
+                isPointer: ["pointer", "reference"].includes(type.kind),
+                typeName: type.typeName
+            });
+            if (type.stdSummary) {
+                summaryVisits = 0;
+                promote(summaryType(id), segments, role);
+            }
+            if (type.stl) return;
+            for (const field of type.fields || [])
+                walkType(
+                    field.type,
+                    field.isBase || field.name === "?" ? path : layoutMemberPath(path, field),
+                    role || field.memberRole,
+                    depth + 1,
+                    field.name ? [...segments, { kind: "member", name: field.name }] : segments
+                );
+            if (type.kind === "array")
+                for (let index = 0; index < Math.min(type.count || 0, 16); index++)
+                    walkType(type.target, path + "[" + index + "]", role, depth + 1, [
+                        ...segments,
+                        { kind: "index", index }
+                    ]);
+        };
+        if (tree) walk(tree, symbol.name);
+        else walkType(graph?.root, symbol.name);
+        return {
+            ...selection,
+            entries: selection.entries
+                .filter((entry) => memberVisible(metadata.get(entry.path), showRaw))
+                .map((entry) => {
+                    const info = metadata.get(entry.path);
+                    return { ...entry, ...(info?.isPointer ? { isPointer: true, typeName: info.typeName } : {}) };
+                })
+                .filter((entry) => !promotedEntries.has(entry.path))
+                .concat([...promotedEntries.values()])
+                .slice(0, 200)
+        };
+    }
     function layoutMemberPath(path, member) {
         return member.name
             ? path + "." + member.name
@@ -263,8 +606,6 @@
             (entry) => entry?.kind === "pointer" || entry?.kind === "reference"
         );
         const hasContainers = runtimeContainsContainer(graph, graph.root);
-        if (hasPointerTypes && !hasContainers) return null;
-        if (segments.some((segment) => segment?.kind === "dereference")) return null;
         const field = (type, name) => runtimeFieldType(graph, type, name);
         const inherits = (type, base, seen = new Set()) => {
             if (!type || seen.has(type)) return false;
@@ -294,9 +635,20 @@
         };
         let type = rootType;
         let enteredContainer = !!rootType.stl;
+        // Raw pointers outside STL are followed only where the path explicitly dereferences
+        // them (`.value` or `->`), one user-requested level at a time, and never into
+        // void, function or declaration-only targets.
+        let followed = false;
         for (const segment of segments) {
             if (!type) return null;
-            if (["pointer", "reference"].includes(type.kind) && !enteredContainer) return null;
+            if (["pointer", "reference"].includes(type.kind) && !enteredContainer) {
+                const explicit =
+                    segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value");
+                if (!explicit || (type.pointerTarget && type.pointerTarget !== "data")) return null;
+                followed = true;
+                type = unwrap(type.target);
+                continue;
+            }
             if (type.kind === "reference") type = unwrap(type.target);
             if (type?.kind === "pointer") {
                 type = unwrap(type.target);
@@ -342,12 +694,15 @@
             } else if (segment.kind === "member") type = member(type, segment.name);
             else return null;
         }
+        if (!followed && hasPointerTypes && !hasContainers) return null;
+        if (!followed && segments.some((segment) => segment?.kind === "dereference")) return null;
         if (type?.stl) enteredContainer = true;
         const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
         if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
         if (!type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType))
             return null;
-        const displayName = variableDisplayName({ name }, [symbol]);
+        const named = variableDisplayName({ name }, [symbol]);
+        const displayName = followed && /\.value$/.test(named) ? "*" + named.slice(0, -".value".length) : named;
         return {
             name,
             address: symbol.address,
@@ -363,9 +718,51 @@
                 : {}),
             runtimeLayout: graph,
             runtimeSegments: segments,
-            ...(hasContainers && !enteredContainer ? { runtimeStaticPointers: true } : {}),
+            ...(followed || (hasContainers && !enteredContainer) ? { runtimeStaticPointers: true } : {}),
+            ...(followed ? { derefPath: true } : {}),
             ...(displayName !== name ? { displayName } : {})
         };
+    }
+    // Member segments of a watch path (`a.b[2]->c`), after its base symbol name.
+    function memberPathSegments(name) {
+        const text = String(name || "");
+        const base = variableBaseName(text);
+        const rest = text.slice(base.length);
+        const segments = [];
+        const pattern = /\.(@base\d+|\?|[A-Za-z_]\w*)|\[(\d+)\]|->([A-Za-z_]\w*)/y;
+        while (pattern.lastIndex < rest.length) {
+            const match = pattern.exec(rest);
+            if (!match || segments.length > MAX_LAYOUT_PATH_DEPTH) return null;
+            if (match[1]) segments.push({ kind: "member", name: match[1] });
+            else if (match[2] !== undefined) segments.push({ kind: "index", index: Number(match[2]) });
+            else segments.push({ kind: "dereference" }, { kind: "member", name: match[3] });
+        }
+        return { base, segments };
+    }
+    // The read-only watch entry showing what one pointer row points to, or null when
+    // the target cannot be dereferenced safely (null graph, void/function/incomplete).
+    function pointerDerefEntry(path, symbol) {
+        const parsed = memberPathSegments(path);
+        if (!parsed || !symbol?.name || parsed.base !== symbol.name || !runtimeGraph(symbol)) return null;
+        return runtimeWatchEntry(path + ".value", symbol, [...parsed.segments, { kind: "member", name: "value" }]);
+    }
+    function renderPointerFollow(container, path, symbol, t, follow) {
+        const entry = pointerDerefEntry(path, symbol);
+        if (!entry) return null;
+        const button = container.ownerDocument.createElement("button");
+        button.type = "button";
+        button.className = "pointer-follow";
+        button.textContent = "\u21b3";
+        button.title = t("lw.followPointer");
+        button.setAttribute("aria-label", t("lw.followPointer") + ": " + path);
+        button.dataset.path = path;
+        button.onclick = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            follow(entry);
+        };
+        container.appendChild(button);
+        return button;
     }
     function runtimeGraph(symbol) {
         return symbol?.runtimeLayout || symbol?.compositeLayout?.runtimeLayout || null;
@@ -548,6 +945,18 @@
         layoutUnavailableRows,
         layoutBranch,
         layoutMemberPath,
+        formatPointer,
+        summaryRoute,
+        memberVisible,
+        pointerDisplay,
+        pointerNodeValue,
+        summaryRow,
+        hiddenMemberCount,
+        renderMemberVisibility,
+        displayLayoutLeaves,
+        displayRuntimeSelection,
+        displayTreeShape,
+        displayUnavailableRows,
         layoutArrayIndices,
         layoutExpansionError,
         createLayoutExpansionUi,
@@ -563,6 +972,9 @@
         renderVariableName,
         translate,
         runtimeWatchEntry,
+        memberPathSegments,
+        pointerDerefEntry,
+        renderPointerFollow,
         runtimeGraph,
         requiresRuntimePath,
         runtimeSelection,

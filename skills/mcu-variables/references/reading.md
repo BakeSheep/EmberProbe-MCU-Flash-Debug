@@ -45,6 +45,13 @@ may be partial, and whole objects cannot be scalar trends; request a supported s
 `LIVE_OBJECT_CHANGED` means a descriptor changed during the read, so that sample is invalid;
 `LIVE_ADDRESS_NOT_RAM`, `LIVE_LAYOUT_UNSUPPORTED`, null/cycle and budget diagnostics must
 remain unavailable, not be bypassed with an explicit scalar suffix or direct Tcl read.
+Raw pointers outside STL are followed only through an explicit `.value` or `->` segment,
+one level per request, never into `void`, function or declaration-only targets; such targets
+are read-only. Pointer leaves report `isPointer`, `pointerTarget`, a hexadecimal `valueText`
+and, when the ELF symbols resolve it, `pointerText` such as `→ &rxBuf[12]`; report the
+address and annotation instead of the decimal value. Composite results keep every raw member;
+`memberRole: "artificial" | "internal"` marks compiler and standard-library internals that the
+EmberProbe UI hides by default. See `docs/POINTER-DISPLAY.md` in the extension repository.
 Running multi-read observations are not atomic snapshots. For task-local variables or
 GDB's paused object presentation and paging, read
 [../../mcu-debug-control/references/paused-inspection.md](../../mcu-debug-control/references/paused-inspection.md).

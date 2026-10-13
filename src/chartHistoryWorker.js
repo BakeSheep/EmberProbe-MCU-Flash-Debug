@@ -107,14 +107,17 @@ async function restoreHistory(store, request) {
     );
     let expectedRevision = state.revision;
     if ((request.fromOffset || 0) >= request.cutoff) return store.status(request.scope);
+    const checkUnchanged = () => {
+        if (store.scopes.get(request.scope) !== state || state.revision !== expectedRevision)
+            throw Object.assign(new Error("History changed while restoring"), {
+                code: "CHART_HISTORY_RESTORE_CANCELLED"
+            });
+    };
     const input = fs.createReadStream(request.dataPath, { start: request.fromOffset || 0, end: request.cutoff - 1 });
     const lines = readline.createInterface({ input, crlfDelay: Infinity });
     try {
         for await (const line of lines) {
-            if (store.scopes.get(request.scope) !== state || state.revision !== expectedRevision)
-                throw Object.assign(new Error("History changed while restoring"), {
-                    code: "CHART_HISTORY_RESTORE_CANCELLED"
-                });
+            checkUnchanged();
             let record;
             try {
                 record = JSON.parse(line);
@@ -147,6 +150,8 @@ async function restoreHistory(store, request) {
             store.append(request.scope, samples, record.t);
             expectedRevision = state.revision;
         }
+        // A clear/configure handled while awaiting end-of-file discarded what was restored.
+        checkUnchanged();
     } finally {
         lines.close();
         input.destroy();

@@ -4,6 +4,7 @@ const c = require("./constants");
 const { encodingToWatchType, resolveTypeInfo, createVariableTypeIndex, unwrapAliases } = require("./types");
 const { arrayDimensions } = require("./subranges");
 const { MAX_COMPOSITE_NODES, MAX_COMPOSITE_BYTES, MAX_TYPE_ALIASES } = require("./layoutLimits");
+const { memberRole, stdSummary } = require("./memberRoles");
 const MAX_RUNTIME_DEPTH = 128;
 const MAX_RUNTIME_TYPES = 4096;
 
@@ -71,6 +72,24 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
             return limitedIds.get(code);
         };
         const partial = (id) => !!types[id]?.unobservable || !!types[id]?.truncated;
+        // Pointer DIEs are unnamed; name them after the first named type behind the aliases.
+        const nameOf = (id) => {
+            for (let step = 0; step < MAX_TYPE_ALIASES && types[id]; step++) {
+                if (types[id].typeName) return types[id].typeName;
+                if (types[id].kind !== "alias") return "";
+                id = types[id].target;
+            }
+            return "";
+        };
+        const pointerTarget = (ref) => {
+            if (ref === undefined) return "void";
+            const pointee = unwrapAliases(ref, parsed.dies);
+            if (pointee.unobservable) return "data";
+            const target = parsed.dies.get(pointee.ref);
+            if (pointee.ref === undefined) return "void";
+            if (target?.tag === c.DW_TAG_subroutine_type) return "function";
+            return COMPOSITES.has(target?.tag) && target.isDecl ? "incomplete" : "data";
+        };
         const fullBudget = {
             maxTypes: MAX_RUNTIME_TYPES - 3,
             maxWork: MAX_COMPOSITE_NODES,
@@ -131,13 +150,25 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                     node.kind = die.tag === c.DW_TAG_pointer_type ? "pointer" : "reference";
                     node.byteSize = 4;
                     node.target = visit(die.typeRef, depth + 1, false, budget);
+                    node.pointerTarget = pointerTarget(die.typeRef);
+                    node.typeName ||=
+                        (nameOf(node.target) || (node.pointerTarget === "function" ? "function" : "void")) +
+                        (node.kind === "pointer" ? " *" : " &");
                     dynamic = true;
                     if (partial(node.target)) node.truncated = true;
                 } else if (
                     [c.DW_TAG_base_type, c.DW_TAG_enumeration_type, c.DW_TAG_ptr_to_member_type].includes(die.tag)
                 ) {
                     node.kind = "scalar";
-                    node.watchType = encodingToWatchType(die.encoding, node.byteSize);
+                    if (die.tag === c.DW_TAG_ptr_to_member_type) {
+                        // ARM GCC omits DW_AT_byte_size: a member function pointer is two words.
+                        node.byteSize ||= pointerTarget(die.typeRef) === "function" ? 8 : 4;
+                        node.isMemberPointer = true;
+                    }
+                    node.watchType = encodingToWatchType(
+                        die.tag === c.DW_TAG_ptr_to_member_type ? c.DW_ATE_unsigned : die.encoding,
+                        node.byteSize
+                    );
                     if (die.tag === c.DW_TAG_enumeration_type) {
                         const info = resolveTypeInfo(ref, parsed.dies, parsed.childrenMap, scalarCache);
                         node.byteSize = info.byteSize;
@@ -187,6 +218,8 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                     node.kind = die.tag === c.DW_TAG_union_type ? "union" : "class";
                     node.fields = [];
                     node.args = [];
+                    const summary = stdSummary(node.typeName);
+                    if (summary) node.stdSummary = summary;
                     const argumentRefs = [];
                     const pending = [...offsets];
                     const seen = new Set();
@@ -244,8 +277,14 @@ function createRuntimeLayoutResolver(parsed, symbols = []) {
                         const child = parsed.dies.get(off);
                         const target = visit(child.typeRef, depth + 1, true, childBudget());
                         const isBase = child.tag === c.DW_TAG_inheritance;
+                        const role = memberRole(node.typeName, {
+                            name: child.name,
+                            isBase,
+                            isArtificial: child.isArtificial
+                        });
                         node.fields.push({
                             name: isBase ? "@base" + base++ : child.name || "?",
+                            ...(role ? { memberRole: role } : {}),
                             type: target,
                             offset: child.memberOffset,
                             expression: child.memberOffset === undefined ? child.memberExpression : undefined,

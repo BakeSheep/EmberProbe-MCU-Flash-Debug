@@ -38,6 +38,7 @@ const {
     DW_AT_upper_bound,
     DW_AT_linkage_name,
     DW_AT_virtuality,
+    DW_AT_artificial,
     DW_ATE_boolean,
     DW_ATE_float,
     DW_ATE_signed,
@@ -324,6 +325,9 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         break;
                                     case DW_AT_virtuality:
                                         if (typeof v === "number") rec.virtuality = v;
+                                        break;
+                                    case DW_AT_artificial:
+                                        rec.isArtificial = !!v;
                                         break;
                                     case DW_AT_type:
                                         if (v && v.ref !== undefined) rec.typeRef = v.ref;

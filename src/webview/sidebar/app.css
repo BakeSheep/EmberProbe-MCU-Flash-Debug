@@ -343,3 +343,69 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     flex: none;
     height: 22px;
 }
+
+.member-visibility {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 4px 0;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+}
+.raw-members-toggle {
+    padding: 2px 5px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+    border-radius: 3px;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+}
+.raw-members-toggle:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+.raw-members-toggle:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+.pointer-pointee {
+    margin-left: 10px;
+    padding-left: 6px;
+    border-left: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
+.sb-mrow:has(.pointer-pointee) {
+    align-items: start;
+}
+.sb-mval {
+    max-width: 100%;
+}
+
+.summary-head {
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+}
+
+.pointer-follow {
+    flex: none;
+    margin-left: 4px;
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--vscode-textLink-foreground);
+    background: transparent;
+    font: inherit;
+    line-height: 1.2;
+    cursor: pointer;
+}
+.pointer-follow:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+.pointer-follow:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}

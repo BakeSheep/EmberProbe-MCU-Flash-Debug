@@ -138,6 +138,10 @@ class ElfService {
             if (info?.isConst) symbol.isConst = true;
             if (info?.isReference) symbol.isReference = true;
             if (info?.isMemberPointer) symbol.isMemberPointer = true;
+            if (info?.isPointer) {
+                symbol.isPointer = true;
+                symbol.pointerTarget = info.pointerTarget;
+            }
             if (symbol.isComposite) {
                 symbol.compositeLayout = hasLayout ? layout : null;
                 symbol.unsupportedReason = hasLayout

@@ -65,6 +65,8 @@ function resolveLeafPath(name, byName, supported) {
             : {}),
         ...(leaf.enumInfo ? { enumInfo: leaf.enumInfo } : {}),
         ...(leaf.isBoolean ? { isBoolean: true } : {}),
+        ...(leaf.isPointer ? { isPointer: true, pointerTarget: leaf.pointerTarget } : {}),
+        ...(leaf.isPointer && leaf.memberRole ? { memberRole: leaf.memberRole } : {}),
         ...(Number.isInteger(leaf.bitSize) ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset } : {})
     };
 }
@@ -90,7 +92,10 @@ function normalizeWatchList(items, symbols) {
         const runtime = runtimeSymbol && runtimeWatchEntry(item.name, runtimeSymbol, path?.segments || []);
         if (runtime) {
             seen.add(item.name);
-            result.push(runtime);
+            result.push({
+                ...runtime,
+                ...(symbol?.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {})
+            });
             continue;
         }
         if (runtimeSymbol && requiresRuntimePath(runtimeSymbol, path?.segments || [])) continue;
@@ -137,6 +142,7 @@ function normalizeWatchList(items, symbols) {
             type,
             ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
             ...(symbol.isBoolean ? { isBoolean: true } : {}),
+            ...(symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {}),
             ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {})
         });
     }

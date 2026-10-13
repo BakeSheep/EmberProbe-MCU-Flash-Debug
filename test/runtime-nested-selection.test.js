@@ -294,7 +294,15 @@ function segments(name) {
         }
         const raw = recipe(holder, "holder.raw");
         assert.strictEqual((await new RuntimeObjectReader(raw, read).sample()).value, 0xdeadbeef);
-        assert.strictEqual(runtime.runtimeWatchEntry("holder.raw.value", holder, segments("holder.raw.value")), null);
+        // A raw pointer beside a container is never chased implicitly; an explicit `.value`
+        // dereference is a read-only request that still honours the verified-range whitelist.
+        const rawTarget = runtime.runtimeWatchEntry("holder.raw.value", holder, segments("holder.raw.value"));
+        assert.strictEqual(rawTarget.derefPath, true);
+        assert.strictEqual(rawTarget.runtimeStaticPointers, true);
+        await assert.rejects(
+            new RuntimeObjectReader({ ...raw, ...rawTarget, runtimeRanges: raw.runtimeRanges }, read).sample(),
+            { code: "LIVE_ADDRESS_NOT_RAM" }
+        );
         // Relocation refreshes semantic elements without persisting their heap addresses.
         await setup(holder.address, base + 4288);
         word(base + 4292, 99);
