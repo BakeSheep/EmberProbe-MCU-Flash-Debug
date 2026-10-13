@@ -766,12 +766,42 @@ class RuntimeObjectReader {
             throw error;
         }
     }
+    // A dereferenced char shows up to 32 bytes of the string it starts. The read stays
+    // inside one verified memory range and within the per-cycle budget.
+    async stringPreview(object) {
+        const type = this.type(object.type);
+        if (type.kind !== "scalar" || !["u8", "i8"].includes(type.watchType) || !/\bchar\b/.test(type.typeName || ""))
+            return null;
+        const range = this.item.runtimeRanges?.find(
+            (entry) => object.address >= entry.start && object.address < entry.end
+        );
+        if (!range) throw failure("LIVE_ADDRESS_NOT_RAM", "Runtime object points outside verified ELF memory ranges");
+        const bytes = await this.memory(object.address, Math.min(32, range.end - object.address));
+        const end = bytes.indexOf(0);
+        const text = bytes
+            .subarray(0, end < 0 ? bytes.length : end)
+            .toString("latin1")
+            .replace(/[\x00-\x1f\x7f-\xff"\\]/g, (char) =>
+                char === '"' || char === "\\" ? "\\" + char : "\\x" + char.charCodeAt(0).toString(16).padStart(2, "0")
+            );
+        return {
+            kind: "scalar",
+            type: type.watchType,
+            typeName: type.typeName,
+            address: object.address,
+            value: type.watchType === "i8" ? bytes.readInt8(0) : bytes[0],
+            valueText: '"' + text + '"' + (end < 0 ? "\u2026" : ""),
+            stringPreview: true
+        };
+    }
     async sample() {
         const object = await this.select(
             await this.dynamic({ address: this.item.address, type: this.graph.root }),
             this.item.runtimeSegments || []
         );
-        const tree = await this.tree(object);
+        const tree = this.item.derefPath
+            ? (await this.stringPreview(object)) || (await this.tree(object))
+            : await this.tree(object);
         for (const [address, original] of this.descriptors) {
             this.verificationBudget.bytes -= original.length;
             this.verificationBudget.commands--;

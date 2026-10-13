@@ -450,6 +450,8 @@ function renderValues() {
         const nameWrap = document.createElement("span");
         nameWrap.className = "value-name-wrap";
         nameWrap.append(n, ty);
+        if (info.isPointer && info.pointerTarget === "data")
+            EmberProbeRuntime.renderPointerFollow(nameWrap, item.name, sbLayoutSymbol(item.name), t, sbFollowPointer);
         const rm = document.createElement("button");
         rm.className = "watch-remove";
         rm.textContent = "✕";
@@ -1422,6 +1424,9 @@ function sbNote(container, txt) {
     n.textContent = txt;
     container.appendChild(n);
 }
+function sbFollowPointer(entry) {
+    if (!sideWatch.some((item) => item.name === entry.name)) sbToggle(entry);
+}
 function sbRenderLeaf(container, label, typeName, path, watchType, node) {
     const row = document.createElement("div");
     row.className = "sb-mrow";
@@ -1446,6 +1451,8 @@ function sbRenderLeaf(container, label, typeName, path, watchType, node) {
     row.dataset.path = path;
     ty.title = ty.textContent;
     row.append(nm, ty, val);
+    if (node?.isPointer && node.pointerTarget === "data")
+        EmberProbeRuntime.renderPointerFollow(row, path, sbLayoutSymbol(path), t, sbFollowPointer);
     container.appendChild(row);
 }
 function sbRenderLayout(container, layout, path, displayPath = path) {

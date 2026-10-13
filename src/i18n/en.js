@@ -557,6 +557,7 @@ module.exports = Object.freeze({
     "lw.hiddenMembers": "{n} internal members hidden",
     "lw.pointerNull": "NULL",
     "lw.functionEmpty": "empty",
+    "lw.followPointer": "Show the pointed-to object (read-only)",
     "lw.addToChart": "Add to chart",
     "lw.removeFromChart": "Remove from chart",
     "lw.clearFilter": "Clear filter",

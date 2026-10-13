@@ -149,6 +149,7 @@ const TEST_GROUPS = Object.freeze({
         "peripheral-view.test.js",
         "peripheral-viewer-integration.test.js",
         "pretty-printing-modes.test.js",
+        "pointer-deref.test.js",
         "pointer-display.test.js",
         "probe-automatic.test.js",
         "probe-connection-service.test.js",

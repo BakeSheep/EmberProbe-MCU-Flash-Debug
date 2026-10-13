@@ -606,8 +606,6 @@
             (entry) => entry?.kind === "pointer" || entry?.kind === "reference"
         );
         const hasContainers = runtimeContainsContainer(graph, graph.root);
-        if (hasPointerTypes && !hasContainers) return null;
-        if (segments.some((segment) => segment?.kind === "dereference")) return null;
         const field = (type, name) => runtimeFieldType(graph, type, name);
         const inherits = (type, base, seen = new Set()) => {
             if (!type || seen.has(type)) return false;
@@ -637,9 +635,20 @@
         };
         let type = rootType;
         let enteredContainer = !!rootType.stl;
+        // Raw pointers outside STL are followed only where the path explicitly dereferences
+        // them (`.value` or `->`), one user-requested level at a time, and never into
+        // void, function or declaration-only targets.
+        let followed = false;
         for (const segment of segments) {
             if (!type) return null;
-            if (["pointer", "reference"].includes(type.kind) && !enteredContainer) return null;
+            if (["pointer", "reference"].includes(type.kind) && !enteredContainer) {
+                const explicit =
+                    segment.kind === "dereference" || (segment.kind === "member" && segment.name === "value");
+                if (!explicit || (type.pointerTarget && type.pointerTarget !== "data")) return null;
+                followed = true;
+                type = unwrap(type.target);
+                continue;
+            }
             if (type.kind === "reference") type = unwrap(type.target);
             if (type?.kind === "pointer") {
                 type = unwrap(type.target);
@@ -685,12 +694,15 @@
             } else if (segment.kind === "member") type = member(type, segment.name);
             else return null;
         }
+        if (!followed && hasPointerTypes && !hasContainers) return null;
+        if (!followed && segments.some((segment) => segment?.kind === "dereference")) return null;
         if (type?.stl) enteredContainer = true;
         const rawPointer = !enteredContainer && ["pointer", "reference"].includes(type?.kind);
         if (type?.kind === "reference" && !rawPointer) type = unwrap(type.target);
         if (!type || type.unobservable || type.kind === "unavailable" || (type.kind === "scalar" && !type.watchType))
             return null;
-        const displayName = variableDisplayName({ name }, [symbol]);
+        const named = variableDisplayName({ name }, [symbol]);
+        const displayName = followed && /\.value$/.test(named) ? "*" + named.slice(0, -".value".length) : named;
         return {
             name,
             address: symbol.address,
@@ -706,9 +718,51 @@
                 : {}),
             runtimeLayout: graph,
             runtimeSegments: segments,
-            ...(hasContainers && !enteredContainer ? { runtimeStaticPointers: true } : {}),
+            ...(followed || (hasContainers && !enteredContainer) ? { runtimeStaticPointers: true } : {}),
+            ...(followed ? { derefPath: true } : {}),
             ...(displayName !== name ? { displayName } : {})
         };
+    }
+    // Member segments of a watch path (`a.b[2]->c`), after its base symbol name.
+    function memberPathSegments(name) {
+        const text = String(name || "");
+        const base = variableBaseName(text);
+        const rest = text.slice(base.length);
+        const segments = [];
+        const pattern = /\.(@base\d+|\?|[A-Za-z_]\w*)|\[(\d+)\]|->([A-Za-z_]\w*)/y;
+        while (pattern.lastIndex < rest.length) {
+            const match = pattern.exec(rest);
+            if (!match || segments.length > MAX_LAYOUT_PATH_DEPTH) return null;
+            if (match[1]) segments.push({ kind: "member", name: match[1] });
+            else if (match[2] !== undefined) segments.push({ kind: "index", index: Number(match[2]) });
+            else segments.push({ kind: "dereference" }, { kind: "member", name: match[3] });
+        }
+        return { base, segments };
+    }
+    // The read-only watch entry showing what one pointer row points to, or null when
+    // the target cannot be dereferenced safely (null graph, void/function/incomplete).
+    function pointerDerefEntry(path, symbol) {
+        const parsed = memberPathSegments(path);
+        if (!parsed || !symbol?.name || parsed.base !== symbol.name || !runtimeGraph(symbol)) return null;
+        return runtimeWatchEntry(path + ".value", symbol, [...parsed.segments, { kind: "member", name: "value" }]);
+    }
+    function renderPointerFollow(container, path, symbol, t, follow) {
+        const entry = pointerDerefEntry(path, symbol);
+        if (!entry) return null;
+        const button = container.ownerDocument.createElement("button");
+        button.type = "button";
+        button.className = "pointer-follow";
+        button.textContent = "\u21b3";
+        button.title = t("lw.followPointer");
+        button.setAttribute("aria-label", t("lw.followPointer") + ": " + path);
+        button.dataset.path = path;
+        button.onclick = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            follow(entry);
+        };
+        container.appendChild(button);
+        return button;
     }
     function runtimeGraph(symbol) {
         return symbol?.runtimeLayout || symbol?.compositeLayout?.runtimeLayout || null;
@@ -918,6 +972,9 @@
         renderVariableName,
         translate,
         runtimeWatchEntry,
+        memberPathSegments,
+        pointerDerefEntry,
+        renderPointerFollow,
         runtimeGraph,
         requiresRuntimePath,
         runtimeSelection,

@@ -546,6 +546,7 @@ module.exports = Object.freeze({
     "lw.hiddenMembers": "已隐藏 {n} 个内部成员",
     "lw.pointerNull": "NULL（空指针）",
     "lw.functionEmpty": "空",
+    "lw.followPointer": "查看指向的对象（只读）",
     "lw.addToChart": "加入图表",
     "lw.removeFromChart": "从图表移除",
     "lw.clearFilter": "清除筛选",

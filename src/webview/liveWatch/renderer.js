@@ -649,6 +649,8 @@ function renderVars() {
             type.textContent = info.typeName || item.type;
             type.title = type.textContent;
             main.appendChild(type);
+            if (info.pointerTarget === "data")
+                EmberProbeRuntime.renderPointerFollow(main, item.name, layoutSymbol(item.name), t, followPointer);
         }
         if (controls) controls.decorate(card, item.name, sw);
         var rm = document.createElement("button");
@@ -774,6 +776,9 @@ function updateCompositeValues(name) {
         );
     });
 }
+function followPointer(entry) {
+    addSymbol(entry, true);
+}
 function renderLeafInto(container, label, typeName, path, watchType, address, node) {
     var row = document.createElement("div");
     row.className = "member-row";
@@ -809,6 +814,8 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     ty.title = ty.textContent;
     row.dataset.path = path;
     row.append(toggle, ty, val);
+    if (node?.isPointer && node.pointerTarget === "data")
+        EmberProbeRuntime.renderPointerFollow(row, path, layoutSymbol(path), t, followPointer);
     container.appendChild(row);
 }
 function renderNestInto(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
