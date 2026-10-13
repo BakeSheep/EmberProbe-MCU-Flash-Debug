@@ -13,6 +13,8 @@ const {
     layoutBranch,
     layoutMemberPath,
     layoutArrayIndices,
+    formatPointer,
+    summaryRoute,
     MAX_LAYOUT_PATH_DEPTH,
     MAX_LAYOUT_VISITS
 } = require("./webview/runtime");
@@ -503,8 +505,26 @@ function leafFlags(member, isConst) {
         ...(member.isBoolean ? { isBoolean: true } : {}),
         ...(member.isConst || isConst ? { isConst: true } : {}),
         ...(member.isReference ? { isReference: true } : {}),
-        ...(member.isMemberPointer ? { isMemberPointer: true } : {})
+        ...(member.isMemberPointer ? { isMemberPointer: true } : {}),
+        ...(member.isPointer ? { isPointer: true, pointerTarget: member.pointerTarget } : {})
     };
+}
+
+// Display state carried down a layout walk: an inherited hiding role, the remaining route
+// to a library object's summary member, and the display alias once that member is reached.
+function memberView(view, current, path, member, childPath) {
+    // An outer library summary that is already routing through this object takes precedence.
+    const summary = view.summary || (current.stdSummary ? { route: summaryRoute(current), owner: path } : null);
+    if (!summary?.route || summary.route[0] !== member)
+        return {
+            role: view.role || member.memberRole || (summary?.route ? "internal" : undefined),
+            alias: view.alias
+        };
+    const rest = summary.route.slice(1);
+    const owner = view.alias ? view.alias.to + summary.owner.slice(view.alias.from.length) : summary.owner;
+    return rest.length
+        ? { role: view.role, summary: { route: rest, owner: summary.owner }, alias: view.alias }
+        : { role: view.role, alias: { from: childPath, to: owner } };
 }
 
 function validateLayoutContext(symbol, layout) {
@@ -614,18 +634,23 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
     const baseAddr = Number(symbol.address) >>> 0;
     const leaves = [];
     let visits = 0;
-    const leaf = (member, offset, path, isConst, expanded) => ({
-        name: symbol.name,
-        path,
-        address: baseAddr + offset,
-        size: member.byteSize || typeByteLength(member.watchType),
-        type: member.watchType,
-        typeName: member.typeName || "",
-        ...leafFlags(member, isConst),
-        ...(expanded ? { layoutExpanded: true } : {}),
-        ...(Number.isInteger(member.bitSize) ? { bitSize: member.bitSize, bitOffset: member.bitOffset } : {})
-    });
-    function walk(node, offset, path, depth, pending = null, isConst = false, expanded = false) {
+    const leaf = (member, offset, path, isConst, expanded, view) => {
+        const displayPath = view.alias ? view.alias.to + path.slice(view.alias.from.length) : path;
+        return {
+            name: symbol.name,
+            path,
+            address: baseAddr + offset,
+            size: member.byteSize || typeByteLength(member.watchType),
+            type: member.watchType,
+            typeName: member.typeName || "",
+            ...leafFlags(member, isConst),
+            ...(view.role ? { memberRole: view.role } : {}),
+            ...(displayPath !== path ? { displayPath } : {}),
+            ...(expanded ? { layoutExpanded: true } : {}),
+            ...(Number.isInteger(member.bitSize) ? { bitSize: member.bitSize, bitOffset: member.bitOffset } : {})
+        };
+    };
+    function walk(node, offset, path, depth, pending = null, isConst = false, expanded = false, view = {}) {
         if (++visits > MAX_LAYOUT_VISITS)
             throw Object.assign(new Error("Layout consumer visit budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
         if (!node || node.unobservable) return;
@@ -639,14 +664,16 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
             for (const member of current.members || []) {
                 const cp = layoutMemberPath(path, member);
                 const resolved = layoutBranch(symbol, member, cp);
+                const childPath = layoutMemberPath(path, resolved);
                 walk(
                     resolved,
                     offset + (member.offset || 0),
-                    layoutMemberPath(path, resolved),
+                    childPath,
                     depth + 1,
                     null,
                     isConst,
-                    expanded
+                    expanded,
+                    memberView(view, current, path, member, childPath)
                 );
             }
         } else if (current.kind === "array") {
@@ -674,10 +701,11 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
                     depth + 1,
                     null,
                     isConst,
-                    expanded
+                    expanded,
+                    view
                 );
             }
-        } else if (node.watchType) leaves.push(leaf(node, offset, path, isConst, expanded));
+        } else if (node.watchType) leaves.push(leaf(node, offset, path, isConst, expanded, view));
     }
     if (pathSpec?.segments.length) {
         const target = resolveLayoutPath(symbol, layout, pathSpec);
@@ -741,12 +769,14 @@ function decodeComposite(bytes, layout, symbol = {}) {
                         name: m.name,
                         kind: m.kind || "unavailable",
                         typeName: m.typeName || "",
+                        ...(m.memberRole ? { memberRole: m.memberRole } : {}),
                         unobservable: m.unobservable
                     });
                 } else if (m.compositeLayout) {
                     members.push({
                         name: m.name,
                         ...decodeLayout(mOff, m.compositeLayout, layoutMemberPath(path, m), depth + 1, false),
+                        ...(m.memberRole ? { memberRole: m.memberRole } : {}),
                         ...(m.expansionRoot ? { expansionRoot: true } : {})
                     });
                 } else if (m.watchType) {
@@ -755,6 +785,7 @@ function decodeComposite(bytes, layout, symbol = {}) {
                     const decoded = Number.isInteger(m.bitSize)
                         ? decodeBitfield(mOff, m)
                         : { value: decodeScalar(mOff, m.watchType), valueText: decodeValueText(raw, m.watchType) };
+                    if (m.isPointer && decoded.value !== null) decoded.valueText = formatPointer(decoded.value);
                     members.push({
                         name: m.name,
                         offset: mOff,
@@ -762,6 +793,8 @@ function decodeComposite(bytes, layout, symbol = {}) {
                         ...(m.enumInfo ? { enumText: enumValueText(decoded, m.enumInfo) } : {}),
                         type: m.watchType,
                         typeName: m.typeName || "",
+                        ...(m.isPointer ? { isPointer: true, pointerTarget: m.pointerTarget } : {}),
+                        ...(m.memberRole ? { memberRole: m.memberRole } : {}),
                         ...(Number.isInteger(m.bitSize) ? { bitSize: m.bitSize, bitOffset: m.bitOffset } : {})
                     });
                 }
@@ -771,6 +804,7 @@ function decodeComposite(bytes, layout, symbol = {}) {
                 typeName: lyt.typeName,
                 byteSize: lyt.byteSize,
                 offset,
+                ...(lyt.stdSummary ? { stdSummary: lyt.stdSummary } : {}),
                 members,
                 ...(lyt.truncated ? { truncated: true } : {})
             };
@@ -797,6 +831,7 @@ function decodeComposite(bytes, layout, symbol = {}) {
                         value: decodeScalar(eOff, elemType.watchType),
                         valueText: decodeValueText(raw, elemType.watchType)
                     };
+                    if (elemType.isPointer && decoded.value !== null) decoded.valueText = formatPointer(decoded.value);
                     elements.push({
                         index: i,
                         offset: eOff,

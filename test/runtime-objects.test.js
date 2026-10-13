@@ -137,22 +137,26 @@ const elf = require("../src/elfSymbols");
         10
     );
     word(base + 32, 0);
-    await assert.rejects(
-        new RuntimeObjectReader(
-            { ...item, address: base + 32, runtimeLayout: refs, runtimeSegments: [] },
-            read
-        ).sample(),
-        { code: "LIVE_NULL_POINTER" }
-    );
+    const nullReference = await new RuntimeObjectReader(
+        { ...item, address: base + 32, runtimeLayout: refs, runtimeSegments: [] },
+        read
+    ).sample();
+    assert.strictEqual(nullReference.kind, "scalar");
+    assert.strictEqual(nullReference.isPointer, true);
+    assert.strictEqual(nullReference.value, 0);
+    assert.strictEqual(nullReference.valueText, "0x00000000");
     const cycle = { root: 0, types: [{ kind: "pointer", byteSize: 4, target: 0 }] };
     word(base + 32, base + 32);
-    await assert.rejects(
-        new RuntimeObjectReader(
-            { ...item, address: base + 32, runtimeLayout: cycle, runtimeSegments: [] },
-            read
-        ).sample(),
-        { code: "LIVE_POINTER_CYCLE" }
-    );
+    const cycleTree = await new RuntimeObjectReader(
+        { ...item, address: base + 32, runtimeLayout: cycle, runtimeSegments: [] },
+        read
+    ).sample();
+    assert.strictEqual(cycleTree.kind, "scalar");
+    assert.strictEqual(cycleTree.isPointer, true);
+    assert.strictEqual(cycleTree.address, base + 32);
+    assert.strictEqual(cycleTree.value, base + 32);
+    assert.strictEqual(cycleTree.valueText, "0x20000020");
+    assert.strictEqual(cycleTree.unavailable, "cycle");
     const virtual = {
         root: 1,
         types: [

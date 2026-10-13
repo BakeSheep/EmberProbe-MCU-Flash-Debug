@@ -65,6 +65,7 @@ const {
     selectPausedDebugReadSession,
     filterRuntimeRamPlan
 } = require("./services/liveWatchService");
+const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
@@ -151,7 +152,7 @@ class MainViewProvider {
         this._queuedChartHistoryBytes = 0;
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
-        this._liveWatchService = new LiveWatchService(elfSymbols);
+        this._liveWatchService = new LiveWatchService(elfSymbols, new PointerSymbolizer());
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this._samplingIntent = false;
         this._samplingCoordinator = new SamplingCoordinator();
@@ -327,7 +328,10 @@ class MainViewProvider {
             elfSymbols,
             dwarf,
             workerPath: path.join(__dirname, "elfWorker.js"),
-            onChange: (phase, result, entries) => this._onElfChange(phase, result, entries),
+            onChange: (phase, result, entries) => {
+                this._liveWatchService.setElfResult(result, true);
+                return this._onElfChange(phase, result, entries);
+            },
             cleanPath: cleanWindowsPath,
             t: (key, params) => this._t(key, params)
         });
@@ -3146,7 +3150,9 @@ class MainViewProvider {
         for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
     }
     readElfSymbols() {
-        return this._elfService.read();
+        const result = this._elfService.read();
+        this._liveWatchService?.setElfResult?.(result);
+        return result;
     }
     _symbolNameIndex(symbols) {
         if (!Array.isArray(symbols)) return new Map();
@@ -3898,7 +3904,11 @@ class MainViewProvider {
         const build = (key) => {
             const m = new Map();
             for (const item of this._scalarWatchList(key)) {
-                if (item?.name) m.set(item.name, Number.isInteger(item.bitSize) || item.enumInfo ? item : item.type);
+                if (item?.name)
+                    m.set(
+                        item.name,
+                        Number.isInteger(item.bitSize) || item.enumInfo || item.isPointer ? item : item.type
+                    );
             }
             return m;
         };
@@ -3906,12 +3916,25 @@ class MainViewProvider {
         // 写入列表变量按自身观察类型解码后推送到侧栏；同名变量以查看列表类型优先
         for (const item of this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
             if (item?.name && item.type && !sidebar.has(item.name)) {
-                const symbol = this.readElfSymbols().symbols.find((entry) => entry.name === item.name);
+                const symbols = this.readElfSymbols().symbols;
+                const symbol =
+                    symbols.find((entry) => entry.name === item.name) ||
+                    validation.normalizeWatchList([item], symbols)[0];
                 const enumInfo = symbol?.watchType === item.type ? symbol.enumInfo : null;
                 sidebar.set(
                     item.name,
-                    Number.isInteger(item.bitSize) || enumInfo
-                        ? { ...item, ...(enumInfo ? { enumInfo } : {}) }
+                    Number.isInteger(item.bitSize) || enumInfo || symbol?.isPointer
+                        ? {
+                              ...item,
+                              ...(enumInfo ? { enumInfo } : {}),
+                              ...(symbol?.isPointer
+                                  ? {
+                                        isPointer: true,
+                                        pointerTarget: symbol.pointerTarget,
+                                        ...(symbol.memberRole ? { memberRole: symbol.memberRole } : {})
+                                    }
+                                  : {})
+                          }
                         : item.type
                 );
             }

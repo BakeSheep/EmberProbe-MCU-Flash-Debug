@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 指针变量与 C++ 类显示优化：指针以十六进制显示、空指针显示 NULL，并根据 ELF 符号标注指向（函数名、`&数组[下标]`、虚表对应的动态类型或内存区域），不增加目标读取；C++ 类默认隐藏编译器生成成员（如 `_vptr`）与标准库内部成员，`std::atomic`、`std::array`、`std::function` 等折叠为一行，每个变量可切换「显示原始成员」，已保存的原始路径、图表与 CSV 保持不变。数据指针新增只读的按需解引用（每次一层，不跟随 `void*`、函数指针与不完整类型，`char*` 显示最多 32 字节字符串预览），沿用运行时读取的地址白名单与每周期预算；STL 容器内无法跟随的指针、指针环或预算耗尽只影响该指针本身，不再使整个变量读取失败。
+- Improve pointer and C++ class display: pointers are shown in hexadecimal with NULL for zero and annotated from ELF symbols (function names, `&array[index]`, virtual-table dynamic types or memory regions) without extra target reads. C++ classes hide compiler-generated (such as `_vptr`) and standard-library internal members by default, collapse `std::atomic`, `std::array`, `std::function` and similar types to one row, and offer a per-variable "Show raw members" toggle while saved raw paths, charts and CSV stay unchanged. Data pointers gain a read-only on-demand dereference (one level per request, never into `void*`, function pointers or incomplete types, with a 32-byte preview for `char*`) under the existing runtime address whitelist and per-cycle budget. Inside STL containers, unfollowable pointers, pointer cycles and budget exhaustion now affect only that pointer instead of failing the whole variable.
+
 ## [0.8.3] - 2026-10-12
 
 - 新增「不复位调试」（issue #28 相关）：侧栏新增「不复位调试」按钮及资源管理器文件夹右键命令 `EmberProbe: 不复位调试（保留现场）`，复用托管 OpenOCD 但以 DAP attach 附加，只暂停内核，不复位、不下载固件，保留芯片当前运行现场；ELF 必须与芯片中固件一致。原「调试」按钮更名为「复位调试」，`launch.json` 显式指定的 request 不受影响。

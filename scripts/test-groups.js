@@ -14,6 +14,8 @@ const TEST_GROUPS = Object.freeze({
         "elf-analyze.test.js",
         "elf-symbols.test.js",
         "enum-variables.test.js",
+        "member-roles.test.js",
+        "pointer-symbolizer.test.js",
         "validation.test.js"
     ]),
     integration: Object.freeze([
@@ -147,6 +149,8 @@ const TEST_GROUPS = Object.freeze({
         "peripheral-view.test.js",
         "peripheral-viewer-integration.test.js",
         "pretty-printing-modes.test.js",
+        "pointer-deref.test.js",
+        "pointer-display.test.js",
         "probe-automatic.test.js",
         "probe-connection-service.test.js",
         "probe-connection.test.js",
@@ -162,6 +166,7 @@ const TEST_GROUPS = Object.freeze({
         "runtime-native-layouts.test.js",
         "runtime-nested-selection.test.js",
         "runtime-objects.test.js",
+        "runtime-pointer-fallback.test.js",
         "runtime-refresh.test.js",
         "runtime-selection.test.js",
         "sampling-archive.test.js",

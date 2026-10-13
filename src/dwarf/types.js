@@ -10,6 +10,7 @@ const {
 const EXPANSION_TYPE_REF = Symbol("layoutExpansionType");
 const typeInfoHeights = new WeakMap();
 const { createTypeComparer, declarationMatchesDefinition, isTypeDeclaration } = require("./typeIdentity");
+const { memberRole, stdSummary } = require("./memberRoles");
 const {
     DW_TAG_array_type,
     DW_TAG_structure_type,
@@ -58,10 +59,11 @@ const WRAPPERS = new Set([DW_TAG_typedef, DW_TAG_const_type, DW_TAG_volatile_typ
 function typeFlags(info) {
     return {
         ...Object.fromEntries(
-            ["isBoolean", "isConst", "isReference", "isMemberPointer", "isEnum", "enumEncodingInferred"]
+            ["isBoolean", "isConst", "isReference", "isMemberPointer", "isPointer", "isEnum", "enumEncodingInferred"]
                 .filter((key) => info?.[key])
                 .map((key) => [key, true])
         ),
+        ...(info?.pointerTarget ? { pointerTarget: info.pointerTarget } : {}),
         ...(info?.enumInfo ? { enumInfo: info.enumInfo } : {})
     };
 }
@@ -196,7 +198,21 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0, active = 
                 break;
             case DW_TAG_pointer_type: {
                 const inner = d.typeRef !== undefined ? resolveInner(d.typeRef) : { typeName: "void" };
-                result = { kind: "scalar", typeName: (inner.typeName || "void") + " *", watchType: "u32", byteSize: 4 };
+                // A declaration-only pointee stays "data": CUs that see the definition must agree.
+                const pointerTarget =
+                    inner.kind === "function"
+                        ? "function"
+                        : d.typeRef === undefined || (inner.kind === "unknown" && !inner.typeName)
+                          ? "void"
+                          : "data";
+                result = {
+                    kind: "scalar",
+                    typeName: (inner.typeName || "void") + " *",
+                    watchType: "u32",
+                    byteSize: 4,
+                    isPointer: true,
+                    pointerTarget
+                };
                 break;
             }
             case DW_TAG_reference_type: {
@@ -405,6 +421,11 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
     const childOffsets = childrenMap.get(typeDieOff);
     if (!childOffsets) return [];
     const members = [];
+    const parentName = dies.get(typeDieOff)?.qualifiedTypeName || dies.get(typeDieOff)?.name || "";
+    const role = (member) => {
+        const value = memberRole(parentName, member);
+        return value ? { memberRole: value } : {};
+    };
     // 基类合成成员（@baseN）置于自身成员之前，保持每条基类路径独立，天然消除跨基类同名歧义。
     let baseIndex = 0;
     for (const childOff of childOffsets) {
@@ -427,6 +448,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
                 isBase: true,
                 baseIndex: index,
                 ...(child.virtuality ? { virtual: true } : {}),
+                ...role({ isBase: true }),
                 unobservable: child.virtuality ? "virtual-base" : "base-location"
             });
             continue;
@@ -441,6 +463,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
             kind: baseType.kind,
             isBase: true,
             baseIndex: index,
+            ...role({ isBase: true }),
             ...(baseType.unobservable ? { unobservable: baseType.unobservable } : {})
         };
         if (baseType.kind === "struct" || baseType.kind === "class" || baseType.kind === "union") {
@@ -464,6 +487,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
                 name: child.name || "",
                 offset: 0,
                 byteSize: 0,
+                ...role({ name: child.name, isArtificial: child.isArtificial }),
                 unobservable: "member-location"
             });
             continue;
@@ -499,6 +523,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
             watchType: memberType.watchType,
             kind: memberType.kind,
             ...typeFlags(memberType),
+            ...role({ name, isArtificial: child.isArtificial }),
             ...(memberType.unobservable ? { unobservable: memberType.unobservable } : {})
         };
         if (Number.isInteger(child.bitSize) && child.bitSize > 0 && Number.isInteger(bitOffset) && bitOffset >= 0) {
@@ -682,8 +707,11 @@ function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, bud
                           : "class";
                 const nm = typeDie.qualifiedTypeName || typeDie.name || "";
                 const typeName = nm ? kind + " " + nm : kind;
+                const summary = stdSummary(nm);
                 let bytes =
-                    Buffer.byteLength(JSON.stringify({ kind, typeName, byteSize: typeDie.byteSize, members: [] })) + 32;
+                    Buffer.byteLength(
+                        JSON.stringify({ kind, typeName, byteSize: typeDie.byteSize, stdSummary: summary, members: [] })
+                    ) + 32;
                 for (const member of members) {
                     // Reserve room for a marker and its signed expansion handle as well
                     // as the compositeLayout property. Check incrementally, before a
@@ -724,6 +752,7 @@ function _buildCompositeLayout(typeRef, dies, childrenMap, typeCache, depth, bud
                     kind,
                     typeName,
                     byteSize: typeDie.byteSize,
+                    ...(summary ? { stdSummary: summary } : {}),
                     members,
                     ...(members.some(isPartial) ? { truncated: true } : {})
                 };
