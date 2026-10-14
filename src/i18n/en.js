@@ -163,6 +163,11 @@ module.exports = Object.freeze({
     "probe.activeConnection": "Active connection",
     "probe.staleConnection": "Settings changed — restart before writing",
     "msg.selectDetectedProbe": "Multiple probe types detected. Select the probe to use.",
+    "msg.selectDetectedMcu": "Project files name several MCU targets. Select the one to use.",
+    "msg.autoMcuUnavailable":
+        "Detected MCU target {name} is not provided by the current OpenOCD; select a target manually",
+    "msg.autoElfArchMismatch":
+        "Found {count} ELF file(s), but none matches the MCU architecture; select the firmware manually",
     "lw.hideAll": "Hide all",
     "lw.chooseMembers": "Select scalar members to plot",
     "lw.expandMembers": "Expand members",
@@ -385,6 +390,14 @@ module.exports = Object.freeze({
     "sb.writeFail": "Write failed: {msg}",
     "sb.writeUnsupported": "This variable cannot be written directly",
     "sb.writeNeedSampling": "Start sampling before writing",
+    "sb.writeNeedHalt":
+        "While a debug session is running only aligned 32-bit variables can be written; this write briefly halts the CPU, so pause the debugger first",
+    "sb.writeRisk.subword":
+        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, read-modify-writes the containing 32-bit word, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+    "sb.writeRisk.unaligned":
+        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, read-modify-writes the spanned 32-bit words, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+    "sb.writeRisk.wide":
+        "Write risk: this variable is {bits}-bit and needs two 32-bit word writes. To keep firmware from reading a half-written value the write briefly halts the CPU, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.invalidWriteValue": "Enter an in-range decimal integer",
     "sb.foldList": "Collapse",
     "sb.unfoldList": "Expand",
@@ -556,8 +569,14 @@ module.exports = Object.freeze({
     "lw.hideRawMembers": "Hide raw members",
     "lw.hiddenMembers": "{n} internal members hidden",
     "lw.pointerNull": "NULL",
+    "lw.pointeeNull": "The pointer is NULL; there is no target",
+    "lw.pointerInvalid": "invalid address",
+    "lw.pointerRegion.flash": "Flash",
+    "lw.pointerRegion.ram": "RAM",
+    "lw.pointerRegion.peripheral": "Peripheral",
+    "lw.pointerRegion.system": "System",
     "lw.functionEmpty": "empty",
-    "lw.followPointer": "Show the pointed-to object (read-only)",
+    "lw.pointerTarget": "Expand the pointed-to object (read-only)",
     "lw.addToChart": "Add to chart",
     "lw.removeFromChart": "Remove from chart",
     "lw.clearFilter": "Clear filter",

@@ -12,6 +12,7 @@
     "openocd-policy.js",
     "jlink-driver.js",
     "probe-detection.js",
+    "target-detection.js",
     "probe-connection.js",
     "probe-inventory.js",
     "windows-probe-inventory.js",

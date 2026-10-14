@@ -180,6 +180,7 @@ async function testSessionAndFairness() {
         const checked = session._sendCheckedCommand.bind(session);
         session._readItems = async (...args) => {
             if (args[0][0]?.name === "once") order.push("read");
+            if (args[0][0]?.name === "verify") order.push("verify-read");
             return readItems(...args);
         };
         session._writeMemoryBytes = async (address, bytes) => {
@@ -187,15 +188,21 @@ async function testSessionAndFairness() {
             return writeBytes(address, bytes);
         };
         session._sendCheckedCommand = async (command) => {
-            if (command === "[target current] curstate") order.push("verify");
+            if (command === "[target current] curstate")
+                assert.fail("aligned verification must not query target state");
             return checked(command);
         };
         const reads = session.readOnce([{ ...graph, name: "once" }], 500);
         const writes = session.writeOnce([{ address: graph.address, bytes: [9, 8, 7, 6] }], 500);
-        const verifies = session.writeAndVerify([{ ...graph, bytes: [4, 3, 2, 1] }], 500);
+        const verifies = session.writeAndVerify([{ ...graph, name: "verify", bytes: [4, 3, 2, 1] }], 500);
         const idle = session.waitForIdle(500);
         const [readResult, written, verified, idleResult] = await Promise.all([reads, writes, verifies, idle]);
-        assert.deepStrictEqual(order, ["read", "write:9", "verify", "write:4"], "FIFO transactions cannot starve");
+        assert.deepStrictEqual(
+            order,
+            ["read", "write:9", "verify-read", "write:4", "verify-read"],
+            "FIFO transactions cannot starve"
+        );
+        assert.strictEqual(verified.halted, false);
         assert.deepStrictEqual(readResult[0].bytes, [1, 2, 3, 4]);
         assert.strictEqual(written, 1);
         assert.deepStrictEqual(verified.before[0].bytes, [9, 8, 7, 6]);

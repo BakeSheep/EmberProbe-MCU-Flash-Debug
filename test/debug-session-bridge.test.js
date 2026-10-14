@@ -225,6 +225,8 @@ async function testBackgroundStatusBroadcasts(debugType) {
         assert.strictEqual(bridge.status().snapshotReady, true);
         assert.ok(quiesceCalls >= 1, "paused DAP reads should wait for managed Tcl reads to quiesce");
         assert.strictEqual(bridge.canWrite, true);
+        assert.strictEqual(bridge.status().haltWrite, true);
+        assert.strictEqual(bridge.status({ canWrite: false }).haltWrite, false);
         const pausedRequestCount = requests.length;
         await delay(MIN_DAP_INTERVAL_MS + 20);
         assert.strictEqual(
@@ -291,6 +293,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
         const tx = await bridge.writeAndVerify([
             { name: "x", address: 0x20000000, bytes: Uint8Array.from([9, 9, 9, 9]) }
         ]);
+        assert.strictEqual(tx.halted, true);
         assert.strictEqual(tx.before.length, 1);
         assert.strictEqual(tx.after.length, 1);
         assert(requests.some((item) => item.command === "writeMemory"));

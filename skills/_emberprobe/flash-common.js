@@ -16,36 +16,7 @@ const { MIN_OPENOCD_VERSION, parseVersion: parseOpenOcdVersion, checkCompatibili
 const { normalizeProbeSerial, normalizeAdapterSpeed } = require("./probe-connection");
 const { prepareProbeConnection } = require("./probe-preflight");
 const { listProbes } = require("./probe-inventory");
-
-const TARGET_RULES = [
-    ["apm32f0", "geehy/apm32f0x.cfg"],
-    ["apm32f1", "geehy/apm32f1x.cfg"],
-    ["apm32f4", "geehy/apm32f4x.cfg"],
-    ["stm32f0", "stm32f0x.cfg"],
-    ["stm32f1", "stm32f1x.cfg"],
-    ["stm32f2", "stm32f2x.cfg"],
-    ["stm32f3", "stm32f3x.cfg"],
-    ["stm32f4", "stm32f4x.cfg"],
-    ["stm32f7", "stm32f7x.cfg"],
-    ["stm32g0", "stm32g0x.cfg"],
-    ["stm32g4", "stm32g4x.cfg"],
-    ["stm32h7", "stm32h7x.cfg"],
-    ["stm32l0", "stm32l0.cfg"],
-    ["stm32l1", "stm32l1.cfg"],
-    ["stm32l4", "stm32l4x.cfg"],
-    ["stm32l5", "stm32l5x.cfg"],
-    ["stm32u5", "stm32u5x.cfg"],
-    ["stm32wb", "stm32wbx.cfg"],
-    ["stm32wl", "stm32wlx.cfg"],
-    ["gd32vf103", "gd32vf103.cfg"],
-    ["gd32e23", "gd32e23x.cfg"],
-    ["nrf51", "nordic/nrf51.cfg"],
-    ["nrf52", "nordic/nrf52.cfg"],
-    ["rp2040", "rp2040.cfg"],
-    ["esp32s3", "esp32s3.cfg"],
-    ["esp32s2", "esp32s2.cfg"],
-    ["esp32", "esp32.cfg"]
-];
+const targets = require("./target-detection");
 
 function parseArgs(argv) {
     const out = { execute: false };
@@ -101,9 +72,9 @@ async function authorizeFlash(result, confirmationId) {
     });
 }
 
-// 深度优先遍历工作区文件；跳过 node_modules/.git，忽略不可读目录。
+// 深度优先遍历工作区文件；跳过 ignored 目录，忽略不可读目录。
 // 扩展名比较统一小写，避免 Linux 等大小写敏感文件系统上漏掉 FIRMWARE.ELF。
-function walkFiles(root, accept) {
+function walkFiles(root, accept, ignored = targets.ELF_IGNORED_DIRS) {
     const files = [];
     const visit = (dir) => {
         let entries;
@@ -115,7 +86,7 @@ function walkFiles(root, accept) {
         for (const entry of entries) {
             const full = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                if (entry.name !== "node_modules" && entry.name !== ".git") visit(full);
+                if (!ignored.includes(entry.name) && !entry.name.startsWith(".emberprobe-cubemx-")) visit(full);
             } else if (entry.isFile() && accept(entry.name)) files.push(full);
         }
     };
@@ -123,34 +94,46 @@ function walkFiles(root, accept) {
     return files;
 }
 
-function findNewestElf(root) {
-    let best = null;
-    for (const file of walkFiles(root, (name) => name.toLowerCase().endsWith(".elf"))) {
+function readElfHeader(file) {
+    const handle = fs.openSync(file, "r");
+    try {
+        const header = Buffer.alloc(20);
+        return header.subarray(0, fs.readSync(handle, header, 0, header.length, 0));
+    } finally {
+        fs.closeSync(handle);
+    }
+}
+
+// 与扩展自动检测共用选择规则：只取 ELF 镜像（含 Keil .axf / IAR .out），拒绝与目标架构矛盾的镜像，
+// 优先工程目录内的镜像，其次按修改时间。
+function findNewestElf(root, options = {}) {
+    const images = [];
+    for (const file of walkFiles(root, targets.isElfCandidateName)) {
         try {
             const stats = fs.statSync(file);
-            if (!best || stats.mtimeMs > best.mtimeMs) best = { file, mtimeMs: stats.mtimeMs };
+            const info = stats.isFile() && targets.elfHeaderInfo(readElfHeader(file));
+            if (info) images.push({ file, mtimeMs: stats.mtimeMs, arch: info.arch });
         } catch {}
     }
-    return best ? best.file : "";
+    return targets.chooseElf(images, options).elf;
+}
+
+function inferTargetDetails(root) {
+    const files = targets.orderProjectFiles(
+        walkFiles(root, (name) => targets.sourcePriority(name) >= 0, targets.PROJECT_IGNORED_DIRS)
+    );
+    const entries = [];
+    for (const file of files) {
+        try {
+            if (fs.statSync(file).size > targets.MAX_PROJECT_FILE_BYTES) continue;
+            entries.push({ file, text: fs.readFileSync(file, "utf8") });
+        } catch {}
+    }
+    return targets.resolveTarget(entries);
 }
 
 function inferTarget(root) {
-    const files = walkFiles(root, (name) => {
-        const ext = path.extname(name).toLowerCase();
-        return ext === ".ioc" || ext === ".cmake" || ext === ".ld" || name === "CMakeLists.txt";
-    }).slice(0, 80);
-    let text = "";
-    for (const file of files) {
-        text += path.basename(file) + "\n";
-        try {
-            text += fs.readFileSync(file, "utf8") + "\n";
-        } catch {}
-    }
-    const joined = text.toLowerCase();
-    for (const [keyword, cfg] of TARGET_RULES) {
-        if (joined.includes(keyword)) return cfg;
-    }
-    return "";
+    return inferTargetDetails(root).target;
 }
 
 function sha256(file) {
@@ -401,13 +384,16 @@ async function preflight(options) {
     // selected ELF before hashing/authorizing so the same bytes are flashed that the
     // user saw in preflight, regardless of the skill process' current directory.
     if (elf && !path.isAbsolute(elf)) elf = path.resolve(root, elf);
-    if (!elf) {
-        elf = findNewestElf(root);
-        sources.elf = elf ? "auto" : "none";
-    }
+    const inferred = !target || !elf ? inferTargetDetails(root) : null;
     if (!target) {
-        target = inferTarget(root);
+        target = inferred.target;
         sources.target = target ? "auto" : "none";
+        if (!target && inferred.candidates.length > 1)
+            notes.push(`Multiple MCU targets detected (${inferred.candidates.join(", ")}); pass --target.`);
+    }
+    if (!elf) {
+        elf = findNewestElf(root, { target, projectDir: inferred.projectDir });
+        sources.elf = elf ? "auto" : "none";
     }
     if (!probe) {
         const detected = await detectProbe();
@@ -513,6 +499,7 @@ module.exports = {
     authorizeFlash,
     findNewestElf,
     inferTarget,
+    inferTargetDetails,
     detectProbe,
     probeFromText,
     sha256,

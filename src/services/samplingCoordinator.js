@@ -1,4 +1,5 @@
 "use strict";
+const { withWriteAccessStatus } = require("../writeAccess");
 
 class SamplingCoordinator {
     constructor() {
@@ -23,7 +24,12 @@ class SamplingCoordinator {
         );
     }
     status({ intent, bridge, standaloneRunning, managedServer, agentStatus }) {
-        if (agentStatus) return agentStatus;
+        if (agentStatus)
+            return withWriteAccessStatus(
+                this.backpressured
+                    ? { ...agentStatus, canRead: false, canWrite: false, snapshotReady: false }
+                    : agentStatus
+            );
         let result;
         if (bridge.hasAnySession || bridge.hasSession) {
             result = bridge.status();
@@ -39,7 +45,12 @@ class SamplingCoordinator {
                     ...result,
                     source: "openocd",
                     canRead,
-                    canWrite: false,
+                    canWrite:
+                        canRead &&
+                        typeof managedServer.writeAndVerify === "function" &&
+                        managedServer.ready !== false &&
+                        !managedServer.stopped &&
+                        !managedServer.pollingFailed,
                     snapshotReady: canRead,
                     mode: canRead ? "debug-running-sampling" : "debug-running-waiting",
                     key: canRead ? "live.debugRuntimeSampling" : "live.debugWaiting"
@@ -57,7 +68,7 @@ class SamplingCoordinator {
             };
         }
         if (this.backpressured) result = { ...result, canRead: false, canWrite: false, snapshotReady: false };
-        return { ...result, running: !!intent, intentEnabled: !!intent };
+        return withWriteAccessStatus({ ...result, running: !!intent, intentEnabled: !!intent });
     }
 }
 module.exports = { SamplingCoordinator };

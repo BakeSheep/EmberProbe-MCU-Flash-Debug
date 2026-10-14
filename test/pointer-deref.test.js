@@ -155,7 +155,7 @@ const fixture = require("./fixtures/pointer-classes/elf.json");
         region(flash).write("abc", flash.end - flash.start - 3, "latin1");
         const clamped = await new RuntimeObjectReader(item(label), read).sample();
         assert.strictEqual(clamped.valueText, '"abc"…', "string previews never read past a verified range");
-        // Both webviews offer the follow button only on dereferenceable data pointers.
+        // Both webviews offer the expansion toggle only on dereferenceable data pointers.
         const bytes = Buffer.alloc(motor.size);
         bytes.writeUInt32LE(
             motor.address,
@@ -164,32 +164,37 @@ const fixture = require("./fixtures/pointer-classes/elf.json");
         const sampleTree = elf.decodeComposite(bytes, motor.compositeLayout, motor);
         for (const sidebar of [false, true]) {
             const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({}, "en"));
+            const saveType = sidebar ? "saveSidebarWatch" : "saveWatch";
+            const saved = () => view.messages.findLast((message) => message.type === saveType).items;
+            const toggle = (path) => view.document.querySelector('.pointer-toggle[data-path="' + path + '"]');
             try {
                 view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [motor] });
                 view.send({ type: "liveCompositeSample", samples: [{ name: "motor", tree: sampleTree }] });
-                const buttons = [...view.document.querySelectorAll(".pointer-follow")].map(
+                assert.strictEqual(view.document.querySelectorAll(".pointer-follow").length, 0);
+                const toggles = [...view.document.querySelectorAll(".pointer-toggle")].map(
                     (button) => button.dataset.path
                 );
-                assert.ok(buttons.includes("motor.@base0.parent"));
-                assert.ok(buttons.includes("motor.@base0.label"));
+                assert.ok(toggles.includes("motor.@base0.parent"));
+                assert.ok(toggles.includes("motor.@base0.label"));
                 for (const opaque of ["motor.@base0.userData", "motor.@base0.onClick", "motor.rxBuffer.x"])
-                    assert.ok(!buttons.includes(opaque), opaque + " has no follow button");
-                view.document.querySelector('.pointer-follow[data-path="motor.@base0.parent"]').click();
-                const saved = view.messages.findLast(
-                    (message) => message.type === (sidebar ? "saveSidebarWatch" : "saveWatch")
-                ).items;
-                const added = saved.find((entry) => entry.name === "motor.@base0.parent.value");
-                assert.ok(added?.runtimeLayout, "following adds a runtime watch for the target");
+                    assert.ok(!toggles.includes(opaque), opaque + " has no expansion toggle");
+                toggle("motor.@base0.parent").click();
+                const added = saved().find((entry) => entry.name === "motor.@base0.parent.value");
+                assert.ok(added?.runtimeLayout, "expanding adds a runtime watch for the target");
                 assert.strictEqual(added.runtimeStaticPointers, true);
-                assert.strictEqual(saved.filter((entry) => entry.name === added.name).length, 1);
-                view.document.querySelector('.pointer-follow[data-path="motor.@base0.parent"]').click();
-                assert.strictEqual(
-                    view.messages
-                        .findLast((message) => message.type === (sidebar ? "saveSidebarWatch" : "saveWatch"))
-                        .items.filter((entry) => entry.name === added.name).length,
-                    1,
-                    "following twice does not duplicate or remove the target watch"
+                assert.strictEqual(added.derefPath, true);
+                assert.strictEqual(saved().filter((entry) => entry.name === added.name).length, 1);
+                // The pointee is drawn below its pointer row, not as another watch card.
+                const host = view.document.querySelector('[data-path="motor.@base0.parent"]').nextElementSibling;
+                assert.ok(host.classList.contains("pointer-pointee") && host.classList.contains("open"));
+                assert.strictEqual(toggle("motor.@base0.parent").getAttribute("aria-expanded"), "true");
+                assert.strictEqual(view.document.getElementById(sidebar ? "watchCount" : "count").textContent, "1");
+                toggle("motor.@base0.parent").click();
+                assert.ok(
+                    !saved().some((entry) => entry.name === added.name),
+                    "collapsing removes the target watch and its reads"
                 );
+                assert.strictEqual(toggle("motor.@base0.parent").getAttribute("aria-expanded"), "false");
                 view.assertHealthy?.();
             } finally {
                 view.close();

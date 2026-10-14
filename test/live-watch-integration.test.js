@@ -40,6 +40,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         );
 
         const transaction = await session.writeAndVerify([{ name: "pair", address: 0x20000001, bytes: [0xaa, 0xbb] }]);
+        assert.strictEqual(transaction.halted, true);
         assert.deepStrictEqual(transaction.before[0].bytes, [2, 3]);
         assert.deepStrictEqual(transaction.after[0].bytes, [0xaa, 0xbb]);
         assert.deepStrictEqual(fake.bytes(0x20000000, 4), [1, 0xaa, 0xbb, 4]);
@@ -52,6 +53,42 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             ["halt", "resume"]
         );
         assert.strictEqual(fake.state, "running", "write transaction should restore the target run state");
+        fake.commands.length = 0;
+        const word = await session.writeAndVerify([
+            { name: "word", address: 0x20000000, bytes: [0x78, 0x56, 0x34, 0x12] }
+        ]);
+        assert.strictEqual(word.halted, false);
+        assert.deepStrictEqual(word.before[0].bytes, [1, 0xaa, 0xbb, 4]);
+        assert.deepStrictEqual(word.after[0].bytes, [0x78, 0x56, 0x34, 0x12]);
+        assert.deepStrictEqual(
+            fake.commands,
+            [
+                "ocd_read_memory 0x20000000 32 1",
+                "ocd_write_memory 0x20000000 32 {0x12345678}",
+                "ocd_read_memory 0x20000000 32 1"
+            ],
+            "aligned word transactions need only before/write/after commands"
+        );
+        fake.commands.length = 0;
+        const mixed = await session.writeAndVerify([
+            { name: "word", address: 0x20000000, bytes: [1, 0, 0, 0] },
+            { name: "byte", address: 0x20000005, bytes: [0xff] }
+        ]);
+        assert.strictEqual(mixed.halted, true);
+        assert.deepStrictEqual(fake.bytes(0x20000004, 4), [5, 0xff, 0, 0]);
+        assert.deepStrictEqual(
+            fake.commands.filter((command) => /curstate|^halt$|^resume$/.test(command)),
+            ["[target current] curstate", "halt", "resume"]
+        );
+        fake.state = "halted";
+        fake.commands.length = 0;
+        const paused = await session.writeAndVerify([{ name: "byte", address: 0x20000005, bytes: [7] }]);
+        assert.strictEqual(paused.halted, true);
+        assert.strictEqual(fake.state, "halted");
+        assert.deepStrictEqual(
+            fake.commands.filter((command) => /curstate|^halt$|^resume$/.test(command)),
+            ["[target current] curstate"]
+        );
     } finally {
         await session.stop();
         await fake.stop();
@@ -68,6 +105,49 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         [9, 8, 7, 6]
     );
     assert.deepStrictEqual(debugFake.responses, [""], "managed debug reads must not emit Tcl values to GDB output");
+    debugFake.commands.length = 0;
+    const debugWord = await managed.writeAndVerify([{ name: "counter", address: 0x20000000, bytes: [1, 2, 3, 4] }]);
+    assert.strictEqual(debugWord.halted, false);
+    assert.deepStrictEqual(debugWord.before[0].bytes, [9, 8, 7, 6]);
+    assert.deepStrictEqual(debugWord.after[0].bytes, [1, 2, 3, 4]);
+    assert.deepStrictEqual(debugFake.commands, [
+        "ocd_read_memory 0x20000000 32 1",
+        "ocd_write_memory 0x20000000 32 {0x4030201}",
+        "ocd_read_memory 0x20000000 32 1"
+    ]);
+    assert(
+        debugFake.responses.every((response) => response === ""),
+        "managed writes keep Tcl responses out of GDB output"
+    );
+    debugFake.commands.length = 0;
+    await managed._writeMemoryBytes(0x20000000, [5, 6, 7, 8]);
+    assert.deepStrictEqual(debugFake.commands, ["ocd_write_memory 0x20000000 32 {0x8070605}"]);
+    debugFake.commands.length = 0;
+    for (const [address, size] of [
+        [0x20000000, 0],
+        [0x20000000, 1],
+        [0x20000000, 2],
+        [0x20000001, 4],
+        [0x20000000, 8]
+    ]) {
+        const bytes = new Uint8Array(size);
+        await assert.rejects(
+            managed.writeAndVerify([{ name: "counter", address, bytes }]),
+            (error) => error.code === "RUNTIME_WRITE_DISABLED" && /Only aligned 32-bit writes/.test(error.message)
+        );
+        await assert.rejects(managed._writeMemoryBytes(address, bytes), { code: "RUNTIME_WRITE_DISABLED" });
+    }
+    await assert.rejects(
+        managed.writeAndVerify(
+            Array.from({ length: MAX_DEBUG_READ_COMMANDS + 1 }, (_, index) => ({
+                name: "word" + index,
+                address: 0x20000000 + index * 4,
+                bytes: [1, 2, 3, 4]
+            }))
+        ),
+        { code: "LIVE_WRITE_BUDGET_EXCEEDED" }
+    );
+    assert.deepStrictEqual(debugFake.commands, [], "invalid managed plans are refused before any hardware access");
     await assert.rejects(
         managed.writeOnce([{ address: 0x20000000, bytes: [1] }]),
         (error) => error.code === "RUNTIME_WRITE_DISABLED"
@@ -93,6 +173,37 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             error.code === "LIVE_READ_BUDGET_EXCEEDED" && error.details.commandCount === MAX_DEBUG_READ_COMMANDS + 1,
         "sparse variables must not create an unbounded number of Tcl requests"
     );
+    await scenario("Managed writes cancel before hardware on queued state changes and between words", async () => {
+        const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+        writing.socket = { destroyed: false };
+        let writeCalls = 0;
+        writing._writeMemoryBytes = async () => {
+            writeCalls++;
+            writing.setSamplingEnabled(false);
+        };
+        writing._readMemoryBytes = async () => [0, 0, 0, 0];
+        writing._tryAcquireExclusive();
+        const pending = writing.writeAndVerify([{ name: "word", address: 0x20000000, bytes: [1, 0, 0, 0] }]);
+        writing.setSamplingEnabled(false);
+        writing._releaseExclusive();
+        await assert.rejects(pending, { code: "LIVE_READ_CANCELLED" });
+        assert.strictEqual(writeCalls, 0);
+        await assert.rejects(
+            writing.writeAndVerify([
+                { name: "first", address: 0x20000000, bytes: [1, 0, 0, 0] },
+                { name: "second", address: 0x20000004, bytes: [2, 0, 0, 0] }
+            ]),
+            { code: "LIVE_READ_CANCELLED" }
+        );
+        assert.strictEqual(writeCalls, 1, "state changes prevent the next word write");
+        assert.strictEqual(writing.busy, false);
+        await assert.rejects(writing.writeAndVerify([{ name: "word", address: 0x20000000, bytes: [1, 0, 0, 0] }], 0), {
+            code: "LIVE_READ_BUDGET_EXCEEDED"
+        });
+        assert.strictEqual(writeCalls, 1, "expired cycle budgets prevent writes");
+        writing.socket = null;
+        await writing.stop();
+    });
     let cancelledReadCalls = 0;
     const cancelling = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
     cancelling.samplingEnabled = true;

@@ -97,7 +97,7 @@ class MemoryAnalysisService {
         const requestedMap = params.mapFile ?? selected.mapFile;
         if (requestedMap) maps = [this.filePath(requestedMap, snapshot.elf.path, ".map")];
         else {
-            maps = [snapshot.elf.path.replace(/\.elf$/i, ".map"), snapshot.elf.path + ".map"];
+            maps = [snapshot.elf.path.replace(/\.(?:elf|axf|out)$/i, ".map"), snapshot.elf.path + ".map"];
             for (const file of maps) this.files.add(file);
             maps = [...new Set(maps)].filter((file) => this.fs.existsSync(file));
         }

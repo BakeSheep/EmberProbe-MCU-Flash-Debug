@@ -1,17 +1,26 @@
 "use strict";
 
-const { formatPointer } = require("../webview/runtime");
+const { formatPointer, runtimeMemberRoute } = require("../webview/runtime");
+
+// `char *` and `const char *` (plain, signed or unsigned char) name C strings.
+const CHAR_POINTER = /^(?:const\s+|volatile\s+)*(?:(?:un)?signed\s+)?char(?:\s+const|\s+volatile)*\s*\*$/;
 
 function annotatePointer(node, spec, symbolizer) {
     if (!node.isPointer && !spec?.isPointer) return node;
     const pointerTarget = node.pointerTarget || spec?.pointerTarget;
-    const decoded = { ...node, isPointer: true, pointerTarget, valueText: formatPointer(node.value) };
+    // Pointers followed by the runtime reader keep their address in pointerValue.
+    const value = node.pointerValue ?? node.value;
+    const decoded = { ...node, isPointer: true, pointerTarget, valueText: formatPointer(value) };
     const isVtable =
         (node.memberRole || spec?.memberRole) === "artificial" && /(?:^|\.)_vptr/.test(node.name || spec?.name || "");
-    const info = symbolizer?.resolve(node.value, isVtable ? "vtable" : pointerTarget || "data");
+    const info = symbolizer?.resolve(value, isVtable ? "vtable" : pointerTarget || "data");
     if (info) {
         decoded.pointerText = info.text;
         decoded.pointerInfo = info;
+    }
+    if (pointerTarget !== "function" && CHAR_POINTER.test(String(node.typeName || spec?.typeName || "").trim())) {
+        const text = symbolizer?.stringAt?.(value);
+        if (text) decoded.pointerString = text;
     }
     return decoded;
 }
@@ -48,6 +57,23 @@ function annotatePointerTree(node, symbolizer, spec = node) {
     return decoded;
 }
 
+// Nearest runtime composite in `names` whose sampled tree contains `name`.
+function runtimeTreeOwner(name, names) {
+    let owner = null;
+    for (const candidate of names)
+        if ((!owner || candidate.length > owner.length) && runtimeMemberRoute(name, candidate)) owner = candidate;
+    return owner;
+}
+
+function runtimeTreeLeaf(tree, route) {
+    let node = tree;
+    for (const name of route) {
+        node = (node?.members || []).find((member) => member.name === name);
+        if (!node) return null;
+    }
+    return node;
+}
+
 // 将多个消费者的观察列表合并为单一原始字节读取计划。
 // 同名标量取最大宽度，复合变量按整体内存范围读取。
 function buildActiveReadPlan(watchLists, elfSymbols) {
@@ -80,7 +106,19 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
         if (!prev) byName.set(item.name, { name: item.name, address: item.address, size });
         else if (!prev.isComposite && size > prev.size) prev.size = size;
     };
-    for (const list of watchLists || []) for (const item of list || []) add(item);
+    // A runtime member whose runtime parent is read for every list watching it adds no read:
+    // its value comes from the parent's tree (see decodeConsumerSamples).
+    const derived = new Set();
+    const lists = (watchLists || []).map((list) => list || []);
+    for (const list of lists)
+        for (const item of list) if (item?.runtimeLayout && !item.isComposite) derived.add(item.name);
+    for (const name of derived)
+        for (const list of lists) {
+            if (!list.some((item) => item?.name === name)) continue;
+            const parents = list.filter((item) => item?.runtimeLayout && item.isComposite).map((item) => item.name);
+            if (!runtimeTreeOwner(name, parents)) derived.delete(name);
+        }
+    for (const list of lists) for (const item of list) if (!derived.has(item?.name)) add(item);
     return Array.from(byName.values());
 }
 
@@ -199,6 +237,11 @@ class LiveWatchService {
         this.pointerMetadataChanged ||= metadataChanged;
     }
 
+    // The bound SVD model names peripheral register targets; null when none is configured.
+    setPeripheralModel(model) {
+        this.pointerSymbolizer?.updatePeripherals?.(model);
+    }
+
     decodeHistorySamples(samples, time, items, decodedScalars = []) {
         const raw = new Map(samples.map((sample) => [sample.name, sample]));
         const decoded = new Map(decodedScalars.map((sample) => [sample.name, sample]));
@@ -252,7 +295,13 @@ class LiveWatchService {
                 const decoded = compositeMap?.has(sample.name)
                     ? {
                           name: sample.name,
-                          tree: { kind: "class", members: [], partial: true, unavailable: sample.diagnostic.message },
+                          tree: {
+                              kind: "class",
+                              members: [],
+                              partial: true,
+                              unavailable: sample.diagnostic.message,
+                              ...(sample.diagnostic.code ? { unavailableCode: sample.diagnostic.code } : {})
+                          },
                           diagnostic: sample.diagnostic,
                           t: sampleTime
                       }
@@ -281,6 +330,7 @@ class LiveWatchService {
                         valueText: tree.valueText,
                         ...(tree.isPointer ? { isPointer: true, pointerTarget: tree.pointerTarget } : {}),
                         ...(tree.pointerText ? { pointerText: tree.pointerText, pointerInfo: tree.pointerInfo } : {}),
+                        ...(tree.pointerString ? { pointerString: tree.pointerString } : {}),
                         ...(tree.enumText ? { enumText: tree.enumText } : {}),
                         t: sampleTime
                     };
@@ -337,7 +387,60 @@ class LiveWatchService {
             scalarSamples.push(displayed);
             latest.set(sample.name, displayed);
         }
+        this._deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest);
         return { scalarSamples, compositeSamples };
+    }
+
+    // Scalars inside a sampled runtime object reuse that object's tree for this cycle.
+    _deriveRuntimeMembers(samples, time, typeMap, scalarSamples, latest) {
+        if (!typeMap?.size) return;
+        const owners = new Map();
+        for (const sample of samples || [])
+            if (sample?.runtimeTree || sample?.diagnostic) owners.set(sample.name, sample);
+        if (!owners.size) return;
+        const decodedNames = new Set(scalarSamples.map((sample) => sample.name));
+        for (const sample of samples || []) decodedNames.add(sample.name);
+        for (const [name, spec] of typeMap) {
+            if (decodedNames.has(name)) continue;
+            const ownerName = runtimeTreeOwner(name, owners.keys());
+            if (!ownerName) continue;
+            const owner = owners.get(ownerName);
+            const sampleTime = Number.isFinite(owner.t) ? owner.t : time;
+            const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, runtimeMemberRoute(name, ownerName));
+            const value = node ? (node.pointerValue ?? node.value) : undefined;
+            let decoded;
+            if (value === undefined || node.kind === "unavailable") {
+                const diagnostic = owner.diagnostic || {
+                    code: "LIVE_MEMBER_MISSING",
+                    message: "Runtime member unavailable: " + name.slice(ownerName.length + 1)
+                };
+                decoded = {
+                    name,
+                    value: null,
+                    valueText: "<unavailable: " + diagnostic.message + ">",
+                    diagnostic,
+                    t: sampleTime
+                };
+            } else {
+                const leaf = annotatePointer(
+                    { ...node, value },
+                    typeof spec === "object" ? spec : null,
+                    this.pointerSymbolizer
+                );
+                decoded = {
+                    name,
+                    value: leaf.value,
+                    valueText: leaf.valueText ?? null,
+                    ...(leaf.isPointer ? { isPointer: true, pointerTarget: leaf.pointerTarget } : {}),
+                    ...(leaf.pointerText ? { pointerText: leaf.pointerText, pointerInfo: leaf.pointerInfo } : {}),
+                    ...(leaf.pointerString ? { pointerString: leaf.pointerString } : {}),
+                    ...(leaf.enumText ? { enumText: leaf.enumText } : {}),
+                    t: sampleTime
+                };
+            }
+            scalarSamples.push(decoded);
+            latest.set(name, decoded);
+        }
     }
 }
 

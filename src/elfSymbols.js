@@ -837,7 +837,9 @@ function decodeComposite(bytes, layout, symbol = {}) {
                         offset: eOff,
                         ...decoded,
                         ...(elemType.enumInfo ? { enumText: enumValueText(decoded, elemType.enumInfo) } : {}),
-                        type: elemType.watchType
+                        type: elemType.watchType,
+                        typeName: elemType.typeName || "",
+                        ...(elemType.isPointer ? { isPointer: true, pointerTarget: elemType.pointerTarget } : {})
                     });
                 }
             }

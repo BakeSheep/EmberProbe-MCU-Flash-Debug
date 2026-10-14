@@ -2,12 +2,14 @@
 
 function probeCandidates(inventory) {
     const text = String(inventory || "");
+    // Windows fallbacks list every present device, so names must start at a word
+    // boundary ("Host Link" is not an ST-LINK, "Menu Link" is not a Nu-Link).
     return [
-        [/st[- ]?link|stm32\s+stlink/i, "stlink.cfg"],
-        [/j[- ]?link/i, "jlink.cfg"],
-        [/cmsis(?:[- _]?dap)|daplink|pico\s?probe|mcu[- ]?link/i, "cmsis-dap.cfg"],
-        [/xds[- ]?110/i, "xds110.cfg"],
-        [/nu[- ]?link/i, "nulink.cfg"]
+        [/\bst[- ]?link/i, "stlink.cfg"],
+        [/\bj[- ]?link/i, "jlink.cfg"],
+        [/\bcmsis(?:[- _]?dap)|\bdaplink|\bpico\s?probe|\bmcu[- ]?link/i, "cmsis-dap.cfg"],
+        [/\bxds[- ]?110/i, "xds110.cfg"],
+        [/\bnu[- ]?link/i, "nulink.cfg"]
     ]
         .filter(([pattern]) => /** @type {RegExp} */ (pattern).test(text))
         .map(([, name]) => String(name));

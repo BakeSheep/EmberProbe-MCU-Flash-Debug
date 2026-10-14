@@ -168,6 +168,8 @@ class SamplingSession {
         return (await this.request("writeOnce", args)).result;
     }
     async writeAndVerify(...args) {
+        if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length)
+            require("./liveWatch").validateManagedWritePlan(args[0]);
         return (await this.request("writeAndVerify", args)).result;
     }
     async waitForIdle(...args) {

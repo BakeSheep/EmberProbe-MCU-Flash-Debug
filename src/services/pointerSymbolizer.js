@@ -1,15 +1,21 @@
 "use strict";
 
+const fs = require("fs");
 const { formatPointer } = require("../webview/runtime");
 
 const MAX_POINTER_CACHE_ENTRIES = 4096;
 const ADDRESS_LIMIT = 0x100000000;
+const MAX_STRING_BYTES = 64;
+const SHT_PROGBITS = 1;
+const SHF_WRITE = 1;
+const SHF_ALLOC = 2;
 
 /**
  * @typedef {{ kind: string, text: string, name?: string, offset?: number,
- * index?: number, region?: string, dynamicTypeName?: string }} PointerInfo
+ * index?: number, memberPath?: string, memberOffset?: number, region?: string,
+ * dynamicTypeName?: string }} PointerInfo
  * @typedef {{ info: PointerInfo, symbol?: any, displayName?: string, layout?: any }} CachedPointer
- * @typedef {{ start: number, end: number, symbol?: any, region?: string, name?: string }} Range
+ * @typedef {{ start: number, end: number, symbol?: any, region?: string, name?: string, section?: any }} Range
  * @typedef {{ range: Range, maxEnd: number, left: RangeTree | null, right: RangeTree | null }} RangeTree
  */
 
@@ -68,6 +74,61 @@ function vtableName(symbol) {
     return parts.length && encoded.slice(position) === (nested ? "E" : "") ? parts.join("::") : null;
 }
 
+const MAX_MEMBER_PATH_DEPTH = 16;
+
+// Member path of the object `offset` bytes into a DWARF layout: `[2].y`, `.pos`, `[1][3]`.
+// Stops at the outermost object starting exactly there; `rest` is what no member covers.
+// Unions, bitfields and unsized members are ambiguous and end the path.
+function layoutPathAt(layout, offset, depth = 0) {
+    if (!layout || depth > MAX_MEMBER_PATH_DEPTH || !Number.isSafeInteger(offset) || offset <= 0) return null;
+    if (layout.kind === "array") {
+        const element = layout.elementType || {};
+        const size = Number(element.byteSize) || 0;
+        const total = Number(layout.totalElements) || 0;
+        const index = size > 0 ? Math.floor(offset / size) : -1;
+        if (index < 0 || index >= total) return null;
+        const dimensions =
+            Array.isArray(layout.dimensions) &&
+            layout.dimensions.length > 1 &&
+            layout.dimensions.every((count) => Number.isSafeInteger(count) && count > 0) &&
+            layout.dimensions.reduce((product, count) => product * count, 1) === total
+                ? layout.dimensions
+                : [total];
+        let path = "";
+        for (let rest = index, position = dimensions.length - 1; position >= 0; position--) {
+            path = "[" + (rest % dimensions[position]) + "]" + path;
+            rest = Math.floor(rest / dimensions[position]);
+        }
+        const rest = offset - index * size;
+        const inner = element.compositeLayout && layoutPathAt(element.compositeLayout, rest, depth + 1);
+        return inner ? { path: path + inner.path, rest: inner.rest } : { path, rest };
+    }
+    if (layout.kind !== "struct" && layout.kind !== "class") return null;
+    for (const member of layout.members || []) {
+        if (Number.isInteger(member.bitSize)) continue;
+        const start = Number(member.offset);
+        const size = Number(member.byteSize || member.compositeLayout?.byteSize) || 0;
+        if (!Number.isSafeInteger(start) || size <= 0 || offset < start || offset >= start + size) continue;
+        const name = !member.name || member.isBase || /^@based+$/.test(member.name) ? "" : "." + member.name;
+        const inner = member.compositeLayout && layoutPathAt(member.compositeLayout, offset - start, depth + 1);
+        if (inner) return { path: name + inner.path, rest: inner.rest };
+        return name ? { path: name, rest: offset - start } : null;
+    }
+    return null;
+}
+
+// C string literal text, escaped like runtime string previews; `…` marks a missing terminator.
+function cStringLiteral(bytes) {
+    const end = bytes.indexOf(0);
+    const text = bytes
+        .subarray(0, end < 0 ? bytes.length : end)
+        .toString("latin1")
+        .replace(/[\x00-\x1f\x7f-\xff"\\]/g, (char) =>
+            char === '"' || char === "\\" ? "\\" + char : "\\x" + char.charCodeAt(0).toString(16).padStart(2, "0")
+        );
+    return '"' + text + '"' + (end < 0 ? "\u2026" : "");
+}
+
 /**
  * Read-only annotations derived from ELF metadata, with no target memory access.
  * resolve() returns machine-friendly kind/region codes together with plain text.
@@ -76,13 +137,81 @@ function vtableName(symbol) {
  * Dynamic type names are display hints only, never runtime read/write authority.
  */
 class PointerSymbolizer {
-    constructor(result = null, { cacheLimit = MAX_POINTER_CACHE_ENTRIES } = {}) {
+    constructor(result = null, { cacheLimit = MAX_POINTER_CACHE_ENTRIES, fileSystem = fs, requestLayout = null } = {}) {
         this.cacheLimit = Number.isSafeInteger(cacheLimit)
             ? Math.max(1, Math.min(cacheLimit, MAX_POINTER_CACHE_ENTRIES))
             : MAX_POINTER_CACHE_ENTRIES;
+        this.fs = fileSystem;
+        // Loads a composite symbol's layout on demand so offsets resolve to member paths.
+        this.requestLayout = typeof requestLayout === "function" ? requestLayout : null;
         /** @type {Map<string, CachedPointer>} */
         this.cache = new Map();
+        /** @type {Map<number, string | null>} */
+        this.strings = new Map();
+        this.peripheralTree = null;
         this.updateElf(result);
+    }
+
+    // SVD registers name peripheral pointers (`&GPIOA->ODR`); null clears them.
+    updatePeripherals(model) {
+        const ranges = [];
+        for (const peripheral of model?.peripherals || [])
+            for (const register of peripheral.registers || []) {
+                const size = Math.max(1, Math.ceil((Number(register.size) || 32) / 8));
+                const [owner, ...rest] = String(register.path || "").split(".");
+                if (!owner || !rest.length || !validRange(register.address, size)) continue;
+                ranges.push({
+                    start: register.address,
+                    end: register.address + size,
+                    name: owner + "->" + rest.join(".")
+                });
+            }
+        this.peripheralTree = rangeTree(ranges);
+        this.cache.clear();
+    }
+
+    // String literals behind `char *` pointers, read from the ELF file's allocated
+    // read-only PROGBITS sections only: their bytes equal the target's and never
+    // change, so no target memory is read. A file that changed since parsing is ignored.
+    stringAt(value) {
+        if (formatPointer(value) === null || Number(value) === 0) return null;
+        const address = Number(value);
+        if (this.strings.has(address)) {
+            const cached = this.strings.get(address);
+            this.strings.delete(address);
+            this.strings.set(address, cached);
+            return cached;
+        }
+        let text = null;
+        const section = containingRange(this.readOnlyTree, address)?.section;
+        const elf = this.elfFile;
+        if (section && elf?.path) {
+            try {
+                const stat = this.fs.statSync(elf.path);
+                if (stat.size === elf.size && stat.mtimeMs === elf.mtimeMs) {
+                    const length = Math.min(MAX_STRING_BYTES, section.addr + section.size - address);
+                    const bytes = Buffer.alloc(length);
+                    const descriptor = this.fs.openSync(elf.path, "r");
+                    try {
+                        const read = this.fs.readSync(
+                            descriptor,
+                            bytes,
+                            0,
+                            length,
+                            section.offset + address - section.addr
+                        );
+                        if (read === length) text = cStringLiteral(bytes);
+                    } finally {
+                        this.fs.closeSync(descriptor);
+                    }
+                }
+            } catch {
+                text = null;
+            }
+        }
+        this.strings.set(address, text);
+        if (this.strings.size > this.cacheLimit) this.strings.delete(this.strings.keys().next().value);
+        return text;
     }
 
     // Arrays grow while the ELF worker streams symbols; force refreshes enriched
@@ -106,6 +235,21 @@ class PointerSymbolizer {
         this.functionCount = this.functions?.length || 0;
         this.sections = result?.memory?.sections;
         this.cache.clear();
+        this.strings.clear();
+        this.layoutRequests = new Set();
+        this.elfFile = result?.elf?.path ? result.elf : null;
+        this.readOnlyTree = rangeTree(
+            (this.sections || [])
+                .filter(
+                    (section) =>
+                        section.type === SHT_PROGBITS &&
+                        section.flags & SHF_ALLOC &&
+                        !(section.flags & SHF_WRITE) &&
+                        Number.isSafeInteger(section.offset) &&
+                        validRange(section.addr, section.size)
+                )
+                .map((section) => ({ start: section.addr, end: section.addr + section.size, section }))
+        );
         this.runtimeLayouts = new WeakSet();
         /** @type {Map<number, Range>} */
         this.vtables = new Map();
@@ -154,6 +298,15 @@ class PointerSymbolizer {
             this.vtableTree = rangeTree([...this.vtables.values()]);
             this.cache.clear();
         }
+    }
+
+    // A loaded layout replaces symbol.compositeLayout, which invalidates cached annotations.
+    _requestLayout(symbol) {
+        if (!this.requestLayout || this.layoutRequests.has(symbol.name)) return;
+        this.layoutRequests.add(symbol.name);
+        Promise.resolve()
+            .then(() => this.requestLayout(symbol.name))
+            .catch(() => {});
     }
 
     /** @returns {PointerInfo | null} */
@@ -216,8 +369,9 @@ class PointerSymbolizer {
             if (symbol) {
                 const offset = address - symbol.address;
                 const name = symbol.displayName || symbol.name;
+                const layout = symbol.compositeLayout;
                 const elementSize =
-                    symbol.compositeLayout?.kind === "array" ? symbol.compositeLayout.elementType?.byteSize : 0;
+                    layout?.kind === "array" && !(layout.dimensions?.length > 1) ? layout.elementType?.byteSize : 0;
                 if (Number.isSafeInteger(elementSize) && elementSize > 0 && offset % elementSize === 0) {
                     const index = offset / elementSize;
                     return {
@@ -225,9 +379,34 @@ class PointerSymbolizer {
                         symbol
                     };
                 }
+                if (offset && !layout && symbol.isComposite) this._requestLayout(symbol);
+                const member = layoutPathAt(layout, offset);
+                if (member)
+                    return {
+                        info: {
+                            kind: "data",
+                            name,
+                            offset,
+                            memberPath: member.path,
+                            memberOffset: member.rest,
+                            text: "→ &" + name + member.path + offsetText(member.rest)
+                        },
+                        symbol
+                    };
                 return { info: { kind: "data", name, offset, text: "→ &" + name + offsetText(offset) }, symbol };
             }
         }
+        const register = containingRange(this.peripheralTree, address);
+        if (register)
+            return {
+                info: {
+                    kind: "peripheral",
+                    region: "peripheral",
+                    name: register.name,
+                    offset: address - register.start,
+                    text: "→ &" + register.name + offsetText(address - register.start)
+                }
+            };
         const region =
             containingRange(this.sectionTree, address)?.region ||
             (address >= 0x40000000 && address <= 0x5fffffff ? "peripheral" : address >= 0xe0000000 ? "system" : null);
@@ -241,4 +420,4 @@ function offsetText(offset) {
     return offset ? "+0x" + offset.toString(16).toUpperCase() : "";
 }
 
-module.exports = { PointerSymbolizer, MAX_POINTER_CACHE_ENTRIES };
+module.exports = { PointerSymbolizer, MAX_POINTER_CACHE_ENTRIES, layoutPathAt };

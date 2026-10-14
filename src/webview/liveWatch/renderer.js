@@ -190,7 +190,10 @@ var watch = [],
     samplingOrigin = null,
     dirty = true,
     lastDraw = 0,
-    runtimeBodies = Object.create(null);
+    runtimeBodies = Object.create(null),
+    // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
+    placedPointees = new Set(),
+    fallbackPointees = new Set();
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
     impVersion = "",
@@ -200,6 +203,8 @@ var wantImportOpen = false,
     impTypesReady = true,
     impExpanded = Object.create(null),
     impLayoutPending = new Set(),
+    // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
+    pointerLayoutWaiters = new Set(),
     impSymbolByName = new Map(),
     impIndexByName = new Map(),
     impTypeChunks = 0,
@@ -273,8 +278,7 @@ function fmtExact(v, valueText, enumText) {
     return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
 }
 function setDisplayedValue(cell, value) {
-    if (cell.textContent !== value) cell.textContent = value;
-    if (cell.title !== value) cell.title = value;
+    EmberProbeRuntime.setValueCell(cell, value);
 }
 var buildCsv = window.__BUILD_CSV__;
 var historyRevision = 0,
@@ -321,8 +325,7 @@ function renderRawMembersUi(container, node, name) {
 }
 function fmtDisplayNode(node) {
     if (node?.functionEmpty) return t("lw.functionEmpty");
-    if (node?.isPointer)
-        return EmberProbeRuntime.pointerDisplay(EmberProbeRuntime.pointerNodeValue(node), t, node.pointerText);
+    if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
     return node ? fmtExact(node.value, node.valueText, node.enumText) : "—";
 }
 // Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
@@ -489,6 +492,7 @@ function addSymbol(sym, resolved = false) {
                 compositeLayout: sym.compositeLayout || null,
                 ...(sym.runtimeSegments ? { runtimeSegments: sym.runtimeSegments } : {}),
                 ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
+                ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {}),
                 ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
             });
             expanded[sym.name] = true;
@@ -513,7 +517,8 @@ function addSymbol(sym, resolved = false) {
             ? {
                   runtimeLayout: EmberProbeRuntime.runtimeGraph(sym),
                   runtimeSegments: sym.runtimeSegments || [],
-                  ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {})
+                  ...(sym.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
+                  ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {})
               }
             : {})
     });
@@ -524,7 +529,7 @@ function addSymbol(sym, resolved = false) {
 }
 function removeVar(name) {
     var rmv = watch.filter(function (w) {
-        return w.name === name || baseNameOf(w.name) === name;
+        return w.name === name || baseNameOf(w.name) === name || EmberProbeRuntime.isPointeeDescendant(w, name);
     });
     watch = watch.filter(function (w) {
         return rmv.indexOf(w) < 0;
@@ -596,77 +601,99 @@ function renderVars() {
     valueCells = Object.create(null);
     compCells = Object.create(null);
     runtimeBodies = Object.create(null);
-    const compositeCards = new Map();
-    watch.filter(isCompositeItem).forEach(function (item) {
+    placedPointees = new Set();
+    fallbackPointees = new Set();
+    // Expanded pointees render inside their pointer rows while cards are built.
+    const topLevel = watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
+    const cards = new Map();
+    topLevel.filter(isCompositeItem).forEach(function (item) {
         const holder = document.createElement("div");
         renderCompositeCard(item, watch.indexOf(item), holder);
-        compositeCards.set(item.name, holder.firstChild);
+        cards.set(item.name, [...holder.childNodes]);
     });
-    $("count").textContent = String(
-        watch.filter(function (it) {
-            return !isLeafChild(it.name);
-        }).length
-    );
+    topLevel.forEach(function (item) {
+        if (!isCompositeItem(item) && !isLeafChild(item.name)) cards.set(item.name, renderScalarCard(item));
+    });
     if (!watch.length) {
+        $("count").textContent = "0";
         var empty = document.createElement("div");
         empty.className = "empty";
         empty.textContent = t("lw.varListEmpty");
         box.appendChild(empty);
         return;
     }
-    watch.forEach(function (item, idx) {
-        if (isCompositeItem(item)) {
-            box.appendChild(compositeCards.get(item.name));
-            return;
-        }
-        if (isLeafChild(item.name)) return;
-        var card = document.createElement("div");
-        card.className = "var-card";
-        var sw = document.createElement("span");
-        sw.className = "swatch" + (hidden[item.name] ? " off" : "");
-        sw.style.background = colorFor(idx);
-        sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
-        var main = document.createElement("span");
-        main.className = "var-main";
-        var name = document.createElement("span");
-        name.className = "var-name";
-        EmberProbeRuntime.renderVariableName(name, displayNameFor(item), item.name);
-        name.title += " \u00b7 " + fmtAddr(item.address);
-        var val = document.createElement("div");
-        val.className = "var-value";
-        setDisplayedValue(val, scalarDisplay(item));
-
-        val.addEventListener("click", function (event) {
-            event.stopPropagation();
-            if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+    topLevel.forEach((item) => box.append(...(cards.get(item.name) || [])));
+    // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
+    watch
+        .filter(EmberProbeRuntime.isPointeeEntry)
+        .sort((a, b) => a.name.length - b.name.length)
+        .forEach(function (item) {
+            if (placedPointees.has(item.name)) return;
+            fallbackPointees.add(item.name);
+            if (isCompositeItem(item)) renderCompositeCard(item, watch.indexOf(item), box);
+            else box.append(...renderScalarCard(item));
         });
-        valueCells[item.name] = val;
-        main.append(name);
-        const info = watchDisplayInfo(item);
-        if (info.isPointer) {
-            const type = document.createElement("span");
-            type.className = "member-type";
-            type.textContent = info.typeName || item.type;
-            type.title = type.textContent;
-            main.appendChild(type);
-            if (info.pointerTarget === "data")
-                EmberProbeRuntime.renderPointerFollow(main, item.name, layoutSymbol(item.name), t, followPointer);
-        }
-        if (controls) controls.decorate(card, item.name, sw);
-        var rm = document.createElement("button");
-        rm.className = "remove";
-        rm.textContent = "×";
-        rm.title = t("lw.removeVar");
-        rm.setAttribute("aria-label", t("lw.removeVarName", { name: displayNameFor(item) }));
-        rm.onclick = function () {
-            removeVar(item.name);
-        };
-        var toggle = createCurveToggle(sw, main, function () {
-            toggleCurve(item.name);
-        });
-        card.append(toggle, val, rm);
-        box.appendChild(card);
+    // A member card drawn before its pointee tree was rendered is shown by that tree instead.
+    cards.forEach(function (nodes, name) {
+        const item = watch.find((w) => w.name === name);
+        if (!item || isCompositeItem(item) || !isLeafChild(name)) return;
+        nodes.forEach((node) => node.remove());
+        if (valueCells[name]?.isConnected === false) delete valueCells[name];
     });
+    $("count").textContent = String(
+        watch.filter(function (it) {
+            return !isLeafChild(it.name) && !placedPointees.has(it.name);
+        }).length
+    );
+}
+function renderScalarCard(item) {
+    var idx = watch.indexOf(item);
+    var card = document.createElement("div");
+    card.className = "var-card";
+    var sw = document.createElement("span");
+    sw.className = "swatch" + (hidden[item.name] ? " off" : "");
+    sw.style.background = colorFor(idx);
+    sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
+    var main = document.createElement("span");
+    main.className = "var-main";
+    var name = document.createElement("span");
+    name.className = "var-name";
+    EmberProbeRuntime.renderVariableName(name, displayNameFor(item), item.name);
+    name.title += " \u00b7 " + fmtAddr(item.address);
+    var val = document.createElement("div");
+    val.className = "var-value";
+    val.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
+    });
+    valueCells[item.name] = val;
+    main.append(name);
+    const info = watchDisplayInfo(item);
+    if (info.isPointer) {
+        const type = document.createElement("span");
+        type.className = "member-type";
+        type.textContent = info.typeName || item.type;
+        type.title = type.textContent;
+        main.appendChild(type);
+    }
+    if (controls) controls.decorate(card, item.name, sw);
+    var rm = document.createElement("button");
+    rm.className = "remove";
+    rm.textContent = "×";
+    rm.title = t("lw.removeVar");
+    rm.setAttribute("aria-label", t("lw.removeVarName", { name: displayNameFor(item) }));
+    rm.onclick = function () {
+        removeVar(item.name);
+    };
+    var toggle = createCurveToggle(sw, main, function () {
+        toggleCurve(item.name);
+    });
+    card.append(toggle, val, rm);
+    // The pointee is part of the variable's card, on a grid row below its value.
+    const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
+    if (host) card.appendChild(host);
+    setDisplayedValue(val, scalarDisplay(item));
+    return [card];
 }
 function updateValues() {
     const items = new Map(watch.map((entry) => [entry.name, entry]));
@@ -719,11 +746,13 @@ function onSamples(samples) {
         var time = Number(s.t) || now;
         if (samplingOrigin === null) samplingOrigin = time;
         latest[s.name] = s.value;
-        latestText[s.name] = s.valueText ?? null;
+        latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
         latestEnum[s.name] = s.enumText ?? null;
         latestPointer[s.name] = {
             ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
-            pointerText: s.pointerText
+            pointerText: s.pointerText,
+            pointerInfo: s.pointerInfo,
+            pointerString: s.pointerString
         };
         // Preserve failed samples as breaks rather than drawing across a gap.
         ensureBuf(s.name);
@@ -776,10 +805,106 @@ function updateCompositeValues(name) {
         );
     });
 }
-function followPointer(entry) {
-    addSymbol(entry, true);
+// Pointer rows expand in place. A pointee already present in the sampled tree toggles
+// locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
+function pointerPointee(row, path, label, node, renderInline) {
+    const host = document.createElement("div");
+    if (renderInline) {
+        const toggle = EmberProbeRuntime.renderPointerToggle(row, path, !!expanded[path], t, function () {
+            expanded[path] = !expanded[path];
+            host.classList.toggle("open", expanded[path]);
+            toggle.classList.toggle("open", expanded[path]);
+            toggle.setAttribute("aria-expanded", String(expanded[path]));
+            saveUi();
+        });
+        host.className = "pointer-pointee" + (expanded[path] ? " open" : "");
+        renderInline(host);
+        return host;
+    }
+    row.classList.add("pointer-row");
+    const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, pointerSymbol(path));
+    if (!entry) return null;
+    const item = watch.find((w) => w.name === entry.name);
+    EmberProbeRuntime.renderPointerToggle(row, path, !!item, t, function () {
+        togglePointee(entry);
+    });
+    if (!item) return null;
+    host.className = "pointer-pointee open";
+    renderPointee(host, item, label);
+    return host;
 }
-function renderLeafInto(container, label, typeName, path, watchType, address, node) {
+// Expansion needs the base symbol's runtime type graph. Composite watches load it with their
+// layout; a scalar pointer variable requests it once here and re-renders when it arrives.
+function pointerSymbol(path) {
+    const symbol = impSymbolByName.get(baseNameOf(path));
+    if (EmberProbeRuntime.runtimeGraph(symbol)) return symbol;
+    const fallback = layoutSymbol(path);
+    if (
+        !EmberProbeRuntime.runtimeGraph(fallback) &&
+        symbol?.hasRuntimeLayout &&
+        !symbol.layoutError &&
+        impVersion &&
+        !impLayoutPending.has(symbol.name)
+    ) {
+        impLayoutPending.add(symbol.name);
+        pointerLayoutWaiters.add(symbol.name);
+        post({ type: "resolveCompositeLayout", name: symbol.name, version: impVersion });
+    }
+    return fallback;
+}
+function togglePointee(entry) {
+    if (watch.some((item) => item.name === entry.name)) {
+        removeVar(entry.name);
+        return;
+    }
+    // Expanding inspects the target; a scalar target joins the chart only when its swatch is enabled.
+    if (!entry.isComposite) hidden[entry.name] = true;
+    addSymbol(entry, true);
+    saveUi();
+}
+function renderPointee(host, item, label) {
+    placedPointees.add(item.name);
+    if (isCompositeItem(item)) {
+        runtimeBodies[item.name] = host;
+        renderRuntimeBody(host, latest[item.name], item.name);
+        return;
+    }
+    // A scalar target (`int *`, `char *` string preview, pointer to pointer) is one chart row.
+    const idx = watch.indexOf(item);
+    const row = document.createElement("div");
+    row.className = "member-row";
+    row.dataset.path = item.name;
+    const sw = document.createElement("span");
+    sw.className = "member-swatch" + (hidden[item.name] ? " off" : "");
+    sw.style.background = colorFor(idx);
+    sw.title = t(hidden[item.name] ? "lw.showCurve" : "lw.hideCurve");
+    if (controls) controls.decorate(row, item.name, sw);
+    const nm = document.createElement("span");
+    nm.className = "member-name";
+    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^\./, "");
+    nm.title = displayNameFor(item);
+    nm.setAttribute("aria-label", nm.title);
+    const ty = document.createElement("span");
+    ty.className = "member-type";
+    ty.textContent = item.typeName || item.type || "";
+    ty.title = ty.textContent;
+    const val = document.createElement("span");
+    val.className = "member-value";
+    val.addEventListener("click", function (event) {
+        event.stopPropagation();
+        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
+    });
+    valueCells[item.name] = val;
+    const toggle = createCurveToggle(sw, nm, function () {
+        toggleCurve(item.name);
+    });
+    row.append(toggle, ty, val);
+    host.appendChild(row);
+    const nested = pointerPointee(row, item.name, nm.textContent, watchDisplayInfo(item));
+    if (nested) host.appendChild(nested);
+    setDisplayedValue(val, scalarDisplay(item));
+}
+function renderLeafInto(container, label, typeName, path, watchType, address, node, renderInline) {
     var row = document.createElement("div");
     row.className = "member-row";
     var wi = watch.findIndex(function (w) {
@@ -797,12 +922,11 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     nm.setAttribute("aria-label", nm.title);
     var val = document.createElement("span");
     val.className = "member-value";
-    setDisplayedValue(val, fmtDisplayNode(node));
     val.displayNode = node;
     val.summaryPath = node?.summaryPath;
     val.addEventListener("click", function (event) {
         event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: val.textContent });
+        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
     });
     compCells[path] = val;
     var toggle = createCurveToggle(sw, nm, function () {
@@ -814,11 +938,24 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     ty.title = ty.textContent;
     row.dataset.path = path;
     row.append(toggle, ty, val);
-    if (node?.isPointer && node.pointerTarget === "data")
-        EmberProbeRuntime.renderPointerFollow(row, path, layoutSymbol(path), t, followPointer);
     container.appendChild(row);
+    const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
+    if (host) container.appendChild(host);
+    setDisplayedValue(val, fmtDisplayNode(node));
 }
 function renderNestInto(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
+    renderLayoutInto(
+        nestShell(container, fieldName, layout.typeName, path, displayPath),
+        layout,
+        path,
+        baseAddr,
+        offset,
+        null,
+        displayPath
+    );
+}
+// Collapsible head + body for a nested composite, laid out like the sidebar; returns the body.
+function nestShell(container, fieldName, typeName, path, displayPath = path) {
     var wrap = document.createElement("div");
     wrap.className = "comp-nest";
     var head = document.createElement("div");
@@ -830,7 +967,11 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset, di
     nm.className = "comp-name";
     nm.textContent = fieldName;
     nm.title = displayNameFor({ name: displayPath });
-    head.append(arrow, nm);
+    var ty = document.createElement("span");
+    ty.className = "comp-type";
+    ty.textContent = typeName || "";
+    ty.title = ty.textContent;
+    head.append(arrow, nm, ty);
     var body = document.createElement("div");
     body.className = "comp-members" + (expanded[path] ? " open" : "");
     head.onclick = function () {
@@ -840,9 +981,9 @@ function renderNestInto(container, layout, fieldName, path, baseAddr, offset, di
         arrow.classList.toggle("open", open);
         saveUi();
     };
-    renderLayoutInto(body, layout, path, baseAddr, offset, null, displayPath);
     wrap.append(head, body);
     container.appendChild(wrap);
+    return body;
 }
 function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displayPath = path) {
     if (!layout) return;
@@ -958,7 +1099,9 @@ function renderSummaryInto(container, summary, baseAddr, label, typeName) {
             node
         );
 }
-function renderRuntimeTreeInto(container, tree, path, label = "value", promoted = false) {
+// Nested structs and array elements get a collapsible head, as in static layouts; base
+// classes, anonymous members and a pointer's own target stay flat.
+function renderRuntimeTreeInto(container, tree, path, label = "value", promoted = false, nest = false) {
     if (!tree) return;
     const summary = !promoted && !showRawFor(path) && EmberProbeRuntime.summaryRow(tree, path);
     if (summary) {
@@ -987,6 +1130,40 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
         return;
     }
     const pointer = tree.isPointer || tree.valueText === "nullptr";
+    if (nest && !pointer && !Object.prototype.hasOwnProperty.call(tree, "value") && (tree.members || tree.elements)) {
+        const body = nestShell(container, label, tree.typeName, path, tree.displayPath || path);
+        renderRuntimeTreeInto(body, tree, path, label, promoted);
+        return;
+    }
+    const renderMembers = function (target) {
+        tree.members.forEach(function (member) {
+            if (!EmberProbeRuntime.memberVisible(member, showRawFor(path))) return;
+            var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
+            if (member.unobservable)
+                appendNote(
+                    target,
+                    (member.name || "?") + ": " + EmberProbeRuntime.unobservableReason(member.unobservable, t)
+                );
+            else
+                renderRuntimeTreeInto(
+                    target,
+                    {
+                        ...member,
+                        ...(tree.displayPath
+                            ? { displayPath: EmberProbeRuntime.layoutMemberPath(tree.displayPath, member) }
+                            : {})
+                    },
+                    childPath,
+                    pointer && member.name === "value" ? "*" + label : member.name || "value",
+                    false,
+                    !!member.name &&
+                        !member.isBase &&
+                        !/^@based+$/.test(member.name) &&
+                        !(pointer && member.name === "value")
+                );
+        });
+    };
+    const inline = pointer && tree.members?.length ? renderMembers : null;
     if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
         renderLeafInto(
             container,
@@ -995,36 +1172,10 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
             path,
             tree.type || (pointer ? "u32" : undefined),
             tree.address,
-            { ...tree, ...(pointer ? { isPointer: true } : {}) }
+            { ...tree, ...(pointer ? { isPointer: true } : {}) },
+            inline
         );
-    if (tree.members)
-        tree.members.forEach(function (member) {
-            if (!EmberProbeRuntime.memberVisible(member, showRawFor(path))) return;
-            var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
-            if (member.unobservable)
-                appendNote(
-                    container,
-                    (member.name || "?") + ": " + EmberProbeRuntime.unobservableReason(member.unobservable, t)
-                );
-            else {
-                const body = pointer ? document.createElement("div") : container;
-                if (pointer) {
-                    body.className = "pointer-pointee";
-                    container.appendChild(body);
-                }
-                renderRuntimeTreeInto(
-                    body,
-                    {
-                        ...member,
-                        ...(tree.displayPath
-                            ? { displayPath: EmberProbeRuntime.layoutMemberPath(tree.displayPath, member) }
-                            : {})
-                    },
-                    childPath,
-                    member.name || "value"
-                );
-            }
-        });
+    if (tree.members && !inline) renderMembers(container);
     else if (tree.elements)
         tree.elements.forEach(function (element) {
             renderRuntimeTreeInto(
@@ -1034,11 +1185,14 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
                     ...(tree.displayPath ? { displayPath: tree.displayPath + "[" + element.index + "]" } : {})
                 },
                 path + "[" + element.index + "]",
-                "[" + element.index + "]"
+                "[" + element.index + "]",
+                false,
+                true
             );
         });
     if (tree.unobservable) appendNote(container, EmberProbeRuntime.unobservableReason(tree.unobservable, t));
-    else if (tree.unavailable) appendNote(container, tree.unavailable);
+    else if (tree.unavailable)
+        appendNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
 }
 function renderRuntimeBody(body, tree, name) {
     var shape = JSON.stringify([showRawFor(name), EmberProbeRuntime.displayTreeShape(tree)]);
@@ -1091,11 +1245,12 @@ function renderCompositeCard(item, idx, box) {
     nm.className = "comp-name";
     EmberProbeRuntime.renderVariableName(nm, displayNameFor(item), item.name);
     var lay = item.compositeLayout || {};
-    var sz = document.createElement("span");
-    sz.className = "comp-size";
-    sz.textContent = (Number(item.size) || 0) + "B";
-    sz.title = fmtAddr(item.address);
-    head.append(arrow, nm, sz);
+    var ty = document.createElement("span");
+    ty.className = "comp-type";
+    ty.textContent = item.typeName || lay.typeName || "";
+    ty.title =
+        (ty.textContent ? ty.textContent + " · " : "") + (Number(item.size) || 0) + "B · " + fmtAddr(item.address);
+    head.append(arrow, nm, ty);
     var body = document.createElement("div");
     body.className = "comp-body";
     head.onclick = function () {
@@ -1126,8 +1281,12 @@ function isLeafChild(name) {
     var b = baseNameOf(name);
     if (b === name) return false;
     const parent = watch.find((w) => w.name === b && isCompositeItem(w));
+    if (parent)
+        return !!compCells[name] && !(parent.runtimeLayout && watch.find((w) => w.name === name)?.layoutExpanded);
+    // Members of an expanded pointee are charted from its tree, which already shows them.
     return (
-        !!parent && !!compCells[name] && !(parent.runtimeLayout && watch.find((w) => w.name === name)?.layoutExpanded)
+        !!compCells[name] &&
+        watch.some((w) => w.runtimeLayout && isCompositeItem(w) && EmberProbeRuntime.runtimeMemberRoute(name, w.name))
     );
 }
 function addLeafWatch(path, address, watchType, node) {
@@ -1196,6 +1355,13 @@ function onCompositeSamples(samples) {
         }
     });
     if (refreshImport && !$("overlay").classList.contains("hidden")) renderImport();
+    // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
+    // A re-rendered tree can also now show members that still have their own chart card.
+    if (
+        [...fallbackPointees].some((name) => placedPointees.has(name)) ||
+        watch.some((it) => !isCompositeItem(it) && valueCells[it.name]?.closest(".var-card") && isLeafChild(it.name))
+    )
+        renderVars();
     scheduleValueRefresh();
     dirty = true;
 }
@@ -2180,10 +2346,12 @@ controls = window.EmberProbeChartControls.create({
         };
     }
 });
+var suppressClickUntil = 0;
 canvas.addEventListener("click", function (e) {
     var point = canvasPoint(e);
     if (
         e.button !== 0 ||
+        Date.now() < suppressClickUntil ||
         !chartState.x ||
         $("chartEmpty").classList.contains("hidden") === false ||
         chartRegion(point.x, point.y) !== "plot" ||
@@ -2479,20 +2647,15 @@ canvas.addEventListener("pointermove", function (e) {
     var p = canvasPoint(e);
     if (chartState.drag) {
         var g = chartState.geometry,
-            dx = p.x - chartState.drag.start.x,
-            dy = p.y - chartState.drag.start.y,
-            center = (chartState.drag.y.min + chartState.drag.y.max) / 2,
-            minY = Math.max(Number.EPSILON, Math.abs(center) * 1e-12),
-            anchorY = chartYAt(chartState.drag.start.y, chartState.drag.y),
-            factor = Math.exp(Math.max(-4, Math.min(4, (dy / g.ph) * 4)));
-        chartState.x = VP.panClamped(
-            chartState.drag.x,
-            (-dx / g.pw) * VP.span(chartState.drag.x),
-            chartState.bounds,
-            minimumXSpan()
-        );
-        chartState.y = VP.zoom(chartState.drag.y, factor, anchorY, minY);
-        chartState.autoY = false;
+            drag = chartState.drag,
+            dx = p.x - drag.start.x,
+            dy = p.y - drag.start.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        chartState.x = VP.panClamped(drag.x, (-dx / g.pw) * VP.span(drag.x), chartState.bounds, minimumXSpan());
+        if (drag.mode === "pan") {
+            chartState.y = VP.pan(drag.y, (dy / g.ph) * VP.span(drag.y));
+            chartState.autoY = false;
+        }
         setWindowCustom();
         updateFollowFromView(false);
         chartState.pointer = p;
@@ -2515,9 +2678,12 @@ canvas.addEventListener("pointerleave", function () {
 });
 canvas.addEventListener("pointerdown", function (e) {
     var p = canvasPoint(e);
-    if (e.button !== 2 || chartRegion(p.x, p.y) !== "plot" || !chartState.x || !chartState.y) return;
+    if ((e.button !== 0 && e.button !== 1) || chartRegion(p.x, p.y) !== "plot" || !chartState.x || !chartState.y)
+        return;
     e.preventDefault();
     chartState.drag = {
+        mode: e.button === 1 ? "x" : "pan",
+        moved: false,
         pointerId: e.pointerId,
         start: p,
         x: { min: chartState.x.min, max: chartState.x.max },
@@ -2529,6 +2695,7 @@ canvas.addEventListener("pointerdown", function (e) {
 });
 function endChartDrag(e) {
     if (!chartState.drag || e.pointerId !== chartState.drag.pointerId) return;
+    suppressClickUntil = chartState.drag.moved ? Date.now() + 50 : 0;
     chartState.drag = null;
     chartStage.classList.remove("dragging");
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
@@ -2538,9 +2705,8 @@ function endChartDrag(e) {
 }
 canvas.addEventListener("pointerup", endChartDrag);
 canvas.addEventListener("pointercancel", endChartDrag);
-canvas.addEventListener("contextmenu", function (e) {
-    var p = canvasPoint(e);
-    if (chartState.drag || chartRegion(p.x, p.y) === "plot") e.preventDefault();
+canvas.addEventListener("auxclick", function (e) {
+    if (e.button === 1) e.preventDefault();
 });
 canvas.addEventListener(
     "wheel",
@@ -2822,6 +2988,14 @@ window.EmberProbeMessages.connect(window, {
         impLayoutPending.delete(m.name);
         const symbol = impSymbolByName.get(m.name);
         if (!symbol) return;
+        const pointerWaiter = pointerLayoutWaiters.delete(m.name);
+        if (pointerWaiter && !symbol.isComposite) {
+            // Scalars keep their identity; only the type graph is needed to expand them.
+            symbol.runtimeLayout = m.layout?.runtimeLayout || null;
+            if (symbol.runtimeLayout) renderVars();
+            else symbol.layoutError = m.error || t("lw.compositeNoLayout");
+            return;
+        }
         if (m.layout) {
             symbol.compositeLayout = m.layout;
             symbol.layoutExpansions = m.layoutExpansions;

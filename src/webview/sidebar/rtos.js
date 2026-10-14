@@ -15,8 +15,8 @@
         status.id = "rtosStatus";
         status.className = "rtos-status";
         status.setAttribute("role", "status");
-        status.innerHTML =
-            '<svg class="rtos-status-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.85 2.67a1.33 1.33 0 0 1 2.3 0l5.34 9.33a1.33 1.33 0 0 1-1.16 2H2.67a1.33 1.33 0 0 1-1.16-2Z"/><path d="M8 5v4.5"/><circle cx="8" cy="11.5" r=".6"/></svg><span class="rtos-status-text"></span>';
+        const runtime = globalThis.EmberProbeRuntime || require("../runtime");
+        status.innerHTML = runtime.warningIconSvg("rtos-status-icon") + '<span class="rtos-status-text"></span>';
         const statusText = status.querySelector(".rtos-status-text");
         const table = body.closest("table");
         if (table) table.before(status);

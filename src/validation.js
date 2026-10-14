@@ -66,6 +66,7 @@ function resolveLeafPath(name, byName, supported) {
         ...(leaf.enumInfo ? { enumInfo: leaf.enumInfo } : {}),
         ...(leaf.isBoolean ? { isBoolean: true } : {}),
         ...(leaf.isPointer ? { isPointer: true, pointerTarget: leaf.pointerTarget } : {}),
+        ...(leaf.isPointer && leaf.typeName ? { typeName: leaf.typeName } : {}),
         ...(leaf.isPointer && leaf.memberRole ? { memberRole: leaf.memberRole } : {}),
         ...(Number.isInteger(leaf.bitSize) ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset } : {})
     };
@@ -143,6 +144,8 @@ function normalizeWatchList(items, symbols) {
             ...(symbol.enumInfo ? { enumInfo: symbol.enumInfo } : {}),
             ...(symbol.isBoolean ? { isBoolean: true } : {}),
             ...(symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {}),
+            // Pointer type names let the host recognize C strings for display.
+            ...(symbol.isPointer && symbol.typeName ? { typeName: symbol.typeName } : {}),
             ...(Number.isInteger(item.bitSize) ? { bitSize: item.bitSize, bitOffset: item.bitOffset } : {})
         });
     }

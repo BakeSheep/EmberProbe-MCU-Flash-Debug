@@ -100,7 +100,20 @@ for (const lang of ["zh", "en"]) {
     const t = (key) => table[key];
     assert.strictEqual(runtime.formatPointer(0), "0x00000000");
     assert.strictEqual(runtime.pointerDisplay(0, t), table["lw.pointerNull"]);
-    assert.strictEqual(runtime.pointerDisplay(0x2000000c, t, "→ &rxBuf[12]"), "0x2000000C → &rxBuf[12]");
+    // The target replaces the address; the address stays in the tooltip and is what a click copies.
+    assert.strictEqual(runtime.pointerDisplay(0x2000000c, t, "→ &rxBuf[12]"), "&rxBuf[12]");
+    assert.deepStrictEqual(runtime.pointerLabel({ value: 0x2000000c, pointerText: "→ &rxBuf[12]" }, t), {
+        text: "&rxBuf[12]",
+        title: "0x2000000C → &rxBuf[12]",
+        copy: "0x2000000C"
+    });
+    assert.strictEqual(runtime.pointerDisplay(0x20000000, t, "→ RAM"), "0x20000000", "regions keep the address");
+    assert.deepStrictEqual(runtime.pointerLabel({ value: 0 }, t), {
+        text: table["lw.pointerNull"],
+        title: "0x00000000",
+        copy: "0x00000000",
+        isNull: true
+    });
     for (const value of [-1, 0x100000000, NaN, 1.5, "12", null, undefined])
         assert.strictEqual(runtime.pointerDisplay(value, t), "—");
     assert.strictEqual(runtime.pointerDisplay(0xffffffff, t), "0xFFFFFFFF");
@@ -187,10 +200,14 @@ for (const version of [4, 5]) {
                     view.scalar([{ name: counter.name, value: 0x2000000c, pointerText: "→ &rxBuf[12]" }]);
                     assert.strictEqual(
                         view.text(callbackPath),
-                        "0x08000101 → clickHandler",
+                        "clickHandler",
                         "function presence updates without rebuilding"
                     );
-                    assert.strictEqual(view.text("motor.rxBuffer"), "0x2000000C → &rxBuf[12]");
+                    assert.strictEqual(view.text("motor.rxBuffer"), "&rxBuf[12]");
+                    assert.strictEqual(
+                        view.row("motor.rxBuffer").querySelector(view.valueSelector).dataset.copy,
+                        "0x2000000C"
+                    );
                     assert.strictEqual(
                         view.row("motor.rxBuffer").querySelector(view.valueSelector).title,
                         "0x2000000C → &rxBuf[12]"
@@ -316,9 +333,15 @@ for (const sidebar of [false, true]) {
             ]
         };
         view.sample(tree, "object");
-        assert.strictEqual(view.text("object.next"), "0x20000100 → &node");
+        assert.strictEqual(view.text("object.next"), "&node");
         assert.strictEqual(view.text("object.next.value.count"), "8");
-        assert.ok(view.row("object.next.value.count").closest(".pointer-pointee"));
+        // A pointee the reader already followed nests under its pointer row, collapsed until toggled.
+        const pointee = view.row("object.next.value.count").closest(".pointer-pointee");
+        assert.ok(pointee && !pointee.classList.contains("open"));
+        assert.strictEqual(pointee.previousElementSibling, view.row("object.next"));
+        view.row("object.next").querySelector(".pointer-toggle").click();
+        assert.ok(pointee.classList.contains("open"));
+        assert.strictEqual(view.getState()[sidebar ? "sbExpanded" : "expanded"]["object.next"], true);
         assert.strictEqual(view.text("object.nil"), "NULL");
         assert.strictEqual(view.text("object.legacy"), "NULL");
         assert.strictEqual(view.text("object.bad"), "0xDEADBEEF");
@@ -330,7 +353,7 @@ for (const sidebar of [false, true]) {
         changed.members[0].pointerValue = 0x20000200;
         changed.members[0].pointerText = "→ &other";
         view.sample(changed, "object");
-        assert.strictEqual(view.text("object.next"), "0x20000200 → &other");
+        assert.strictEqual(view.text("object.next"), "&other");
         view.raw("object");
         assert.strictEqual(view.text("object.secret"), "99");
         view.assertHealthy();

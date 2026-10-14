@@ -48,8 +48,9 @@ remain unavailable, not be bypassed with an explicit scalar suffix or direct Tcl
 Raw pointers outside STL are followed only through an explicit `.value` or `->` segment,
 one level per request, never into `void`, function or declaration-only targets; such targets
 are read-only. Pointer leaves report `isPointer`, `pointerTarget`, a hexadecimal `valueText`
-and, when the ELF symbols resolve it, `pointerText` such as `→ &rxBuf[12]`; report the
-address and annotation instead of the decimal value. Composite results keep every raw member;
+and, when the ELF symbols resolve it, `pointerText` such as `→ &rxBuf[12]` with a structured
+`pointerInfo`; `char *` into read-only ELF data may add `pointerString` such as `"hello"`. Report
+the address and annotation instead of the decimal value. Composite results keep every raw member;
 `memberRole: "artificial" | "internal"` marks compiler and standard-library internals that the
 EmberProbe UI hides by default. See `docs/POINTER-DISPLAY.md` in the extension repository.
 Running multi-read observations are not atomic snapshots. For task-local variables or

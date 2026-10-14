@@ -10,6 +10,14 @@
     const MAX_LAYOUT_VISITS = 65536;
     const SUPPORTED_TYPES = ["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
     const WIDTHS = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
+    // Shared warning triangle (RTOS status and write-risk markers); styled through the given class.
+    function warningIconSvg(className) {
+        return (
+            '<svg class="' +
+            className +
+            '" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.85 2.67a1.33 1.33 0 0 1 2.3 0l5.34 9.33a1.33 1.33 0 0 1-1.16 2H2.67a1.33 1.33 0 0 1-1.16-2Z"/><path d="M8 5v4.5"/><circle cx="8" cy="11.5" r=".6"/></svg>'
+        );
+    }
     function typeByteLength(type) {
         return WIDTHS[type] || 4;
     }
@@ -59,6 +67,42 @@
     function shortVariableName(name) {
         const parts = variableNameParts(name);
         return (parts.prefix ? "." : "") + parts.leaf;
+    }
+    // Shortest qualified suffixes that keep every name distinct: a.x.Ref and b.y.Ref become .x.Ref and .y.Ref.
+    function uniqueShortVariableNames(names) {
+        const suffixes = names.map((name) => {
+            const out = [];
+            let rest = name,
+                tail = "";
+            for (;;) {
+                const parts = variableNameParts(rest);
+                tail = parts.leaf + tail;
+                out.push(tail);
+                if (!parts.prefix) return out;
+                const separator = parts.prefix.endsWith("::") ? "::" : ".";
+                rest = parts.prefix.slice(0, -separator.length);
+                tail = separator + tail;
+            }
+        });
+        const depth = names.map(() => 0);
+        for (let changed = true; changed;) {
+            changed = false;
+            const counts = new Map();
+            suffixes.forEach((list, index) => {
+                const label = list[depth[index]];
+                counts.set(label, (counts.get(label) || 0) + 1);
+            });
+            suffixes.forEach((list, index) => {
+                if (counts.get(list[depth[index]]) > 1 && depth[index] < list.length - 1) {
+                    depth[index]++;
+                    changed = true;
+                }
+            });
+        }
+        return suffixes.map((list, index) => {
+            const label = list[depth[index]];
+            return label === names[index] ? label : (label.startsWith(".") ? "" : ".") + label;
+        });
     }
     function renderVariableName(element, name, rawName = name) {
         const parts = variableNameParts(name);
@@ -122,11 +166,89 @@
     function memberVisible(member, showRaw = false) {
         return !!showRaw || !member?.memberRole;
     }
-    function pointerDisplay(value, t, pointerText) {
+    // Unqualified symbol name for compact pointer targets: `lab::g_widgets` -> `g_widgets`.
+    // Qualifiers inside template arguments or parameter lists stay untouched.
+    function shortSymbolName(name) {
+        const text = String(name || "");
+        let depth = 0;
+        let split = 0;
+        for (let index = 0; index < text.length; index++) {
+            const char = text[index];
+            if (char === "<" || char === "(" || char === "[") depth++;
+            else if (char === ">" || char === ")" || char === "]") depth = Math.max(0, depth - 1);
+            else if (!depth && text.startsWith("::", index)) split = ++index + 1;
+        }
+        return text.slice(split) || text;
+    }
+    function hexOffset(offset) {
+        return Number.isSafeInteger(offset) && offset > 0 ? "+0x" + offset.toString(16).toUpperCase() : "";
+    }
+    // Target text from host pointerInfo; `full` keeps qualified names for the tooltip.
+    function pointerTargetText(info, full) {
+        const name = (value) => (full ? String(value || "") : shortSymbolName(value));
+        if (info.kind === "data")
+            return (
+                "&" +
+                name(info.name) +
+                (typeof info.memberPath === "string"
+                    ? info.memberPath + hexOffset(info.memberOffset)
+                    : Number.isInteger(info.index)
+                      ? "[" + info.index + "]"
+                      : hexOffset(info.offset))
+            );
+        if (info.kind === "function") {
+            const base = name(info.name);
+            const bare = full ? base : base.replace(/\(.*$/s, "");
+            return info.offset ? bare + hexOffset(info.offset) : full || /\(/.test(bare) ? bare : bare + "()";
+        }
+        if (info.kind === "vtable") return name(info.dynamicTypeName || info.name);
+        if (info.kind === "peripheral") return "&" + info.name + hexOffset(info.offset);
+        return "";
+    }
+    const LEGACY_POINTER_REGIONS = new Set(["Flash", "RAM", "Peripheral", "System", "invalid"]);
+    // Compact pointer cell: the target replaces the address, which stays in the tooltip
+    // and is what a click copies. Addresses without a symbol remain the only information.
+    function pointerLabel(node, t) {
+        const value = pointerNodeValue(node);
         const hex = formatPointer(value);
-        if (!hex) return "—";
-        const text = Number(value) === 0 ? t("lw.pointerNull") : hex;
-        return typeof pointerText === "string" && pointerText.trim() ? text + " " + pointerText.trim() : text;
+        if (!hex) return { text: "—", title: "—" };
+        if (Number(value) === 0) return { text: t("lw.pointerNull"), title: hex, copy: hex, isNull: true };
+        if (typeof node.pointerString === "string" && node.pointerString)
+            return { text: node.pointerString, title: hex + " → " + node.pointerString, copy: hex };
+        const info = node.pointerInfo;
+        if (info && ["data", "function", "vtable", "peripheral"].includes(info.kind) && info.name)
+            return {
+                text: pointerTargetText(info, false),
+                title: hex + " → " + pointerTargetText(info, true),
+                copy: hex
+            };
+        if (info?.kind === "region")
+            return { text: hex, title: hex + " → " + t("lw.pointerRegion." + info.region), copy: hex };
+        if (info?.kind === "invalid")
+            return { text: hex, title: hex + " → " + t("lw.pointerInvalid"), copy: hex, invalid: true };
+        const legacy = typeof node.pointerText === "string" ? node.pointerText.trim().replace(/^→\s*/, "") : "";
+        if (legacy && !LEGACY_POINTER_REGIONS.has(legacy))
+            return { text: legacy, title: hex + " " + node.pointerText.trim(), copy: hex };
+        return { text: hex, title: hex, copy: hex };
+    }
+    function pointerDisplay(value, t, pointerText, pointerInfo) {
+        return pointerLabel({ value, pointerText, pointerInfo }, t).text;
+    }
+    // Value cells accept plain text or a pointerLabel() result. Pointer rows mirror the
+    // NULL state so their expansion toggle and pointee hide while there is no target.
+    function setValueCell(cell, display) {
+        const label = typeof display === "object" && display ? display : { text: String(display ?? "") };
+        const title = label.title || label.text;
+        if (cell.textContent !== label.text) cell.textContent = label.text;
+        if (cell.title !== title) cell.title = title;
+        if (label.copy) cell.dataset.copy = label.copy;
+        else delete cell.dataset.copy;
+        cell.classList.toggle("pointer-invalid", !!label.invalid);
+        const row = cell.parentElement;
+        if (row?.classList.contains("pointer-row")) row.classList.toggle("pointer-null", !!label.isNull);
+    }
+    function copyValueText(cell) {
+        return cell.dataset.copy || cell.textContent;
     }
     function pointerNodeValue(node) {
         const value = node?.pointerValue ?? node?.value;
@@ -708,6 +830,10 @@
             address: symbol.address,
             size: symbol.size,
             type: rawPointer ? "u32" : type.watchType || "",
+            ...(segments.length && type.typeName ? { typeName: type.typeName } : {}),
+            ...(rawPointer && type.kind === "pointer"
+                ? { isPointer: true, pointerTarget: type.pointerTarget || "data" }
+                : {}),
             isComposite: !rawPointer && type.kind !== "scalar",
             compositeLayout: symbol.compositeLayout || null,
             ...(symbol.layoutExpansions
@@ -746,22 +872,50 @@
         if (!parsed || !symbol?.name || parsed.base !== symbol.name || !runtimeGraph(symbol)) return null;
         return runtimeWatchEntry(path + ".value", symbol, [...parsed.segments, { kind: "member", name: "value" }]);
     }
-    function renderPointerFollow(container, path, symbol, t, follow) {
-        const entry = pointerDerefEntry(path, symbol);
-        if (!entry) return null;
-        const button = container.ownerDocument.createElement("button");
+    // Member route (`.a.@base0.b`) of a runtime watch below another runtime object, or null.
+    // Dereferences (`.value`) and indexes are not taken from the parent tree: the parent reads
+    // pointers inside its target as addresses and bounds container elements.
+    function runtimeMemberRoute(name, ancestor) {
+        if (typeof name !== "string" || !ancestor || !name.startsWith(ancestor)) return null;
+        const rest = name.slice(ancestor.length);
+        const route = [];
+        const pattern = /\.(@base\d+|[A-Za-z_]\w*)/y;
+        while (pattern.lastIndex < rest.length) {
+            const match = pattern.exec(rest);
+            if (!match || match[1] === "value") return null;
+            route.push(match[1]);
+        }
+        return route.length ? route : null;
+    }
+    // Watch entries created by expanding a pointer row: `<pointer path>.value`.
+    function isPointeeEntry(item) {
+        return !!item?.derefPath && /\.value$/.test(String(item.name || ""));
+    }
+    function pointeeParentPath(name) {
+        return String(name).slice(0, -".value".length);
+    }
+    // Entries nested below `name`: its own pointee chain (`name.value`, `name.value.x.value`...).
+    function isPointeeDescendant(item, name) {
+        const text = String(item?.name || "");
+        return isPointeeEntry(item) && text.startsWith(name) && /^[.[]/.test(text.slice(name.length));
+    }
+    // Disclosure toggle placed first in a pointer row; the pointee body follows the row.
+    function renderPointerToggle(row, path, open, t, onToggle) {
+        const button = row.ownerDocument.createElement("button");
         button.type = "button";
-        button.className = "pointer-follow";
-        button.textContent = "\u21b3";
-        button.title = t("lw.followPointer");
-        button.setAttribute("aria-label", t("lw.followPointer") + ": " + path);
+        button.className = "pointer-toggle" + (open ? " open" : "");
+        button.textContent = "\u25b6";
+        button.title = t("lw.pointerTarget");
+        button.setAttribute("aria-label", t("lw.pointerTarget") + ": " + path);
+        button.setAttribute("aria-expanded", String(!!open));
         button.dataset.path = path;
         button.onclick = (event) => {
             event.stopPropagation();
             event.preventDefault();
-            follow(entry);
+            onToggle();
         };
-        container.appendChild(button);
+        row.classList.add("pointer-row", "has-pointee");
+        row.prepend(button);
         return button;
     }
     function runtimeGraph(symbol) {
@@ -922,6 +1076,14 @@
             element.append(line);
         }
     }
+    // Only one aligned 32-bit word can be written while the core keeps running; anything else is written
+    // as a short halt + read-modify-write transaction. Returns "" for non-halting writes.
+    function writeHaltRisk(address, byteLength) {
+        const size = Number(byteLength) || 0;
+        if (size > 4) return "wide";
+        if (size < 4) return "subword";
+        return (Number(address) >>> 0) % 4 ? "unaligned" : "";
+    }
     function liveState(previous, message) {
         return {
             running:
@@ -932,6 +1094,13 @@
                       : !!previous.running,
             canRead: typeof message.canRead === "boolean" ? message.canRead : !!previous.canRead,
             canWrite: typeof message.canWrite === "boolean" ? message.canWrite : !!previous.canWrite,
+            // Halting writes (sub-word, unaligned, 64-bit) need run control; a running debug session keeps it.
+            haltWrite:
+                typeof message.haltWrite === "boolean"
+                    ? message.haltWrite
+                    : typeof message.canWrite === "boolean"
+                      ? message.canWrite
+                      : !!previous.haltWrite,
             fresh:
                 message.source === "dap"
                     ? message.snapshotReady === true
@@ -948,7 +1117,11 @@
         formatPointer,
         summaryRoute,
         memberVisible,
+        shortSymbolName,
+        pointerLabel,
         pointerDisplay,
+        setValueCell,
+        copyValueText,
         pointerNodeValue,
         summaryRow,
         hiddenMemberCount,
@@ -969,17 +1142,24 @@
         variableDisplayName,
         variableNameParts,
         shortVariableName,
+        uniqueShortVariableNames,
         renderVariableName,
         translate,
         runtimeWatchEntry,
         memberPathSegments,
         pointerDerefEntry,
-        renderPointerFollow,
+        isPointeeEntry,
+        runtimeMemberRoute,
+        pointeeParentPath,
+        isPointeeDescendant,
+        renderPointerToggle,
         runtimeGraph,
         requiresRuntimePath,
         runtimeSelection,
         runtimeTreeShape,
         liveState,
+        writeHaltRisk,
+        warningIconSvg,
         renderElfDiagnostics
     };
 });

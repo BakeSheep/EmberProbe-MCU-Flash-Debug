@@ -8,6 +8,7 @@ const {
     normalizeAdapterSpeed,
     probeFamily
 } = require("../../skills/_emberprobe/probe-connection");
+const { ELF_EXTENSIONS } = require("../../skills/_emberprobe/target-detection");
 
 const ALLOWED_KEYS = new Set([
     "elf",
@@ -81,6 +82,7 @@ class ConfigurationStore {
         };
     }
 
+    /** @param {string | readonly string[]} [extension] accepted lowercase extensions */
     workspacePath(value, extension) {
         if (value === "") return "";
         const workspace = this.vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -99,8 +101,9 @@ class ConfigurationStore {
                 code: "PATH_OUTSIDE_WORKSPACE"
             });
         }
-        if (extension && path.extname(resolvedReal).toLowerCase() !== extension) {
-            throw Object.assign(new Error(`Expected a ${extension} file`), { code: "INVALID_FILE_TYPE" });
+        const extensions = extension ? [extension].flat() : [];
+        if (extensions.length && !extensions.includes(path.extname(resolvedReal).toLowerCase())) {
+            throw Object.assign(new Error(`Expected a ${extensions.join(" / ")} file`), { code: "INVALID_FILE_TYPE" });
         }
         return this.cleanPath(resolvedReal);
     }
@@ -143,7 +146,8 @@ class ConfigurationStore {
             if (key === "cubemxPath") assertAgentSettable({ cubemxPath: value });
             else if (key === "iocPath")
                 addState(key, await require("./cubemxEnvironment").workspaceIoc(this.vscode, value));
-            else if (key === "elf" || key === "svd") addState(key, this.workspacePath(value, "." + key));
+            else if (key === "elf") addState(key, this.workspacePath(value, ELF_EXTENSIONS));
+            else if (key === "svd") addState(key, this.workspacePath(value, ".svd"));
             else if (key === "debugger" || key === "mcu") {
                 if (!this.isSafeCfg(value))
                     throw Object.assign(new Error("Invalid " + key + " configuration name"), {

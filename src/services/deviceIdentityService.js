@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { deviceField } = require("../../skills/_emberprobe/target-detection");
 
 /** @type {ReadonlyArray<[RegExp, string]>} */
 const VENDOR_HINTS = Object.freeze([
@@ -17,6 +18,8 @@ const VENDOR_HINTS = Object.freeze([
     [/^CH32/i, "WCH"],
     [/^RP2040/i, "RaspberryPi"]
 ]);
+
+const PROJECT_METADATA = /(?:\.ioc|\.ya?ml|\.pdsc|\.cprj|\.uvprojx?|\.ewp)$/i;
 
 function normalizePart(value) {
     return String(value || "")
@@ -47,6 +50,10 @@ function targetIdentity(target) {
 }
 
 function extractProjectParts(text) {
+    // CubeMX writes the same device as Mcu.UserName, Mcu.CPN, Mcu.Name ("STM32F407V(E-G)Tx")
+    // and DeviceId; an explicit device field identifies the project on its own.
+    const explicit = normalizePart(deviceField(String(text || "")));
+    if (explicit) return [explicit];
     const parts = [];
     const patterns = [
         /^Mcu\.(?:Name|Cpn)\s*=\s*([^\s,]+)/gim,
@@ -68,7 +75,7 @@ function scanProject(workspacePath, maxFiles = 80, maxEntries = 5000) {
     if (!workspacePath || !fs.existsSync(workspacePath)) return [];
     const found = [];
     const queue = [workspacePath];
-    const allowed = /(?:\.ioc|\.ya?ml|\.pdsc|\.cprj)$/i;
+    const allowed = PROJECT_METADATA;
     const ignored = new Set([".git", "node_modules", "dist", "build", "out"]);
     let scannedFiles = 0;
     let visitedEntries = 0;
@@ -168,7 +175,7 @@ async function scanProjectAsync(workspacePath, maxFiles = 80, maxEntries = 5000)
             visited++;
             const file = path.join(dir, entry.name);
             if (entry.isDirectory() && !ignored.has(entry.name)) queue.push(file);
-            else if (entry.isFile() && /(?:\.ioc|\.ya?ml|\.pdsc|\.cprj)$/i.test(entry.name)) {
+            else if (entry.isFile() && PROJECT_METADATA.test(entry.name)) {
                 scanned++;
                 try {
                     const stat = await fs.promises.stat(file);

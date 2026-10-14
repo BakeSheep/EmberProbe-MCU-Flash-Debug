@@ -365,7 +365,7 @@ function lastJsonLine(stdout) {
         const bareRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-skills-bare-"));
         try {
             const upperElf = path.join(bareRoot, "APP.ELF");
-            fs.writeFileSync(upperElf, "upper case elf");
+            fs.writeFileSync(upperElf, minimalElf());
             const bare = await execFileAsync(process.execPath, [
                 path.resolve(__dirname, "../skills/mcu-flash/scripts/program.js"),
                 "--workspace",

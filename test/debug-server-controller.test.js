@@ -27,6 +27,7 @@ function fixture(options = {}, overrides = {}) {
         setPauseReason: (value) => calls.push(value),
         stats: () => ({ actualHz: 7 }),
         readOnce: async (items) => items,
+        writeAndVerify: async (items) => ({ before: [], after: items, halted: false }),
         waitForIdle: async () => true,
         waitForExit: async () => true,
         ...overrides
@@ -111,6 +112,7 @@ function fixture(options = {}, overrides = {}) {
     assert.strictEqual(await one.controller.waitForIdle(), true);
     assert.strictEqual(await one.controller.waitForExit(), true);
     await assert.rejects(one.controller.readOnce([]), /not ready/);
+    await assert.rejects(one.controller.writeAndVerify([]), /not ready/);
     const first = one.controller.start();
     assert.strictEqual(one.controller.start(), first);
     const connection = await first;
@@ -124,6 +126,14 @@ function fixture(options = {}, overrides = {}) {
     one.controller.setPauseReason("backpressure");
     assert.deepStrictEqual(one.controller.stats(), { actualHz: 7 });
     assert.deepStrictEqual(await one.controller.readOnce(["value"]), ["value"]);
+    assert.deepStrictEqual(await one.controller.writeAndVerify(["value"]), {
+        before: [],
+        after: ["value"],
+        halted: false
+    });
+    one.runtime.pollingFailed = true;
+    assert.strictEqual(one.controller.pollingFailed, true);
+    one.runtime.pollingFailed = false;
     assert.strictEqual(await one.controller.waitForIdle(), true);
     assert.strictEqual(await one.controller.waitForExit(), true);
     const stop = one.controller.stop();
@@ -145,6 +155,7 @@ function fixture(options = {}, overrides = {}) {
     two.controller.setWatch([]);
     assert.throws(() => two.controller.setWatch([{}]), { code: "DEBUG_RUNTIME_READ_UNSUPPORTED" });
     await assert.rejects(two.controller.readOnce([]), { code: "DEBUG_RUNTIME_READ_UNSUPPORTED" });
+    await assert.rejects(two.controller.writeAndVerify([]), { code: "RUNTIME_WRITE_DISABLED" });
     const coordinator = new SamplingCoordinator();
     assert.strictEqual(coordinator.setRuntimeEnabled(two.controller, true, { paused: false }), false);
     const bridge = {
@@ -292,6 +303,29 @@ function fixture(options = {}, overrides = {}) {
     assert.strictEqual(starts[1].probeSerial, "1234");
     assert.strictEqual(prepared, 1);
     assert.strictEqual(recorded, 1);
+    const callbackStatuses = [];
+    retryHost._postConsumerStatuses = (status) => callbackStatuses.push(status);
+    for (const status of [
+        { mode: "debug-running-sampling", canWrite: true, haltWrite: false },
+        { mode: "debug-paused-ready", canWrite: true, haltWrite: true },
+        { mode: "debug-running-waiting", canWrite: false, haltWrite: false }
+    ]) {
+        retryHost._samplingStatus = () => status;
+        retryHost._managedDebugServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
+        assert.deepStrictEqual(
+            callbackStatuses.at(-1),
+            status,
+            "late runtime recovery retains the current write state"
+        );
+    }
+    retryHost._managedDebugServer.handlers.onStatus({ key: "live.debugTclDegraded" });
+    assert.strictEqual(callbackStatuses.at(-1).canWrite, false);
+    const currentServer = retryHost._managedDebugServer;
+    const statusCount = callbackStatuses.length;
+    retryHost._managedDebugServer = null;
+    currentServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
+    assert.strictEqual(callbackStatuses.length, statusCount, "stale controllers cannot enable runtime writes");
+    retryHost._managedDebugServer = currentServer;
     assert.strictEqual(stopped.length, 1, "The failed server is stopped before retrying");
     assert.strictEqual(retryHost._probeCoordinator.isActive("debugStart"), true);
     assert.deepStrictEqual(retryHost._configureManagedRuntimeWatch(), []);

@@ -4,10 +4,32 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { encodeValue, decodeValue, decodeValueText } = require("../src/elfSymbols");
-const { LiveWatchSession } = require("../src/liveWatch");
+const { LiveWatchSession, validateManagedWritePlan } = require("../src/liveWatch");
+const { isNonHaltingWordWrite } = require("../src/writeAccess");
 const writeSkill = require("../skills/mcu-variables/scripts/write");
 
 (async () => {
+    assert.strictEqual(isNonHaltingWordWrite({ address: 0x20000000, bytes: [1, 2, 3, 4] }), true);
+    for (const [address, size] of [
+        [0x20000000, 0],
+        [0x20000000, 1],
+        [0x20000000, 2],
+        [0x20000001, 4],
+        [0x20000000, 8]
+    ])
+        assert.strictEqual(isNonHaltingWordWrite({ address, bytes: new Uint8Array(size) }), false);
+    assert.strictEqual(isNonHaltingWordWrite(null), false);
+    assert.strictEqual(isNonHaltingWordWrite({ address: 0x20000000 }), false);
+    for (const address of [-4, 0x100000000, "536870912"])
+        assert.throws(() => validateManagedWritePlan([{ address, bytes: [1, 2, 3, 4] }]), {
+            code: "LIVE_ADDRESS_NOT_RAM"
+        });
+    for (const byte of [-1, 256, 1.5, "1", NaN])
+        assert.throws(() => validateManagedWritePlan([{ address: 0x20000000, bytes: [byte, 0, 0, 0] }]), {
+            code: "INVALID_WRITE_VALUE"
+        });
+    validateManagedWritePlan([{ address: 0xfffffffc, bytes: Buffer.from([1, 2, 3, 4]) }]);
+
     // —— encodeValue：各类型小端编码与 decodeValue 往返 ——
     assert.deepStrictEqual(encodeValue(255, "u8"), [0xff]);
     assert.deepStrictEqual(encodeValue(-1, "i16"), [0xff, 0xff]);
@@ -204,6 +226,42 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         code: "PROBE_CONNECTION_BUSY_TIMEOUT"
     });
     concurrent.busy = false;
+
+    await scenario("Aligned transactions retain exclusive ownership without run control", async () => {
+        const session = new LiveWatchSession(null, {}, {});
+        session.socket = { destroyed: false };
+        const operations = [];
+        let release;
+        const gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        session._sendCheckedCommand = async () => assert.fail("word writes must not query or change target state");
+        session._readItems = async () => {
+            operations.push("read");
+            return { samples: [] };
+        };
+        session._writeMemoryBytes = async (_address, bytes) => {
+            operations.push("write:" + bytes[0]);
+            if (bytes[0] === 1) await gate;
+        };
+        const first = session.writeAndVerify([{ address: 0x20000000, bytes: [1, 0, 0, 0] }]);
+        const second = session.writeAndVerify([{ address: 0x20000004, bytes: [2, 0, 0, 0] }]);
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.deepStrictEqual(operations, ["read", "write:1"]);
+        release();
+        const results = await Promise.all([first, second]);
+        assert(results.every((result) => result.halted === false));
+        assert.deepStrictEqual(operations, ["read", "write:1", "read", "read", "write:2", "read"]);
+        session._writeMemoryBytes = async () => {
+            throw Error("word write failed");
+        };
+        await assert.rejects(
+            session.writeAndVerify([{ address: 0x20000000, bytes: [1, 0, 0, 0] }]),
+            /word write failed/
+        );
+        assert.strictEqual(session.busy, false);
+        assert.deepStrictEqual(await session.writeAndVerify([]), { before: [], after: [], halted: false });
+    });
 
     // —— variables/write.js 的 --set 解析 ——
     assert.deepStrictEqual(writeSkill.parseSet("kp=0.5,counter=2"), [

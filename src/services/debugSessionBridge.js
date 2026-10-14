@@ -1,4 +1,5 @@
 "use strict";
+const { withWriteAccessStatus } = require("../writeAccess");
 const { isSupportedDebugSession } = require("./debugConfiguration");
 
 const MIN_DAP_INTERVAL_MS = 250;
@@ -227,7 +228,7 @@ class DebugSessionBridge {
                 key = "live.dapReady";
             }
         }
-        return {
+        return withWriteAccessStatus({
             running: this.intentEnabled,
             mode,
             intentEnabled: this.intentEnabled,
@@ -237,7 +238,7 @@ class DebugSessionBridge {
             source,
             key,
             ...extra
-        };
+        });
     }
 
     setWorkspace(folder) {
@@ -973,7 +974,7 @@ class DebugSessionBridge {
                 this.onSamples(after, this.now());
                 this.onStatus(this.status());
             }
-            return { before, after };
+            return { before, after, halted: true };
         } finally {
             this.writing = false;
         }

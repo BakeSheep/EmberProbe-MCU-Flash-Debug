@@ -12,10 +12,12 @@ const path = require("path");
 const modernView = require("./modernView");
 const { versionLabel } = require("./buildInfo");
 const autoDetect = require("./autoDetect");
+const { ELF_FILE_GLOB } = require("../skills/_emberprobe/target-detection");
 const skillInstaller = require("./skillInstaller");
 const openocdRunner = require("./openocdRunner");
 const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
+const { isNonHaltingWordWrite, runtimeWriteDisabledError, withWriteAccessStatus } = require("./writeAccess");
 const liveWatchView = require("./liveWatchView");
 const {
     configuredFrequencyHz,
@@ -156,7 +158,11 @@ class MainViewProvider {
         this._queuedChartHistoryBytes = 0;
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
-        this._liveWatchService = new LiveWatchService(elfSymbols, new PointerSymbolizer());
+        this._liveWatchService = new LiveWatchService(
+            elfSymbols,
+            // Pointer offsets into structs resolve to member paths once the target layout is loaded.
+            new PointerSymbolizer(null, { requestLayout: (name) => this._elfService?.layout(name) })
+        );
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this._samplingIntent = false;
         this._samplingCoordinator = new SamplingCoordinator();
@@ -385,7 +391,12 @@ class MainViewProvider {
             cacheKeys: CACHE_KEYS,
             t: (key, params) => this._t(key, params),
             getChipInfo: () => this._chipInfoService.info,
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "svdStatus", ...status })
+            onStatus: (status) => {
+                // A changed SVD binding renames peripheral pointer targets on the next plan refresh.
+                this._pointerPeripheralsRequested = false;
+                if (this._samplingIntent) this._refreshPointerPeripherals();
+                this._webviewView?.webview.postMessage({ type: "svdStatus", ...status });
+            }
         });
         this._svdPeripheralService = new SvdPeripheralService({
             workerPath: path.join(__dirname, "svdWorker.js"),
@@ -555,7 +566,11 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
             try {
                 console.log("主进程执行选择 ELF 文件命令");
-                const elfFiles = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 100);
+                const elfFiles = await vscode.workspace.findFiles(
+                    ELF_FILE_GLOB,
+                    "{**/node_modules/**,**/.git/**,**/CMakeFiles/**}",
+                    100
+                );
                 if (elfFiles.length === 0) {
                     vscode.window.showWarningMessage(this._t("msg.noElfFound"));
                     return false;
@@ -1582,17 +1597,18 @@ class MainViewProvider {
                     },
                     onSample: (samples, t, consumers) => this._handleRawSamples(samples, t, consumers),
                     onStatus: (status) => {
-                        if (status?.key === "live.debugRuntimeSampling" || status?.key === "live.debugTclDegraded") {
+                        if (this._managedDebugServer !== server) return;
+                        if (status?.key === "live.debugRuntimeSampling") {
+                            // Recovery notifications can arrive after GDB paused or sampling was disabled.
+                            this._postConsumerStatuses(this._samplingStatus());
+                        } else if (status?.key === "live.debugTclDegraded") {
                             this._postConsumerStatuses({
-                                mode:
-                                    status.key === "live.debugRuntimeSampling"
-                                        ? "debug-running-sampling"
-                                        : "debug-running-degraded",
+                                mode: "debug-running-degraded",
                                 key: status.key,
                                 source: "openocd",
-                                canRead: status.key === "live.debugRuntimeSampling",
+                                canRead: false,
                                 canWrite: false,
-                                snapshotReady: status.key === "live.debugRuntimeSampling",
+                                snapshotReady: false,
                                 intentEnabled: this._samplingIntent,
                                 running: this._samplingIntent
                             });
@@ -2031,7 +2047,7 @@ class MainViewProvider {
                     key: enabled ? "live.debugRuntimeSampling" : "live.debugTclDegraded",
                     source: "openocd",
                     canRead: enabled,
-                    canWrite: false,
+                    canWrite: enabled,
                     snapshotReady: enabled,
                     intentEnabled: true,
                     running: true
@@ -2416,9 +2432,37 @@ class MainViewProvider {
                 details: { expected: plan.connection, actual: connection }
             });
         const { elfResult, items } = plan;
+        const runtimeWrite = session === this._managedDebugServer;
+        const debugSession = runtimeWrite ? this._debugBridge.activeSession : null;
+        const stopEpoch = runtimeWrite ? this._debugBridge.stopEpoch : null;
+        if (runtimeWrite) {
+            if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
+            const status = this._samplingStatus();
+            if (status.mode !== "debug-running-sampling" || !status.canWrite)
+                throw Object.assign(new Error("Runtime writes require an active managed OpenOCD sampling session"), {
+                    code: "RUNTIME_WRITE_DISABLED"
+                });
+            this._assertGroupedReadElf();
+            this._runtimeRamPlan(
+                items.map((item) => ({ ...item, size: item.bytes.length })),
+                true
+            );
+        }
         const transaction = await session.writeAndVerify(
             items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
         );
+        if (
+            runtimeWrite &&
+            (session !== this._managedDebugServer ||
+                debugSession !== this._debugBridge.activeSession ||
+                stopEpoch !== this._debugBridge.stopEpoch ||
+                this._debugBridge.agentStatus().state !== "running")
+        )
+            throw Object.assign(new Error("Debug target state changed during the runtime write"), {
+                code: "DEBUG_STATE_CHANGED",
+                retryable: true
+            });
+        const halted = transaction.halted === true;
         const before = new Map(transaction.before.map((s) => [s.name, s]));
         const after = new Map(transaction.after.map((s) => [s.name, s]));
         const results = items.map((i) => {
@@ -2443,16 +2487,18 @@ class MainViewProvider {
         if (results.some((r) => !r.verified)) {
             throw Object.assign(
                 new Error(
-                    "Write verification failed while the target was halted: the value read back does not match (check RAM accessibility, MPU/cache configuration, and debug transport)"
+                    halted
+                        ? "Write verification failed while the target was halted: the value read back does not match (check RAM accessibility, MPU/cache configuration, and debug transport)"
+                        : "Write verification failed: the value read back differs; the running firmware may have modified it right after the write"
                 ),
                 {
                     code: "WRITE_VERIFY_FAILED",
                     retryable: true,
-                    details: { results, targetHaltedDuringWrite: true, alignedWordWrites: true }
+                    details: { results, targetHaltedDuringWrite: halted, alignedWordWrites: true }
                 }
             );
         }
-        return { source, elf: elfResult.elf, results };
+        return { source, elf: elfResult.elf, results, halted };
     }
     // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
@@ -2505,6 +2551,10 @@ class MainViewProvider {
             const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
             return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
         }
+        if (this._managedDebugServer && this._debugBridge.agentStatus().state === "running") {
+            const result = await this._executeWritePlan(this._managedDebugServer, "debug-running-openocd", plan);
+            return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
+        }
         const result = await this._withAgentProbe(
             ({ session, source }) => this._executeWritePlan(session, source, plan),
             {
@@ -2531,20 +2581,29 @@ class MainViewProvider {
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
-        const dapSession = this._debugBridge.canWrite ? this._debugBridge : null;
-        const session = dapSession || (this._liveWatchRunning ? this._liveSession : null);
+        const status = this._samplingStatus();
+        const dapSession = status.canWrite && this._debugBridge.canWrite ? this._debugBridge : null;
+        const runtimeSession =
+            status.canWrite && status.mode === "debug-running-sampling" ? this._managedDebugServer : null;
+        const session =
+            dapSession || runtimeSession || (status.canWrite && this._liveWatchRunning ? this._liveSession : null);
         if (!session) {
             throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
         }
         await this._prepareRequestedLayouts([{ name }]);
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
+        if (!status.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
         plan.connection = this._sessionWriteConnection(session);
         if (dapSession)
             this._postConsumerStatuses(
                 dapSession.status({ mode: "debug-paused-writing", key: "live.dapWriting", canWrite: false })
             );
         try {
-            return await this._executeWritePlan(session, dapSession ? "cortex-debug-dap" : "active-sampling", plan);
+            return await this._executeWritePlan(
+                session,
+                dapSession ? "cortex-debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
+                plan
+            );
         } finally {
             if (dapSession) this._postConsumerStatuses(dapSession.status());
         }
@@ -3253,7 +3312,8 @@ class MainViewProvider {
                 ...(symbol.isBoolean ? { isBoolean: true } : {}),
                 ...(symbol.isConst ? { isConst: true } : {}),
                 ...(symbol.isReference ? { isReference: true } : {}),
-                ...(symbol.isMemberPointer ? { isMemberPointer: true } : {})
+                ...(symbol.isMemberPointer ? { isMemberPointer: true } : {}),
+                ...(symbol.isPointer ? { isPointer: true, pointerTarget: symbol.pointerTarget } : {})
             }));
             sidebarPost({ type: "availableVariableTypes", version, symbols });
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
@@ -3365,6 +3425,7 @@ class MainViewProvider {
     }
     // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
     _postLive(message) {
+        if (message.type === "liveStatus") message = withWriteAccessStatus({ ...this._samplingStatus(), ...message });
         if (message.type === "liveError" && message.message && typeof message.message === "object")
             message = {
                 ...toUiError(message.message),
@@ -3376,12 +3437,15 @@ class MainViewProvider {
     }
     _postConsumerStatuses(payload, error = false) {
         const p = typeof payload === "string" ? { message: payload } : payload || {};
-        const message = { type: "liveStatus", ...this._samplingStatus(), ...p, error };
+        const status = this._samplingStatus();
+        let message = { type: "liveStatus", ...status, ...p, error };
+        message.canWrite = message.canWrite === true && status.canWrite;
         if (this._samplingCoordinator.backpressured) {
             message.canRead = false;
             message.canWrite = false;
             message.snapshotReady = false;
         }
+        message = withWriteAccessStatus(message);
         for (const entry of this._livePanels.values()) entry.post(message);
         this._webviewView?.webview.postMessage({
             ...message,
@@ -4320,10 +4384,25 @@ class MainViewProvider {
         status.hostHoldMs = stats?.hostHoldMs ?? 0;
         status.pauseReason =
             stats?.pauseReason ?? (this._samplingCoordinator.backpressured ? "archive_backpressure" : null);
-        return status;
+        return withWriteAccessStatus(status);
+    }
+
+    // Pointer cells name peripheral registers from the bound SVD. Loading is read-only,
+    // shares the peripheral service cache and runs once per SVD binding.
+    _refreshPointerPeripherals() {
+        if (this._pointerPeripheralsRequested || !this._svdPeripheralService || !this._liveWatchService) return;
+        this._pointerPeripheralsRequested = true;
+        const generation = (this._pointerPeripheralGeneration = (this._pointerPeripheralGeneration || 0) + 1);
+        const apply = (model) => {
+            if (generation === this._pointerPeripheralGeneration) this._liveWatchService.setPeripheralModel(model);
+        };
+        Promise.resolve()
+            .then(() => this._svdPeripheralService.model())
+            .then(apply, () => apply(null));
     }
 
     async _refreshSamplingPlan() {
+        this._refreshPointerPeripherals();
         const active = this._activeReadPlan();
         for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
         if (this._debugBridge.hasSession) {
@@ -4355,7 +4434,7 @@ class MainViewProvider {
                               : "live.needVar",
                         source: "openocd",
                         canRead: enabled,
-                        canWrite: false,
+                        canWrite: enabled,
                         snapshotReady: enabled,
                         intentEnabled: this._samplingIntent,
                         running: this._samplingIntent
@@ -5568,29 +5647,48 @@ class MainViewProvider {
     async runAutoDetect(force) {
         if (force) this._assertConnectionEditable({ debugger: true, mcu: true });
         const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
-        const result = await autoDetect.detectWorkspace(vscode);
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
+        // 只采用当前 OpenOCD 实际提供的脚本；用户选定的 .ioc 单独决定 MCU。
+        const scripts = await this._availableOpenOcdScripts();
+        const result = await autoDetect.detectWorkspace(vscode, {
+            ioc: detectedIoc,
+            mcu: currentMcu || "",
+            targets: scripts.targets,
+            interfaces: scripts.interfaces
+        });
         if (!currentDebugger && result.probeCandidates?.length > 1 && force) {
             result.debugger =
                 (await vscode.window.showQuickPick(result.probeCandidates, {
                     placeHolder: this._t("msg.selectDetectedProbe")
                 })) || "";
         }
-        if (result.elf && (force || !currentElf))
-            await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
-        if ((result.debugger && (force || !currentDebugger)) || (result.mcu && (force || !currentMcu)))
-            this._assertConnectionEditable({ debugger: true, mcu: true });
-        if (result.debugger && (force || !currentDebugger))
-            await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
-        if (result.mcu && (force || !currentMcu))
-            await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
-        if (result.elf && (force || !currentElf)) {
-            await this._refreshElfBindings();
+        if (!result.mcu && result.mcuCandidates?.length > 1 && force) {
+            result.mcu =
+                (await vscode.window.showQuickPick(result.mcuCandidates, {
+                    placeHolder: this._t("msg.selectDetectedMcu")
+                })) || "";
         }
+        const writeElf = !!result.elf && (force || !currentElf);
+        let writeDebugger = !!result.debugger && (force || !currentDebugger);
+        let writeMcu = !!result.mcu && (force || !currentMcu);
+        // 先确认可写再落盘任何字段，避免只写入一半配置。自动检测遇到忙碌会话时
+        // 静默跳过连接配置，不向用户报告其未发起的操作失败。
+        if (writeDebugger || writeMcu) {
+            try {
+                this._assertConnectionEditable({ debugger: true, mcu: true });
+            } catch (error) {
+                if (force) throw error;
+                writeDebugger = writeMcu = false;
+            }
+        }
+        if (writeElf) await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
+        if (writeDebugger) await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
+        if (writeMcu) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
+        if (writeElf) await this._refreshElfBindings();
         await this.updateView();
-        if (result.debugger && (force || !currentDebugger)) await this._refreshJlinkDriverChoice(true);
+        if (writeDebugger) await this._refreshJlinkDriverChoice(true);
         const found = [
             detectedIoc && ".ioc: " + path.basename(detectedIoc),
             result.elf && this._t("msg.foundElf", { name: path.basename(result.elf) }),
@@ -5602,8 +5700,28 @@ class MainViewProvider {
                 ? this._t("msg.autoDoneWith", { found: found.join(", ") })
                 : this._t("msg.autoNone");
             found.length ? vscode.window.showInformationMessage(message) : vscode.window.showWarningMessage(message);
+            if (result.mcuUnavailable)
+                vscode.window.showWarningMessage(this._t("msg.autoMcuUnavailable", { name: result.mcuUnavailable }));
+            if (!result.elf && result.elfRejected?.length)
+                vscode.window.showWarningMessage(
+                    this._t("msg.autoElfArchMismatch", { count: result.elfRejected.length })
+                );
         }
         return result;
+    }
+    // 当前 OpenOCD 可用的 target/interface 脚本；OpenOCD 未就绪时返回空列表，不做过滤。
+    async _availableOpenOcdScripts() {
+        try {
+            const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
+            const executable = this._openOcdStatusService ? await this._resolveOpenOcdPath(configured) : "";
+            if (!executable) return { targets: [], interfaces: [] };
+            return {
+                targets: openocdScripts.discoverTargetConfigs(executable),
+                interfaces: openocdScripts.discoverInterfaceConfigs(executable)
+            };
+        } catch {
+            return { targets: [], interfaces: [] };
+        }
     }
     async _refreshJlinkDriverChoice(notify = false) {
         const revision = this._jlinkDriverChoiceRevision || 0;

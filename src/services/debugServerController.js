@@ -2,6 +2,7 @@
 
 const net = require("net");
 const scripts = require("../openocdScripts");
+const { runtimeWriteDisabledError } = require("../writeAccess");
 const { normalizeDebugServerOptions } = require("./debugConfiguration");
 
 // Hold every reservation until the complete set exists; closing each socket as
@@ -110,6 +111,9 @@ class OpenOcdDebugController {
     get stopped() {
         return this.state === "stopped" || !!this.runtime?.stopped;
     }
+    get pollingFailed() {
+        return !!this.runtime?.pollingFailed;
+    }
     get samplingEnabled() {
         return this.capabilities.runtimeRead && !!this.runtime?.samplingEnabled;
     }
@@ -165,6 +169,11 @@ class OpenOcdDebugController {
             );
         if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
         return this.runtime.readOnce(...args);
+    }
+    writeAndVerify(...args) {
+        if (!this.capabilities.runtimeRead) return Promise.reject(runtimeWriteDisabledError());
+        if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
+        return this.runtime.writeAndVerify(...args);
     }
     stop(...args) {
         if (this.stopping) return this.stopping;

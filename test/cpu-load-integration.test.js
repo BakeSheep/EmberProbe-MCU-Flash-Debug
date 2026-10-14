@@ -111,20 +111,41 @@ async function waitFor(predicate, message) {
             );
             server.readLatencyMs = 5;
             const beginWrite = server.commands.length;
-            await writing.writeAndVerify([{ name: "value", address: 0x20000200, bytes: [9, 8, 7, 6] }]);
+            const word = await writing.writeAndVerify([{ name: "value", address: 0x20000200, bytes: [9, 8, 7, 6] }]);
+            assert.strictEqual(word.halted, false);
             writing.setCpuLoadPaused("after-write");
             await writing.waitForIdle();
             const transaction = server.commands.slice(beginWrite);
-            const halt = transaction.indexOf("halt"),
-                resume = transaction.indexOf("resume");
+            const wordWrite = transaction.findIndex((command) => command.startsWith("ocd_write_memory 0x20000200"));
+            assert(wordWrite >= 1);
+            assert.deepStrictEqual(
+                transaction.slice(wordWrite - 1, wordWrite + 2),
+                [
+                    "ocd_read_memory 0x20000200 32 1",
+                    "ocd_write_memory 0x20000200 32 {0x6070809}",
+                    "ocd_read_memory 0x20000200 32 1"
+                ],
+                "CPU never interleaves with the non-halting write transaction"
+            );
+            assert(!transaction.includes("halt") && !transaction.includes("resume"));
+            assert.deepStrictEqual(server.bytes(0x20000200, 4), [9, 8, 7, 6]);
+            writing.setCpuLoadPaused(null);
+            const beginHaltingWrite = server.commands.length;
+            const byte = await writing.writeAndVerify([{ name: "value", address: 0x20000200, bytes: [10] }]);
+            assert.strictEqual(byte.halted, true);
+            writing.setCpuLoadPaused("after-write");
+            await writing.waitForIdle();
+            const haltedTransaction = server.commands.slice(beginHaltingWrite);
+            const halt = haltedTransaction.indexOf("halt"),
+                resume = haltedTransaction.indexOf("resume");
             assert(halt >= 0 && resume > halt);
             assert(
-                !transaction
+                !haltedTransaction
                     .slice(halt, resume)
                     .some((command) => command.startsWith("join [list") && command.includes("curstate")),
                 "CPU never interleaves with an authorized write transaction"
             );
-            assert.deepStrictEqual(server.bytes(0x20000200, 4), [9, 8, 7, 6]);
+            assert.deepStrictEqual(server.bytes(0x20000200, 4), [10, 8, 7, 6]);
         } finally {
             await writing.stop();
         }

@@ -12,6 +12,7 @@ const TEST_GROUPS = Object.freeze({
         "agent-sampling-control.test.js",
         "agent-service.test.js",
         "attach-debug-command.test.js",
+        "auto-detect.test.js",
         "build-info.test.js",
         "chart-viewport.test.js",
         "chip-control.test.js",
@@ -190,7 +191,10 @@ const TEST_GROUPS = Object.freeze({
         "write-stepping.test.js",
         "pointer-deref.test.js",
         "pointer-display.test.js",
-        "write-list-view.test.js"
+        "pointer-targets.test.js",
+        "write-list-view.test.js",
+        "write-risk-view.test.js",
+        "write-card-display.test.js"
     ]),
     release: Object.freeze(["release-consistency.test.js"])
 });

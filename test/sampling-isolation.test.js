@@ -114,6 +114,7 @@ function testRuntimeAccounting() {
             { name: "value", address: 0x20000000, bytes: [7, 8, 9, 10] }
         ]);
         assert.deepEqual(transaction.after[0].bytes, [7, 8, 9, 10]);
+        assert.strictEqual(transaction.halted, false, "Worker result preserves the non-halting transaction indicator");
         session.setIntervalMs(40);
         session.setSamplingEnabled(true);
         await wait(150);

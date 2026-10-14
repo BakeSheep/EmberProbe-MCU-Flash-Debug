@@ -6,6 +6,117 @@ const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
 (async () => {
+    const coordinator = new SamplingCoordinator();
+    const access = (status) => [status.canWrite, status.haltWrite];
+    const bridge = {
+        hasAnySession: false,
+        hasSession: false,
+        paused: false,
+        conflict: false,
+        transitionKind: "",
+        status() {
+            return {
+                mode: this.paused
+                    ? "debug-paused-ready"
+                    : this.conflict
+                      ? "debug-session-conflict"
+                      : "debug-running-waiting",
+                canWrite: this.paused && !this.conflict,
+                source: "dap"
+            };
+        }
+    };
+    assert.deepStrictEqual(access(coordinator.status({ intent: true, bridge, standaloneRunning: true })), [true, true]);
+    for (const [intent, standaloneRunning] of [
+        [false, true],
+        [true, false],
+        [false, false]
+    ])
+        assert.deepStrictEqual(access(coordinator.status({ intent, bridge, standaloneRunning })), [false, false]);
+    bridge.hasAnySession = bridge.hasSession = true;
+    bridge.paused = true;
+    assert.deepStrictEqual(access(coordinator.status({ intent: true, bridge })), [true, true]);
+    bridge.paused = false;
+    const server = { samplingEnabled: true, ready: true, writeAndVerify() {} };
+    const runtimeStatus = () => coordinator.status({ intent: true, bridge, managedServer: server });
+    assert.strictEqual(runtimeStatus().mode, "debug-running-sampling");
+    assert.deepStrictEqual(access(runtimeStatus()), [true, false]);
+    for (const [property, value] of [
+        ["ready", false],
+        ["stopped", true],
+        ["pollingFailed", true],
+        ["samplingEnabled", false],
+        ["writeAndVerify", undefined]
+    ]) {
+        const previous = server[property];
+        server[property] = value;
+        assert.deepStrictEqual(access(runtimeStatus()), [false, false], property);
+        server[property] = previous;
+    }
+    server.capabilities = { runtimeRead: false };
+    assert.deepStrictEqual(access(runtimeStatus()), [false, false]);
+    delete server.capabilities;
+    for (const [property, value] of [
+        ["conflict", true],
+        ["transitionKind", "continue"]
+    ]) {
+        const previous = bridge[property];
+        bridge[property] = value;
+        assert.deepStrictEqual(access(runtimeStatus()), [false, false], property);
+        bridge[property] = previous;
+    }
+    assert.deepStrictEqual(access(coordinator.status({ intent: false, bridge, managedServer: server })), [
+        false,
+        false
+    ]);
+    coordinator.setBackpressure(true);
+    assert.deepStrictEqual(access(runtimeStatus()), [false, false]);
+    assert.deepStrictEqual(access(coordinator.status({ intent: true, bridge, agentStatus: { canWrite: true } })), [
+        false,
+        false
+    ]);
+    coordinator.setBackpressure(false);
+    assert.deepStrictEqual(
+        access(coordinator.status({ intent: true, bridge, agentStatus: { canWrite: false, haltWrite: true } })),
+        [false, false]
+    );
+
+    const StatusProvider = loadProvider();
+    const provider = Object.create(StatusProvider.prototype);
+    const messages = [];
+    Object.assign(provider, {
+        _samplingCoordinator: coordinator,
+        _debugBridge: bridge,
+        _managedDebugServer: server,
+        _samplingIntent: true,
+        _livePanels: new Map([["chart", { post: (message) => messages.push(message) }]]),
+        _webviewView: { webview: { postMessage: (message) => messages.push(message) } },
+        _unlimitedSamplingEnabled: () => false
+    });
+    provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true });
+    assert(
+        messages.every((message) => message.type === "liveStatus" && message.canWrite && message.haltWrite === false)
+    );
+    provider._postConsumerStatuses({ mode: "debug-running-degraded", canWrite: false });
+    assert.deepStrictEqual(access(messages.at(-1)), [false, false]);
+    provider._postLive({ type: "liveStatus", running: true });
+    assert.deepStrictEqual(access(messages.at(-1)), [true, false]);
+    coordinator.setBackpressure(true);
+    provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true, haltWrite: true });
+    assert.deepStrictEqual(access(messages.at(-1)), [false, false]);
+    coordinator.setBackpressure(false);
+    provider._liveConnectionClosing = true;
+    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
+    provider._liveConnectionClosing = false;
+    server.options = { settingsIdentity: {} };
+    provider._probeConnectionService = {
+        assertCurrent() {
+            throw Error("Connection settings changed");
+        }
+    };
+    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
+    delete server.options;
+
     for (const debugType of ["cortex-debug", "emberprobe"]) {
         const timers = [];
         const cancelled = [];
@@ -120,6 +231,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
         const server = {
             samplingEnabled: true,
+            writeAndVerify() {},
             setSamplingEnabled(value) {
                 this.samplingEnabled = value;
                 return value;
@@ -141,7 +253,9 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             const entry = { ready: true, watchKey: "watch", post: (m) => messages.push(m), latestSamples: new Map() };
             p._scalarWatchList = () => [];
             p._syncGraphTarget(entry);
-            assert.strictEqual(messages.find((m) => m.type === "liveStatus").mode, "debug-running-sampling");
+            const liveStatus = messages.find((m) => m.type === "liveStatus");
+            assert.strictEqual(liveStatus.mode, "debug-running-sampling");
+            assert.deepStrictEqual([liveStatus.canWrite, liveStatus.haltWrite], [true, false]);
             p._livePanels = new Map();
             p._postConsumerStatuses = () => {};
             p._setSamplingArchiveBackpressure(true);

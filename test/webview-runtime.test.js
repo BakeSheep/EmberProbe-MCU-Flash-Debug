@@ -22,10 +22,11 @@ assert.strictEqual(
 assert.strictEqual(runtime.translate({ zh: { fallback: "中文" } }, "fr", "fallback"), "中文");
 assert.strictEqual(runtime.translate({}, "en", "unknown"), "unknown");
 assert.strictEqual(runtime.translate({ zh: { hello: "Hello {name}" } }, "en", "hello"), "Hello ");
-assert.deepStrictEqual(runtime.liveState({ running: true, canRead: true, canWrite: true }, {}), {
+assert.deepStrictEqual(runtime.liveState({ running: true, canRead: true, canWrite: true, haltWrite: true }, {}), {
     running: true,
     canRead: true,
     canWrite: true,
+    haltWrite: true,
     fresh: false
 });
 for (const message of [

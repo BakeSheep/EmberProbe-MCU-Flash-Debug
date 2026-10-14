@@ -24,6 +24,10 @@
 
 ## 数据流与竞态
 
+运行时写入：批次中每项地址均按 4 字节对齐且恰好 4 字节时，只执行写前读取、直接 32 位字写入和回读，不查询或改变目标运行状态。其他写入在独立模式下保留暂停、对齐读-改-写、校验及恢复；托管调试运行态拒绝这些写入，暂停后通过 DAP 执行。`liveStatus` 的 `canWrite/haltWrite` 在独立采样或暂停 DAP 就绪时为 `true/true`，托管调试运行期采样可用时为 `true/false`，禁止写入时为 `false/false`。事务及成功结果带 `halted`；未暂停时回读不一致仍报 `WRITE_VERIFY_FAILED`，并标记 `targetHaltedDuringWrite: false`，因为固件可能紧接着修改该值。
+
+Runtime writes keep execution running when every item is exactly four bytes at a four-byte-aligned address: read before, write each 32-bit word directly, and read back. Other standalone writes retain halt/RMW/verify/resume; running managed debug sessions reject them until paused for DAP writes. `canWrite/haltWrite` is `true/true` for standalone sampling or ready paused DAP, `true/false` for usable managed runtime sampling, and `false/false` when writes are disabled. Transactions and successful results include `halted`; an unhalted mismatch remains `WRITE_VERIFY_FAILED` with `targetHaltedDuringWrite: false`, since firmware may modify the value immediately after writing.
+
 采样 Worker 保持唯一连接与原有读取预算、写入互斥及会话代次。扩展宿主解码后分别写入磁盘归档和历史 Worker。Webview 只持有当前值、历史边界和当前视口的缩减分段；原始历史不会随采样时长累积到页面。
 
 视口请求携带面板、会话 scope、清空代次、冻结编号、可见变量、时间范围、宽度及请求编号。正常请求间隔至少 80 ms，每窗口一个在途及一个最新待处理请求。显隐、拖动、缩放或清空后的旧回复不得覆盖新视图。按像素列保留首尾、数值极值及精确整数极值，缺失点分段，并保留视口两端相邻点。异常断点过多使回复超过 262,144 点时明确提示缩小范围，不隐式连接缺失采样。

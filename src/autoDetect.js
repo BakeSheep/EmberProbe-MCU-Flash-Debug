@@ -5,80 +5,106 @@ const {
     usbInventory,
     probeFromText: debuggerFromInventory
 } = require("../skills/_emberprobe/probe-detection");
-const path = require("path");
+const targets = require("../skills/_emberprobe/target-detection");
 
-async function newestElf(vscode) {
-    const files = await vscode.workspace.findFiles("**/*.elf", "{**/node_modules/**,**/.git/**}", 200);
-    const ranked = await Promise.all(
+const MAX_ELF_CANDIDATES = 2000;
+
+async function readHeader(file) {
+    const handle = await fs.open(file, "r");
+    try {
+        const header = Buffer.alloc(20);
+        const { bytesRead } = await handle.read(header, 0, header.length, 0);
+        return header.subarray(0, bytesRead);
+    } finally {
+        await handle.close();
+    }
+}
+
+// Every ELF image in the workspace with its mtime and architecture; non-ELF *.out files are dropped.
+async function elfImages(vscode) {
+    const files = await vscode.workspace.findFiles(targets.ELF_FILE_GLOB, targets.ELF_EXCLUDE_GLOB, MAX_ELF_CANDIDATES);
+    const images = await Promise.all(
         files.map(async (uri) => {
             try {
-                return { uri, mtime: (await fs.stat(uri.fsPath)).mtimeMs };
+                const [stat, header] = await Promise.all([fs.stat(uri.fsPath), readHeader(uri.fsPath)]);
+                const info = stat.isFile() && targets.elfHeaderInfo(header);
+                return info ? { file: uri.fsPath, mtimeMs: stat.mtimeMs, arch: info.arch } : null;
             } catch {
-                return { uri, mtime: 0 };
+                return null;
             }
         })
     );
-    ranked.sort((a, b) => b.mtime - a.mtime);
-    return ranked[0]?.uri.fsPath || "";
+    return images.filter(Boolean);
 }
 
-function targetFromText(text) {
-    const value = text.toLowerCase();
-    /** @type {Array<[RegExp, string]>} */
-    const rules = [
-        [/apm32f0/, "geehy/apm32f0x.cfg"],
-        [/apm32f1/, "geehy/apm32f1x.cfg"],
-        [/apm32f4/, "geehy/apm32f4x.cfg"],
-        [/stm32f0/, "stm32f0x.cfg"],
-        [/stm32f1/, "stm32f1x.cfg"],
-        [/stm32f2/, "stm32f2x.cfg"],
-        [/stm32f3/, "stm32f3x.cfg"],
-        [/stm32f4/, "stm32f4x.cfg"],
-        [/stm32f7/, "stm32f7x.cfg"],
-        [/stm32g0/, "stm32g0x.cfg"],
-        [/stm32g4/, "stm32g4x.cfg"],
-        [/stm32h7/, "stm32h7x.cfg"],
-        [/stm32l0/, "stm32l0.cfg"],
-        [/stm32l1/, "stm32l1.cfg"],
-        [/stm32l4/, "stm32l4x.cfg"],
-        [/stm32l5/, "stm32l5x.cfg"],
-        [/stm32u5/, "stm32u5x.cfg"],
-        [/stm32wb/, "stm32wbx.cfg"],
-        [/stm32wl/, "stm32wlx.cfg"],
-        [/gd32vf103/, "gd32vf103.cfg"],
-        [/gd32e23/, "gd32e23x.cfg"],
-        [/nrf51/, "nordic/nrf51.cfg"],
-        [/nrf52/, "nordic/nrf52.cfg"],
-        [/rp2040/, "rp2040.cfg"],
-        [/esp32s3/, "esp32s3.cfg"],
-        [/esp32s2/, "esp32s2.cfg"],
-        [/esp32/, "esp32.cfg"]
-    ];
-    return rules.find(([pattern]) => pattern.test(value))?.[1] || "";
-}
-
-async function detectMcu(vscode) {
-    const candidates = [
-        ...(await vscode.workspace.findFiles("**/*.ioc", "{**/node_modules/**,**/.git/**}", 20)),
-        ...(await vscode.workspace.findFiles("**/{CMakeLists.txt,*.cmake,*.ld}", "{**/node_modules/**,**/.git/**}", 80))
-    ];
-    for (const uri of candidates) {
+async function projectEntries(vscode) {
+    const uris = await vscode.workspace.findFiles(targets.PROJECT_FILE_GLOB, targets.PROJECT_EXCLUDE_GLOB, 1000);
+    const files = targets.orderProjectFiles(uris.map((uri) => uri.fsPath));
+    const entries = [];
+    for (const file of files) {
         try {
-            const content = await fs.readFile(uri.fsPath, "utf8");
-            const target = targetFromText(content + "\n" + path.basename(uri.fsPath));
-            if (target) return target;
+            const stat = await fs.stat(file);
+            if (!stat.isFile() || stat.size > targets.MAX_PROJECT_FILE_BYTES) continue;
+            entries.push({ file, text: await fs.readFile(file, "utf8") });
         } catch {}
     }
-    return "";
+    return entries;
 }
 
-async function detectDebugger() {
-    const detected = await detectProbe();
-    return { debugger: detected.probe, probeCandidates: detected.candidates };
+/**
+ * @param {any} vscode
+ * @param {{ ioc?: string, targets?: string[] }} [options] `ioc` is a user-selected project
+ *   file that decides alone; `targets` lists the scripts the configured OpenOCD provides.
+ */
+async function detectMcu(vscode, options = {}) {
+    const entries = await projectEntries(vscode);
+    if (options.ioc && !entries.some((entry) => entry.file === options.ioc)) {
+        try {
+            entries.unshift({ file: options.ioc, text: await fs.readFile(options.ioc, "utf8") });
+        } catch {}
+    }
+    const resolved = targets.resolveTarget(entries, { preferred: options.ioc });
+    const available = Array.isArray(options.targets) && options.targets.length ? new Set(options.targets) : null;
+    if (!available) return { ...resolved, unavailable: "" };
+    const candidates = resolved.candidates.filter((cfg) => available.has(cfg));
+    if (resolved.target && !available.has(resolved.target))
+        return { ...resolved, target: "", candidates, unavailable: resolved.target };
+    return { ...resolved, candidates, unavailable: "" };
 }
 
-async function detectWorkspace(vscode) {
-    const [elf, mcu, debuggerConfig] = await Promise.all([newestElf(vscode), detectMcu(vscode), detectDebugger()]);
-    return { elf, mcu, ...debuggerConfig };
+async function detectDebugger(options = {}) {
+    const detected = await (options.detectProbe || detectProbe)();
+    const available =
+        Array.isArray(options.interfaces) && options.interfaces.length ? new Set(options.interfaces) : null;
+    const candidates = available ? detected.candidates.filter((cfg) => available.has(cfg)) : detected.candidates;
+    return { debugger: candidates.length === 1 ? candidates[0] : "", probeCandidates: candidates };
 }
-module.exports = { detectWorkspace, targetFromText, debuggerFromInventory, usbInventory };
+
+/**
+ * @param {any} vscode
+ * @param {{ ioc?: string, mcu?: string, targets?: string[], interfaces?: string[], detectProbe?: Function }} [options]
+ *   `mcu` is the configured target used to pair firmware when detection finds none.
+ */
+async function detectWorkspace(vscode, options = {}) {
+    const [mcu, images, debuggerConfig] = await Promise.all([
+        detectMcu(vscode, options),
+        elfImages(vscode),
+        detectDebugger(options)
+    ]);
+    const { elf, rejected } = targets.chooseElf(images, {
+        target: mcu.target || options.mcu || "",
+        projectDir: mcu.projectDir
+    });
+    return {
+        elf,
+        elfRejected: rejected,
+        mcu: mcu.target,
+        mcuCandidates: mcu.candidates,
+        mcuSource: mcu.source,
+        mcuUnavailable: mcu.unavailable,
+        ...debuggerConfig
+    };
+}
+
+const targetFromText = targets.targetFromText;
+module.exports = { detectWorkspace, detectMcu, elfImages, targetFromText, debuggerFromInventory, usbInventory };

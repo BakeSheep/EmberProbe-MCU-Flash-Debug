@@ -2,6 +2,7 @@
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
+const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
 
@@ -71,7 +72,172 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
         { code: "WRITE_CONFIRMATION_INVALID" }
     );
     assert.throws(() => auth.authorize({ ...plan, connection: null }), { code: "WRITE_CONNECTION_REQUIRED" });
-    console.log("Write connection binding, stale sessions and legacy trust tests passed");
+    const verifyProvider = Object.create(Provider.prototype);
+    const verifyConnection = writeConnectionIdentity({ kind: "dap", sessionId: "verify", workspace: "workspace" });
+    verifyProvider._sessionWriteConnection = () => verifyConnection;
+    const verifyItem = {
+        requestedName: "value",
+        name: "value",
+        address: 0x20000000,
+        type: "u32",
+        bytes: [42, 0, 0, 0],
+        value: 42,
+        valueText: "42"
+    };
+    const verifyPlan = { elfResult: { elf: { sha256: "verify" } }, items: [verifyItem], connection: verifyConnection };
+    for (const halted of [false, true]) {
+        let readBack = [42, 0, 0, 0];
+        const verifySession = {
+            writeAndVerify: async () => ({
+                before: [{ name: "value", bytes: [1, 0, 0, 0] }],
+                after: [{ name: "value", bytes: readBack }],
+                halted
+            })
+        };
+        const success = await verifyProvider._executeWritePlan(verifySession, "test", verifyPlan);
+        assert.strictEqual(success.halted, halted);
+        assert.strictEqual(success.results[0].verified, true);
+        readBack = [41, 0, 0, 0];
+        await assert.rejects(
+            verifyProvider._executeWritePlan(verifySession, "test", verifyPlan),
+            (error) =>
+                error.code === "WRITE_VERIFY_FAILED" &&
+                error.details.targetHaltedDuringWrite === halted &&
+                error.details.results[0].readBack === 41 &&
+                (halted
+                    ? /while the target was halted/.test(error.message)
+                    : /running firmware may have modified it right after the write/.test(error.message))
+        );
+    }
+
+    const runtimeProvider = Object.create(Provider.prototype);
+    const writeCalls = [];
+    const runtime = {
+        ready: true,
+        samplingEnabled: true,
+        writeAndVerify: async (items) => {
+            writeCalls.push(items);
+            return {
+                before: items.map((item) => ({ name: item.name, bytes: [0, 0, 0, 0] })),
+                after: items.map((item) => ({ name: item.name, bytes: item.bytes })),
+                halted: false
+            };
+        }
+    };
+    const debugBridge = {
+        hasAnySession: true,
+        hasSession: true,
+        paused: false,
+        canWrite: false,
+        activeSession: { id: "runtime", configuration: {} },
+        stopEpoch: 1,
+        agentStatus() {
+            return { state: this.paused ? "paused" : "running" };
+        },
+        status() {
+            return { mode: this.paused ? "debug-paused-ready" : "debug-running-waiting", canWrite: this.canWrite };
+        }
+    };
+    const runtimeElf = {
+        elf: { path: "runtime.elf", sha256: "runtime" },
+        memory: { sections: [{ name: ".data", flags: 3, addr: 0x20000000, size: 16 }] },
+        symbols: [
+            { name: "word", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true },
+            { name: "byte", address: 0x20000004, size: 1, watchType: "u8", hasDwarfWriteType: true }
+        ]
+    };
+    Object.assign(runtimeProvider, {
+        _samplingCoordinator: new SamplingCoordinator(),
+        _samplingIntent: true,
+        _debugBridge: debugBridge,
+        _managedDebugServer: runtime,
+        _livePanels: new Map(),
+        _unlimitedSamplingEnabled: () => false,
+        _elfService: { invalidate() {} },
+        readElfSymbols: () => runtimeElf,
+        _prepareRequestedLayouts: async () => {},
+        _sessionWriteConnection: () => verifyConnection,
+        _prepareWriteConnection: async () => verifyConnection,
+        _t: (key) => key,
+        _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
+    });
+    const uiWord = await runtimeProvider._writeUiVariable("word", 42);
+    assert.strictEqual(uiWord.source, "debug-running-openocd");
+    assert.strictEqual(uiWord.halted, false);
+    assert.strictEqual(writeCalls.length, 1);
+    await assert.rejects(runtimeProvider._writeUiVariable("byte", 42), { code: "RUNTIME_WRITE_DISABLED" });
+    assert.strictEqual(writeCalls.length, 1, "halting UI requests are refused before touching hardware");
+    const runtimePlan = runtimeProvider._agentWritePlan([{ name: "word", value: 43 }], { refreshSymbols: false });
+    runtimePlan.connection = verifyConnection;
+    runtimeProvider._samplingCoordinator.setBackpressure(true);
+    await assert.rejects(runtimeProvider._executeWritePlan(runtime, "test", runtimePlan), {
+        code: "RUNTIME_WRITE_DISABLED"
+    });
+    runtimeProvider._samplingCoordinator.setBackpressure(false);
+    await assert.rejects(
+        runtimeProvider._executeWritePlan(runtime, "test", {
+            ...runtimePlan,
+            items: [{ ...runtimePlan.items[0], address: 0x20000100 }]
+        }),
+        { code: "LIVE_ADDRESS_NOT_RAM" }
+    );
+    assert.strictEqual(writeCalls.length, 1, "backpressure and RAM restrictions prevent hardware writes");
+
+    runtimeProvider._writeAuthorization = new WriteAuthorization({ get: () => undefined, update: async () => {} });
+    let approvals = 0;
+    runtimeProvider._humanApproval = {
+        approve: async (operation) => {
+            assert.strictEqual(operation, "variables.write");
+            approvals++;
+            return { remember: false, mode: "once" };
+        }
+    };
+    const values = [{ name: "word", value: 44 }];
+    const requestWrite = await runtimeProvider._writeAgentVariables({ values });
+    assert.strictEqual(requestWrite.confirmationRequired, true);
+    assert.strictEqual(writeCalls.length, 1);
+    assert.strictEqual(approvals, 0);
+    const agentWord = await runtimeProvider._writeAgentVariables({
+        values,
+        confirmationId: requestWrite.confirmationId
+    });
+    assert.strictEqual(agentWord.source, "debug-running-openocd");
+    assert.strictEqual(agentWord.halted, false);
+    assert.strictEqual(approvals, 1);
+    assert.strictEqual(writeCalls.length, 2);
+    const byteValues = [{ name: "byte", value: 1 }];
+    const requestByte = await runtimeProvider._writeAgentVariables({ values: byteValues });
+    await assert.rejects(
+        runtimeProvider._writeAgentVariables({ values: byteValues, confirmationId: requestByte.confirmationId }),
+        { code: "RUNTIME_WRITE_DISABLED" }
+    );
+    assert.strictEqual(approvals, 2, "Agent approval still runs before execution restrictions");
+    assert.strictEqual(writeCalls.length, 2);
+
+    const normalWrite = runtime.writeAndVerify;
+    for (const change of ["epoch", "selected-session", "server"]) {
+        const active = debugBridge.activeSession;
+        runtime.writeAndVerify = async (items) => {
+            const result = await normalWrite(items);
+            if (change === "epoch") debugBridge.stopEpoch++;
+            else if (change === "selected-session") debugBridge.activeSession = { ...active, id: "other" };
+            else runtimeProvider._managedDebugServer = null;
+            return result;
+        };
+        await assert.rejects(runtimeProvider._executeWritePlan(runtime, "test", runtimePlan), {
+            code: "DEBUG_STATE_CHANGED"
+        });
+        debugBridge.activeSession = active;
+        runtimeProvider._managedDebugServer = runtime;
+    }
+    runtime.writeAndVerify = normalWrite;
+    debugBridge.paused = true;
+    debugBridge.canWrite = true;
+    debugBridge.writeAndVerify = async (items) => ({ ...(await normalWrite(items)), halted: true });
+    const pausedWrite = await runtimeProvider._writeUiVariable("byte", 2);
+    assert.strictEqual(pausedWrite.source, "cortex-debug-dap");
+    assert.strictEqual(pausedWrite.halted, true);
+    console.log("Write connection binding, verification, managed routing and approval tests passed");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

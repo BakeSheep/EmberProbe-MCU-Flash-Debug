@@ -1,6 +1,6 @@
 "use strict";
 const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs, buildOpenOcdTargetArgs } = require("./openocdScripts");
-// 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，并通过 Tcl-RPC 只读采样 RAM。
+// 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，Tcl-RPC 采样 RAM 并允许不暂停的字写入。
 // 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
 const net = require("net");
 const fs = require("fs");
@@ -16,6 +16,7 @@ const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics
 const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
 const { CpuLoadSampler } = require("./services/cpuLoadSampler");
+const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
@@ -139,6 +140,27 @@ function validateManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxComm
         );
     }
     return total;
+}
+
+function validateManagedWritePlan(items) {
+    if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
+    for (const item of items) {
+        if (!Number.isInteger(item.address) || item.address < 0 || item.address + 4 > 0x100000000)
+            throw Object.assign(new Error("Runtime write range overflows the 32-bit target address space"), {
+                code: "LIVE_ADDRESS_NOT_RAM"
+            });
+        if (Array.from(item.bytes).some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255))
+            throw Object.assign(new Error("Runtime writes require integer bytes in the range 0..255"), {
+                code: "INVALID_WRITE_VALUE"
+            });
+    }
+    validateManagedReadPlan(items.map((item) => ({ address: item.address, size: item.bytes.length })));
+    // Reads may merge adjacent ranges; each word write still requires its own Tcl command.
+    if (items.length > MAX_DEBUG_READ_COMMANDS)
+        throw Object.assign(new Error("Runtime write plan exceeds the per-cycle command budget"), {
+            code: "LIVE_WRITE_BUDGET_EXCEEDED",
+            details: { commandCount: items.length, maxCommands: MAX_DEBUG_READ_COMMANDS }
+        });
 }
 
 function compileReadBatches(items) {
@@ -1483,14 +1505,10 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 变量写入统一转换为对齐的 32-bit 读-改-写。某些 Cortex-M7/AHB-AP 组合下
-    // debugger 的 byte-lane 写入会被丢弃；字写可避开该问题并保留相邻字节。
+    // 对齐的单字直接写入，其他变量写入转换为对齐的 32-bit 读-改-写。
+    // 某些 Cortex-M7/AHB-AP 的 byte-lane 写入会被丢弃；字写可避开该问题并保留相邻字节。
     async _writeMemoryBytes(addr, bytes) {
-        if (this.mode === "debug") {
-            throw Object.assign(new Error("Runtime writes are disabled for managed debug sessions"), {
-                code: "RUNTIME_WRITE_DISABLED"
-            });
-        }
+        if (this.mode === "debug") validateManagedWritePlan([{ address: addr, bytes }]);
         const address = addr >>> 0;
         const input = Array.from(bytes || [], (value) => value & 0xff);
         if (!input.length) return true;
@@ -1542,16 +1560,14 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 显式写入默认采用安全事务：记录状态、必要时短暂 halt、写前/写后读取，再恢复运行。
+    // 全部为对齐单字时不查询或改变运行状态；其他事务保持 halt、读-改-写、校验及恢复。
     async writeAndVerify(items, timeoutMs = 5000) {
-        if (this.mode === "debug") {
-            throw Object.assign(new Error("Runtime writes are disabled for managed debug sessions"), {
-                code: "RUNTIME_WRITE_DISABLED"
-            });
-        }
-        if (!Array.isArray(items) || !items.length) return { before: [], after: [] };
+        if (!Array.isArray(items) || !items.length) return { before: [], after: [], halted: false };
+        const nonHalting = items.every(isNonHaltingWordWrite);
+        if (this.mode === "debug") validateManagedWritePlan(items);
         if (this.stopped || !this.socket || this.socket.destroyed)
             throw new Error("OpenOCD Tcl service is not connected");
+        const requestEpoch = this.sampleEpoch;
         const deadline = Date.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         let haltedByUs = false;
@@ -1561,20 +1577,35 @@ class ManagedOpenOcdSession {
             // Ownership is reserved synchronously by the arbiter before connection checks.
             if (this.stopped || !this.socket || this.socket.destroyed)
                 throw new Error("OpenOCD Tcl service is not connected");
-            const state = (await this._sendCheckedCommand("[target current] curstate")).trim();
-            if (state !== "halted") {
-                await this._sendCheckedCommand("halt");
-                haltedByUs = true;
+            if (!nonHalting) {
+                const state = (await this._sendCheckedCommand("[target current] curstate")).trim();
+                if (state !== "halted") {
+                    await this._sendCheckedCommand("halt");
+                    haltedByUs = true;
+                }
             }
+            const guard =
+                this.mode === "debug"
+                    ? {
+                          epoch: requestEpoch,
+                          requireSampling: false,
+                          deadline: Math.min(deadline, Date.now() + MAX_DEBUG_CYCLE_MS)
+                      }
+                    : null;
             const readItems = items.map((item) => ({
                 name: item.name,
                 address: item.address,
                 size: item.bytes.length
             }));
-            const before = (await this._readItems(readItems, Date.now())).samples;
-            for (const item of items) await this._writeMemoryBytes(item.address, item.bytes);
-            const after = (await this._readItems(readItems, Date.now())).samples;
-            result = { before, after };
+            const before = (await this._readItems(readItems, Date.now(), guard)).samples;
+            for (const item of items) {
+                this._assertReadGuard(guard);
+                await this._writeMemoryBytes(item.address, item.bytes);
+            }
+            this._assertReadGuard(guard);
+            const after = (await this._readItems(readItems, Date.now(), guard)).samples;
+            this._assertReadGuard(guard);
+            result = { before, after, halted: !nonHalting };
         } catch (error) {
             primaryError = error;
         }
@@ -1804,6 +1835,7 @@ module.exports = {
     bytesToElements,
     elementsToBytes,
     validateManagedReadPlan,
+    validateManagedWritePlan,
     MAX_DEBUG_READ_BYTES,
     MAX_DEBUG_READ_COMMANDS,
     MAX_DEBUG_CYCLE_MS,
