@@ -15,6 +15,16 @@ const readmeZh = readText("README.md");
 const readmeEn = readText("README_EN.md");
 const gitAttributes = readText(".gitattributes");
 
+const icon = fs.readFileSync(path.join(root, pkg.icon));
+assert.ok(icon.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), "extension icon must be PNG");
+assert.strictEqual(icon.toString("ascii", 12, 16), "IHDR", "extension icon must start with a PNG image header");
+const iconWidth = icon.readUInt32BE(16);
+const iconHeight = icon.readUInt32BE(20);
+assert.ok(
+    iconWidth >= 128 && iconHeight >= 128 && iconWidth <= 1024 && iconHeight <= 1024,
+    `extension icon must be between 128x128 and 1024x1024 pixels for Marketplace publishing, got ${iconWidth}x${iconHeight}`
+);
+
 assert.strictEqual(lock.version, pkg.version, "package-lock top-level version must match package.json");
 assert.strictEqual(lock.packages[""].version, pkg.version, "package-lock root package version must match package.json");
 assert.ok(changelog.includes(`## [${pkg.version}]`), `CHANGELOG must contain a ${pkg.version} release heading`);
