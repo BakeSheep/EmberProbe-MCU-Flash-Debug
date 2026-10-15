@@ -11,6 +11,7 @@ const MAIN_DOCS = new Set([
     "EXTERNAL-GDB-SERVER.md",
     "JLINK-COMPATIBILITY.md",
     "LAYERED-SAMPLING.md",
+    "LINUX-CMSIS-DAP-DIAGNOSIS.md",
     "POINTER-DISPLAY.md",
     "PROBE-RS-EMBASSY.md",
     "RELEASING.md",

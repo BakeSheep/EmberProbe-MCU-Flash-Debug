@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 内置 Linux x64 xPack OpenOCD 0.12.0-7，支持通过现有侧栏安装流程离线解压并配置路径，保留配套脚本、依赖库及许可证。
+- Bundle Linux x64 xPack OpenOCD 0.12.0-7 for offline installation through the existing sidebar flow, retaining its scripts, runtime libraries, and licenses.
+
+- 明确识别 OpenOCD 原生崩溃，在芯片读取的结构化错误诊断中保留可执行路径和退出信号，并提示 Linux CMSIS-DAP HID 序列号匹配的上游修复；保留精确序列号选择。
+- Identify native OpenOCD crashes, retain the executable path and termination signal in structured chip-read errors, and point Linux CMSIS-DAP HID serial failures to the upstream fix while preserving exact serial selection.
+
 ## [0.8.4] - 2026-10-15
 
 - 将扩展图标等比缩小至 1024×1024，修复 VS Code Marketplace 拒绝上传的问题；发布一致性检查新增图标尺寸校验。

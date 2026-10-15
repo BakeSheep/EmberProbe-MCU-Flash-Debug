@@ -101,6 +101,29 @@ function resolver(executable = "openocd") {
     assert.strictEqual(failure.diagnostic.code, "PROBE_NOT_FOUND");
     assert(!failure.openocdTail.some((line) => line.includes("LIBUSB")), "diagnosis must precede display truncation");
 
+    const crashChild = fakeChild();
+    const crash = await runOpenOcdOnce({
+        executable: "fake",
+        probe: "cmsis-dap.cfg",
+        probeSerial: "0001234",
+        target: "stm32h7x.cfg",
+        resolveLaunch: resolver("/trusted/openocd"),
+        buildCommands: () => ["init"],
+        spawnImpl: () => {
+            process.nextTick(() => {
+                crashChild.stderr.write("*** buffer overflow detected ***: terminated\n");
+                crashChild.emit("close", null, "SIGABRT");
+            });
+            return crashChild;
+        }
+    });
+    assert.strictEqual(crash.exitCode, null);
+    assert.strictEqual(crash.signal, "SIGABRT");
+    assert.strictEqual(crash.diagnostic.code, "OPENOCD_NATIVE_CRASH");
+    assert.strictEqual(crash.diagnostic.details.executable, "/trusted/openocd");
+    assert.strictEqual(crash.diagnostic.details.signal, "SIGABRT");
+    assert.strictEqual(crash.diagnostic.details.probeSerial, "0001234");
+
     // 同步 spawn 失败与异步 error 事件的 ENOENT 语义必须一致。
     const enoent = Object.assign(new Error("missing"), { code: "ENOENT" });
     await assert.rejects(

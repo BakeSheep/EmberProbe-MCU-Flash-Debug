@@ -53,6 +53,28 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
         suggestedActions,
         details: { ...details, openocdTail: tail }
     });
+    // Native aborts must not be reported as wiring/permission errors from earlier output.
+    if (
+        /buffer overflow detected|stack smashing detected|segmentation fault/.test(text) ||
+        ["SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL"].includes(details.signal)
+    ) {
+        const cmsisHidSerial =
+            platform === "linux" && /cmsis[-_]dap/i.test(details.probe || "") && Boolean(details.probeSerial);
+        return make(
+            "OPENOCD_NATIVE_CRASH",
+            "openocd",
+            "OpenOCD 进程发生原生崩溃，未能完成当前操作。",
+            [
+                "保留原始输出、OpenOCD 可执行文件路径和版本，检查该构建及其依赖库。",
+                ...(cmsisHidSerial
+                    ? [
+                          "Linux 的部分 OpenOCD 0.12.0 构建在 CMSIS-DAP HID 序列号匹配时存在缓冲区长度错误；请在侧边栏配置包含上游 e01e180f 修复的 OpenOCD。保留精确探针序列号。"
+                      ]
+                    : [])
+            ],
+            false
+        );
+    }
     if (
         /transport.*(?:not supported|unsupported|invalid|not available|can't|cannot)|(?:can't|cannot|unable to|doesn't support).*transport/.test(
             text

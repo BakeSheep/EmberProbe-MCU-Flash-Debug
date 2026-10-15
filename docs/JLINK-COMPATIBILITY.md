@@ -52,6 +52,43 @@ Write confirmations bind the ELF and connection identity. Persisted workspace wr
 
 ## Diagnose without guessing / 按证据诊断
 
+### Linux CMSIS-DAP HID serial crash / Linux CMSIS-DAP HID 序列号崩溃
+
+Some system OpenOCD 0.12.0 builds abort with `*** buffer overflow detected ***: terminated`
+when the CMSIS-DAP HID backend matches an `adapter serial`. The upstream fix is
+[e01e180f](https://github.com/openocd-org/openocd/commit/e01e180f6248590348bad5c354c6b4e0cf1a956a):
+the old conversion passed a byte count where `mbstowcs` expects a wide-character count.
+J-Link does not use this backend, so a successful J-Link read cannot exclude this defect.
+The version string `0.12.0` alone does not establish whether a distribution backported the fix.
+
+部分系统 OpenOCD 0.12.0 构建在 CMSIS-DAP HID 后端匹配 `adapter serial` 时，会以
+`*** buffer overflow detected ***: terminated` 崩溃。上游修复 e01e180f 纠正了宽字符转换的长度单位。
+J-Link 不走这个后端，因此 J-Link 读取成功与此故障可以同时存在。仅凭版本字符串 `0.12.0`
+不能判断系统发行包是否已回移植修复。
+
+Configure a build containing the fix through **Configure OpenOCD Path** in the sidebar or
+`emberprobe.openocdPath` in VS Code settings. Retain the exact serial and the matching scripts tree;
+removing the serial bypasses physical probe selection. Native crashes are reported as
+`OPENOCD_NATIVE_CRASH`, without an automatic retry. One-shot reads retain the executable path,
+exit code, termination signal and bounded raw output in diagnostics.
+
+通过侧栏“配置 OpenOCD 路径”或 VS Code 的 `emberprobe.openocdPath` 设置，选择包含修复的构建，
+并使用该构建配套的 scripts。保留精确序列号：删除序列号会绕过物理探针选择。
+原生崩溃报告为 `OPENOCD_NATIVE_CRASH`，不自动重试；单次读取诊断保留可执行路径、退出码、
+退出信号和有界原始日志。具体复现与验证范围见 [Linux CMSIS-DAP 诊断记录](LINUX-CMSIS-DAP-DIAGNOSIS.md)。
+
+The extension includes xPack OpenOCD 0.12.0-7 for Linux x64 as
+`resources/openocd-linux-x64.tar.gz`. The existing sidebar installation action extracts it offline
+to extension global storage, verifies the executable, and configures the workspace path.
+Bundling the archive does not automatically replace a configured system OpenOCD.
+
+插件内置 Linux x64 的 xPack OpenOCD 0.12.0-7，可通过现有侧栏安装操作离线解压到扩展全局存储，
+验证可执行文件并配置工作区路径。内置资源本身不会自动替换已配置的系统 OpenOCD。
+压缩包保留官方完整目录，其 SHA-256 为
+`94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
+
+### Other connection failures / 其他连接故障
+
 An Ozone session holding a probe and an incompatible USB driver are different failure modes. Close the competing session for a busy error. `Failed to open device` alone does not prove either cause. Inspect the diagnostic code, native log, interface driver and device presence. OpenOCD and Ozone generally cannot own the same debug interface concurrently. Official WinUSB support depends on the exact J-Link/OB implementation and firmware; replacing a legacy SEGGER driver can affect SEGGER tools.
 
 Ozone 占用与 USB 驱动不兼容是不同问题。占用错误应先释放竞争会话；单独一条 `Failed to open device` 不能证明根因。应查看错误码、原生日志、接口驱动及设备是否在线。OpenOCD 和 Ozone 通常不能同时独占同一调试接口。官方 WinUSB 支持取决于准确型号与固件，替换旧 SEGGER 驱动可能影响 SEGGER 工具。

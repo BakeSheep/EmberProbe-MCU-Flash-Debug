@@ -32,7 +32,7 @@ function getBundledArchive(context) {
 // 平台标识：与预置包命名约定一致；未覆盖平台返回 null。
 function platformKey() {
     const { platform, arch } = process;
-    // 当前预置包为 win32-x64（i686 mingw 构建可在 x64 运行）
+    // 当前包含 win32-x64 和 linux-x64；其他平台仅在添加对应资源包后可离线安装。
     if (platform === "win32" && arch === "x64") return "win32-x64";
     if (platform === "darwin" && arch === "x64") return "darwin-x64";
     if (platform === "darwin" && arch === "arm64") return "darwin-arm64";

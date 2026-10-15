@@ -72,7 +72,7 @@ function runOpenOcdOnce(options) {
         let terminalError = null;
         let outputBytes = 0;
 
-        const finish = (error, exitCode) => {
+        const finish = (error, exitCode, signal) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
@@ -89,9 +89,15 @@ function runOpenOcdOnce(options) {
             } else
                 resolve({
                     exitCode,
+                    signal: signal || null,
                     openocdTail: openocdTail.slice(),
                     commands: commands.slice(),
-                    diagnostic: diagnoseOpenOcdFailure(diagnosticLines, { ...connectionDetails(options), exitCode })
+                    diagnostic: diagnoseOpenOcdFailure(diagnosticLines, {
+                        ...connectionDetails(options),
+                        executable: launch.executable,
+                        exitCode,
+                        signal: signal || null
+                    })
                 });
         };
         const handleLine = (raw) => {
@@ -152,12 +158,12 @@ function runOpenOcdOnce(options) {
             if (terminalError && options.waitForCloseOnTimeout) return;
             finish(normalizeSpawnError(error, launch.executable));
         });
-        child.on("close", (code) => {
+        child.on("close", (code, signal) => {
             for (const stream of ["stdout", "stderr"]) {
                 if (pending[stream]) handleLine(pending[stream]);
                 pending[stream] = "";
             }
-            finish(terminalError, code);
+            finish(terminalError, code, signal);
         });
     });
 }

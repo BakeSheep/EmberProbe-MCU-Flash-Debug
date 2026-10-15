@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { createHash } = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -49,12 +50,21 @@ const {
 
     // 用统一 mock context：asAbsolutePath 指向项目根用于定位预置包，globalStorageUri 指向临时目录用于解压
     const projectRoot = path.resolve(__dirname, "..");
+    const linuxArchive = path.join(projectRoot, "resources", "openocd-linux-x64.tar.gz");
+    assert.strictEqual(
+        createHash("sha256").update(fs.readFileSync(linuxArchive)).digest("hex"),
+        "94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6",
+        "Linux x64 预置包必须与 xPack 0.12.0-7 官方 SHA-256 一致"
+    );
     const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "ep-test-"));
     const mockContext = {
         asAbsolutePath: (p) => path.join(projectRoot, p),
         globalStorageUri: { fsPath: tmpBase }
     };
     const archive = getBundledArchive(mockContext);
+    if (process.platform === "linux" && process.arch === "x64") {
+        assert.strictEqual(archive, linuxArchive, "Linux x64 必须发现其离线预置包");
+    }
     if (archive) {
         // 当前平台有预置包：文件必须真实存在且可读
         assert.ok(fs.existsSync(archive), `预置包应存在：${archive}`);

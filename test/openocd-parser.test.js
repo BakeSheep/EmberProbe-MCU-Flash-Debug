@@ -69,6 +69,33 @@ assert.deepStrictEqual(noProbe.details.openocdTail, ["Error: unable to find a ma
 
 const noTarget = diagnoseOpenOcdFailure(["Error: Error connecting DP: cannot read IDR"], { exitCode: 1 });
 assert.strictEqual(noTarget.code, "TARGET_NOT_CONNECTED");
+const nativeCrash = diagnoseOpenOcdFailure(["Error: init failed", "*** buffer overflow detected ***: terminated"], {
+    platform: "linux",
+    probe: "cmsis-dap.cfg",
+    probeSerial: "0001234",
+    exitCode: null,
+    signal: "SIGABRT"
+});
+assert.strictEqual(nativeCrash.code, "OPENOCD_NATIVE_CRASH");
+assert.strictEqual(nativeCrash.category, "openocd");
+assert.strictEqual(nativeCrash.retryable, false);
+assert.strictEqual(nativeCrash.details.signal, "SIGABRT");
+assert(nativeCrash.suggestedActions.some((action) => action.includes("e01e180f")));
+assert(nativeCrash.suggestedActions.some((action) => action.includes("保留精确探针序列号")));
+for (const signal of ["SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL"]) {
+    const crash = diagnoseOpenOcdFailure([], { signal, probe: "jlink.cfg" });
+    assert.strictEqual(crash.code, "OPENOCD_NATIVE_CRASH");
+    assert(!crash.suggestedActions.some((action) => action.includes("CMSIS-DAP HID")));
+}
+assert.notStrictEqual(diagnoseOpenOcdFailure([], { signal: "SIGTERM" }).code, "OPENOCD_NATIVE_CRASH");
+for (const details of [
+    { platform: "win32", probe: "cmsis-dap.cfg", probeSerial: "0001234" },
+    { platform: "linux", probe: "cmsis-dap.cfg", probeSerial: "" }
+]) {
+    const crash = diagnoseOpenOcdFailure(["*** stack smashing detected ***: terminated"], details);
+    assert.strictEqual(crash.code, "OPENOCD_NATIVE_CRASH");
+    assert(!crash.suggestedActions.some((action) => action.includes("e01e180f")));
+}
 const h7NoTarget = diagnoseOpenOcdFailure(["Error: Error connecting DP: cannot read IDR"], {
     target: "stm32h7x.cfg"
 });
