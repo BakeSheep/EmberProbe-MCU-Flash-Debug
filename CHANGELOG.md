@@ -8,6 +8,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.8.4] - 2026-10-15
 
+- 波形图操作调整：左键拖动平移时间轴与数值轴，中键拖动仅平移时间轴，替代原来的右键拖动操作；滚轮以鼠标所在位置为缩放中心，在绘图区同时缩放两轴、在坐标轴区域仅缩放对应轴。拖动结束后不再误触曲线选择；新添加的指针曲线默认关闭，可手动开启，并保留原有曲线显示选择。
+- Update waveform interactions: left-drag pans both time and value axes, and middle-drag pans only time, replacing the previous right-drag gesture. Wheel zoom anchors at the cursor, scaling both axes over the plot and only the corresponding axis over an axis region. Finishing a drag no longer accidentally selects a curve. Newly added pointer curves start hidden and can be enabled manually, while existing curve visibility choices are preserved.
+
 - 调试暂停时读取当前值更快：同一次暂停快照中已读取的内存块供所有运行时对象复用，目标暂停期间不再重复校验指针；暂停快照的时间上限放宽，指针解析不再因“Runtime object time budget exceeded”失败。展开的指针目标读取失败时直接显示错误原因，不再一直显示“等待采样数据”。
 - Reading current values while debugging is paused is faster: memory read once in a paused snapshot is reused by every runtime object, and pointers are no longer re-verified while the target is halted. Paused snapshots get a longer time limit, so pointer expansion no longer fails with "Runtime object time budget exceeded". When an expanded pointee cannot be read, it shows the reason instead of waiting for samples indefinitely.
 
