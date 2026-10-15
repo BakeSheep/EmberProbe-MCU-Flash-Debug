@@ -78,12 +78,17 @@ exit code, termination signal and bounded raw output in diagnostics.
 退出信号和有界原始日志。具体复现与验证范围见 [Linux CMSIS-DAP 诊断记录](LINUX-CMSIS-DAP-DIAGNOSIS.md)。
 
 The extension includes xPack OpenOCD 0.12.0-7 for Linux x64 as
-`resources/openocd-linux-x64.tar.gz`. The existing sidebar installation action extracts it offline
-to extension global storage, verifies the executable, and configures the workspace path.
-Bundling the archive does not automatically replace a configured system OpenOCD.
+`resources/openocd-linux-x64.tar.gz`. With the default `openocd` or empty path, the extension
+automatically extracts and verifies this runtime offline before hardware startup, then reuses
+its archive-specific directory in extension global storage. It does not write settings or change
+the system installation. Explicit paths, including `/usr/bin/openocd`, take precedence.
+Preparation failures stop the operation without falling back to the affected system build.
+The sidebar installation action remains available for manual installation and path configuration.
 
-插件内置 Linux x64 的 xPack OpenOCD 0.12.0-7，可通过现有侧栏安装操作离线解压到扩展全局存储，
-验证可执行文件并配置工作区路径。内置资源本身不会自动替换已配置的系统 OpenOCD。
+插件内置 Linux x64 的 xPack OpenOCD 0.12.0-7。路径为默认 `openocd` 或空值时，
+连接硬件前自动离线解压并验证，之后复用扩展全局存储中按预置包 SHA-256 分隔的目录。
+自动准备不改写设置或系统安装；包括 `/usr/bin/openocd` 在内的显式路径继续优先。
+准备失败时停止操作，不回退到有缺陷的系统构建；侧栏仍保留手动安装并配置路径的入口。
 压缩包保留官方完整目录，其 SHA-256 为
 `94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
 

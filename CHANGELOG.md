@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Linux x64 默认路径自动离线准备并使用内置 xPack OpenOCD，按预置包 SHA-256 分目录缓存；保留显式路径，不修改用户配置，准备失败时在连接硬件前停止。
+- Automatically prepare and use bundled xPack OpenOCD offline for the Linux x64 default path, caching by archive SHA-256; preserve explicit paths and user settings, and stop before hardware startup if preparation fails.
+
 ## [0.8.5] - 2026-10-15
 
 - 内置 Linux x64 xPack OpenOCD 0.12.0-7，支持通过现有侧栏安装流程离线解压并配置路径，保留配套脚本、依赖库及许可证。

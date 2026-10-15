@@ -81,6 +81,61 @@ const { createFixture } = require("./helpers/service-fixture");
         probe.resolve({ path: "valid-openocd" });
         assert.deepStrictEqual(await Promise.all([resolving, refreshing]), ["valid-openocd", "valid-openocd"]);
     });
+
+    await scenario(
+        "Prefer the bundled default over a compatible system cache without changing explicit paths",
+        async () => {
+            let preparations = 0;
+            const probes = [];
+            const checker = {
+                cached: { found: true, path: "/usr/bin/openocd", requested: "openocd", version: "0.12.0" },
+                getCachedResult() {
+                    return this.cached;
+                },
+                setCache(result) {
+                    this.cached = result;
+                },
+                isCompatibleResult: (result) => Boolean(result?.found),
+                shouldUseBundledDefault: (target) => target === "openocd",
+                async probeDefaultOpenOcd(target) {
+                    if (target !== "openocd") return undefined;
+                    preparations++;
+                    return { found: true, path: "/storage/bundled/openocd", requested: target, bundled: true };
+                },
+                async probeOpenOcd(target) {
+                    probes.push(target);
+                    return { found: true, path: target, requested: target };
+                },
+                async resolveOpenOcdStatus(_target, _context, result, report) {
+                    report({ state: result.found ? "ready" : "missing" });
+                    return result.found ? result.path : null;
+                }
+            };
+            const service = new OpenOcdStatusService({
+                checker,
+                context: {},
+                vscode: {
+                    workspace: { getConfiguration: () => ({ get: () => "" }) },
+                    commands: { executeCommand() {} }
+                },
+                onStatus() {}
+            });
+            assert.strictEqual(await service.resolve("openocd"), "/storage/bundled/openocd");
+            assert.deepStrictEqual(await Promise.all([service.resolve(""), service.refresh()]), [
+                "/storage/bundled/openocd",
+                "/storage/bundled/openocd"
+            ]);
+            assert.strictEqual(preparations, 2, "并发默认路径解析必须共用一次准备操作");
+            assert.deepStrictEqual(probes, [], "不得探测或启动系统默认可执行文件");
+            assert.strictEqual(await service.resolve("/usr/bin/openocd"), "/usr/bin/openocd");
+            assert.strictEqual(await service.resolve("/custom/openocd"), "/custom/openocd");
+            assert.deepStrictEqual(probes, ["/usr/bin/openocd", "/custom/openocd"]);
+
+            checker.probeDefaultOpenOcd = async () => ({ found: false, requested: "openocd", error: "install failed" });
+            assert.strictEqual(await service.resolve("openocd"), null);
+            assert.deepStrictEqual(probes, ["/usr/bin/openocd", "/custom/openocd"], "准备失败不得回退到系统包");
+        }
+    );
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

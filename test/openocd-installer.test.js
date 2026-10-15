@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 const installer = require("../src/openocdInstaller");
 const { discoverTargetConfigs } = require("../src/openocdScripts");
-const { probeOpenOcd } = require("../src/openocdChecker");
+const { probeOpenOcd, probeDefaultOpenOcd, shouldUseBundledDefault } = require("../src/openocdChecker");
 const {
     platformKey,
     getBundledArchive,
@@ -62,8 +62,44 @@ const {
         globalStorageUri: { fsPath: tmpBase }
     };
     const archive = getBundledArchive(mockContext);
+    assert.strictEqual(shouldUseBundledDefault("/custom/openocd", mockContext), false);
+    assert.strictEqual(await probeDefaultOpenOcd("/custom/openocd", mockContext), undefined);
+    assert.strictEqual(shouldUseBundledDefault("openocd", { asAbsolutePath: () => "/missing/archive.tar.gz" }), false);
     if (process.platform === "linux" && process.arch === "x64") {
         assert.strictEqual(archive, linuxArchive, "Linux x64 必须发现其离线预置包");
+        const progress = [];
+        const [bundled, otherWindow] = await Promise.all([
+            probeDefaultOpenOcd("openocd", mockContext, (event) => progress.push(event)),
+            probeDefaultOpenOcd("openocd", mockContext)
+        ]);
+        assert.ok(bundled.found && bundled.compatible, JSON.stringify(bundled));
+        assert.ok(otherWindow.found && otherWindow.compatible, JSON.stringify(otherWindow));
+        assert.strictEqual(otherWindow.path, bundled.path, "跨窗口并发准备必须共享已发布的运行时");
+        assert.strictEqual(bundled.bundled, true);
+        assert.strictEqual(bundled.requested, "openocd");
+        assert.ok(bundled.path.startsWith(tmpBase), "默认运行时必须安装在扩展全局存储内");
+        assert.notStrictEqual(bundled.path, "/usr/bin/openocd");
+        const installedAt = fs.statSync(bundled.path).mtimeMs;
+        const reused = await probeDefaultOpenOcd("openocd", mockContext);
+        assert.strictEqual(reused.path, bundled.path);
+        assert.strictEqual(fs.statSync(bundled.path).mtimeMs, installedAt, "重复解析不得覆盖缓存的运行时");
+        assert.ok(progress.some((event) => event.key === "oc.extracting"));
+
+        // A damaged cached runtime must fail without falling back to the affected system build.
+        fs.unlinkSync(bundled.path);
+        const damaged = await probeDefaultOpenOcd("openocd", mockContext);
+        assert.strictEqual(damaged.found, false);
+        assert.strictEqual(damaged.errorKey, "oc.installFailed");
+        assert.match(damaged.error, /缓存验证失败/);
+
+        const corrupt = path.join(tmpBase, "default-corrupt.tar.gz");
+        fs.writeFileSync(corrupt, "not a tar archive");
+        const invalid = await probeDefaultOpenOcd("openocd", {
+            asAbsolutePath: () => corrupt,
+            globalStorageUri: { fsPath: tmpBase }
+        });
+        assert.strictEqual(invalid.found, false);
+        assert.strictEqual(invalid.errorKey, "oc.installFailed");
     }
     if (archive) {
         // 当前平台有预置包：文件必须真实存在且可读

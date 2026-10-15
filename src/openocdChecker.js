@@ -156,6 +156,47 @@ function hasBundledArchive(context) {
     return Boolean(context && typeof context.asAbsolutePath === "function" && installer.getBundledArchive(context));
 }
 
+function shouldUseBundledDefault(executable, context) {
+    const target = String(executable || "").trim();
+    return installer.platformKey() === "linux-x64" && (!target || target === "openocd") && hasBundledArchive(context);
+}
+
+// Resolve the Linux default before hardware startup. Keep the configured value unchanged,
+// and fail closed if the bundled runtime cannot run instead of starting the affected system build.
+async function probeDefaultOpenOcd(executable, context, report) {
+    if (!shouldUseBundledDefault(executable, context)) return undefined;
+    reportStatus(report, { state: "installing", key: "oc.preparing" });
+    try {
+        let probed;
+        const result = await installer.installBundledOpenOcd(
+            null,
+            context,
+            (progress) => reportStatus(report, { state: "installing", ...progress }),
+            async (candidate) => {
+                probed = await probeOpenOcd(candidate);
+                return {
+                    ok: isCompatibleResult(probed),
+                    version: probed.version,
+                    error: probed.error || `OpenOCD ${MIN_OPENOCD_VERSION} or newer is required`
+                };
+            },
+            { reuse: true }
+        );
+        if (!result.ok) throw new Error(result.error);
+        return { ...probed, path: result.path, requested: String(executable || "").trim(), bundled: true };
+    } catch (error) {
+        return {
+            found: false,
+            path: "",
+            requested: String(executable || "").trim(),
+            version: "",
+            error: error.message || String(error),
+            errorKey: "oc.installFailed",
+            errorParams: { error: error.message || String(error) }
+        };
+    }
+}
+
 // 将路径写入当前实际使用的配置层级。打开工作区时优先写入 Workspace，
 // 并同步替换值仍等于旧路径的 Folder 覆盖项，避免 Global 值被更高优先级设置遮蔽。
 async function persistOpenOcdPath(vscode, fsPath, previousPath) {
@@ -365,6 +406,8 @@ async function resolveOpenOcdStatus(executable, context, probedResult, report) {
 }
 
 module.exports = {
+    shouldUseBundledDefault,
+    probeDefaultOpenOcd,
     parseVersion,
     compareVersions,
     checkCompatibility,

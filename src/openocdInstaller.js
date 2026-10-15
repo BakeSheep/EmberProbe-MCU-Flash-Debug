@@ -3,9 +3,10 @@
 // 解压进度通过 onentry 回调上报；安装成功后返回 openocd 可执行文件路径。
 // 设计要点：
 // - 离线可用，不依赖网络；
-// - 安装目标为 context.globalStorageUri/emberprobe/openocd/，跨工作区共享、卸载随插件清理；
+// - 手动安装到 globalStorageUri/emberprobe/openocd/，自动默认运行时使用按压缩包摘要区分的同级目录；
 // - 预置包按 平台-架构 命名，未匹配当前平台时返回 null 由上层兜底（引导手动配置）。
 const fs = require("fs");
+const { createHash } = require("crypto");
 const path = require("path");
 const tar = require("tar");
 
@@ -93,7 +94,7 @@ function assertSafeEntryPath(staging, entryPath) {
 
 // 安装预置包到全局存储目录；progress(report) 上报进度，verifyBinary 在替换旧版本前验证暂存文件。
 // 返回 { ok, path?, version?, error? }；path 为 openocd 可执行文件绝对路径。
-async function installBundledOpenOcd(vscode, context, progress, verifyBinary) {
+async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { reuse = false } = {}) {
     const archive = getBundledArchive(context);
     if (!archive) {
         return {
@@ -101,7 +102,27 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary) {
             error: `当前平台（${process.platform}-${process.arch}）暂无预置 OpenOCD 包，请手动安装后用「配置 OpenOCD 路径」选择`
         };
     }
-    const dest = installDir(context);
+    // Automatic defaults use an archive-specific sibling directory, leaving manual installations
+    // and runtimes from other extension versions intact, including those used by another window.
+    const dest = reuse
+        ? path.join(
+              path.dirname(installDir(context)),
+              `openocd-${platformKey()}-${createHash("sha256").update(fs.readFileSync(archive)).digest("hex")}`
+          )
+        : installDir(context);
+    if (reuse && fs.existsSync(dest)) {
+        const binary = locateOpenOcdBinary(dest);
+        let verification;
+        try {
+            verification = binary && verifyBinary ? await verifyBinary(binary) : null;
+        } catch (error) {
+            verification = { ok: false, error: error.message || String(error) };
+        }
+        if (!binary || !verification || verification.ok === false) {
+            return { ok: false, error: `预置 OpenOCD 缓存验证失败：${verification?.error || "缺少可用的可执行文件"}` };
+        }
+        return { ok: true, path: binary, version: verification.version || "", verification, error: "" };
+    }
     const parent = path.dirname(dest);
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const staging = path.join(parent, `.openocd-staging-${nonce}`);
@@ -177,12 +198,18 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary) {
     const relativeBin = path.relative(staging, bin);
     let movedOld = false;
     try {
-        if (fs.existsSync(dest)) {
+        if (!reuse && fs.existsSync(dest)) {
             fs.renameSync(dest, backup);
             movedOld = true;
         }
         fs.renameSync(staging, dest);
     } catch (error) {
+        // Another VS Code window may have published this exact archive while we extracted it.
+        // Reuse its verified runtime without moving or replacing files it may already be running.
+        if (reuse && ["EEXIST", "ENOTEMPTY"].includes(error.code) && fs.existsSync(dest)) {
+            fs.rmSync(staging, { recursive: true, force: true });
+            return installBundledOpenOcd(vscode, context, progress, verifyBinary, { reuse: true });
+        }
         // 新目录切换失败时恢复旧安装；staging/backup 都限定在扩展全局存储子目录内。
         try {
             if (!fs.existsSync(dest) && movedOld && fs.existsSync(backup)) fs.renameSync(backup, dest);
