@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-10-15
+
 - 内置 Linux x64 xPack OpenOCD 0.12.0-7，支持通过现有侧栏安装流程离线解压并配置路径，保留配套脚本、依赖库及许可证。
 - Bundle Linux x64 xPack OpenOCD 0.12.0-7 for offline installation through the existing sidebar flow, retaining its scripts, runtime libraries, and licenses.
 
