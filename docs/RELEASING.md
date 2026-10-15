@@ -59,4 +59,12 @@ gh release edit v0.8.1 --notes-file "release-notes.md"
 - Draft Release 已存在时会复用并更新 VSIX。
 - GitHub Release 已经公开时会直接结束，不重复发布。
 
-不要删除已经发布的标签后用同一版本指向其他提交；发布构件应保持不可变。
+如维护者明确要求同版本修复图标等打包问题，可从包含修复的 `master` 提交执行：
+
+```powershell
+gh workflow run release.yml --ref master -f tag=v0.8.4 -F rebuild=true
+```
+
+`rebuild` 默认关闭。显式开启后，检查、原生构建、打包和上传使用本次工作流的同一个提交 SHA，仍校验五个文件与目标版本一致；通过全部门禁后替换该版本的 VSIX 附件，保留发布说明和公开状态。标签保持原有指向。发布说明应记录打包修复、构建提交与对应运行，以说明附件来源；功能代码变化仍使用新版本。
+
+不要删除已经发布的标签后用同一版本指向其他提交；除明确授权的打包修复外，发布构件应保持不可变。

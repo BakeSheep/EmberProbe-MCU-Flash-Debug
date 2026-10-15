@@ -6,10 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-15
+
 - 将扩展图标等比缩小至 1024×1024，修复 VS Code Marketplace 拒绝上传的问题；发布一致性检查新增图标尺寸校验。
 - Resize the extension icon to 1024×1024 to fix VS Code Marketplace upload rejection, and validate icon dimensions in release consistency checks.
-
-## [0.8.4] - 2026-10-15
 
 - 波形图操作调整：左键拖动平移时间轴与数值轴，中键拖动仅平移时间轴，替代原来的右键拖动操作；滚轮以鼠标所在位置为缩放中心，在绘图区同时缩放两轴、在坐标轴区域仅缩放对应轴。拖动结束后不再误触曲线选择；新添加的指针曲线默认关闭，可手动开启，并保留原有曲线显示选择。
 - Update waveform interactions: left-drag pans both time and value axes, and middle-drag pans only time, replacing the previous right-drag gesture. Wheel zoom anchors at the cursor, scaling both axes over the plot and only the corresponding axis over an axis region. Finishing a drag no longer accidentally selects a curve. Newly added pointer curves start hidden and can be enabled manually, while existing curve visibility choices are preserved.

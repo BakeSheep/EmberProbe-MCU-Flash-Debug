@@ -10,6 +10,11 @@ on:
         description: Existing stable tag to publish or retry, for example v1.2.3
         required: true
         type: string
+      rebuild:
+        description: Rebuild this workflow commit for the same version and replace its VSIX without moving the tag
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
   gates:
     uses: ./.github/workflows/ci.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
 
   build:
     needs: [gates, driver-helper]
@@ -33,10 +38,10 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
-      - name: Check out release tag
+      - name: Check out release source
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -91,13 +96,14 @@ jobs:
       contents: write
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REPLACE_RELEASE_ASSET: ${{ inputs.rebuild && 'true' || 'false' }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
 
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -118,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}
       - uses: microsoft/setup-msbuild@v2
       - name: Build libwdi and helper
         shell: pwsh

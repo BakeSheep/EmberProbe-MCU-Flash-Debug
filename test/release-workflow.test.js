@@ -29,6 +29,17 @@ assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-dr
 assert.strictEqual(release.jobs.publish.needs, "build");
 assert.strictEqual(release.permissions.contents, "read");
 assert.strictEqual(release.jobs.publish.permissions.contents, "write");
+assert.strictEqual(release.on.workflow_dispatch.inputs.rebuild.type, "boolean");
+assert.strictEqual(release.on.workflow_dispatch.inputs.rebuild.default, false);
+const releaseSource = "${{ inputs.rebuild && github.sha || inputs.tag || github.ref }}";
+assert.strictEqual(release.jobs.gates.with.ref, releaseSource);
+for (const name of ["build", "driver-helper", "publish"]) {
+    assert.strictEqual(
+        release.jobs[name].steps.find((step) => step.uses === "actions/checkout@v5").with.ref,
+        releaseSource
+    );
+}
+assert.strictEqual(release.jobs.publish.env.REPLACE_RELEASE_ASSET, "${{ inputs.rebuild && 'true' || 'false' }}");
 const buildScript = fs.readFileSync(path.join(__dirname, "../scripts/build-driver-helper.ps1"), "utf8");
 assert.match(buildScript, /manifest\.json/);
 assert.match(buildScript, /Get-FileHash -LiteralPath \$file -Algorithm SHA256/);
@@ -56,6 +67,33 @@ for (const state of ["missing", "draft", "public"]) {
         assert.ok(calls[calls.length - 1].includes("--draft=false"));
     }
 }
+for (const replaceAsset of [true, false, "true"]) {
+    const calls = [];
+    const result = publishRelease(
+        "v1.2.3",
+        (args) => {
+            calls.push(args);
+            return args[1] === "view" ? '{"isDraft":false}' : "";
+        },
+        { replaceAsset }
+    );
+    assert.strictEqual(result.published, replaceAsset === true);
+    assert.strictEqual(calls.length, replaceAsset === true ? 2 : 1);
+    if (replaceAsset === true)
+        assert.deepStrictEqual(calls[1], ["release", "upload", "v1.2.3", "dist/emberprobe.vsix", "--clobber"]);
+}
+assert.throws(
+    () =>
+        publishRelease(
+            "v1.2.3",
+            (args) => {
+                if (args[1] === "view") return '{"isDraft":false}';
+                throw new Error("replacement upload failed");
+            },
+            { replaceAsset: true }
+        ),
+    /replacement upload failed/
+);
 const failed = [];
 assert.throws(
     () =>
