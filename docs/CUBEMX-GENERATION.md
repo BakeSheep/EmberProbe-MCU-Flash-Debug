@@ -18,6 +18,10 @@ Log completion/error state is tracked while reading stdout/stderr, independently
 
 Regression coverage is in `test/cubemx-generation-safety.test.js` and `test/cubemx.test.js`; these tests require no CubeMX installation or hardware.
 
-Agent generation requires approval in the extension's modal UI, in addition to the existing plan-bound confirmation ID. Only the user's UI choice can grant the 24-hour project permission. The project identity is checked again after approval.
+Agent generation is confirmed in the Agent conversation using the returned plan-bound
+confirmation ID. The Agent shows the project and changes, waits for the human's answer,
+then submits that ID. A 24-hour project permission requires an explicit chat choice and
+`remember`; EmberProbe does not show a second operation approval dialog. Execution recomputes
+the project identity and rejects a changed plan.
 
 Cancellation and timeouts first terminate CubeMX, then escalate to SIGKILL. If exit still cannot be confirmed, `CUBEMX_EXIT_UNCONFIRMED` is returned while the project and staging files remain owned by that process. New generation/deep checks remain blocked. `cubemx.cancel` retries termination; ownership and deferred cleanup finish only after process exit.

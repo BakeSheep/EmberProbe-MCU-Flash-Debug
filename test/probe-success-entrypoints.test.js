@@ -95,7 +95,13 @@ async function main() {
             resolveLaunch: () => ({ executable: "fake" }),
             check: async () => ({ compatible: true }),
             prepare: async () => connection,
-            authorization: { authorize: (plan) => assert.strictEqual(plan.transport, "swd") },
+            authorization: {
+                authorize: (plan) => {
+                    assert.strictEqual(plan.transport, "swd");
+                    assert.strictEqual(plan.operation, "flash.execute");
+                    return { authorized: true };
+                }
+            },
             recordSuccess: async (value) => {
                 assert.strictEqual(value, connection);
                 flashRecords++;

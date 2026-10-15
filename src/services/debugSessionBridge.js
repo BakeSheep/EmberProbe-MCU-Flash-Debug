@@ -6,6 +6,9 @@ const MIN_DAP_INTERVAL_MS = 250;
 const MAX_READ_BYTES = 4096;
 const SNAPSHOT_INITIAL_DELAY_MS = 180;
 const SNAPSHOT_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000]);
+// A paused snapshot is one-shot rather than a sampling cycle. The 4096-byte / 32-read budget still
+// bounds its work; this limit only stops a stalled adapter, and resuming cancels the read anyway.
+const PAUSED_RUNTIME_READ_MS = 5000;
 const CONTROL_TIMEOUT_MS = 5000;
 
 function sessionFolderKey(session) {
@@ -830,29 +833,13 @@ class DebugSessionBridge {
         const budget = {
             bytes: groups.reduce((sum, group) => sum + group.size, 0),
             commands: groups.length,
-            deadline: Date.now() + 1000
+            deadline: Date.now() + PAUSED_RUNTIME_READ_MS
         };
-        for (const item of items.filter((entry) => entry.runtimeLayout)) {
-            guard();
-            try {
-                const { RuntimeObjectReader } = require("./runtimeObjectReader");
-                const reader = new RuntimeObjectReader(
-                    item,
-                    (address, size) => this._readBlock(session, address, size),
-                    guard,
-                    budget
-                );
-                samples.push({ name: item.name, runtimeTree: await reader.sample() });
-            } catch (error) {
-                if (!error.code?.startsWith("LIVE_")) throw error;
-                samples.push({
-                    name: item.name,
-                    bytes: null,
-                    diagnostic: { code: error.code, message: error.message }
-                });
-            }
-        }
+        // Memory is frozen while paused: blocks read once (fixed groups first) serve every runtime
+        // object, so a pointer word or an object shared by several watches costs one DAP request.
+        const cache = [];
         for (const group of groups) {
+            guard();
             if (expectedEpoch !== null && expectedEpoch !== this.epoch)
                 throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
                     code: "DEBUG_STATE_CHANGED"
@@ -867,6 +854,28 @@ class DebugSessionBridge {
                 const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
                 if (bytes.length !== item.size) throw new Error(`DAP partially read ${item.name}`);
                 samples.push({ name: item.name, bytes });
+            }
+            cache.push({ address: group.address, bytes: Buffer.from(data) });
+        }
+        for (const item of items.filter((entry) => entry.runtimeLayout)) {
+            guard();
+            try {
+                const { RuntimeObjectReader } = require("./runtimeObjectReader");
+                const reader = new RuntimeObjectReader(
+                    item,
+                    (address, size) => this._readBlock(session, address, size),
+                    guard,
+                    budget,
+                    { frozen: true, cache }
+                );
+                samples.push({ name: item.name, runtimeTree: await reader.sample() });
+            } catch (error) {
+                if (!error.code?.startsWith("LIVE_")) throw error;
+                samples.push({
+                    name: item.name,
+                    bytes: null,
+                    diagnostic: { code: error.code, message: error.message }
+                });
             }
         }
         return samples;

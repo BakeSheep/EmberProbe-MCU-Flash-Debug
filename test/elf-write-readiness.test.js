@@ -163,7 +163,7 @@ const elfSymbols = require("../src/elfSymbols");
         assert.throws(() => provider._agentWritePlan([{ name: "sensor.x", value: 1 }]), /Bitfield writes/);
     });
 
-    await scenario("Reject denied or changed-image writes after human approval", async () => {
+    await scenario("Reject unconfirmed or changed-image writes after chat confirmation", async () => {
         const { ProbeCoordinator } = require("../src/probeCoordinator");
         const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
         const { DebugLifecycle } = require("../src/services/debugLifecycle");
@@ -228,21 +228,19 @@ const elfSymbols = require("../src/elfSymbols");
             workspace: "workspace",
             stopEpoch: 1
         });
-        variable._writeAuthorization = { authorize: () => ({ authorized: true }) };
+        variable._writeAuthorization = new (require("../src/writeAuthorization").WriteAuthorization)({
+            get: () => undefined,
+            update: async () => {}
+        });
         variable._executeWritePlan = async () => {
             attemptedWrites++;
         };
-        variable._humanApproval = {
-            approve: async () => {
-                throw Object.assign(Error("denied"), { code: "HUMAN_APPROVAL_DENIED" });
-            }
-        };
-        await assert.rejects(variable._writeAgentVariables({ values: [] }), { code: "HUMAN_APPROVAL_DENIED" });
-        variable._humanApproval.approve = async () => {
-            identity = "after";
-            return { remember: false };
-        };
-        await assert.rejects(variable._writeAgentVariables({ values: [] }), { code: "WRITE_CONFIRMATION_INVALID" });
+        const request = await variable._writeAgentVariables({ values: [] });
+        assert(request.confirmationRequired);
+        identity = "after";
+        await assert.rejects(variable._writeAgentVariables({ values: [], confirmationId: request.confirmationId }), {
+            code: "ELF_CHANGED_DURING_WRITE_CONFIRMATION"
+        });
         assert.strictEqual(attemptedWrites, 0);
     });
 

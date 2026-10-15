@@ -9,7 +9,6 @@ const modules = [
     "watchListStore.js",
     "agentRoutes.js",
     "agentFlashService.js",
-    "humanApprovalService.js",
     "svdDerivation.js",
     "svdWriteConstraints.js",
     "svdModelService.js",

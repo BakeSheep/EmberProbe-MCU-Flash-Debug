@@ -23,6 +23,10 @@ function activate(context) {
         vscode.commands.registerCommand("mcu-vscode.folderAttachDebug", resource => provider.commandHandlers["mcu-vscode.attachDebug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),
         vscode.commands.registerCommand("mcu-vscode.openLiveWatch", () => provider.commandHandlers["mcu-vscode.openLiveWatch"]()),
+        // Chart tabs left open at shutdown come back with their state when VS Code restarts.
+        vscode.window.registerWebviewPanelSerializer("emberprobe.liveWatch", {
+            deserializeWebviewPanel: async (panel, state) => provider.restoreLiveWatchPanel(panel, state)
+        }),
         vscode.commands.registerCommand("mcu-vscode.manageAgentSkills", () => provider.commandHandlers["mcu-vscode.manageAgentSkills"]()),
         vscode.commands.registerCommand("mcu-vscode.downloadOfficialSvd", () => provider.commandHandlers["mcu-vscode.downloadOfficialSvd"]()),
         vscode.commands.registerCommand("mcu-vscode.selectExistingSvd", () => provider.commandHandlers["mcu-vscode.selectExistingSvd"]()),

@@ -38,7 +38,7 @@ The result includes exact hexadecimal register values plus decoded fields and en
 node <skill-dir>/scripts/peripheral.js --workspace <workspace> --set GPIOA.MODER.MODE0=Output
 ```
 
-The first call only returns a write plan with the current and final register values. Show every planned register change and ask whether to allow this write once or deny it. Only after an explicit approval, repeat the identical command with the returned ID:
+The first call only returns a write plan with the current and final register values. Show every planned register change in the Agent conversation and ask whether to allow this write once or deny it. Only after an explicit approval, repeat the identical command with the returned ID. EmberProbe does not display a second operation approval dialog:
 
 ```bash
 node <skill-dir>/scripts/peripheral.js --workspace <workspace> --set GPIOA.MODER.MODE0=Output --confirm <confirmationId>

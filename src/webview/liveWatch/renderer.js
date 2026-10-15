@@ -175,6 +175,10 @@ var watch = [],
     latestText = Object.create(null),
     latestEnum = Object.create(null),
     latestPointer = Object.create(null),
+    // Last sampled pointer targets by watch path; restored with the view so a reopened panel still names them.
+    // They belong to the ELF version they were sampled from and are shown only while it is loaded.
+    lastPointers = Object.create(null),
+    lastPointersVersion = "",
     valueCells = Object.create(null),
     hidden = Object.create(null),
     expanded = Object.create(null),
@@ -219,6 +223,12 @@ if (saved && typeof saved.norm === "boolean") norm = saved.norm;
 if (saved && saved.expanded) expanded = saved.expanded;
 if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
 if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
+// State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
+var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
+if (saved && saved.lastPointers && saved.lastPointersVersion) {
+    lastPointers = saved.lastPointers;
+    lastPointersVersion = String(saved.lastPointersVersion);
+}
 var impHead = document.createElement("div");
 impHead.className = "imp-head";
 impHead.setAttribute("aria-hidden", "true");
@@ -347,8 +357,12 @@ function resolveWatchDisplayInfo(item) {
     );
 }
 function scalarDisplay(item) {
+    const info = watchDisplayInfo(item);
+    // Before the first sample a pointer shows the target it had when last sampled.
+    const last = info.isPointer && latest[item.name] === undefined && shownLastPointers()[item.name];
+    if (last) return fmtDisplayNode({ ...info, ...last, stale: true });
     return fmtDisplayNode({
-        ...watchDisplayInfo(item),
+        ...info,
         ...latestPointer[item.name],
         value: latest[item.name],
         valueText: latestText[item.name],
@@ -364,18 +378,72 @@ function post(m) {
 function saveWatch() {
     post({ type: "saveWatch", items: watch });
 }
+// The host keeps each chart's curve visibility so a panel reopened after a restart restores it.
+// Nothing is sent before the host's copy arrives, so a fresh view cannot overwrite it.
+var curveVisibilityLoaded = false,
+    sentCurveVisibility = null;
 function saveUi() {
+    var curves = analysis.previousHidden || hidden;
+    if (curveVisibilityLoaded) {
+        var key = JSON.stringify(curves);
+        if (key !== sentCurveVisibility) {
+            sentCurveVisibility = key;
+            post({ type: "saveCurveVisibility", hidden: curves });
+        }
+    }
     if (api && api.setState)
         api.setState({
-            hidden: analysis.previousHidden || hidden,
+            panelId: CFG.panelId,
+            hidden: curves,
             expanded: expanded,
             rawMembers: rawMembers,
             dispSpec: dispSpec,
+            lastPointers: lastPointers,
+            lastPointersVersion: lastPointersVersion,
+            pointerCurveDefaults: true,
             timeWindow: windowPreset,
             sideWidth: sideWidth,
             sideCollapsed: sideCollapsed,
             norm: norm
         });
+}
+var pointerSaveTimer = null;
+// Snapshots sampled from another ELF never name targets in the loaded one.
+function shownLastPointers() {
+    return impVersion && lastPointersVersion === impVersion ? lastPointers : Object.create(null);
+}
+function resetLastPointers(version) {
+    lastPointers = Object.create(null);
+    lastPointersVersion = version || "";
+}
+function rememberPointers(entries) {
+    if (!impVersion) return;
+    var changed = false;
+    if (lastPointersVersion !== impVersion) {
+        resetLastPointers(impVersion);
+        changed = true;
+    }
+    Object.keys(entries).forEach(function (path) {
+        var next = entries[path];
+        if (JSON.stringify(lastPointers[path]) !== JSON.stringify(next)) {
+            lastPointers[path] = next;
+            changed = true;
+        }
+    });
+    if (!changed || pointerSaveTimer !== null) return;
+    pointerSaveTimer = setTimeout(function () {
+        pointerSaveTimer = null;
+        saveUi();
+    }, 2000);
+}
+function forgetPointers(name) {
+    Object.keys(lastPointers).forEach(function (path) {
+        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete lastPointers[path];
+    });
+}
+// Pointer curves carry little information; they start hidden unless the user switched them on.
+function hidePointerCurve(item) {
+    if (item && item.isPointer && hidden[item.name] === undefined) hidden[item.name] = true;
 }
 function ensureBuf(n) {
     if (!Object.prototype.hasOwnProperty.call(data, n)) data[n] = [];
@@ -523,8 +591,10 @@ function addSymbol(sym, resolved = false) {
             : {})
     });
     ensureBuf(sym.name);
+    hidePointerCurve(sym);
     renderVars();
     saveWatch();
+    saveUi();
     dirty = true;
 }
 function removeVar(name) {
@@ -565,6 +635,7 @@ function removeVar(name) {
     });
     delete dispSpec[name];
     delete rawMembers[name];
+    forgetPointers(name);
     renderVars();
     saveWatch();
     saveUi();
@@ -748,12 +819,7 @@ function onSamples(samples) {
         latest[s.name] = s.value;
         latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
         latestEnum[s.name] = s.enumText ?? null;
-        latestPointer[s.name] = {
-            ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
-            pointerText: s.pointerText,
-            pointerInfo: s.pointerInfo,
-            pointerString: s.pointerString
-        };
+        recordPointerSample(s);
         // Preserve failed samples as breaks rather than drawing across a gap.
         ensureBuf(s.name);
         var arr = data[s.name];
@@ -766,6 +832,24 @@ function onSamples(samples) {
     });
     scheduleValueRefresh();
     dirty = true;
+}
+function recordPointerSample(s) {
+    latestPointer[s.name] = {
+        ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
+        pointerText: s.pointerText,
+        pointerInfo: s.pointerInfo,
+        pointerString: s.pointerString
+    };
+    if ((s.isPointer || s.pointerText) && s.value != null && !s.diagnostic)
+        rememberPointers({
+            [s.name]: {
+                value: s.value,
+                ...(s.valueText != null ? { valueText: s.valueText } : {}),
+                ...(s.pointerText ? { pointerText: s.pointerText } : {}),
+                ...(s.pointerInfo ? { pointerInfo: s.pointerInfo } : {}),
+                ...(s.pointerString ? { pointerString: s.pointerString } : {})
+            }
+        });
 }
 function isCompositeItem(it) {
     return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
@@ -930,7 +1014,15 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     });
     compCells[path] = val;
     var toggle = createCurveToggle(sw, nm, function () {
-        toggleLeafInChart(path, address, watchType, node);
+        // A placeholder row has no address yet: it can be added once samples arrive, but a curve
+        // already in the chart can be switched off right away.
+        if (
+            !node?.placeholder ||
+            watch.some(function (w) {
+                return w.name === path;
+            })
+        )
+            toggleLeafInChart(path, address, watchType, node);
     });
     const ty = document.createElement("span");
     ty.className = "member-type";
@@ -941,7 +1033,12 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     container.appendChild(row);
     const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
     if (host) container.appendChild(host);
-    setDisplayedValue(val, fmtDisplayNode(node));
+    setDisplayedValue(val, fmtDisplayNode(withLastPointer(node, path)));
+}
+// A static layout row has no value until sampled; a pointer in it shows its last known target.
+function withLastPointer(node, path) {
+    const last = node?.isPointer && node.value == null && !node.stale && shownLastPointers()[path];
+    return last && latest[baseNameOf(path)] === undefined ? { ...node, ...last, stale: true } : node;
 }
 function renderNestInto(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
     renderLayoutInto(
@@ -1194,8 +1291,17 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
     else if (tree.unavailable)
         appendNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
 }
-function renderRuntimeBody(body, tree, name) {
-    var shape = JSON.stringify([showRawFor(name), EmberProbeRuntime.displayTreeShape(tree)]);
+function renderRuntimeBody(body, sampled, name) {
+    // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
+    var tree =
+        sampled ||
+        EmberProbeRuntime.placeholderRuntimeTree(
+            watch.find(function (item) {
+                return item.name === name;
+            }),
+            shownLastPointers()
+        );
+    var shape = JSON.stringify([showRawFor(name), !sampled, EmberProbeRuntime.displayTreeShape(tree)]);
     if (body.dataset.runtimeShape === shape) return;
     Object.keys(compCells).forEach(function (path) {
         if (body.contains(compCells[path])) delete compCells[path];
@@ -1203,7 +1309,7 @@ function renderRuntimeBody(body, tree, name) {
     body.textContent = "";
     body.dataset.runtimeShape = shape;
     if (tree?.truncated) appendNote(body, t("lw.layoutPartial"));
-    renderRawMembersUi(body, tree || layoutSymbol(name)?.compositeLayout, name);
+    renderRawMembersUi(body, sampled || layoutSymbol(name)?.compositeLayout, name);
     renderRuntimeTreeInto(body, tree, name);
     const symbol = layoutSymbol(name);
     for (const entry of EmberProbeRuntime.displayUnavailableRows(
@@ -1214,7 +1320,7 @@ function renderRuntimeBody(body, tree, name) {
         showRawFor(name)
     ))
         layoutExpansionUi.render(body, entry, name, t);
-    if (!tree) appendNote(body, t("lw.waitSamples"));
+    if (!sampled) appendNote(body, t("lw.waitSamples"));
 }
 function appendNote(container, text) {
     var n = document.createElement("div");
@@ -1350,6 +1456,7 @@ function onCompositeSamples(samples) {
             refreshImport = true;
         if (s && s.name) {
             latest[s.name] = s.tree;
+            rememberPointers(EmberProbeRuntime.pointerSnapshots(s.tree, s.name));
             var body = runtimeBodies[s.name];
             if (body) renderRuntimeBody(body, s.tree, s.name);
         }
@@ -1829,8 +1936,12 @@ function importSelected() {
     var changed = false;
     leafCbs.forEach(function (cb) {
         if (cb.runtimeEntry) addSymbol(cb.runtimeEntry, true);
-        else if (addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType, cb.leafEntry))
+        else if (
+            addLeafWatch(cb.dataset.leafPath, Number(cb.dataset.leafAddr) || 0, cb.dataset.leafType, cb.leafEntry)
+        ) {
+            hidePointerCurve(cb.leafEntry && { ...cb.leafEntry, name: cb.dataset.leafPath });
             changed = true;
+        }
     });
     syms.forEach(function (s) {
         addSymbol(s);
@@ -1838,6 +1949,7 @@ function importSelected() {
     if (changed) {
         renderVars();
         saveWatch();
+        saveUi();
         dirty = true;
     }
     hideImport();
@@ -2866,9 +2978,20 @@ window.EmberProbeMessages.connect(window, {
             delete latestText[name];
             delete latestEnum[name];
             delete latestPointer[name];
+            forgetPointers(name);
         });
+        // A view saved before pointer curves started hidden keeps the pointer curves it showed.
+        if (legacyPointerCurves) {
+            incoming.forEach(function (item) {
+                if (item.isPointer && hidden[item.name] === undefined) hidden[item.name] = false;
+            });
+            legacyPointerCurves = false;
+            saveUi();
+        }
         watch = incoming;
+        watch.forEach(hidePointerCurve);
         if (m.resetValues) {
+            resetLastPointers(lastPointersVersion);
             watch.forEach(function (item) {
                 delete latest[item.name];
                 delete latestText[item.name];
@@ -2876,14 +2999,9 @@ window.EmberProbeMessages.connect(window, {
                 delete latestPointer[item.name];
             });
         }
-        Object.keys(hidden).forEach(function (n) {
-            if (
-                !watch.some(function (w) {
-                    return w.name === n;
-                })
-            )
-                delete hidden[n];
-        });
+        // Curve visibility is kept for watches missing from this list: a list sent while layouts are
+        // still resolving can omit them briefly, and they must come back as the user left them.
+        // Removing a watch here (removeVar) is what forgets its curve.
         watch.forEach(function (w) {
             ensureBuf(w.name);
         });
@@ -2918,6 +3036,19 @@ window.EmberProbeMessages.connect(window, {
             renderAutocomplete();
         }
     },
+    curveVisibility: function (m) {
+        // A panel VS Code restored keeps its own state; a newly opened one adopts the host's copy.
+        if (!(saved && saved.hidden) && m.hidden && typeof m.hidden === "object") {
+            hidden = Object.create(null);
+            Object.keys(m.hidden).forEach(function (name) {
+                hidden[name] = !!m.hidden[name];
+            });
+            renderVars();
+            dirty = true;
+        }
+        curveVisibilityLoaded = true;
+        saveUi();
+    },
     variablesListReset: function (m) {
         impWarnings = m.warnings || [];
         impError = "";
@@ -2925,6 +3056,10 @@ window.EmberProbeMessages.connect(window, {
         cancelImportMemberSearch();
         impVersion = m.version || "";
         impGeneration = m.generation ?? null;
+        if (impVersion && lastPointersVersion && lastPointersVersion !== impVersion) {
+            resetLastPointers(impVersion);
+            saveUi();
+        }
         layoutExpansionUi.reset();
         for (const item of watch) {
             delete item.layoutExpansions;
@@ -3201,8 +3336,10 @@ window.EmberProbeMessages.connect(window, {
         if (!CFG.backendHistory || historyClearPending) return;
         (m.samples || []).forEach(function (sample) {
             latest[sample.name] = sample.value;
-            latestText[sample.name] = sample.valueText ?? null;
+            latestText[sample.name] =
+                sample.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (sample.valueText ?? null);
             latestEnum[sample.name] = sample.enumText ?? null;
+            recordPointerSample(sample);
         });
         scheduleValueRefresh();
         applyUnlimitedStatus(m);

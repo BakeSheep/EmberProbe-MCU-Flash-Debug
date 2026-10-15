@@ -20,13 +20,23 @@ function pointerFailureReason(code) {
 }
 
 class RuntimeObjectReader {
-    constructor(item, read, guard = () => {}, budget = { bytes: 0, commands: 0, deadline: Date.now() + 1000 }) {
+    // `frozen`: the target is halted for the whole read (the guard enforces it), so memory cannot
+    // change underneath and descriptors need no second read. `cache` may then be shared by every
+    // reader of the same halted snapshot.
+    constructor(
+        item,
+        read,
+        guard = () => {},
+        budget = { bytes: 0, commands: 0, deadline: Date.now() + 1000 },
+        options = {}
+    ) {
         this.item = item;
         this.graph = item.runtimeLayout;
         this.readRaw = read;
         this.guard = guard;
         this.budget = budget;
-        this.cache = [];
+        this.frozen = !!options.frozen;
+        this.cache = this.frozen && Array.isArray(options.cache) ? options.cache : [];
         this.descriptors = new Map();
         this.verificationBudget = { bytes: 0, commands: 0 };
         this.pointerExpansionStopped = false;
@@ -54,6 +64,7 @@ class RuntimeObjectReader {
         return size;
     }
     async memory(address, size, fresh = false, descriptor = false) {
+        if (this.frozen) descriptor = false;
         this.guard();
         if (Date.now() > this.budget.deadline)
             throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object time budget exceeded");

@@ -570,6 +570,7 @@ module.exports = Object.freeze({
     "lw.hiddenMembers": "{n} internal members hidden",
     "lw.pointerNull": "NULL",
     "lw.pointeeNull": "The pointer is NULL; there is no target",
+    "lw.pointerLastSampled": "last sampled",
     "lw.pointerInvalid": "invalid address",
     "lw.pointerRegion.flash": "Flash",
     "lw.pointerRegion.ram": "RAM",
@@ -726,9 +727,6 @@ module.exports = Object.freeze({
     "live.probeDisconnected": "Debugger disconnected; live sampling stopped automatically",
     "live.disconnecting": "Sampling stopped; closing the probe connection…",
     "live.connectionClosed": "Sampling connection closed",
-    "approval.once": "Allow once",
-    "approval.workspace": "Allow this workspace for 24 hours",
-    "approval.request": "Agent requests {operation}. Review the actual operation plan",
     "approval.denied": "The user did not approve this operation",
     "approval.skills":
         "Workspace skills differ from the extension version. Allow the current contents to call the Agent Bridge?",

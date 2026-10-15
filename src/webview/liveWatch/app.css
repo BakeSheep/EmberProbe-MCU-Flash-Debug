@@ -2099,6 +2099,12 @@ input[type="number"]::-webkit-outer-spin-button {
 .member-value.pointer-invalid {
     color: var(--vscode-editorWarning-foreground, #cca700);
 }
+/* Last sampled target shown before sampling resumes. */
+.var-value.pointer-stale,
+.member-value.pointer-stale {
+    opacity: 0.6;
+    font-style: italic;
+}
 
 .member-type {
     overflow: hidden;
@@ -2269,4 +2275,51 @@ input[type="number"]::-webkit-outer-spin-button {
 .comp-members {
     padding: 2px 0 0 6px;
     margin: 4px 0 0 4px;
+}
+
+/* Values are sized by the list width, not a fixed 110px, so long pointer targets use free space
+   and are ellipsized only when it runs out. Narrow lists also drop the type badges (still in
+   tooltips) and give the name more room than the value. */
+.side {
+    container: lw-side / inline-size;
+}
+.var-card > .var-value {
+    max-width: 58cqw;
+}
+@container lw-side (max-width: 320px) {
+    .side .member-row > .member-type,
+    .side .var-main > .member-type,
+    .side .comp-head > .comp-type {
+        display: none;
+    }
+    .var-card > .var-value {
+        max-width: 40cqw;
+        font-size: 11px;
+    }
+    .side .member-row > .member-value {
+        max-width: 45%;
+    }
+}
+/* The type badge's auto margin used to push the value right; the name now takes the free space. */
+.side .member-row > .curve-toggle {
+    margin-right: auto;
+}
+.side .member-row > .member-value {
+    margin-left: 0;
+}
+
+/* The remove button is a full-height column at the card's right edge, glyph centered, whether the
+   card is a scalar, a composite or has an expanded pointee below its value line. */
+.var-card > .remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+}
+.var-card:not(.composite).has-pointee:has(> .pointer-pointee.open) > .pointer-pointee {
+    grid-column: 1 / 4;
+    grid-row: 3;
+}
+.var-card:not(.composite).has-pointee:has(> .pointer-pointee.open) > .remove {
+    grid-row: 1 / 4;
 }

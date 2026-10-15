@@ -209,6 +209,12 @@
     // Compact pointer cell: the target replaces the address, which stays in the tooltip
     // and is what a click copies. Addresses without a symbol remain the only information.
     function pointerLabel(node, t) {
+        const label = pointerTargetLabel(node, t);
+        if (!node?.stale || !label.copy) return label;
+        const { isNull, ...rest } = label;
+        return { ...rest, stale: true, title: (label.title || label.text) + " · " + t("lw.pointerLastSampled") };
+    }
+    function pointerTargetLabel(node, t) {
         const value = pointerNodeValue(node);
         const hex = formatPointer(value);
         if (!hex) return { text: "—", title: "—" };
@@ -244,6 +250,7 @@
         if (label.copy) cell.dataset.copy = label.copy;
         else delete cell.dataset.copy;
         cell.classList.toggle("pointer-invalid", !!label.invalid);
+        cell.classList.toggle("pointer-stale", !!label.stale);
         const row = cell.parentElement;
         if (row?.classList.contains("pointer-row")) row.classList.toggle("pointer-null", !!label.isNull);
     }
@@ -941,16 +948,20 @@
             (type.fields || []).some((field) => runtimeContainsContainer(graph, field.type, seen, depth + 1))
         );
     }
-    function runtimeFieldType(graph, type, name, seen = new Set(), depth = 0) {
+    function runtimeFieldId(graph, type, name, seen = new Set(), depth = 0) {
         if (!type || type.unobservable || seen.has(type) || depth > MAX_COMPOSITE_DEPTH) return null;
         const direct = (type.fields || []).filter((field) => field.name === name && !field.unobservable);
-        if (direct.length) return direct.length === 1 ? runtimeType(graph, direct[0].type) : null;
+        if (direct.length) return direct.length === 1 ? direct[0].type : null;
         const next = new Set(seen).add(type);
         const inherited = (type.fields || [])
             .filter((field) => field.isBase || field.name === "?")
-            .map((field) => runtimeFieldType(graph, runtimeType(graph, field.type), name, next, depth + 1))
-            .filter(Boolean);
+            .map((field) => runtimeFieldId(graph, runtimeType(graph, field.type), name, next, depth + 1))
+            .filter((id) => id != null);
         return inherited.length === 1 ? inherited[0] : null;
+    }
+    function runtimeFieldType(graph, type, name) {
+        const id = runtimeFieldId(graph, type, name);
+        return id == null ? null : runtimeType(graph, id);
     }
     // A rejected semantic path must never become a raw STL storage watch.
     function requiresRuntimePath(symbol, segments = []) {
@@ -964,6 +975,109 @@
             else return false;
         }
         return !!type && runtimeContainsContainer(graph, graph.types.indexOf(type));
+    }
+    // Pointer annotations of a sampled tree, keyed by watch path, so a reopened view can show
+    // the last known targets until sampling runs again. Display hints only.
+    function pointerSnapshots(tree, path, out = Object.create(null), limit = 512) {
+        let visits = 0;
+        const walk = (node, nodePath, depth) => {
+            if (!node || depth > MAX_COMPOSITE_DEPTH || ++visits > MAX_LAYOUT_VISITS) return;
+            if (node.isPointer && Object.keys(out).length < limit) {
+                const value = pointerNodeValue(node);
+                if (value != null && !node.unavailable)
+                    out[nodePath] = {
+                        value,
+                        ...(node.valueText != null ? { valueText: node.valueText } : {}),
+                        ...(node.pointerText ? { pointerText: node.pointerText } : {}),
+                        ...(node.pointerInfo ? { pointerInfo: node.pointerInfo } : {}),
+                        ...(node.pointerString ? { pointerString: node.pointerString } : {})
+                    };
+            }
+            for (const member of node.members || []) walk(member, layoutMemberPath(nodePath, member), depth + 1);
+            for (const element of node.elements || []) walk(element, nodePath + "[" + element.index + "]", depth + 1);
+        };
+        walk(tree, path, 0);
+        return out;
+    }
+    // A value-less tree of a runtime watch built from its type graph. It gives pointer rows (and the
+    // pointees saved below them) a place before the first sample; `remembered` supplies last known targets.
+    function placeholderRuntimeTree(symbol, remembered = null) {
+        const graph = runtimeGraph(symbol);
+        if (!graph?.types) return null;
+        let id = graph.root;
+        for (const segment of symbol.runtimeSegments || []) {
+            const type = runtimeType(graph, id);
+            if (!type || type.unobservable || type.stl) return null;
+            if (["pointer", "reference"].includes(type.kind)) {
+                if (segment.kind !== "dereference" && !(segment.kind === "member" && segment.name === "value"))
+                    return null;
+                id = type.target;
+            } else if (segment.kind === "index" && type.kind === "array") id = type.target;
+            else if (segment.kind === "member") {
+                id = runtimeFieldId(graph, type, segment.name);
+                if (id == null) return null;
+            } else return null;
+        }
+        let nodes = 0;
+        const build = (typeId, path, depth) => {
+            const type = runtimeType(graph, typeId);
+            if (!type) return { kind: "unavailable", unobservable: "member-location" };
+            if (depth > MAX_COMPOSITE_DEPTH || ++nodes > 256)
+                return {
+                    kind: "unavailable",
+                    unobservable: depth > MAX_COMPOSITE_DEPTH ? "depth-limit" : "expansion-budget"
+                };
+            if (type.unobservable)
+                return { kind: "unavailable", typeName: type.typeName, unobservable: type.unobservable };
+            const identity = { typeName: type.typeName, placeholder: true };
+            if (["pointer", "reference"].includes(type.kind))
+                return {
+                    kind: "scalar",
+                    type: "u32",
+                    ...identity,
+                    typeName: type.typeName || type.kind,
+                    isPointer: true,
+                    pointerTarget: type.pointerTarget,
+                    value: null,
+                    ...(remembered?.[path] ? { ...remembered[path], stale: true } : {})
+                };
+            if (type.stl || ["class", "union"].includes(type.kind))
+                return {
+                    kind: type.stl ? "class" : type.kind,
+                    ...identity,
+                    ...(type.stdSummary ? { stdSummary: type.stdSummary } : {}),
+                    members: type.stl
+                        ? []
+                        : (type.fields || [])
+                              .filter((field) => !field.name.startsWith("_vptr"))
+                              .map((field) => ({
+                                  name: field.name,
+                                  ...(field.memberRole ? { memberRole: field.memberRole } : {}),
+                                  // Matches the sampled tree, which reports such members as unavailable.
+                                  ...(field.unobservable
+                                      ? { kind: "unavailable", unobservable: field.unobservable }
+                                      : build(field.type, layoutMemberPath(path, field), depth + 1))
+                              }))
+                };
+            if (type.kind === "array") {
+                const count = Math.min(Number(type.count) || 0, 16);
+                return {
+                    kind: "array",
+                    ...identity,
+                    totalElements: type.count,
+                    partial: type.count > count,
+                    elements: Array.from({ length: count }, (_unused, index) => ({
+                        index,
+                        ...build(type.target, path + "[" + index + "]", depth + 1)
+                    }))
+                };
+            }
+            if (type.kind === "scalar" && type.watchType)
+                return { kind: "scalar", type: type.watchType, ...identity, value: null };
+            return { kind: "unavailable", typeName: type.typeName, unobservable: "no-watch-type" };
+        };
+        const tree = build(id, symbol.name, 0);
+        return tree.kind === "unavailable" ? null : tree;
     }
     function runtimeSelection(symbol, tree) {
         const graph = runtimeGraph(symbol);
@@ -1156,6 +1270,8 @@
         runtimeGraph,
         requiresRuntimePath,
         runtimeSelection,
+        placeholderRuntimeTree,
+        pointerSnapshots,
         runtimeTreeShape,
         liveState,
         writeHaltRisk,

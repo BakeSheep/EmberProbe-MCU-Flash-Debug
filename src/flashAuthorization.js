@@ -9,7 +9,10 @@ const { normalizeProbeSerial, normalizeAdapterSpeed, probeFamily } = require("..
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 function flashIdentity(plan) {
+    const operation = plan?.operation || "flash.execute";
+    if (!["flash.execute", "flash.verify"].includes(operation)) throw invalid("Invalid Flash operation");
     return {
+        operation,
         elf: {
             path: normalizeFileIdentity(plan?.elf?.path || ""),
             sha256: String(plan?.elf?.sha256 || "")
@@ -63,7 +66,10 @@ class FlashAuthorization {
                 confirmationId: nextId,
                 expiresAt,
                 choices: ["once", "deny"],
-                question: "Allow this one-time MCU flash erase and firmware download?",
+                question:
+                    identity.operation === "flash.verify"
+                        ? "Allow this one-time Flash verification? It temporarily halts the target and restores its prior state."
+                        : "Allow this one-time MCU flash erase and firmware download?",
                 ...identity
             };
         }

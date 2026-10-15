@@ -116,6 +116,10 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             openocd: executable,
             injected: "ignored"
         };
+        const verify = async (options = params) => {
+            const authorization = await service.authorize({ ...options, operation: "flash.verify" });
+            return service.execute({ ...options, confirmationId: authorization.confirmationId }, true);
+        };
         for (const key of ["openocd", "executable"])
             for (const method of [
                 () => service.authorize({ ...params, [key]: path.join(root, "other.exe") }),
@@ -141,43 +145,43 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         await assert.rejects(service.execute({ ...params, confirmationId: authorized.confirmationId }), {
             code: "FLASH_CONFIRMATION_INVALID"
         });
-        assert((await service.execute(params, true)).verified);
+        assert((await verify()).verified);
         exitCode = 1;
-        assert.strictEqual((await service.execute(params, true)).verified, false);
+        assert.strictEqual((await verify()).verified, false);
         compatible = false;
-        await assert.rejects(service.execute(params, true), /Incompatible/);
+        await assert.rejects(service.execute({ ...params, confirmationId: "pending" }, true), /Incompatible/);
         assert.strictEqual(coordinator.anyActive(), false);
         assert.strictEqual(runs, 3);
         compatible = true;
         const originalPrepare = service.prepare;
-        service.approve = async () => {
-            throw Object.assign(new Error("User denied"), { code: "HUMAN_APPROVAL_DENIED" });
-        };
-        await assert.rejects(service.execute(params, true), { code: "HUMAN_APPROVAL_DENIED" });
-        assert.strictEqual(runs, 3, "verification must not halt the target before human approval");
-        const denied = await service.authorize(params);
-        await assert.rejects(service.execute({ ...params, confirmationId: denied.confirmationId }), {
-            code: "HUMAN_APPROVAL_DENIED"
+        await assert.rejects(service.execute(params, true), /Flash verification confirmation is required/);
+        const requestedVerify = await service.authorize({ ...params, operation: "flash.verify" });
+        assert(requestedVerify.confirmationRequired);
+        assert.strictEqual(runs, 3, "verification must not halt the target before chat confirmation");
+        await assert.rejects(service.execute({ ...params, confirmationId: "unknown" }, true), {
+            code: "FLASH_CONFIRMATION_INVALID"
         });
-        assert.strictEqual(runs, 3, "returning a confirmation ID cannot bypass human approval");
-        service.approve = async () => {
-            service.prepare = async (request) => ({ ...request, probeSerial: "changed" });
-        };
-        await assert.rejects(service.execute(params, true), { code: "FLASH_CONFIRMATION_INVALID" });
+        await assert.rejects(service.execute({ ...params, confirmationId: requestedVerify.confirmationId }), {
+            code: "FLASH_CONFIRMATION_INVALID"
+        });
+        const changedConnection = await service.authorize({ ...params, operation: "flash.verify" });
+        service.prepare = async (request) => ({ ...request, probeSerial: "changed" });
+        await assert.rejects(service.execute({ ...params, confirmationId: changedConnection.confirmationId }, true), {
+            code: "FLASH_CONFIRMATION_INVALID"
+        });
+        assert.strictEqual(runs, 3, "unconfirmed or changed plans must not reach hardware");
         service.prepare = originalPrepare;
-        service.approve = async () => {};
-        await service.execute(params, true);
-        service.approve = null;
+        await verify();
         service.run = async (options) => {
             options.onLine("EP_VERIFY FAIL mismatch");
             return { exitCode: 0, openocdTail: [] };
         };
-        assert.strictEqual((await service.execute(params, true)).verified, false);
+        assert.strictEqual((await verify()).verified, false);
         service.prepare = async () => {
             busy = true;
             return params;
         };
-        await assert.rejects(service.execute(params, true), { code: "PROBE_BUSY" });
+        await assert.rejects(service.execute({ ...params, confirmationId: "pending" }, true), { code: "PROBE_BUSY" });
         busy = false;
         assert.strictEqual(coordinator.anyActive(), false);
         // Snapshot creation and subprocess cancellation both release the lease
@@ -191,7 +195,10 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
                 if (String(name).endsWith("firmware.elf")) throw new Error("snapshot creation failed");
                 return openFile(name, ...args);
             };
-            await assert.rejects(service.execute(params, true), /snapshot creation failed/);
+            await assert.rejects(
+                service.execute({ ...params, confirmationId: "pending" }, true),
+                /snapshot creation failed/
+            );
             await assert.rejects(fs.stat(temporary), { code: "ENOENT" });
             assert.strictEqual(coordinator.anyActive(), false);
             fs.open = openFile;
@@ -199,7 +206,7 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             service.run = async () => {
                 throw new Error("cancelled");
             };
-            await assert.rejects(service.execute(params, true), /cancelled/);
+            await assert.rejects(verify(), /cancelled/);
             await assert.rejects(fs.stat(temporary), { code: "ENOENT" });
             assert.strictEqual(coordinator.anyActive(), false);
         } finally {
@@ -259,9 +266,15 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             } finally {
                 active.release();
             }
-            await assert.rejects(service.execute({ ...params, elfSha256: "changed" }, true), /ELF changed/);
+            await assert.rejects(
+                service.execute({ ...params, elfSha256: "changed", confirmationId: "pending" }, true),
+                /ELF changed/
+            );
             await assert.rejects(service.execute(params), /confirmation/);
-            running = service.execute(params, true);
+            await assert.rejects(service.execute(params, true), /confirmation/);
+            const verification = await service.authorize({ ...params, operation: "flash.verify" });
+            assert(verification.confirmationRequired);
+            running = service.execute({ ...params, confirmationId: verification.confirmationId }, true);
             await Promise.race([started, running]);
             assert.throws(
                 () => coordinator.acquire("chipInfo"),

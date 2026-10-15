@@ -11,7 +11,6 @@ const { runOpenOcdOnce } = require("./openocdExec");
 const { probeOpenOcdCompatibility } = require("../../skills/_emberprobe/flash-common");
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
 const { buildFlashProgramCommand } = require("../../skills/_emberprobe/openocd-flash");
-const { fingerprint } = require("../flashAuthorization");
 
 class AgentFlashService {
     constructor(options) {
@@ -24,7 +23,6 @@ class AgentFlashService {
         this.run = options.run || runOpenOcdOnce;
         this.prepare = options.prepare || prepareProbeConnection;
         this.recordSuccess = options.recordSuccess || (async () => {});
-        this.approve = options.approve;
     }
 
     request(params) {
@@ -58,7 +56,10 @@ class AgentFlashService {
             this.request(request);
             const connection = await this.prepare(request);
             this.request(request);
-            return this.authorization.authorize({ ...this.identity(request, connection), elf }, params.confirmationId);
+            return this.authorization.authorize(
+                { ...this.identity(request, connection), elf, operation: params.operation || "flash.execute" },
+                params.confirmationId
+            );
         } finally {
             lease.release();
         }
@@ -88,7 +89,11 @@ class AgentFlashService {
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {
-            if (!verify && !params.confirmationId) throw new Error("Flash confirmation is required");
+            // Plans come from flash.authorize; execution never issues a confirmation itself.
+            if (!params.confirmationId)
+                throw new Error(
+                    verify ? "Flash verification confirmation is required" : "Flash confirmation is required"
+                );
             temporary = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-flash-"));
             const snapshot = path.join(temporary, "firmware.elf");
             const inspected = await inspectElf(params.elf, { snapshot });
@@ -98,23 +103,17 @@ class AgentFlashService {
             const launch = this.resolveLaunch(request.executable, request.probe, request.target, request.transport);
             const compatible = await this.check(launch.executable);
             if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
-            let connection = await this.prepare(request, { resolveLaunch: () => launch });
+            const connection = await this.prepare(request, { resolveLaunch: () => launch });
             if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
-            if (!verify)
-                this.authorization.authorize(
-                    { ...this.identity(request, connection), elf: inspected },
-                    params.confirmationId
-                );
-            if (this.approve) {
-                const plan = { ...this.identity(request, connection), elf: inspected };
-                await this.approve(verify ? "flash.verify (halt/resume)" : "flash.execute", plan);
-                this.request(request);
-                connection = await this.prepare(request, { resolveLaunch: () => launch });
-                if (fingerprint(plan) !== fingerprint({ ...this.identity(request, connection), elf: inspected }))
-                    throw Object.assign(new Error("Connection changed during human approval"), {
-                        code: "FLASH_CONFIRMATION_INVALID"
-                    });
-            }
+            const authorization = this.authorization.authorize(
+                {
+                    ...this.identity(request, connection),
+                    elf: inspected,
+                    operation: verify ? "flash.verify" : "flash.execute"
+                },
+                params.confirmationId
+            );
+            if (!authorization.authorized) return authorization;
             // Only the private, bounded snapshot whose digest was authorized is consumed.
             const word = quoteTclWord(snapshot.replace(/\\/g, "/"));
             const verifyCommand =

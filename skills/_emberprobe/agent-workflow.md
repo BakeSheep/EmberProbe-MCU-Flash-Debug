@@ -21,11 +21,14 @@ generic guess and take priority.
 
 ## Failure handling
 
-Sensitive Bridge operations also require approval through EmberProbe's VS Code UI. A returned
-confirmation ID identifies a plan; it is not evidence of human approval. Flash programming,
-variable/peripheral writes, CubeMX generation, and flash verification that temporarily halts
-the target must wait for the UI decision. Only the UI can grant remembered permission. Do not
-replace a rejected approval with a direct CLI call or retry it automatically.
+Confirm sensitive Bridge operations in the Agent conversation. Show the returned concrete
+plan and wait for the human's answer before submitting its confirmation ID. Flash programming,
+variable/peripheral writes, CubeMX generation, and Flash verification that temporarily halts
+the target use plan-bound IDs; EmberProbe does not show a second operation approval dialog.
+Pass `remember` only when the human explicitly chooses the documented 24-hour permission.
+The Bridge validates the ID and current plan; it does not independently attest that a chat
+answer came from a human. A returned ID alone is never permission for the Agent to execute.
+Denial ends the operation; do not substitute a direct CLI call or retry automatically.
 
 Custom or modified installed skill contents are checked before Bridge calls and require a
 separate UI decision for their current hashes. Changing them invalidates that decision.

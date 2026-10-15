@@ -54,6 +54,10 @@ let sideWatch = [],
     lastSkill = { state: "checking" },
     uiState = api && api.getState ? api.getState() || {} : {};
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
+    // Last sampled pointer targets by watch path; restored with the view so a reopened sidebar still names them.
+    // They belong to the ELF version they were sampled from and are shown only while it is loaded.
+    sbLastPointers = (uiState.sbLastPointersVersion && uiState.sbLastPointers) || Object.create(null),
+    sbLastPointersVersion = (uiState.sbLastPointers && uiState.sbLastPointersVersion) || "",
     sbRawMembers = uiState.sbRawMembers || Object.create(null),
     compCells = Object.create(null),
     avExpanded = Object.create(null),
@@ -148,8 +152,12 @@ function sbResolveWatchDisplayInfo(item) {
     );
 }
 function sbScalarDisplay(item) {
+    const info = sbWatchDisplayInfo(item);
+    // Before the first sample a pointer shows the target it had when last sampled.
+    const last = info.isPointer && latest[item.name] === undefined && sbShownLastPointers()[item.name];
+    if (last) return sbFmtDisplayNode({ ...info, ...last, stale: true });
     return sbFmtDisplayNode({
-        ...sbWatchDisplayInfo(item),
+        ...info,
         ...latestPointer[item.name],
         value: latest[item.name],
         valueText: latestText[item.name],
@@ -397,7 +405,42 @@ function sbRemove(name, isComp) {
     }
     sbForgetValues(name);
 }
+let sbPointerSaveTimer = null;
+// Snapshots sampled from another ELF never name targets in the loaded one.
+function sbShownLastPointers() {
+    return availableVersion && sbLastPointersVersion === availableVersion ? sbLastPointers : Object.create(null);
+}
+function sbResetLastPointers(version) {
+    sbLastPointers = Object.create(null);
+    sbLastPointersVersion = version || "";
+    uiState.sbLastPointers = sbLastPointers;
+    uiState.sbLastPointersVersion = sbLastPointersVersion;
+}
+function sbRememberPointers(entries) {
+    if (!availableVersion) return;
+    let changed = false;
+    if (sbLastPointersVersion !== availableVersion) {
+        sbResetLastPointers(availableVersion);
+        changed = true;
+    }
+    for (const [path, next] of Object.entries(entries)) {
+        if (JSON.stringify(sbLastPointers[path]) !== JSON.stringify(next)) {
+            sbLastPointers[path] = next;
+            changed = true;
+        }
+    }
+    if (!changed || sbPointerSaveTimer !== null) return;
+    sbPointerSaveTimer = setTimeout(() => {
+        sbPointerSaveTimer = null;
+        saveSbUi();
+    }, 2000);
+}
+function sbForgetPointers(name) {
+    for (const path of Object.keys(sbLastPointers))
+        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete sbLastPointers[path];
+}
 function sbForgetValues(name) {
+    sbForgetPointers(name);
     delete latest[name];
     delete latestText[name];
     delete latestEnum[name];
@@ -1584,6 +1627,8 @@ function applyFolds() {
 function saveSbUi() {
     uiState.sbExpanded = sbExpanded;
     uiState.sbRawMembers = sbRawMembers;
+    uiState.sbLastPointers = sbLastPointers;
+    uiState.sbLastPointersVersion = sbLastPointersVersion;
     if (api && api.setState) api.setState(uiState);
 }
 function sbWalkLeaves(node, path, cb) {
@@ -1643,7 +1688,12 @@ function sbRenderLeaf(container, label, typeName, path, watchType, node, renderI
     container.appendChild(row);
     const host = node?.isPointer && sbPointerPointee(row, path, label, node, renderInline);
     if (host) container.appendChild(host);
-    setDisplayedValue(val, sbFmtDisplayNode(node));
+    setDisplayedValue(val, sbFmtDisplayNode(sbWithLastPointer(node, path)));
+}
+// A static layout row has no value until sampled; a pointer in it shows its last known target.
+function sbWithLastPointer(node, path) {
+    const last = node?.isPointer && node.value == null && !node.stale && sbShownLastPointers()[path];
+    return last && latest[sbBaseNameOf(path)] === undefined ? { ...node, ...last, stale: true } : node;
 }
 function sbRenderLayout(container, layout, path, displayPath = path) {
     if (!layout) return;
@@ -1825,8 +1875,15 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
     else if (tree.unavailable)
         sbNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
 }
-function sbRenderRuntimeBody(body, tree, name) {
-    const shape = JSON.stringify([sbShowRawFor(name), EmberProbeRuntime.displayTreeShape(tree)]);
+function sbRenderRuntimeBody(body, sampled, name) {
+    // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
+    const tree =
+        sampled ||
+        EmberProbeRuntime.placeholderRuntimeTree(
+            sideWatch.find((item) => item.name === name),
+            sbShownLastPointers()
+        );
+    const shape = JSON.stringify([sbShowRawFor(name), !sampled, EmberProbeRuntime.displayTreeShape(tree)]);
     if (body.dataset.runtimeShape === shape) return;
     for (const path of Object.keys(compCells)) {
         if (body.contains(compCells[path])) delete compCells[path];
@@ -1834,7 +1891,7 @@ function sbRenderRuntimeBody(body, tree, name) {
     body.textContent = "";
     body.dataset.runtimeShape = shape;
     if (tree?.truncated) sbNote(body, t("lw.layoutPartial"));
-    sbRenderRawMembersUi(body, tree || sbLayoutSymbol(name)?.compositeLayout, name);
+    sbRenderRawMembersUi(body, sampled || sbLayoutSymbol(name)?.compositeLayout, name);
     sbRenderRuntimeTree(body, tree, name);
     const symbol = sbLayoutSymbol(name);
     for (const entry of EmberProbeRuntime.displayUnavailableRows(
@@ -1845,7 +1902,7 @@ function sbRenderRuntimeBody(body, tree, name) {
         sbShowRawFor(name)
     ))
         layoutExpansionUi.render(body, entry, name, t);
-    if (!tree) sbNote(body, t("lw.waitSamples"));
+    if (!sampled) sbNote(body, t("lw.waitSamples"));
 }
 function sbRenderNest(container, layout, fieldName, path, displayPath = path) {
     sbRenderLayout(sbNestShell(container, fieldName, layout.typeName, path, displayPath), layout, path, displayPath);
@@ -1942,6 +1999,7 @@ function sbOnComposite(samples) {
             )
                 refreshAvailable = true;
             latest[s.name] = s.tree;
+            sbRememberPointers(EmberProbeRuntime.pointerSnapshots(s.tree, s.name));
             const body = runtimeBodies[s.name];
             if (body) sbRenderRuntimeBody(body, s.tree, s.name);
         }
@@ -1962,6 +2020,16 @@ function updateValues(samples) {
             pointerInfo: s.pointerInfo,
             pointerString: s.pointerString
         };
+        if ((s.isPointer || s.pointerText) && s.value != null && !s.diagnostic)
+            sbRememberPointers({
+                [s.name]: {
+                    value: s.value,
+                    ...(s.valueText != null ? { valueText: s.valueText } : {}),
+                    ...(s.pointerText ? { pointerText: s.pointerText } : {}),
+                    ...(s.pointerInfo ? { pointerInfo: s.pointerInfo } : {}),
+                    ...(s.pointerString ? { pointerString: s.pointerString } : {})
+                }
+            });
     });
     scheduleValueRefresh();
 }
@@ -2384,8 +2452,12 @@ window.EmberProbeMessages.connect(window, {
         setStat("error", m.key || "", m.params, m.error || t("sb.commandFailed"));
     },
     sidebarWatchList: function (m) {
-        sideWatch = (m.items || []).slice();
+        const incoming = (m.items || []).slice();
+        for (const item of sideWatch)
+            if (!incoming.some((next) => next.name === item.name)) sbForgetPointers(item.name);
+        sideWatch = incoming;
         if (m.resetValues) {
+            sbResetLastPointers(sbLastPointersVersion);
             sideWatch.forEach((item) => {
                 delete latest[item.name];
                 delete latestText[item.name];
@@ -2420,6 +2492,10 @@ window.EmberProbeMessages.connect(window, {
         variableWarnings = m.warnings || [];
         availableVersion = m.version || "";
         availableGeneration = m.generation ?? null;
+        if (availableVersion && sbLastPointersVersion && sbLastPointersVersion !== availableVersion) {
+            sbResetLastPointers(availableVersion);
+            saveSbUi();
+        }
         layoutExpansionUi.reset();
         for (const item of sideWatch) {
             delete item.layoutExpansions;

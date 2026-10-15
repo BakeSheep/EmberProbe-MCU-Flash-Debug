@@ -211,6 +211,36 @@ const { createFixture } = require("./helpers/service-fixture");
             assert.strictEqual(decoded.scalarSamples[0].value, -2);
         }
     });
+    await scenario("Route a failed runtime pointee read to its tree", async () => {
+        // An expanded pointee has only a runtime type graph. Its failed read must reach the pointee
+        // body as an error, not become a scalar sample (the body would keep waiting for samples and
+        // chart history would record a bogus series).
+        const { loadProvider } = require("./helpers/load-provider");
+        const Provider = loadProvider();
+        const host = Object.create(Provider.prototype);
+        const pointee = { name: "p.value", isComposite: true, runtimeLayout: { root: 0, types: [] }, type: "u32" };
+        host._scalarWatchList = () => [{ name: "p", type: "u32", isPointer: true }, pointee];
+        const composites = host._compositeMap("chart");
+        assert.deepStrictEqual([...composites.keys()], ["p.value"]);
+        const diagnostic = { code: "LIVE_READ_BUDGET_EXCEEDED", message: "Runtime object time budget exceeded" };
+        const decoded = new LiveWatchService({}).decodeConsumerSamples(
+            [{ name: "p.value", bytes: null, diagnostic }],
+            1,
+            new Map([["p.value", "u32"]]),
+            composites,
+            new Map()
+        );
+        assert.deepStrictEqual(decoded.scalarSamples, []);
+        assert.strictEqual(decoded.compositeSamples[0].tree.unavailable, diagnostic.message);
+        assert.strictEqual(decoded.compositeSamples[0].tree.unavailableCode, diagnostic.code);
+        // Bytes without a static layout are never decoded as one.
+        const bytesOnly = new LiveWatchService({ decodeComposite: () => assert.fail("no layout to decode") });
+        assert.deepStrictEqual(
+            bytesOnly.decodeConsumerSamples([{ name: "p.value", bytes: [1, 2, 3, 4] }], 1, null, composites)
+                .compositeSamples,
+            []
+        );
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

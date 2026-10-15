@@ -259,7 +259,6 @@ class CubeMxService {
 
     async permission(params = {}) {
         if (params.action === "reset") {
-            await this.options.resetApproval?.();
             return this.authorization.reset();
         }
         if (params.action && params.action !== "status") throw failure("INVALID_ARGUMENT", "Unknown permission action");
@@ -332,7 +331,7 @@ class CubeMxService {
     }
 
     async start(params = {}) {
-        let plan = await this.plan(params);
+        const plan = await this.plan(params);
         const pHash = computeParamsHash(params);
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
@@ -355,20 +354,6 @@ class CubeMxService {
         }
 
         if (this.jobs.has(plan.root)) throw failure("CUBEMX_BUSY", "This project is already generating or checking");
-        if (this.options.approve) {
-            const approved = await this.options.approve("cubemx.generate", {
-                identity: plan.identity,
-                trust: plan.trust,
-                changes: plan.changes
-            });
-            params = { ...params, remember: approved.remember };
-            const current = await this.plan(params);
-            if (JSON.stringify(plan.identity) !== JSON.stringify(current.identity))
-                throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during human approval");
-            plan = current;
-            if (this.jobs.has(plan.root))
-                throw failure("CUBEMX_BUSY", "This project is already generating or checking");
-        }
         this.authorization.authorize(plan, params.confirmationId, params.remember);
 
         // Claim the project slot synchronously (no await between the busy check and the claim)
@@ -422,7 +407,7 @@ class CubeMxService {
     }
 
     async execute(params = {}, signal, progress = this.options.progress) {
-        let plan = await this.plan(params);
+        const plan = await this.plan(params);
         const pHash = computeParamsHash(params);
         if (params.requestId) {
             const existing = await this.store.findOperationByRequestId(plan.root, params.requestId);
@@ -475,20 +460,6 @@ class CubeMxService {
         }
 
         if (this.jobs.has(plan.root)) throw failure("CUBEMX_BUSY", "This project is already generating or checking");
-        if (this.options.approve) {
-            const approved = await this.options.approve("cubemx.generate", {
-                identity: plan.identity,
-                trust: plan.trust,
-                changes: plan.changes
-            });
-            params = { ...params, remember: approved.remember };
-            const current = await this.plan(params);
-            if (JSON.stringify(plan.identity) !== JSON.stringify(current.identity))
-                throw failure("CUBEMX_PROJECT_CHANGED", "Project changed during human approval");
-            plan = current;
-            if (this.jobs.has(plan.root))
-                throw failure("CUBEMX_BUSY", "This project is already generating or checking");
-        }
         this.authorization.authorize(plan, params.confirmationId, params.remember);
 
         const controller = new AbortController();

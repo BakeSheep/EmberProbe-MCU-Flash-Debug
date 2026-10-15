@@ -48,6 +48,7 @@
     "onCommand:mcu-vscode.folderAttachDebug",
     "onCommand:mcu-vscode.folderDownload",
     "onCommand:mcu-vscode.openLiveWatch",
+    "onWebviewPanel:emberprobe.liveWatch",
     "onCommand:mcu-vscode.manageAgentSkills",
     "onCommand:mcu-vscode.downloadOfficialSvd",
     "onCommand:mcu-vscode.selectExistingSvd",

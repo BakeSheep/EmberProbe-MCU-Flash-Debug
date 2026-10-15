@@ -8,6 +8,7 @@ const path = require("path");
 const TEST_GROUPS = Object.freeze({
     // Pure in-process unit tests (no child processes, sockets or Worker threads), each well under a second.
     fast: Object.freeze([
+        "agent-chat-confirmation.test.js",
         "agent-routes.test.js",
         "agent-sampling-control.test.js",
         "agent-service.test.js",
@@ -59,7 +60,6 @@ const TEST_GROUPS = Object.freeze({
         "flash-safety.test.js",
         "flash-service.test.js",
         "hil-runner.test.js",
-        "human-approval.test.js",
         "java-properties.test.js",
         "jlink-driver-choice.test.js",
         "jlink-probe-ready.test.js",
@@ -128,6 +128,7 @@ const TEST_GROUPS = Object.freeze({
         "chart-presentation.test.js",
         "chart-render-budget.test.js",
         "chart-retention.test.js",
+        "chart-restore.test.js",
         "cortex-debug-integration.test.js",
         "cortex-debug-preflight.test.js",
         "cpp-variable-names.test.js",

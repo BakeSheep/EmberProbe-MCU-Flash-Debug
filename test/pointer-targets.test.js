@@ -22,6 +22,40 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
 const fixture = require("./fixtures/pointer-targets/elf.json");
 
 const tables = { zh: require("../src/i18n/zh"), en: require("../src/i18n/en") };
+
+// A placeholder tree reports members exactly as unavailable as the sampled tree would, and
+// fills pointer rows from the remembered targets.
+{
+    const placeholder = runtime.placeholderRuntimeTree(
+        {
+            name: "s",
+            runtimeLayout: {
+                root: 0,
+                types: [
+                    {
+                        kind: "class",
+                        typeName: "S",
+                        fields: [
+                            { name: "hidden", type: 1, unobservable: "member-location" },
+                            { name: "p", type: 2 }
+                        ]
+                    },
+                    { kind: "scalar", typeName: "int", watchType: "i32" },
+                    { kind: "pointer", typeName: "int *", target: 1, pointerTarget: "int" }
+                ]
+            }
+        },
+        { "s.p": { value: 0x20000010 } }
+    );
+    assert.deepStrictEqual(placeholder.members[0], {
+        name: "hidden",
+        kind: "unavailable",
+        unobservable: "member-location"
+    });
+    assert.strictEqual(placeholder.members[1].isPointer, true);
+    assert.strictEqual(placeholder.members[1].value, 0x20000010);
+    assert.strictEqual(placeholder.members[1].stale, true);
+}
 const t = (key) => tables.en[key] ?? key;
 
 // Pure label rules: unqualified targets, qualified tooltips, copied addresses.
@@ -420,6 +454,174 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                 view.assertHealthy();
             } finally {
                 view.close();
+            }
+
+            // After a restart the rows exist before sampling: a charted member can be switched off at
+            // once, and lists that briefly omit it (DWARF or layouts still resolving) keep it off.
+            const reopened = render(getLiveWatchContent({}, "en"), { hidden: {}, pointerCurveDefaults: true });
+            try {
+                const swatchOf = (name) =>
+                    reopened.document.querySelector('.member-row[data-path="' + name + '"] .member-swatch');
+                reopened.send({ type: "variablesListReset", version: "v1", generation: 1, warnings: [] });
+                reopened.send({ type: "variablesListChunk", version: "v1", symbols });
+                reopened.send({ type: "variablesListDone", version: "v1", total: symbols.length, warnings: [] });
+                reopened.send({ type: "watchList", items: list });
+                assert.ok(swatchOf(members[0]), "the member row is laid out before any sample");
+                assert.ok(!swatchOf(members[0]).classList.contains("off"));
+                swatchOf(members[0]).click();
+                assert.ok(swatchOf(members[0]).classList.contains("off"), "unsampled charted member switches off");
+                assert.strictEqual(reopened.getState().hidden[members[0]], true);
+                reopened.send({ type: "watchList", items: list.filter((item) => !members.includes(item.name)) });
+                reopened.send({ type: "watchList", items: [] });
+                reopened.send({ type: "watchList", items: list });
+                const decoded = await decodePlan();
+                reopened.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
+                reopened.send({ type: "liveSample", samples: decoded.scalarSamples });
+                reopened.window.updateValues();
+                assert.ok(swatchOf(members[0]).classList.contains("off"), "a briefly omitted member stays off");
+                assert.ok(!swatchOf(members[1]).classList.contains("off"), "other members stay charted");
+                reopened.assertHealthy();
+            } finally {
+                reopened.close();
+            }
+        }
+
+        // A reopened view lays saved pointees out before any sample, names pointers by their last
+        // sampled target, and starts pointer curves hidden. Chart values name targets as well.
+        {
+            const tableName = nameOf("lab::g_widgetTable");
+            const focusName = nameOf("lab::g_focus");
+            const chain = tableName + "[1].value.parent.value";
+            const saved = normalizeWatchList(
+                [{ name: tableName }, { name: tableName + "[1].value" }, { name: chain }, { name: focusName }],
+                symbols
+            );
+            const lengths = symbols.map((entry) => ({
+                name: entry.name,
+                displayName: entry.displayName || entry.name,
+                address: entry.address,
+                size: entry.size
+            }));
+            const typed = symbols.map((entry) => ({
+                name: entry.name,
+                displayName: entry.displayName || entry.name,
+                typeName: entry.typeName,
+                watchType: entry.watchType,
+                isComposite: entry.isComposite,
+                hasRuntimeLayout: entry.hasRuntimeLayout,
+                ...(entry.isPointer ? { isPointer: true, pointerTarget: entry.pointerTarget } : {})
+            }));
+            const open = (sidebar, state, config = {}, version = "v1") => {
+                const view = render(
+                    sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent(config, "en"),
+                    state
+                );
+                const list = sidebar ? "availableVariables" : "variablesList";
+                if (!sidebar) view.document.getElementById("import").click();
+                view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: saved });
+                view.send({ type: list + "Reset", version, generation: 1, warnings: [] });
+                view.send({ type: list + "Chunk", version, symbols: lengths });
+                view.send({
+                    type: sidebar ? "availableVariableTypes" : "variableTypes",
+                    version,
+                    symbols: typed
+                });
+                view.send({ type: list + "Done", version, total: lengths.length, warnings: [] });
+                view.send({ type: sidebar ? "availableTypesDone" : "variableTypesDone", version });
+                return view;
+            };
+            const topComposites = (view, sidebar) =>
+                [...view.document.querySelectorAll(sidebar ? ".value-row.composite" : ".var-card.composite")].filter(
+                    (element) => !element.closest(".pointer-pointee")
+                );
+            const focusCell = (view, sidebar) =>
+                [...view.document.querySelectorAll(sidebar ? ".value-row" : ".var-card")]
+                    .find((element) => element.textContent.includes("g_focus"))
+                    ?.querySelector(sidebar ? ".value-number, .sb-mval" : ".var-value");
+            let states = {};
+            for (const sidebar of [true, false]) {
+                const view = open(sidebar, {}, { backendHistory: true });
+                try {
+                    const decoded = await sample(saved);
+                    assert.strictEqual(
+                        topComposites(view, sidebar).length,
+                        1,
+                        "saved pointees are laid out without a sample"
+                    );
+                    assert.ok(
+                        view.document
+                            .querySelector('.pointer-toggle[data-path="' + tableName + '[1].value.parent"]')
+                            ?.parentElement.nextElementSibling?.matches(".pointer-pointee.open"),
+                        "the chained pointee sits below its pointer row before sampling"
+                    );
+                    if (!sidebar)
+                        assert.ok(view.document.querySelector(".var-card .swatch.off"), "pointer curves start hidden");
+                    view.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
+                    // The chart panel receives scalar samples as chartValues when history is kept by the host.
+                    view.send({ type: sidebar ? "liveSample" : "chartValues", samples: decoded.scalarSamples });
+                    if (sidebar) view.window.refreshDisplayedValues();
+                    else view.window.updateValues();
+                    assert.strictEqual(focusCell(view, sidebar).textContent, "&g_widgets[1]", "targets, not addresses");
+                    assert.strictEqual(topComposites(view, sidebar).length, 1);
+                    await new Promise((resolve) => setTimeout(resolve, 2200));
+                    states[sidebar] = view.getState();
+                    view.assertHealthy();
+                } finally {
+                    view.close();
+                }
+            }
+            for (const sidebar of [true, false]) {
+                const view = open(sidebar, states[sidebar]);
+                try {
+                    assert.strictEqual(topComposites(view, sidebar).length, 1, "reopened: pointees stay nested");
+                    const cell = focusCell(view, sidebar);
+                    assert.strictEqual(cell.textContent, "&g_widgets[1]", "reopened: last sampled target");
+                    assert.ok(cell.classList.contains("pointer-stale"));
+                    assert.match(cell.title, /last sampled/);
+                    const parent = view.document.querySelector(
+                        '.pointer-toggle[data-path="' + tableName + '[1].value.parent"]'
+                    );
+                    assert.strictEqual(parent.getAttribute("aria-expanded"), "true");
+                    view.assertHealthy();
+                } finally {
+                    view.close();
+                }
+            }
+            // Saved targets belong to the ELF they were sampled from, and a removed watch drops its own.
+            for (const sidebar of [true, false]) {
+                const rebuilt = open(sidebar, states[sidebar], {}, "v2");
+                try {
+                    const cell = focusCell(rebuilt, sidebar);
+                    assert.notStrictEqual(cell.textContent, "&g_widgets[1]", "another ELF: no last sampled target");
+                    assert.ok(!cell.classList.contains("pointer-stale"));
+                    rebuilt.assertHealthy();
+                } finally {
+                    rebuilt.close();
+                }
+                const view = open(sidebar, states[sidebar]);
+                try {
+                    const type = sidebar ? "sidebarWatchList" : "watchList";
+                    view.send({ type, items: saved.filter((item) => item.name !== focusName) });
+                    view.send({ type, items: saved });
+                    const cell = focusCell(view, sidebar);
+                    assert.notStrictEqual(cell.textContent, "&g_widgets[1]", "re-added watch: no stale target");
+                    assert.ok(!cell.classList.contains("pointer-stale"));
+                    view.assertHealthy();
+                } finally {
+                    view.close();
+                }
+            }
+            // A chart saved before pointer curves defaulted to hidden keeps showing its pointer curve.
+            {
+                const view = open(false, { hidden: {} });
+                try {
+                    const card = focusCell(view, false).closest(".var-card");
+                    assert.ok(!card.querySelector(".swatch.off"), "legacy pointer curve stays visible");
+                    assert.strictEqual(view.getState().hidden[focusName], false);
+                    view.assertHealthy();
+                } finally {
+                    view.close();
+                }
             }
         }
 

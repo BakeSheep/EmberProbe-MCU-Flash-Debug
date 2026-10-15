@@ -16,10 +16,11 @@ Use `scripts/program.js` from the Skill directory. Do not construct an OpenOCD s
    node <skill-dir>/scripts/program.js --workspace <workspace> --execute --confirmation-id <id>
    ```
 
-When using the Agent Bridge, the extension also presents the actual snapshot digest and
-connection plan in a VS Code approval dialog. Returning the confirmation ID cannot approve
-that dialog. Flash verification also needs this approval because it may halt and resume the
-target. A denied dialog must not be bypassed by switching to direct OpenOCD execution.
+The Agent conversation is the operation confirmation surface. Show the actual image digest
+and connection plan there and wait for the user's answer; EmberProbe does not display a
+second operation approval dialog. A returned ID alone is not a human answer. Denial ends the
+operation and must not be bypassed through direct OpenOCD execution. Flash verification has
+its own confirmation plan because it may halt and resume the target; its ID cannot program Flash.
 
 The script resolves executable and configuration paths canonically, prevents workspace Tcl/config shadowing, backs up target work areas, and executes OpenOCD `program ... verify reset exit`. Report the ELF fingerprint, exit code, and concise result. On failure, include the actionable output tail.
 

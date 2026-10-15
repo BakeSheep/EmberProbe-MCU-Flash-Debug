@@ -58,7 +58,7 @@ function probeSerialOverride(result) {
     return ["explicit", "config"].includes(result.sources?.probeSerial) ? result.probeSerial : undefined;
 }
 
-async function authorizeFlash(result, confirmationId) {
+async function authorizeFlash(result, confirmationId, operation = "flash.execute") {
     return call(result.workspace, "flash.authorize", {
         elf: result.elf,
         elfSha256: result.elfSha256,
@@ -68,7 +68,8 @@ async function authorizeFlash(result, confirmationId) {
         transport: result.transport,
         probeSerial: probeSerialOverride(result),
         adapterSpeedKhz: result.adapterSpeedKhz,
-        confirmationId
+        confirmationId,
+        operation
     });
 }
 

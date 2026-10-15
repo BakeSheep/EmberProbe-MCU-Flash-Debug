@@ -6,8 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
-- 对齐的单个 32 位变量写入现在保持目标运行，支持独立采样与托管调试运行态；其他宽度或非对齐写入仍使用暂停校验事务，调试运行态须先暂停。状态新增 `haltWrite`，写入结果新增 `halted`；未暂停时回读不一致会提示固件可能已并发修改该值，Agent 授权流程不变。
-- Aligned single 32-bit variable writes now keep the target running in standalone sampling and managed debug sessions. Other widths or unaligned writes retain halted verification and require pausing in debug mode. Status adds `haltWrite`, write results add `halted`, and a read-back mismatch without halting reports that firmware may have concurrently changed the value; Agent approval remains unchanged.
+- 调试暂停时读取当前值更快：同一次暂停快照中已读取的内存块供所有运行时对象复用，目标暂停期间不再重复校验指针；暂停快照的时间上限放宽，指针解析不再因“Runtime object time budget exceeded”失败。展开的指针目标读取失败时直接显示错误原因，不再一直显示“等待采样数据”。
+- Reading current values while debugging is paused is faster: memory read once in a paused snapshot is reused by every runtime object, and pointers are no longer re-verified while the target is halted. Paused snapshots get a longer time limit, so pointer expansion no longer fails with "Runtime object time budget exceeded". When an expanded pointee cannot be read, it shows the reason instead of waiting for samples indefinitely.
+
+- 波形图标签页在重启 VS Code 后自动恢复，并保留各图表开启绘图的变量；关闭后重新打开的图表也会沿用上次的曲线显示设置。侧边栏较窄、隐藏类型标签时，结构体成员的实时值保持右对齐。
+- Chart tabs now reopen after a VS Code restart with the same curves switched on, and a chart closed and opened again keeps its previous curve visibility. In narrow sidebars that hide type badges, structure member values stay right-aligned.
+
+- Agent 敏感操作统一在 Agent 对话中确认，不再弹出第二次 VS Code 操作审批；保留计划绑定、一次性确认 ID、有效期及明确选择的 24 小时许可。Flash 校验新增独立确认，校验许可不能用于烧录。
+- Confirm sensitive Agent operations in the Agent conversation without a second VS Code operation approval dialog, retaining plan binding, one-time IDs, expiry and explicitly chosen 24-hour permissions. Flash verification now has its own confirmation, which cannot authorize programming.
+
+- 对齐的单个 32 位变量写入现在保持目标运行，支持独立采样与托管调试运行态；其他宽度或非对齐写入仍使用暂停校验事务，调试运行态须先暂停。状态新增 `haltWrite`，写入结果新增 `halted`；未暂停时回读不一致会提示固件可能已并发修改该值，保留计划绑定的 Agent 授权校验。
+- Aligned single 32-bit variable writes now keep the target running in standalone sampling and managed debug sessions. Other widths or unaligned writes retain halted verification and require pausing in debug mode. Status adds `haltWrite`, write results add `halted`, and a read-back mismatch without halting reports that firmware may have concurrently changed the value; writes retain plan-bound Agent authorization.
 - 写入列表中需要暂停 CPU 才能写入的变量（8/16 位、未对齐、64 位）在名称前显示三角警告图标，悬停说明风险；调试会话运行中仅这些卡片禁用并提示先暂停。写入卡片的滑块范围会随采样值或回读值自动扩展，不再停留在 -1~1；同名成员（如多个 `.Ref`）自动补全最短的上级路径以便区分。
 - Write-list variables that need a CPU halt (8/16-bit, unaligned, 64-bit) show a warning triangle before their name with the risk on hover; while a debug session runs only those cards are disabled with a hint to pause first. Write-card slider bounds now widen to follow sampled or read-back values instead of staying at -1..1, and members sharing a name (such as several `.Ref`) show the shortest parent path that tells them apart.
 

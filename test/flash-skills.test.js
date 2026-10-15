@@ -160,6 +160,59 @@ async function testProbeBinding(root, elf) {
         assert.strictEqual(requests.at(-1).params.confirmationId, "fixture-plan");
     }
 
+    // Detection reports the preflight even when no verification plan can be issued.
+    {
+        const result = await common.preflight({ workspace: root, "probe-serial": "probe-B" });
+        assert.strictEqual(result.ready, true);
+        const detect = (preflightResult, authorizeFlash) => {
+            const written = [];
+            const processImpl = {
+                argv: ["node", "verify.js", "--workspace", root],
+                platform: process.platform,
+                stdout: { write() {} },
+                stderr: { write() {} },
+                exit: (code) => {
+                    throw Object.assign(new Error("CLI exit " + code), { written });
+                }
+            };
+            const main = loadFlashModule(
+                "skills/mcu-flash/scripts/verify.js",
+                {
+                    "../../_emberprobe/flash-common": {
+                        ...common,
+                        preflight: async () => preflightResult,
+                        emit: (value) => written.push(value),
+                        authorizeFlash
+                    },
+                    "../../_emberprobe/agent-client": { call: bridgeCall }
+                },
+                processImpl
+            ).main;
+            return main().then(() => written);
+        };
+        const busy = Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
+        await assert.rejects(
+            detect(result, async () => {
+                throw busy;
+            }),
+            (error) => {
+                assert.match(error.message, /CLI exit 1/);
+                assert.strictEqual(error.written.length, 1);
+                assert.strictEqual(error.written[0].elf, result.elf);
+                assert.deepStrictEqual(error.written[0].verificationAuthorizationError, {
+                    code: "PROBE_BUSY",
+                    message: busy.message
+                });
+                return true;
+            }
+        );
+        const incompatible = await detect({ ...result, openocdCompatible: false }, async () =>
+            assert.fail("an incompatible OpenOCD must not request a verification plan")
+        );
+        assert.strictEqual(incompatible.length, 1);
+        assert.strictEqual(incompatible[0].verificationAuthorization, undefined);
+    }
+
     config.probeSerial = "";
     config.successfulConnection = undefined;
     inventory.devices = [devices[1]];
@@ -308,7 +361,13 @@ function lastJsonLine(stdout) {
         assert.strictEqual(verifyPreflight.openocd, fakeOpenOcd);
 
         if (canRunFakeOpenOcd) {
-            const verifyRun = await run("mcu-flash/scripts/verify.js", ["--execute"]);
+            assert.strictEqual(verifyPreflight.verificationAuthorization.operation, "flash.verify");
+            await assert.rejects(run("mcu-flash/scripts/verify.js", ["--execute"]), /Verification confirmation/);
+            const verifyRun = await run("mcu-flash/scripts/verify.js", [
+                "--execute",
+                "--confirmation-id",
+                verifyPreflight.verificationAuthorization.confirmationId
+            ]);
             const verified = lastJsonLine(verifyRun.stdout);
             assert.strictEqual(verified.verified, true);
             assert.strictEqual(verified.elf, canonicalFileSync(elf));

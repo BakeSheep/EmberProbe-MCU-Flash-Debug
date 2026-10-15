@@ -519,7 +519,6 @@ function jsonConstraint(value) {
 class SvdPeripheralService {
     constructor(options = {}) {
         this.loadBoundSvd = options.loadBoundSvd;
-        this.approve = options.approve;
         this.debugBridge = options.debugBridge;
         this.authorization = options.authorization;
         this.cache = new Map();
@@ -876,20 +875,12 @@ class SvdPeripheralService {
     }
 
     async _write(params, fromUi = false) {
-        let model = await this.model();
+        const model = await this.model();
         const guard = this._guard(true);
-        let plan = await this._writePlan(model, params.writes, guard);
+        const plan = await this._writePlan(model, params.writes, guard);
         guard();
         if (!fromUi) {
             if (!params.confirmationId) return this.authorization.request(plan);
-            if (this.approve) {
-                await this.approve("peripherals.write", plan);
-                guard();
-                model = await this.model();
-                guard();
-                plan = await this._writePlan(model, params.writes, guard);
-                guard();
-            }
             this.authorization.authorize(plan, params.confirmationId);
         }
         const results = [];

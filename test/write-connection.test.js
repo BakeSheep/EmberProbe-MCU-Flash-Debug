@@ -184,26 +184,16 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
     assert.strictEqual(writeCalls.length, 1, "backpressure and RAM restrictions prevent hardware writes");
 
     runtimeProvider._writeAuthorization = new WriteAuthorization({ get: () => undefined, update: async () => {} });
-    let approvals = 0;
-    runtimeProvider._humanApproval = {
-        approve: async (operation) => {
-            assert.strictEqual(operation, "variables.write");
-            approvals++;
-            return { remember: false, mode: "once" };
-        }
-    };
     const values = [{ name: "word", value: 44 }];
     const requestWrite = await runtimeProvider._writeAgentVariables({ values });
     assert.strictEqual(requestWrite.confirmationRequired, true);
     assert.strictEqual(writeCalls.length, 1);
-    assert.strictEqual(approvals, 0);
     const agentWord = await runtimeProvider._writeAgentVariables({
         values,
         confirmationId: requestWrite.confirmationId
     });
     assert.strictEqual(agentWord.source, "debug-running-openocd");
     assert.strictEqual(agentWord.halted, false);
-    assert.strictEqual(approvals, 1);
     assert.strictEqual(writeCalls.length, 2);
     const byteValues = [{ name: "byte", value: 1 }];
     const requestByte = await runtimeProvider._writeAgentVariables({ values: byteValues });
@@ -211,7 +201,6 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
         runtimeProvider._writeAgentVariables({ values: byteValues, confirmationId: requestByte.confirmationId }),
         { code: "RUNTIME_WRITE_DISABLED" }
     );
-    assert.strictEqual(approvals, 2, "Agent approval still runs before execution restrictions");
     assert.strictEqual(writeCalls.length, 2);
 
     const normalWrite = runtime.writeAndVerify;

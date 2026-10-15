@@ -1,16 +1,23 @@
 # Agent approval and local trust boundaries
 
-Agent Bridge calls require a trusted VS Code workspace. Sensitive operations require a
-decision through the extension UI as well as the existing confirmation fingerprint. Flash
-and peripheral writes use one-time approval; variable writes and CubeMX can remember the
-user's UI choice for up to 24 hours, bound to the ELF/connection or project/tool identity.
-Legacy client-provided `remember` flags cannot create a UI grant. Resetting the corresponding
-permission must clear both the plan authorization and the UI grant.
-Resetting permission while an approval dialog is open invalidates that pending decision.
+Agent Bridge calls require a trusted VS Code workspace. Sensitive operations are confirmed
+in the Agent conversation: the Agent shows the returned plan, waits for the human's answer,
+then resubmits its one-time confirmation ID. There is no second VS Code operation approval
+dialog. The Bridge checks plan identity and ID expiry/reuse; it does not independently
+attest that the Agent obtained a human answer. A returned ID alone never authorizes an
+Agent to execute.
 
-Approvals display the actual bounded snapshot/plan. ELF, connection, project, SVD, register
-values and debug-stop identity are rechecked after the dialog. Flash verification is included
-because it can temporarily halt the target. Custom SVDs remain supported: their actual path,
+Flash programming, Flash verification and peripheral writes use one-time confirmation.
+Variable writes and CubeMX can remember an explicitly requested chat choice for up to
+24 hours, bound to the ELF/connection or project/tool identity. `remember` requires a
+valid confirmation ID and must not be inferred from a request to perform the operation.
+Resetting permission clears the pending confirmations and remembered authorization.
+Old independent modal grant records are no longer consulted.
+
+Confirmation responses describe the actual bounded snapshot/plan. ELF, connection, project,
+SVD, register values and debug-stop identity are recomputed when the confirmed request
+arrives. Flash verification is included because it can temporarily halt the target, and its
+operation-bound ID cannot program Flash. Custom SVDs remain supported: their actual path,
 digest, register addresses and write semantics appear in peripheral approval. Device/vendor
 matching is compatibility evidence rather than proof of provenance.
 

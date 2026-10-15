@@ -376,14 +376,15 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     gap: 5px;
     padding-left: 15px;
 }
+/* The name takes the free space, so the value stays right-aligned even when narrow views hide the type. */
 .sb-mrow > .sb-mname {
     flex: 0 0 auto;
     max-width: 45%;
+    margin-right: auto;
 }
 .sb-mrow > .sb-mtype {
     flex: 0 1 auto;
     min-width: 0;
-    margin-left: auto;
 }
 .sb-mval {
     flex: 0 0 auto;
@@ -396,6 +397,12 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .sb-mval.pointer-invalid,
 .value-number.pointer-invalid {
     color: var(--vscode-editorWarning-foreground, #cca700);
+}
+/* Last sampled target shown before sampling resumes. */
+.sb-mval.pointer-stale,
+.value-number.pointer-stale {
+    opacity: 0.6;
+    font-style: italic;
 }
 .pointer-toggle {
     flex: none;

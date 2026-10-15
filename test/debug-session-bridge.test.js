@@ -510,6 +510,85 @@ async function testBackgroundStatusBroadcasts(debugType) {
         console.log("debug session bridge tests passed");
     }
 
+    await scenario("Read each block of a paused snapshot once", async () => {
+        // g_peerPtr -> struct Peer { u32 magic; Peer* owner; Peer* self; u32 updates; }
+        const memory = Buffer.alloc(0x20);
+        memory.writeUInt32LE(0x20000010, 0);
+        memory.writeUInt32LE(40679, 0x10);
+        memory.writeUInt32LE(0, 0x14);
+        memory.writeUInt32LE(0x20000010, 0x18);
+        memory.writeUInt32LE(49086, 0x1c);
+        const reads = [];
+        const session = {
+            id: "paused",
+            type: "emberprobe",
+            async customRequest(command, args) {
+                assert.strictEqual(command, "readMemory");
+                const offset = Number.parseInt(args.memoryReference, 16) - 0x20000000;
+                reads.push([offset, args.count]);
+                return {
+                    address: args.memoryReference,
+                    data: memory.subarray(offset, offset + args.count).toString("base64")
+                };
+            }
+        };
+        const runtimeLayout = {
+            root: 0,
+            types: [
+                { kind: "pointer", typeName: "Peer *", target: 1, pointerTarget: "Peer", byteSize: 4 },
+                {
+                    kind: "class",
+                    typeName: "Peer",
+                    byteSize: 16,
+                    fields: [
+                        { name: "magic", type: 2, offset: 0 },
+                        { name: "owner", type: 0, offset: 4 },
+                        { name: "self", type: 0, offset: 8 },
+                        { name: "updates", type: 2, offset: 12 }
+                    ]
+                },
+                { kind: "scalar", typeName: "unsigned int", watchType: "u32", byteSize: 4 }
+            ]
+        };
+        const bridge = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
+        try {
+            bridge.attach(session);
+            bridge.handleMessage(session, {
+                type: "response",
+                command: "initialize",
+                success: true,
+                body: { supportsReadMemoryRequest: true }
+            });
+            bridge.handleMessage(session, { type: "event", event: "stopped" });
+            const samples = await bridge.readPausedItems([
+                { name: "g_peerPtr", address: 0x20000000, size: 4 },
+                {
+                    name: "g_peerPtr.value",
+                    address: 0x20000000,
+                    runtimeLayout,
+                    runtimeSegments: [{ kind: "member", name: "value" }],
+                    runtimeRanges: [{ start: 0x20000000, end: 0x20000020 }]
+                }
+            ]);
+            const tree = samples.find((sample) => sample.name === "g_peerPtr.value").runtimeTree;
+            assert.deepStrictEqual(
+                tree.members.map((member) => member.name),
+                ["magic", "owner", "self", "updates"]
+            );
+            assert.strictEqual(tree.members[0].value, 40679);
+            assert.deepStrictEqual(
+                reads,
+                [
+                    [0, 4],
+                    [0x10, 16]
+                ],
+                "the pointer word and the object are each read once; a halted target needs no re-verification"
+            );
+        } finally {
+            bridge.dispose();
+        }
+    });
+
     await scenario("Reject short memory reads and changed stop epochs", async () => {
         const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
         const bridge = new DebugSessionBridge();

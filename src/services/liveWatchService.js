@@ -344,12 +344,13 @@ class LiveWatchService {
                 continue;
             }
             if (composite) {
-                const tree = sample.bytes
-                    ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout, {
-                          name: sample.name,
-                          ...composite
-                      })
-                    : null;
+                const tree =
+                    sample.bytes && composite.layout
+                        ? this.elfSymbols.decodeComposite(sample.bytes, composite.layout, {
+                              name: sample.name,
+                              ...composite
+                          })
+                        : null;
                 if (tree) {
                     const decoded = {
                         name: sample.name,

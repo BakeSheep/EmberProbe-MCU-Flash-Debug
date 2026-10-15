@@ -105,6 +105,23 @@ Inside STL containers, pointers that cannot be followed (opaque targets, cycles,
 exhaustion, unreadable memory) become local address rows with a reason instead of failing
 the whole variable.
 
+## Reopening the view
+
+Saved lists keep only identities, so a reopened view lays the rows out from the ELF type graph
+before any sample: pointer rows of runtime composites exist as value-less placeholder rows, and
+the `<path>.value` watches saved below them nest in those rows instead of appearing as separate
+cards. Placeholder rows cannot be charted until a sample supplies their address.
+
+The last sampled target of every pointer is kept with the view state (at most 512 entries,
+cleared when the ELF changes or the variable is removed). Until sampling starts the pointer cell
+shows it dimmed and in italics, and its tooltip ends with "last sampled". It is a display hint
+only; the target is never read without sampling.
+
+Pointer variables added to the sampling list start with their chart curve hidden, since the
+address rarely carries information. Switching the swatch on is remembered. The chart panel also
+names pointer targets when the host keeps the chart history (`chartValues` samples carry the
+same pointer annotations as `liveSample`).
+
 ## Agent Bridge
 
 Decoded trees keep every raw member. Members carry `memberRole` (`artificial` or

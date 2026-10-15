@@ -317,6 +317,53 @@ async function testShutdownFence(Provider) {
     assert.equal(panels[0].messages.at(-1).rowCount, 1);
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
+    // Each chart keeps its curve visibility in the workspace and hands it to the reopened chart.
+    assert.deepStrictEqual(
+        panels[0].messages.find((message) => message.type === "curveVisibility"),
+        { type: "curveVisibility", hidden: null },
+        "a chart without saved visibility keeps its defaults"
+    );
+    await panels[0].receive({ type: "saveCurveVisibility", hidden: { first: true, shared: false, bad: "yes" } });
+    await panels[1].receive({ type: "saveCurveVisibility", panelId: 2, hidden: { shared: true } });
+    assert.deepStrictEqual(values.get("liveWatch.curveVisibility"), {
+        "mcu.watchList": { first: true, shared: false },
+        "mcu.watchList.2": { shared: true }
+    });
+    await panels[0].receive({ type: "saveCurveVisibility", hidden: ["first"] });
+    assert.equal(panels[0].messages.at(-1).type, "liveError");
+    // VS Code restores a chart tab with its panel number, so it reopens the same watch list and curves.
+    const restored = (state) => {
+        const panel = {
+            messages: [],
+            webview: {
+                postMessage: (m) => panel.messages.push(structuredClone(m)),
+                onDidReceiveMessage: (handler) => {
+                    panel.receive = handler;
+                }
+            },
+            onDidDispose() {},
+            onDidChangeViewState() {}
+        };
+        p.restoreLiveWatchPanel(panel, state);
+        return panel;
+    };
+    values.set("liveWatch.curveVisibility", {
+        ...values.get("liveWatch.curveVisibility"),
+        "mcu.watchList.5": { restoredCurve: false }
+    });
+    const reopened = restored({ panelId: 5, hidden: {} });
+    assert.strictEqual(p._livePanels.get(5)?.watchKey, "mcu.watchList.5");
+    assert.strictEqual(reopened.title, "lw.panelTitle");
+    assert.strictEqual(reopened.webview.options.enableScripts, true);
+    await reopened.receive({ type: "ready", panelId: 5 });
+    assert.deepStrictEqual(reopened.messages.find((message) => message.type === "curveVisibility").hidden, {
+        restoredCurve: false
+    });
+    restored({ panelId: 1 });
+    assert.ok(p._livePanels.has(3), "a restored panel number already in use takes the next free one");
+    restored({});
+    assert.ok(p._livePanels.has(4), "state saved before panel numbers were recorded still restores");
+    for (const id of [3, 4, 5]) p._livePanels.delete(id);
     const entry = p._livePanels.get(2);
     entry.latestSamples.set("shared", { name: "shared", value: 99 });
     entry._pendingScalars = [{ name: "shared", value: 99 }];

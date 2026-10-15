@@ -33,7 +33,7 @@ const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
-const { WriteAuthorization, writeConnectionIdentity, fingerprintWritePlan } = require("./writeAuthorization");
+const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
 const { CubeMxService } = require("./services/cubemxService");
 const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
 const { CubeMxFirmware } = require("./services/cubemxFirmware");
@@ -45,7 +45,6 @@ const { FlashService } = require("./services/flashService");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
-const { HumanApprovalService } = require("./services/humanApprovalService");
 const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
@@ -99,6 +98,9 @@ const CACHE_KEYS = {
 };
 // Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
+// Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
+const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
+const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 const UNLIMITED_SAMPLING_SETTING = "experimental.unlimitedSampling.enabled";
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
@@ -315,14 +317,7 @@ class MainViewProvider {
             changed: () => this.updateView(),
             t: (key) => this._t(key)
         });
-        this._humanApproval = new HumanApprovalService(
-            vscode,
-            (key, params) => this._t(key, params),
-            context.workspaceState
-        );
         this._cubemxService = new CubeMxService({
-            resetApproval: () => this._humanApproval.reset("cubemx.generate"),
-            approve: (kind, plan) => this._humanApproval.approve(kind, plan, true),
             storage: context.workspaceState,
             storageDir: context.globalStorageUri?.fsPath,
             config: () => this._configurationStore.snapshot(),
@@ -402,8 +397,7 @@ class MainViewProvider {
             workerPath: path.join(__dirname, "svdWorker.js"),
             loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
             debugBridge: this._debugBridge,
-            authorization: this._peripheralWriteAuthorization,
-            approve: (kind, plan) => this._humanApproval.approve(kind, plan)
+            authorization: this._peripheralWriteAuthorization
         });
         this._peripheralViewService = new PeripheralViewService({
             peripherals: this._svdPeripheralService,
@@ -420,7 +414,6 @@ class MainViewProvider {
             coordinator: this._probeCoordinator,
             authorization: this._flashAuthorization,
             prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
-            approve: (kind, plan) => this._humanApproval.approve(kind, plan),
             recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
         });
@@ -2505,42 +2498,13 @@ class MainViewProvider {
     async _writeAgentVariables(params) {
         this._assertCpuIdle();
         await this._prepareRequestedLayouts(params.values);
-        let plan = this._agentWritePlan(params.values, { refreshSymbols: false });
+        const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
         const authorization = this._writeAuthorization.authorize(plan, {
             confirmationId: params.confirmationId,
             remember: params.remember
         });
         if (!authorization.authorized) return authorization.response;
-        if (this._humanApproval) {
-            const approved = await this._humanApproval.approve(
-                "variables.write",
-                {
-                    elf: plan.elfResult.elf,
-                    connection: plan.connection,
-                    items: plan.items.map(({ name, address, size, type, value, valueText, bytes }) => ({
-                        name,
-                        address,
-                        size,
-                        type,
-                        value,
-                        valueText,
-                        bytes
-                    }))
-                },
-                true
-            );
-            authorization.remember = approved.remember;
-            authorization.mode = approved.mode || (approved.remember ? "workspace" : "once");
-            await this._prepareRequestedLayouts(params.values);
-            const current = this._agentWritePlan(params.values, { refreshSymbols: false });
-            current.connection = await this._prepareWriteConnection();
-            if (fingerprintWritePlan(plan) !== fingerprintWritePlan(current))
-                throw Object.assign(new Error("Write plan changed during human approval"), {
-                    code: "WRITE_CONFIRMATION_INVALID"
-                });
-            plan = current;
-        }
         // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
         // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
         // the write path loses the DAP connection identity between confirmation and execution.
@@ -2623,7 +2587,6 @@ class MainViewProvider {
             }
         }
         if (action === "reset") {
-            await this._humanApproval?.reset("variables.write");
             return this._writeAuthorization.reset();
         }
         throw Object.assign(new Error(`Unsupported write permission action: ${action}`), {
@@ -2766,25 +2729,57 @@ class MainViewProvider {
         if (result) await this._syncAgentBridgeWithSkills(result);
         return result;
     }
+    // VS Code restores chart tabs left open at shutdown; each keeps its panel number and so its watch list.
+    restoreLiveWatchPanel(panel, state) {
+        const saved = Number(state?.panelId);
+        const panelId =
+            Number.isSafeInteger(saved) && saved >= 1 && !this._livePanels.has(saved)
+                ? saved
+                : nextLivePanelId(this._livePanels);
+        panel.title = this._t("lw.panelTitle", { n: panelId });
+        panel.webview.options = { enableScripts: true, localResourceRoots: [this._webviewAssetRootUri] };
+        this.openLiveWatchPanel(panel, panelId);
+    }
+    _curveVisibility(watchKey) {
+        const stored = this._context.workspaceState.get(CURVE_VISIBILITY_STATE_KEY);
+        const hidden = stored && typeof stored === "object" ? stored[watchKey] : null;
+        return hidden && typeof hidden === "object" && !Array.isArray(hidden) ? hidden : null;
+    }
+    async _saveCurveVisibility(watchKey, hidden) {
+        if (!hidden || typeof hidden !== "object" || Array.isArray(hidden))
+            throw Object.assign(new Error("Invalid curve visibility"), { code: "INVALID_ARGUMENT" });
+        const entries = Object.entries(hidden).filter(
+            ([name, value]) => typeof name === "string" && name.length <= 1024 && typeof value === "boolean"
+        );
+        if (entries.length > MAX_CURVE_VISIBILITY_ENTRIES)
+            throw Object.assign(new Error("Too many curve visibility entries"), { code: "INVALID_ARGUMENT" });
+        const stored = this._context.workspaceState.get(CURVE_VISIBILITY_STATE_KEY);
+        await this._context.workspaceState.update(CURVE_VISIBILITY_STATE_KEY, {
+            ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
+            [watchKey]: Object.fromEntries(entries)
+        });
+    }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
-    openLiveWatchPanel() {
+    openLiveWatchPanel(restoredPanel = null, restoredId = null) {
         if (!this._seriesStyleStore) {
             const { SeriesStyleStore } = require("./services/seriesStyleStore");
             this._seriesStyleStore = new SeriesStyleStore(this._context.workspaceState);
         }
-        const panelId = nextLivePanelId(this._livePanels);
+        const panelId = restoredId || nextLivePanelId(this._livePanels);
         const watchKey = panelId === 1 ? CACHE_KEYS.watchList : `${CACHE_KEYS.watchList}.${panelId}`;
         const cfg = vscode.workspace.getConfiguration("emberprobe");
-        const panel = vscode.window.createWebviewPanel(
-            "emberprobe.liveWatch",
-            this._t("lw.panelTitle", { n: panelId }),
-            vscode.ViewColumn.Active,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [this._webviewAssetRootUri]
-            }
-        );
+        const panel =
+            restoredPanel ||
+            vscode.window.createWebviewPanel(
+                "emberprobe.liveWatch",
+                this._t("lw.panelTitle", { n: panelId }),
+                vscode.ViewColumn.Active,
+                {
+                    enableScripts: true,
+                    retainContextWhenHidden: true,
+                    localResourceRoots: [this._webviewAssetRootUri]
+                }
+            );
         const panelWebview = panel.webview;
         const post = (m) => panelWebview.postMessage(m);
         const entry = {
@@ -2852,6 +2847,7 @@ class MainViewProvider {
                         post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
                         post(this._unlimitedSamplingState());
                         post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
+                        post({ type: "curveVisibility", hidden: this._curveVisibility(watchKey) });
                         this._syncGraphTarget(entry);
                         if (this._liveSession) {
                             const active = this._activeReadPlan();
@@ -2868,6 +2864,9 @@ class MainViewProvider {
                             )
                                 post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
                         }
+                        break;
+                    case "saveCurveVisibility":
+                        await this._saveCurveVisibility(watchKey, message.hidden);
                         break;
                     case "setSeriesStyle": {
                         const styles = await this._seriesStyleStore.update(message.name, message.style);
@@ -3453,8 +3452,12 @@ class MainViewProvider {
             actualHz: message.consumers?.sidebarHz ?? message.actualHz
         });
     }
+    // Watch lists resolve against DWARF types; before they load, the empty list means "not known yet".
+    _watchListsReady() {
+        return !(this._elfService?.workerPath && !this._elfService.cache?.dwarfReady);
+    }
     _scalarWatchList(key) {
-        if (this._elfService?.workerPath && !this._elfService.cache?.dwarfReady) return [];
+        if (!this._watchListsReady()) return [];
         if (this._watchGeneration !== this._elfService?.generation) {
             this._watchGeneration = this._elfService?.generation;
             this._watchLists.invalidate();
@@ -3543,7 +3546,9 @@ class MainViewProvider {
                 post({ type: "variablesList", symbols: [], warnings: [error.message], error: error.message });
             }
         }
-        post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
+        // A chart keeps its current watches until the real list can be resolved; the rebind after
+        // DWARF loading sends it.
+        if (this._watchListsReady()) post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
         this._configureChartHistory(entry);
         post({
             type: "liveStatus",
@@ -4019,10 +4024,13 @@ class MainViewProvider {
     _invalidateConsumerTypes() {
         this._consumerTypesCache = null;
     }
+    // Runtime-only composites (an expanded pointee has a type graph, not a static layout) belong here
+    // too, so a failed read reaches their tree as an error rather than becoming a scalar sample.
     _compositeMap(key) {
         const map = new Map();
         for (const item of this._scalarWatchList(key)) {
-            if (item.isComposite && item.compositeLayout) map.set(item.name, { ...item, layout: item.compositeLayout });
+            if (item.isComposite && (item.compositeLayout || item.runtimeLayout))
+                map.set(item.name, { ...item, layout: item.compositeLayout || null });
         }
         return map;
     }
