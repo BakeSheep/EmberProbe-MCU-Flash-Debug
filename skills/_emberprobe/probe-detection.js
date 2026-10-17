@@ -23,7 +23,7 @@ function probeFromText(text) {
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
-const { listProbes, listLinuxUsbRows } = require("./probe-inventory");
+const { listProbes, listLinuxUsbRows, MAC_USB_DATA_TYPES } = require("./probe-inventory");
 const { listWindowsProbeRows } = require("./windows-probe-inventory");
 
 async function usbInventory(options = {}) {
@@ -74,10 +74,23 @@ async function usbInventory(options = {}) {
             // Keep discovery of other adapters when sysfs is unavailable; preflight checks identity separately.
         }
     }
+    if (platform === "darwin") {
+        // macOS 26 renamed the USB data type: `SPUSBDataType` exits 0 with empty output.
+        for (const dataType of MAC_USB_DATA_TYPES) {
+            try {
+                const { stdout } = await run("system_profiler", [dataType], {
+                    timeout: 6000,
+                    maxBuffer: 2 * 1024 * 1024
+                });
+                if (String(stdout || "").trim()) return stdout;
+            } catch {
+                // The renamed data type does not exist before macOS 26; try the next one.
+            }
+        }
+        return "";
+    }
     try {
-        /** @type {[string, string[]]} */
-        const command = platform === "darwin" ? ["system_profiler", ["SPUSBDataType"]] : ["lsusb", []];
-        return (await run(command[0], command[1], { timeout: 6000, maxBuffer: 2 * 1024 * 1024 })).stdout;
+        return (await run("lsusb", [], { timeout: 6000, maxBuffer: 2 * 1024 * 1024 })).stdout;
     } catch {
         return "";
     }

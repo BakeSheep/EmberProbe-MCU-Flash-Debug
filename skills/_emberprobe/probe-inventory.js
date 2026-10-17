@@ -254,28 +254,40 @@ function parseWindowsInventory(text, family = "jlink") {
     );
 }
 
+// macOS 26 renamed the USB data type and its JSON keys along with it: `SPUSBHostDataType`
+// reports USBDeviceKeyVendorID / USBDeviceKeyProductID / USBDeviceKeySerialNumber /
+// USBKeyLocationID where `SPUSBDataType` used vendor_id / product_id / serial_num /
+// location_id. Accept both so either table shape parses without a second walker.
+function macField(value, ...keys) {
+    for (const key of keys) {
+        const field = value[key];
+        if (field !== undefined && field !== null && field !== "") return field;
+    }
+    return "";
+}
+
 function parseMacInventory(text, family = "jlink") {
     const devices = [];
     const visit = (value) => {
         if (!value || typeof value !== "object") return;
         const vid =
-            String(value.vendor_id || "")
+            String(macField(value, "vendor_id", "USBDeviceKeyVendorID"))
                 .match(/0x([0-9a-f]{4})/i)?.[1]
                 ?.toLowerCase() || "";
         const pid =
-            String(value.product_id || "")
+            String(macField(value, "product_id", "USBDeviceKeyProductID"))
                 .match(/0x([0-9a-f]{4})/i)?.[1]
                 ?.toLowerCase() || "";
         const classified = usbFamily(vid, pid, value._name || "");
         if (classified && (family === "all" || family === classified)) {
             devices.push(
                 deviceRecord({
-                    id: String(value.location_id || `usb-${devices.length}`),
+                    id: String(macField(value, "location_id", "USBKeyLocationID") || `usb-${devices.length}`),
                     name: value._name || "USB debug probe",
                     vid,
                     pid,
                     family: classified,
-                    serial: serialOrUnknown(value.serial_num, classified)
+                    serial: serialOrUnknown(macField(value, "serial_num", "USBDeviceKeySerialNumber"), classified)
                 })
             );
         }
@@ -306,6 +318,33 @@ function runInventory(command, args) {
             }
         ).stdin?.end()
     );
+}
+
+// macOS 26 renamed the USB data type: `system_profiler SPUSBDataType` still exits 0 but
+// returns an empty table, while `SPUSBHostDataType` carries the real data. Keep the old
+// name first so hosts before macOS 26 behave exactly as before.
+const MAC_USB_DATA_TYPES = ["SPUSBDataType", "SPUSBHostDataType"];
+
+function isEmptyMacUsbTable(text) {
+    try {
+        const parsed = JSON.parse(text);
+        const rows = parsed && typeof parsed === "object" ? Object.values(parsed)[0] : null;
+        return Array.isArray(rows) && rows.length === 0;
+    } catch {
+        return false;
+    }
+}
+
+async function listMacProbeRows(run, family) {
+    let devices = [];
+    for (const dataType of MAC_USB_DATA_TYPES) {
+        const text = await run("system_profiler", [dataType, "-json"]);
+        devices = parseMacInventory(text, family);
+        // Fall back only when the table itself is empty. An empty result for our family on a
+        // healthy table is a genuine "no probe attached" and must not pay a second cold start.
+        if (devices.length || !isEmptyMacUsbTable(text)) return devices;
+    }
+    return devices;
 }
 
 async function listProbes(options = {}) {
@@ -344,8 +383,7 @@ async function listProbes(options = {}) {
                     ]),
                     family
                 );
-        } else if (platform === "darwin")
-            devices = parseMacInventory(await run("system_profiler", ["SPUSBDataType", "-json"]), family);
+        } else if (platform === "darwin") devices = await listMacProbeRows(run, family);
         else if (platform === "linux") {
             const rows = await listLinuxUsbRows(options);
             if (family === "all") {
@@ -382,6 +420,7 @@ module.exports = {
     parseMacInventory,
     windowsHelperPath,
     listLinuxUsbRows,
+    MAC_USB_DATA_TYPES,
     WINDOWS_INVENTORY,
     USB_INVENTORY
 };
