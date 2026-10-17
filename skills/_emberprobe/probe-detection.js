@@ -33,7 +33,7 @@ async function usbInventory(options = {}) {
         if (!options.run || options.nativeList) {
             try {
                 const rows = await (options.nativeList || listWindowsProbeRows)(() => true);
-                return rows.map((row) => row.name).join("\n");
+                return rows.flatMap((row) => [row.name, row.reportedName || ""]).join("\n");
             } catch {
                 // Standalone skills without the packaged native runtime retain OS-tool fallback.
             }
@@ -99,18 +99,21 @@ async function usbInventory(options = {}) {
 async function detectProbe(dependencies = {}) {
     const inventoryPromise = Promise.resolve((dependencies.listProbes || listProbes)({ family: "all" }));
     const names = () => (dependencies.usbInventory || usbInventory)();
-    const [text, inventory] = await Promise.all([
-        (dependencies.platform || process.platform) === "linux"
-            ? inventoryPromise.then((result) =>
-                  typeof result.discoveryText === "string" ? result.discoveryText : names()
-              )
-            : names(),
-        inventoryPromise
-    ]);
+    // Linux and macOS inventories carry USB names; other platforms enumerate names concurrently.
+    const namesPromise = ["linux", "darwin"].includes(dependencies.platform || process.platform) ? null : names();
+    const inventory = await inventoryPromise;
+    const text =
+        typeof inventory.discoveryText === "string" ? inventory.discoveryText : await (namesPromise || names());
     const candidates = probeCandidates(text);
     if (inventory.available)
         for (const device of inventory.devices) {
-            const probe = { jlink: "jlink.cfg", "cmsis-dap": "cmsis-dap.cfg", stlink: "stlink.cfg" }[device.family];
+            const probe = {
+                jlink: "jlink.cfg",
+                "cmsis-dap": "cmsis-dap.cfg",
+                stlink: "stlink.cfg",
+                xds110: "xds110.cfg",
+                nulink: "nulink.cfg"
+            }[device.family];
             if (probe && !candidates.includes(probe)) candidates.push(probe);
         }
     return {

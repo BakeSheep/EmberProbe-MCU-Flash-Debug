@@ -6,7 +6,8 @@ const i18n = require("../i18n");
 const {
     normalizeProbeSerial,
     connectionIdentity,
-    connectionError
+    connectionError,
+    trustedSerial
 } = require("../../skills/_emberprobe/probe-connection");
 
 // UI prompts live here; automated callers receive the same structured configuration errors.
@@ -79,6 +80,9 @@ class ProbeConnectionService {
                 const connection = Object.freeze({
                     ...result,
                     selection: Object.freeze({ ...result.selection }),
+                    ...(result.selectionIdentity
+                        ? { selectionIdentity: Object.freeze({ ...result.selectionIdentity }) }
+                        : {}),
                     settingsIdentity: Object.freeze(current)
                 });
                 this.onResolved(connection);
@@ -89,12 +93,16 @@ class ProbeConnectionService {
                 // A stale remembered probe is never replaced silently; the user picks a present one instead.
                 const staleRemembered = error.code === "PROBE_SELECTED_NOT_FOUND" && error.details?.remembered === true;
                 if (error.code === "PROBE_SELECTION_REQUIRED" || staleRemembered) {
+                    // Several devices need a serial OpenOCD can enforce; a lone device can be picked by its OS id.
                     const choices = (error.details?.devices || [])
-                        .filter((device) => device.serial)
+                        .filter(
+                            (device, _index, devices) => devices.length === 1 || trustedSerial(device, device.family)
+                        )
                         .map((device) => ({
-                            label: device.serial,
-                            description: device.name,
-                            value: device.serial
+                            label: device.serial || this.t("probe.noSerial"),
+                            description: [device.name, device.id].filter(Boolean).join(" · "),
+                            value: trustedSerial(device, device.family),
+                            deviceId: device.id
                         }));
                     if (!choices.length) throw error;
                     const selected = await this.window.showQuickPick(choices, {
@@ -105,6 +113,7 @@ class ProbeConnectionService {
                     if (selected) {
                         const serial = selected.value;
                         if (serial) values = { probeSerial: normalizeProbeSerial(serial) };
+                        else if (selected.deviceId) values = { selectedDeviceId: selected.deviceId, probeSerial: "" };
                     }
                 } else throw error;
                 if (!values)
@@ -119,7 +128,7 @@ class ProbeConnectionService {
         const configured = this.getConfig();
         if (configured.debugger || configured.probe) return configured.debugger || configured.probe;
         const remembered = this.getSuccessfulConnection();
-        if (remembered?.version === 1 && remembered.probe) return remembered.probe;
+        if ([1, 2].includes(remembered?.version) && remembered.probe) return remembered.probe;
         const detected = await this.detectProbe();
         if (!detected.probe)
             throw connectionError("PROBE_SELECTION_REQUIRED", "Cannot determine a unique probe type", {
@@ -133,10 +142,12 @@ class ProbeConnectionService {
         if (
             !connection ||
             this.recorded.has(connection) ||
-            !["jlink", "cmsis-dap", "cmsis_dap", "hla", "st-link"].includes(connection.adapterFamily) ||
             !connection.probe ||
-            !connection.probeSerial ||
-            (connection.inventory && (!connection.inventory.available || !connection.deviceId)) ||
+            (!connection.probeSerial && !connection.selectionIdentity) ||
+            (connection.selectionIdentity?.kind !== "tcp" &&
+                connection.selectionIdentity?.kind !== "local" &&
+                connection.inventory &&
+                (!connection.inventory.available || !connection.deviceId)) ||
             (connection.settingsIdentity && this.settingsChanged({ options: connection }))
         )
             return;
@@ -145,9 +156,10 @@ class ProbeConnectionService {
             .then(async () => {
                 if (connection.settingsIdentity && this.settingsChanged({ options: connection })) return;
                 await this.saveSuccessfulConnection({
-                    version: 1,
+                    version: connection.selectionIdentity ? 2 : 1,
                     probe: connection.probe,
-                    probeSerial: connection.probeSerial
+                    probeSerial: connection.selectionIdentity?.anonymous ? "" : connection.probeSerial,
+                    ...(connection.profile ? { profile: connection.profile.fingerprint } : {})
                 });
             })
             .catch(() => {

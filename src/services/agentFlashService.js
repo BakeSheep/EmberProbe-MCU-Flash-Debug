@@ -79,6 +79,7 @@ class AgentFlashService {
             probe: request.probe,
             openocd: connection.openocd,
             probeSerial: connection.probeSerial,
+            selectionIdentity: connection.selectionIdentity,
             adapterSpeedKhz: connection.adapterSpeedKhz
         };
     }
@@ -138,6 +139,9 @@ class AgentFlashService {
                 target: request.target,
                 transport: connection.transport,
                 probeSerial: connection.probeSerial,
+                adapterSerial: connection.adapterSerial,
+                selectionIdentity: connection.selectionIdentity,
+                profile: connection.profile,
                 adapterSpeedKhz: connection.adapterSpeedKhz,
                 inventory: connection.inventory,
                 resolveLaunch: () => launch,

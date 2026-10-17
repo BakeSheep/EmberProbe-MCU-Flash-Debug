@@ -68,6 +68,29 @@ const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connecti
         assert.ok(chipPosts.some((message) => message.key === "chip.busyDownload"));
         active.delete("download");
 
+        let attachmentId = "arrival-A";
+        chipService.prepareConnection = async () => ({
+            selectionIdentity: { kind: "usb", anonymous: true, attachmentId }
+        });
+        await chipService.read();
+        attachmentId = "arrival-B";
+        for (const action of ["pause", "continue", "reset"]) {
+            assert.strictEqual(await chipService.control(action), null);
+            assert.strictEqual(chipPosts.at(-1).diagnostic.code, "CHIP_INFO_STALE");
+        }
+        assert.strictEqual(
+            actions.length,
+            3,
+            "Replacing an anonymous probe cannot control the previously displayed chip"
+        );
+        await chipService.read();
+        assert.strictEqual((await chipService.control("pause")).targetState, "halted");
+        attachmentId = "";
+        await chipService.read();
+        assert.strictEqual(await chipService.control("reset"), null);
+        assert.strictEqual(chipPosts.at(-1).diagnostic.code, "PROBE_IDENTITY_UNVERIFIED");
+        assert.strictEqual(actions.length, 4);
+
         for (const selection of ["configured", "remembered"]) {
             let configuredSerial = "";
             let remembered = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" };

@@ -54,7 +54,7 @@ async function main() {
     await service.recordSuccess(result);
     assert.strictEqual(writes, 1);
     assert.deepStrictEqual(saved, {
-        version: 1,
+        version: 2,
         probe: "jlink.cfg",
         probeSerial: "1234"
     });
@@ -82,7 +82,7 @@ async function main() {
     await service.recordSuccess(freshResult);
     assert.strictEqual(writes, 1);
     assert.deepStrictEqual(saved, {
-        version: 1,
+        version: 2,
         probe: "jlink.cfg",
         probeSerial: "1234"
     });
@@ -162,7 +162,8 @@ async function main() {
     selected = undefined;
     await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
     devices = [];
-    await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_REQUIRED" });
+    // An empty inventory keeps the interface default instead of prompting.
+    assert.strictEqual((await service.prepare(options, true)).selection.probe, "script-default");
     assert.strictEqual(prompts, 2);
     await service.forgetSuccess();
     assert.strictEqual(saved, undefined);

@@ -224,7 +224,8 @@ async function main() {
             (error) => error.code === code
         );
     assert.strictEqual(resolveProbeConnection({ ...config, transport: "auto" }, inventory).transport, "swd");
-    fails(config, unavailable, "PROBE_SELECTION_REQUIRED");
+    // Without OS inventory OpenOCD applies the interface default selection.
+    assert.strictEqual(resolveProbeConnection(config, unavailable).selection.probe, "script-default");
     fails({ ...config, probeSerial: "12" }, inventory, "PROBE_SELECTED_NOT_FOUND");
     fails(config, { available: true, devices: [...devices, ...devices] }, "PROBE_SELECTION_REQUIRED");
     fails(
@@ -249,7 +250,7 @@ async function main() {
         readFile: async () => "adapter driver jlink",
         run: async (_exe, args) => {
             calls.push(args);
-            if (args.includes("-f")) return "EP_ADAPTER_NAME=jlink\n";
+            if (args.includes("-f")) return "EP_ADAPTER_NAME=jlink\nEP_PROFILE_BEGIN\nEP_PROFILE_END\n";
             return "EP_ADAPTERS_BEGIN\njlink { jtag swd } st-link { dapdirect_swd }\nEP_ADAPTERS_END";
         }
     };
@@ -262,7 +263,8 @@ async function main() {
         (
             await checkAdapterCapability(launch, {
                 ...options,
-                run: async (_exe, args) => (args.includes("-f") ? "EP_ADAPTER_NAME=jlink\n" : numberedAdapters)
+                run: async (_exe, args) =>
+                    args.includes("-f") ? "EP_ADAPTER_NAME=jlink\nEP_PROFILE_BEGIN\nEP_PROFILE_END\n" : numberedAdapters
             })
         ).adapterFamily,
         "jlink"
@@ -406,11 +408,11 @@ async function main() {
         assert.strictEqual(inventory.available, true);
         assert.deepStrictEqual(
             inventory.devices.map((device) => device.family),
-            ["cmsis-dap", "jlink", "stlink"]
+            ["cmsis-dap", "jlink", "stlink", "xds110", "nulink"]
         );
         assert.deepStrictEqual(
             inventory.devices.map((device) => device.serial),
-            ["000Aa1", "123", "000Bc2"]
+            ["000Aa1", "123", "000Bc2", "", ""]
         );
         assert.strictEqual(inventory.devices[0].interfaces.length, 2);
         assert(!fixture.reads.some((name) => /outside|bad|usb1|1-7/.test(name)));
@@ -490,9 +492,7 @@ async function main() {
         assert.deepStrictEqual(removed.devices, []);
         const missingSerial = await listProbes(sysfs({ "1-2": { idVendor: "0483", idProduct: "3748" } }));
         assert.strictEqual(missingSerial.devices.length, 1);
-        assert.throws(() => resolveProbeConnection({ probe: "stlink.cfg" }, missingSerial), {
-            code: "PROBE_SELECTION_REQUIRED"
-        });
+        assert.strictEqual(resolveProbeConnection({ probe: "stlink.cfg" }, missingSerial).adapterSerial, "");
         for (const options of [
             { readdir: async () => new Promise(() => {}), timeoutMs: 10 },
             { ...sysfs({ "1-2": {} }), readFile: async () => new Promise(() => {}), timeoutMs: 10 },

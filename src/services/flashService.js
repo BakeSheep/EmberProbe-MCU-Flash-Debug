@@ -3,6 +3,7 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { inspectElf } = require("../../skills/_emberprobe/elf-file");
+const { assertWriteIdentity } = require("../../skills/_emberprobe/probe-connection");
 
 class FlashService {
     constructor(runner) {
@@ -16,6 +17,7 @@ class FlashService {
             const elf = await inspectElf(options.elf, { snapshot });
             const { prepare, ...request } = options;
             const connection = prepare ? await prepare() : {};
+            assertWriteIdentity({ ...request, ...connection });
             return await this.runner.runOpenOcd(
                 vscode,
                 {

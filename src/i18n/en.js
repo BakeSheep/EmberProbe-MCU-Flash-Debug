@@ -148,6 +148,7 @@ module.exports = Object.freeze({
     "probe.source.unique-device": "Only device",
     "probe.source.cortex-m": "Cortex-M default",
     "probe.source.script-default": "Script default",
+    "probe.source.script": "Interface script",
     "probe.serial": "J-Link serial number",
     "probe.transport": "SWD / JTAG transport",
     "probe.speed": "Adapter speed (kHz)",
@@ -155,6 +156,28 @@ module.exports = Object.freeze({
     "probe.manualSerial": "Enter serial number",
     "probe.serialRequired": "Select J-Link serial",
     "probe.pickTitle": "Select physical debug probe",
+    "probe.noSerial": "Probe without a readable serial",
+    "probe.selectionRequired":
+        "Cannot select a unique probe. Keep one matching probe connected or configure its exact USB serial number.",
+    "probe.selectionUnsupported":
+        "This adapter cannot enforce the requested device selection. Use a verified interface and selector, or keep only one matching probe connected.",
+    "probe.identityAmbiguous":
+        "The physical probe cannot be identified uniquely. Disconnect other matching probes or configure an exact USB serial number.",
+    "probe.identityUnverified":
+        "Cannot verify this USB attachment before writing. Reconnect the probe and retry, or configure an exact USB serial number.",
+    "probe.capabilityUnknown":
+        "Cannot verify the effective OpenOCD interface configuration. Check its adapter driver and sourced scripts.",
+    "probe.driverMissing":
+        "This OpenOCD build does not include the selected adapter driver. Select a compatible OpenOCD build.",
+    "probe.backendAmbiguous":
+        "The CMSIS-DAP script has a TCP host but uses automatic backend selection. Select TCP or USB explicitly in the script.",
+    "probe.endpointInvalid": "Configure a valid CMSIS-DAP TCP host and port in the interface script.",
+    "probe.configurationChanged": "Connection settings changed during preparation. Retry with the current settings.",
+    "probe.rememberedProfileChanged":
+        "The previously used interface configuration changed. Select the physical probe again.",
+    "probe.selectionCancelled": "Probe selection was cancelled.",
+    "probe.serialInvalid":
+        "Use 1–128 ASCII letters, digits, spaces or _.:- for a USB serial number. J-Link requires a decimal integer from 1 to 4294967295.",
     "probe.pickStaleTitle": "Previously used probe {serial} is not connected; select a physical debug probe",
     "probe.selectedNotFound": "The selected {label} is not present; no other device will be selected",
     "probe.rememberedNotFound":

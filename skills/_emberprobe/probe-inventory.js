@@ -4,11 +4,12 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { normalizeProbeSerial } = require("./probe-connection");
 const { listWindowsProbeRows } = require("./windows-probe-inventory");
+const { USB_PROFILES, normalizeInventoryQuery, matchesUsbIds } = require("./probe-profile");
 
 // Only OS metadata is read. No SEGGER tool, OpenOCD init or driver installer is invoked.
 const WINDOWS_INVENTORY = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
 $keys = @('DEVPKEY_Device_Parent', 'DEVPKEY_Device_ContainerId', 'DEVPKEY_Device_Service',
- 'DEVPKEY_Device_DriverProvider', 'DEVPKEY_Device_DriverInfPath', 'DEVPKEY_Device_BusReportedDeviceDesc');
+ 'DEVPKEY_Device_DriverProvider', 'DEVPKEY_Device_DriverInfPath', 'DEVPKEY_Device_BusReportedDeviceDesc', 'DEVPKEY_Device_LastArrivalDate');
 $devices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -like 'USB\\VID_1366*' });
 $properties = @{};
 if ($devices.Count) {
@@ -22,7 +23,7 @@ if ($devices.Count) {
  if (!$p['DEVPKEY_Device_Parent']) {
   Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName @('DEVPKEY_Device_Parent', 'DEVPKEY_Device_ContainerId') -ErrorAction SilentlyContinue | ForEach-Object { $p[$_.KeyName] = $_.Data }
  };
- [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; reportedName=$p['DEVPKEY_Device_BusReportedDeviceDesc']; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath'] }
+ [pscustomobject]@{ instanceId=$d.InstanceId; name=$d.FriendlyName; reportedName=$p['DEVPKEY_Device_BusReportedDeviceDesc']; parentId=$p['DEVPKEY_Device_Parent']; containerId=[string]$p['DEVPKEY_Device_ContainerId']; service=$p['DEVPKEY_Device_Service']; driverProvider=$p['DEVPKEY_Device_DriverProvider']; driverInf=$p['DEVPKEY_Device_DriverInfPath']; attachmentId=if($p['DEVPKEY_Device_LastArrivalDate']) {$p['DEVPKEY_Device_LastArrivalDate'].ToFileTimeUtc().ToString()} else {''} }
 }) | ConvertTo-Json -Depth 4 -Compress`;
 const USB_INVENTORY = WINDOWS_INVENTORY.replace(
     "$_.InstanceId -like 'USB\\VID_1366*'",
@@ -33,9 +34,9 @@ const USB_INVENTORY = WINDOWS_INVENTORY.replace(
     // Querying properties for keyboards, mice and cameras can exhaust the bounded query budget, so only
     // unmatched USB roots get one batched iProduct query (CMSIS-DAP clones often have generic Windows names).
     `$prefixes = @{};
-$pattern = 'j[- ]?link|cmsis[- _]?dap|daplink|mcu[- ]?link|picoprobe|st[- ]?link';
+$pattern = 'j[- ]?link|cmsis[- _]?dap|daplink|mcu[- ]?link|picoprobe|st[- ]?link|xds[- ]?110|nu[- ]?link|kitprog|versaloon|vsllink|icdi';
 foreach ($d in $devices) {
- if ($d.InstanceId -match '^(USB|HID)\\\\VID_(1366&PID_[0-9A-F]{4}|0D28&PID_0204|C251&PID_(F001|F002|2722|2750)|0483&PID_(374[48BDEF]|375[23457]))' -or $d.FriendlyName -match $pattern) {
+ if ($d.InstanceId -match '^(USB|HID)\\\\VID_(1366&PID_[0-9A-F]{4}|0D28&PID_0204|C251&PID_(F001|F002|2722|2750)|0483&PID_(374[48BDEF]|375[23457]|A038)|0451&PID_(BEF3|BEF4)|1CBE&PID_(02A5|00FD)|0416&PID_(511[B-D]|520[01])|04B4&PID_F139)' -or $d.FriendlyName -match $pattern) {
   if ($d.InstanceId -match '^(USB|HID)\\\\(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') { $prefixes[$Matches[2]] = $true }
  }
 };
@@ -79,6 +80,17 @@ function usbFamily(vid, pid, name) {
     )
         return "cmsis-dap";
     if (/st[- ]?link/i.test(name)) return "stlink";
+    // Generic FTDI bridges are usually serial cables; they count as probes only when an interface selects their IDs.
+    for (const profile of Object.values(USB_PROFILES))
+        if (
+            profile.family !== "ft232r" &&
+            profile.ids?.some(
+                ([vendor, product]) => Number.parseInt(vid, 16) === vendor && Number.parseInt(pid, 16) === product
+            )
+        )
+            return profile.family;
+    if (/\bxds[- ]?110/i.test(name)) return "xds110";
+    if (/\bnu[- ]?link/i.test(name)) return "nulink";
     return "";
 }
 
@@ -89,7 +101,7 @@ function linuxSerial(value, family, vid) {
         family === "stlink" &&
         vid === "0483" &&
         raw.length === 12 &&
-        !/^[A-Za-z0-9_.:-]+$/.test(raw) &&
+        !/^[A-Za-z0-9_.: -]+$/.test(raw) &&
         [...raw].every((char) => char.charCodeAt(0) <= 255)
     ) {
         // Old ST-Link/V2 DFU exposes twelve byte-valued UTF-16 code points.
@@ -165,13 +177,34 @@ async function listLinuxUsbRows(options = {}) {
                     if (name) children.push({ instanceId: child.id, name, interfaceNumber: child.interfaceNumber });
                 }
                 const name = product.trim();
-                const family = usbFamily(vid, pid, [name, ...children.map((child) => child.name)].join("\n"));
+                const family =
+                    options.vidPid?.length && options.family !== "all" && matchesUsbIds({ vid, pid }, options.vidPid)
+                        ? options.family
+                        : usbFamily(vid, pid, [name, ...children.map((child) => child.name)].join("\n"));
+                let attachmentId = "";
+                if (family) {
+                    const [bus, address, metadata] = await Promise.all([
+                        value(id, "busnum"),
+                        value(id, "devnum"),
+                        (options.stat || fs.stat)(path.join(root, id), { bigint: true }).catch(() => null)
+                    ]);
+                    if (
+                        /^\d+$/.test(bus.trim()) &&
+                        /^\d+$/.test(address.trim()) &&
+                        metadata?.ino > 0n &&
+                        metadata?.ctimeNs > 0n
+                    )
+                        attachmentId = `${bus.trim()}:${address.trim()}:${metadata.ino}:${metadata.ctimeNs}`;
+                }
                 rows[index] = {
                     id,
                     name,
+                    product: name,
                     vid,
                     pid,
                     family,
+                    serialSource: "usb-descriptor",
+                    attachmentId,
                     interfaces: children,
                     serial: family ? linuxSerial(await value(id, "serial"), family, vid) : ""
                 };
@@ -188,7 +221,7 @@ async function listLinuxUsbRows(options = {}) {
     }
 }
 
-function parseWindowsInventory(text, family = "jlink") {
+function parseWindowsInventory(text, family = "jlink", vidPid = []) {
     const parsed = JSON.parse(String(text || "[]").replace(/^\uFEFF/, ""));
     const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
     const roots = new Map(
@@ -223,10 +256,13 @@ function parseWindowsInventory(text, family = "jlink") {
         const group =
             groups.get(groupKey) ||
             deviceRecord({ id: physicalId, vid: usbId[1].toLowerCase(), pid: usbId[2].toLowerCase(), family: "" });
-        const classified = usbFamily(group.vid, group.pid, [row.name, row.reportedName].filter(Boolean).join("\n"));
+        const classified =
+            vidPid.length && family !== "all" && matchesUsbIds(group, vidPid)
+                ? family
+                : usbFamily(group.vid, group.pid, [row.name, row.reportedName].filter(Boolean).join("\n"));
         if (classified) group.family = classified;
         for (const name of [row.name, row.reportedName])
-            if (name && /j[- ]?link|cmsis|daplink|st[- ]?link/i.test(name)) {
+            if (name && /j[- ]?link|cmsis|daplink|st[- ]?link|xds|nu[- ]?link|kitprog|versaloon|vsllink/i.test(name)) {
                 group.name = name;
                 break;
             }
@@ -235,6 +271,10 @@ function parseWindowsInventory(text, family = "jlink") {
             ? serialOrUnknown(serialId.split("\\").pop(), group.family)
             : "";
         if (serial) group.serial = serial;
+        group.serialSource = "os-instance";
+        if (id.toUpperCase() === physicalId.toUpperCase()) group.product = row.reportedName || row.name || "";
+        if (row.attachmentId && id.toUpperCase() === physicalId.toUpperCase())
+            group.attachmentId = String(row.attachmentId);
         group.interfaces.push({
             instanceId: id,
             name: row.name || "",
@@ -266,7 +306,7 @@ function macField(value, ...keys) {
     return "";
 }
 
-function parseMacInventory(text, family = "jlink") {
+function parseMacInventory(text, family = "jlink", vidPid = []) {
     const devices = [];
     const visit = (value) => {
         if (!value || typeof value !== "object") return;
@@ -278,15 +318,21 @@ function parseMacInventory(text, family = "jlink") {
             String(macField(value, "product_id", "USBDeviceKeyProductID"))
                 .match(/0x([0-9a-f]{4})/i)?.[1]
                 ?.toLowerCase() || "";
-        const classified = usbFamily(vid, pid, value._name || "");
+        const classified =
+            vidPid.length && family !== "all" && matchesUsbIds({ vid, pid }, vidPid)
+                ? family
+                : usbFamily(vid, pid, value._name || "");
         if (classified && (family === "all" || family === classified)) {
             devices.push(
                 deviceRecord({
                     id: String(macField(value, "location_id", "USBKeyLocationID") || `usb-${devices.length}`),
                     name: value._name || "USB debug probe",
+                    product: value._name || "",
                     vid,
                     pid,
                     family: classified,
+                    serialSource: "usb-descriptor",
+                    attachmentId: "",
                     serial: serialOrUnknown(macField(value, "serial_num", "USBDeviceKeySerialNumber"), classified)
                 })
             );
@@ -335,21 +381,46 @@ function isEmptyMacUsbTable(text) {
     }
 }
 
-async function listMacProbeRows(run, family) {
+function macUsbNames(text) {
+    const names = [];
+    const visit = (value) => {
+        if (!value || typeof value !== "object") return;
+        if (typeof value._name === "string") names.push(value._name);
+        for (const child of Object.values(value)) if (child && typeof child === "object") visit(child);
+    };
+    visit(JSON.parse(text));
+    return names.join("\n");
+}
+
+async function listMacProbeRows(run, family, vidPid = []) {
     let devices = [];
+    let text = "";
+    let failure;
     for (const dataType of MAC_USB_DATA_TYPES) {
-        const text = await run("system_profiler", [dataType, "-json"]);
-        devices = parseMacInventory(text, family);
+        try {
+            text = await run("system_profiler", [dataType, "-json"]);
+        } catch (error) {
+            // A failed old query must not hide the renamed data type.
+            failure = error;
+            continue;
+        }
+        failure = undefined;
+        devices = parseMacInventory(text, family, vidPid);
         // Fall back only when the table itself is empty. An empty result for our family on a
         // healthy table is a genuine "no probe attached" and must not pay a second cold start.
-        if (devices.length || !isEmptyMacUsbTable(text)) return devices;
+        if (devices.length || !isEmptyMacUsbTable(text)) break;
     }
-    return devices;
+    if (failure) throw failure;
+    return { devices, text };
 }
 
 async function listProbes(options = {}) {
     const platform = options.platform || process.platform;
     const family = options.family || "jlink";
+    const filters = normalizeInventoryQuery({ family, vidPid: options.vidPid });
+    const classify = (vid, pid, name) =>
+        matchesUsbIds({ vid, pid }, filters.vidPid) &&
+        (usbFamily(vid, pid, name) || (filters.vidPid.length ? family : ""));
     const run = options.run || runInventory;
     try {
         let devices;
@@ -359,6 +430,7 @@ async function listProbes(options = {}) {
                 try {
                     if (!options.fastRun) await fs.access(WINDOWS_HELPER);
                     devices = parseWindowsInventory(await (options.fastRun || runInventory)(WINDOWS_HELPER, ["list"]));
+                    if (devices.some((device) => !device.serial)) devices = undefined;
                 } catch {
                     // Older development helpers have no list action; keep the PowerShell fallback.
                 }
@@ -366,25 +438,49 @@ async function listProbes(options = {}) {
             if (!devices && (!options.run || options.nativeList)) {
                 try {
                     devices = parseWindowsInventory(
-                        JSON.stringify(await (options.nativeList || listWindowsProbeRows)(usbFamily)),
-                        family
+                        JSON.stringify(await (options.nativeList || listWindowsProbeRows)(classify)),
+                        family,
+                        filters.vidPid
                     );
                 } catch {
                     // Missing native runtime or a changing device list retains the bounded OS-query fallback.
                 }
             }
-            if (!devices)
+            if (!devices) {
+                const script =
+                    family === "jlink"
+                        ? WINDOWS_INVENTORY
+                        : !filters.vidPid.length
+                          ? USB_INVENTORY
+                          : USB_INVENTORY.replace(
+                                "$prefixes = @{};",
+                                "$prefixes = @{}; " +
+                                    filters.vidPid
+                                        .map(
+                                            ([vid, pid]) =>
+                                                `$prefixes['VID_${vid.toString(16).padStart(4, "0")}&PID_${pid.toString(16).padStart(4, "0")}'] = $true;`
+                                        )
+                                        .join(" ")
+                            );
                 devices = parseWindowsInventory(
-                    await run("powershell.exe", [
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        family === "jlink" ? WINDOWS_INVENTORY : USB_INVENTORY
-                    ]),
-                    family
+                    await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]),
+                    family,
+                    filters.vidPid
                 );
-        } else if (platform === "darwin") devices = await listMacProbeRows(run, family);
-        else if (platform === "linux") {
+            }
+        } else if (platform === "darwin") {
+            const table = await listMacProbeRows(run, family, filters.vidPid);
+            devices = table.devices;
+            // Probe detection reuses these names instead of starting system_profiler again.
+            if (family === "all") discoveryText = macUsbNames(table.text);
+            if (devices.some((device) => !device.serial || device.family === "kitprog")) {
+                try {
+                    attachMacRegistryIds(devices, await run("ioreg", ["-p", "IOUSB", "-l", "-w", "0"]));
+                } catch {
+                    /* Unknown attachments cannot authorize anonymous writes. */
+                }
+            }
+        } else if (platform === "linux") {
             const rows = await listLinuxUsbRows(options);
             if (family === "all") {
                 discoveryText = rows
@@ -397,6 +493,7 @@ async function listProbes(options = {}) {
                 .filter((row) => row.family && (family === "all" || row.family === family))
                 .map((row) => deviceRecord({ ...row, name: row.name || "USB debug probe" }));
         } else throw new Error("USB inventory is unavailable on this platform");
+        devices = devices.filter((device) => matchesUsbIds(device, filters.vidPid));
         return {
             available: true,
             platform,
@@ -414,6 +511,38 @@ async function listProbes(options = {}) {
     }
 }
 
+function attachMacRegistryIds(devices, text) {
+    if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new Error("IORegistry exceeds its byte budget");
+    const records = [];
+    let record;
+    for (const line of String(text).split(/\r?\n/)) {
+        const header = line.match(/\+-o .*<class (?:IOUSBHostDevice|IOUSBDevice), id (0x[0-9a-f]+),/i);
+        if (line.includes("+-o ")) {
+            record = header ? { id: header[1] } : null;
+            if (record) records.push(record);
+        }
+        if (!record) continue;
+        for (const [property, key] of [
+            ["locationID", "location"],
+            ["idVendor", "vid"],
+            ["idProduct", "pid"]
+        ]) {
+            const value = line.match(new RegExp(`"${property}" = (0x[0-9a-f]+|[0-9]+)`, "i"));
+            if (value) record[key] = Number(value[1]);
+        }
+    }
+    for (const device of devices) {
+        const location = Number.parseInt(device.id.match(/0x[0-9a-f]+/i)?.[0] || "", 16);
+        const matches = records.filter(
+            (item) =>
+                item.location === location &&
+                item.vid === Number.parseInt(device.vid, 16) &&
+                item.pid === Number.parseInt(device.pid, 16)
+        );
+        if (matches.length === 1) device.attachmentId = matches[0].id;
+    }
+}
+
 module.exports = {
     listProbes,
     parseWindowsInventory,
@@ -422,5 +551,6 @@ module.exports = {
     listLinuxUsbRows,
     MAC_USB_DATA_TYPES,
     WINDOWS_INVENTORY,
-    USB_INVENTORY
+    USB_INVENTORY,
+    attachMacRegistryIds
 };

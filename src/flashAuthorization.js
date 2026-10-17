@@ -4,11 +4,17 @@ const crypto = require("crypto");
 const { ConfirmationStore } = require("./confirmationStore");
 const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { normalizeTransport } = require("./openocdScripts");
-const { normalizeProbeSerial, normalizeAdapterSpeed, probeFamily } = require("../skills/_emberprobe/probe-connection");
+const {
+    normalizeProbeSerial,
+    normalizeAdapterSpeed,
+    probeFamily,
+    assertWriteIdentity
+} = require("../skills/_emberprobe/probe-connection");
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 function flashIdentity(plan) {
+    assertWriteIdentity(plan);
     const operation = plan?.operation || "flash.execute";
     if (!["flash.execute", "flash.verify"].includes(operation)) throw invalid("Invalid Flash operation");
     return {
@@ -19,6 +25,7 @@ function flashIdentity(plan) {
         },
         transport: normalizeTransport(plan?.transport),
         probeSerial: normalizeProbeSerial(plan?.probeSerial, probeFamily(plan || {})),
+        ...(plan?.selectionIdentity ? { selectionIdentity: plan.selectionIdentity } : {}),
         adapterSpeedKhz: normalizeAdapterSpeed(plan?.adapterSpeedKhz),
         target: String(plan?.target || ""),
         probe: String(plan?.probe || ""),

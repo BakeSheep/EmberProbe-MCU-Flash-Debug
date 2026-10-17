@@ -249,7 +249,7 @@ function makeFakeOpenOcd(dir) {
     const file = path.join(bin, "fake-openocd.sh");
     fs.writeFileSync(
         file,
-        '#!/bin/sh\necho "Open On-Chip Debugger 0.12.0"\necho "ARGS:$@"\necho "EP_ADAPTERS_BEGIN"\necho "cmsis-dap { swd jtag }"\necho "EP_ADAPTERS_END"\necho "EP_ADAPTER_NAME=cmsis-dap"\necho "EP_VERIFY OK"\nexit 0\n'
+        '#!/bin/sh\necho "Open On-Chip Debugger 0.12.0"\necho "ARGS:$@"\necho "EP_ADAPTERS_BEGIN"\necho "cmsis-dap { swd jtag }"\necho "EP_ADAPTERS_END"\necho "EP_ADAPTER_NAME=cmsis-dap"\necho "EP_PROFILE_BEGIN"\necho "EP_PROFILE_END"\necho "EP_VERIFY OK"\nexit 0\n'
     );
     fs.chmodSync(file, 0o755);
     return file;

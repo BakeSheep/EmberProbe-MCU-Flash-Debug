@@ -44,7 +44,8 @@ const keys = {
     reportedName: propertyKey("540b947e-8b40-45bc-a8a2-6a0b894cbda2", 4),
     service: propertyKey(deviceGuid, 6),
     driverProvider: propertyKey(driverGuid, 9),
-    driverInf: propertyKey(driverGuid, 5)
+    driverInf: propertyKey(driverGuid, 5),
+    arrival: propertyKey("83da6326-97a6-4088-9453-a1923f573b29", 102)
 };
 const presentOnly = 0x100;
 const bufferSmall = 0x1a;
@@ -105,7 +106,7 @@ function listWindowsProbeRows(classify, options = {}) {
             reportedName = stringProperty(node, keys.reportedName);
             if (reportedName && classify(vid, pid, reportedName)) prefixes.add(prefix);
         }
-        rows.push({ instanceId: id, name, ...(reportedName ? { reportedName } : {}), node, prefix });
+        rows.push({ instanceId: id, name, ...(reportedName ? { reportedName } : {}), node, prefix, attachmentId: "" });
     }
     return rows
         .filter((row) => prefixes.has(row.prefix))
@@ -117,6 +118,22 @@ function listWindowsProbeRows(classify, options = {}) {
             if (native.deviceId(parent, buffer, buffer.length / 2, 0) !== 0)
                 throw new Error("Unable to read USB device parent identity");
             row.parentId = buffer.toString("utf16le").split("\0")[0];
+            // The product filter needs the root iProduct; query it only for matched probes.
+            if (!row.reportedName && /^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}\\/i.test(row.instanceId)) {
+                const reportedName = stringProperty(node, keys.reportedName);
+                if (reportedName) row.reportedName = reportedName;
+            }
+            const arrival = Buffer.alloc(8);
+            const arrivalSize = Buffer.alloc(4);
+            const arrivalType = Buffer.alloc(4);
+            arrivalSize.writeUInt32LE(8);
+            if (
+                native.property(node, keys.arrival, arrivalType, arrival, arrivalSize, 0) === 0 &&
+                arrivalType.readUInt32LE() === 0x10 &&
+                arrivalSize.readUInt32LE() === 8 &&
+                arrival.readBigUInt64LE() > 0n
+            )
+                row.attachmentId = arrival.readBigUInt64LE().toString();
             for (const field of ["service", "driverProvider", "driverInf"])
                 row[field] = stringProperty(node, keys[field]);
             return row;

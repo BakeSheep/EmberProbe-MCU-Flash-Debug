@@ -26,6 +26,14 @@ plan and wait for the human's answer before submitting its confirmation ID. Flas
 variable/peripheral writes, CubeMX generation, and Flash verification that temporarily halts
 the target use plan-bound IDs; EmberProbe does not show a second operation approval dialog.
 Pass `remember` only when the human explicitly chooses the documented 24-hour permission.
+Honor the returned `choices`: a probe without a reliable USB serial permits `once` only,
+even when the user previously granted workspace write trust. Its confirmation binds the
+current physical attachment; unplug/replug requires a fresh plan and confirmation. If the
+OS cannot establish an attachment identity, writes fail with `PROBE_IDENTITY_UNVERIFIED`.
+Do not turn a Windows instance-ID tail into `--probe-serial`: it may differ from the USB
+descriptor (for example, `ATK_20190528` versus `ATK 20190528`). Use the explicitly supplied
+USB serial or leave it empty for a uniquely matched probe. Network backends are configured
+in the trusted interface script and do not require a local USB probe.
 The Bridge validates the ID and current plan; it does not independently attest that a chat
 answer came from a human. A returned ID alone is never permission for the Agent to execute.
 Denial ends the operation; do not substitute a direct CLI call or retry automatically.
