@@ -13,6 +13,7 @@ function groupIdentity(config) {
         config.target,
         config.transport || "auto",
         config.probeSerial || "",
+        config.selectionIdentity || null,
         config.adapterSpeedKhz || 0,
         config.rtos || "",
         config.numberOfProcessors

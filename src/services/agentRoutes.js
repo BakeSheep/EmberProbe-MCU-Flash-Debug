@@ -1,5 +1,6 @@
 "use strict";
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
+const { normalizeInventoryQuery } = require("../../skills/_emberprobe/probe-profile");
 const { AgentDebugInspection } = require("./agentDebugInspection");
 
 function createAgentRoutes(host, probes = listProbes) {
@@ -7,7 +8,10 @@ function createAgentRoutes(host, probes = listProbes) {
     let inspection;
     return {
         "config.get": () => host._configurationSnapshot(),
-        "probe.list": () => listProbes({ family: "all" }),
+        "probe.list": (params = {}) => {
+            const query = normalizeInventoryQuery(params);
+            return listProbes(query.vidPid.length ? query : { family: query.family });
+        },
         "config.set": (params) => host._setAgentConfiguration(params.values || {}),
         "cubemx.detect": () => host._cubemxConfiguration.detect(),
         "cubemx.inspect": (params) => host._cubemxService.inspect(params || {}),

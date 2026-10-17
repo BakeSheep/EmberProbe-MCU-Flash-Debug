@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复无序列号 ST-Link 克隆及带空格序列号 ATK-DAP 的连接选择：Windows 会把序列号中的空格转为 `_`，唯一设备自动连接时省略不可靠的序列号过滤，显式填写的真实序列号可在多台设备中匹配其 Windows 别名；不含 `_` 的别名继续用于成功记录和探针选择框。将相同预检扩展至 XDS110、Nu-Link、TI-ICDI、FTDI/FT232R、KitProg 和 VSLLINK，按接口脚本的实际后端、VID/PID 与产品过滤枚举，CMSIS-DAP/ST-Link TCP 不再查询本机 USB；其他 OpenOCD 适配器及系统未识别的设备沿用 OpenOCD 默认选择，接口参数变化后的旧记录直接忽略。无可靠序列号的探针在 Agent 写入时逐次确认，重新插拔使待确认操作失效。
+- Fix connection selection for serial-less ST-Link clones and ATK-DAP probes with spaces in their USB serials: Windows turns serial spaces into `_`, so a unique device is connected without an unreliable serial filter, and an explicitly configured true serial matches its Windows alias among several devices; aliases without `_` still serve success history and the probe picker. Extend preflight to XDS110, Nu-Link, TI-ICDI, FTDI/FT232R, KitProg and VSLLINK, enumerate by the interface script's effective backend, VID/PID and product filter, and skip local USB discovery for CMSIS-DAP/ST-Link TCP; other OpenOCD adapters and devices the OS query does not recognize keep OpenOCD's default selection, and history from a changed interface profile is ignored. Agent writes through probes without a reliable serial require per-operation confirmation, and reattachment invalidates pending confirmations.
+- 适配 macOS 26 改名后的 USB 系统信息类型及字段，修复该系统上探针枚举为空的问题；探针自动识别复用同一次系统查询。
+- Support the renamed macOS 26 USB system profile data type and fields, fixing empty probe inventories there; probe detection reuses the same system query.
+
 ## [0.8.6] - 2026-10-15
 
 - Linux x64 默认路径自动离线准备并使用内置 xPack OpenOCD，按预置包 SHA-256 分目录缓存；保留显式路径，不修改用户配置，准备失败时在连接硬件前停止。

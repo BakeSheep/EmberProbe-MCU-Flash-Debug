@@ -73,9 +73,10 @@ async function main() {
 
     // Device missing or ambiguous handling: never switches to other probes
     const cached = { ...config, successfulConnection: legacyConnection };
-    assert.throws(() => resolveProbeConnection(cached, { available: false, devices: [] }), {
-        code: "PROBE_IDENTITY_AMBIGUOUS"
-    });
+    // Without inventory the remembered serial is passed so OpenOCD cannot open another probe.
+    const offline = resolveProbeConnection(cached, { available: false, devices: [] });
+    assert.strictEqual(offline.adapterSerial, offline.probeSerial);
+    assert.strictEqual(offline.selection.inventory, "unconfirmed");
     assert.throws(() => resolveProbeConnection(cached, { ...inventory, devices: [] }), {
         code: "PROBE_SELECTED_NOT_FOUND"
     });
@@ -87,14 +88,12 @@ async function main() {
             }),
         { code: "PROBE_IDENTITY_AMBIGUOUS" }
     );
-    assert.throws(
-        () =>
-            resolveProbeConnection(cached, {
-                ...inventory,
-                devices: [...inventory.devices, { family: "jlink", serial: "" }]
-            }),
-        { code: "PROBE_IDENTITY_AMBIGUOUS" }
-    );
+    // The remembered exact serial is enforced by OpenOCD even beside a serial-less probe.
+    const besideAnonymous = resolveProbeConnection(cached, {
+        ...inventory,
+        devices: [...inventory.devices, { family: "jlink", serial: "" }]
+    });
+    assert.strictEqual(besideAnonymous.adapterSerial, besideAnonymous.probeSerial);
 
     const launch = {
         executable: "fake",

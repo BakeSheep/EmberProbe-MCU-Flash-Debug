@@ -8,6 +8,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 // so the adapter only halts the core (no reset, no download) and the current state survives.
 (async () => {
     const started = [];
+    const serverRequests = [];
     const folder = { uri: { fsPath: __dirname, toString: () => "folder" } };
     const values = new Map([
         ["mcu.elfPath", __filename],
@@ -40,7 +41,10 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         _resolveOpenOcdPath: async () => "openocd",
         prepareForCortexDebug: async () => {},
         _probeCoordinator: new ProbeCoordinator(),
-        _startManagedDebugServer: async () => ({ gdbTarget: "127.0.0.1:3333" }),
+        _startManagedDebugServer: async (_executable, _probe, _target, _cfg, _interactive, _rtos, options) => {
+            serverRequests.push(options.request);
+            return { gdbTarget: "127.0.0.1:3333" };
+        },
         _armDebugStartupWatchdog: () => new Promise(() => {}),
         _clearDebugStartupWatchdog() {},
         _stopManagedDebugServer: async () => {
@@ -59,6 +63,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         started.map((config) => config.request),
         ["attach", "launch"]
     );
+    assert.deepStrictEqual(serverRequests, ["attach", "launch"]);
     assert.strictEqual(started[0].gdbTarget, "127.0.0.1:3333");
     assert.strictEqual(started[0].type, "emberprobe");
     assert.strictEqual(serverStops, 2, "a failed start must still release the managed server");

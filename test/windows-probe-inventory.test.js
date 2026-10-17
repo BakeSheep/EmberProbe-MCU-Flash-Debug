@@ -56,6 +56,14 @@ function mockApi(rows = fixture) {
             assert.strictEqual(size.readUInt32LE(), buffer.length);
             propertyCalls++;
             const guid = key.subarray(0, 16).toString("hex");
+            if (guid === "2663da83a69788409453a1923f573b29" && key.readUInt32LE(16) === 102) {
+                const arrival = rows[node - 1].arrival;
+                if (!arrival) return 0x25;
+                type.writeUInt32LE(0x10);
+                size.writeUInt32LE(8);
+                buffer.writeBigUInt64LE(BigInt(arrival));
+                return 0;
+            }
             const field =
                 guid === "4e255ca41cdffd4e802067d146a850e0"
                     ? { 14: "name", 2: "description", 6: "service" }[key.readUInt32LE(16)]
@@ -83,10 +91,30 @@ async function main() {
     assert.strictEqual(parsed[0].interfaces.length, 3);
     assert.strictEqual(
         api.propertyCalls,
-        14,
+        18,
         "Only candidate probes need driver/parent metadata; an unmatched USB device gets one iProduct query"
     );
     assert(!rows.some((row) => "reportedName" in row), "Classified names need no iProduct query");
+
+    const arrived = fixture.map((row) => ({
+        ...row,
+        arrival: row.instanceId === root ? "133000000000000001" : "133000000000000002"
+    }));
+    const arrivedProbe = parseWindowsInventory(
+        JSON.stringify(listWindowsProbeRows(classify, { api: mockApi(arrived) })),
+        "all"
+    )[0];
+    assert.strictEqual(
+        arrivedProbe.attachmentId,
+        "133000000000000001",
+        "Use the physical root's FILETIME without precision loss"
+    );
+    arrived[0].arrival = "133000000000000003";
+    assert.strictEqual(
+        parseWindowsInventory(JSON.stringify(listWindowsProbeRows(classify, { api: mockApi(arrived) })), "all")[0]
+            .attachmentId,
+        "133000000000000003"
+    );
 
     // Every call queries present devices afresh, including unplug/replug with a different serial.
     const replacement = fixture.map((row) => ({

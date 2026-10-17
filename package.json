@@ -190,7 +190,7 @@
         "emberprobe.probeSerial": {
           "type": "string",
           "default": "",
-          "description": "探针序列号：支持 CMSIS-DAP/DAPLink、ST-Link 和 J-Link。DAP/ST-Link 保留大小写及前导零；留空时选择唯一设备或工作区成功绑定，多设备须选择，不会回退到其他设备。"
+          "description": "探针 USB 序列号：适用于支持序列号选择的 J-Link、CMSIS-DAP、ST-Link、XDS110、Nu-Link、TI-ICDI、FTDI/FT232R 和 VSLLINK 后端。保留大小写、前导零及内部空格；J-Link 使用十进制整数。留空时按当前物理设备和成功记录选择；无可靠序列号仅允许唯一设备，Agent 写入每次确认。TCP 主机及端口在接口脚本中配置。"
         },
         "emberprobe.adapterSpeedKhz": {
           "type": "integer",

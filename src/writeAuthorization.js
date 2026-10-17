@@ -1,20 +1,26 @@
 "use strict";
 const crypto = require("crypto");
 const { ConfirmationStore } = require("./confirmationStore");
-const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
+const {
+    resolvedConnectionIdentity,
+    assertWriteIdentity,
+    canRememberWrite
+} = require("../skills/_emberprobe/probe-connection");
 const { normalizeTargetSelection } = require("../skills/_emberprobe/openocd-launch");
 
 function writeConnectionIdentity(connection) {
     if (!connection) return null;
+    assertWriteIdentity(connection);
     if (connection.kind === "dap") {
         return {
             kind: "dap",
             sessionId: String(connection.sessionId || ""),
             workspace: String(connection.workspace || ""),
+            ...(connection.selectionIdentity ? { selectionIdentity: connection.selectionIdentity } : {}),
             ...(connection.stopEpoch === undefined ? {} : { stopEpoch: connection.stopEpoch })
         };
     }
-    return { kind: "openocd", ...connectionIdentity(connection), ...normalizeTargetSelection(connection) };
+    return { kind: "openocd", ...resolvedConnectionIdentity(connection), ...normalizeTargetSelection(connection) };
 }
 
 function connectionFingerprint(plan) {
@@ -78,6 +84,7 @@ class WriteAuthorization {
         const age = this.now() - trust?.trustedAt;
         // Legacy timestamps/booleans and missing fingerprints fail closed.
         return !!(
+            canRememberWrite(plan?.connection) &&
             trust &&
             typeof trust === "object" &&
             Number.isFinite(trust.trustedAt) &&
@@ -119,9 +126,10 @@ class WriteAuthorization {
                 confirmationId,
                 expiresAt,
                 scope: "workspace",
-                question:
-                    "Allow this MCU memory write? Choose once, or allow future writes for this ELF and connection in this workspace for 24 hours. Changing the ELF or connection requires confirmation again.",
-                choices: ["once", "workspace"],
+                question: !canRememberWrite(plan?.connection)
+                    ? "This probe has no reliable serial number. Allow this one-time MCU memory write?"
+                    : "Allow this MCU memory write? Choose once, or allow future writes for this ELF and connection in this workspace for 24 hours. Changing the ELF or connection requires confirmation again.",
+                choices: canRememberWrite(plan?.connection) ? ["once", "workspace"] : ["once"],
                 elf: identity.elf,
                 connection: identity.connection,
                 items: (plan.items || []).map((item) => ({
@@ -135,6 +143,11 @@ class WriteAuthorization {
     }
 
     authorize(plan, options = {}) {
+        if (options.remember && !canRememberWrite(plan?.connection))
+            throw authorizationError(
+                "This probe supports one-time write permission only",
+                "WRITE_CONFIRMATION_INVALID"
+            );
         if (!connectionFingerprint(plan))
             throw authorizationError(
                 "A connection identity is required before confirming a write",
@@ -179,6 +192,11 @@ class WriteAuthorization {
     }
 
     async trustWorkspace(plan) {
+        if (!canRememberWrite(plan?.connection))
+            throw authorizationError(
+                "This probe supports one-time write permission only",
+                "WRITE_CONFIRMATION_INVALID"
+            );
         const elfSha256 = plan?.elfResult?.elf?.sha256;
         if (typeof elfSha256 !== "string" || !elfSha256 || !connectionFingerprint(plan)) {
             throw authorizationError(

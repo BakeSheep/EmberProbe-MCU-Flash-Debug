@@ -65,6 +65,30 @@ async function main() {
         })
     );
     assert.strictEqual(mac[0].serial, "1234");
+    // macOS 26 renamed the keys as well: SPUSBHostDataType uses USBDeviceKey* / USBKey* names.
+    const macRenamedKeys = parseMacInventory(
+        JSON.stringify({
+            SPUSBHostDataType: [
+                {
+                    _items: [
+                        {
+                            _name: "Horco CMSIS-DAP",
+                            USBDeviceKeyVendorID: "0xfaed",
+                            USBDeviceKeyProductID: "0x4870",
+                            USBDeviceKeySerialNumber: "134244833088",
+                            USBKeyLocationID: "0x00100000"
+                        }
+                    ]
+                }
+            ]
+        }),
+        "cmsis-dap"
+    );
+    assert.strictEqual(macRenamedKeys.length, 1);
+    assert.strictEqual(macRenamedKeys[0].vid, "faed");
+    assert.strictEqual(macRenamedKeys[0].pid, "4870");
+    assert.strictEqual(macRenamedKeys[0].serial, "134244833088");
+    assert.strictEqual(macRenamedKeys[0].id, "0x00100000");
     const helper = path.join("extension", "resources", "driver-helper", "win32-x64", "emberprobe-driver-helper.exe");
     assert.strictEqual(windowsHelperPath(path.join("extension", "dist")), path.resolve(helper));
     assert.strictEqual(windowsHelperPath(path.join("extension", "skills", "_emberprobe")), path.resolve(helper));
@@ -129,6 +153,59 @@ async function main() {
     assert.strictEqual(darwinProbes.devices.length, 1);
     assert.strictEqual(darwinProbes.devices[0].serial, "987654321");
     assert.strictEqual(darwinProbes.devices[0].family, "jlink");
+    // macOS 26 renamed the USB data type: SPUSBDataType exits 0 with an empty table.
+    const macRenamedCalls = [];
+    const macRenamed = await listProbes({
+        platform: "darwin",
+        family: "cmsis-dap",
+        run: async (cmd, args) => {
+            assert.strictEqual(cmd, "system_profiler");
+            macRenamedCalls.push(args[0]);
+            if (args[0] === "SPUSBDataType") return JSON.stringify({ SPUSBDataType: [] });
+            // Real macOS 26 shape, including the renamed keys.
+            return JSON.stringify({
+                SPUSBHostDataType: [
+                    {
+                        _items: [
+                            {
+                                _name: "Horco CMSIS-DAP",
+                                USBDeviceKeyVendorID: "0xfaed",
+                                USBDeviceKeyProductID: "0x4870",
+                                USBDeviceKeySerialNumber: "134244833088",
+                                USBKeyLocationID: "0x00100000"
+                            }
+                        ]
+                    }
+                ]
+            });
+        }
+    });
+    assert.deepStrictEqual(macRenamedCalls, ["SPUSBDataType", "SPUSBHostDataType"]);
+    assert.strictEqual(macRenamed.devices.length, 1);
+    assert.strictEqual(macRenamed.devices[0].family, "cmsis-dap");
+    assert.strictEqual(macRenamed.devices[0].serial, "134244833088");
+    // A healthy table without our family is already conclusive: no second cold start.
+    const macHealthyCalls = [];
+    const macHealthy = await listProbes({
+        platform: "darwin",
+        family: "cmsis-dap",
+        run: async (cmd, args) => {
+            macHealthyCalls.push(args[0]);
+            return JSON.stringify({
+                SPUSBDataType: [{ _name: "USB Keyboard", vendor_id: "0x05ac", product_id: "0x024f" }]
+            });
+        }
+    });
+    assert.deepStrictEqual(macHealthyCalls, ["SPUSBDataType"]);
+    assert.strictEqual(macHealthy.devices.length, 0);
+    // Both names empty: report an empty inventory instead of failing the query.
+    const macEmpty = await listProbes({
+        platform: "darwin",
+        family: "cmsis-dap",
+        run: async (cmd, args) => JSON.stringify({ [args[0]]: [] })
+    });
+    assert.strictEqual(macEmpty.available, true);
+    assert.strictEqual(macEmpty.devices.length, 0);
     const unavailable = await listProbes({
         platform: "win32",
         run: async () => {
@@ -147,7 +224,8 @@ async function main() {
             (error) => error.code === code
         );
     assert.strictEqual(resolveProbeConnection({ ...config, transport: "auto" }, inventory).transport, "swd");
-    fails(config, unavailable, "PROBE_SELECTION_REQUIRED");
+    // Without OS inventory OpenOCD applies the interface default selection.
+    assert.strictEqual(resolveProbeConnection(config, unavailable).selection.probe, "script-default");
     fails({ ...config, probeSerial: "12" }, inventory, "PROBE_SELECTED_NOT_FOUND");
     fails(config, { available: true, devices: [...devices, ...devices] }, "PROBE_SELECTION_REQUIRED");
     fails(
@@ -172,7 +250,7 @@ async function main() {
         readFile: async () => "adapter driver jlink",
         run: async (_exe, args) => {
             calls.push(args);
-            if (args.includes("-f")) return "EP_ADAPTER_NAME=jlink\n";
+            if (args.includes("-f")) return "EP_ADAPTER_NAME=jlink\nEP_PROFILE_BEGIN\nEP_PROFILE_END\n";
             return "EP_ADAPTERS_BEGIN\njlink { jtag swd } st-link { dapdirect_swd }\nEP_ADAPTERS_END";
         }
     };
@@ -185,7 +263,8 @@ async function main() {
         (
             await checkAdapterCapability(launch, {
                 ...options,
-                run: async (_exe, args) => (args.includes("-f") ? "EP_ADAPTER_NAME=jlink\n" : numberedAdapters)
+                run: async (_exe, args) =>
+                    args.includes("-f") ? "EP_ADAPTER_NAME=jlink\nEP_PROFILE_BEGIN\nEP_PROFILE_END\n" : numberedAdapters
             })
         ).adapterFamily,
         "jlink"
@@ -329,11 +408,11 @@ async function main() {
         assert.strictEqual(inventory.available, true);
         assert.deepStrictEqual(
             inventory.devices.map((device) => device.family),
-            ["cmsis-dap", "jlink", "stlink"]
+            ["cmsis-dap", "jlink", "stlink", "xds110", "nulink"]
         );
         assert.deepStrictEqual(
             inventory.devices.map((device) => device.serial),
-            ["000Aa1", "123", "000Bc2"]
+            ["000Aa1", "123", "000Bc2", "", ""]
         );
         assert.strictEqual(inventory.devices[0].interfaces.length, 2);
         assert(!fixture.reads.some((name) => /outside|bad|usb1|1-7/.test(name)));
@@ -413,9 +492,7 @@ async function main() {
         assert.deepStrictEqual(removed.devices, []);
         const missingSerial = await listProbes(sysfs({ "1-2": { idVendor: "0483", idProduct: "3748" } }));
         assert.strictEqual(missingSerial.devices.length, 1);
-        assert.throws(() => resolveProbeConnection({ probe: "stlink.cfg" }, missingSerial), {
-            code: "PROBE_SELECTION_REQUIRED"
-        });
+        assert.strictEqual(resolveProbeConnection({ probe: "stlink.cfg" }, missingSerial).adapterSerial, "");
         for (const options of [
             { readdir: async () => new Promise(() => {}), timeoutMs: 10 },
             { ...sysfs({ "1-2": {} }), readFile: async () => new Promise(() => {}), timeoutMs: 10 },

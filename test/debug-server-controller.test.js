@@ -280,6 +280,15 @@ function fixture(options = {}, overrides = {}) {
         }
     };
     const configuration = { inspect: () => null, get: (_name, fallback) => fallback };
+    const originalPrepare = retryHost._probeConnectionService.prepare;
+    retryHost._probeConnectionService.prepare = async () => ({
+        selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" }
+    });
+    await assert.rejects(retryHost._startManagedDebugServer("fake", "stlink.cfg", "stm32f1x.cfg", configuration), {
+        code: "PROBE_IDENTITY_UNVERIFIED"
+    });
+    assert.strictEqual(allocations.length, 0, "Launch must verify an anonymous attachment before starting its server");
+    retryHost._probeConnectionService.prepare = originalPrepare;
     const managed = await retryHost._startManagedDebugServer(
         "fake",
         "cmsis-dap.cfg",

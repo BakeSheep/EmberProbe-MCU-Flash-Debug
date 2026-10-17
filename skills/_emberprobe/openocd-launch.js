@@ -118,14 +118,14 @@ function buildOpenOcdTargetArgs(config, ports) {
 
 function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
     normalizeTransport(transport);
-    const serial = normalizeProbeSerial(connection.probeSerial, probeFamily(connection));
+    const serial = normalizeProbeSerial(connection.adapterSerial ?? connection.probeSerial, probeFamily(connection));
     const speed = normalizeAdapterSpeed(connection.adapterSpeedKhz);
     return [
         "-s",
         launch.scriptsRoot,
         "-f",
         launch.probePath,
-        ...(serial ? ["-c", `adapter serial ${serial}`] : []),
+        ...(serial ? ["-c", `adapter serial ${serial.includes(" ") ? JSON.stringify(serial) : serial}`] : []),
         ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
         "-f",
         launch.targetPath,

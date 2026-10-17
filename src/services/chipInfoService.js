@@ -1,6 +1,6 @@
 "use strict";
 const { serializeError } = require("./errorEnvelope");
-const { connectionIdentity } = require("../../skills/_emberprobe/probe-connection");
+const { resolvedConnectionIdentity, assertWriteIdentity } = require("../../skills/_emberprobe/probe-connection");
 
 class ChipInfoService {
     constructor(options) {
@@ -120,7 +120,7 @@ class ChipInfoService {
             saveMs = Date.now() - saveStartedAt;
             info.readAt = new Date().toISOString();
             this.info = info;
-            this.infoConnection = connectionIdentity(options);
+            this.infoConnection = resolvedConnectionIdentity(options);
             this.post({ state: "ready", key: "chip.done" }, info);
             this.onDiagnostics(diagnosticReport(), info);
             return info;
@@ -176,7 +176,8 @@ class ChipInfoService {
                 transport: this.vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
                 ...connection
             };
-            if (JSON.stringify(connectionIdentity(options)) !== JSON.stringify(this.infoConnection))
+            assertWriteIdentity(options);
+            if (JSON.stringify(resolvedConnectionIdentity(options)) !== JSON.stringify(this.infoConnection))
                 throw Object.assign(new Error(this.t("chip.readAgain")), {
                     i18nKey: "chip.readAgain",
                     code: "CHIP_INFO_STALE"

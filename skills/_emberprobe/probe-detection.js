@@ -23,7 +23,7 @@ function probeFromText(text) {
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const execFileAsync = promisify(execFile);
-const { listProbes, listLinuxUsbRows } = require("./probe-inventory");
+const { listProbes, listLinuxUsbRows, MAC_USB_DATA_TYPES } = require("./probe-inventory");
 const { listWindowsProbeRows } = require("./windows-probe-inventory");
 
 async function usbInventory(options = {}) {
@@ -33,7 +33,7 @@ async function usbInventory(options = {}) {
         if (!options.run || options.nativeList) {
             try {
                 const rows = await (options.nativeList || listWindowsProbeRows)(() => true);
-                return rows.map((row) => row.name).join("\n");
+                return rows.flatMap((row) => [row.name, row.reportedName || ""]).join("\n");
             } catch {
                 // Standalone skills without the packaged native runtime retain OS-tool fallback.
             }
@@ -74,10 +74,23 @@ async function usbInventory(options = {}) {
             // Keep discovery of other adapters when sysfs is unavailable; preflight checks identity separately.
         }
     }
+    if (platform === "darwin") {
+        // macOS 26 renamed the USB data type: `SPUSBDataType` exits 0 with empty output.
+        for (const dataType of MAC_USB_DATA_TYPES) {
+            try {
+                const { stdout } = await run("system_profiler", [dataType], {
+                    timeout: 6000,
+                    maxBuffer: 2 * 1024 * 1024
+                });
+                if (String(stdout || "").trim()) return stdout;
+            } catch {
+                // The renamed data type does not exist before macOS 26; try the next one.
+            }
+        }
+        return "";
+    }
     try {
-        /** @type {[string, string[]]} */
-        const command = platform === "darwin" ? ["system_profiler", ["SPUSBDataType"]] : ["lsusb", []];
-        return (await run(command[0], command[1], { timeout: 6000, maxBuffer: 2 * 1024 * 1024 })).stdout;
+        return (await run("lsusb", [], { timeout: 6000, maxBuffer: 2 * 1024 * 1024 })).stdout;
     } catch {
         return "";
     }
@@ -86,18 +99,21 @@ async function usbInventory(options = {}) {
 async function detectProbe(dependencies = {}) {
     const inventoryPromise = Promise.resolve((dependencies.listProbes || listProbes)({ family: "all" }));
     const names = () => (dependencies.usbInventory || usbInventory)();
-    const [text, inventory] = await Promise.all([
-        (dependencies.platform || process.platform) === "linux"
-            ? inventoryPromise.then((result) =>
-                  typeof result.discoveryText === "string" ? result.discoveryText : names()
-              )
-            : names(),
-        inventoryPromise
-    ]);
+    // Linux and macOS inventories carry USB names; other platforms enumerate names concurrently.
+    const namesPromise = ["linux", "darwin"].includes(dependencies.platform || process.platform) ? null : names();
+    const inventory = await inventoryPromise;
+    const text =
+        typeof inventory.discoveryText === "string" ? inventory.discoveryText : await (namesPromise || names());
     const candidates = probeCandidates(text);
     if (inventory.available)
         for (const device of inventory.devices) {
-            const probe = { jlink: "jlink.cfg", "cmsis-dap": "cmsis-dap.cfg", stlink: "stlink.cfg" }[device.family];
+            const probe = {
+                jlink: "jlink.cfg",
+                "cmsis-dap": "cmsis-dap.cfg",
+                stlink: "stlink.cfg",
+                xds110: "xds110.cfg",
+                nulink: "nulink.cfg"
+            }[device.family];
             if (probe && !candidates.includes(probe)) candidates.push(probe);
         }
     return {

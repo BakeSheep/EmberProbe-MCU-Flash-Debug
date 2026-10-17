@@ -35,6 +35,33 @@ const { createFixture } = require("./helpers/service-fixture");
             "private image is removed after confirmed completion"
         );
         assert.deepStrictEqual(progress, [{ stage: "done" }]);
+        let started = false;
+        const guarded = new FlashService({
+            runOpenOcd: async () => {
+                started = true;
+            }
+        });
+        await assert.rejects(
+            guarded.download(
+                {},
+                {
+                    elf,
+                    prepare: async () => ({ selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" } })
+                }
+            ),
+            { code: "PROBE_IDENTITY_UNVERIFIED" }
+        );
+        assert.strictEqual(started, false, "Unverified anonymous USB attachments cannot start a download");
+        await guarded.download(
+            {},
+            {
+                elf,
+                prepare: async () => ({
+                    selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "arrival-1" }
+                })
+            }
+        );
+        assert.strictEqual(started, true);
     } finally {
         fixture.dispose();
     }

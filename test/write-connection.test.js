@@ -41,6 +41,13 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
         "Agent write confirmation must bind to the managed debug server while DAP is between stop events"
     );
     provider._managedDebugServer = null;
+    const unverified = { options: { selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" } } };
+    assert.throws(() => provider._assertWriteSessionCurrent(unverified), { code: "PROBE_IDENTITY_UNVERIFIED" });
+    provider._managedDebugServer = unverified;
+    assert.throws(() => provider._assertWriteSessionCurrent(provider._debugBridge), {
+        code: "PROBE_IDENTITY_UNVERIFIED"
+    });
+    provider._managedDebugServer = null;
     await assert.rejects(
         provider._executeWritePlan(session, "test", {
             ...plan,

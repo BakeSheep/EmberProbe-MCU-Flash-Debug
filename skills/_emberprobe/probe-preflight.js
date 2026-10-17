@@ -5,6 +5,7 @@ const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
 const { resolveProbeConnection, connectionError, probeFamily } = require("./probe-connection");
 const { requireJlinkWinUsb } = require("./jlink-driver");
+const { createProbeProfile, captureProfileScript, PRINT_PROFILE, parseProfileEvents } = require("./probe-profile");
 
 const capabilitiesCache = new Map();
 function query(executable, args, cwd = undefined) {
@@ -81,6 +82,7 @@ async function checkAdapterCapability(launch, options = {}) {
             `This OpenOCD build does not include the ${adapterFamily} adapter`,
             { adapterFamily, drivers }
         );
+    let profile;
     try {
         // Custom trusted interface scripts can source another script. Do not load a target or call init.
         const output = await run(
@@ -90,17 +92,23 @@ async function checkAdapterCapability(launch, options = {}) {
                 launch.scriptsRoot,
                 "-c",
                 "noinit",
+                "-c",
+                captureProfileScript(),
                 "-f",
                 launch.probePath,
                 "-c",
                 "echo EP_ADAPTER_NAME=[adapter name]",
+                "-c",
+                PRINT_PROFILE,
                 "-c",
                 "shutdown"
             ],
             launch.scriptsRoot
         );
         adapterFamily = String(output).match(/^EP_ADAPTER_NAME=([\w-]+)\s*$/m)?.[1];
+        if (adapterFamily) profile = createProbeProfile(adapterFamily, parseProfileEvents(output), launch.probePath);
     } catch (cause) {
+        if (typeof cause.code === "string" && cause.code.startsWith("PROBE_")) throw cause;
         throw connectionError(
             "PROBE_CAPABILITY_UNKNOWN",
             "Unable to resolve the interface adapter without initialization",
@@ -115,7 +123,7 @@ async function checkAdapterCapability(launch, options = {}) {
             `This OpenOCD build does not include the ${adapterFamily} adapter`,
             { adapterFamily, drivers }
         );
-    return { adapterFamily, drivers };
+    return { adapterFamily, drivers, profile };
 }
 
 async function prepareProbeConnection(options, dependencies = {}) {
@@ -126,11 +134,19 @@ async function prepareProbeConnection(options, dependencies = {}) {
         options.transport
     );
     const capability = await (dependencies.checkCapability || checkAdapterCapability)(launch);
-    const family = probeFamily({ ...options, adapterFamily: capability.adapterFamily });
-    const inventory = family
-        ? await (dependencies.listProbes || listProbes)({ family })
-        : { available: false, devices: [], notes: [] };
-    const connection = resolveProbeConnection({ ...options, adapterFamily: capability.adapterFamily }, inventory);
+    const profile = capability.profile || createProbeProfile(capability.adapterFamily, [], options.probe);
+    const family = probeFamily({ ...options, profile });
+    const inventory =
+        family && profile.kind === "usb"
+            ? await (dependencies.listProbes || listProbes)({
+                  family,
+                  ...(profile.vidPid.length ? { vidPid: profile.vidPid } : {})
+              })
+            : { available: false, devices: [], notes: [] };
+    const connection = resolveProbeConnection(
+        { ...options, profile, adapterFamily: capability.adapterFamily },
+        inventory
+    );
     if (capability.adapterFamily === "jlink")
         requireJlinkWinUsb(
             { ...connection, adapterFamily: capability.adapterFamily, inventory },
@@ -146,6 +162,7 @@ async function prepareProbeConnection(options, dependencies = {}) {
         ...connection,
         openocd: launch.executable,
         adapterFamily: capability.adapterFamily,
+        profile,
         launch,
         inventory
     };

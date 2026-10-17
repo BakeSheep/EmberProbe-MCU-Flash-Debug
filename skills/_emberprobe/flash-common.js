@@ -447,7 +447,7 @@ async function preflight(options) {
                     listProbes: async (inventoryOptions) => {
                         if (config) {
                             try {
-                                return await call(root, "probe.list", {});
+                                return await call(root, "probe.list", inventoryOptions);
                             } catch {
                                 /* Use OS metadata without Bridge. */
                             }

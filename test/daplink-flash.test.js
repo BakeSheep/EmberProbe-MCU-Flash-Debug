@@ -37,7 +37,7 @@ const launch = {
 async function identities() {
     assert.strictEqual(normalizeProbeSerial(serial), serial);
     assert.strictEqual(normalizeProbeSerial("000123", "jlink"), "123");
-    for (const value of ["x;shutdown", "[shutdown]", "$env", "x y", "x\ny", "a".repeat(129)])
+    for (const value of ["x;shutdown", "[shutdown]", "$env", "x\ty", "x\ny", "a".repeat(129)])
         assert.throws(() => normalizeProbeSerial(value), { code: "PROBE_SERIAL_INVALID" });
     for (const [adapterFamily, family, probe] of [
         ["cmsis-dap", "cmsis-dap", "cmsis-dap.cfg"],
@@ -67,17 +67,18 @@ async function identities() {
             () => resolveProbeConnection({ ...config, probeSerial: serial }, { ...two, devices: [device, device] }),
             { code: "PROBE_IDENTITY_AMBIGUOUS" }
         );
-        assert.throws(
-            () =>
-                resolveProbeConnection(
-                    { ...config, probeSerial: serial },
-                    { ...two, devices: [device, { ...device, serial: "" }] }
-                ),
-            { code: "PROBE_IDENTITY_AMBIGUOUS" }
+        // OpenOCD enforces an explicit serial even when another device has none.
+        assert.strictEqual(
+            resolveProbeConnection(
+                { ...config, probeSerial: serial },
+                { ...two, devices: [device, { ...device, serial: "", id: "usb-3" }] }
+            ).deviceId,
+            "usb-1"
         );
-        assert.throws(() => resolveProbeConnection(config, { available: false, devices: [] }), {
-            code: "PROBE_SELECTION_REQUIRED"
-        });
+        assert.strictEqual(
+            resolveProbeConnection(config, { available: false, devices: [] }).selection.probe,
+            "script-default"
+        );
         assert.strictEqual(
             resolveProbeConnection({ ...config, probeSerial: serial }, { available: false, devices: [] }).probeSerial,
             serial
@@ -182,7 +183,7 @@ async function inventory() {
     const chosen = resolveProbeConnection({ probe: "cmsis-dap.cfg", target: "stm32h7x.cfg" }, c251Inventory);
     assert.strictEqual(chosen.probeSerial, "0001A0000000");
     assert.strictEqual(chosen.deviceId, c251Root);
-    assert(buildOpenOcdConfigArgs(launch, "auto", chosen).includes("adapter serial 0001A0000000"));
+    assert(!buildOpenOcdConfigArgs(launch, "auto", chosen).some((arg) => arg.startsWith("adapter serial")));
     for (const pid of ["f001", "f002", "2722", "2750"]) {
         const macDevice = parseMacInventory(JSON.stringify({ vendor_id: "0xc251", product_id: `0x${pid}` }), "all");
         assert.strictEqual(macDevice[0].family, "cmsis-dap");
@@ -324,14 +325,21 @@ function unlistedCmsisDap() {
         }
         return "";
     };
+    // Nothing recognized: OpenOCD applies the interface script default instead of failing early.
+    assert.strictEqual(resolveProbeConnection(config, empty).selection.probe, "script-default");
+    // USB descriptor strings can prove absence; Windows instance tails cannot.
     assert.strictEqual(
-        code(() => resolveProbeConnection(config, empty)),
-        "PROBE_SELECTION_REQUIRED"
-    );
-    // A visible CMSIS-DAP inventory still rejects an absent explicit serial.
-    assert.strictEqual(
-        code(() => resolveProbeConnection({ ...config, probeSerial: "missing" }, { available: true, devices })),
+        code(() =>
+            resolveProbeConnection(
+                { ...config, probeSerial: "missing" },
+                { available: true, devices: devices.map((device) => ({ ...device, serialSource: "usb-descriptor" })) }
+            )
+        ),
         "PROBE_SELECTED_NOT_FOUND"
+    );
+    assert.strictEqual(
+        resolveProbeConnection({ ...config, probeSerial: "actual serial" }, { available: true, devices }).adapterSerial,
+        "actual serial"
     );
     // A remembered serial is never used without inventory confirmation.
     const remembered = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "4844332732" };

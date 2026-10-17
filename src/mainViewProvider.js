@@ -56,6 +56,7 @@ const { ProbeDriverService } = require("./services/probeDriverService");
 const { jlinkDriverChoice } = require("./services/jlinkDriverChoice");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
+const { assertWriteIdentity } = require("../skills/_emberprobe/probe-connection");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const {
     LiveWatchService,
@@ -772,7 +773,10 @@ class MainViewProvider {
                     vscode.workspace.getConfiguration("emberprobe"),
                     interactive,
                     rtos,
-                    serverOptions
+                    {
+                        ...serverOptions,
+                        request: configuration?.request || (startOptions?.attach ? "attach" : "launch")
+                    }
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
@@ -978,7 +982,7 @@ class MainViewProvider {
         const snapshot = this._configurationStore.snapshot();
         snapshot.svd = (await this._svdManager.peekBound())?.path || "";
         const successfulConnection = this._context?.workspaceState.get("mcu.successfulProbeConnection");
-        if (successfulConnection?.version === 1) snapshot.successfulConnection = successfulConnection;
+        if ([1, 2].includes(successfulConnection?.version)) snapshot.successfulConnection = successfulConnection;
         return snapshot;
     }
     _assertConnectionEditable(values) {
@@ -1021,6 +1025,7 @@ class MainViewProvider {
             session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
         if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
         this._probeConnectionService.assertCurrent(physical);
+        assertWriteIdentity(physical.options);
     }
     _sessionWriteConnection(session) {
         this._assertWriteSessionCurrent(session);
@@ -1031,6 +1036,7 @@ class MainViewProvider {
             if (!active) this._debugBridge.assertUniqueSession();
             return writeConnectionIdentity({
                 kind: "dap",
+                selectionIdentity: this._managedDebugServer?.options?.selectionIdentity,
                 sessionId: active.id,
                 workspace: active.workspaceFolder?.uri?.fsPath || "",
                 ...(active.configuration?.servertype === "external" ? { stopEpoch: this._debugBridge.stopEpoch } : {})
@@ -1557,6 +1563,8 @@ class MainViewProvider {
     async _startManagedDebugServer(executable, probe, target, cfg, interactive = true, rtos = "", serverOptions = {}) {
         const selection = normalizeDebugServerOptions(serverOptions);
         const connection = await this._probeConnectionService.prepare({ executable, probe, target }, interactive);
+        // Launch downloads firmware through GDB; attach can still inspect an unverified USB attachment.
+        if (serverOptions.request !== "attach") assertWriteIdentity(connection);
         let lastError = null;
         const inspect = typeof cfg.inspect === "function" ? cfg.inspect("tclPort") : null;
         const fixedTcl = !!(inspect && (inspect.workspaceValue !== undefined || inspect.globalValue !== undefined));
@@ -1731,7 +1739,7 @@ class MainViewProvider {
                     cfg,
                     interactive,
                     rtos,
-                    serverOptions
+                    { ...serverOptions, request: debugConfig.request || "launch" }
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 group = new SharedDebugGroup({
@@ -1756,6 +1764,7 @@ class MainViewProvider {
             }
         }
         try {
+            if (debugConfig.request !== "attach") assertWriteIdentity(group.controller.options);
             this._probeConnectionService.assertCurrent(group.controller);
             const member = group.reserve(
                 workspace,

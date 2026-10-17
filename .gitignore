@@ -23,3 +23,4 @@ native/vendor/libwdi/x64/
 native/vendor/libwdi/Win32/
 native/driver-helper/x64/
 resources/driver-helper/
+.playwright-mcp/
