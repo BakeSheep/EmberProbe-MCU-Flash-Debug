@@ -541,6 +541,16 @@ function diagnosticForError(error, context = {}) {
     };
 }
 
+// 批量变量读取的部分失败：扩展在结果中返回 variableErrors[{ requestedName, error }]，
+// 其余变量照常返回。按错误码补全 likelyCause/suggestedActions，形状与整体诊断的 error 字段一致。
+function variableErrorDiagnostics(result, context = {}) {
+    const entries = Array.isArray(result?.variableErrors) ? result.variableErrors : [];
+    return entries.map((entry) => ({
+        requestedName: entry?.requestedName ?? "",
+        ...diagnosticForError(entry?.error || {}, { stage: "variable_resolution", ...context }).error
+    }));
+}
+
 function writeDiagnostic(error, context) {
     process.stderr.write(JSON.stringify(diagnosticForError(error, context)) + "\n");
 }
@@ -616,4 +626,4 @@ function call(workspace, method, params, timeoutMs) {
     });
 }
 
-module.exports = { call, descriptor, diagnosticForError, writeDiagnostic, isReadOnlyMethod };
+module.exports = { call, descriptor, diagnosticForError, variableErrorDiagnostics, writeDiagnostic, isReadOnlyMethod };

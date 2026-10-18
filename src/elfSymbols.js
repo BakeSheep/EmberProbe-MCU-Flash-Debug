@@ -298,10 +298,23 @@ function parseElfSymbols(buffer) {
         return name;
     };
 
+    const STT_NOTYPE = 0;
     const STT_OBJECT = 1;
     const STT_FUNC = 2;
+    const STB_LOCAL = 0;
     const SHN_UNDEF = 0;
     const SHN_ABS = 0xfff1;
+    const SHF_WRITE = 1;
+    const SHF_ALLOC = 2;
+    // GCC 在 -O0 且未启用 -fdata-sections 时，把 .bss 中的文件作用域 static（C 标量、C++ 匿名类型对象等）
+    // 发成不带 .type 的 NOTYPE LOCAL 符号。仅接纳有尺寸、完整落在可写已分配节内的此类符号；
+    // 映射符号 $d、节符号与链接脚本标记（尺寸为 0 或 GLOBAL）仍被排除。类型仍由 DWARF 决定。
+    const isUntypedLocalData = (stInfo, stShndx, stValue, stSize) => {
+        if (stInfo >> 4 !== STB_LOCAL || stSize === 0) return false;
+        const section = sections[stShndx];
+        if (!section || (section.flags & (SHF_WRITE | SHF_ALLOC)) !== (SHF_WRITE | SHF_ALLOC)) return false;
+        return stValue >= section.addr && stValue + stSize <= section.addr + section.size;
+    };
     const entsize = symtab.entsize || 16;
     if (entsize < 16) throw new Error("ELF 符号表条目大小无效");
     const count = Math.floor(symtab.size / entsize);
@@ -329,9 +342,11 @@ function parseElfSymbols(buffer) {
             seenFuncs.set(key, { name, address, size: stSize >>> 0 });
             continue;
         }
-        if (stType !== STT_OBJECT) continue; // 仅数据对象（变量）与函数
+        // 仅数据对象（变量）与函数
+        if (stType !== STT_OBJECT && !(stType === STT_NOTYPE && isUntypedLocalData(stInfo, stShndx, stValue, stSize)))
+            continue;
         const name = readCStr(strtab.offset, stName);
-        if (!name) continue;
+        if (!name || (stType === STT_NOTYPE && name.startsWith("$"))) continue;
         if (seen.has(name)) {
             const previous = seen.get(name);
             if (previous.address !== stValue || previous.size !== stSize) previous.addressAmbiguous = true;

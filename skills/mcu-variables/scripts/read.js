@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const crypto = require("crypto");
-const { call, writeDiagnostic } = require("../../_emberprobe/agent-client");
+const { call, variableErrorDiagnostics, writeDiagnostic } = require("../../_emberprobe/agent-client");
 
 const TYPES = new Set(["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"]);
 const WIDTH = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
@@ -30,6 +30,13 @@ function args(argv) {
         }
     }
     return out;
+}
+
+// 部分变量失败时扩展仍返回其余变量，并附 variableErrors；补全为结构化诊断后输出，
+// 让 Agent 逐项判断原因，而不是把整批视为失败。
+function withVariableErrors(result, operation) {
+    if (!Array.isArray(result?.variableErrors) || !result.variableErrors.length) return result;
+    return { ...result, partial: true, variableErrors: variableErrorDiagnostics(result, { operation }) };
 }
 
 function boundedInteger(value, fallback, min, max, name) {
@@ -160,6 +167,8 @@ function parseSymbolsBuffer(buffer) {
         if (o + 40 > b.length) break;
         sections.push({
             type: b.readUInt32LE(o + 4),
+            flags: b.readUInt32LE(o + 8),
+            addr: b.readUInt32LE(o + 12) >>> 0,
             offset: b.readUInt32LE(o + 16),
             size: b.readUInt32LE(o + 20),
             link: b.readUInt32LE(o + 24),
@@ -181,15 +190,30 @@ function parseSymbolsBuffer(buffer) {
         while (e < endLimit && b[e]) e++;
         return e < endLimit ? b.toString("utf8", p, e) : "";
     };
+    // 与扩展一致：GCC -O0 且无 -fdata-sections 时 .bss 中的 static 是 NOTYPE LOCAL，
+    // 只接纳有尺寸且完整落在可写已分配节（SHF_WRITE|SHF_ALLOC）内的此类符号。
+    const untypedLocalData = (o, section, address, size) => {
+        const owner = sections[section];
+        return (
+            b[o + 12] >> 4 === 0 &&
+            size > 0 &&
+            !!owner &&
+            (owner.flags & 3) === 3 &&
+            address >= owner.addr &&
+            address + size <= owner.addr + owner.size
+        );
+    };
     for (let o = sym.offset; o + 16 <= Math.min(b.length, sym.offset + sym.size); o += ent) {
-        if ((b[o + 12] & 15) !== 1) continue;
+        const type = b[o + 12] & 15;
         const section = b.readUInt16LE(o + 14),
-            address = b.readUInt32LE(o + 4) >>> 0;
+            address = b.readUInt32LE(o + 4) >>> 0,
+            size = b.readUInt32LE(o + 8) >>> 0;
+        if (type !== 1 && !(type === 0 && untypedLocalData(o, section, address, size))) continue;
         if (!section || section === 0xfff1 || !address) continue;
         const name = cstr(str.offset + b.readUInt32LE(o));
-        if (!name || seen.has(name)) continue;
+        if (!name || seen.has(name) || (type === 0 && name.startsWith("$"))) continue;
         seen.add(name);
-        result.push({ name, address, size: b.readUInt32LE(o + 8) >>> 0 });
+        result.push({ name, address, size });
     }
     return result.sort((a, z) => a.name.localeCompare(z.name));
 }
@@ -479,6 +503,7 @@ async function main() {
             }
         }
         const latest = result.samples?.length ? result.samples[result.samples.length - 1].values : {};
+        const { partial, variableErrors } = withVariableErrors(result, "variables.trend");
         process.stdout.write(
             stringify({
                 type: "trend",
@@ -486,7 +511,8 @@ async function main() {
                 elf: result.elf,
                 sampleCount: result.samples?.length || 0,
                 latest,
-                trends: Object.fromEntries(Object.entries(series).map(([name, points]) => [name, summarize(points)]))
+                trends: Object.fromEntries(Object.entries(series).map(([name, points]) => [name, summarize(points)])),
+                ...(partial ? { partial, variableErrors } : {})
             }) + "\n"
         );
         return;
@@ -505,6 +531,8 @@ async function main() {
             },
             Math.min(2147483647, count * intervalMs + 30000)
         );
+        const { partial, variableErrors } = withVariableErrors(result, "variables.read");
+        if (partial) process.stdout.write(stringify({ type: "variableErrors", partial, variableErrors }) + "\n");
         for (const sample of result.samples || []) {
             process.stdout.write(
                 stringify({ type: "sample", source: result.source, elf: result.elf, ...sample }) + "\n"
@@ -518,7 +546,7 @@ async function main() {
     if (!opt.list && !opt.trend && opt.count === undefined && !opt.elf && !opt.port) {
         const variables = bridgeVariables || variableSpecs(opt.variables);
         const result = await call(workspace, "variables.read", { variables });
-        process.stdout.write(stringify({ type: "sample", ...result }) + "\n");
+        process.stdout.write(stringify({ type: "sample", ...withVariableErrors(result, "variables.read") }) + "\n");
         return;
     }
     const selectedElf = opt.elf || newestElf(workspace);
@@ -660,5 +688,6 @@ module.exports = {
     readStableElf,
     summarize,
     stringify,
-    workspaceOutputPath
+    workspaceOutputPath,
+    withVariableErrors
 };
