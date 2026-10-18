@@ -198,7 +198,7 @@ try {
         symbols: [{ name: "alias", address: 0x20000000, size: 4 }]
     });
     graph.document.getElementById("addName").value = "alias";
-    graph.document.getElementById("addBtn").click();
+    graph.document.getElementById("addName").dispatchEvent(new graph.window.KeyboardEvent("keydown", { key: "Enter" }));
     assert.deepStrictEqual(graph.messages.at(-1), {
         type: "resolveVariable",
         name: "alias",

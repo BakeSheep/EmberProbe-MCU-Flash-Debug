@@ -1208,12 +1208,20 @@
         const entries = Array.isArray(warnings)
             ? [...new Set(warnings.filter((item) => typeof item === "string" && item.trim()))].slice(0, 64)
             : [];
+        const wasOpen = element.querySelector("details")?.open === true && !element.hidden;
         element.replaceChildren();
         element.hidden = !error && !entries.length;
         if (element.hidden) return;
+        const details = element.ownerDocument.createElement("details");
+        details.open = wasOpen;
+        const summary = element.ownerDocument.createElement("summary");
         const heading = element.ownerDocument.createElement("strong");
         heading.textContent = label;
-        element.append(heading);
+        summary.append(heading);
+        const body = element.ownerDocument.createElement("div");
+        body.className = "elf-diagnostics-body";
+        details.append(summary, body);
+        element.append(details);
         for (const [message, kind] of [
             ...(error ? [[error, "error"]] : []),
             ...entries.filter((message) => message !== error).map((message) => [message, "warning"])
@@ -1221,7 +1229,7 @@
             const line = element.ownerDocument.createElement("div");
             line.className = "elf-" + kind;
             line.textContent = String(message).slice(0, 2000);
-            element.append(line);
+            body.append(line);
         }
     }
     // Only one aligned 32-bit word can be written while the core keeps running; anything else is written

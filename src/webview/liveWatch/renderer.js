@@ -216,6 +216,7 @@ var wantImportOpen = false,
     impSearchQuery = "";
 var saved = api && api.getState ? api.getState() : null,
     sideWidth = (saved && Number(saved.sideWidth)) || 260,
+    sideHeight = saved && Number.isFinite(saved.sideHeight) ? Math.max(100, saved.sideHeight) : null,
     sideCollapsed = !!(saved && saved.sideCollapsed),
     windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30";
 if (saved && saved.hidden) hidden = saved.hidden;
@@ -403,6 +404,7 @@ function saveUi() {
             pointerCurveDefaults: true,
             timeWindow: windowPreset,
             sideWidth: sideWidth,
+            sideHeight: sideHeight,
             sideCollapsed: sideCollapsed,
             norm: norm
         });
@@ -669,6 +671,8 @@ function renderVars() {
         });
     var box = $("vars");
     box.textContent = "";
+    variableCards = [];
+    box.classList.remove("independent-columns");
     valueCells = Object.create(null);
     compCells = Object.create(null);
     runtimeBodies = Object.create(null);
@@ -716,6 +720,35 @@ function renderVars() {
             return !isLeafChild(it.name) && !placedPointees.has(it.name);
         }).length
     );
+    variableCards = Array.from(box.children);
+    arrangeVariableCards(true);
+}
+var variableCards = [];
+function arrangeVariableCards(force) {
+    if (!variableCards.length) return;
+    var box = $("vars");
+    var columns = window.innerWidth >= 560 && window.innerWidth <= 760;
+    if (!force && columns === box.classList.contains("independent-columns")) return;
+    var focused = document.activeElement;
+    var pane = $("valuePane");
+    var scrollTop = pane.scrollTop;
+    if (columns) {
+        var stacks = [document.createElement("div"), document.createElement("div")];
+        stacks.forEach(function (stack) {
+            stack.className = "var-column";
+        });
+        // Stable alternating columns: expanding a tree never moves cards in the other column.
+        variableCards.forEach(function (card, index) {
+            stacks[index % 2].appendChild(card);
+        });
+        box.replaceChildren(...stacks);
+    } else {
+        // Restore watch order, DOM focus order and the original nodes at the single-column breakpoints.
+        box.replaceChildren(...variableCards);
+    }
+    box.classList.toggle("independent-columns", columns);
+    if (focused && focused !== document.activeElement && box.contains(focused)) focused.focus({ preventScroll: true });
+    pane.scrollTop = scrollTop;
 }
 function renderScalarCard(item) {
     var idx = watch.indexOf(item);
@@ -3216,7 +3249,7 @@ $("import").onclick = function () {
     wantImportOpen = true;
     post({ type: "importVariables", version: impVersion });
 };
-$("addBtn").onclick = function () {
+function addByName() {
     var n = $("addName").value.trim();
     if (!n) return;
     var sym = allSymbols.find(function (s) {
@@ -3226,7 +3259,7 @@ $("addBtn").onclick = function () {
     else post({ type: "resolveVariable", name: n, version: impVersion });
     $("addName").value = "";
     hideAutocomplete();
-};
+}
 $("addName").oninput = function () {
     if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
     renderAutocomplete();
@@ -3254,7 +3287,7 @@ $("addName").onkeydown = function (e) {
         e.preventDefault();
         if (autocompleteIndex >= 0 && $("acDrop").classList.contains("open"))
             acceptAutocomplete(autocompleteMatches[autocompleteIndex]);
-        else $("addBtn").click();
+        else addByName();
     } else if (e.key === "Escape") {
         e.preventDefault();
         hideAutocomplete();
@@ -3445,12 +3478,43 @@ var layout = $("layout"),
     sideToggle = $("sideToggle");
 function applySideLayout() {
     layout.style.setProperty("--side-width", sideWidth + "px");
+    if (sideHeight !== null) layout.style.setProperty("--side-height", sideHeight + "px");
     layout.classList.toggle("side-collapsed", sideCollapsed);
     sideToggle.setAttribute("aria-expanded", String(!sideCollapsed));
     sideToggle.setAttribute("aria-controls", "vars");
     sideToggle.setAttribute("aria-label", sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane"));
     sideToggle.textContent = (sideCollapsed ? "› " : "‹ ") + t("lw.valuePane");
     sideToggle.title = sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane");
+    updateSplitter();
+    dirty = true;
+}
+function updateSplitter() {
+    var stacked = window.innerWidth <= 760;
+    var bounds = layout.getBoundingClientRect();
+    var pane = $("valuePane").getBoundingClientRect();
+    sideSplitter.setAttribute("aria-label", t("lw.splitterHint"));
+    sideSplitter.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
+    sideSplitter.setAttribute("aria-valuemin", stacked ? "100" : "220");
+    sideSplitter.setAttribute(
+        "aria-valuemax",
+        String(Math.round(Math.max(stacked ? 100 : 220, stacked ? bounds.height - 169 : bounds.width - 300)))
+    );
+    sideSplitter.setAttribute("aria-valuenow", String(Math.round(stacked ? pane.height : pane.width)));
+    sideSplitter.tabIndex = sideCollapsed ? -1 : 0;
+}
+function resizeSide(size, stacked) {
+    var bounds = layout.getBoundingClientRect();
+    var min = stacked ? 100 : 220;
+    var max = Math.max(min, stacked ? bounds.height - 169 : bounds.width - 300);
+    size = Math.round(Math.min(max, Math.max(min, size)));
+    if (stacked) {
+        sideHeight = size;
+        layout.style.setProperty("--side-height", size + "px");
+    } else {
+        sideWidth = size;
+        layout.style.setProperty("--side-width", size + "px");
+    }
+    updateSplitter();
     dirty = true;
 }
 sideToggle.onclick = function () {
@@ -3459,36 +3523,54 @@ sideToggle.onclick = function () {
     saveUi();
 };
 sideSplitter.addEventListener("pointerdown", function (e) {
-    if (window.innerWidth <= 760) return;
+    if (e.button !== 0) return;
+    var stacked = window.innerWidth <= 760;
     e.preventDefault();
     if (sideCollapsed) {
         sideCollapsed = false;
         applySideLayout();
     }
-    var startX = e.clientX,
-        startWidth = document.querySelector(".side").getBoundingClientRect().width;
+    var start = stacked ? e.clientY : e.clientX,
+        bounds = $("valuePane").getBoundingClientRect(),
+        startSize = stacked ? bounds.height : bounds.width;
     sideSplitter.classList.add("dragging");
     sideSplitter.setPointerCapture(e.pointerId);
     var move = function (ev) {
-        var max = Math.max(220, layout.getBoundingClientRect().width - 300);
-        sideWidth = Math.min(max, Math.max(220, startWidth + ev.clientX - startX));
-        layout.style.setProperty("--side-width", sideWidth + "px");
-        dirty = true;
+        if (ev.pointerId !== e.pointerId) return;
+        resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
     };
     var end = function (ev) {
+        if (ev.pointerId !== e.pointerId) return;
         sideSplitter.classList.remove("dragging");
-        sideSplitter.releasePointerCapture(ev.pointerId);
         sideSplitter.removeEventListener("pointermove", move);
         sideSplitter.removeEventListener("pointerup", end);
         sideSplitter.removeEventListener("pointercancel", end);
-        sideWidth = Math.round(document.querySelector(".side").getBoundingClientRect().width);
+        sideSplitter.removeEventListener("lostpointercapture", end);
+        if (sideSplitter.hasPointerCapture(ev.pointerId)) sideSplitter.releasePointerCapture(ev.pointerId);
         saveUi();
     };
     sideSplitter.addEventListener("pointermove", move);
     sideSplitter.addEventListener("pointerup", end);
     sideSplitter.addEventListener("pointercancel", end);
+    sideSplitter.addEventListener("lostpointercapture", end);
+});
+sideSplitter.addEventListener("keydown", function (e) {
+    var stacked = window.innerWidth <= 760;
+    var direction = stacked ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (!direction) return;
+    e.preventDefault();
+    var bounds = $("valuePane").getBoundingClientRect();
+    resizeSide((stacked ? bounds.height : bounds.width) + direction * (e.shiftKey ? 50 : 10), stacked);
+    saveUi();
 });
 applySideLayout();
+new ResizeObserver(function () {
+    updateSplitter();
+    arrangeVariableCards();
+}).observe(layout);
+window.addEventListener("resize", function () {
+    arrangeVariableCards();
+});
 new ResizeObserver(function () {
     dirty = true;
 }).observe($("chartWrap"));

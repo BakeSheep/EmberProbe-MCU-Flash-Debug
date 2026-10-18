@@ -155,6 +155,7 @@ const TEST_GROUPS = Object.freeze({
         "dwarf-global-budget.test.js",
         "elf-variable-filtering.test.js",
         "elf-webview-lazy.test.js",
+        "live-watch-layout.test.js",
         "layout-expansion-ui.test.js",
         "elf-worker.test.js",
         "ember-debug.test.js",

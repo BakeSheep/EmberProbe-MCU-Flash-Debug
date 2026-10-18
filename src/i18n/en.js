@@ -491,7 +491,7 @@ module.exports = Object.freeze({
     "lw.panelTitle": "Waveform #{n}",
     "lw.ready": "Ready",
     "lw.hint": "Non-intrusive RAM reads while running",
-    "lw.splitterHint": "Drag left/right to resize the current-value panel",
+    "lw.splitterHint": "Drag or use arrow keys to resize the current-value panel",
     "lw.valuePane": "Values",
     "lw.collapsePane": "Collapse the current-value panel",
     "lw.expandPane": "Expand the current-value panel",

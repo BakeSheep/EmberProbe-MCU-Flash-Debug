@@ -255,8 +255,36 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     overflow-y: auto;
 }
 .elf-diagnostics {
+    padding: 0;
+    max-height: none;
+    overflow: visible;
     border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
     background: var(--vscode-textBlockQuote-background);
+}
+.elf-diagnostics > details {
+    margin: 0;
+    border: 0;
+}
+.elf-diagnostics > details > summary {
+    height: auto;
+    padding: 6px 8px;
+    cursor: pointer;
+    background: transparent;
+}
+.elf-diagnostics-body {
+    padding: 0 8px 8px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+.elf-diagnostics > details > summary:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+.elf-diagnostics > details > summary:before {
+    transform: rotate(0);
+}
+.elf-diagnostics > details[open] > summary:before {
+    transform: rotate(90deg);
 }
 .rtos-status {
     display: flex;
