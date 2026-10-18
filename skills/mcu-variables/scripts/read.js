@@ -22,7 +22,8 @@ function args(argv) {
         const key = argv[i];
         if (!key.startsWith("--")) throw new Error(`Unexpected argument: ${key}`);
         const name = key.slice(2);
-        if (name === "list" || name === "trend" || name === "read" || name === "export-csv") out[name] = true;
+        if (name === "list" || name === "trend" || name === "read" || name === "export-csv" || name === "json-array")
+            out[name] = true;
         else {
             const value = argv[++i];
             if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for --${name}`);
@@ -30,6 +31,19 @@ function args(argv) {
         }
     }
     return out;
+}
+
+// --list 默认输出 NDJSON：每个符号一行 JSON，且每行都重复 elf/elfSha256/elfMtimeMs；
+// --json-array 改为单个 JSON 对象 { elf, elfSha256, elfMtimeMs, symbols: [...] }，便于 JSON.parse(stdout)。
+function listOutput({ elf, snapshot, symbols }, jsonArray = false) {
+    const binding = { elf, elfSha256: snapshot.sha256, elfMtimeMs: snapshot.mtimeMs };
+    const entries = symbols.map((symbol) => ({
+        ...symbol,
+        inferredType: infer(symbol.size),
+        compositeCandidate: symbol.size > 8
+    }));
+    if (jsonArray) return stringify({ ...binding, symbols: entries }) + "\n";
+    return entries.map((entry) => stringify({ ...binding, ...entry }) + "\n").join("");
 }
 
 function boundedInteger(value, fallback, min, max, name) {
@@ -403,6 +417,7 @@ function workspaceOutputPath(workspace, requested) {
 async function main() {
     const opt = args(process.argv.slice(2));
     const workspace = path.resolve(opt.workspace || process.cwd());
+    if (opt["json-array"] && !opt.list) throw new Error("--json-array can only be combined with --list");
     if (opt["export-csv"]) {
         const variables = opt.variables ? variableSpecs(opt.variables).map((item) => item.name) : [];
         const range = exportRange(opt);
@@ -529,17 +544,7 @@ async function main() {
     const symbols = parsed.symbols;
     const snapshot = parsed.snapshot;
     if (opt.list) {
-        for (const s of symbols)
-            process.stdout.write(
-                stringify({
-                    elf,
-                    elfSha256: snapshot.sha256,
-                    elfMtimeMs: snapshot.mtimeMs,
-                    ...s,
-                    inferredType: infer(s.size),
-                    compositeCandidate: s.size > 8
-                }) + "\n"
-            );
+        process.stdout.write(listOutput({ elf, snapshot, symbols }, opt["json-array"]));
         return;
     }
     const requested = String(opt.variables || "")
@@ -657,6 +662,7 @@ module.exports = {
     decode,
     decodeText,
     infer,
+    listOutput,
     readStableElf,
     summarize,
     stringify,

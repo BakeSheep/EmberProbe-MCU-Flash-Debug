@@ -26,7 +26,7 @@ For a current value, pass names directly. Do not search source declarations firs
 node <skill-dir>/scripts/read.js --workspace <workspace> --variables Tick,sinx
 ```
 
-Use `--list` only after a missing or ambiguous name. DWARF paths support members and array selections such as `sensor.pos.y`, `buf[0]`, `buf[1:5]`, and `buf[*]`. Whole composites return a reporting tree and cannot be trended.
+Use `--list` only after a missing or ambiguous name. By default `--list` prints NDJSON (one JSON object per line, not a single JSON document), so `JSON.parse(stdout)` fails; parse it line by line. Every line repeats the ELF binding `elf`, `elfSha256` and `elfMtimeMs` and adds one symbol's fields (`name`, `address`, `size` and others from the ELF symbol table) plus `inferredType` and `compositeCandidate` (`true` when the symbol is larger than 8 bytes). For a single JSON document, add `--json-array`: `node <skill-dir>/scripts/read.js --workspace <workspace> --list --json-array` prints one object `{ "elf", "elfSha256", "elfMtimeMs", "symbols": [ { ...symbol, "inferredType", "compositeCandidate" } ] }` with the binding fields once. `--json-array` is valid only with `--list`; the default NDJSON output is unchanged. DWARF paths support members and array selections such as `sensor.pos.y`, `buf[0]`, `buf[1:5]`, and `buf[*]`. Whole composites return a reporting tree and cannot be trended.
 
 C++ names can contain `::`; quote qualified paths such as `"app::sensor.pos.y"`. Prefer an
 exact ELF/linkage name when a display name is ambiguous. Explicit scalar suffixes use a
