@@ -2,6 +2,38 @@
 const fs = require("fs");
 const { StringDecoder } = require("string_decoder");
 
+// CubeMX also runs its online updater and home-page advertisement panel in script mode. Their
+// network failures are logged at ERROR level but are unrelated to code generation, so records
+// from these log4j sources (simple class name) are reported as warnings instead of failures.
+const BENIGN_LOG_SOURCE = /^(?:WebUtils|HomeAdPanel|[\w$]*Updater[\w$]*|[\w$]*Advert[\w$]*)$/;
+// log4j records look like "[ERROR] WebUtils:658 - Updater is busy", optionally after a timestamp.
+const logSource = (text) =>
+    text.match(/\[(?:ERROR|FATAL|SEVERE|WARN(?:ING)?|INFO|DEBUG|TRACE)\]\s+(?:[\w$]+\.)*([\w$]+):\d+\s+-\s/i)?.[1];
+
+// Failures that are attributable to generation block regardless of the log source.
+const isGenerationFailure = (diagnostic) =>
+    /\b(?:generation|generate)\s+failed\b|\bfailed\s+to\s+generate\b|\bcode\s+generation\s+(?:failed|error)\b/i.test(
+        diagnostic
+    ) ||
+    /\b(?:firmware|package|library|dependency)\b[^\r\n]*\b(?:not\s+installed|missing|not\s+found|please.*download)\b|\b(?:please|must)\s+download\b|\b(?:download|install)\s+firmware\s+package\b/i.test(
+        diagnostic
+    ) ||
+    /\b(?:requires?\s+migration|must\s+be\s+migrated|migration\s+required|migration\s+needed)\b|\bProject\s+migration\b/i.test(
+        diagnostic
+    );
+
+const isErrorOrException = (diagnostic) =>
+    /\b(?:error|fatal)\b/i.test(diagnostic) ||
+    /(?:\bException\b|\bError\b):|^\s*at\s+[\w$./]+\([\w$.]+\.java:\d+\)|\b(?:NullPointerException|ClassNotFoundException|IOException|InvocationTargetException|RuntimeException)\b/i.test(
+        diagnostic
+    );
+
+// A Java stack trace printed directly below a log4j record belongs to that record.
+const isStackTraceLine = (text) =>
+    /^(?:at\s+[\w$./<>]+\(.*\)|Caused by:.*|\.\.\.\s*\d+\s+more|(?:[\w$]+\.)+[\w$]*(?:Exception|Error)(?::.*)?)$/.test(
+        text
+    );
+
 function createLogMonitor(options = {}) {
     let log = "";
     let pending = false;
@@ -21,42 +53,30 @@ function createLogMonitor(options = {}) {
 
     const isWarnLine = (text) => /^(?:.*?\[WARN(?:ING)?\]|WARN(?:ING)?\s*:)/i.test(text);
 
-    const isBlockingLine = (text) => {
+    // Per stream: whether unattributed stack-trace lines continue a benign log4j record.
+    const benignTrace = { stdout: false, stderr: false };
+    const classify = (text, streamName) => {
         const diagnostic = text.replace(/\b0\s+(?:errors?|exceptions?|failures?|failed)\b/gi, "");
-        if (/\b(?:error|fatal)\b/i.test(diagnostic)) return true;
-        if (
-            /(?:\bException\b|\bError\b):|^\s*at\s+[\w$./]+\([\w$.]+\.java:\d+\)|\b(?:NullPointerException|ClassNotFoundException|IOException|InvocationTargetException|RuntimeException)\b/i.test(
-                diagnostic
-            )
-        )
-            return true;
-        if (
-            /\b(?:generation|generate)\s+failed\b|\bfailed\s+to\s+generate\b|\bcode\s+generation\s+(?:failed|error)\b/i.test(
-                diagnostic
-            )
-        )
-            return true;
-        if (
-            /\b(?:firmware|package|library|dependency)\b[^\r\n]*\b(?:not\s+installed|missing|not\s+found|please.*download)\b|\b(?:please|must)\s+download\b|\b(?:download|install)\s+firmware\s+package\b/i.test(
-                diagnostic
-            )
-        )
-            return true;
-        if (
-            /\b(?:requires?\s+migration|must\s+be\s+migrated|migration\s+required|migration\s+needed)\b|\bProject\s+migration\b/i.test(
-                diagnostic
-            )
-        )
-            return true;
-        return false;
+        const source = logSource(text);
+        let benign;
+        if (source) benign = benignTrace[streamName] = BENIGN_LOG_SOURCE.test(source);
+        else benign = benignTrace[streamName] = benignTrace[streamName] && isStackTraceLine(text);
+        if (isGenerationFailure(diagnostic)) return "blocking";
+        if (isErrorOrException(diagnostic)) {
+            if (!benign) return "blocking";
+            // Report the benign record once; its stack trace lines would only flood the warnings.
+            return source ? "warning" : "";
+        }
+        return isWarnLine(text) ? "warning" : "";
     };
 
     const line = (text, stdout) => {
         text = text.trim();
         if (/^log4j user configuration file not found:[^\r\n]*[/\\]log4j2\.xml$/i.test(text)) return;
-        if (isBlockingLine(text)) {
+        const kind = classify(text, stdout ? "stdout" : "stderr");
+        if (kind === "blocking") {
             failureLine ||= text.slice(0, 1000);
-        } else if (isWarnLine(text)) {
+        } else if (kind === "warning") {
             const summaryText = text.slice(0, 500);
             if (!warnings.includes(summaryText) && warnings.length < 50) warnings.push(summaryText);
         }
@@ -71,6 +91,10 @@ function createLogMonitor(options = {}) {
             pending = false;
         } else if (pending && text === "OK") {
             confirmed = true;
+            pending = false;
+        } else if (pending && text === "KO") {
+            // Only the generate command's status is decisive: `project path` may answer KO harmlessly.
+            failureLine ||= "CubeMX reported KO for project generate";
             pending = false;
         } else if (/(?:generat[^\r\n]*(?:success|succes)|(?:success|succes)[^\r\n]*generat)/i.test(text)) {
             confirmed = true;

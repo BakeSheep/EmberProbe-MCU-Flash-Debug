@@ -1,5 +1,6 @@
 "use strict";
 const fs = require("fs/promises");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { CubeMxAuthorization } = require("../cubemxAuthorization");
@@ -9,11 +10,13 @@ const {
     parseIoc,
     changes,
     snapshot,
+    assertOutsideLinks,
     fileDiff,
     normalizeGenerated,
     stageGeneration,
     assertFreshOutput,
     preserveTextFormatting,
+    materialize,
     applyFiles,
     assertUserCodePreserved
 } = require("./cubemxProject");
@@ -30,6 +33,34 @@ const { categorizeChanges, validateStructuralIoc } = require("./cubemxCandidate"
 // Mirrors parseIoc's cap: permission() reads the workspace .ioc directly and must reject an
 // oversized file before feeding it to the property parser (§17.3).
 const MAX_IOC_BYTES = 1024 * 1024;
+// Per-project operation diagnostics directories kept in extension storage (recovery material excepted).
+const RETAINED_RUNS = 20;
+const STAGE_PREFIX = "emberprobe-cubemx-stage-";
+const STALE_STAGE_MS = 24 * 60 * 60 * 1000;
+
+// The runner streams its log straight to logPath; other runners may have logged inside the stage,
+// which is removed after the operation, so keep a copy in the diagnostics directory.
+async function persistLog(result, logPath) {
+    if (result.logPath === logPath) return;
+    try {
+        await fs.copyFile(result.logPath, logPath);
+    } catch {
+        await fs.writeFile(logPath, result.log || "");
+    }
+}
+
+async function retainFailureLog(directory, logPath, error) {
+    try {
+        await fs.access(logPath);
+    } catch {
+        try {
+            await fs.copyFile(path.join(directory, ".emberprobe-cubemx-output.log"), logPath);
+        } catch {
+            return; // CubeMX never started; keep the original error details.
+        }
+    }
+    error.details = { ...error.details, logPath };
+}
 
 function computeParamsHash(params) {
     return hash(
@@ -48,6 +79,8 @@ function computeParamsHash(params) {
 const RECORDABLE_ERROR_KEYS = [
     "stage",
     "logPath",
+    "diagnosticsPath",
+    "baselineOutput",
     "failureLine",
     "warningSummary",
     "expectedRoot",
@@ -79,6 +112,54 @@ class CubeMxService {
         this.activeExecutions = new Map();
         this.recordFailures = new Map();
         this.store = new CubeMxOperationStore(options.storageDir || options.storage?.storageUri?.fsPath);
+        // Staged project copies (often hundreds of MB) stay outside the workspace. The system temp
+        // directory keeps CubeMX's deep Drivers/Middlewares paths short on Windows.
+        this.stagingDir = options.stagingDir || os.tmpdir();
+        /** @type {Promise<void> | null} */
+        this._staleStageSweep = null;
+    }
+
+    _runDir(root, operationId) {
+        return path.join(this.store.projectDir(root), "runs", operationId);
+    }
+
+    async _createStage(kind) {
+        await fs.mkdir(this.stagingDir, { recursive: true });
+        this._staleStageSweep ||= this._sweepStaleStages();
+        await this._staleStageSweep;
+        return fs.mkdtemp(path.join(this.stagingDir, `${STAGE_PREFIX}${kind}-`));
+    }
+
+    // Stages left behind by a crashed extension host; a live job never runs this long.
+    async _sweepStaleStages() {
+        const now = Date.now();
+        for (const name of await fs.readdir(this.stagingDir).catch(() => [])) {
+            if (!name.startsWith(STAGE_PREFIX)) continue;
+            const target = path.join(this.stagingDir, name);
+            const stat = await fs.lstat(target).catch(() => null);
+            if (stat?.isDirectory() && now - stat.mtimeMs > STALE_STAGE_MS)
+                await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+        }
+    }
+
+    // Keep the newest diagnostics directories, plus any that may hold needed recovery material.
+    async _pruneRuns(root) {
+        const runs = path.join(this.store.projectDir(root), "runs");
+        const entries = await fs.readdir(runs).catch(() => []);
+        if (entries.length <= RETAINED_RUNS) return;
+        const operations = await this.store.getOperations(root);
+        const records = new Map(operations.map((op) => [op.operationId, op]));
+        const removable = entries
+            .filter((id) => {
+                const op = records.get(id);
+                return !(
+                    op &&
+                    (op.status === "in_progress" || ["recoveryRequired", "unknown"].includes(op.sourceProjectStatus))
+                );
+            })
+            .sort((a, b) => (records.get(b)?.createdAt || "").localeCompare(records.get(a)?.createdAt || ""));
+        for (const id of removable.slice(RETAINED_RUNS))
+            await fs.rm(path.join(runs, id), { recursive: true, force: true }).catch(() => {});
     }
 
     async _resolveProjectRoot() {
@@ -499,14 +580,18 @@ class CubeMxService {
     async _runExecution(plan, params, op, controller, progress) {
         let stage;
         let backup;
+        let currentRun;
+        const runDir = this._runDir(plan.root, op.operationId);
         try {
-            const before = await snapshot(plan.root);
+            const links = [];
+            const before = await snapshot(plan.root, { links });
             const name = path.basename(plan.ioc);
             if (before.get(name)?.hash !== plan.identity.before)
                 throw failure("CUBEMX_PROJECT_CHANGED", ".ioc changed after confirmation");
 
-            stage = await fs.mkdtemp(path.join(plan.root, ".emberprobe-cubemx-"));
-            await this.store.updateOperation(plan.root, op.operationId, { stagePath: stage });
+            stage = await this._createStage("gen");
+            await fs.mkdir(runDir, { recursive: true });
+            await this.store.updateOperation(plan.root, op.operationId, { stagePath: stage, diagnosticsPath: runDir });
 
             const baseline = path.join(stage, "baseline");
             const candidate = path.join(stage, "candidate");
@@ -520,23 +605,24 @@ class CubeMxService {
                 const { output, mains } = await stageGeneration(directory, files, name, plan.tool);
                 const timeoutMs = 300000 - (Date.now() - started);
                 if (timeoutMs <= 0) throw failure("CUBEMX_TIMEOUT", "Generation exceeded five minutes");
+                const logPath = path.join(runDir, `${runStage}.log`);
+                currentRun = { directory, logPath };
                 const result = await run(plan.tool, directory, name, {
                     signal: controller.signal,
                     timeoutMs,
                     stage: runStage,
+                    logPath,
                     onExitUnconfirmed: (exited, retryStop) => this._retainProcess(plan.root, exited, retryStop)
                 });
-                if (!result.logPath)
-                    await fs.writeFile(path.join(directory, ".emberprobe-cubemx-output.log"), result.log || "");
+                await persistLog(result, logPath);
                 for (const reported of result.generatedFiles || []) {
                     const relative = path.relative(output, reported);
                     if (inside(output, reported)) ownedFiles.add(relative);
                 }
                 for (const warning of result.warnings || []) generationWarnings.add(warning);
-                await this.store.updateOperation(plan.root, op.operationId, {
-                    logPath: result.logPath || path.join(directory, ".emberprobe-cubemx-output.log")
-                });
+                await this.store.updateOperation(plan.root, op.operationId, { logPath });
                 const raw = normalizeGenerated(files, await snapshot(directory), name, plan.tool);
+                assertOutsideLinks(links, raw);
                 await assertFreshOutput(output, mains, result.generatedFiles);
                 const generated = preserveTextFormatting(files, raw);
                 generated.set(name, files.get(name));
@@ -551,10 +637,18 @@ class CubeMxService {
             const base = await generate(baseline, before, "baseline");
             const drift = fileDiff(before, base).filter((entry) => before.has(entry.file));
             if (drift.length) {
+                // The stage is removed, so keep CubeMX's regenerated version of each drifted file.
+                const baselineOutput = path.join(runDir, "baseline-drift");
+                await materialize(
+                    baselineOutput,
+                    new Map(
+                        drift.filter((entry) => base.has(entry.file)).map((entry) => [entry.file, base.get(entry.file)])
+                    )
+                );
                 const error = failure(
                     "CUBEMX_BASELINE_DRIFT",
                     "Existing files cannot be reproduced; review hand edits before generating",
-                    { changes: drift, stage }
+                    { changes: drift, baselineOutput }
                 );
                 if (drift.some((entry) => entry.file.replace(/\\/g, "/") === "cmake/stm32cubemx/CMakeLists.txt"))
                     error.suggestedActions.unshift(
@@ -586,7 +680,7 @@ class CubeMxService {
                 sourceProjectStatus: "unchanged"
             });
 
-            backup = path.join(stage, "backup");
+            backup = path.join(runDir, "backup");
             // Must update record before writing files
             await this.store.updateOperation(plan.root, op.operationId, {
                 stage: "writing",
@@ -635,6 +729,12 @@ class CubeMxService {
                         file: fileName
                     });
                 }
+            }
+
+            // Only added files: there are no original bytes to recover.
+            if (!changed.some((item) => item.action !== "added")) {
+                await fs.rm(backup, { recursive: true, force: true }).catch(() => {});
+                backup = null;
             }
 
             let permissionWarning;
@@ -697,6 +797,7 @@ class CubeMxService {
                 ioc: plan.ioc,
                 changes: changed,
                 backup,
+                diagnosticsPath: runDir,
                 sourceProjectStatus: "committed",
                 permissionWarning,
                 warnings: [...generationWarnings].slice(0, 20),
@@ -730,13 +831,16 @@ class CubeMxService {
                 throw failure(
                     "CUBEMX_RECORD_SAVE_FAILED",
                     "Source files committed, but operation record could not be saved",
-                    { committed: true, sourceProjectStatus: "committed", backup, stage }
+                    { committed: true, sourceProjectStatus: "committed", backup }
                 );
             }
 
             return result;
         } catch (error) {
-            if (stage) error.details = { ...error.details, stage };
+            if (stage) {
+                if (currentRun) await retainFailureLog(currentRun.directory, currentRun.logPath, error);
+                error.details = { ...error.details, diagnosticsPath: runDir };
+            }
             try {
                 const currentOp = await this.store.getOperation(plan.root, op.operationId);
                 if (currentOp?.sourceProjectStatus !== "committed" || error.code === "CUBEMX_RECORD_SAVE_FAILED") {
@@ -757,7 +861,8 @@ class CubeMxService {
             }
             throw error;
         } finally {
-            await this._finishJob(plan.root, op.operationId);
+            await this._finishJob(plan.root, op.operationId, stage);
+            await this._pruneRuns(plan.root).catch(() => {});
         }
     }
 
@@ -895,12 +1000,16 @@ class CubeMxService {
 
     async _runDeepCheck(project, op, controller) {
         const root = project.root;
+        const runDir = this._runDir(root, op.operationId);
+        const logPath = path.join(runDir, "deepCheck.log");
         let stage;
         try {
-            const before = await snapshot(root);
+            const links = [];
+            const before = await snapshot(root, { links });
             const name = path.basename(project.ioc);
-            stage = await fs.mkdtemp(path.join(root, ".emberprobe-cubemx-deep-"));
-            await this.store.updateOperation(root, op.operationId, { stagePath: stage });
+            stage = await this._createStage("deep");
+            await fs.mkdir(runDir, { recursive: true });
+            await this.store.updateOperation(root, op.operationId, { stagePath: stage, diagnosticsPath: runDir });
 
             const run = this.options.run || runCubeMx;
             const { output, mains } = await stageGeneration(stage, before, name, project.tool);
@@ -908,10 +1017,13 @@ class CubeMxService {
                 signal: controller.signal,
                 timeoutMs: 300000,
                 stage: "deepCheck",
+                logPath,
                 onExitUnconfirmed: (exited, retryStop) => this._retainProcess(root, exited, retryStop)
             });
+            await persistLog(runResult, logPath);
 
             const raw = normalizeGenerated(before, await snapshot(stage), name, project.tool);
+            assertOutsideLinks(links, raw);
             await assertFreshOutput(output, mains, runResult.generatedFiles);
             const generated = preserveTextFormatting(before, raw);
             generated.set(name, before.get(name));
@@ -1018,16 +1130,9 @@ class CubeMxService {
             };
         } catch (err) {
             if (stage) {
-                // The stage directory is removed below, so persist its CubeMX log first:
-                // deep-check failures must keep their diagnostics like generation failures do.
-                const persistedLog = path.join(this.store.projectDir(root), "logs", `deep-${op.operationId}.log`);
-                try {
-                    await fs.mkdir(path.dirname(persistedLog), { recursive: true });
-                    await fs.copyFile(path.join(stage, ".emberprobe-cubemx-output.log"), persistedLog);
-                    err.details = { ...err.details, logPath: persistedLog };
-                } catch {
-                    // No stage log (e.g. CubeMX never started); keep the original error details.
-                }
+                // The stage directory is removed below; deep-check failures keep their CubeMX log.
+                await retainFailureLog(stage, logPath, err);
+                err.details = { ...err.details, diagnosticsPath: runDir };
             }
             try {
                 await this.store.updateOperation(root, op.operationId, {
@@ -1041,6 +1146,7 @@ class CubeMxService {
             throw err;
         } finally {
             await this._finishJob(root, op.operationId, stage);
+            await this._pruneRuns(root).catch(() => {});
         }
     }
 }
