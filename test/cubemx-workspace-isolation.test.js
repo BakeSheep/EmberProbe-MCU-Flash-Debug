@@ -249,7 +249,15 @@ const link = (target, location) => fs.symlink(target, location, "junction");
             const remaining = await fs.readdir(runs);
             assert(remaining.includes(recovery.operationId));
             assert(remaining.includes(result.operationId));
-            assert.strictEqual(remaining.length, 21);
+            // A writeback backup survives as long as the operation record that reports it.
+            const operations = await service.store.getOperations(project);
+            const withBackup = operations.filter((op) => op.backupPath && op.backupPath.startsWith(runs + path.sep));
+            assert(withBackup.some((op) => op.operationId === result.operationId));
+            for (const op of withBackup) {
+                assert(remaining.includes(op.operationId), op.operationId);
+                await fs.access(op.backupPath);
+            }
+            assert.strictEqual(remaining.length, 20 + 1 + withBackup.length, "20 newest plus protected runs");
             // Directories without an operation record are older than every recorded one.
             const recorded = remaining.filter((name) => !name.startsWith("op_old_"));
             assert.strictEqual(recorded.length, 6, "four earlier runs, the recovery run and this run");

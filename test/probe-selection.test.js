@@ -137,6 +137,32 @@ async function main() {
         inventory([], false)
     );
     assert.strictEqual(offline.adapterSerial, daplinks[1].serial);
+    // A changed interface configuration drops the remembered device and says why the user must pick again.
+    const dapProfile = createProbeProfile("cmsis-dap", [["adapter driver", "cmsis-dap"]]);
+    assert.throws(
+        () =>
+            resolveProbeConnection(
+                {
+                    probe: "cmsis-dap.cfg",
+                    profile: dapProfile,
+                    successfulConnection: {
+                        version: 2,
+                        probe: "cmsis-dap.cfg",
+                        probeSerial: daplinks[1].serial,
+                        profile: "f".repeat(64)
+                    }
+                },
+                inventory(daplinks)
+            ),
+        (error) =>
+            error.code === "PROBE_SELECTION_REQUIRED" &&
+            error.i18nKey === "probe.rememberedProfileChanged" &&
+            error.details.rememberedProfileChanged === true
+    );
+    assert.throws(
+        () => resolveProbeConnection({ probe: "cmsis-dap.cfg", profile: dapProfile }, inventory(daplinks)),
+        (error) => error.code === "PROBE_SELECTION_REQUIRED" && error.i18nKey === "probe.selectionRequired"
+    );
     assert.strictEqual(explicit.adapterSerial, "ATK 20190528");
     assert.strictEqual(
         explicit.selectionIdentity.attachmentId,

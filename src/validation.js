@@ -1,7 +1,13 @@
 "use strict";
 
-const { SUPPORTED_TYPES, typeByteLength, parseMemberPath, expandCompositeLeaves } = require("./elfSymbols");
-const { variableDisplayName, requiresRuntimePath } = require("./webview/runtime");
+const {
+    SUPPORTED_TYPES,
+    typeByteLength,
+    parseMemberPath,
+    expandCompositeLeaves,
+    createSymbolResolver
+} = require("./elfSymbols");
+const { variableDisplayName, requiresRuntimePath, variableScope } = require("./webview/runtime");
 const { runtimeWatchEntry } = require("./services/runtimeWatch");
 
 function validateLayoutExpansionRequest(handle, generation) {
@@ -72,14 +78,45 @@ function resolveLeafPath(name, byName, supported) {
     };
 }
 
-function normalizeWatchList(items, symbols) {
+// Same-named internal-linkage variables carry CU-qualified identities that can change between builds:
+// a bare `cnt` becomes `main.c::cnt` once another CU defines `cnt`, and `main.c::cnt` becomes
+// `app/main.c::cnt` once another main.c appears. A persisted name follows its unique current identity
+// only within the same ELF name; ambiguity is reported through onAmbiguous, never guessed.
+function currentWatchName(name, byName, resolve, options) {
+    const parsed = parseMemberPath(name);
+    const base = parsed ? parsed.base : name;
+    if (byName.has(name) || byName.has(base)) return name;
+    let symbol;
+    try {
+        symbol = resolve()(base);
+    } catch (error) {
+        if (error?.code === "VARIABLE_AMBIGUOUS")
+            options.onAmbiguous?.(
+                name,
+                (error.details?.candidates || []).map((candidate) => candidate.name)
+            );
+        return name;
+    }
+    const elfName = variableScope(base)?.name || base;
+    if (!symbol?.elfName || symbol.elfName !== elfName) return name;
+    const renamed = symbol.name + name.slice(base.length);
+    options.onRename?.(name, renamed);
+    return renamed;
+}
+
+function normalizeWatchList(items, symbols, options = {}) {
     if (!Array.isArray(items) || !Array.isArray(symbols)) return [];
     const byName = new Map(symbols.map((symbol) => [symbol.name, symbol]));
+    let resolver;
+    const resolve = () => (resolver ||= createSymbolResolver(symbols));
     const supported = new Set(SUPPORTED_TYPES);
     const seen = new Set();
     const result = [];
-    for (const item of items) {
-        if (!item || typeof item.name !== "string" || seen.has(item.name)) continue;
+    for (const original of items) {
+        if (!original || typeof original.name !== "string") continue;
+        const name = currentWatchName(original.name, byName, resolve, options);
+        const item = name === original.name ? original : { ...original, name };
+        if (seen.has(item.name)) continue;
         const symbol = byName.get(item.name);
         const path = parseMemberPath(item.name);
         const runtimeSymbol = symbol || (path && byName.get(path.base));

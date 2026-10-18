@@ -12,8 +12,7 @@ function connectionError(code, message, details = {}) {
         PROBE_CONFIGURATION_CHANGED: "probe.configurationChanged",
         PROBE_SESSION_STALE: "probe.staleConnection",
         PROBE_SELECTION_CANCELLED: "probe.selectionCancelled",
-        PROBE_SERIAL_INVALID: "probe.serialInvalid",
-        PROBE_SELECTED_NOT_FOUND: "probe.rememberedProfileChanged"
+        PROBE_SERIAL_INVALID: "probe.serialInvalid"
     }[code];
     return Object.assign(new Error(message), {
         code,
@@ -160,6 +159,12 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             config.successfulConnection.profile === profile.fingerprint)
             ? config.successfulConnection
             : null;
+    // The previously used probe would have been selected had the interface configuration not changed.
+    const profileChanged =
+        !remembered &&
+        [1, 2].includes(config.successfulConnection?.version) &&
+        !!config.successfulConnection.probeSerial &&
+        config.successfulConnection.probe === result.probe;
     result.selection = { probe: "explicit", transport: result.selection.transport };
     if (!enforceable) result.probeSerial = "";
     if (enforceable && !result.probeSerial && profile?.scriptSerial) {
@@ -185,14 +190,20 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
           )
         : [];
     if (!result.probeSerial && devices.length > 1)
-        throw connectionError(
-            "PROBE_SELECTION_REQUIRED",
-            `Cannot select a unique ${label} from current USB inventory`,
-            {
-                devices,
-                inventoryAvailable: inventory.available,
-                notes: inventory.notes || []
-            }
+        throw Object.assign(
+            connectionError(
+                "PROBE_SELECTION_REQUIRED",
+                profileChanged
+                    ? `The ${label} interface configuration changed since the last connection; select the probe again`
+                    : `Cannot select a unique ${label} from current USB inventory`,
+                {
+                    devices,
+                    inventoryAvailable: inventory.available,
+                    notes: inventory.notes || [],
+                    ...(profileChanged ? { rememberedProfileChanged: true } : {})
+                }
+            ),
+            profileChanged ? { i18nKey: "probe.rememberedProfileChanged" } : {}
         );
     if (!result.probeSerial && devices.length === 1) {
         if (config.selectedDeviceId && config.selectedDeviceId !== devices[0].id)

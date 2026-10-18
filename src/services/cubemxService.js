@@ -142,7 +142,8 @@ class CubeMxService {
         }
     }
 
-    // Keep the newest diagnostics directories, plus any that may hold needed recovery material.
+    // Keep the newest diagnostics directories, plus any that may hold needed recovery material. A
+    // writeback backup lives as long as the operation record that reports it (the store keeps 50).
     async _pruneRuns(root) {
         const runs = path.join(this.store.projectDir(root), "runs");
         const entries = await fs.readdir(runs).catch(() => []);
@@ -154,7 +155,9 @@ class CubeMxService {
                 const op = records.get(id);
                 return !(
                     op &&
-                    (op.status === "in_progress" || ["recoveryRequired", "unknown"].includes(op.sourceProjectStatus))
+                    (op.status === "in_progress" ||
+                        ["recoveryRequired", "unknown"].includes(op.sourceProjectStatus) ||
+                        (op.backupPath && inside(path.join(runs, id), op.backupPath)))
                 );
             })
             .sort((a, b) => (records.get(b)?.createdAt || "").localeCompare(records.get(a)?.createdAt || ""));

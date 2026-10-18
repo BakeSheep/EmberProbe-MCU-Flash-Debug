@@ -3260,6 +3260,8 @@ function addByName() {
     $("addName").value = "";
     hideAutocomplete();
 }
+// Pointer and touch users submit a typed (for example CU-qualified) name without the keyboard.
+$("addBtn").onclick = addByName;
 $("addName").oninput = function () {
     if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
     renderAutocomplete();

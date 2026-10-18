@@ -417,25 +417,24 @@ function macUsbNames(text) {
 }
 
 async function listMacProbeRows(run, family, vidPid = []) {
-    let devices = [];
-    let text = "";
+    // The last table that parsed; an empty old table is a valid answer if the renamed type fails.
+    let table = null;
     let failure;
     for (const dataType of MAC_USB_DATA_TYPES) {
         try {
-            text = await run("system_profiler", [dataType, "-json"]);
+            const text = await run("system_profiler", [dataType, "-json"]);
+            table = { devices: parseMacInventory(text, family, vidPid), text };
         } catch (error) {
-            // A failed old query must not hide the renamed data type.
+            // A failed or unparsable query must not hide the other data type, nor a table already read.
             failure = error;
             continue;
         }
-        failure = undefined;
-        devices = parseMacInventory(text, family, vidPid);
         // Fall back only when the table itself is empty. An empty result for our family on a
         // healthy table is a genuine "no probe attached" and must not pay a second cold start.
-        if (devices.length || !isEmptyMacUsbTable(text)) break;
+        if (table.devices.length || !isEmptyMacUsbTable(table.text)) break;
     }
-    if (failure) throw failure;
-    return { devices, text };
+    if (!table) throw failure;
+    return table;
 }
 
 async function listProbes(options = {}) {

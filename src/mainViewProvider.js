@@ -195,11 +195,20 @@ class MainViewProvider {
             state: context.workspaceState,
             serialize: (items) => this._watchIdentities(items),
             normalize: (items, symbols, key) => {
-                const normalized = validation.normalizeWatchList(items, symbols);
+                // Current name -> persisted name, for items whose CU-qualified identity changed.
+                const renamed = new Map();
+                const changes = this._watchNameChanges;
+                const normalized = validation.normalizeWatchList(items, symbols, {
+                    onRename: (from, to) => {
+                        renamed.set(to, from);
+                        changes?.renamed.set(from, to);
+                    },
+                    onAmbiguous: (name, candidates) => changes?.ambiguous.set(name, candidates)
+                });
                 if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
                 const previous = new Map(items.map((item) => [item.name, item]));
                 return normalized.map((item) => {
-                    const { min, max, value } = previous.get(item.name) || {};
+                    const { min, max, value } = previous.get(renamed.get(item.name) || item.name) || {};
                     return { ...item, min, max, value };
                 });
             },
@@ -3424,6 +3433,11 @@ class MainViewProvider {
             });
             for (const post of graphPosts)
                 post({ type: "variablesListDone", version, total: result.symbols.length, warnings: result.warnings });
+        } else if (phase === "identities") {
+            // DWARF refined the CU identities of same-named statics: resend the renamed symbol list.
+            this._watchLists.invalidate();
+            this._sendElfSnapshot(sidebarPost, "availableVariables");
+            for (const post of graphPosts) this._sendElfSnapshot(post, "variablesList");
         } else if (phase === "types") {
             const symbols = entries.map((symbol) => ({
                 name: symbol.name,
@@ -3643,19 +3657,42 @@ class MainViewProvider {
         const expanded = keys.flatMap((key) =>
             (this._context.workspaceState.get(key) || []).filter((item) => item.layoutExpanded)
         );
-        const rebound = await this._watchLists.rebind(
-            [
-                CACHE_KEYS.sidebarWatchList,
-                CACHE_KEYS.sidebarWriteList,
-                CACHE_KEYS.watchList,
-                ...entries.map((entry) => entry.watchKey)
-            ],
-            symbols
-        );
+        const changes = { renamed: new Map(), ambiguous: new Map() };
+        this._watchNameChanges = changes;
+        let rebound;
+        try {
+            rebound = await this._watchLists.rebind(
+                [
+                    CACHE_KEYS.sidebarWatchList,
+                    CACHE_KEYS.sidebarWriteList,
+                    CACHE_KEYS.watchList,
+                    ...entries.map((entry) => entry.watchKey)
+                ],
+                symbols
+            );
+        } finally {
+            this._watchNameChanges = null;
+        }
         const valid = new Set([...rebound.values()].flat().map((item) => item.name));
-        const invalid = [...new Set(expanded.filter((item) => !valid.has(item.name)).map((item) => item.name))];
+        const invalid = [
+            ...new Set(
+                expanded
+                    .filter((item) => !valid.has(changes.renamed.get(item.name) || item.name))
+                    .map((item) => item.name)
+            )
+        ].filter((name) => !changes.ambiguous.has(name));
         if (invalid.length)
             this._postLive({ type: "liveError", key: "lw.layoutWatchInvalid", params: { names: invalid.join(", ") } });
+        // A saved name that now matches same-named variables of several CUs is removed, never bound to one of them.
+        if (changes.ambiguous.size)
+            this._postLive({
+                type: "liveError",
+                key: "lw.watchAmbiguous",
+                params: {
+                    names: [...changes.ambiguous.keys()].join(", "),
+                    candidates: [...new Set([...changes.ambiguous.values()].flat())].slice(0, 8).join(", ")
+                }
+            });
         this._latestSidebarSamples.clear();
         for (const entry of entries) entry.latestSamples.clear();
         return { entries, rebound };

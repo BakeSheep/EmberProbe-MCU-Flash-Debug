@@ -3,7 +3,7 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const { parentPort, workerData, isMainThread } = require("worker_threads");
-const { parseElfSymbols, parseElfSections, qualifySameNameSymbols, sameNameSymbolWarning } = require("./elfSymbols");
+const { parseElfSymbols, parseElfSections, refineSameNameSymbols } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
 const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
 const {
@@ -108,24 +108,6 @@ async function run(port, filePath, generation = 0) {
         }
         const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
         const result = parseElfSymbols(buffer);
-        let dwarf = null;
-        let dwarfError = null;
-        const parseDwarfOnce = () => {
-            if (dwarf || dwarfError) return;
-            try {
-                dwarf = parseDwarfInternal(buffer, { filePath });
-            } catch (error) {
-                dwarfError = error;
-            }
-        };
-        // Same-named statics of several CUs are published under CU-qualified identities, which
-        // need DWARF source paths. Settle them before any symbol leaves the Worker.
-        if (result.symbols.some((symbol) => symbol.elfName)) {
-            parseDwarfOnce();
-            if (dwarf) result.symbols = qualifySameNameSymbols(result.symbols, dwarf.variables);
-            const warning = sameNameSymbolWarning(result.symbols);
-            if (warning) result.warnings.push(warning);
-        }
         symbolNames = new Set(result.symbols.map((symbol) => symbol.name));
         port.postMessage({
             type: "metadata",
@@ -145,10 +127,16 @@ async function run(port, filePath, generation = 0) {
         await sendChunks(port, "symbols", result.symbols, acks);
         await sendChunks(port, "functions", result.functions, acks);
         try {
-            parseDwarfOnce();
-            if (dwarfError) throw dwarfError;
+            const dwarf = parseDwarfInternal(buffer, { filePath });
+            // Same-named statics were published under STT_FILE identities so symbols never wait for
+            // DWARF; refine them by DWARF source path before any type is keyed by name.
+            const refined = refineSameNameSymbols(result.symbols, dwarf.variables);
+            if (refined.identities.length) {
+                result.symbols = refined.symbols;
+                symbolNames = new Set(result.symbols.map((symbol) => symbol.name));
+                await sendChunks(port, "symbolIdentities", refined.identities, acks);
+            }
             const parsed = bindVariableSymbols(dwarf, result.symbols);
-            dwarf = null;
             const types = buildVariableTypes(parsed);
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);

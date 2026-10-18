@@ -12,11 +12,17 @@ const zlib = require("zlib");
 const elf = require("../src/elfSymbols");
 const runtime = require("../src/webview/runtime");
 const { normalizeWatchList } = require("../src/validation");
+const i18n = require("../src/i18n");
 const { bindVariableSymbols } = require("../src/dwarf/types");
 const { loadProvider } = require("./helpers/load-provider");
 const { createWorkerElfService } = require("./helpers/elf-service");
 const { diagnosticForError } = require("../skills/_emberprobe/agent-client");
-const { parseSymbolsBuffer, findSymbol, variableSpecs } = require("../skills/mcu-variables/scripts/read");
+const {
+    parseSymbolsBuffer,
+    findSymbol,
+    variableSpecs,
+    directRequests
+} = require("../skills/mcu-variables/scripts/read");
 const fixture = require("./fixtures/cu-static-variables.json");
 
 const buffer = zlib.inflateSync(Buffer.from(fixture.elf, "base64"));
@@ -91,8 +97,30 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
     ]);
     assert.strictEqual(clash.length, 1);
     assert.throws(() => elf.createSymbolResolver(clash)("0x20000000::x"), { code: "VARIABLE_AMBIGUOUS" });
-    assert.match(elf.sameNameSymbolWarning(elfOnly), /^3 个变量名在多个编译单元中各有定义/);
-    assert.strictEqual(elf.sameNameSymbolWarning([{ name: "x" }]), "");
+    // The warning is localized by the host; the Worker has no UI language.
+    const translate = (lang) => (key, params) => i18n.t(lang, key, params);
+    assert.match(elf.sameNameSymbolWarning(elfOnly, translate("zh")), /^3 个变量名在多个编译单元中各有定义/);
+    assert.match(
+        elf.sameNameSymbolWarning(elfOnly, translate("en")),
+        /^3 variable names are defined in several compilation units.*g_localConfig \(main\.c::g_localConfig, other\.c::g_localConfig\)/
+    );
+    assert.strictEqual(elf.sameNameSymbolWarning([{ name: "x" }], translate("en")), "");
+    // DWARF refinement reports each renamed identity so already-published symbols can follow it.
+    const refinedCopy = elfOnly.map((symbol) => ({ ...symbol }));
+    const before = refinedCopy.find((symbol) => symbol.elfName === "s_counter" && symbol.name.startsWith("0x"));
+    const previousName = before.name;
+    const { identities } = elf.refineSameNameSymbols(refinedCopy, [
+        { name: "s_counter", address: before.address, sourceFile: "/w/src/a/main.c" }
+    ]);
+    assert.deepStrictEqual(identities.find(([previous]) => previous === previousName)[1], {
+        name: "a/main.c::s_counter",
+        elfName: "s_counter",
+        scope: "a/main.c",
+        sameNameCount: 3,
+        sourceFile: "/w/src/a/main.c",
+        addressAmbiguous: false
+    });
+    assert.deepStrictEqual(elf.refineSameNameSymbols([{ name: "x" }], []).identities, []);
 }
 
 // —— DWARF binding never merges CUs: each identity keeps its own type and layout ——
@@ -155,6 +183,15 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         { name: "0x2000::v", type: "i16" },
         { name: "ns::w", type: "u8" }
     ]);
+    // Direct --elf/--port mode: the `::` of a CU scope is never a type separator.
+    assert.deepStrictEqual(
+        directRequests(listed, "'other.c'::s_counter:u16,src/b/other.c::calls.0").map((item) => [item.name, item.type]),
+        [
+            ["other.c::s_counter", "u16"],
+            ["other.c::calls.0", "u32"]
+        ]
+    );
+    assert.throws(() => directRequests(listed, "g_localConfig"), { code: "VARIABLE_AMBIGUOUS" });
     const { error: diagnostic } = diagnosticForError(
         Object.assign(new Error("ambiguous"), { code: "VARIABLE_AMBIGUOUS", details: { candidates: [] } }),
         { operation: "variables.write" }
@@ -167,9 +204,23 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ember-cu-statics-"));
     const file = path.join(root, "statics.elf");
     fs.writeFileSync(file, buffer);
-    const service = createWorkerElfService(file);
+    const phases = [];
+    const published = [];
+    const service = createWorkerElfService(file, {
+        t: (key, params) => i18n.t("en", key, params),
+        onChange: (phase, _result, entries) => {
+            phases.push(phase);
+            if (phase === "symbols") published.push(...entries.map((entry) => entry.name));
+        }
+    });
     try {
         const result = await service.ready();
+        await service.dwarfPromise;
+        // Symbols are published before the DWARF parse, under STT_FILE identities, and renamed afterwards.
+        assert(phases.indexOf("symbolsDone") < phases.indexOf("identities"), phases.join());
+        assert.strictEqual(published.filter((name) => /^0x[0-9a-f]+::s_counter$/.test(name)).length, 2);
+        assert(service.symbolByName.has("a/main.c::s_counter"));
+        assert(![...service.symbolByName.keys()].some((name) => /^0x[0-9a-f]+::s_counter$/.test(name)));
         const symbol = (name) => result.symbols.find((item) => item.name === name);
         // DWARF source paths extend the scope until it is unique: two main.c files and one other.c.
         assert.deepStrictEqual(
@@ -181,7 +232,9 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         assert.strictEqual(symbol("b/main.c::s_counter").sourceFile, "src/b/main.c");
         assert.strictEqual(symbol("main.c::calls.0").displayName, "main.c::calls");
         assert.strictEqual(symbol("main.c::g_localConfig").isComposite, true);
-        assert(result.warnings.some((warning) => warning.includes("g_localConfig（main.c::g_localConfig")));
+        const sameName = result.warnings.filter((warning) => warning.startsWith("3 variable names are defined"));
+        assert.strictEqual(sameName.length, 1, "the refined warning replaces the first one");
+        assert(sameName[0].includes("s_counter (a/main.c::s_counter, b/main.c::s_counter, other.c::s_counter)"));
 
         const sections = elf.parseElfSections(buffer).sections;
         const reads = [];
@@ -331,6 +384,38 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
             [
                 ["other.c::g_localConfig.mode", symbol("other.c::g_localConfig").address],
                 ["a/main.c::s_counter", symbol("a/main.c::s_counter").address]
+            ]
+        );
+        // Persisted names follow a changed CU identity of the same ELF name; ambiguity is reported, never guessed.
+        const renamed = [];
+        const ambiguous = [];
+        const followed = normalizeWatchList(
+            [
+                { name: `0x${address}::s_counter` },
+                { name: "src/b/other.c::s_counter" },
+                { name: "s_counter" },
+                { name: "main.c::s_counter" },
+                { name: "G_SHARED" }
+            ],
+            result.symbols,
+            {
+                onRename: (from, to) => renamed.push([from, to]),
+                onAmbiguous: (name, names) => ambiguous.push([name, names])
+            }
+        );
+        assert.deepStrictEqual(
+            followed.map((item) => item.name),
+            ["a/main.c::s_counter", "other.c::s_counter"]
+        );
+        assert.deepStrictEqual(renamed, [
+            [`0x${address}::s_counter`, "a/main.c::s_counter"],
+            ["src/b/other.c::s_counter", "other.c::s_counter"]
+        ]);
+        assert.deepStrictEqual(
+            ambiguous.map(([name, names]) => [name, names.length]),
+            [
+                ["s_counter", 3],
+                ["main.c::s_counter", 2]
             ]
         );
         console.log("agent CU static variables ok");

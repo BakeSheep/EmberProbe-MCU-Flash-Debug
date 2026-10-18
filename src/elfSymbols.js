@@ -113,8 +113,30 @@ function qualifySameNameSymbols(symbols, variables = null) {
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
 }
-// 供 ELF 加载告警使用：概括同名多编译单元变量，提示改用 文件名::变量名。
-function sameNameSymbolWarning(symbols) {
+// 同名符号先以 STT_FILE 身份发布；DWARF 就绪后按源文件路径精化（原地修改）。
+// 返回精化后的列表，以及每个同名符号的 [原身份名, 新身份 | null（因地址歧义被合并）]。
+function refineSameNameSymbols(symbols, variables) {
+    const previous = new Map(symbols.filter((symbol) => symbol.elfName).map((symbol) => [symbol, symbol.name]));
+    if (!previous.size) return { symbols, identities: [] };
+    const refined = qualifySameNameSymbols(symbols, variables);
+    const kept = new Set(refined);
+    const identities = Array.from(previous, ([symbol, name]) => [
+        name,
+        kept.has(symbol)
+            ? {
+                  name: symbol.name,
+                  elfName: symbol.elfName,
+                  scope: symbol.scope,
+                  sameNameCount: symbol.sameNameCount,
+                  sourceFile: symbol.sourceFile || "",
+                  addressAmbiguous: !!symbol.addressAmbiguous
+              }
+            : null
+    ]);
+    return { symbols: refined, identities };
+}
+// 供 ELF 加载告警使用：概括同名多编译单元变量，提示改用 文件名::变量名。t 为 i18n 翻译函数。
+function sameNameSymbolWarning(symbols, t) {
     const groups = new Map();
     for (const symbol of symbols || []) {
         if (!symbol.elfName) continue;
@@ -124,12 +146,8 @@ function sameNameSymbolWarning(symbols) {
     if (!groups.size) return "";
     const shown = Array.from(groups)
         .slice(0, 5)
-        .map(([name, ids]) => `${name}（${ids.slice(0, 4).join("、")}${ids.length > 4 ? "…" : ""}）`);
-    return (
-        `${groups.size} 个变量名在多个编译单元中各有定义，按裸名读写会被拒绝，请使用 文件名::变量名：` +
-        shown.join("；") +
-        (groups.size > 5 ? "…" : "")
-    );
+        .map(([name, ids]) => `${name} (${ids.slice(0, 4).join(", ")}${ids.length > 4 ? ", …" : ""})`);
+    return t("live.sameNameSymbols", { count: groups.size, names: shown.join("; ") + (groups.size > 5 ? "; …" : "") });
 }
 function symbolCandidates(symbols) {
     return symbols.slice(0, 32).map((symbol) => ({
@@ -1139,6 +1157,7 @@ function isScalarLeafNode(node) {
 module.exports = {
     parseElfSymbols,
     qualifySameNameSymbols,
+    refineSameNameSymbols,
     sameNameSymbolWarning,
     createSymbolResolver,
     isCppRuntimeSymbol,

@@ -316,6 +316,21 @@ function findSymbol(symbols, requested) {
         );
     return null;
 }
+// 直接 --elf/--port 模式的请求解析：与 Bridge 模式共用 variableSpecs 的拆分规则，
+// 编译单元前缀（main.c::x）与 C++ 限定名中的 :: 都不是类型分隔符。
+function directRequests(symbols, variables) {
+    return (variables ? variableSpecs(variables) : []).map(({ name, type: explicit = "" }) => {
+        const symbol = findSymbol(symbols, name);
+        if (!symbol)
+            throw Object.assign(new Error(`Variable not found in ELF: ${name}`), { code: "VARIABLE_NOT_FOUND" });
+        const type = explicit || infer(symbol.size);
+        if (!TYPES.has(type))
+            throw new Error(
+                `Variable ${name} is ${symbol.size} bytes; specify a scalar type or read a member/element instead`
+            );
+        return { ...symbol, type };
+    });
+}
 function readStableElf(file) {
     const before = fs.statSync(file);
     const buffer = fs.readFileSync(file);
@@ -660,23 +675,7 @@ async function main() {
         process.stdout.write(listOutput({ elf, snapshot, symbols }, opt["json-array"]));
         return;
     }
-    const requested = String(opt.variables || "")
-        .split(",")
-        .filter(Boolean)
-        .map((spec) => {
-            const split = spec.lastIndexOf(":");
-            const name = split > 0 ? spec.slice(0, split) : spec;
-            const explicit = split > 0 ? spec.slice(split + 1) : "";
-            const symbol = findSymbol(symbols, name);
-            if (!symbol)
-                throw Object.assign(new Error(`Variable not found in ELF: ${name}`), { code: "VARIABLE_NOT_FOUND" });
-            const type = explicit || infer(symbol.size);
-            if (!TYPES.has(type))
-                throw new Error(
-                    `Variable ${name} is ${symbol.size} bytes; specify a scalar type or read a member/element instead`
-                );
-            return { ...symbol, type };
-        });
+    const requested = directRequests(symbols, opt.variables);
     if (!requested.length) throw new Error("Pass --variables name[:type],...");
     if (opt["add-to"]) {
         const destination = opt["add-to"];
@@ -773,6 +772,7 @@ module.exports = {
     variableSpecs,
     parseSymbolsBuffer,
     findSymbol,
+    directRequests,
     memoryValues,
     decode,
     decodeText,

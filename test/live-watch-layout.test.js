@@ -34,7 +34,7 @@ try {
     };
     const key = (value) => splitter.dispatchEvent(new window.KeyboardEvent("keydown", { key: value }));
     window.applySideLayout();
-    assert.strictEqual(document.getElementById("addBtn"), null);
+    assert.ok(document.getElementById("addBtn").closest(".sampling-tools"), "typed names can be added by pointer");
     assert.strictEqual(layout.style.getPropertyValue("--side-height"), "220px");
     assert.strictEqual(splitter.getAttribute("aria-orientation"), "horizontal");
     pointer("pointerdown", 0, 220, 1, 2);

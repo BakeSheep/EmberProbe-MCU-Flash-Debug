@@ -198,6 +198,21 @@ async function main() {
     });
     assert.deepStrictEqual(macHealthyCalls, ["SPUSBDataType"]);
     assert.strictEqual(macHealthy.devices.length, 0);
+    // Before macOS 26 the renamed type does not exist: an empty old table is still a valid answer.
+    for (const renamed of [
+        async () => {
+            throw new Error("Unknown data type");
+        },
+        async () => ""
+    ]) {
+        const macEmpty = await listProbes({
+            platform: "darwin",
+            family: "cmsis-dap",
+            run: async (cmd, args) => (args[0] === "SPUSBDataType" ? JSON.stringify({ SPUSBDataType: [] }) : renamed())
+        });
+        assert.strictEqual(macEmpty.available, true);
+        assert.deepStrictEqual(macEmpty.devices, []);
+    }
     // Both names empty: report an empty inventory instead of failing the query.
     const macEmpty = await listProbes({
         platform: "darwin",

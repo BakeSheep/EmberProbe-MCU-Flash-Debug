@@ -571,6 +571,8 @@ module.exports = Object.freeze({
     "lw.layoutExpansionLimit": "Layout expansion limit reached. Refresh variables to start again.",
     "lw.layoutExpansionFailed": "Could not load members. Try expanding again.",
     "lw.layoutWatchInvalid": "Expanded watch paths are unavailable after ELF reload: {names}",
+    "lw.watchAmbiguous":
+        "Removed watch items defined in several compilation units: {names}. Add them again with a qualified name: {candidates}",
     "lw.compositeNoLayout": "Missing DWARF layout info; cannot expand members",
     "lw.unknownType": "Unknown type",
     "lw.cppUnknownType": "C++ symbol has no DWARF type info; refusing to guess a scalar type from its size",
@@ -758,6 +760,8 @@ module.exports = Object.freeze({
     "live.elfReadFail": "Cannot read ELF: {path}",
     "live.elfTooLarge": "ELF exceeds the {limit} MiB safety limit and was not parsed: {path}",
     "live.varNotFound": "Variable not found in the ELF: {name}",
+    "live.sameNameSymbols":
+        "{count} variable names are defined in several compilation units; reads and writes by the bare name are rejected. Use file::name: {names}",
     "live.varAmbiguous": "Variable {name} is defined in several compilation units; use a qualified name: {candidates}",
     "warn.noDwarf": "No DWARF type info found; types are inferred from size (build with -g for precise types)",
     "diag.cppTypeUnresolved": "C++ symbol {name} has no DWARF type; marked unobservable instead of guessing a scalar",

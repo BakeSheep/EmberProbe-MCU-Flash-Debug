@@ -108,7 +108,9 @@ class ProbeConnectionService {
                     const selected = await this.window.showQuickPick(choices, {
                         title: staleRemembered
                             ? this.t("probe.pickStaleTitle", { serial: error.details.probeSerial })
-                            : this.t("probe.pickTitle")
+                            : error.details?.rememberedProfileChanged
+                              ? this.t("probe.rememberedProfileChanged")
+                              : this.t("probe.pickTitle")
                     });
                     if (selected) {
                         const serial = selected.value;

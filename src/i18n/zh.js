@@ -550,6 +550,8 @@ module.exports = Object.freeze({
     "lw.layoutExpansionLimit": "已达到布局展开上限，请刷新变量后重新开始。",
     "lw.layoutExpansionFailed": "成员加载失败，请重试展开。",
     "lw.layoutWatchInvalid": "ELF 更新后展开的观察路径不可用：{names}",
+    "lw.watchAmbiguous":
+        "以下观察项在多个编译单元中各有定义，已移除：{names}。请改用带编译单元的名称重新添加：{candidates}",
     "lw.compositeNoLayout": "缺少 DWARF 布局信息，无法展开成员",
     "lw.unknownType": "未知类型",
     "lw.cppUnknownType": "C++ 符号缺少 DWARF 类型信息，不按大小猜测标量类型",
@@ -728,6 +730,8 @@ module.exports = Object.freeze({
     "live.elfReadFail": "无法读取 ELF：{path}",
     "live.elfTooLarge": "ELF 超过 {limit} MiB 安全上限，已拒绝解析：{path}",
     "live.varNotFound": "ELF 中未找到变量：{name}",
+    "live.sameNameSymbols":
+        "{count} 个变量名在多个编译单元中各有定义，按裸名读写会被拒绝，请使用 文件名::变量名：{names}",
     "live.varAmbiguous": "变量 {name} 在多个编译单元中各有定义，请改用带编译单元的名称：{candidates}",
     "warn.noDwarf": "未读取到 DWARF 类型信息，类型按大小推测（如需精确类型，请用带 -g 的 Debug 构建）",
     "diag.cppTypeUnresolved": "C++ 符号 {name} 未能从 DWARF 解析类型，已标记为不可观测而非猜测标量",

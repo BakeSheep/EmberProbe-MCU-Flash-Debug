@@ -28,6 +28,7 @@ class ElfService {
         this.dwarf = options.dwarf;
         this.cleanPath = options.cleanPath;
         this.t = options.t;
+        this._sameNameWarnings = new WeakMap();
         this.workerPath = options.workerPath || null;
         this.onChange = options.onChange || (() => {});
         this.cache = null;
@@ -96,7 +97,8 @@ class ElfService {
             symbol.displayName = displayNames.get(symbol.name) || symbol.displayName || symbol.name;
             symbol.qualifiedName = symbol.displayName;
             symbol.typeName = info?.typeName || "";
-            symbol.sourceFile = info?.sourceFile || "";
+            // A same-named static keeps the DWARF source path that settled its CU identity.
+            symbol.sourceFile = info?.sourceFile || symbol.sourceFile || "";
             const origin = classifyVariableOrigin(symbol, { debugComplete: hasDebugInfo, hasDebugInfo: !!info });
             if (symbol.origin !== undefined && symbol.origin !== origin) originChanged.push(symbol);
             symbol.origin = origin;
@@ -292,7 +294,16 @@ class ElfService {
                 }
                 case "symbolsDone":
                     break;
+                case "symbolIdentities":
+                    this._applySymbolIdentities(result, message.entries);
+                    ack("symbolIdentities");
+                    break;
+                case "symbolIdentitiesDone":
+                    this._setSameNameWarning(result);
+                    this.onChange("identities", result);
+                    break;
                 case "functionsDone":
+                    this._setSameNameWarning(result);
                     this.resolveSymbols?.(result);
                     this.resolveSymbols = null;
                     this.rejectSymbols = null;
@@ -621,20 +632,19 @@ class ElfService {
         const qualified = new Map();
         for (const symbol of Array.isArray(parsed?.symbols) ? parsed.symbols : [])
             if (symbol.elfName) qualified.set(`${symbol.elfName}\0${symbol.address}\0${symbol.size}`, symbol);
-        if (qualified.size) {
-            for (const symbol of result.symbols) {
-                const match = qualified.get(`${symbol.elfName || symbol.name}\0${symbol.address}\0${symbol.size}`);
-                if (match)
-                    Object.assign(symbol, {
-                        name: match.name,
-                        elfName: match.elfName,
-                        scope: match.scope,
-                        sameNameCount: match.sameNameCount
-                    });
-            }
-            const warning = this.elfSymbols.sameNameSymbolWarning?.(result.symbols);
-            if (warning) result.warnings.push(warning);
+        for (const symbol of result.symbols) {
+            const match = qualified.get(`${symbol.elfName || symbol.name}\0${symbol.address}\0${symbol.size}`);
+            if (match)
+                Object.assign(symbol, {
+                    name: match.name,
+                    elfName: match.elfName,
+                    scope: match.scope,
+                    sameNameCount: match.sameNameCount,
+                    // Path-suffix scopes ('app/main.c'::x) match against the DWARF source path.
+                    ...(match.sourceFile ? { sourceFile: match.sourceFile } : {})
+                });
         }
+        this._setSameNameWarning(result);
         result.typeMetadataIncomplete = parsed?.diagnostics?.some((entry) => entry.code !== "DWARF_MISSING");
         result.companions = parsed?.companions || [];
         result.diagnostics = parsed?.diagnostics || [];
@@ -650,6 +660,47 @@ class ElfService {
         if (!typeMap || typeMap.size === 0) result.warnings.push(this.t("warn.noDwarf"));
         this.cache = { elfPath, mtimeMs: before.mtimeMs, size: before.size, sha256, result };
         return result;
+    }
+    // Worker refinement of same-named statics: [previous identity, identity | null]. Old keys are all
+    // removed first, since a refined name may equal another symbol's previous name.
+    _applySymbolIdentities(result, entries) {
+        const updates = [];
+        for (const [previous, identity] of entries) {
+            const symbol = this.symbolByName.get(previous);
+            if (!symbol) continue;
+            this.symbolByName.delete(previous);
+            updates.push([symbol, identity]);
+        }
+        const removed = new Set();
+        for (const [symbol, identity] of updates) {
+            if (!identity) {
+                removed.add(symbol);
+                continue;
+            }
+            const { addressAmbiguous, ...fields } = identity;
+            Object.assign(symbol, fields);
+            if (addressAmbiguous) symbol.addressAmbiguous = true;
+            else delete symbol.addressAmbiguous;
+            this.symbolByName.set(symbol.name, symbol);
+        }
+        if (removed.size) {
+            // Keep the array identity: name indexes and resolved promises share it.
+            const kept = result.symbols.filter((symbol) => !removed.has(symbol));
+            result.symbols.splice(0, result.symbols.length, ...kept);
+        }
+    }
+    // The same-name warning is localized here (the Worker has no language) and replaced when identities change.
+    _setSameNameWarning(result) {
+        const previous = this._sameNameWarnings.get(result);
+        if (previous) {
+            const index = result.warnings.indexOf(previous);
+            if (index >= 0) result.warnings.splice(index, 1);
+        }
+        const warning = this.t ? this.elfSymbols.sameNameSymbolWarning?.(result.symbols, this.t) : "";
+        if (warning) {
+            result.warnings.push(warning);
+            this._sameNameWarnings.set(result, warning);
+        } else this._sameNameWarnings.delete(result);
     }
 }
 
