@@ -153,7 +153,8 @@ class WriteAuthorization {
                 "A connection identity is required before confirming a write",
                 "WRITE_CONNECTION_REQUIRED"
             );
-        if (this.isTrusted(plan)) return { authorized: true, mode: "workspace", remember: false };
+        if (options.allowTrusted !== false && this.isTrusted(plan))
+            return { authorized: true, mode: "workspace", remember: false };
         const confirmationId = String(options.confirmationId || "").trim();
         if (!confirmationId) {
             if (options.remember)

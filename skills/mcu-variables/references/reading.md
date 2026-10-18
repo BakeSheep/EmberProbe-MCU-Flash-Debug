@@ -26,6 +26,8 @@ For a current value, pass names directly. Do not search source declarations firs
 node <skill-dir>/scripts/read.js --workspace <workspace> --variables Tick,sinx
 ```
 
+Results include `firmwareConsistency`: `match` when the configured ELF has the SHA-256 that EmberProbe last programmed in this workspace, `mismatch` when it differs (for example a rebuild that was not flashed), and `unknown` when EmberProbe has no record. On `mismatch` the result also carries an `ELF_TARGET_MISMATCH` warning: addresses come from the disk ELF and may not match the running firmware, so report the warning with the values and suggest flashing the current ELF; do not present the values as reliable. `unknown` is not an error, because programming by other tools is not observed.
+
 Use `--list` only after a missing or ambiguous name. DWARF paths support members and array selections such as `sensor.pos.y`, `buf[0]`, `buf[1:5]`, and `buf[*]`. Whole composites return a reporting tree and cannot be trended.
 
 C++ names can contain `::`; quote qualified paths such as `"app::sensor.pos.y"`. Prefer an

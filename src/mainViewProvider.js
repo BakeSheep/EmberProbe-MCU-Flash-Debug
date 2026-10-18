@@ -42,6 +42,7 @@ const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator } = require("./probeCoordinator");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
+const { FirmwareRecord } = require("./services/firmwareRecord");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
 const { AgentService } = require("./services/agentService");
@@ -275,7 +276,8 @@ class MainViewProvider {
         });
         this._writeAuthorization = new WriteAuthorization(context.workspaceState);
         this._peripheralWriteAuthorization = new PeripheralWriteAuthorization();
-        this._flashAuthorization = new FlashAuthorization();
+        this._flashAuthorization = new FlashAuthorization({ storage: context.workspaceState });
+        this._firmwareRecord = new FirmwareRecord(context.workspaceState);
         this._configurationStore = new ConfigurationStore({
             vscode,
             context,
@@ -427,6 +429,7 @@ class MainViewProvider {
             authorization: this._flashAuthorization,
             prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
             recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
+            recordFlashed: (entry) => this._firmwareRecord.record(entry),
             isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
         });
         this._agentService = new AgentService({
@@ -944,6 +947,11 @@ class MainViewProvider {
                             );
                             return connection;
                         },
+                        onDownloaded: (image) =>
+                            this._firmwareRecord.record({
+                                ...image,
+                                connection: { ...connection, probe: debuggerCfg, target: mcuCore }
+                            }),
                         cwd
                     },
                     (event) => {
@@ -1543,6 +1551,7 @@ class MainViewProvider {
                 return {
                     source,
                     elf: elfResult.elf,
+                    ...this._firmwareConsistency(elfResult),
                     samples: result,
                     ...(variableErrors.length ? { partial: true, variableErrors } : {})
                 };
@@ -2326,6 +2335,8 @@ class MainViewProvider {
         return {
             source: result.source,
             elf: result.elf,
+            firmwareConsistency: result.firmwareConsistency,
+            ...(result.warnings ? { warnings: result.warnings } : {}),
             ...result.samples[0],
             ...(result.variableErrors ? { partial: true, variableErrors: result.variableErrors } : {})
         };
@@ -2565,11 +2576,15 @@ class MainViewProvider {
         await this._prepareRequestedLayouts(params.values);
         const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
+        const consistency = this._firmwareConsistency(plan.elfResult);
+        // A remembered write permission never applies while the ELF differs from the last
+        // EmberProbe-programmed image: the addresses may target different data on the device.
         const authorization = this._writeAuthorization.authorize(plan, {
             confirmationId: params.confirmationId,
-            remember: params.remember
+            remember: params.remember,
+            allowTrusted: consistency.firmwareConsistency.status !== "mismatch"
         });
-        if (!authorization.authorized) return authorization.response;
+        if (!authorization.authorized) return { ...authorization.response, ...consistency };
         // Use the real DAP bridge for a paused managed debug session. The generic Agent probe
         // helper deliberately wraps paused reads in a read-only session; passing that wrapper to
         // the write path loses the DAP connection identity between confirmation and execution.
@@ -2578,11 +2593,11 @@ class MainViewProvider {
         if (this._debugBridge.agentStatus().state === "paused") {
             if (!this._debugBridge.canWrite) await this._debugBridge.prepareWriteSnapshot(plan.items);
             const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
-            return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
+            return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
         if (this._managedDebugServer && this._debugBridge.agentStatus().state === "running") {
             const result = await this._executeWritePlan(this._managedDebugServer, "debug-running-openocd", plan);
-            return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
+            return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
         const result = await this._withAgentProbe(
             ({ session, source }) => this._executeWritePlan(session, source, plan),
@@ -2590,7 +2605,13 @@ class MainViewProvider {
                 allowPausedDebugRead: true
             }
         );
-        return { ...result, permission: await this._writePermissionGrant(authorization, plan) };
+        return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
+    }
+    _firmwareConsistency(elfResult) {
+        const record = this._firmwareRecord || new FirmwareRecord(null);
+        const firmwareConsistency = record.check(elfResult?.elf);
+        const warning = record.warning(elfResult?.elf);
+        return { firmwareConsistency, ...(warning ? { warnings: [warning] } : {}) };
     }
     async _writePermissionGrant(authorization, plan) {
         if (!authorization.remember)

@@ -7,12 +7,22 @@ dialog. The Bridge checks plan identity and ID expiry/reuse; it does not indepen
 attest that the Agent obtained a human answer. A returned ID alone never authorizes an
 Agent to execute.
 
-Flash programming, Flash verification and peripheral writes use one-time confirmation.
-Variable writes and CubeMX can remember an explicitly requested chat choice for up to
-24 hours, bound to the ELF/connection or project/tool identity. `remember` requires a
-valid confirmation ID and must not be inferred from a request to perform the operation.
-Resetting permission clears the pending confirmations and remembered authorization.
-Old independent modal grant records are no longer consulted.
+Flash verification and peripheral writes use one-time confirmation. Flash programming,
+variable writes and CubeMX can remember an explicitly requested chat choice for up to
+24 hours. Variable writes bind it to the ELF digest and connection, CubeMX to the
+project/tool identity. Flash programming binds it to the ELF path, target, probe identity,
+transport, adapter speed and OpenOCD executable but not to the image digest, so rebuilding
+the same path keeps the permission; every programming result still reports the SHA-256 that
+was written. Probes without a reliable serial and Flash verification never remember.
+`remember` requires a valid confirmation ID and must not be inferred from a request to
+perform the operation. Resetting permission clears the pending confirmations and remembered
+authorization. Old independent modal grant records are no longer consulted.
+
+EmberProbe records the digest of the last image it programmed in each workspace. Agent
+reads, samples and writes report `firmwareConsistency` (`match`, `mismatch` or `unknown`)
+against the configured ELF and add an `ELF_TARGET_MISMATCH` warning on mismatch; a
+remembered variable-write permission does not apply while the ELF differs. Programming by
+other tools is not observed, so `unknown` or a stale record is evidence, not proof.
 
 Confirmation responses describe the actual bounded snapshot/plan. ELF, connection, project,
 SVD, register values and debug-stop identity are recomputed when the confirmed request

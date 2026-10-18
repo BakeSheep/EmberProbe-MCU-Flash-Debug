@@ -15,10 +15,10 @@ class FlashService {
         try {
             const snapshot = path.join(directory, "firmware.elf");
             const elf = await inspectElf(options.elf, { snapshot });
-            const { prepare, ...request } = options;
+            const { prepare, onDownloaded, ...request } = options;
             const connection = prepare ? await prepare() : {};
             assertWriteIdentity({ ...request, ...connection });
-            return await this.runner.runOpenOcd(
+            const result = await this.runner.runOpenOcd(
                 vscode,
                 {
                     ...request,
@@ -29,6 +29,9 @@ class FlashService {
                 },
                 onProgress
             );
+            // The download already succeeded; a failing record must not report it as failed.
+            await Promise.resolve(onDownloaded?.({ elf: elf.path, sha256: elf.sha256 })).catch(() => {});
+            return result;
         } finally {
             await fs.rm(directory, { recursive: true, force: true });
         }
