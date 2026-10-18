@@ -25,4 +25,6 @@ their supported runtime layouts; it does not substitute for task/frame-local GDB
 - For starting, stopping, or querying persistent sidebar/chart sampling, read the sampling controls in [references/reading.md](references/reading.md) and use `scripts/sampling.js`.
 - Only when the user explicitly asks to set, tune, override, or otherwise modify a variable, read [references/writing.md](references/writing.md) and use `scripts/write.js`.
 
+A name defined in several source files fails with `VARIABLE_AMBIGUOUS`; pick the intended candidate (ask the user if unclear) and use its `file::name` form, as described in [references/reading.md](references/reading.md).
+
 Never turn a read or monitoring request into a write. A write request starts planning but is not itself approval to execute the returned write plan. Preserve exact 64-bit `valueText` fields when reporting values, and base failures on the structured stderr diagnostic instead of guessing a probe or service cause.

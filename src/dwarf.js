@@ -8,7 +8,7 @@ const {
     buildDisplayNames,
     bindVariableSymbols
 } = require("./dwarf/types");
-const { parseElfSymbols } = require("./elfSymbols");
+const { parseElfSymbols, qualifySameNameSymbols } = require("./elfSymbols");
 const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
 const { MAX_DIAGNOSTICS } = require("./dwarf/diagnostics");
 // 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
@@ -22,7 +22,8 @@ function _parseDwarfCached(buffer, options = {}) {
         parsed = _parseDwarfInternal(buf, options);
         let symbols = [];
         try {
-            symbols = parseElfSymbols(buf).symbols;
+            // 同名 static 的编译单元身份必须在绑定前按 DWARF 源文件确定，与 Worker 路径保持一致。
+            symbols = qualifySameNameSymbols(parseElfSymbols(buf).symbols, parsed.variables);
         } catch {
             // Synthetic or stripped DWARF can still be inspected without a symbol table.
         }
@@ -98,6 +99,7 @@ function parseDwarf(buffer, options = {}) {
                 types,
                 layouts,
                 displayNames: buildDisplayNames(parsed),
+                symbols: parsed.symbols,
                 diagnostics,
                 companions: parsed.companions
             };

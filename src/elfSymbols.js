@@ -15,6 +15,8 @@ const {
     layoutArrayIndices,
     formatPointer,
     summaryRoute,
+    variableScope,
+    scopedVariableName,
     MAX_LAYOUT_PATH_DEPTH,
     MAX_LAYOUT_VISITS
 } = require("./webview/runtime");
@@ -34,41 +36,211 @@ function isItaniumMangled(name) {
     return /^_Z[A-Z0-9]/.test(String(name));
 }
 
-function resolveVariableRequests(symbols, requests) {
+function normalizeSourcePath(value) {
+    return String(value || "").replace(/\\/g, "/");
+}
+// 路径后缀匹配只在路径分隔符边界成立：main.c 匹配 src/main.c，但不匹配 mymain.c。
+function sourceMatches(source, file) {
+    return !!source && !!file && (source === file || source.endsWith("/" + file));
+}
+function uniqueSourceSuffix(paths, index) {
+    const segments = paths[index].split("/").filter(Boolean);
+    for (let count = 1; count <= segments.length; count++) {
+        const suffix = segments.slice(-count).join("/");
+        if (paths.filter((source) => sourceMatches(source, suffix)).length === 1) return suffix;
+    }
+    return "";
+}
+// 同名的内部链接变量（各编译单元的 C static、C++ _ZL/匿名命名空间对象、函数内 static 的编号名）
+// 在 ELF 中名字相同、地址不同。逐个给出唯一身份 <最短唯一源文件路径后缀>::<ELF 名>，
+// 无法区分时退回 0x<地址>::<ELF 名>。源文件优先取 DWARF 中地址精确且唯一的变量所属 CU，
+// 其次是 STT_FILE（仅 basename）。可重复调用：DWARF 就绪后传入 variables 精化身份。
+const MAX_QUALIFIED_GROUP = 64;
+function qualifySameNameSymbols(symbols, variables = null) {
+    const sources = new Map();
+    for (const variable of variables || []) {
+        if (variable.address === undefined || !variable.sourceFile) continue;
+        const previous = sources.get(variable.address);
+        sources.set(
+            variable.address,
+            previous === undefined || previous === variable.sourceFile ? variable.sourceFile : null
+        );
+    }
+    const groups = new Map();
+    for (const symbol of symbols) {
+        const elfName = symbol.elfName || symbol.name;
+        if (!groups.has(elfName)) groups.set(elfName, []);
+        groups.get(elfName).push(symbol);
+    }
+    const result = [];
+    const identities = new Map();
+    for (const [elfName, group] of groups) {
+        if (group.length === 1) {
+            const [symbol] = group;
+            if (symbol.elfName) {
+                symbol.name = elfName;
+                delete symbol.elfName;
+                delete symbol.scope;
+                delete symbol.sameNameCount;
+            }
+            result.push(symbol);
+            continue;
+        }
+        const paths = group.map((symbol) => normalizeSourcePath(sources.get(symbol.address) || symbol.objectFile));
+        group.forEach((symbol, index) => {
+            const dwarfSource = sources.get(symbol.address);
+            if (dwarfSource) symbol.sourceFile = dwarfSource;
+            const address = "0x" + (symbol.address >>> 0).toString(16);
+            const suffix = group.length <= MAX_QUALIFIED_GROUP ? uniqueSourceSuffix(paths, index) : "";
+            const scopedName = suffix && scopedVariableName(suffix, elfName);
+            const name = scopedName || scopedVariableName(address, elfName);
+            const previous = identities.get(name);
+            if (previous) {
+                // 同地址不同尺寸的同名符号无法给出唯一身份：保留首项但标记歧义，任何按名读写都会拒绝。
+                previous.addressAmbiguous = true;
+                return;
+            }
+            delete symbol.addressAmbiguous;
+            Object.assign(symbol, {
+                name,
+                elfName,
+                scope: scopedName ? suffix : address,
+                sameNameCount: group.length
+            });
+            identities.set(name, symbol);
+            result.push(symbol);
+        });
+    }
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+}
+// 供 ELF 加载告警使用：概括同名多编译单元变量，提示改用 文件名::变量名。
+function sameNameSymbolWarning(symbols) {
+    const groups = new Map();
+    for (const symbol of symbols || []) {
+        if (!symbol.elfName) continue;
+        if (!groups.has(symbol.elfName)) groups.set(symbol.elfName, []);
+        groups.get(symbol.elfName).push(symbol.name);
+    }
+    if (!groups.size) return "";
+    const shown = Array.from(groups)
+        .slice(0, 5)
+        .map(([name, ids]) => `${name}（${ids.slice(0, 4).join("、")}${ids.length > 4 ? "…" : ""}）`);
+    return (
+        `${groups.size} 个变量名在多个编译单元中各有定义，按裸名读写会被拒绝，请使用 文件名::变量名：` +
+        shown.join("；") +
+        (groups.size > 5 ? "…" : "")
+    );
+}
+function symbolCandidates(symbols) {
+    return symbols.slice(0, 32).map((symbol) => ({
+        name: symbol.name,
+        ...(symbol.displayName && symbol.displayName !== symbol.name ? { displayName: symbol.displayName } : {}),
+        sourceFile: symbol.sourceFile || symbol.objectFile || "",
+        address: "0x" + (Number(symbol.address) >>> 0).toString(16).toUpperCase(),
+        size: Number(symbol.size) || 0
+    }));
+}
+function scopeMatches(symbols, file) {
+    if (/^0x[0-9a-f]+$/i.test(file)) {
+        const address = parseInt(file, 16);
+        return symbols.filter((symbol) => Number(symbol.address) >>> 0 === address);
+    }
+    const wanted = normalizeSourcePath(file).replace(/^(?:\.\/)+/, "");
+    const filter = (fold) => {
+        const target = fold ? wanted.toLowerCase() : wanted;
+        return symbols.filter((symbol) =>
+            [symbol.sourceFile, symbol.objectFile].some((source) => {
+                const path = normalizeSourcePath(source);
+                return sourceMatches(fold ? path.toLowerCase() : path, target);
+            })
+        );
+    };
+    const matches = filter(false);
+    return matches.length ? matches : filter(true);
+}
+// Agent 读写、观察列表与界面共用的变量名解析：
+// 1. 身份名精确匹配；2. 编译单元限定名 file.c::name、'dir/file.c'::name、0xADDR::name（文件名按路径后缀匹配，
+// 只接受唯一 CU）；3. 唯一 displayName 别名（C++ 限定名）；4. 大小写不敏感的唯一匹配。
+// 同名变量分布在多个编译单元时，裸名一律以 VARIABLE_AMBIGUOUS 拒绝并列出候选，绝不默认取第一项。
+function createSymbolResolver(symbols) {
     const list = Array.isArray(symbols) ? symbols : [];
-    const exact = new Map(list.map((symbol) => [symbol.name, symbol]));
-    // displayName 唯一别名：允许用 C++ 限定名解析；多个符号共享同一 displayName（重载/歧义）时不作别名。
-    const byDisplay = new Map();
-    for (const symbol of list) {
-        const dn = symbol.displayName;
-        if (!dn || dn === symbol.name) continue;
-        byDisplay.set(dn, byDisplay.has(dn) ? null : symbol);
-    }
-    const folded = new Map();
-    for (const symbol of list) {
-        const key = String(symbol.name || "").toLowerCase();
-        if (!folded.has(key)) folded.set(key, []);
-        folded.get(key).push(symbol);
-    }
+    let exact = null,
+        byKey = null,
+        folded = null;
+    const index = () => {
+        if (exact) return;
+        exact = new Map();
+        byKey = new Map();
+        folded = new Map();
+        const add = (map, key, symbol) => {
+            if (!key) return;
+            const entries = map.get(key);
+            if (!entries) map.set(key, [symbol]);
+            else if (!entries.includes(symbol)) entries.push(symbol);
+        };
+        for (const symbol of list) {
+            exact.set(symbol.name, symbol);
+            add(byKey, symbol.elfName || symbol.name, symbol);
+            if (symbol.displayName && symbol.displayName !== symbol.name) {
+                add(byKey, symbol.displayName, symbol);
+                add(byKey, variableScope(symbol.displayName)?.name, symbol);
+            }
+            add(folded, String(symbol.name || "").toLowerCase(), symbol);
+        }
+    };
+    const ambiguous = (requestedName, matches) =>
+        Object.assign(
+            new Error(
+                `Variable name is ambiguous: ${requestedName} matches ${matches.length} variables in different ` +
+                    `compilation units; qualify it as file::name, e.g. ${matches[0].name}`
+            ),
+            { code: "VARIABLE_AMBIGUOUS", details: { requestedName, candidates: symbolCandidates(matches) } }
+        );
+    const accept = (symbol, requestedName) => {
+        if (symbol.addressAmbiguous)
+            throw ambiguous(requestedName, byKey.get(symbol.elfName || symbol.name) || [symbol]);
+        return symbol;
+    };
+    return (name, requestedName = name) => {
+        index();
+        const key = String(name ?? "").trim();
+        const direct = exact.get(key);
+        if (direct) return accept(direct, requestedName);
+        const scope = variableScope(key);
+        if (scope) {
+            const named = byKey.get(scope.name) || [];
+            const matches = scopeMatches(named, scope.file);
+            if (matches.length === 1) return accept(matches[0], requestedName);
+            if (matches.length > 1) throw ambiguous(requestedName, matches);
+            throw Object.assign(new Error(`Variable not found in compilation unit ${scope.file}: ${requestedName}`), {
+                code: "VARIABLE_NOT_FOUND",
+                details: { requestedName, candidates: symbolCandidates(named) }
+            });
+        }
+        const matches = byKey.get(key) || [];
+        if (matches.length > 1) throw ambiguous(requestedName, matches);
+        if (matches.length === 1) return accept(matches[0], requestedName);
+        // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
+        const foldedMatches = folded.get(key.toLowerCase()) || [];
+        if (foldedMatches.length === 1) return accept(foldedMatches[0], requestedName);
+        if (foldedMatches.length > 1)
+            throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), {
+                code: "AMBIGUOUS_VARIABLE"
+            });
+        throw Object.assign(new Error(`Variable not found in current ELF: ${requestedName}`), {
+            code: "VARIABLE_NOT_FOUND"
+        });
+    };
+}
+
+function resolveVariableRequests(symbols, requests) {
+    const resolve = createSymbolResolver(symbols);
     const seen = new Set();
     return (Array.isArray(requests) ? requests : []).map((request) => {
         const requestedName = String(request?.name || "").trim();
         if (!requestedName)
             throw Object.assign(new Error("Variable name is required"), { code: "INVALID_VARIABLE_NAME" });
-        let symbol = exact.get(requestedName);
-        if (!symbol) symbol = byDisplay.get(requestedName) || undefined;
-        if (!symbol) {
-            const matches = folded.get(requestedName.toLowerCase()) || [];
-            if (matches.length === 1) symbol = matches[0];
-            else if (matches.length > 1)
-                throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), {
-                    code: "AMBIGUOUS_VARIABLE"
-                });
-        }
-        if (!symbol)
-            throw Object.assign(new Error(`Variable not found in current ELF: ${requestedName}`), {
-                code: "VARIABLE_NOT_FOUND"
-            });
+        const symbol = resolve(requestedName);
         if (seen.has(symbol.name))
             throw Object.assign(new Error(`Variable requested more than once: ${symbol.name}`), {
                 code: "DUPLICATE_VARIABLE"
@@ -301,6 +473,7 @@ function parseElfSymbols(buffer) {
     const STT_NOTYPE = 0;
     const STT_OBJECT = 1;
     const STT_FUNC = 2;
+    const STT_FILE = 4;
     const STB_LOCAL = 0;
     const SHN_UNDEF = 0;
     const SHN_ABS = 0xfff1;
@@ -321,6 +494,8 @@ function parseElfSymbols(buffer) {
     if (count > 200000) throw budgetError();
     const seen = new Map();
     const seenFuncs = new Map();
+    // STT_FILE 标记其后局部符号所属的目标文件（通常只有源文件 basename），在 DWARF 不可用时用于区分同名 static。
+    let objectFile = "";
     for (let i = 0; i < count; i++) {
         if (i % 1024 === 0 && Date.now() > deadline) throw budgetError();
         const off = symtab.offset + i * entsize;
@@ -331,6 +506,10 @@ function parseElfSymbols(buffer) {
         const stInfo = buf[off + 12];
         const stShndx = buf.readUInt16LE(off + 14);
         const stType = stInfo & 0xf;
+        if (stType === STT_FILE) {
+            objectFile = stInfo >> 4 === STB_LOCAL ? readCStr(strtab.offset, stName) : "";
+            continue;
+        }
         if (stShndx === SHN_UNDEF || stShndx === SHN_ABS) continue;
         if (stType === STT_FUNC) {
             // 函数符号单独收集（故障分析的 PC/LR 符号化与体积排名用），清除 Thumb bit
@@ -346,17 +525,21 @@ function parseElfSymbols(buffer) {
         if (stType !== STT_OBJECT && !(stType === STT_NOTYPE && isUntypedLocalData(stInfo, stShndx, stValue, stSize)))
             continue;
         const name = readCStr(strtab.offset, stName);
-        if (!name || (stType === STT_NOTYPE && name.startsWith("$"))) continue;
-        if (seen.has(name)) {
-            const previous = seen.get(name);
-            if (previous.address !== stValue || previous.size !== stSize) previous.addressAmbiguous = true;
-            continue; // Preserve existing variable lookup, but CPU plans must reject ambiguous identities.
-        }
-        seen.set(name, { name, address: stValue >>> 0, size: stSize >>> 0 });
+        if (!name || (stType === STT_NOTYPE && name.startsWith("$")) || stValue === 0) continue;
+        const local = stInfo >> 4 === STB_LOCAL;
+        const entry = {
+            name,
+            address: stValue >>> 0,
+            size: stSize >>> 0,
+            ...(local && objectFile ? { objectFile } : {})
+        };
+        const group = seen.get(name);
+        if (!group) seen.set(name, [entry]);
+        // 不同编译单元的同名内部链接变量全部保留，随后按编译单元限定身份；仅丢弃地址与大小都相同的别名。
+        else if (!group.some((other) => other.address === entry.address && other.size === entry.size))
+            group.push(entry);
     }
-    const symbols = Array.from(seen.values())
-        .filter((s) => s.address !== 0)
-        .sort((a, b) => a.name.localeCompare(b.name));
+    const symbols = qualifySameNameSymbols(Array.from(seen.values()).flat());
     const functions = Array.from(seenFuncs.values())
         .filter((s) => s.address !== 0)
         .sort((a, b) => a.address - b.address);
@@ -421,8 +604,20 @@ function nearestFunction(functions, address) {
 // buf[1:5] → { base:'buf', segments:[{kind:'range',start:1,end:5}] }
 // buf[*] → { base:'buf', segments:[{kind:'all'}] }
 // buf[0].x → { base:'buf', segments:[{kind:'index',index:0},{kind:'member',name:'x'}] }
+// main.c::cfg.mode / 'dir/main.c'::cfg[0] → base 为原样的限定前缀加变量名（保持是输入的前缀，
+// 调用方据此切出成员后缀），scope:{file:'main.c',name:'cfg'} 供按编译单元解析。
 function parseMemberPath(pathStr) {
     const str = String(pathStr || "").trim();
+    const scope = variableScope(str);
+    if (scope) {
+        const inner = parseMemberPath(scope.name);
+        if (!inner || variableScope(inner.base)) return null;
+        return {
+            base: str.slice(0, scope.prefixLength) + inner.base,
+            segments: inner.segments,
+            scope: { file: scope.file, name: inner.base }
+        };
+    }
     if (!str || !/^[A-Za-z_]/.test(str)) return null;
     // 匹配 baseName 后跟 .member 或 [index/range/*]
     // base 允许 C++ 限定名（ns::Foo::bar）、模板名（Holder<int>::object）与 mangled 名（_Z...）。
@@ -943,6 +1138,9 @@ function isScalarLeafNode(node) {
 
 module.exports = {
     parseElfSymbols,
+    qualifySameNameSymbols,
+    sameNameSymbolWarning,
+    createSymbolResolver,
     isCppRuntimeSymbol,
     isItaniumMangled,
     parseElfSections,

@@ -97,7 +97,24 @@ function firmware(version) {
                 { name: "pxCurrentTCB", value: 0x20000004, size: 4 }
             ]
         });
-        assert.strictEqual(elfSymbols.parseElfSymbols(duplicate).symbols[0].addressAmbiguous, true);
+        // Same-named symbols keep separate CU identities, but the raw name stays ambiguous for CPU plans.
+        const duplicates = elfSymbols.parseElfSymbols(duplicate).symbols;
+        assert.deepStrictEqual(
+            duplicates.map((symbol) => [symbol.name, symbol.elfName]),
+            [
+                ["0x20000000::pxCurrentTCB", "pxCurrentTCB"],
+                ["0x20000004::pxCurrentTCB", "pxCurrentTCB"]
+            ]
+        );
+        assert.throws(
+            () =>
+                require("../src/services/cpuLoadModel").buildCpuLoadPlan({
+                    elf: { machine: 40, elfClass: 1, encoding: 1 },
+                    symbols: duplicates,
+                    memory: elfSymbols.parseElfSections(duplicate)
+                }),
+            /pxCurrentTCB is missing, ambiguous/
+        );
         const stalled = new ElfService({ workerPath: "fake" });
         stalled.ready = async () => service.read();
         stalled.layout = async () => {

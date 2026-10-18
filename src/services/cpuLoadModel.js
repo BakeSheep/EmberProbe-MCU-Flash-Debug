@@ -30,7 +30,8 @@ function buildCpuLoadPlan(result, layout) {
         )
         .map((section) => ({ start: section.addr, end: section.addr + section.size }));
     const symbol = (name, required = false) => {
-        const matches = result.symbols.filter((item) => item.name === name);
+        // Same-named statics of several CUs carry qualified identities; the raw name must still count as ambiguous.
+        const matches = result.symbols.filter((item) => (item.elfName || item.name) === name);
         if (!matches.length && !required) return null;
         if (
             matches.length !== 1 ||

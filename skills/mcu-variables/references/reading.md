@@ -89,3 +89,26 @@ C++ file-scope `static` objects, namespace variables, and class static members c
 by their DWARF display name (`ep7.port`, `"app::object.id"`) as well as by the mangled ELF name
 (`_ZL3ep7`). `--list` shows the mangled names. Untyped `.bss` statics (GCC emits them as `NOTYPE`
 symbols at `-O0` without `-fdata-sections`) are listed and typed from DWARF like other variables.
+
+### Same-named statics in several source files
+
+File-scope `static` variables, C++ internal-linkage objects and function statics (`calls.0`) may
+have the same name in several compilation units. EmberProbe keeps every copy and names each one
+by its compilation unit: `main.c::g_cfg`, `other.c::g_cfg`, or a longer path suffix such as
+`a/main.c::s_counter` when two files share a basename. A bare name such as `g_cfg` fails with
+`VARIABLE_AMBIGUOUS`; it never falls back to the first symbol. `details.candidates` lists each
+candidate's `name`, `sourceFile`, `address` and `size`. Ask the user which source file they mean
+when the request does not say, then retry with that candidate's `name`.
+
+Qualify a name GDB-style as `file::name`, with or without quotes: `main.c::g_cfg.mode`,
+`"src/b/main.c::s_counter"`, `"'my dir/x.c'::buf[0]"`. The file is matched as a path suffix of the
+compilation unit's DWARF source path and must select exactly one unit; otherwise the request fails
+with `VARIABLE_AMBIGUOUS` (several units) or `VARIABLE_NOT_FOUND` (none) and lists the candidates.
+An unquoted scope must end in a file extension, so C++ names such as `app::counter` are never read
+as a file. Quote paths containing spaces or a drive letter. `0x2000abcd::s_counter` selects the
+copy at that address. Explicit scalar suffixes still follow the name (`main.c::s_counter:u32`).
+
+`--list` is a raw ELF inventory without DWARF, so it qualifies duplicates by the `STT_FILE`
+basename (`sourceFile`, for example `main.c`) and falls back to the address when basenames
+collide (`0x20000010::s_counter`); both forms are accepted by reads, writes and `--add-to`.
+Duplicate entries carry `elfName` (the raw ELF name), `scope` and `sameNameCount`.

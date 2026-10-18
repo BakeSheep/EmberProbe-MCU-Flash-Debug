@@ -108,21 +108,28 @@ function exportRangeDetails(opt, range) {
     };
 }
 
+// 编译单元限定前缀：'dir/main.c'::、"main.c"::、main.c::、src/main.c:: 或 0x2000abcd::（与扩展的解析规则一致）。
+const SCOPE_PREFIX =
+    /^(?:'[^'\x00-\x1f]{1,1024}'|"[^"\x00-\x1f]{1,1024}"|[\w.+~/\\-]{0,512}\.[A-Za-z0-9_+]+|0x[0-9a-fA-F]{1,8})::(?=[A-Za-z_])/;
+
 function variableSpecs(value) {
     const specs = String(value || "")
         .split(",")
         .filter(Boolean)
         .map((raw) => {
             const trimmed = raw.trim();
+            // 编译单元前缀里的 '.'、':' 不属于成员路径或类型后缀。
+            const prefix = (SCOPE_PREFIX.exec(trimmed) || [""])[0].length;
+            const rest = trimmed.slice(prefix);
             // 路径语法（结构体成员 sensor.x / 数组元素 buf[0] / 范围 buf[1:5] / 全部 buf[*]）
             // 类型由扩展侧按 DWARF 布局推断，整体作为变量名传递，不再按 ':' 拆分类型。
-            if (trimmed.includes("[") || trimmed.includes(".")) {
+            if (rest.includes("[") || rest.includes(".")) {
                 if (!trimmed) throw new Error("Variable name is required");
                 return { name: trimmed };
             }
             // C++ 限定名中的 :: 是名字的一部分，只有单个冒号才分隔显式类型。
             const lastColon = trimmed.lastIndexOf(":");
-            const split = lastColon > 0 && trimmed[lastColon - 1] !== ":" ? lastColon : -1;
+            const split = lastColon > prefix && trimmed[lastColon - 1] !== ":" ? lastColon : -1;
             const name = (split > 0 ? trimmed.slice(0, split) : trimmed).trim();
             const type = split > 0 ? trimmed.slice(split + 1).trim() : "";
             if (!name) throw new Error("Variable name is required");
@@ -178,8 +185,7 @@ function parseSymbolsBuffer(buffer) {
     const sym = sections.find((s) => s.type === 2) || sections.find((s) => s.type === 11);
     if (!sym || !sections[sym.link]) throw new Error("ELF has no usable symbol table");
     const str = sections[sym.link],
-        result = [],
-        seen = new Set(),
+        groups = new Map(),
         ent = sym.entsize || 16;
     const inBounds = (s) => s.offset <= b.length && s.size <= b.length - s.offset;
     if (!inBounds(sym) || !inBounds(str) || ent < 16) throw new Error("ELF symbol table is out of bounds");
@@ -203,19 +209,97 @@ function parseSymbolsBuffer(buffer) {
             address + size <= owner.addr + owner.size
         );
     };
+    // STT_FILE 标记其后局部符号所属的源文件（basename），用于区分不同编译单元中的同名 static。
+    let objectFile = "";
     for (let o = sym.offset; o + 16 <= Math.min(b.length, sym.offset + sym.size); o += ent) {
         const type = b[o + 12] & 15;
+        const local = b[o + 12] >> 4 === 0;
+        if (type === 4) {
+            objectFile = local ? cstr(str.offset + b.readUInt32LE(o)) : "";
+            continue;
+        }
         const section = b.readUInt16LE(o + 14),
             address = b.readUInt32LE(o + 4) >>> 0,
             size = b.readUInt32LE(o + 8) >>> 0;
         if (type !== 1 && !(type === 0 && untypedLocalData(o, section, address, size))) continue;
         if (!section || section === 0xfff1 || !address) continue;
         const name = cstr(str.offset + b.readUInt32LE(o));
-        if (!name || seen.has(name) || (type === 0 && name.startsWith("$"))) continue;
-        seen.add(name);
-        result.push({ name, address, size });
+        if (!name || (type === 0 && name.startsWith("$"))) continue;
+        const entry = { name, address, size, ...(local && objectFile ? { objectFile } : {}) };
+        const group = groups.get(name);
+        if (!group) groups.set(name, [entry]);
+        else if (!group.some((other) => other.address === address && other.size === size)) group.push(entry);
     }
-    return result.sort((a, z) => a.name.localeCompare(z.name));
+    return qualifySameName(groups).sort((a, z) => a.name.localeCompare(z.name));
+}
+
+// 同名变量（各 .c 中的 static 等）全部保留，按 STT_FILE 给出唯一身份 main.c::name；
+// 源文件 basename 也重名时退回 0x<地址>::name。扩展侧按 DWARF 完整路径解析这两种写法。
+function qualifySameName(groups) {
+    const result = [];
+    for (const [elfName, group] of groups) {
+        if (group.length === 1) {
+            result.push(group[0]);
+            continue;
+        }
+        const used = new Set();
+        for (const symbol of group) {
+            const file = symbol.objectFile || "";
+            const unique =
+                /^[\w.+~-]{0,512}\.[A-Za-z0-9_+]+$/.test(file) &&
+                group.filter((other) => other.objectFile === file).length === 1;
+            const scope = unique ? file : "0x" + symbol.address.toString(16);
+            const name = scope + "::" + elfName;
+            if (used.has(name)) continue;
+            used.add(name);
+            result.push({ ...symbol, name, elfName, scope, sameNameCount: group.length });
+        }
+    }
+    return result;
+}
+
+// 直接 --elf/--port 模式的变量查找：身份名精确匹配，或 文件名::变量名 / 0x地址::变量名 唯一匹配。
+// 同名多编译单元的裸名抛 VARIABLE_AMBIGUOUS 并列出候选，不得默认取第一项。
+function findSymbol(symbols, requested) {
+    const direct = symbols.find((symbol) => symbol.name === requested);
+    if (direct) return direct;
+    const prefix = (SCOPE_PREFIX.exec(requested) || [""])[0];
+    const local = requested.slice(prefix.length);
+    const named = symbols.filter((symbol) => (symbol.elfName || symbol.name) === local);
+    let matches = named;
+    if (prefix) {
+        const file = prefix
+            .slice(0, -2)
+            .replace(/^['"]|['"]$/g, "")
+            .replace(/\\/g, "/");
+        matches = /^0x[0-9a-f]+$/i.test(file)
+            ? named.filter((symbol) => symbol.address === parseInt(file, 16))
+            : named.filter(
+                  (symbol) =>
+                      symbol.objectFile && (file === symbol.objectFile || file.endsWith("/" + symbol.objectFile))
+              );
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1)
+        throw Object.assign(
+            new Error(
+                `Variable name is ambiguous: ${requested} matches ${matches.length} variables in different ` +
+                    "compilation units; use one of details.candidates[].name"
+            ),
+            {
+                code: "VARIABLE_AMBIGUOUS",
+                details: {
+                    requestedName: requested,
+                    candidates: matches.map((symbol) => ({
+                        name: symbol.name,
+                        sourceFile: symbol.objectFile || "",
+                        address: `0x${symbol.address.toString(16).toUpperCase()}`,
+                        size: symbol.size
+                    }))
+                }
+            }
+        );
+    return null;
 }
 function readStableElf(file) {
     const before = fs.statSync(file);
@@ -564,6 +648,8 @@ async function main() {
                     elfSha256: snapshot.sha256,
                     elfMtimeMs: snapshot.mtimeMs,
                     ...s,
+                    // 同名多编译单元的变量带 elfName/scope/sourceFile；按 name（如 main.c::g_cfg）读写。
+                    ...(s.objectFile ? { sourceFile: s.objectFile } : {}),
                     inferredType: infer(s.size),
                     compositeCandidate: s.size > 8
                 }) + "\n"
@@ -577,8 +663,9 @@ async function main() {
             const split = spec.lastIndexOf(":");
             const name = split > 0 ? spec.slice(0, split) : spec;
             const explicit = split > 0 ? spec.slice(split + 1) : "";
-            const symbol = symbols.find((s) => s.name === name);
-            if (!symbol) throw new Error(`Variable not found in ELF: ${name}`);
+            const symbol = findSymbol(symbols, name);
+            if (!symbol)
+                throw Object.assign(new Error(`Variable not found in ELF: ${name}`), { code: "VARIABLE_NOT_FOUND" });
             const type = explicit || infer(symbol.size);
             if (!TYPES.has(type))
                 throw new Error(
@@ -681,6 +768,7 @@ module.exports = {
     exportRangeDetails,
     variableSpecs,
     parseSymbolsBuffer,
+    findSymbol,
     memoryValues,
     decode,
     decodeText,

@@ -161,6 +161,15 @@ const DIAGNOSTICS = {
         ["使用 --list 查看候选项并提供精确名称。"],
         false
     ],
+    VARIABLE_AMBIGUOUS: [
+        "variable_resolution",
+        "同名变量（如各 .c 文件中的 static）分布在多个编译单元，EmberProbe 拒绝默认选择其中一项。",
+        [
+            "从 details.candidates 中按源文件选择目标，改用其 name（如 main.c::g_cfg）或 '路径后缀'::变量名 重试。",
+            "写入前必须确认所选编译单元就是用户要修改的变量。"
+        ],
+        false
+    ],
     AGENT_READ_CANCELLED: ["cancelled", "Agent 采样已被用户或其他操作取消。", ["仅在仍需要数据时重新发起读取。"], true],
     OPENOCD_START_FAILED: [
         "openocd",

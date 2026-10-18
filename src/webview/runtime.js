@@ -24,9 +24,42 @@
     function defaultType(size) {
         return size === 1 ? "u8" : size === 2 ? "u16" : size === 8 ? "u64" : "u32";
     }
+    // Compilation-unit scope of an internal-linkage variable, in GDB style: 'dir/file.c'::name,
+    // "file.c"::name, file.c::name, dir/file.c::name, or the symbol address 0x2000abcd::name.
+    // An unquoted scope must end in a file extension (or be an address), so C++ names such as
+    // ns::value never parse as scoped.
+    const UNQUOTED_SCOPE = /^[\w.+~/\\-]{1,512}$/;
+    const ADDRESS_SCOPE = /^0x[0-9a-fA-F]{1,8}$/;
+    function plainScope(file) {
+        return UNQUOTED_SCOPE.test(file) && (/\.[A-Za-z0-9_+]+$/.test(file) || ADDRESS_SCOPE.test(file));
+    }
+    function variableScope(name) {
+        const text = String(name || "");
+        let file, length;
+        if (text[0] === "'" || text[0] === '"') {
+            const end = text.indexOf(text[0], 1);
+            if (end < 2 || end > 1025 || text.slice(end + 1, end + 3) !== "::") return null;
+            file = text.slice(1, end);
+            if (/[\x00-\x1f]/.test(file)) return null;
+            length = end + 3;
+        } else {
+            const end = text.indexOf("::");
+            if (end < 1 || !plainScope((file = text.slice(0, end)))) return null;
+            length = end + 2;
+        }
+        return /^[A-Za-z_]/.test(text.slice(length)) ? { file, name: text.slice(length), prefixLength: length } : null;
+    }
+    // Canonical scoped name; quoted only when the scope cannot be written bare. Null when unrepresentable.
+    function scopedVariableName(file, name) {
+        if (plainScope(file)) return file + "::" + name;
+        if (!file || file.length > 1024 || /[\x00-\x1f]/.test(file)) return null;
+        if (!file.includes("'")) return "'" + file + "'::" + name;
+        return file.includes('"') ? null : '"' + file + '"::' + name;
+    }
     function variableBaseName(name) {
         let depth = 0;
-        for (let index = 0; index < name.length; index++) {
+        const scope = variableScope(name);
+        for (let index = scope ? scope.prefixLength : 0; index < name.length; index++) {
             if (name[index] === "<") depth++;
             else if (name[index] === ">") depth--;
             else if (!depth && (name[index] === "." || name[index] === "[")) {
@@ -53,8 +86,9 @@
     }
     function variableNameParts(name) {
         let depth = 0;
-        let split = 0;
-        for (let index = 0; index < name.length; index++) {
+        const scope = variableScope(name);
+        let split = scope ? scope.prefixLength : 0;
+        for (let index = split; index < name.length; index++) {
             if (name[index] === "<" || name[index] === "[") depth++;
             else if (name[index] === ">" || name[index] === "]") depth--;
             else if (!depth && name[index] === ".") split = index + 1;
@@ -1253,6 +1287,8 @@
         typeByteLength,
         defaultType,
         variableBaseName,
+        variableScope,
+        scopedVariableName,
         variableDisplayName,
         variableNameParts,
         shortVariableName,

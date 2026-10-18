@@ -1195,8 +1195,7 @@ class MainViewProvider {
                 code: "INVALID_DESTINATION"
             });
         await this._prepareRequestedLayouts(names);
-        const symbols = this.readElfSymbols().symbols;
-        const byName = this._symbolNameIndex(symbols);
+        const resolveSymbol = this._agentSymbolResolver(this.readElfSymbols().symbols);
         const resolved = [];
         const resolvedNames = new Set();
         // Requested base name -> raw ELF name, for requests that matched a display name.
@@ -1211,11 +1210,8 @@ class MainViewProvider {
             // 支持路径语法：sensor.x, buf[0], buf[1:5]
             const parsed = elfSymbols.parseMemberPath(rawName);
             const baseName = parsed ? parsed.base : rawName;
-            const symbol = byName.get(baseName);
-            if (!symbol)
-                throw Object.assign(new Error(`Variable not found in current ELF: ${rawName}`), {
-                    code: "VARIABLE_NOT_FOUND"
-                });
+            // 同名多编译单元的裸名会抛 VARIABLE_AMBIGUOUS，绝不把第一项写进观察列表。
+            const symbol = resolveSymbol(baseName, rawName);
             if (symbol.name !== baseName) aliases[baseName] = symbol.name;
             // Watch lists persist raw ELF identities; normalizeWatchList does not resolve
             // display names, so a requested `ep7` must be stored as `_ZL3ep7`.
@@ -1383,7 +1379,8 @@ class MainViewProvider {
                     { code: "INVALID_VARIABLE_PATH" }
                 );
             } else {
-                scalarRequests.push({ req, index });
+                // 标量按已解析的身份名重解析，限定名（'main.c'::x、路径后缀）不必再与身份名逐字一致。
+                scalarRequests.push({ req: { ...req, name: symbol.name }, requestedName: req.name, index });
             }
         };
         // 只有带错误码的预期失败按项隔离；无错误码的异常属于程序缺陷，继续整体抛出
@@ -1399,18 +1396,21 @@ class MainViewProvider {
         let scalarPlan = [];
         try {
             scalarPlan = scalarRequests.length
-                ? elfSymbols.resolveVariableRequests(
-                      elfResult.symbols,
-                      scalarRequests.map((entry) => entry.req)
-                  )
+                ? elfSymbols
+                      .resolveVariableRequests(
+                          elfResult.symbols,
+                          scalarRequests.map((entry) => entry.req)
+                      )
+                      .map((item, position) => ({ ...item, requestedName: scalarRequests[position].requestedName }))
                 : [];
         } catch {
             // 批量解析遇到首个错误即中止；逐项重解析以隔离失败项，并在项间保持重复请求检查。
             scalarPlan = [];
             const seen = new Set();
-            for (const { req, index } of scalarRequests) {
+            for (const { req, requestedName, index } of scalarRequests) {
                 isolate(index, () => {
-                    const [item] = elfSymbols.resolveVariableRequests(elfResult.symbols, [req]);
+                    const [resolvedItem] = elfSymbols.resolveVariableRequests(elfResult.symbols, [req]);
+                    const item = { ...resolvedItem, requestedName };
                     if (seen.has(item.name))
                         throw Object.assign(new Error(`Variable requested more than once: ${item.name}`), {
                             code: "DUPLICATE_VARIABLE"
@@ -2356,7 +2356,7 @@ class MainViewProvider {
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         if (options.refreshSymbols !== false) this._elfService.invalidate();
         const elfResult = this.readElfSymbols();
-        const byName = this._symbolNameIndex(elfResult.symbols);
+        const resolveSymbol = this._agentSymbolResolver(elfResult.symbols);
         const SHF_WRITE = 1,
             SHF_ALLOC = 2;
         let writable = [];
@@ -2378,7 +2378,8 @@ class MainViewProvider {
                 throw Object.assign(new Error("Variable name is required"), { code: "INVALID_VARIABLE_NAME" });
             const parsed = elfSymbols.parseMemberPath(req.name);
             const baseName = parsed ? parsed.base : req.name;
-            const symbol = byName.get(baseName);
+            // 写入目标必须唯一：同名多编译单元的裸名抛 VARIABLE_AMBIGUOUS，绝不默认写第一项。
+            const symbol = resolveSymbol(baseName, req.name);
             let target;
             if (symbol && symbol.isComposite) {
                 if (symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout)
@@ -2421,8 +2422,13 @@ class MainViewProvider {
                         code: "WRITE_TYPE_UNKNOWN"
                     });
             } else {
-                const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: req.name }]);
-                const resolvedSymbol = byName.get(plan.name);
+                if (parsed?.segments.length)
+                    throw Object.assign(
+                        new Error(`${req.name} is not a composite variable; member paths are not applicable`),
+                        { code: "INVALID_VARIABLE_PATH" }
+                    );
+                const [plan] = elfSymbols.resolveVariableRequests(elfResult.symbols, [{ name: symbol.name }]);
+                const resolvedSymbol = symbol;
                 if (resolvedSymbol?.isConst || resolvedSymbol?.isReference || resolvedSymbol?.isMemberPointer)
                     throw Object.assign(new Error(`Writing to const / read-only storage is not allowed: ${req.name}`), {
                         code: "WRITE_NOT_ALLOWED"
@@ -2976,9 +2982,29 @@ class MainViewProvider {
                         const { symbols } = await this._elfService.ready();
                         const version = this._elfVersion(this._elfService.cache);
                         if (message.version && message.version !== version) break;
-                        const found =
+                        let found =
                             this._elfService.symbolByName.get(message.name) ||
                             symbols.find((s) => s.name === message.name);
+                        if (!found) {
+                            // 手动输入的 文件名::变量名 解析到唯一编译单元；同名多编译单元的裸名给出候选提示。
+                            try {
+                                found = this._agentSymbolResolver(symbols)(message.name);
+                            } catch (error) {
+                                if (error.code === "VARIABLE_AMBIGUOUS") {
+                                    post({
+                                        type: "liveError",
+                                        key: "live.varAmbiguous",
+                                        params: {
+                                            name: message.name,
+                                            candidates: error.details.candidates
+                                                .map((candidate) => candidate.name)
+                                                .join(", ")
+                                        }
+                                    });
+                                    break;
+                                }
+                            }
+                        }
                         if (found) {
                             if (found.isComposite) {
                                 try {
@@ -3311,33 +3337,11 @@ class MainViewProvider {
         this._symbolNameIndexes.set(symbols, { length: symbols.length, index });
         return index;
     }
-    // Agent 读写路径的名称解析：原始 ELF 名 → 唯一 displayName（C++ 限定名/mangled static 的显示名）
-    // → 大小写不敏感的唯一匹配。布局预取与读写规划必须共用它，否则按显示名请求的复合变量会缺布局。
+    // Agent 读写、观察列表与界面手动添加共用的名称解析（elfSymbols.createSymbolResolver）：身份名 →
+    // 编译单元限定名（main.c::cfg）→ 唯一 displayName → 大小写不敏感的唯一匹配。同名变量分布在多个编译单元时
+    // 裸名以 VARIABLE_AMBIGUOUS 拒绝。布局预取与读写规划必须共用它，否则按显示名请求的复合变量会缺布局。
     _agentSymbolResolver(symbols) {
-        const byName = this._symbolNameIndex(symbols);
-        let folded = null;
-        return (baseName, requestedName = baseName) => {
-            const symbol = byName.get(baseName);
-            if (symbol) return symbol;
-            if (!folded) {
-                folded = new Map();
-                for (const s of Array.isArray(symbols) ? symbols : []) {
-                    const key = String(s.name || "").toLowerCase();
-                    if (!folded.has(key)) folded.set(key, []);
-                    folded.get(key).push(s);
-                }
-            }
-            // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
-            const matches = folded.get(String(baseName).toLowerCase()) || [];
-            if (matches.length === 1) return matches[0];
-            if (matches.length > 1)
-                throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), {
-                    code: "AMBIGUOUS_VARIABLE"
-                });
-            throw Object.assign(new Error(`Variable not found in current ELF: ${requestedName}`), {
-                code: "VARIABLE_NOT_FOUND"
-            });
-        };
+        return elfSymbols.createSymbolResolver(symbols);
     }
     // 预取请求中复合变量的 DWARF 布局。传入 options.layoutErrors 时逐项收集布局错误（键为原始符号名）
     // 而不中止整批；未传入时保持原语义，首个布局错误直接抛出。名称解析失败留给后续规划报告。
