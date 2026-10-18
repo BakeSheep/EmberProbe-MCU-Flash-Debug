@@ -161,6 +161,15 @@ const DIAGNOSTICS = {
         ["使用 --list 查看候选项并提供精确名称。"],
         false
     ],
+    VARIABLE_AMBIGUOUS: [
+        "variable_resolution",
+        "同名变量（如各 .c 文件中的 static）分布在多个编译单元，EmberProbe 拒绝默认选择其中一项。",
+        [
+            "从 details.candidates 中按源文件选择目标，改用其 name（如 main.c::g_cfg）或 '路径后缀'::变量名 重试。",
+            "写入前必须确认所选编译单元就是用户要修改的变量。"
+        ],
+        false
+    ],
     AGENT_READ_CANCELLED: ["cancelled", "Agent 采样已被用户或其他操作取消。", ["仅在仍需要数据时重新发起读取。"], true],
     OPENOCD_START_FAILED: [
         "openocd",
@@ -299,7 +308,7 @@ const DIAGNOSTICS = {
     TARGET_NOT_PAUSED: [
         "debug_state",
         "SVD 外设读写或当前调试操作需要芯片已暂停。",
-        ["使用 mcu-debug-control 暂停 Cortex-Debug 会话后重试。"],
+        ["使用 mcu-debug-control --pause 暂停当前调试会话（EmberProbe 内置调试器或 Cortex-Debug）后重试。"],
         true
     ],
     INVALID_PERIPHERAL_WRITE_VALUE: [
@@ -334,20 +343,22 @@ const DIAGNOSTICS = {
     ],
     DEBUG_SESSION_NOT_ACTIVE: [
         "debug_state",
-        "当前工作区没有活动的 Cortex-Debug 会话。",
+        "当前工作区没有活动的调试会话（EmberProbe 内置调试器或 Cortex-Debug）。",
         ["使用 mcu-debug-control --start 启动调试后重试。"],
         true
     ],
     DEBUG_SESSION_CONFLICT: [
         "resource_conflict",
-        "当前工作区匹配到多个 Cortex-Debug 会话。",
+        "当前工作区匹配到多个调试会话（EmberProbe 内置调试器或 Cortex-Debug）。",
         ["在 VS Code 中停止不需要的调试会话，保留唯一目标后重试。"],
         true
     ],
     DEBUG_ACTION_UNSUPPORTED: [
         "debug_capability",
-        "Cortex-Debug 不支持请求的操作或未声明对应 DAP 能力。",
-        ["查看 debug.status 的 capabilities，或升级 Cortex-Debug。"],
+        "当前调试会话不支持请求的操作或未声明对应 DAP 能力。",
+        [
+            "查看 debug.status 的 capabilities；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug 或改用 mcu-debug-control --start 启动内置 emberprobe 会话。"
+        ],
         false
     ],
     DEBUG_STATE_INVALID: [
@@ -364,14 +375,14 @@ const DIAGNOSTICS = {
     ],
     DEBUG_MEMORY_READ_UNSUPPORTED: [
         "debug_capability",
-        "Cortex-Debug 未声明 DAP readMemory 能力。",
-        ["升级 Cortex-Debug，并确认当前调试后端支持内存读取。"],
+        "当前调试会话未声明 DAP readMemory 能力。",
+        ["确认当前调试后端支持内存读取；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug。"],
         false
     ],
     DEBUG_MEMORY_WRITE_UNSUPPORTED: [
         "debug_capability",
-        "Cortex-Debug 未声明 DAP writeMemory 能力。",
-        ["升级 Cortex-Debug，并确认当前调试后端支持内存写入。"],
+        "当前调试会话未声明 DAP writeMemory 能力。",
+        ["确认当前调试后端支持内存写入；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug。"],
         false
     ],
     DEBUG_CONTROL_TIMEOUT: [
@@ -497,6 +508,11 @@ function isReadOnlyMethod(method) {
     return READ_ONLY_METHODS.has(method);
 }
 
+// RTOS 快照与暂停对象检查只由原生 emberprobe 调试器提供。
+function requiresNativeSession(operation) {
+    return typeof operation === "string" && (operation.startsWith("rtos.") || operation === "debug.inspect");
+}
+
 function diagnosticForError(error, context = {}) {
     let code = error?.code || "UNKNOWN_ERROR";
     if (code === "ECONNREFUSED" || code === "ECONNRESET") code = "BRIDGE_UNAVAILABLE";
@@ -504,6 +520,17 @@ function diagnosticForError(error, context = {}) {
     const details = { ...(error?.details || {}) };
     let retryable = error?.retryable ?? preset[3] ?? false;
     let suggestedActions = error?.suggestedActions || preset[2] || ["保留本诊断并检查 EmberProbe/OpenOCD 日志。"];
+    // RTOS 快照/暂停对象检查只能使用原生 emberprobe 会话，建议动作需指明启动方式。
+    if (requiresNativeSession(context.operation || details.method)) {
+        if (code === "DEBUG_SESSION_NOT_ACTIVE" && !error?.suggestedActions)
+            suggestedActions = [
+                "RTOS 快照与暂停对象检查需要原生 emberprobe 调试会话：使用 mcu-debug-control --start 启动后重试。"
+            ];
+        else if (code === "DEBUG_SESSION_CONFLICT" && !error?.suggestedActions)
+            suggestedActions = ["在 VS Code 中停止多余的调试会话，保留唯一的原生 emberprobe 会话后重试。"];
+        else if (code === "TARGET_NOT_PAUSED" && !error?.suggestedActions)
+            suggestedActions = ["使用 mcu-debug-control --pause 暂停原生 emberprobe 会话后重试。"];
+    }
     // 传输超时缺少服务端结果：只读方法可在前置不变时重试一次；状态变更方法结果未知，
     // 必须查询实际状态、不得自动重发，也不声称请求已取消。
     if (code === "BRIDGE_TIMEOUT") {
@@ -539,6 +566,16 @@ function diagnosticForError(error, context = {}) {
             details
         }
     };
+}
+
+// 批量变量读取的部分失败：扩展在结果中返回 variableErrors[{ requestedName, error }]，
+// 其余变量照常返回。按错误码补全 likelyCause/suggestedActions，形状与整体诊断的 error 字段一致。
+function variableErrorDiagnostics(result, context = {}) {
+    const entries = Array.isArray(result?.variableErrors) ? result.variableErrors : [];
+    return entries.map((entry) => ({
+        requestedName: entry?.requestedName ?? "",
+        ...diagnosticForError(entry?.error || {}, { stage: "variable_resolution", ...context }).error
+    }));
 }
 
 function writeDiagnostic(error, context) {
@@ -616,4 +653,4 @@ function call(workspace, method, params, timeoutMs) {
     });
 }
 
-module.exports = { call, descriptor, diagnosticForError, writeDiagnostic, isReadOnlyMethod };
+module.exports = { call, descriptor, diagnosticForError, variableErrorDiagnostics, writeDiagnostic, isReadOnlyMethod };

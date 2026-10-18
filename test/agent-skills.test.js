@@ -87,6 +87,70 @@ const execFileAsync = promisify(execFile);
             (action) => action.includes("--stop") && action.includes("--start")
         )
     );
+    // --list 默认 NDJSON，--json-array 输出单个 JSON 对象且仅可与 --list 合用
+    assert.strictEqual(liveSkill.args(["--list", "--json-array"])["json-array"], true);
+    const listInput = {
+        elf: "/w/app.elf",
+        snapshot: { sha256: "abc", mtimeMs: 42 },
+        symbols: [
+            { name: "counter", address: 0x20000000, size: 4 },
+            { name: "buf", address: 0x20000010, size: 32 }
+        ]
+    };
+    const ndjson = liveSkill.listOutput(listInput);
+    const ndjsonLines = ndjson
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    assert.strictEqual(ndjsonLines.length, 2);
+    assert.throws(() => JSON.parse(ndjson));
+    for (const line of ndjsonLines) {
+        assert.strictEqual(line.elf, "/w/app.elf");
+        assert.strictEqual(line.elfSha256, "abc");
+        assert.strictEqual(line.elfMtimeMs, 42);
+    }
+    assert.strictEqual(ndjsonLines[1].compositeCandidate, true);
+    const listArray = JSON.parse(liveSkill.listOutput(listInput, true));
+    assert.deepStrictEqual(Object.keys(listArray), ["elf", "elfSha256", "elfMtimeMs", "symbols"]);
+    assert.strictEqual(listArray.symbols.length, 2);
+    assert.strictEqual(listArray.symbols[0].name, "counter");
+    assert.strictEqual(listArray.symbols[0].inferredType, ndjsonLines[0].inferredType);
+    assert.strictEqual(listArray.symbols[0].elf, undefined);
+    // 调试会话文案对 EmberProbe 内置调试器与 Cortex-Debug 保持中立；只有会话确为 Cortex-Debug 时才建议升级它。
+    for (const code of [
+        "DEBUG_SESSION_NOT_ACTIVE",
+        "DEBUG_SESSION_CONFLICT",
+        "TARGET_NOT_PAUSED",
+        "DEBUG_ACTION_UNSUPPORTED",
+        "DEBUG_MEMORY_READ_UNSUPPORTED",
+        "DEBUG_MEMORY_WRITE_UNSUPPORTED"
+    ]) {
+        const sessionDiagnostic = diagnosticForError(Object.assign(new Error("x"), { code }));
+        assert.ok(!sessionDiagnostic.error.likelyCause.startsWith("Cortex-Debug"), code);
+        assert.ok(!sessionDiagnostic.error.suggestedActions.some((action) => /^升级 Cortex-Debug/.test(action)), code);
+    }
+    const noSessionDiagnostic = diagnosticForError(
+        Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE" })
+    );
+    assert.ok(noSessionDiagnostic.error.likelyCause.includes("EmberProbe 内置调试器"));
+    const rtosNoSession = diagnosticForError(Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE" }), {
+        operation: "rtos.snapshot"
+    });
+    assert.ok(
+        rtosNoSession.error.suggestedActions.some(
+            (action) => action.includes("emberprobe") && action.includes("mcu-debug-control --start")
+        )
+    );
+    const rtosNotPaused = diagnosticForError(Object.assign(new Error("run"), { code: "TARGET_NOT_PAUSED" }), {
+        operation: "rtos.snapshot"
+    });
+    assert.ok(rtosNotPaused.error.suggestedActions.some((action) => action.includes("emberprobe")));
+    // 服务端给出的具体建议优先于客户端模板
+    const serverActions = diagnosticForError(
+        Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE", suggestedActions: ["server"] }),
+        { operation: "rtos.snapshot" }
+    );
+    assert.deepStrictEqual(serverActions.error.suggestedActions, ["server"]);
     assert.deepStrictEqual(JSON.parse(stringifyJson({ nan: NaN, pos: Infinity, neg: -Infinity })), {
         nan: "NaN",
         pos: "Infinity",

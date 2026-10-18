@@ -30,6 +30,7 @@ function createAgentRoutes(host, probes = listProbes) {
         "flash.authorize": (params) => host._agentFlashService.authorize(params || {}),
         "flash.execute": (params) => host._agentFlashService.execute(params || {}),
         "flash.verify": (params) => host._agentFlashService.execute(params || {}, true),
+        "flash.permission": (params) => host._agentFlashService.permission(params || {}),
         "watch.add": (params) => host._addAgentWatch(params),
         "variables.exportCsv": (params) => host._exportAgentCsv(params || {}),
         "variables.read": (params) => host._readAgentVariables(params),

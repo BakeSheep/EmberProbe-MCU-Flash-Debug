@@ -9,7 +9,7 @@ description: Program MCU firmware or verify on-chip Flash against the workspace 
 
 - **Applies to**: programming/downloading/burning firmware, or verifying on-chip Flash against the workspace ELF.
 - **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, a powered target, and a resolvable ELF.
-- **Preconditions**: the probe is free (not sampling, downloading, or debugging); ELF, target, and probe are resolved — never guess a missing one; programming and verification need separate one-time user authorization in the Agent conversation.
+- **Preconditions**: the probe is free (not sampling, downloading, or debugging); ELF, target, and probe are resolved — never guess a missing one; programming and verification need separate user authorization in the Agent conversation; programming may use a 24-hour workspace permission the user explicitly chose, verification is always one-time.
 - **Side effects**: programming rewrites target Flash and resets the target; verification briefly halts then resumes it, restoring the prior run state.
 - **Success evidence**: preflight reports the selected ELF, ELF SHA-256, target, probe, OpenOCD, and each value's `sources`; the run reports OpenOCD's own result. A verify success does not prove a program success.
 

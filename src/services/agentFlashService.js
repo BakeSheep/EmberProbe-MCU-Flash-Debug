@@ -23,6 +23,7 @@ class AgentFlashService {
         this.run = options.run || runOpenOcdOnce;
         this.prepare = options.prepare || prepareProbeConnection;
         this.recordSuccess = options.recordSuccess || (async () => {});
+        this.recordFlashed = options.recordFlashed || null;
     }
 
     request(params) {
@@ -65,6 +66,15 @@ class AgentFlashService {
         }
     }
 
+    async permission(params = {}) {
+        const action = String(params.action || "status");
+        if (action === "status") return this.authorization.status();
+        if (action === "reset") return this.authorization.reset();
+        throw Object.assign(new Error(`Unsupported Flash permission action: ${action}`), {
+            code: "INVALID_PERMISSION_ACTION"
+        });
+    }
+
     assertDigest(actual, expected) {
         if (actual !== expected)
             throw Object.assign(new Error("ELF changed before execution"), {
@@ -90,8 +100,10 @@ class AgentFlashService {
         const lease = this.coordinator.acquire("download");
         let temporary;
         try {
-            // Plans come from flash.authorize; execution never issues a confirmation itself.
-            if (!params.confirmationId)
+            // Plans come from flash.authorize; execution never issues a confirmation itself. Without an ID,
+            // only a remembered workspace permission for this exact path and connection may proceed.
+            const remember = !verify && !!params.remember;
+            if (!params.confirmationId && (verify || remember))
                 throw new Error(
                     verify ? "Flash verification confirmation is required" : "Flash confirmation is required"
                 );
@@ -106,14 +118,18 @@ class AgentFlashService {
             if (!compatible.compatible) throw new Error(`Incompatible OpenOCD ${compatible.version}`);
             const connection = await this.prepare(request, { resolveLaunch: () => launch });
             if (this.isDebugActive()) throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
-            const authorization = this.authorization.authorize(
-                {
-                    ...this.identity(request, connection),
-                    elf: inspected,
-                    operation: verify ? "flash.verify" : "flash.execute"
-                },
-                params.confirmationId
-            );
+            const plan = {
+                ...this.identity(request, connection),
+                elf: inspected,
+                operation: verify ? "flash.verify" : "flash.execute"
+            };
+            if (!params.confirmationId && !this.authorization.isTrusted?.(plan))
+                throw Object.assign(new Error("Flash confirmation is required"), {
+                    code: "FLASH_CONFIRMATION_REQUIRED",
+                    category: "user_decision",
+                    retryable: false
+                });
+            const authorization = this.authorization.authorize(plan, params.confirmationId, { remember });
             if (!authorization.authorized) return authorization;
             // Only the private, bounded snapshot whose digest was authorized is consumed.
             const word = quoteTclWord(snapshot.replace(/\\/g, "/"));
@@ -157,11 +173,24 @@ class AgentFlashService {
             const verified =
                 execution.exitCode === 0 &&
                 (!verify || (!failed && resultLines.some((line) => /^\s*EP_VERIFY OK\b/.test(line))));
-            if (verified && !lease.released) await this.recordSuccess(connection);
+            let permissionWarning;
+            if (verified && !lease.released) {
+                await this.recordSuccess(connection);
+                if (!verify) await this.recordFlashed?.({ elf, sha256, connection: plan });
+                if (remember) {
+                    try {
+                        await this.authorization.remember(plan);
+                    } catch (error) {
+                        permissionWarning = error.message;
+                    }
+                }
+            }
             return {
                 verified,
                 elf,
                 elfSha256: sha256,
+                permission: { mode: authorization.mode, ...this.authorization.status?.(plan) },
+                ...(permissionWarning ? { permissionWarning } : {}),
                 code: verified ? 0 : 1,
                 detail:
                     failed ||

@@ -89,7 +89,7 @@ class ElfService {
         const hasDebugInfo = debugComplete && types.size > 0;
         for (const symbol of result.symbols) {
             const info = types.get(symbol.name);
-            const looksCpp = isItaniumMangled(symbol.name);
+            const looksCpp = isItaniumMangled(symbol.elfName || symbol.name);
             const unresolvedCpp =
                 (looksCpp || result.typeMetadataIncomplete || info?.kind === "unknown") &&
                 (!info || info.kind === "unknown");
@@ -161,7 +161,7 @@ class ElfService {
         let suppressed = 0;
         let suppressedWarnings = 0;
         for (const symbol of result.symbols) {
-            if (!isItaniumMangled(symbol.name)) continue;
+            if (!isItaniumMangled(symbol.elfName || symbol.name)) continue;
             const info = types.get(symbol.name);
             const code = info?.ambiguous
                 ? "CPP_SYMBOL_AMBIGUOUS"
@@ -280,7 +280,9 @@ class ElfService {
                     this.onChange("metadata", result);
                     break;
                 case "symbols": {
-                    const entries = message.entries.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
+                    const entries = message.entries.filter(
+                        (symbol) => !isCppRuntimeSymbol(symbol.elfName || symbol.name)
+                    );
                     result.symbols.push(...entries);
                     for (const symbol of entries) this.symbolByName.set(symbol.name, symbol);
                     this._enrich({ symbols: entries }, types);
@@ -604,7 +606,7 @@ class ElfService {
 
         const result = this.elfSymbols.parseElfSymbols(buffer);
         result.memory = this.elfSymbols.parseElfSections(buffer);
-        result.symbols = result.symbols.filter((symbol) => !isCppRuntimeSymbol(symbol.name));
+        result.symbols = result.symbols.filter((symbol) => !isCppRuntimeSymbol(symbol.elfName || symbol.name));
         result.elf = {
             path: elfPath,
             mtimeMs: before.mtimeMs,
@@ -615,6 +617,24 @@ class ElfService {
             encoding: buffer[5]
         };
         const parsed = this.dwarf.parseDwarf(buffer, { filePath: elfPath, runtime: true });
+        // DWARF 已按源文件给同名 static 定下编译单元身份；按 ELF 名+地址+尺寸采用它们，使类型/布局键与符号名一致。
+        const qualified = new Map();
+        for (const symbol of Array.isArray(parsed?.symbols) ? parsed.symbols : [])
+            if (symbol.elfName) qualified.set(`${symbol.elfName}\0${symbol.address}\0${symbol.size}`, symbol);
+        if (qualified.size) {
+            for (const symbol of result.symbols) {
+                const match = qualified.get(`${symbol.elfName || symbol.name}\0${symbol.address}\0${symbol.size}`);
+                if (match)
+                    Object.assign(symbol, {
+                        name: match.name,
+                        elfName: match.elfName,
+                        scope: match.scope,
+                        sameNameCount: match.sameNameCount
+                    });
+            }
+            const warning = this.elfSymbols.sameNameSymbolWarning?.(result.symbols);
+            if (warning) result.warnings.push(warning);
+        }
         result.typeMetadataIncomplete = parsed?.diagnostics?.some((entry) => entry.code !== "DWARF_MISSING");
         result.companions = parsed?.companions || [];
         result.diagnostics = parsed?.diagnostics || [];

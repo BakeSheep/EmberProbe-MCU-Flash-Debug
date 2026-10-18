@@ -63,12 +63,17 @@ function minimalElf() {
     assert.strictEqual(req.name, "_ZN2ns5nsVarE", "解析身份始终为原始规范名");
     assert.strictEqual(req.address >>> 0, 0x20000020);
 
-    // 多个符号共享同一 displayName（重载）→ 不作别名，回落到未找到
+    // 多个符号共享同一 displayName（重载）→ 不作别名，以歧义拒绝并列出候选身份
     const overloaded = [
         { name: "_ZN2ns1fv", displayName: "ns::f", address: 0x20000100, size: 4, watchType: "i32" },
         { name: "_ZN2ns1fw", displayName: "ns::f", address: 0x20000104, size: 4, watchType: "i32" }
     ];
-    assert.throws(() => resolveVariableRequests(overloaded, [{ name: "ns::f" }]), { code: "VARIABLE_NOT_FOUND" });
+    assert.throws(
+        () => resolveVariableRequests(overloaded, [{ name: "ns::f" }]),
+        (error) =>
+            error.code === "VARIABLE_AMBIGUOUS" &&
+            error.details.candidates.map((candidate) => candidate.name).join() === "_ZN2ns1fv,_ZN2ns1fw"
+    );
 
     // —— _analyzeElf：topSymbols 含 displayName 且保留 name ——
     const tmp = path.join(fs.realpathSync(os.tmpdir()), `emberprobe-cpp-display-${process.pid}.elf`);

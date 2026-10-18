@@ -94,8 +94,28 @@ function bindVariableSymbols(parsed, symbols) {
     return {
         ...parsed,
         variables: parsed.variables.map((variable) => {
-            if (variable.linkageName || variable.address === undefined) return variable;
+            if (variable.address === undefined) return variable;
             const symbol = byAddress.get(variable.address);
+            // Same-named internal-linkage variables of several CUs carry a CU-qualified ELF identity
+            // (main.c::cfg). Key each one by that identity so types and layouts never merge across CUs.
+            const elfName = symbol?.elfName;
+            if (
+                elfName &&
+                (variable.linkageName
+                    ? variable.linkageName === elfName
+                    : variable.name === elfName ||
+                      /^_Z/.test(elfName) ||
+                      (elfName.startsWith(variable.name + ".") &&
+                          /^\d+$/.test(elfName.slice(variable.name.length + 1))))
+            ) {
+                const prefix = symbol.name.slice(0, symbol.name.length - elfName.length);
+                return {
+                    ...variable,
+                    linkageName: symbol.name,
+                    qualifiedName: prefix + (variable.qualifiedName || variable.name)
+                };
+            }
+            if (variable.linkageName) return variable;
             // Internal-linkage C++ globals and C function statics (e.g. Idle_Stack.2)
             // can have different ELF names and no DW_AT_linkage_name. Bind only an
             // exact, unique static address; never strip suffixes or guess by name.

@@ -32,6 +32,7 @@ const { AgentService } = require("../src/services/agentService");
         "flash.authorize": "_agentFlashService.authorize",
         "flash.execute": "_agentFlashService.execute",
         "flash.verify": "_agentFlashService.execute",
+        "flash.permission": "_agentFlashService.permission",
         "watch.add": "_addAgentWatch",
         "variables.exportCsv": "_exportAgentCsv",
         "variables.read": "_readAgentVariables",

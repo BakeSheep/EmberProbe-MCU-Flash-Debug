@@ -728,6 +728,7 @@ module.exports = Object.freeze({
     "live.elfReadFail": "无法读取 ELF：{path}",
     "live.elfTooLarge": "ELF 超过 {limit} MiB 安全上限，已拒绝解析：{path}",
     "live.varNotFound": "ELF 中未找到变量：{name}",
+    "live.varAmbiguous": "变量 {name} 在多个编译单元中各有定义，请改用带编译单元的名称：{candidates}",
     "warn.noDwarf": "未读取到 DWARF 类型信息，类型按大小推测（如需精确类型，请用带 -g 的 Debug 构建）",
     "diag.cppTypeUnresolved": "C++ 符号 {name} 未能从 DWARF 解析类型，已标记为不可观测而非猜测标量",
     "diag.cppSymbolAmbiguous": "C++ 符号 {name} 在 DWARF 中命中多个类型不一致的候选，无法唯一匹配",

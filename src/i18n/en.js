@@ -758,6 +758,7 @@ module.exports = Object.freeze({
     "live.elfReadFail": "Cannot read ELF: {path}",
     "live.elfTooLarge": "ELF exceeds the {limit} MiB safety limit and was not parsed: {path}",
     "live.varNotFound": "Variable not found in the ELF: {name}",
+    "live.varAmbiguous": "Variable {name} is defined in several compilation units; use a qualified name: {candidates}",
     "warn.noDwarf": "No DWARF type info found; types are inferred from size (build with -g for precise types)",
     "diag.cppTypeUnresolved": "C++ symbol {name} has no DWARF type; marked unobservable instead of guessing a scalar",
     "diag.cppSymbolAmbiguous": "C++ symbol {name} matched multiple conflicting DWARF candidates; cannot match uniquely",

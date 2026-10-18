@@ -3,7 +3,7 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const { parentPort, workerData, isMainThread } = require("worker_threads");
-const { parseElfSymbols, parseElfSections } = require("./elfSymbols");
+const { parseElfSymbols, parseElfSections, qualifySameNameSymbols, sameNameSymbolWarning } = require("./elfSymbols");
 const { parseDwarfInternal } = require("./dwarf/parser");
 const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
 const {
@@ -108,6 +108,24 @@ async function run(port, filePath, generation = 0) {
         }
         const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
         const result = parseElfSymbols(buffer);
+        let dwarf = null;
+        let dwarfError = null;
+        const parseDwarfOnce = () => {
+            if (dwarf || dwarfError) return;
+            try {
+                dwarf = parseDwarfInternal(buffer, { filePath });
+            } catch (error) {
+                dwarfError = error;
+            }
+        };
+        // Same-named statics of several CUs are published under CU-qualified identities, which
+        // need DWARF source paths. Settle them before any symbol leaves the Worker.
+        if (result.symbols.some((symbol) => symbol.elfName)) {
+            parseDwarfOnce();
+            if (dwarf) result.symbols = qualifySameNameSymbols(result.symbols, dwarf.variables);
+            const warning = sameNameSymbolWarning(result.symbols);
+            if (warning) result.warnings.push(warning);
+        }
         symbolNames = new Set(result.symbols.map((symbol) => symbol.name));
         port.postMessage({
             type: "metadata",
@@ -127,7 +145,10 @@ async function run(port, filePath, generation = 0) {
         await sendChunks(port, "symbols", result.symbols, acks);
         await sendChunks(port, "functions", result.functions, acks);
         try {
-            const parsed = bindVariableSymbols(parseDwarfInternal(buffer, { filePath }), result.symbols);
+            parseDwarfOnce();
+            if (dwarfError) throw dwarfError;
+            const parsed = bindVariableSymbols(dwarf, result.symbols);
+            dwarf = null;
             const types = buildVariableTypes(parsed);
             await sendChunks(port, "types", Array.from(types), acks);
             await sendChunks(port, "displayNames", Array.from(buildDisplayNames(parsed)), acks);

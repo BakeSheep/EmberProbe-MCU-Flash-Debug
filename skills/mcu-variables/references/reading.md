@@ -26,7 +26,9 @@ For a current value, pass names directly. Do not search source declarations firs
 node <skill-dir>/scripts/read.js --workspace <workspace> --variables Tick,sinx
 ```
 
-Use `--list` only after a missing or ambiguous name. DWARF paths support members and array selections such as `sensor.pos.y`, `buf[0]`, `buf[1:5]`, and `buf[*]`. Whole composites return a reporting tree and cannot be trended.
+Results include `firmwareConsistency`: `match` when the configured ELF has the SHA-256 that EmberProbe last programmed in this workspace, `mismatch` when it differs (for example a rebuild that was not flashed), and `unknown` when EmberProbe has no record. On `mismatch` the result also carries an `ELF_TARGET_MISMATCH` warning: addresses come from the disk ELF and may not match the running firmware, so report the warning with the values and suggest flashing the current ELF; do not present the values as reliable. `unknown` is not an error, because programming by other tools is not observed.
+
+Use `--list` only after a missing or ambiguous name. By default `--list` prints NDJSON (one JSON object per line, not a single JSON document), so `JSON.parse(stdout)` fails; parse it line by line. Every line repeats the ELF binding `elf`, `elfSha256` and `elfMtimeMs` and adds one symbol's fields (`name`, `address`, `size` and others from the ELF symbol table) plus `inferredType` and `compositeCandidate` (`true` when the symbol is larger than 8 bytes). For a single JSON document, add `--json-array`: `node <skill-dir>/scripts/read.js --workspace <workspace> --list --json-array` prints one object `{ "elf", "elfSha256", "elfMtimeMs", "symbols": [ { ...symbol, "inferredType", "compositeCandidate" } ] }` with the binding fields once. `--json-array` is valid only with `--list`; the default NDJSON output is unchanged. DWARF paths support members and array selections such as `sensor.pos.y`, `buf[0]`, `buf[1:5]`, and `buf[*]`. Whole composites return a reporting tree and cannot be trended.
 
 C++ names can contain `::`; quote qualified paths such as `"app::sensor.pos.y"`. Prefer an
 exact ELF/linkage name when a display name is ambiguous. Explicit scalar suffixes use a
@@ -63,7 +65,7 @@ For trends, use `--trend`; it defaults to ten samples. EmberProbe reuses an exis
 node <skill-dir>/scripts/read.js --workspace <workspace> --variables counter --trend --interval 200
 ```
 
-Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
+Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Watches are saved under raw ELF names, so `added` and `alreadyPresent` list those names: a request for the display name `ep7` reports `_ZL3ep7`, and `ep7.port` reports `_ZL3ep7.port`. When a request matched a display name, `resolvedNames` maps it to the raw name (`{"ep7": "_ZL3ep7"}`); the UI still shows the display name. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
 
 Agent CSV reads the chart's full sampling archive. Column headers include the decoded type so history remains clear if a watch's type changes. Results larger than 64 MiB are rejected explicitly; use the chart's archive export dialog for larger files. `historyTruncated: true` means the archive hit its size cap and stopped recording while the chart kept drawing, so the CSV covers less than the requested range: compare `from`/`to` with what was asked and report the gap instead of presenting the rows as complete.
 
@@ -74,3 +76,39 @@ node <skill-dir>/scripts/read.js --workspace <workspace> --export-csv --variable
 If an EmberProbe-managed debug target is running, reads are limited to writable allocated ELF RAM. A paused session may use DAP memory. Never pause a user-managed session implicitly. Report resolved names, inferred types, exact text values where present, source, and concise trend or composite results.
 
 On failure, use the diagnostic's `error.code`, `likelyCause`, `suggestedActions`, and `details`. Distinguish probe absence, target connection or power, probe ownership, Tcl port, configuration/ELF, and Bridge errors.
+
+A batch with some unresolvable variables still succeeds for the others. The output then has
+`partial: true` and `variableErrors`, one entry per failed request with `requestedName` plus the
+same `code`, `category`, `likelyCause`, `suggestedActions`, and `details` fields as a full
+diagnostic (for `--count`, a separate `type: "variableErrors"` line comes before the samples).
+Report the returned values, and fix or explain only the listed names instead of retrying the
+whole batch. The command fails with a normal diagnostic only when every requested variable fails;
+the first failure's code is kept and `details.variableErrors` lists all of them.
+
+C++ file-scope `static` objects, namespace variables, and class static members can be requested
+by their DWARF display name (`ep7.port`, `"app::object.id"`) as well as by the mangled ELF name
+(`_ZL3ep7`). `--list` shows the mangled names. Untyped `.bss` statics (GCC emits them as `NOTYPE`
+symbols at `-O0` without `-fdata-sections`) are listed and typed from DWARF like other variables.
+
+### Same-named statics in several source files
+
+File-scope `static` variables, C++ internal-linkage objects and function statics (`calls.0`) may
+have the same name in several compilation units. EmberProbe keeps every copy and names each one
+by its compilation unit: `main.c::g_cfg`, `other.c::g_cfg`, or a longer path suffix such as
+`a/main.c::s_counter` when two files share a basename. A bare name such as `g_cfg` fails with
+`VARIABLE_AMBIGUOUS`; it never falls back to the first symbol. `details.candidates` lists each
+candidate's `name`, `sourceFile`, `address` and `size`. Ask the user which source file they mean
+when the request does not say, then retry with that candidate's `name`.
+
+Qualify a name GDB-style as `file::name`, with or without quotes: `main.c::g_cfg.mode`,
+`"src/b/main.c::s_counter"`, `"'my dir/x.c'::buf[0]"`. The file is matched as a path suffix of the
+compilation unit's DWARF source path and must select exactly one unit; otherwise the request fails
+with `VARIABLE_AMBIGUOUS` (several units) or `VARIABLE_NOT_FOUND` (none) and lists the candidates.
+An unquoted scope must end in a file extension, so C++ names such as `app::counter` are never read
+as a file. Quote paths containing spaces or a drive letter. `0x2000abcd::s_counter` selects the
+copy at that address. Explicit scalar suffixes still follow the name (`main.c::s_counter:u32`).
+
+`--list` is a raw ELF inventory without DWARF, so it qualifies duplicates by the `STT_FILE`
+basename (`sourceFile`, for example `main.c`) and falls back to the address when basenames
+collide (`0x20000010::s_counter`); both forms are accepted by reads, writes and `--add-to`.
+Duplicate entries carry `elfName` (the raw ELF name), `scope` and `sameNameCount`.

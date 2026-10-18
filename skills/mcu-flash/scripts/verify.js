@@ -19,6 +19,8 @@ function fail(message) {
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
+    if (options.remember || options.permission || options["reset-permission"])
+        fail("Flash verification supports one-time confirmation only; manage programming permission with program.js.");
     const result = await preflight(options);
     if (!result.ready) {
         emit(result);

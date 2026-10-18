@@ -34,6 +34,7 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i];
         if (key === "--execute") out.execute = true;
+        else if (["--remember", "--permission", "--reset-permission"].includes(key)) out[key.slice(2)] = true;
         else if (valued.includes(key)) {
             if (!argv[i + 1]) throw new Error(`Missing value for ${key}`);
             out[key.slice(2)] = argv[++i];

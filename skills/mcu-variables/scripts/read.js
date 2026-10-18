@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const crypto = require("crypto");
-const { call, writeDiagnostic } = require("../../_emberprobe/agent-client");
+const { call, variableErrorDiagnostics, writeDiagnostic } = require("../../_emberprobe/agent-client");
 
 const TYPES = new Set(["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"]);
 const WIDTH = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
@@ -22,7 +22,8 @@ function args(argv) {
         const key = argv[i];
         if (!key.startsWith("--")) throw new Error(`Unexpected argument: ${key}`);
         const name = key.slice(2);
-        if (name === "list" || name === "trend" || name === "read" || name === "export-csv") out[name] = true;
+        if (name === "list" || name === "trend" || name === "read" || name === "export-csv" || name === "json-array")
+            out[name] = true;
         else {
             const value = argv[++i];
             if (value === undefined || value.startsWith("--")) throw new Error(`Missing value for --${name}`);
@@ -30,6 +31,27 @@ function args(argv) {
         }
     }
     return out;
+}
+
+// 部分变量失败时扩展仍返回其余变量，并附 variableErrors；补全为结构化诊断后输出，
+// 让 Agent 逐项判断原因，而不是把整批视为失败。
+function withVariableErrors(result, operation) {
+    if (!Array.isArray(result?.variableErrors) || !result.variableErrors.length) return result;
+    return { ...result, partial: true, variableErrors: variableErrorDiagnostics(result, { operation }) };
+}
+
+// --list 默认输出 NDJSON：每个符号一行 JSON，且每行都重复 elf/elfSha256/elfMtimeMs；
+// --json-array 改为单个 JSON 对象 { elf, elfSha256, elfMtimeMs, symbols: [...] }，便于 JSON.parse(stdout)。
+function listOutput({ elf, snapshot, symbols }, jsonArray = false) {
+    const binding = { elf, elfSha256: snapshot.sha256, elfMtimeMs: snapshot.mtimeMs };
+    const entries = symbols.map((symbol) => ({
+        ...symbol,
+        ...(symbol.objectFile ? { sourceFile: symbol.objectFile } : {}),
+        inferredType: infer(symbol.size),
+        compositeCandidate: symbol.size > 8
+    }));
+    if (jsonArray) return stringify({ ...binding, symbols: entries }) + "\n";
+    return entries.map((entry) => stringify({ ...binding, ...entry }) + "\n").join("");
 }
 
 function boundedInteger(value, fallback, min, max, name) {
@@ -101,21 +123,28 @@ function exportRangeDetails(opt, range) {
     };
 }
 
+// 编译单元限定前缀：'dir/main.c'::、"main.c"::、main.c::、src/main.c:: 或 0x2000abcd::（与扩展的解析规则一致）。
+const SCOPE_PREFIX =
+    /^(?:'[^'\x00-\x1f]{1,1024}'|"[^"\x00-\x1f]{1,1024}"|[\w.+~/\\-]{0,512}\.[A-Za-z0-9_+]+|0x[0-9a-fA-F]{1,8})::(?=[A-Za-z_])/;
+
 function variableSpecs(value) {
     const specs = String(value || "")
         .split(",")
         .filter(Boolean)
         .map((raw) => {
             const trimmed = raw.trim();
+            // 编译单元前缀里的 '.'、':' 不属于成员路径或类型后缀。
+            const prefix = (SCOPE_PREFIX.exec(trimmed) || [""])[0].length;
+            const rest = trimmed.slice(prefix);
             // 路径语法（结构体成员 sensor.x / 数组元素 buf[0] / 范围 buf[1:5] / 全部 buf[*]）
             // 类型由扩展侧按 DWARF 布局推断，整体作为变量名传递，不再按 ':' 拆分类型。
-            if (trimmed.includes("[") || trimmed.includes(".")) {
+            if (rest.includes("[") || rest.includes(".")) {
                 if (!trimmed) throw new Error("Variable name is required");
                 return { name: trimmed };
             }
             // C++ 限定名中的 :: 是名字的一部分，只有单个冒号才分隔显式类型。
             const lastColon = trimmed.lastIndexOf(":");
-            const split = lastColon > 0 && trimmed[lastColon - 1] !== ":" ? lastColon : -1;
+            const split = lastColon > prefix && trimmed[lastColon - 1] !== ":" ? lastColon : -1;
             const name = (split > 0 ? trimmed.slice(0, split) : trimmed).trim();
             const type = split > 0 ? trimmed.slice(split + 1).trim() : "";
             if (!name) throw new Error("Variable name is required");
@@ -160,6 +189,8 @@ function parseSymbolsBuffer(buffer) {
         if (o + 40 > b.length) break;
         sections.push({
             type: b.readUInt32LE(o + 4),
+            flags: b.readUInt32LE(o + 8),
+            addr: b.readUInt32LE(o + 12) >>> 0,
             offset: b.readUInt32LE(o + 16),
             size: b.readUInt32LE(o + 20),
             link: b.readUInt32LE(o + 24),
@@ -169,8 +200,7 @@ function parseSymbolsBuffer(buffer) {
     const sym = sections.find((s) => s.type === 2) || sections.find((s) => s.type === 11);
     if (!sym || !sections[sym.link]) throw new Error("ELF has no usable symbol table");
     const str = sections[sym.link],
-        result = [],
-        seen = new Set(),
+        groups = new Map(),
         ent = sym.entsize || 16;
     const inBounds = (s) => s.offset <= b.length && s.size <= b.length - s.offset;
     if (!inBounds(sym) || !inBounds(str) || ent < 16) throw new Error("ELF symbol table is out of bounds");
@@ -181,17 +211,110 @@ function parseSymbolsBuffer(buffer) {
         while (e < endLimit && b[e]) e++;
         return e < endLimit ? b.toString("utf8", p, e) : "";
     };
+    // 与扩展一致：GCC -O0 且无 -fdata-sections 时 .bss 中的 static 是 NOTYPE LOCAL，
+    // 只接纳有尺寸且完整落在可写已分配节（SHF_WRITE|SHF_ALLOC）内的此类符号。
+    const untypedLocalData = (o, section, address, size) => {
+        const owner = sections[section];
+        return (
+            b[o + 12] >> 4 === 0 &&
+            size > 0 &&
+            !!owner &&
+            (owner.flags & 3) === 3 &&
+            address >= owner.addr &&
+            address + size <= owner.addr + owner.size
+        );
+    };
+    // STT_FILE 标记其后局部符号所属的源文件（basename），用于区分不同编译单元中的同名 static。
+    let objectFile = "";
     for (let o = sym.offset; o + 16 <= Math.min(b.length, sym.offset + sym.size); o += ent) {
-        if ((b[o + 12] & 15) !== 1) continue;
+        const type = b[o + 12] & 15;
+        const local = b[o + 12] >> 4 === 0;
+        if (type === 4) {
+            objectFile = local ? cstr(str.offset + b.readUInt32LE(o)) : "";
+            continue;
+        }
         const section = b.readUInt16LE(o + 14),
-            address = b.readUInt32LE(o + 4) >>> 0;
+            address = b.readUInt32LE(o + 4) >>> 0,
+            size = b.readUInt32LE(o + 8) >>> 0;
+        if (type !== 1 && !(type === 0 && untypedLocalData(o, section, address, size))) continue;
         if (!section || section === 0xfff1 || !address) continue;
         const name = cstr(str.offset + b.readUInt32LE(o));
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        result.push({ name, address, size: b.readUInt32LE(o + 8) >>> 0 });
+        if (!name || (type === 0 && name.startsWith("$"))) continue;
+        const entry = { name, address, size, ...(local && objectFile ? { objectFile } : {}) };
+        const group = groups.get(name);
+        if (!group) groups.set(name, [entry]);
+        else if (!group.some((other) => other.address === address && other.size === size)) group.push(entry);
     }
-    return result.sort((a, z) => a.name.localeCompare(z.name));
+    return qualifySameName(groups).sort((a, z) => a.name.localeCompare(z.name));
+}
+
+// 同名变量（各 .c 中的 static 等）全部保留，按 STT_FILE 给出唯一身份 main.c::name；
+// 源文件 basename 也重名时退回 0x<地址>::name。扩展侧按 DWARF 完整路径解析这两种写法。
+function qualifySameName(groups) {
+    const result = [];
+    for (const [elfName, group] of groups) {
+        if (group.length === 1) {
+            result.push(group[0]);
+            continue;
+        }
+        const used = new Set();
+        for (const symbol of group) {
+            const file = symbol.objectFile || "";
+            const unique =
+                /^[\w.+~-]{0,512}\.[A-Za-z0-9_+]+$/.test(file) &&
+                group.filter((other) => other.objectFile === file).length === 1;
+            const scope = unique ? file : "0x" + symbol.address.toString(16);
+            const name = scope + "::" + elfName;
+            if (used.has(name)) continue;
+            used.add(name);
+            result.push({ ...symbol, name, elfName, scope, sameNameCount: group.length });
+        }
+    }
+    return result;
+}
+
+// 直接 --elf/--port 模式的变量查找：身份名精确匹配，或 文件名::变量名 / 0x地址::变量名 唯一匹配。
+// 同名多编译单元的裸名抛 VARIABLE_AMBIGUOUS 并列出候选，不得默认取第一项。
+function findSymbol(symbols, requested) {
+    const direct = symbols.find((symbol) => symbol.name === requested);
+    if (direct) return direct;
+    const prefix = (SCOPE_PREFIX.exec(requested) || [""])[0];
+    const local = requested.slice(prefix.length);
+    const named = symbols.filter((symbol) => (symbol.elfName || symbol.name) === local);
+    let matches = named;
+    if (prefix) {
+        const file = prefix
+            .slice(0, -2)
+            .replace(/^['"]|['"]$/g, "")
+            .replace(/\\/g, "/");
+        matches = /^0x[0-9a-f]+$/i.test(file)
+            ? named.filter((symbol) => symbol.address === parseInt(file, 16))
+            : named.filter(
+                  (symbol) =>
+                      symbol.objectFile && (file === symbol.objectFile || file.endsWith("/" + symbol.objectFile))
+              );
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1)
+        throw Object.assign(
+            new Error(
+                `Variable name is ambiguous: ${requested} matches ${matches.length} variables in different ` +
+                    "compilation units; use one of details.candidates[].name"
+            ),
+            {
+                code: "VARIABLE_AMBIGUOUS",
+                details: {
+                    requestedName: requested,
+                    candidates: matches.map((symbol) => ({
+                        name: symbol.name,
+                        sourceFile: symbol.objectFile || "",
+                        address: `0x${symbol.address.toString(16).toUpperCase()}`,
+                        size: symbol.size
+                    }))
+                }
+            }
+        );
+    return null;
 }
 function readStableElf(file) {
     const before = fs.statSync(file);
@@ -403,6 +526,7 @@ function workspaceOutputPath(workspace, requested) {
 async function main() {
     const opt = args(process.argv.slice(2));
     const workspace = path.resolve(opt.workspace || process.cwd());
+    if (opt["json-array"] && !opt.list) throw new Error("--json-array can only be combined with --list");
     if (opt["export-csv"]) {
         const variables = opt.variables ? variableSpecs(opt.variables).map((item) => item.name) : [];
         const range = exportRange(opt);
@@ -479,6 +603,7 @@ async function main() {
             }
         }
         const latest = result.samples?.length ? result.samples[result.samples.length - 1].values : {};
+        const { partial, variableErrors } = withVariableErrors(result, "variables.trend");
         process.stdout.write(
             stringify({
                 type: "trend",
@@ -486,7 +611,8 @@ async function main() {
                 elf: result.elf,
                 sampleCount: result.samples?.length || 0,
                 latest,
-                trends: Object.fromEntries(Object.entries(series).map(([name, points]) => [name, summarize(points)]))
+                trends: Object.fromEntries(Object.entries(series).map(([name, points]) => [name, summarize(points)])),
+                ...(partial ? { partial, variableErrors } : {})
             }) + "\n"
         );
         return;
@@ -505,6 +631,8 @@ async function main() {
             },
             Math.min(2147483647, count * intervalMs + 30000)
         );
+        const { partial, variableErrors } = withVariableErrors(result, "variables.read");
+        if (partial) process.stdout.write(stringify({ type: "variableErrors", partial, variableErrors }) + "\n");
         for (const sample of result.samples || []) {
             process.stdout.write(
                 stringify({ type: "sample", source: result.source, elf: result.elf, ...sample }) + "\n"
@@ -518,7 +646,7 @@ async function main() {
     if (!opt.list && !opt.trend && opt.count === undefined && !opt.elf && !opt.port) {
         const variables = bridgeVariables || variableSpecs(opt.variables);
         const result = await call(workspace, "variables.read", { variables });
-        process.stdout.write(stringify({ type: "sample", ...result }) + "\n");
+        process.stdout.write(stringify({ type: "sample", ...withVariableErrors(result, "variables.read") }) + "\n");
         return;
     }
     const selectedElf = opt.elf || newestElf(workspace);
@@ -529,17 +657,7 @@ async function main() {
     const symbols = parsed.symbols;
     const snapshot = parsed.snapshot;
     if (opt.list) {
-        for (const s of symbols)
-            process.stdout.write(
-                stringify({
-                    elf,
-                    elfSha256: snapshot.sha256,
-                    elfMtimeMs: snapshot.mtimeMs,
-                    ...s,
-                    inferredType: infer(s.size),
-                    compositeCandidate: s.size > 8
-                }) + "\n"
-            );
+        process.stdout.write(listOutput({ elf, snapshot, symbols }, opt["json-array"]));
         return;
     }
     const requested = String(opt.variables || "")
@@ -549,8 +667,9 @@ async function main() {
             const split = spec.lastIndexOf(":");
             const name = split > 0 ? spec.slice(0, split) : spec;
             const explicit = split > 0 ? spec.slice(split + 1) : "";
-            const symbol = symbols.find((s) => s.name === name);
-            if (!symbol) throw new Error(`Variable not found in ELF: ${name}`);
+            const symbol = findSymbol(symbols, name);
+            if (!symbol)
+                throw Object.assign(new Error(`Variable not found in ELF: ${name}`), { code: "VARIABLE_NOT_FOUND" });
             const type = explicit || infer(symbol.size);
             if (!TYPES.has(type))
                 throw new Error(
@@ -653,12 +772,15 @@ module.exports = {
     exportRangeDetails,
     variableSpecs,
     parseSymbolsBuffer,
+    findSymbol,
     memoryValues,
     decode,
     decodeText,
     infer,
+    listOutput,
     readStableElf,
     summarize,
     stringify,
-    workspaceOutputPath
+    workspaceOutputPath,
+    withVariableErrors
 };

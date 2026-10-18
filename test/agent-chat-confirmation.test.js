@@ -61,7 +61,21 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
     await provider._writeAgentVariables({ values, confirmationId: remembered.confirmationId, remember: true });
     const trusted = await provider._writeAgentVariables({ values: [{ name: "word", value: 34 }] });
     assert.strictEqual(trusted.permission.trusted, true);
+    assert.strictEqual(trusted.firmwareConsistency.status, "unknown");
     assert.strictEqual(writes, 3);
+    // A rebuilt ELF that was not flashed disables remembered trust and warns in the plan.
+    const { FirmwareRecord } = require("../src/services/firmwareRecord");
+    provider._firmwareRecord = new FirmwareRecord({
+        get: (key) => state.get(key),
+        update: async (key, value) => state.set(key, value)
+    });
+    await provider._firmwareRecord.record({ elf: "firmware.elf", sha256: "a".repeat(64) });
+    const mismatched = await provider._writeAgentVariables({ values });
+    assert(mismatched.confirmationRequired, "remembered trust must not apply to a mismatched firmware");
+    assert.strictEqual(mismatched.firmwareConsistency.status, "mismatch");
+    assert.strictEqual(mismatched.warnings[0].code, "ELF_TARGET_MISMATCH");
+    assert.strictEqual(writes, 3);
+    delete provider._firmwareRecord;
     await provider._writeAuthorization.reset();
     assert((await provider._writeAgentVariables({ values })).confirmationRequired);
     assert.strictEqual(writes, 3);

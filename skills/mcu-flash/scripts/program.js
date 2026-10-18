@@ -19,6 +19,18 @@ function fail(message) {
 
 async function main() {
     const options = parseArgs(process.argv.slice(2));
+    if (options.permission || options["reset-permission"]) {
+        if (options.execute || options.remember || options["confirmation-id"])
+            fail("--permission and --reset-permission cannot be combined with programming arguments.");
+        emit(
+            await call(options.workspace, "flash.permission", {
+                action: options["reset-permission"] ? "reset" : "status"
+            })
+        );
+        return;
+    }
+    if (options.remember && !(options.execute && options["confirmation-id"]))
+        fail("--remember requires --execute --confirmation-id <id> after the user chose the workspace option.");
     const result = await preflight(options);
     if (!result.ready) {
         emit(result);
@@ -29,7 +41,9 @@ async function main() {
     if (!isSafeCfgPath(result.target) || !isSafeCfgPath(result.probe)) fail("Unsafe OpenOCD configuration path.");
     let authorization;
     try {
-        authorization = options.execute ? { authorized: !!options["confirmation-id"] } : await authorizeFlash(result);
+        // Without an ID, execution proceeds only under a remembered workspace permission for this plan.
+        authorization =
+            options.execute && options["confirmation-id"] ? { authorized: true } : await authorizeFlash(result);
     } catch (error) {
         if (!options.execute) {
             emit({
@@ -50,7 +64,7 @@ async function main() {
     if (!options.execute) return;
     if (!authorization || authorization.authorized !== true) {
         fail(
-            "Flash confirmation is required. Show the preflight details to the user, then rerun with --execute --confirmation-id <id> only after explicit approval."
+            "Flash confirmation is required. Show the preflight details to the user, then rerun with --execute --confirmation-id <id> (add --remember only if the user chose the workspace option) after explicit approval."
         );
     }
     if (!result.openocdCompatible) {
@@ -70,7 +84,8 @@ async function main() {
             transport: result.transport,
             probeSerial: probeSerialOverride(result),
             adapterSpeedKhz: result.adapterSpeedKhz,
-            confirmationId: options["confirmation-id"]
+            confirmationId: options["confirmation-id"],
+            remember: !!options.remember
         },
         150000
     );
