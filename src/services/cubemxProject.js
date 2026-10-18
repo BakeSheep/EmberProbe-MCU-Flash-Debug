@@ -5,9 +5,31 @@ const crypto = require("crypto");
 const { failure, inside } = require("./cubemxEnvironment");
 const { parseProperties } = require("./javaProperties");
 const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
-const ignored = (name) =>
-    [".git", ".agents", "node_modules", "build", "dist", "Debug", "Release"].includes(name) ||
-    name.startsWith(".emberprobe-cubemx-");
+// Version control, editor and agent tool directories are never CubeMX inputs or outputs.
+const IGNORED_NAMES = new Set([
+    ".git",
+    ".svn",
+    ".hg",
+    ".agents",
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".vscode",
+    ".idea",
+    ".cache",
+    "node_modules",
+    "build",
+    "dist",
+    "Debug",
+    "Release"
+]);
+const ignored = (name) => IGNORED_NAMES.has(name) || name.startsWith(".emberprobe-cubemx-");
+// Top-level entries CubeMX reads or regenerates. A link here could redirect generated writes or
+// feed linked sources into Keep User Code, so it is rejected; links elsewhere are skipped.
+const GENERATION_SCOPE =
+    /^(?:Core|Drivers|Middlewares|cmake|Inc|Src|Startup|USB_DEVICE|USB_HOST|FATFS|LWIP|MBEDTLS|X-CUBE-[^/\\]*|[^/\\]+\.(?:ioc|ld|s)|\.mxproject|CMakeLists\.txt|CMakePresets\.json|Makefile)$/i;
+const linkKey = (name) => (process.platform === "win32" ? name.toLowerCase() : name);
 
 function parseIoc(content) {
     if (typeof content !== "string" || Buffer.byteLength(content) > 1024 * 1024 || content.includes("\0"))
@@ -45,20 +67,44 @@ function changes(before, after) {
         .filter((key) => before[key] !== after[key])
         .map((key) => ({ key, previous: before[key] ?? null, requested: after[key] ?? null }));
 }
-async function snapshot(root, relative = "", result = new Map()) {
-    for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
-        if (ignored(entry.name)) continue;
-        const name = path.join(relative, entry.name);
-        const absolute = path.join(root, name);
-        if (entry.isSymbolicLink() || !inside(root, await fs.realpath(absolute)))
-            throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Linked project files are unsupported", { file: name });
-        if (entry.isDirectory()) await snapshot(root, name, result);
-        else if (entry.isFile()) {
-            const bytes = await fs.readFile(absolute);
-            result.set(name, { bytes, hash: hash(bytes) });
-        } else throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Unsupported project entry", { file: name });
-    }
+// Links outside the generation scope are skipped and reported through `options.links`, so callers
+// can verify with assertOutsideLinks() that generated output never lands on or below one.
+async function snapshot(root, options = {}) {
+    const result = new Map();
+    const walk = async (relative) => {
+        for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
+            if (ignored(entry.name)) continue;
+            const name = path.join(relative, entry.name);
+            const absolute = path.join(root, name);
+            if (entry.isSymbolicLink() || !inside(root, await fs.realpath(absolute))) {
+                if (GENERATION_SCOPE.test(name.split(path.sep)[0]))
+                    throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Linked project files are unsupported", {
+                        file: name
+                    });
+                options.links?.push(name);
+                continue;
+            }
+            if (entry.isDirectory()) await walk(name);
+            else if (entry.isFile()) {
+                const bytes = await fs.readFile(absolute);
+                result.set(name, { bytes, hash: hash(bytes) });
+            } else throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Unsupported project entry", { file: name });
+        }
+    };
+    await walk("");
     return result;
+}
+function assertOutsideLinks(links, files) {
+    if (!links.length) return;
+    const keys = links.map(linkKey);
+    for (const name of files.keys()) {
+        const file = linkKey(name);
+        if (keys.some((key) => file === key || file.startsWith(key + path.sep)))
+            throw failure("CUBEMX_LAYOUT_UNSUPPORTED", "Generated output overlaps a linked project path", {
+                file: name,
+                condition: "linked_output_path"
+            });
+    }
 }
 function fileDiff(before, after) {
     return [...new Set([...before.keys(), ...after.keys()])]
@@ -283,7 +329,12 @@ async function applyFiles(root, before, after, backup, options = {}) {
             // Nothing has been written yet, so callers must not treat this as a rollback.
             condition: "pre_write_change"
         });
-    await materialize(backup, before);
+    // Recovery material: the original bytes of every file this writeback modifies or deletes.
+    await fs.mkdir(backup, { recursive: true });
+    await materialize(
+        backup,
+        new Map(diff.filter((item) => before.has(item.file)).map((item) => [item.file, before.get(item.file)]))
+    );
     const applied = [];
     try {
         for (const item of diff) {
@@ -340,6 +391,7 @@ module.exports = {
     parseIoc,
     changes,
     snapshot,
+    assertOutsideLinks,
     fileDiff,
     normalizeGenerated,
     stageGeneration,
