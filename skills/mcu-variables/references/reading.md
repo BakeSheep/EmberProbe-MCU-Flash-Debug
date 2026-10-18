@@ -74,3 +74,16 @@ node <skill-dir>/scripts/read.js --workspace <workspace> --export-csv --variable
 If an EmberProbe-managed debug target is running, reads are limited to writable allocated ELF RAM. A paused session may use DAP memory. Never pause a user-managed session implicitly. Report resolved names, inferred types, exact text values where present, source, and concise trend or composite results.
 
 On failure, use the diagnostic's `error.code`, `likelyCause`, `suggestedActions`, and `details`. Distinguish probe absence, target connection or power, probe ownership, Tcl port, configuration/ELF, and Bridge errors.
+
+A batch with some unresolvable variables still succeeds for the others. The output then has
+`partial: true` and `variableErrors`, one entry per failed request with `requestedName` plus the
+same `code`, `category`, `likelyCause`, `suggestedActions`, and `details` fields as a full
+diagnostic (for `--count`, a separate `type: "variableErrors"` line comes before the samples).
+Report the returned values, and fix or explain only the listed names instead of retrying the
+whole batch. The command fails with a normal diagnostic only when every requested variable fails;
+the first failure's code is kept and `details.variableErrors` lists all of them.
+
+C++ file-scope `static` objects, namespace variables, and class static members can be requested
+by their DWARF display name (`ep7.port`, `"app::object.id"`) as well as by the mangled ELF name
+(`_ZL3ep7`). `--list` shows the mangled names. Untyped `.bss` statics (GCC emits them as `NOTYPE`
+symbols at `-O0` without `-fdata-sections`) are listed and typed from DWARF like other variables.

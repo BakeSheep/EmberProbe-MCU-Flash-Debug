@@ -125,6 +125,17 @@ function buildSymbolNameIndex(symbols) {
     }
     return byName;
 }
+// Agent 批量读取中单个变量的失败项：保留错误码/消息/细节，供 Skill 映射为结构化诊断。
+function variableErrorEntry({ requestedName, error }) {
+    return {
+        requestedName,
+        error: {
+            code: error.code,
+            message: error.message,
+            ...(error.details ? { details: error.details } : {})
+        }
+    };
+}
 // 实现WebviewViewProvider接口的类
 class MainViewProvider {
     constructor(context) {
@@ -1275,7 +1286,9 @@ class MainViewProvider {
         if (destination === "chart" || destination === "both") await addTo(chartKey, "chart");
         return results;
     }
-    _agentVariablePlan(params) {
+    // 逐项规划：单个变量的解析/布局失败记入 variableErrors，不影响同批其余变量；
+    // 全部失败时抛出首个错误（保持单变量请求原有的错误码），多项失败附带 details.variableErrors。
+    _agentVariablePlan(params, layoutErrors = null) {
         const raw = Array.isArray(params.variables) ? params.variables : [];
         const requests = raw.map((item) =>
             typeof item === "string"
@@ -1287,47 +1300,32 @@ class MainViewProvider {
         );
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
         const elfResult = this.readElfSymbols();
-        const byName = this._symbolNameIndex(elfResult.symbols);
-        const folded = new Map();
-        for (const s of elfResult.symbols) {
-            const key = String(s.name || "").toLowerCase();
-            if (!folded.has(key)) folded.set(key, []);
-            folded.get(key).push(s);
-        }
+        const resolveSymbol = this._agentSymbolResolver(elfResult.symbols);
         const scalarRequests = [];
         const expandedScalars = [];
         const compositePlan = [];
-        for (const req of requests) {
+        const failures = [];
+        const planRequest = (req, index) => {
             const parsed = elfSymbols.parseMemberPath(req.name);
             const baseName = parsed ? parsed.base : req.name;
-            let symbol = byName.get(baseName);
-            if (!symbol) {
-                // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
-                const matches = folded.get(String(baseName).toLowerCase()) || [];
-                if (matches.length === 1) symbol = matches[0];
-                else if (matches.length > 1)
-                    throw Object.assign(new Error(`Variable name is ambiguous: ${req.name}`), {
-                        code: "AMBIGUOUS_VARIABLE"
-                    });
-            }
-            if (!symbol)
-                throw Object.assign(new Error(`Variable not found in current ELF: ${req.name}`), {
-                    code: "VARIABLE_NOT_FOUND"
-                });
+            const symbol = resolveSymbol(baseName, req.name);
+            // 预取布局失败（预算/解析错误等）时报告原始错误，而不是笼统的 COMPOSITE_LAYOUT_MISSING
+            const layoutError = !symbol.compositeLayout && layoutErrors?.get(symbol.name);
+            if (layoutError) throw layoutError;
             const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
             if (
                 expanded.length === 1 &&
                 elfSymbols.resolveLayoutPath(symbol, symbol.compositeLayout, parsed)?.node.watchType
             ) {
                 expandedScalars.push({ ...expanded[0], name: expanded[0].path, requestedName: req.name });
-                continue;
+                return;
             }
             const runtime =
                 !expanded.length &&
                 require("./services/runtimeWatch").runtimeWatchEntry(req.name, symbol, parsed?.segments || []);
             if (runtime) {
                 compositePlan.push({ ...runtime, requestedName: req.name });
-                continue;
+                return;
             }
             if (!expanded.length && require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
                 throw Object.assign(new Error(`Invalid runtime member path: ${req.name}`), {
@@ -1369,13 +1367,52 @@ class MainViewProvider {
                     { code: "INVALID_VARIABLE_PATH" }
                 );
             } else {
-                scalarRequests.push(req);
+                scalarRequests.push({ req, index });
+            }
+        };
+        // 只有带错误码的预期失败按项隔离；无错误码的异常属于程序缺陷，继续整体抛出
+        const isolate = (index, fn) => {
+            try {
+                fn();
+            } catch (error) {
+                if (!error?.code) throw error;
+                failures.push({ index, requestedName: requests[index].name, error });
+            }
+        };
+        requests.forEach((req, index) => isolate(index, () => planRequest(req, index)));
+        let scalarPlan = [];
+        try {
+            scalarPlan = scalarRequests.length
+                ? elfSymbols.resolveVariableRequests(
+                      elfResult.symbols,
+                      scalarRequests.map((entry) => entry.req)
+                  )
+                : [];
+        } catch {
+            // 批量解析遇到首个错误即中止；逐项重解析以隔离失败项，并在项间保持重复请求检查。
+            scalarPlan = [];
+            const seen = new Set();
+            for (const { req, index } of scalarRequests) {
+                isolate(index, () => {
+                    const [item] = elfSymbols.resolveVariableRequests(elfResult.symbols, [req]);
+                    if (seen.has(item.name))
+                        throw Object.assign(new Error(`Variable requested more than once: ${item.name}`), {
+                            code: "DUPLICATE_VARIABLE"
+                        });
+                    seen.add(item.name);
+                    scalarPlan.push(item);
+                });
             }
         }
-        const plan = expandedScalars.concat(
-            scalarRequests.length ? elfSymbols.resolveVariableRequests(elfResult.symbols, scalarRequests) : []
-        );
-        return { elfResult, plan, compositePlan };
+        const plan = expandedScalars.concat(scalarPlan);
+        failures.sort((a, b) => a.index - b.index);
+        if (failures.length && !plan.length && !compositePlan.length) {
+            const first = failures[0].error;
+            if (failures.length > 1)
+                first.details = { ...(first.details || {}), variableErrors: failures.map(variableErrorEntry) };
+            throw first;
+        }
+        return { elfResult, plan, compositePlan, variableErrors: failures.map(variableErrorEntry) };
     }
     _decodeAgentSample(plan, samples, compositePlan) {
         const byName = new Map(samples.map((sample) => [sample.name, sample]));
@@ -1451,8 +1488,9 @@ class MainViewProvider {
         });
     }
     async _runAgentSamples(params, count, intervalMs, syncStatus) {
-        await this._prepareRequestedLayouts(params.variables);
-        const { elfResult, plan, compositePlan } = this._agentVariablePlan(params);
+        const layoutErrors = new Map();
+        await this._prepareRequestedLayouts(params.variables, { layoutErrors });
+        const { elfResult, plan, compositePlan, variableErrors } = this._agentVariablePlan(params, layoutErrors);
         // 合并标量与复合变量的实际读取项：复合变量按基址整体读一次（同名去重），
         // 解码时再按各路径导航；避免同一结构体多次重复读取。
         const readItems = [];
@@ -1494,7 +1532,12 @@ class MainViewProvider {
                         this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
                     if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs);
                 }
-                return { source, elf: elfResult.elf, samples: result };
+                return {
+                    source,
+                    elf: elfResult.elf,
+                    samples: result,
+                    ...(variableErrors.length ? { partial: true, variableErrors } : {})
+                };
             },
             { syncStatus, total: count, allowPausedDebugRead: true }
         );
@@ -2272,7 +2315,12 @@ class MainViewProvider {
     }
     async _readAgentVariables(params) {
         const result = await this._runAgentSamples(params, 1, 0, false);
-        return { source: result.source, elf: result.elf, ...result.samples[0] };
+        return {
+            source: result.source,
+            elf: result.elf,
+            ...result.samples[0],
+            ...(result.variableErrors ? { partial: true, variableErrors: result.variableErrors } : {})
+        };
     }
     async _sampleAgentVariables(params) {
         const count = validation.clampInteger(params.count, 10, 2, 1000);
@@ -3234,16 +3282,56 @@ class MainViewProvider {
         this._symbolNameIndexes.set(symbols, { length: symbols.length, index });
         return index;
     }
-    async _prepareRequestedLayouts(requests) {
+    // Agent 读写路径的名称解析：原始 ELF 名 → 唯一 displayName（C++ 限定名/mangled static 的显示名）
+    // → 大小写不敏感的唯一匹配。布局预取与读写规划必须共用它，否则按显示名请求的复合变量会缺布局。
+    _agentSymbolResolver(symbols) {
+        const byName = this._symbolNameIndex(symbols);
+        let folded = null;
+        return (baseName, requestedName = baseName) => {
+            const symbol = byName.get(baseName);
+            if (symbol) return symbol;
+            if (!folded) {
+                folded = new Map();
+                for (const s of Array.isArray(symbols) ? symbols : []) {
+                    const key = String(s.name || "").toLowerCase();
+                    if (!folded.has(key)) folded.set(key, []);
+                    folded.get(key).push(s);
+                }
+            }
+            // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
+            const matches = folded.get(String(baseName).toLowerCase()) || [];
+            if (matches.length === 1) return matches[0];
+            if (matches.length > 1)
+                throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), {
+                    code: "AMBIGUOUS_VARIABLE"
+                });
+            throw Object.assign(new Error(`Variable not found in current ELF: ${requestedName}`), {
+                code: "VARIABLE_NOT_FOUND"
+            });
+        };
+    }
+    // 预取请求中复合变量的 DWARF 布局。传入 options.layoutErrors 时逐项收集布局错误（键为原始符号名）
+    // 而不中止整批；未传入时保持原语义，首个布局错误直接抛出。名称解析失败留给后续规划报告。
+    async _prepareRequestedLayouts(requests, options = {}) {
         const result = await this._elfService.ready();
-        const byName = this._elfService.symbolByName || new Map(result.symbols.map((symbol) => [symbol.name, symbol]));
+        const resolveSymbol = this._agentSymbolResolver(result.symbols);
         for (const request of Array.isArray(requests) ? requests : []) {
             const name = typeof request === "string" ? request : request?.name;
             const parsed = elfSymbols.parseMemberPath(name);
             const base = parsed ? parsed.base : name;
-            const symbol = byName.get(base);
-            if ((!symbol?.isComposite && !symbol?.hasRuntimeLayout) || symbol.compositeLayout) continue;
-            await this._elfService.layout(base);
+            let symbol;
+            try {
+                symbol = resolveSymbol(base);
+            } catch {
+                continue;
+            }
+            if ((!symbol.isComposite && !symbol.hasRuntimeLayout) || symbol.compositeLayout) continue;
+            try {
+                await this._elfService.layout(symbol.name);
+            } catch (error) {
+                if (!options.layoutErrors) throw error;
+                options.layoutErrors.set(symbol.name, error);
+            }
         }
         return result;
     }
