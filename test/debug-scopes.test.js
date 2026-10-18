@@ -19,6 +19,11 @@ const catalog = {
                 symbols: [
                     { name: "counter", description: "static int counter;", type: "int" },
                     { name: "app::text[abi:cxx11]", type: "std::string" },
+                    {
+                        name: "(anonymous namespace)::events",
+                        description: "static int (anonymous namespace)::events;",
+                        type: "int"
+                    },
                     ...Array.from({ length: 205 }, (_, index) => ({ name: `global${index}`, type: "int" }))
                 ]
             },
@@ -77,17 +82,30 @@ function setup() {
     const entries = debugSymbols(catalog);
     assert.deepStrictEqual(
         entries.filter((entry) => entry.isStatic).map((entry) => entry.expression),
-        ["'C:/src/a.cpp'::counter", "'C:/src/b.cpp'::counter"]
+        ["'C:/src/a.cpp'::counter", "'C:/src/a.cpp'::'(anonymous namespace)::events'", "'C:/src/b.cpp'::counter"]
     );
-    assert(entries.some((entry) => entry.expression === "::app::text"));
+    // GDB rejects `::app::text` in C frames and resolves `app::text` relative to the frame's namespace.
+    assert(entries.some((entry) => entry.expression === "'C:/src/a.cpp'::'app::text'"));
+    assert(entries.some((entry) => entry.expression === "::global0"));
     assert.strictEqual(safePath("'C:/src/a.cpp'::counter"), "'C:/src/a.cpp'::counter");
+    for (const path of [
+        "'C:/src/a.cpp'::'app::text'",
+        "('C:/src/a.cpp'::counter).field",
+        "('C:/src/a.cpp'::'(anonymous namespace)::events').field"
+    ])
+        assert.strictEqual(safePath(path), path);
+    assert.throws(() => safePath("('C:/src/a.cpp'::counter).danger()"), /side-effect/);
     assert.throws(() => safePath("'C:/src/a.cpp'::danger()"), /side-effect/);
     assert.throws(() => safePath("global0++"), /side-effect/);
     const fallback = nmSymbols(
         "20000000 00000004 b counter\tC:/src/a.cpp:3\n20000004 00000004 b orphan\n20000008 00000004 B app::text[abi:cxx11]\n"
     );
     assert.strictEqual(fallback.length, 2);
-    assert.strictEqual(fallback[1].expression, "::app::text");
+    assert.strictEqual(fallback[1].expression, "::app::text", "without a source file only `::` can anchor the name");
+    assert.strictEqual(
+        nmSymbols("20000008 00000004 B AppConfig::balance	C:/src/config.hpp:46")[0].expression,
+        "'C:/src/config.hpp'::'AppConfig::balance'"
+    );
     assert.strictEqual(nmSymbols("20AB0000 00000004 u inlineValue")[0].isStatic, false);
     assert.strictEqual(nmSymbols("20AB0000 00000004 v weakObject")[0].isStatic, false);
     let calls = 0;
@@ -132,15 +150,19 @@ function setup() {
     const globalRef = scopes[1].variablesReference;
     const first = (await adapter.handle("variables", { variablesReference: globalRef })).variables;
     assert.strictEqual(first.length, 101);
-    assert.strictEqual(first[0].evaluateName, "::app::text");
+    assert.strictEqual(first[0].evaluateName, "'C:/src/a.cpp'::'app::text'");
     assert.strictEqual(first[0].memoryReference, "0x20000000");
     assert.strictEqual(mi.commands.filter((command) => command.startsWith("-var-create")).length, 100);
     const next = (await adapter.handle("variables", { variablesReference: first.at(-1).variablesReference })).variables;
     assert.strictEqual(next.length, 101);
     const statics = (await adapter.handle("variables", { variablesReference: scopes[2].variablesReference })).variables;
-    assert.strictEqual(statics.length, 1);
-    assert.strictEqual(statics[0].evaluateName, "'C:/src/a.cpp'::counter");
-    assert.strictEqual(statics[0].memoryReference, "0x20000000");
+    assert.deepStrictEqual(
+        statics.map((item) => [item.evaluateName, item.memoryReference]),
+        [
+            ["'C:/src/a.cpp'::'(anonymous namespace)::events'", "0x20000000"],
+            ["'C:/src/a.cpp'::counter", "0x20000000"]
+        ]
+    );
     const edited = await adapter.handle("setExpression", { frameId, expression: "global0", value: "7" });
     assert.strictEqual(edited.value, "7");
     assert(events.some((event) => event.event === "invalidated"));

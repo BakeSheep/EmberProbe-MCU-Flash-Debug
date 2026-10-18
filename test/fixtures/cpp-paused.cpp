@@ -72,9 +72,12 @@ VectorAlias aliasNumbers = {31, 32};
 std::optional<std::vector<int>> nestedOptional = std::vector<int>{51, 52};
 
 int reviewCounter = 100;
+namespace app { int reviewTotal = 12; }
+namespace { int reviewHidden = 13; }
 struct ReviewPair { int x; };
 extern "C" __attribute__((noinline)) void checkpoint(ReviewPair p = {22}, int reviewCounter = 7) {
     asm volatile("" ::: "memory");
+    (void)(app::reviewTotal + reviewHidden);
 }
 
 int main() {

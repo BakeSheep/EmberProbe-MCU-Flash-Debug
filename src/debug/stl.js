@@ -66,9 +66,11 @@ function castType(type) {
 
 function safePath(expression) {
     const unquoted = String(expression || "")
-        // A file-qualified static has a quoted source path, not a quoted C++ type.
-        .replace(/^'(?:\\.|[^'\\])*'::/, "__file::")
-        .replace(/'([^']*)'/g, (_match, type) => safeType(type));
+        // A file-qualified symbol has a quoted source path, not a quoted C++ type. GDB child
+        // paths parenthesize the root, so the scope need not start the expression.
+        .replace(/'(?:\\.|[^'\\])*'::/g, "__file::")
+        // A quoted symbol name is looked up, never called; anonymous namespaces are spelled with parentheses.
+        .replace(/'([^']*)'/g, (_match, type) => safeType(type.replace(/\(anonymous namespace\)/g, "__anonymous")));
     if (
         !expression ||
         expression.length > 16384 ||

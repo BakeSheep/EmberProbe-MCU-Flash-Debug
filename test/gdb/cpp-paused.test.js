@@ -115,6 +115,19 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
         });
         assert.strictEqual((await evaluate("::reviewCounter")).result, "101");
         assert.strictEqual((await evaluate("reviewCounter")).result, "7", "global edits must not write the parameter");
+        const pausedFile = path.resolve(__dirname, "../fixtures/cpp-paused.cpp").replace(/\\/g, "/");
+        const scopedGlobal = contextDirectory.find((item) => item.name === "app::reviewTotal");
+        const anonymousStatic = (await adapter.symbolDirectory.variables("statics", pausedFile)).find(
+            (item) => item.name === "(anonymous namespace)::reviewHidden"
+        );
+        assert.strictEqual(scopedGlobal?.expression, `'${pausedFile}'::'app::reviewTotal'`);
+        assert.strictEqual(anonymousStatic?.expression, `'${pausedFile}'::'(anonymous namespace)::reviewHidden'`);
+        // C frames (and ELF-only sessions) parse with C rules, which reject `::app::reviewTotal`.
+        for (const language of ["c", "auto"]) {
+            await mi.command(`-gdb-set language ${language}`);
+            assert.strictEqual((await evaluate(scopedGlobal.expression)).result, "12");
+            assert.strictEqual((await evaluate(anonymousStatic.expression)).result, "13");
+        }
         for (const mode of ["builtin", "raw"]) {
             adapter.config.prettyPrintingMode = mode;
             const local = await adapter.handle("evaluate", { frameId: contextFrames[0].id, expression: "p" });

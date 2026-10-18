@@ -28,7 +28,12 @@ function sourceKey(value) {
     if (!file) return file;
     return (file.startsWith("//") ? "/" : "") + path.posix.normalize(file);
 }
-const qualified = (file, name) => `'${file.replace(/'/g, "\\'")}'::${name}`;
+// Quote scoped C++ names: an unquoted `ns::x` after a file scope is parsed as a function in C frames.
+const scopedName = (name) => (name.includes("::") && !name.includes("'") ? `'${name}'` : name);
+const qualified = (file, name) => `'${file.replace(/'/g, "\\'")}'::${scopedName(name)}`;
+// A leading `::` bypasses same-named locals, but GDB accepts `::ns::x` only in C++ frames, and an
+// unanchored `ns::x` can resolve to `outer::ns::x`. Scope qualified names by their defining file.
+const globalExpression = (file, name) => (name.includes("::") && file ? qualified(file, name) : `::${name}`);
 const identity = (entry) => `${entry.isStatic}:${entry.file}:${entry.name}`;
 
 function symbolExpression(name) {
@@ -49,7 +54,7 @@ function debugSymbols(result) {
                 type: item.type,
                 file,
                 isStatic,
-                expression: isStatic ? qualified(file, name) : `::${name}`
+                expression: isStatic ? qualified(file, name) : globalExpression(file, name)
             });
             if (entries.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
         }
@@ -74,7 +79,7 @@ function nmSymbols(output) {
             isStatic,
             address: `0x${match[1]}`,
             size: parseInt(match[2], 16),
-            expression: isStatic ? qualified(file, name) : `::${name}`
+            expression: isStatic ? qualified(file, name) : globalExpression(file, name)
         });
         if (entries.length > MAX_SYMBOLS) throw new Error("Debug symbol directory limit exceeded");
     }
