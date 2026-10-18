@@ -63,7 +63,7 @@ For trends, use `--trend`; it defaults to ten samples. EmberProbe reuses an exis
 node <skill-dir>/scripts/read.js --workspace <workspace> --variables counter --trend --interval 200
 ```
 
-Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
+Use `--add-to sidebar|chart|both` only when the user asks to update the EmberProbe UI. Adding does not start sampling. Watches are saved under raw ELF names, so `added` and `alreadyPresent` list those names: a request for the display name `ep7` reports `_ZL3ep7`, and `ep7.port` reports `_ZL3ep7.port`. When a request matched a display name, `resolvedNames` maps it to the raw name (`{"ep7": "_ZL3ep7"}`); the UI still shows the display name. Export an open chart's real history with `--export-csv`; prefer `--last <seconds>` or complete ISO 8601 UTC timestamps, and keep `--output` relative to the workspace:
 
 Agent CSV reads the chart's full sampling archive. Column headers include the decoded type so history remains clear if a watch's type changes. Results larger than 64 MiB are rejected explicitly; use the chart's archive export dialog for larger files. `historyTruncated: true` means the archive hit its size cap and stopped recording while the chart kept drawing, so the CSV covers less than the requested range: compare `from`/`to` with what was asked and report the gap instead of presenting the rows as complete.
 

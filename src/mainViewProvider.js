@@ -1180,6 +1180,8 @@ class MainViewProvider {
         const byName = this._symbolNameIndex(symbols);
         const resolved = [];
         const resolvedNames = new Set();
+        // Requested base name -> raw ELF name, for requests that matched a display name.
+        const aliases = {};
         const appendResolved = (item) => {
             if (!resolvedNames.has(item.name)) {
                 resolvedNames.add(item.name);
@@ -1195,13 +1197,17 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Variable not found in current ELF: ${rawName}`), {
                     code: "VARIABLE_NOT_FOUND"
                 });
+            if (symbol.name !== baseName) aliases[baseName] = symbol.name;
+            // Watch lists persist raw ELF identities; normalizeWatchList does not resolve
+            // display names, so a requested `ep7` must be stored as `_ZL3ep7`.
+            const rawPath = parsed ? symbol.name + rawName.trim().slice(baseName.length) : symbol.name;
             const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
             if (expanded.length) {
                 for (const leaf of expanded) appendResolved({ ...leaf, name: leaf.path });
                 continue;
             }
             const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
-                rawName,
+                rawPath,
                 symbol,
                 parsed?.segments || []
             );
@@ -1237,7 +1243,7 @@ class MainViewProvider {
                     }
                 } else {
                     appendResolved({
-                        name: baseName,
+                        name: symbol.name,
                         address: symbol.address,
                         size: symbol.size,
                         type: "",
@@ -1251,14 +1257,16 @@ class MainViewProvider {
                         code: "UNSUPPORTED_VARIABLE"
                     });
                 appendResolved({
-                    name: baseName,
+                    name: symbol.name,
                     address: symbol.address,
                     size: symbol.size,
                     type: params.types?.[baseName] || symbol.watchType
                 });
             }
         }
-        const results = {};
+        // `added` and `alreadyPresent` report the stored raw identities; `resolvedNames`
+        // maps each display-name request back to the raw name it was saved under.
+        const results = Object.keys(aliases).length ? { resolvedNames: aliases } : {};
         const addTo = async (key, target) => {
             const current = this._scalarWatchList(key);
             const existing = new Set(current.map((item) => item.name));

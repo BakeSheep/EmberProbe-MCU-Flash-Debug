@@ -12,6 +12,7 @@ const TEST_GROUPS = Object.freeze({
         "agent-routes.test.js",
         "agent-sampling-control.test.js",
         "agent-service.test.js",
+        "agent-watch-identity.test.js",
         "attach-debug-command.test.js",
         "auto-detect.test.js",
         "build-info.test.js",
