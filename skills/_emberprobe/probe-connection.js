@@ -218,11 +218,13 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
         );
     const remembering = result.selection.probe === "remembered";
     // A remembered probe is never replaced. Other serials are reported absent only when USB descriptors (or
-    // the reserved J-Link/ST-Link IDs) prove it; Windows aliases leave enforcement to OpenOCD.
+    // the reserved J-Link/ST-Link IDs) prove it; Windows aliases leave enforcement to OpenOCD. An inventory
+    // that skipped unreadable devices proves nothing absent, so the serial is passed for OpenOCD to enforce.
+    const complete = inventory.available && !inventory.partial;
     const provesAbsence = devices.length
         ? devices.every((device) => device.serial && (family === "jlink" || device.serialSource !== "os-instance"))
         : ["jlink", "stlink"].includes(family);
-    if (result.probeSerial && inventory.available && !matches.length && (remembering || provesAbsence))
+    if (result.probeSerial && complete && !matches.length && (remembering || provesAbsence))
         throw Object.assign(
             connectionError(
                 "PROBE_SELECTED_NOT_FOUND",
@@ -261,11 +263,13 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
         );
     const anonymous = !exactSerial;
     result.deviceId = selected?.id || "";
+    // Without a serial filter OpenOCD may open a probe the partial inventory skipped, so the visible
+    // attachment cannot authorize writes.
     result.selectionIdentity = {
         kind: "usb",
         family,
         deviceId: result.deviceId,
-        attachmentId: anonymous ? String(selected?.attachmentId || "") : "",
+        attachmentId: anonymous && complete ? String(selected?.attachmentId || "") : "",
         serial: exactSerial,
         anonymous,
         profile: profile?.fingerprint || ""

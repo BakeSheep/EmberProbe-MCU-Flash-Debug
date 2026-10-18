@@ -534,6 +534,116 @@ async function main() {
         }
     });
 
+    await scenario("Skip unreadable Linux USB devices without failing probe selection", async () => {
+        const { usbInventory, detectProbe } = require("../skills/_emberprobe/probe-detection");
+        const hang = () => new Promise(() => {});
+        // Issue #39: a target's own USB CDC device stalls sysfs reads while the probe stays readable.
+        function sysfs(devices) {
+            return {
+                platform: "linux",
+                timeoutMs: 30,
+                readdir: async () => Object.keys(devices),
+                readFile: async (filename) => {
+                    const value = devices[path.basename(path.dirname(filename))]?.[path.basename(filename)];
+                    if (typeof value === "function") return value();
+                    if (value instanceof Error) throw value;
+                    if (value === undefined) throw Object.assign(new Error("No attribute"), { code: "ENOENT" });
+                    return value;
+                },
+                stat: async () => ({ ino: 7n, ctimeNs: 9n })
+            };
+        }
+        const probe = {
+            idVendor: "c251\n",
+            idProduct: "f00a\n",
+            product: "Horco CMSIS-DAP\n",
+            serial: "ABC123\n",
+            busnum: "1\n",
+            devnum: "4\n"
+        };
+        const target = { idVendor: "0483\n", idProduct: "5740\n", product: hang, serial: "2059384E5642\n" };
+        const hub = { idVendor: "1d6b\n", idProduct: "0002\n", product: Object.assign(new Error(), { code: "EINTR" }) };
+        const stalled = sysfs({ "1-1": probe, "1-2": target, "1-3": hub });
+        const partial = await listProbes({ ...stalled, family: "cmsis-dap" });
+        assert.strictEqual(partial.available, true, partial.notes.join("\n"));
+        assert.strictEqual(partial.partial, true);
+        assert.deepStrictEqual(
+            partial.devices.map((device) => device.serial),
+            ["ABC123"]
+        );
+        assert(partial.notes[0].includes("skipped 2"));
+        assert(partial.notes[0].includes("1-2: query timed out") && partial.notes[0].includes("1-3/product: EINTR"));
+        const complete = await listProbes({ ...sysfs({ "1-1": probe }), family: "cmsis-dap" });
+        assert.strictEqual(complete.partial, undefined);
+        assert.deepStrictEqual(complete.notes, []);
+
+        const remembered = (probeSerial) => ({
+            probe: "cmsis-dap.cfg",
+            target: "stm32h7x.cfg",
+            successfulConnection: { version: 2, probe: "cmsis-dap.cfg", probeSerial }
+        });
+        const present = resolveProbeConnection(remembered("ABC123"), partial);
+        assert.strictEqual(present.selection.probe, "remembered");
+        assert.strictEqual(present.adapterSerial, "ABC123");
+        assert.strictEqual(present.deviceId, "1-1");
+        // The skipped device could be the remembered probe, so OpenOCD enforces the serial instead.
+        const absent = resolveProbeConnection(remembered("OTHER1"), partial);
+        assert.strictEqual(absent.adapterSerial, "OTHER1");
+        assert.strictEqual(absent.selection.inventory, "unconfirmed");
+        assert.throws(() => resolveProbeConnection(remembered("OTHER1"), complete), {
+            code: "PROBE_SELECTED_NOT_FOUND"
+        });
+        const stlink = await listProbes({ ...stalled, family: "stlink" });
+        assert.strictEqual(stlink.partial, true);
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "stlink.cfg", probeSerial: "ST1" }, stlink).selection.inventory,
+            "unconfirmed"
+        );
+        assert.throws(
+            () => resolveProbeConnection({ probe: "stlink.cfg", probeSerial: "ST1" }, { ...stlink, partial: false }),
+            { code: "PROBE_SELECTED_NOT_FOUND" }
+        );
+        const unique = resolveProbeConnection({ probe: "cmsis-dap.cfg" }, partial);
+        assert.strictEqual(unique.selection.probe, "unique-device");
+        assert.strictEqual(unique.adapterSerial, "ABC123");
+
+        // A serial-less probe stays connectable, but its attachment cannot authorize writes while another
+        // device that might be a probe was skipped.
+        const anonymous = { ...probe, serial: "\n" };
+        const anonymousPartial = await listProbes({
+            ...sysfs({ "1-1": anonymous, "1-2": target }),
+            family: "cmsis-dap"
+        });
+        const anonymousComplete = await listProbes({ ...sysfs({ "1-1": anonymous }), family: "cmsis-dap" });
+        assert.strictEqual(anonymousPartial.devices[0].attachmentId, "1:4:7:9");
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "cmsis-dap.cfg" }, anonymousPartial).selectionIdentity.attachmentId,
+            ""
+        );
+        assert.strictEqual(
+            resolveProbeConnection({ probe: "cmsis-dap.cfg" }, anonymousComplete).selectionIdentity.attachmentId,
+            "1:4:7:9"
+        );
+
+        // Probe type detection uses the same scan.
+        const detected = await detectProbe({
+            platform: "linux",
+            listProbes: (query) => listProbes({ ...stalled, ...query })
+        });
+        assert.strictEqual(detected.probe, "cmsis-dap.cfg");
+        assert(detected.notes.some((note) => note.includes("incomplete")));
+        const names = await usbInventory({
+            ...stalled,
+            run: () => assert.fail("Readable sysfs must not invoke lsusb")
+        });
+        assert(names.includes("Horco CMSIS-DAP"));
+
+        // Nothing readable at all is still an unavailable inventory.
+        const nothing = await listProbes({ ...sysfs({ "1-2": target, "1-3": hub }), family: "all" });
+        assert.strictEqual(nothing.available, false);
+        assert.strictEqual(nothing.partial, undefined);
+    });
+
     console.log("Probe inventory, identity and preflight tests passed");
 }
 main().catch((error) => {

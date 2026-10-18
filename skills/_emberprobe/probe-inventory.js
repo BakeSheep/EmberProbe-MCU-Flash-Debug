@@ -113,20 +113,24 @@ function linuxSerial(value, family, vid) {
     return serialOrUnknown(raw, family);
 }
 
-async function listLinuxUsbRows(options = {}) {
+// A device that cannot be read in time (for example a target whose USB stack stops answering while the kernel
+// holds its device lock) is skipped instead of failing the query. Skipped devices may still be probes.
+async function scanLinuxUsb(options = {}) {
     const root = options.sysfsRoot || "/sys/bus/usb/devices";
     const controller = new AbortController();
     const timeoutMs = options.timeoutMs ?? 2000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15000) throw new Error("Invalid USB query budget");
     let timer;
-    const timeout = new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
-            controller.abort();
-            reject(new Error("Linux USB metadata query timed out"));
-        }, timeoutMs);
+    const expired = new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
     });
-    const enumerate = async () => {
-        const entries = await (options.readdir || fs.readdir)(root);
+    // Resolves to null when the budget expires first.
+    const withinBudget = (promise) =>
+        Promise.race([Promise.resolve(promise).then((value) => ({ value })), expired.then(() => null)]);
+    try {
+        const listed = await withinBudget((options.readdir || fs.readdir)(root));
+        if (!listed) throw new Error("Linux USB metadata query timed out");
+        const entries = listed.value;
         if (entries.length > 4096) throw new Error("Linux USB inventory exceeds its device budget");
         const devices = entries.filter((name) => /^\d+-\d+(?:\.\d+)*$/.test(name));
         const interfaces = new Map();
@@ -155,70 +159,90 @@ async function listLinuxUsbRows(options = {}) {
                 throw new Error(`Linux USB metadata ${name}/${file}: ${error.code || error.message}`);
             }
         };
-        const rows = new Array(devices.length);
+        const readDevice = async (id) => {
+            const [vendor, productId, product] = await Promise.all([
+                value(id, "idVendor"),
+                value(id, "idProduct"),
+                value(id, "product")
+            ]);
+            const vid = vendor.trim().toLowerCase();
+            const pid = productId.trim().toLowerCase();
+            if (!vid || !pid) return null;
+            if (!/^[0-9a-f]{4}$/.test(vid) || !/^[0-9a-f]{4}$/.test(pid))
+                throw new Error(`Linux USB metadata ${id}: invalid VID/PID`);
+            const children = [];
+            for (const child of interfaces.get(id) || []) {
+                const name = (await value(child.id, "interface")).trim();
+                if (name) children.push({ instanceId: child.id, name, interfaceNumber: child.interfaceNumber });
+            }
+            const name = product.trim();
+            const family =
+                options.vidPid?.length && options.family !== "all" && matchesUsbIds({ vid, pid }, options.vidPid)
+                    ? options.family
+                    : usbFamily(vid, pid, [name, ...children.map((child) => child.name)].join("\n"));
+            let attachmentId = "";
+            if (family) {
+                const [bus, address, metadata] = await Promise.all([
+                    value(id, "busnum"),
+                    value(id, "devnum"),
+                    (options.stat || fs.stat)(path.join(root, id), { bigint: true }).catch(() => null)
+                ]);
+                if (
+                    /^\d+$/.test(bus.trim()) &&
+                    /^\d+$/.test(address.trim()) &&
+                    metadata?.ino > 0n &&
+                    metadata?.ctimeNs > 0n
+                )
+                    attachmentId = `${bus.trim()}:${address.trim()}:${metadata.ino}:${metadata.ctimeNs}`;
+            }
+            return {
+                id,
+                name,
+                product: name,
+                vid,
+                pid,
+                family,
+                serialSource: "usb-descriptor",
+                attachmentId,
+                interfaces: children,
+                serial: family ? linuxSerial(await value(id, "serial"), family, vid) : ""
+            };
+        };
+        /** @type {Array<{row?: any, failure?: string}|undefined>} */
+        const results = new Array(devices.length);
         let next = 0;
         const worker = async () => {
-            while (next < devices.length) {
+            while (next < devices.length && !controller.signal.aborted) {
                 const index = next++;
-                const id = devices[index];
-                const [vendor, productId, product] = await Promise.all([
-                    value(id, "idVendor"),
-                    value(id, "idProduct"),
-                    value(id, "product")
-                ]);
-                const vid = vendor.trim().toLowerCase();
-                const pid = productId.trim().toLowerCase();
-                if (!vid || !pid) continue;
-                if (!/^[0-9a-f]{4}$/.test(vid) || !/^[0-9a-f]{4}$/.test(pid))
-                    throw new Error("Invalid USB VID/PID metadata");
-                const children = [];
-                for (const child of interfaces.get(id) || []) {
-                    const name = (await value(child.id, "interface")).trim();
-                    if (name) children.push({ instanceId: child.id, name, interfaceNumber: child.interfaceNumber });
+                try {
+                    const row = await readDevice(devices[index]);
+                    results[index] = { row };
+                } catch (error) {
+                    results[index] = { failure: String(error.message) };
                 }
-                const name = product.trim();
-                const family =
-                    options.vidPid?.length && options.family !== "all" && matchesUsbIds({ vid, pid }, options.vidPid)
-                        ? options.family
-                        : usbFamily(vid, pid, [name, ...children.map((child) => child.name)].join("\n"));
-                let attachmentId = "";
-                if (family) {
-                    const [bus, address, metadata] = await Promise.all([
-                        value(id, "busnum"),
-                        value(id, "devnum"),
-                        (options.stat || fs.stat)(path.join(root, id), { bigint: true }).catch(() => null)
-                    ]);
-                    if (
-                        /^\d+$/.test(bus.trim()) &&
-                        /^\d+$/.test(address.trim()) &&
-                        metadata?.ino > 0n &&
-                        metadata?.ctimeNs > 0n
-                    )
-                        attachmentId = `${bus.trim()}:${address.trim()}:${metadata.ino}:${metadata.ctimeNs}`;
-                }
-                rows[index] = {
-                    id,
-                    name,
-                    product: name,
-                    vid,
-                    pid,
-                    family,
-                    serialSource: "usb-descriptor",
-                    attachmentId,
-                    interfaces: children,
-                    serial: family ? linuxSerial(await value(id, "serial"), family, vid) : ""
-                };
             }
         };
-        await Promise.all(Array.from({ length: Math.min(4, devices.length) }, worker));
-        return rows.filter(Boolean);
-    };
-    try {
-        return await Promise.race([enumerate(), timeout]);
+        await withinBudget(Promise.all(Array.from({ length: Math.min(4, devices.length) }, worker)));
+        // Snapshot synchronously: workers still blocked in a read must not change the returned inventory.
+        const rows = [];
+        const skipped = [];
+        devices.forEach((id, index) => {
+            const result = results[index];
+            if (!result) skipped.push({ id, reason: `Linux USB metadata ${id}: query timed out` });
+            else if (result.failure !== undefined) skipped.push({ id, reason: result.failure });
+            else if (result.row) rows.push(result.row);
+        });
+        // No readable device at all is an unavailable inventory, not an empty one.
+        if (skipped.length && skipped.length === devices.length) throw new Error(skipped[0].reason);
+        return { rows, skipped };
     } finally {
         clearTimeout(timer);
         controller.abort();
     }
+}
+
+async function listLinuxUsbRows(options = {}) {
+    return (await scanLinuxUsb(options)).rows;
 }
 
 function parseWindowsInventory(text, family = "jlink", vidPid = []) {
@@ -425,6 +449,7 @@ async function listProbes(options = {}) {
     try {
         let devices;
         let discoveryText;
+        let skipped = [];
         if (platform === "win32") {
             if (family === "jlink" && (!options.run || options.fastRun)) {
                 try {
@@ -481,7 +506,9 @@ async function listProbes(options = {}) {
                 }
             }
         } else if (platform === "linux") {
-            const rows = await listLinuxUsbRows(options);
+            const scan = await scanLinuxUsb(options);
+            const rows = scan.rows;
+            skipped = scan.skipped;
             if (family === "all") {
                 discoveryText = rows
                     .flatMap((row) => [row.name, ...row.interfaces.map((child) => child.name)])
@@ -494,11 +521,20 @@ async function listProbes(options = {}) {
                 .map((row) => deviceRecord({ ...row, name: row.name || "USB debug probe" }));
         } else throw new Error("USB inventory is unavailable on this platform");
         devices = devices.filter((device) => matchesUsbIds(device, filters.vidPid));
+        // A partial inventory still identifies the probes it lists but cannot prove any other probe absent.
         return {
             available: true,
+            ...(skipped.length ? { partial: true } : {}),
             platform,
             devices,
-            notes: [],
+            notes: skipped.length
+                ? [
+                      `USB inventory incomplete; skipped ${skipped.length} unreadable device(s): ${skipped
+                          .slice(0, 3)
+                          .map((item) => item.reason)
+                          .join("; ")}`.slice(0, 400)
+                  ]
+                : [],
             ...(discoveryText === undefined ? {} : { discoveryText })
         };
     } catch (error) {
@@ -549,6 +585,7 @@ module.exports = {
     parseMacInventory,
     windowsHelperPath,
     listLinuxUsbRows,
+    scanLinuxUsb,
     MAC_USB_DATA_TYPES,
     WINDOWS_INVENTORY,
     USB_INVENTORY,
