@@ -173,18 +173,127 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             error.code === "LIVE_READ_BUDGET_EXCEEDED" && error.details.commandCount === MAX_DEBUG_READ_COMMANDS + 1,
         "sparse variables must not create an unbounded number of Tcl requests"
     );
+    await scenario("Managed transactions survive sampling configuration changes", async () => {
+        for (const operation of ["read", "write"]) {
+            for (const phase of operation === "write"
+                ? ["queued", "before", "between", "after"]
+                : ["queued", "before"]) {
+                for (const change of ["interval", "consumers", "enable", "sampling-pause"]) {
+                    const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+                    writing.socket = { destroyed: false };
+                    writing._scheduleNext = () => {};
+                    writing.setSamplingEnabled(true);
+                    let memory = [0, 0, 0, 0];
+                    let reads = 0;
+                    const reconfigure = () => {
+                        if (change === "interval") writing.setIntervalMs(50);
+                        else if (change === "consumers")
+                            writing.setSamplingPlan({
+                                graphItems: [{ name: "other", address: 0x20000004, size: 4 }],
+                                sidebarItems: [],
+                                graphIntervalMs: 50
+                            });
+                        else if (change === "enable") writing.setSamplingEnabled(true);
+                        // Backpressure, plan errors and user stops pause sampling without a target change.
+                        else writing.setSamplingEnabled(false);
+                    };
+                    writing._readMemoryBytes = async () => {
+                        reads++;
+                        if ((phase === "before" && reads === 1) || (phase === "after" && reads === 2)) reconfigure();
+                        return memory.slice();
+                    };
+                    writing._writeMemoryBytes = async (_address, bytes) => {
+                        memory = Array.from(bytes);
+                        if (phase === "between") reconfigure();
+                    };
+                    const item = { name: "word", address: 0x20000000, size: 4, bytes: [1, 0, 0, 0] };
+                    if (phase === "queued") writing._tryAcquireExclusive();
+                    try {
+                        const pending =
+                            operation === "write" ? writing.writeAndVerify([item]) : writing.readOnce([item]);
+                        if (phase === "queued") {
+                            reconfigure();
+                            writing._releaseExclusive();
+                        }
+                        const result = await pending;
+                        if (operation === "write") {
+                            assert.deepStrictEqual(result.before[0].bytes, [0, 0, 0, 0]);
+                            assert.deepStrictEqual(result.after[0].bytes, item.bytes);
+                            assert.strictEqual(result.halted, false);
+                        } else assert.deepStrictEqual(result[0].bytes, [0, 0, 0, 0]);
+                        assert.strictEqual(writing.busy, false);
+                    } finally {
+                        writing.socket = null;
+                        await writing.stop();
+                    }
+                }
+            }
+        }
+    });
+    await scenario("Target changes still invalidate managed transactions", async () => {
+        for (const operation of ["read", "write"]) {
+            for (const change of ["pause", "pause-resume", "disconnect", "stop"]) {
+                for (const phase of operation === "write" ? ["before", "between", "after"] : ["before"]) {
+                    const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+                    writing.socket = { destroyed: false, destroy() {} };
+                    writing._scheduleNext = () => {};
+                    writing.setSamplingEnabled(true);
+                    let reads = 0;
+                    let writes = 0;
+                    const invalidate = () => {
+                        if (change === "disconnect") writing._abortConnection(new Error("Connection lost"));
+                        else if (change === "stop") {
+                            writing.socket = null;
+                            void writing.stop();
+                        } else {
+                            writing.invalidateTarget();
+                            writing.setSamplingEnabled(false);
+                            if (change === "pause-resume") writing.setSamplingEnabled(true);
+                        }
+                    };
+                    writing._readMemoryBytes = async () => {
+                        reads++;
+                        if ((phase === "before" && reads === 1) || (phase === "after" && reads === 2)) invalidate();
+                        return [0, 0, 0, 0];
+                    };
+                    writing._writeMemoryBytes = async () => {
+                        writes++;
+                        if (phase === "between") invalidate();
+                    };
+                    const item = { name: "word", address: 0x20000000, size: 4, bytes: [1, 0, 0, 0] };
+                    try {
+                        await assert.rejects(
+                            operation === "write" ? writing.writeAndVerify([item]) : writing.readOnce([item]),
+                            (error) =>
+                                error.code === "LIVE_READ_CANCELLED" &&
+                                (operation === "read" ||
+                                    (error.details.writtenItems === (phase === "before" ? 0 : 1) &&
+                                        error.details.totalItems === 1)),
+                            `${operation}: ${change} ${phase}`
+                        );
+                        assert.strictEqual(writes, phase === "before" ? 0 : 1);
+                        assert.strictEqual(reads, phase === "after" ? 2 : 1);
+                        assert.strictEqual(writing.busy, false);
+                    } finally {
+                        writing.socket = null;
+                        await writing.stop();
+                    }
+                }
+            }
+        }
+    });
     await scenario("Managed writes cancel before hardware on queued state changes and between words", async () => {
         const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
         writing.socket = { destroyed: false };
         let writeCalls = 0;
         writing._writeMemoryBytes = async () => {
             writeCalls++;
-            writing.setSamplingEnabled(false);
+            writing.invalidateTarget();
         };
         writing._readMemoryBytes = async () => [0, 0, 0, 0];
         writing._tryAcquireExclusive();
         const pending = writing.writeAndVerify([{ name: "word", address: 0x20000000, bytes: [1, 0, 0, 0] }]);
-        writing.setSamplingEnabled(false);
+        writing.invalidateTarget();
         writing._releaseExclusive();
         await assert.rejects(pending, { code: "LIVE_READ_CANCELLED" });
         assert.strictEqual(writeCalls, 0);
@@ -193,7 +302,10 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
                 { name: "first", address: 0x20000000, bytes: [1, 0, 0, 0] },
                 { name: "second", address: 0x20000004, bytes: [2, 0, 0, 0] }
             ]),
-            { code: "LIVE_READ_CANCELLED" }
+            (error) =>
+                error.code === "LIVE_READ_CANCELLED" &&
+                error.details.writtenItems === 1 &&
+                error.details.totalItems === 2
         );
         assert.strictEqual(writeCalls, 1, "state changes prevent the next word write");
         assert.strictEqual(writing.busy, false);
@@ -238,7 +350,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     };
     const queuedPromise = queuedRead.readOnce([{ name: "queued", address: 0x20000000, size: 1 }]);
     await new Promise((resolve) => setTimeout(resolve, 5));
-    queuedRead.setSamplingEnabled(false);
+    queuedRead.invalidateTarget();
     queuedRead._releaseExclusive();
     await assert.rejects(queuedPromise, (error) => error.code === "LIVE_READ_CANCELLED");
     assert.strictEqual(queuedReadCalls, 0, "a queued Agent read must not start after the target state changes");

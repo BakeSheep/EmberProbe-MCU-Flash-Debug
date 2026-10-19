@@ -469,6 +469,22 @@ async function testBackgroundStatusBroadcasts(debugType) {
         assert.strictEqual(busyReads, 3, "transient DAP busy errors should be retried");
         assert.strictEqual(retrySamples.length, 1);
         assert.strictEqual(retryBridge.status().snapshotReady, true);
+        const successfulRead = retrySession.customRequest;
+        retrySession.customRequest = async () => {
+            throw new Error("DAP memory is unavailable");
+        };
+        retryBridge.refreshSnapshot();
+        await delay(SNAPSHOT_INITIAL_DELAY_MS);
+        assert.strictEqual(retryBridge.status().key, "live.dapRetrying");
+        assert.strictEqual(retryBridge.status().canWrite, false);
+        await delay(SNAPSHOT_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0) + 100);
+        assert.strictEqual(retryBridge.status().key, "live.dapFailed", "status queries preserve the failure reason");
+        assert.strictEqual(retryBridge.status().canWrite, false);
+        retrySession.customRequest = successfulRead;
+        retryBridge.refreshSnapshot();
+        await delay(SNAPSHOT_INITIAL_DELAY_MS);
+        assert.strictEqual(retryBridge.status().key, "live.dapReady");
+        assert.strictEqual(retryBridge.status().canWrite, true);
         retryBridge.dispose();
 
         let quiesceAttempts = 0;

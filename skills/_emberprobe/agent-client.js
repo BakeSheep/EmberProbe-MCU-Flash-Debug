@@ -244,6 +244,12 @@ const DIAGNOSTICS = {
         ["向用户说明变量被固件持续覆写的可能，不要盲目重试。"],
         true
     ],
+    WRITE_READBACK_FAILED: [
+        "write_safety",
+        "写入命令已执行，但随后回读失败，无法确认目标中的当前值。",
+        ["先只读确认该变量的当前值，再决定是否重试；回读持续失败时检查调试连接和采样负载。"],
+        false
+    ],
     UNSUPPORTED_VARIABLE: [
         "variable_resolution",
         "变量不是受支持的标量（或尝试写入整个复合类型）。",

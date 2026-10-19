@@ -225,7 +225,11 @@ class DebugSessionBridge {
                 key = "live.dapReadUnsupported";
             } else if (!this.snapshotReady) {
                 mode = "debug-paused-reading";
-                key = "live.dapReading";
+                key = this.consecutiveErrors
+                    ? this.snapshotPending
+                        ? "live.dapRetrying"
+                        : "live.dapFailed"
+                    : "live.dapReading";
             } else {
                 mode = "debug-paused-ready";
                 key = "live.dapReady";

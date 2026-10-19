@@ -252,6 +252,8 @@ class ManagedOpenOcdSession {
         this.samplingEnabled = this.mode === "standalone";
         this._samplingRequested = this.samplingEnabled;
         this.sampleEpoch = 0;
+        // One-shot transactions keep their own plan; only target/connection changes invalidate them.
+        this.targetEpoch = 0;
         this._reconnectPromise = null;
         this._startCompleted = false;
         this._tclListening = false;
@@ -525,6 +527,12 @@ class ManagedOpenOcdSession {
         }
     }
 
+    // Pausing sampling (backpressure, plan errors, user stop) keeps one-shot transactions valid;
+    // only execution, session or connection changes invalidate them.
+    invalidateTarget() {
+        this.targetEpoch++;
+    }
+
     setSamplingEnabled(enabled) {
         if (enabled && this._pollFailureLocked) return false;
         const nextEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
@@ -696,6 +704,7 @@ class ManagedOpenOcdSession {
         this._error(message);
         if (this._pollFailureCount < 3 || now - this._pollFailureSince < 3000) return;
         this._pollFailureLocked = true;
+        this.invalidateTarget();
         this.setSamplingEnabled(false);
         const error = Object.assign(new Error(message), {
             code: "LIVE_TARGET_POLL_FAILED",
@@ -1084,6 +1093,7 @@ class ManagedOpenOcdSession {
         );
         if (this.connectionFailed) return;
         this.connectionFailed = true;
+        this.targetEpoch++;
         this.connectionError = err;
         this._rejectExclusiveWaiters(err);
         this._resetHostHold();
@@ -1304,7 +1314,9 @@ class ManagedOpenOcdSession {
 
     _assertReadGuard(guard) {
         if (!guard) return;
-        if (guard.epoch !== this.sampleEpoch || (guard.requireSampling && !this.samplingEnabled)) {
+        const epochChanged =
+            guard.targetEpoch === undefined ? guard.epoch !== this.sampleEpoch : guard.targetEpoch !== this.targetEpoch;
+        if (epochChanged || (guard.requireSampling && !this.samplingEnabled)) {
             throw Object.assign(new Error("Runtime read was cancelled by a target state change"), {
                 code: "LIVE_READ_CANCELLED"
             });
@@ -1507,7 +1519,7 @@ class ManagedOpenOcdSession {
         if (this.mode === "debug") validateManagedReadPlan(items);
         if (this.stopped || !this.socket || this.socket.destroyed)
             throw new Error("OpenOCD Tcl service is not connected");
-        const requestEpoch = this.sampleEpoch;
+        const requestEpoch = this.targetEpoch;
         const deadline = Date.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         try {
@@ -1516,7 +1528,7 @@ class ManagedOpenOcdSession {
             const guard =
                 this.mode === "debug"
                     ? {
-                          epoch: requestEpoch,
+                          targetEpoch: requestEpoch,
                           requireSampling: false,
                           deadline: Math.min(deadline, Date.now() + MAX_DEBUG_CYCLE_MS)
                       }
@@ -1589,12 +1601,13 @@ class ManagedOpenOcdSession {
         if (this.mode === "debug") validateManagedWritePlan(items);
         if (this.stopped || !this.socket || this.socket.destroyed)
             throw new Error("OpenOCD Tcl service is not connected");
-        const requestEpoch = this.sampleEpoch;
+        const requestEpoch = this.targetEpoch;
         const deadline = Date.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         let haltedByUs = false;
         let primaryError = null;
         let result = null;
+        let writtenItems = 0;
         try {
             // Ownership is reserved synchronously by the arbiter before connection checks.
             if (this.stopped || !this.socket || this.socket.destroyed)
@@ -1609,7 +1622,7 @@ class ManagedOpenOcdSession {
             const guard =
                 this.mode === "debug"
                     ? {
-                          epoch: requestEpoch,
+                          targetEpoch: requestEpoch,
                           requireSampling: false,
                           deadline: Math.min(deadline, Date.now() + MAX_DEBUG_CYCLE_MS)
                       }
@@ -1623,12 +1636,16 @@ class ManagedOpenOcdSession {
             for (const item of items) {
                 this._assertReadGuard(guard);
                 await this._writeMemoryBytes(item.address, item.bytes);
+                writtenItems++;
             }
             this._assertReadGuard(guard);
             const after = (await this._readItems(readItems, Date.now(), guard)).samples;
             this._assertReadGuard(guard);
             result = { before, after, halted: !nonHalting };
         } catch (error) {
+            // Callers must know whether a cancelled transaction already changed target memory.
+            if (error?.code === "LIVE_READ_CANCELLED")
+                error.details = { ...error.details, writtenItems, totalItems: items.length };
             primaryError = error;
         }
         try {
@@ -1743,6 +1760,7 @@ class ManagedOpenOcdSession {
         this.stopped = true;
         this._pauseReason = "stopped";
         this.sampleEpoch++;
+        this.targetEpoch++;
         this.samplingEnabled = false;
         this._samplingRequested = false;
         this.connectionFailed = true;

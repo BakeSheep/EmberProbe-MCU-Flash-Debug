@@ -99,7 +99,39 @@ try {
 
     view.send({ type: "liveStatus", running: true, canRead: true, canWrite: false, haltWrite: false });
     assert(card("speed_ref").classList.contains("gated"));
-    assert.match(card("speed_ref").querySelector(".write-input").title, /Start sampling/);
+    assert.match(card("speed_ref").querySelector(".write-input").title, /temporarily unavailable/);
+    // All of these keep canWrite=false: the reason must update without enabling or replacing the input.
+    const input = card("speed_ref").querySelector(".write-input");
+    for (const [status, expected] of [
+        [{ mode: "debug-paused-reading" }, /reading the current values/],
+        [{ mode: "debug-paused-reading", key: "live.dapRetrying" }, /retrying/],
+        [{ mode: "debug-paused-reading", key: "live.dapFailed" }, /DAP read failed/],
+        [{ mode: "debug-paused-unsupported" }, /does not support memory reads/],
+        [{ mode: "debug-paused-ready" }, /does not support memory writes/],
+        [{ mode: "debug-session-conflict" }, /Multiple debugger sessions/],
+        [{ mode: "debug-paused-writing" }, /writing/],
+        [{ pauseReason: "archive_backpressure" }, /storage is busy/],
+        [{ connectionStale: true }, /settings changed/],
+        [{ key: "live.debugTclDegraded" }, /Tcl/],
+        [{ key: "live.needVar" }, /Add a variable/],
+        [{ mode: "debug-running-waiting" }, /temporarily unavailable/],
+        [{ intentEnabled: false }, /Start sampling/]
+    ]) {
+        view.send({ type: "liveStatus", running: true, canRead: true, canWrite: false, haltWrite: false, ...status });
+        assert.strictEqual(card("speed_ref").querySelector(".write-input"), input);
+        assert(input.disabled);
+        assert.match(input.title, expected);
+    }
+    view.send({
+        type: "liveStatus",
+        intentEnabled: true,
+        canWrite: false,
+        mode: "debug-paused-reading",
+        source: "dap",
+        snapshotReady: false
+    });
+    view.document.getElementById("langToggle").click();
+    assert.match(card("speed_ref").querySelector(".write-input").title, /正在读取当前值/);
     view.send({ type: "liveStatus", running: true, canRead: true, canWrite: true, haltWrite: true });
     for (const row of view.document.querySelectorAll(".write-row")) assert(!row.classList.contains("gated"));
     view.assertHealthy();

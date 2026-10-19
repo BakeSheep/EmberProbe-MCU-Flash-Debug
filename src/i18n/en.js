@@ -413,8 +413,23 @@ module.exports = Object.freeze({
     "sb.writeFail": "Write failed: {msg}",
     "sb.writeUnsupported": "This variable cannot be written directly",
     "sb.writeNeedSampling": "Start sampling before writing",
+    "sb.writeUnavailable": "Writing is temporarily unavailable; check the sampling status",
+    "sb.writeDebuggerUnsupported": "The debugger does not support memory writes",
+    "sb.writeConnectionChanged": "Probe connection settings changed; reconnect before writing",
+    "sb.writeArchiveBusy": "Sampling storage is busy; wait for it to recover before writing",
     "sb.writeNeedHalt":
         "While a debug session is running only aligned 32-bit variables can be written; this write briefly halts the CPU, so pause the debugger first",
+    "sb.writeTargetChanged.notWritten":
+        "The debug target changed state (pause, step or breakpoint) before the write; nothing was written. Retry once it is running again",
+    "sb.writeTargetChanged.unverified":
+        "The debug target changed state (pause, step or breakpoint) during the write; {written}/{total} value(s) were written but not verified. Check the current value before retrying",
+    "sb.writeTargetChanged.verified":
+        "The value was written and read back, but the debug target changed state (pause, step or breakpoint) right after; the result may be stale",
+    "sb.writeReadBackFailed": "The value was written, but reading it back failed, so the result is unconfirmed: {msg}",
+    "sb.writeVerifyFailedRunning":
+        "The value read back differs from the written value; the running firmware may have modified it right after the write",
+    "sb.writeVerifyFailedHalted":
+        "The value read back still differs while the target was halted; check RAM accessibility, MPU/cache configuration and the debug connection",
     "sb.writeRisk.subword":
         "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, read-modify-writes the containing 32-bit word, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.writeRisk.unaligned":

@@ -25,6 +25,7 @@ function fixture(options = {}, overrides = {}) {
         setWatch: (items) => calls.push(items),
         setIntervalMs: (value) => calls.push(value),
         setPauseReason: (value) => calls.push(value),
+        invalidateTarget: () => calls.push("invalidateTarget"),
         stats: () => ({ actualHz: 7 }),
         readOnce: async (items) => items,
         writeAndVerify: async (items) => ({ before: [], after: items, halted: false }),
@@ -109,6 +110,7 @@ function fixture(options = {}, overrides = {}) {
     assert.strictEqual(one.controller.stopped, false);
     assert.strictEqual(one.controller.samplingEnabled, false);
     assert.strictEqual(one.controller.setSamplingEnabled(true), false);
+    one.controller.invalidateTarget();
     assert.strictEqual(await one.controller.waitForIdle(), true);
     assert.strictEqual(await one.controller.waitForExit(), true);
     await assert.rejects(one.controller.readOnce([]), /not ready/);
@@ -124,6 +126,8 @@ function fixture(options = {}, overrides = {}) {
     one.controller.setWatch([{ address: 0x20000000, size: 4 }]);
     one.controller.setIntervalMs(100);
     one.controller.setPauseReason("backpressure");
+    one.controller.invalidateTarget();
+    assert.strictEqual(one.calls.filter((value) => value === "invalidateTarget").length, 1);
     assert.deepStrictEqual(one.controller.stats(), { actualHz: 7 });
     assert.deepStrictEqual(await one.controller.readOnce(["value"]), ["value"]);
     assert.deepStrictEqual(await one.controller.writeAndVerify(["value"]), {
@@ -341,6 +345,20 @@ function fixture(options = {}, overrides = {}) {
     retryHost._managedDebugSessionId = "core1";
     retryHost._handleManagedTargetState({ session: { id: "core1" }, state: "continued", epoch: 1 });
     assert.strictEqual(retryHost._runtimeResumeTimer, null, "Unsupported runtime reads never schedule Tcl sampling");
+    const stateHost = Object.create(retryHostClass.prototype);
+    const targetCalls = [];
+    stateHost._managedDebugSessionId = "core0";
+    stateHost._managedDebugServer = {
+        capabilities: { runtimeRead: true },
+        invalidateTarget: () => targetCalls.push("invalidate"),
+        setSamplingEnabled: (enabled) => targetCalls.push(`sampling:${enabled}`)
+    };
+    stateHost._handleManagedTargetState({ session: { id: "core0" }, state: "stopped", epoch: 2 });
+    assert.deepStrictEqual(
+        targetCalls,
+        ["invalidate", "sampling:false"],
+        "target stops cancel queued runtime transactions, unlike sampling pauses"
+    );
     await retryHost._stopManagedDebugServer();
     assert.strictEqual(stopped.length, 2);
     assert.strictEqual(retryHost._probeCoordinator.anyActive(), false);

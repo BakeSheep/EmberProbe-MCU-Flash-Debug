@@ -91,6 +91,8 @@ function testRuntimeAccounting() {
         session.setPauseReason("archive_backpressure");
         assert.strictEqual((await session.request("stats")).result.pauseReason, "archive_backpressure");
         session.setPauseReason(null);
+        // The worker accepts target invalidation without pausing the sampling clock.
+        assert.strictEqual((await session.request("invalidateTarget", [])).result, undefined);
         await wait(250);
         assert.ok(ticks.length >= 2);
         const begin = Date.now();

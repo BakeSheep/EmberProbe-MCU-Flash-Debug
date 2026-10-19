@@ -120,6 +120,9 @@ class OpenOcdDebugController {
     setSamplingEnabled(enabled) {
         return this.runtime?.setSamplingEnabled(!!enabled && this.capabilities.runtimeRead) || false;
     }
+    invalidateTarget() {
+        this.runtime?.invalidateTarget?.();
+    }
     setWatch(items) {
         if (items.length && !this.capabilities.runtimeRead)
             throw Object.assign(new Error("Multicore runtime sampling requires explicit target routing"), {

@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复已开启采样时仍提示“开始采样后才能写入”的问题：按暂停快照读取、重试、失败、调试器能力及连接状态显示实际阻止原因，并在状态变化时更新写入提示。
+- Fix write controls asking to start sampling when it is already enabled: show the actual paused-snapshot, retry, failure, debugger-capability or connection reason and refresh the hint when it changes.
+
+- 修复调试运行中写入或一次性读取被采样频率、观察列表刷新、采样存储背压或停止采样误取消的问题；暂停、单步、断点命中、会话切换、停止和连接变化仍会中止事务。
+- Fix running-debug writes and one-shot reads being cancelled by sampling-rate or watch-list updates, sampling storage backpressure or stopping sampling; pauses, steps, breakpoint hits, session changes, stops and connection changes still cancel transactions.
+
+- 写入因调试目标状态变化被中止时，提示改为说明值是否已写入、是否已校验；写入后回读失败单独报告为 `WRITE_READBACK_FAILED`，不再误报为固件修改了变量；回读不一致的提示随界面语言显示。
+- When a write is aborted by a debug target state change, the message now says whether the value was written and verified; a failed read-back after writing is reported separately as `WRITE_READBACK_FAILED` instead of blaming firmware, and read-back mismatch messages follow the interface language.
+
 ## [0.8.7] - 2026-10-19
 
 - ELF/DWARF 诊断随界面语言显示为中文或英文，切换语言时已有提示立即更新，诊断代码、变量名和路径保持原样。

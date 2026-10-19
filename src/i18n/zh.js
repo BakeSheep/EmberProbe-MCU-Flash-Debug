@@ -394,7 +394,20 @@ module.exports = Object.freeze({
     "sb.writeFail": "写入失败：{msg}",
     "sb.writeUnsupported": "该变量不支持直接写入",
     "sb.writeNeedSampling": "开始采样后才能写入",
+    "sb.writeUnavailable": "当前暂不可写，请查看采样状态提示",
+    "sb.writeDebuggerUnsupported": "调试器不支持内存写入",
+    "sb.writeConnectionChanged": "探针连接配置已变化，请重新连接后再写入",
+    "sb.writeArchiveBusy": "采样存储繁忙，恢复后才能写入",
     "sb.writeNeedHalt": "调试会话运行中只能写入对齐的 32 位变量；该变量写入需要短暂暂停 CPU，请先暂停调试再写入",
+    "sb.writeTargetChanged.notWritten":
+        "写入前调试目标状态发生变化（暂停、单步或命中断点），未写入任何值；目标恢复运行后可重试",
+    "sb.writeTargetChanged.unverified":
+        "写入期间调试目标状态发生变化（暂停、单步或命中断点），已写入 {written}/{total} 项但未完成回读校验；请先确认当前值再决定是否重试",
+    "sb.writeTargetChanged.verified":
+        "值已写入并回读一致，但调试目标状态随即发生变化（暂停、单步或命中断点），结果可能已过期",
+    "sb.writeReadBackFailed": "值已写入，但回读失败，无法确认结果：{msg}",
+    "sb.writeVerifyFailedRunning": "回读值与写入值不一致，运行中的固件可能在写入后立即修改了该变量",
+    "sb.writeVerifyFailedHalted": "目标暂停时回读值仍与写入值不一致，请检查 RAM 可访问性、MPU/缓存配置和调试连接",
     "sb.writeRisk.subword":
         "写入风险：该变量为 {bits} 位，无法用单次对齐 32 位访问写入。写入时会短暂暂停 CPU（halt），读-改-写所在的 32 位字后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
     "sb.writeRisk.unaligned":

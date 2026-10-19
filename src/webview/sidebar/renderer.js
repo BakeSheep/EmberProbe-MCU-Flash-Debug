@@ -45,6 +45,7 @@ let sideWatch = [],
     liveRunning = false,
     liveCanRead = false,
     liveCanWrite = false,
+    liveWriteUnavailableKey = "sb.writeNeedSampling",
     liveHaltWrite = false,
     liveSnapshotReady = true,
     variableError = "",
@@ -1073,7 +1074,7 @@ function writeRisk(item) {
     return EmberProbeRuntime.writeHaltRisk(item.address, LEAF_W[item.type] || item.size);
 }
 function writeGateKey(item) {
-    if (!liveCanWrite) return "sb.writeNeedSampling";
+    if (!liveCanWrite) return liveWriteUnavailableKey;
     return !liveHaltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
 }
 // 风险说明用自绘浮层：原生 title 无法限制宽度，且会与名称的 title 叠加
@@ -2088,7 +2089,8 @@ function liveStatus(m) {
     m = m || {};
     lastLive = m;
     const wasWrite = liveCanWrite,
-        wasHaltWrite = liveHaltWrite;
+        wasHaltWrite = liveHaltWrite,
+        wasWriteUnavailableKey = liveWriteUnavailableKey;
     const next = window.EmberProbeRuntime.liveState(
         { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
         m
@@ -2097,6 +2099,11 @@ function liveStatus(m) {
     liveCanRead = next.canRead;
     liveCanWrite = next.canWrite;
     liveHaltWrite = next.haltWrite;
+    liveWriteUnavailableKey = EmberProbeRuntime.writeUnavailableKey({
+        ...m,
+        running: liveRunning,
+        canWrite: liveCanWrite
+    });
     liveSnapshotReady = next.fresh;
     const debugRunning = m.mode === "debug-running-waiting",
         debugReading = m.source === "dap" && liveRunning && !liveSnapshotReady;
@@ -2108,7 +2115,12 @@ function liveStatus(m) {
         (m.error ? "err" : debugRunning || debugReading ? "busy" : liveCanRead ? "on" : liveRunning ? "busy" : "");
     liveLabel.textContent = msgText(m) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
-    if (wasWrite !== liveCanWrite || wasHaltWrite !== liveHaltWrite) updateWriteAvailability();
+    if (
+        wasWrite !== liveCanWrite ||
+        wasHaltWrite !== liveHaltWrite ||
+        wasWriteUnavailableKey !== liveWriteUnavailableKey
+    )
+        updateWriteAvailability();
 }
 function openocdStatus(m) {
     m = m || {};

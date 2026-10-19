@@ -30,7 +30,7 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
-const { variableDisplayName } = require("./webview/runtime");
+const { variableDisplayName, writeUnavailableKey } = require("./webview/runtime");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
@@ -139,6 +139,35 @@ function variableErrorEntry({ requestedName, error }) {
         }
     };
 }
+const TARGET_CHANGED_WRITE_MESSAGES = {
+    notWritten:
+        "The debug target changed state (pause, step or breakpoint) before the write; nothing was written. Retry once it is running again",
+    unverified:
+        "The debug target changed state (pause, step or breakpoint) during the write; {written}/{total} value(s) were written but not verified. Check the current value before retrying",
+    verified:
+        "The value was written and read back, but the debug target changed state (pause, step or breakpoint) right after; the result may be stale"
+};
+
+// A cancelled runtime write must say whether target memory already changed.
+/** @param {"notWritten" | "unverified" | "verified"} state @param {{ writtenItems: number, totalItems: number, results?: object[] }} progress */
+function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
+    const params = { written: writtenItems, total: totalItems };
+    const message = TARGET_CHANGED_WRITE_MESSAGES[state].replace(/\{(\w+)\}/g, (_, key) => String(params[key]));
+    return Object.assign(new Error(message), {
+        code: "DEBUG_STATE_CHANGED",
+        retryable: state === "notWritten",
+        i18nKey: `sb.writeTargetChanged.${state}`,
+        i18nParams: params,
+        details: {
+            written: writtenItems > 0,
+            writtenItems,
+            totalItems,
+            verified: state === "verified",
+            ...(results && { results })
+        }
+    });
+}
+
 // 实现WebviewViewProvider接口的类
 class MainViewProvider {
     constructor(context) {
@@ -2084,6 +2113,7 @@ class MainViewProvider {
         this._runtimeResumeTimer = null;
         const server = this._managedDebugServer;
         if (!server || server.capabilities?.runtimeRead === false) return;
+        server.invalidateTarget?.();
         server.setSamplingEnabled(false);
         if (event.state !== "continued") return;
         if (event.transition && event.transition !== "continue") return;
@@ -2535,20 +2565,25 @@ class MainViewProvider {
                 true
             );
         }
-        const transaction = await session.writeAndVerify(
-            items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
-        );
-        if (
+        let transaction;
+        try {
+            transaction = await session.writeAndVerify(
+                items.map((i) => ({ name: i.name, address: i.address, bytes: i.bytes }))
+            );
+        } catch (error) {
+            if (error?.code !== "LIVE_READ_CANCELLED") throw error;
+            const writtenItems = Number(error.details?.writtenItems) || 0;
+            throw targetChangedWriteError(writtenItems ? "unverified" : "notWritten", {
+                writtenItems,
+                totalItems: items.length
+            });
+        }
+        const targetChanged =
             runtimeWrite &&
             (session !== this._managedDebugServer ||
                 debugSession !== this._debugBridge.activeSession ||
                 stopEpoch !== this._debugBridge.stopEpoch ||
-                this._debugBridge.agentStatus().state !== "running")
-        )
-            throw Object.assign(new Error("Debug target state changed during the runtime write"), {
-                code: "DEBUG_STATE_CHANGED",
-                retryable: true
-            });
+                this._debugBridge.agentStatus().state !== "running");
         const halted = transaction.halted === true;
         const before = new Map(transaction.before.map((s) => [s.name, s]));
         const after = new Map(transaction.after.map((s) => [s.name, s]));
@@ -2568,9 +2603,28 @@ class MainViewProvider {
                 writtenText: i.valueText,
                 readBack: post?.bytes ? elfSymbols.decodeValue(post.bytes, i.type) : null,
                 readBackText: post?.bytes ? elfSymbols.decodeValueText(post.bytes, i.type) : null,
-                verified
+                verified,
+                ...(!post?.bytes && { readBackError: post?.diagnostic?.message || "no read-back data" })
             };
         });
+        // The transaction finished, but its results belong to a target state that no longer exists.
+        if (targetChanged)
+            throw targetChangedWriteError(results.every((r) => r.verified) ? "verified" : "unverified", {
+                writtenItems: items.length,
+                totalItems: items.length,
+                results
+            });
+        const unreadable = results.filter((r) => r.readBackError);
+        if (unreadable.length) {
+            const msg = unreadable.map((r) => `${r.name}: ${r.readBackError}`).join("; ");
+            throw Object.assign(new Error(`The value was written, but reading it back failed: ${msg}`), {
+                code: "WRITE_READBACK_FAILED",
+                retryable: false,
+                i18nKey: "sb.writeReadBackFailed",
+                i18nParams: { msg },
+                details: { results, targetHaltedDuringWrite: halted }
+            });
+        }
         if (results.some((r) => !r.verified)) {
             throw Object.assign(
                 new Error(
@@ -2581,6 +2635,7 @@ class MainViewProvider {
                 {
                     code: "WRITE_VERIFY_FAILED",
                     retryable: true,
+                    i18nKey: halted ? "sb.writeVerifyFailedHalted" : "sb.writeVerifyFailedRunning",
                     details: { results, targetHaltedDuringWrite: halted, alignedWordWrites: true }
                 }
             );
@@ -2656,7 +2711,8 @@ class MainViewProvider {
         const session =
             dapSession || runtimeSession || (status.canWrite && this._liveWatchRunning ? this._liveSession : null);
         if (!session) {
-            throw Object.assign(new Error(this._t("sb.writeNeedSampling")), { i18nKey: "sb.writeNeedSampling" });
+            const key = writeUnavailableKey(status) || "sb.writeUnavailable";
+            throw Object.assign(new Error(this._t(key)), { i18nKey: key });
         }
         await this._prepareRequestedLayouts([{ name }]);
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
@@ -5261,10 +5317,14 @@ class MainViewProvider {
             this._managedDebugServer
         ) {
             this._managedDebugSessionId = session.id;
+            this._managedDebugServer.invalidateTarget?.();
             this._managedDebugServer.setSamplingEnabled(false);
         }
         this._debugBridge.attach(session);
-        if (grouped) this._managedDebugServer.setSamplingEnabled(false);
+        if (grouped) {
+            this._managedDebugServer.invalidateTarget?.();
+            this._managedDebugServer.setSamplingEnabled(false);
+        }
         this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._samplingIntent);
     }
     handleDebugAdapterMessage(session, message) {

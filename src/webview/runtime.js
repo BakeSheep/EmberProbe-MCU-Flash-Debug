@@ -1271,6 +1271,32 @@
         if (size < 4) return "subword";
         return (Number(address) >>> 0) % 4 ? "unaligned" : "";
     }
+    // Shared by the sidebar gate and the host's write rejection; sampling intent alone is not write readiness.
+    function writeUnavailableKey(status) {
+        if (status.canWrite === true) return "";
+        if (status.connectionStale) return "sb.writeConnectionChanged";
+        if (status.pauseReason === "archive_backpressure") return "sb.writeArchiveBusy";
+        if (!(status.intentEnabled ?? status.running)) return "sb.writeNeedSampling";
+        if (
+            [
+                "live.dapReading",
+                "live.dapRetrying",
+                "live.dapFailed",
+                "live.dapReadUnsupported",
+                "live.dapWriting",
+                "live.debugConflict",
+                "live.debugTclDegraded",
+                "live.needVar"
+            ].includes(status.key)
+        )
+            return status.key;
+        if (status.mode === "debug-paused-reading") return "live.dapReading";
+        if (status.mode === "debug-paused-unsupported") return "live.dapReadUnsupported";
+        if (status.mode === "debug-session-conflict") return "live.debugConflict";
+        if (status.mode === "debug-paused-writing") return "live.dapWriting";
+        if (status.mode === "debug-paused-ready") return "sb.writeDebuggerUnsupported";
+        return "sb.writeUnavailable";
+    }
     function liveState(previous, message) {
         return {
             running:
@@ -1351,6 +1377,7 @@
         runtimeTreeShape,
         liveState,
         writeHaltRisk,
+        writeUnavailableKey,
         warningIconSvg,
         renderElfDiagnostics
     };

@@ -111,11 +111,30 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
                 error.code === "WRITE_VERIFY_FAILED" &&
                 error.details.targetHaltedDuringWrite === halted &&
                 error.details.results[0].readBack === 41 &&
+                error.i18nKey === (halted ? "sb.writeVerifyFailedHalted" : "sb.writeVerifyFailedRunning") &&
                 (halted
                     ? /while the target was halted/.test(error.message)
                     : /running firmware may have modified it right after the write/.test(error.message))
         );
     }
+
+    const unreadableSession = {
+        writeAndVerify: async () => ({
+            before: [{ name: "value", bytes: [1, 0, 0, 0] }],
+            after: [{ name: "value", bytes: null, diagnostic: { message: "incomplete data" } }],
+            halted: false
+        })
+    };
+    await assert.rejects(
+        verifyProvider._executeWritePlan(unreadableSession, "test", verifyPlan),
+        (error) =>
+            error.code === "WRITE_READBACK_FAILED" &&
+            error.i18nKey === "sb.writeReadBackFailed" &&
+            /incomplete data/.test(error.i18nParams.msg) &&
+            error.details.results[0].verified === false &&
+            error.details.results[0].readBackError === "incomplete data",
+        "a failed read-back must not be reported as firmware modifying the value"
+    );
 
     const runtimeProvider = Object.create(Provider.prototype);
     const writeCalls = [];
@@ -220,11 +239,36 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
             else runtimeProvider._managedDebugServer = null;
             return result;
         };
-        await assert.rejects(runtimeProvider._executeWritePlan(runtime, "test", runtimePlan), {
-            code: "DEBUG_STATE_CHANGED"
-        });
+        await assert.rejects(
+            runtimeProvider._executeWritePlan(runtime, "test", runtimePlan),
+            (error) =>
+                error.code === "DEBUG_STATE_CHANGED" &&
+                error.i18nKey === "sb.writeTargetChanged.verified" &&
+                error.details.written === true &&
+                error.details.verified === true &&
+                error.details.results.length === runtimePlan.items.length
+        );
         debugBridge.activeSession = active;
         runtimeProvider._managedDebugServer = runtime;
+    }
+    for (const writtenItems of [0, 1]) {
+        runtime.writeAndVerify = async () => {
+            throw Object.assign(new Error("Runtime read was cancelled by a target state change"), {
+                code: "LIVE_READ_CANCELLED",
+                details: { writtenItems, totalItems: 1 }
+            });
+        };
+        await assert.rejects(
+            runtimeProvider._executeWritePlan(runtime, "test", runtimePlan),
+            (error) =>
+                error.code === "DEBUG_STATE_CHANGED" &&
+                error.i18nKey === `sb.writeTargetChanged.${writtenItems ? "unverified" : "notWritten"}` &&
+                error.retryable === !writtenItems &&
+                error.details.written === !!writtenItems &&
+                error.details.verified === false &&
+                !/Runtime read/.test(error.message),
+            "cancelled runtime writes report whether target memory changed"
+        );
     }
     runtime.writeAndVerify = normalWrite;
     debugBridge.paused = true;
@@ -233,6 +277,25 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
     const pausedWrite = await runtimeProvider._writeUiVariable("byte", 2);
     assert.strictEqual(pausedWrite.source, "cortex-debug-dap");
     assert.strictEqual(pausedWrite.halted, true);
+    const blockedProvider = Object.create(Provider.prototype);
+    blockedProvider._assertCpuIdle = () => {};
+    blockedProvider._debugBridge = { canWrite: false };
+    blockedProvider._t = (key) => key;
+    const blockedWriteCount = writeCalls.length;
+    for (const [status, key] of [
+        [{ intentEnabled: false }, "sb.writeNeedSampling"],
+        [{ intentEnabled: true, mode: "debug-paused-reading" }, "live.dapReading"],
+        [{ intentEnabled: true, mode: "debug-paused-reading", key: "live.dapFailed" }, "live.dapFailed"],
+        [{ intentEnabled: true, mode: "debug-paused-ready" }, "sb.writeDebuggerUnsupported"],
+        [{ intentEnabled: true, mode: "debug-session-conflict" }, "live.debugConflict"],
+        [{ intentEnabled: true, connectionStale: true }, "sb.writeConnectionChanged"],
+        [{ intentEnabled: true, pauseReason: "archive_backpressure" }, "sb.writeArchiveBusy"],
+        [{ intentEnabled: true }, "sb.writeUnavailable"]
+    ]) {
+        blockedProvider._samplingStatus = () => ({ canWrite: false, ...status });
+        await assert.rejects(blockedProvider._writeUiVariable("word", 42), { i18nKey: key, message: key });
+    }
+    assert.strictEqual(writeCalls.length, blockedWriteCount, "reporting a blocked reason never performs a write");
     console.log("Write connection binding, verification, managed routing and approval tests passed");
 })().catch((error) => {
     console.error(error);
