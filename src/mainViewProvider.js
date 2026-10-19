@@ -31,6 +31,7 @@ const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
+const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
 const { WriteAuthorization, writeConnectionIdentity } = require("./writeAuthorization");
@@ -2984,52 +2985,14 @@ class MainViewProvider {
                             post({
                                 type: "variablesListDone",
                                 version: this._elfVersion(result),
-                                warnings: result.warnings
+                                warnings: displayWarnings(result)
                             });
                         else this._sendElfSnapshot(post, "variablesList");
                         break;
                     }
-                    case "resolveVariable": {
-                        const { symbols } = await this._elfService.ready();
-                        const version = this._elfVersion(this._elfService.cache);
-                        if (message.version && message.version !== version) break;
-                        let found =
-                            this._elfService.symbolByName.get(message.name) ||
-                            symbols.find((s) => s.name === message.name);
-                        if (!found) {
-                            // 手动输入的 文件名::变量名 解析到唯一编译单元；同名多编译单元的裸名给出候选提示。
-                            try {
-                                found = this._agentSymbolResolver(symbols)(message.name);
-                            } catch (error) {
-                                if (error.code === "VARIABLE_AMBIGUOUS") {
-                                    post({
-                                        type: "liveError",
-                                        key: "live.varAmbiguous",
-                                        params: {
-                                            name: message.name,
-                                            candidates: error.details.candidates
-                                                .map((candidate) => candidate.name)
-                                                .join(", ")
-                                        }
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-                        if (found) {
-                            if (found.isComposite) {
-                                try {
-                                    await this._elfService.layout(found.name);
-                                } catch (error) {
-                                    post({ type: "liveError", ...toUiError(error) });
-                                    break;
-                                }
-                            }
-                            if (this._elfVersion(this._elfService.cache) === version)
-                                post({ type: "addResolved", version, symbol: found });
-                        } else post({ type: "liveError", key: "live.varNotFound", params: { name: message.name } });
+                    case "resolveVariable":
+                        await this._resolveLiveVariable(message, post);
                         break;
-                    }
                     case "expandLayout":
                         await this._handleLayoutExpansion(message, post);
                         break;
@@ -3354,6 +3317,44 @@ class MainViewProvider {
     _agentSymbolResolver(symbols) {
         return elfSymbols.createSymbolResolver(symbols);
     }
+    // Return structured choices to the combobox; never select a default for an ambiguous name.
+    async _resolveLiveVariable(message, post) {
+        const result = await this._elfService.ready();
+        const version = this._elfVersion(result);
+        if (message.version && message.version !== version) return;
+        const generation = this._elfService.generation;
+        const reply = { version, requestId: message.requestId, requestedName: message.name };
+        let found;
+        try {
+            found = this._agentSymbolResolver(result.symbols)(message.name);
+        } catch (error) {
+            if (error.code === "VARIABLE_AMBIGUOUS") {
+                const candidates = error.details.candidates;
+                if (candidates.length > 1) post({ type: "variableChoices", ...reply, candidates });
+                else
+                    post({
+                        type: "liveError",
+                        ...reply,
+                        key: "live.varIdentityAmbiguous",
+                        params: { name: candidates[0]?.displayName || message.name }
+                    });
+            } else {
+                post({ type: "liveError", ...reply, key: "live.varNotFound", params: { name: message.name } });
+            }
+            return;
+        }
+        if (found.isComposite) {
+            try {
+                await this._elfService.layout(found.name);
+            } catch (error) {
+                if (generation === this._elfService.generation)
+                    post({ type: "liveError", ...reply, ...toUiError(error) });
+                return;
+            }
+        }
+        if (generation !== this._elfService.generation || version !== this._elfVersion(this._elfService.cache)) return;
+        post({ type: "addResolved", ...reply, symbol: found });
+    }
     // 预取请求中复合变量的 DWARF 布局。传入 options.layoutErrors 时逐项收集布局错误（键为原始符号名）
     // 而不中止整批；未传入时保持原语义，首个布局错误直接抛出。名称解析失败留给后续规划报告。
     async _prepareRequestedLayouts(requests, options = {}) {
@@ -3389,15 +3390,20 @@ class MainViewProvider {
         const result = this._elfService?.cache;
         if (!result?.elf) return;
         const version = this._elfVersion(result);
-        post({ type: `${listType}Reset`, version, generation: this._elfService.generation, warnings: result.warnings });
+        post({
+            type: `${listType}Reset`,
+            version,
+            generation: this._elfService.generation,
+            warnings: displayWarnings(result)
+        });
         for (let i = 0; i < result.symbols.length; i += 1000)
             post({ type: `${listType}Chunk`, version, symbols: result.symbols.slice(i, i + 1000) });
-        post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: result.warnings });
+        post({ type: `${listType}Done`, version, total: result.symbols.length, warnings: displayWarnings(result) });
         if (result.dwarfReady)
             post({
                 type: listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone",
                 version,
-                warnings: result.warnings
+                warnings: displayWarnings(result)
             });
     }
     _onElfChange(phase, result, entries) {
@@ -3414,14 +3420,14 @@ class MainViewProvider {
                 type: "availableVariablesReset",
                 version,
                 generation: this._elfService.generation,
-                warnings: result.warnings
+                warnings: displayWarnings(result)
             });
             for (const post of graphPosts)
                 post({
                     type: "variablesListReset",
                     version,
                     generation: this._elfService.generation,
-                    warnings: result.warnings
+                    warnings: displayWarnings(result)
                 });
         } else if (phase === "symbols") {
             sidebarPost({ type: "availableVariablesChunk", version, symbols: entries });
@@ -3431,10 +3437,15 @@ class MainViewProvider {
                 type: "availableVariablesDone",
                 version,
                 total: result.symbols.length,
-                warnings: result.warnings
+                warnings: displayWarnings(result)
             });
             for (const post of graphPosts)
-                post({ type: "variablesListDone", version, total: result.symbols.length, warnings: result.warnings });
+                post({
+                    type: "variablesListDone",
+                    version,
+                    total: result.symbols.length,
+                    warnings: displayWarnings(result)
+                });
         } else if (phase === "identities") {
             // DWARF refined the CU identities of same-named statics: resend the renamed symbol list.
             this._watchLists.invalidate();
@@ -3464,8 +3475,9 @@ class MainViewProvider {
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
         } else if (phase === "dwarfReady") {
             void this._cpuLoadService?.refreshSupport();
-            sidebarPost({ type: "availableTypesDone", version, warnings: result.warnings });
-            for (const post of graphPosts) post({ type: "variableTypesDone", version, warnings: result.warnings });
+            sidebarPost({ type: "availableTypesDone", version, warnings: displayWarnings(result) });
+            for (const post of graphPosts)
+                post({ type: "variableTypesDone", version, warnings: displayWarnings(result) });
             this._elfRebindPromise = this._hydrateSelectedLayouts(result)
                 .then(() => this._rebindWatchLists(result.symbols))
                 .then(() => {
@@ -3478,14 +3490,14 @@ class MainViewProvider {
             sidebarPost({
                 type: "availableVariablesDone",
                 version,
-                warnings: result.warnings,
+                warnings: displayWarnings(result),
                 error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
             });
             for (const post of graphPosts)
                 post({
                     type: "variablesListDone",
                     version,
-                    warnings: result.warnings,
+                    warnings: displayWarnings(result),
                     error: result.symbols.length ? "" : result.warnings[result.warnings.length - 1]
                 });
         }
@@ -3692,7 +3704,10 @@ class MainViewProvider {
                 key: "lw.watchAmbiguous",
                 params: {
                     names: [...changes.ambiguous.keys()].join(", "),
-                    candidates: [...new Set([...changes.ambiguous.values()].flat())].slice(0, 8).join(", ")
+                    candidates: [...new Set([...changes.ambiguous.values()].flat())]
+                        .slice(0, 8)
+                        .map((name) => symbols.find((symbol) => symbol.name === name)?.displayName || name)
+                        .join(", ")
                 }
             });
         this._latestSidebarSamples.clear();
@@ -3710,7 +3725,7 @@ class MainViewProvider {
         } else if (!skipElf && this.readElfSymbols) {
             try {
                 const result = this.readElfSymbols();
-                post({ type: "variablesList", symbols: result.symbols, warnings: result.warnings });
+                post({ type: "variablesList", symbols: result.symbols, warnings: displayWarnings(result) });
             } catch (error) {
                 post({ type: "variablesList", symbols: [], warnings: [error.message], error: error.message });
             }
@@ -3843,8 +3858,8 @@ class MainViewProvider {
                 { code: "UNLIMITED_SAMPLING_DISABLED" }
             );
         this._unlimitedSamplingRequested = enabled;
-        await this._context.workspaceState.update(UNLIMITED_SAMPLING_STATE_KEY, enabled);
         this._unlimitedSamplingChanged();
+        await this._context.workspaceState.update(UNLIMITED_SAMPLING_STATE_KEY, enabled);
         return this._unlimitedSamplingEnabled();
     }
     unlimitedSamplingConfigurationChanged() {
@@ -4229,6 +4244,7 @@ class MainViewProvider {
                 code: "INVALID_SAMPLE_FREQUENCY"
             });
         const value = normalizeFrequencyHz(frequencyHz);
+        this._setLiveInterval(intervalMsFromHz(value), value);
         this._savingFrequency = true;
         try {
             await vscode.workspace
@@ -4237,7 +4253,6 @@ class MainViewProvider {
         } finally {
             this._savingFrequency = false;
         }
-        this._setLiveInterval(intervalMsFromHz(value), value);
         return value;
     }
     samplingFrequencyConfigurationChanged() {

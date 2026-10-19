@@ -28,7 +28,6 @@ class ElfService {
         this.dwarf = options.dwarf;
         this.cleanPath = options.cleanPath;
         this.t = options.t;
-        this._sameNameWarnings = new WeakMap();
         this.workerPath = options.workerPath || null;
         this.onChange = options.onChange || (() => {});
         this.cache = null;
@@ -177,22 +176,28 @@ class ElfService {
                 continue;
             }
             recorded++;
-            const message = this.t(
-                code === "CPP_SYMBOL_AMBIGUOUS" ? "diag.cppSymbolAmbiguous" : "diag.cppTypeUnresolved",
-                {
-                    name: symbol.displayName || symbol.name
-                }
-            );
-            result.diagnostics.push({ code, stage: "bind", message });
+            const i18nKey = code === "CPP_SYMBOL_AMBIGUOUS" ? "diag.cppSymbolAmbiguous" : "diag.cppTypeUnresolved";
+            const i18nParams = { name: symbol.displayName || symbol.name };
+            const message = this.t(i18nKey, i18nParams);
+            result.diagnostics.push({ code, stage: "bind", message, i18nKey, i18nParams });
             if (code !== "CPP_TYPE_UNRESOLVED") result.warnings.push(`${code}: ${message}`);
         }
         if (suppressed) {
             const message = this.t("diag.cppDiagnosticsTruncated", { count: suppressed });
-            result.diagnostics.push({ code: "CPP_DIAGNOSTICS_TRUNCATED", stage: "bind", message });
-            if (suppressedWarnings)
-                result.warnings.push(
-                    `CPP_DIAGNOSTICS_TRUNCATED: ${this.t("diag.cppDiagnosticsTruncated", { count: suppressedWarnings })}`
-                );
+            const diagnostic = {
+                code: "CPP_DIAGNOSTICS_TRUNCATED",
+                stage: "bind",
+                message,
+                i18nKey: "diag.cppDiagnosticsTruncated",
+                i18nParams: { count: suppressed }
+            };
+            result.diagnostics.push(diagnostic);
+            if (suppressedWarnings) {
+                const warning = this.t("diag.cppDiagnosticsTruncated", { count: suppressedWarnings });
+                result.warnings.push(`CPP_DIAGNOSTICS_TRUNCATED: ${warning}`);
+                diagnostic.warningMessage = warning;
+                diagnostic.warningI18nParams = { count: suppressedWarnings };
+            }
         }
     }
 
@@ -299,11 +304,9 @@ class ElfService {
                     ack("symbolIdentities");
                     break;
                 case "symbolIdentitiesDone":
-                    this._setSameNameWarning(result);
                     this.onChange("identities", result);
                     break;
                 case "functionsDone":
-                    this._setSameNameWarning(result);
                     this.resolveSymbols?.(result);
                     this.resolveSymbols = null;
                     this.rejectSymbols = null;
@@ -644,7 +647,6 @@ class ElfService {
                     ...(match.sourceFile ? { sourceFile: match.sourceFile } : {})
                 });
         }
-        this._setSameNameWarning(result);
         result.typeMetadataIncomplete = parsed?.diagnostics?.some((entry) => entry.code !== "DWARF_MISSING");
         result.companions = parsed?.companions || [];
         result.diagnostics = parsed?.diagnostics || [];
@@ -688,19 +690,6 @@ class ElfService {
             const kept = result.symbols.filter((symbol) => !removed.has(symbol));
             result.symbols.splice(0, result.symbols.length, ...kept);
         }
-    }
-    // The same-name warning is localized here (the Worker has no language) and replaced when identities change.
-    _setSameNameWarning(result) {
-        const previous = this._sameNameWarnings.get(result);
-        if (previous) {
-            const index = result.warnings.indexOf(previous);
-            if (index >= 0) result.warnings.splice(index, 1);
-        }
-        const warning = this.t ? this.elfSymbols.sameNameSymbolWarning?.(result.symbols, this.t) : "";
-        if (warning) {
-            result.warnings.push(warning);
-            this._sameNameWarnings.set(result, warning);
-        } else this._sameNameWarnings.delete(result);
     }
 }
 

@@ -6,6 +6,7 @@ const net = require("net");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
 const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
@@ -460,17 +461,37 @@ class ManagedOpenOcdSession {
     setIntervalMs(ms) {
         if (this.ratePlan) {
             const interval = clampInteger(ms, 33, 5, 10000);
-            if (interval !== this.ratePlan.graphIntervalMs) {
+            const changed = interval !== this.ratePlan.graphIntervalMs;
+            if (changed) {
                 this.ratePlan.graphIntervalMs = interval;
                 this.ratePlan.nextGraph = 0;
+                if (!this.unlimitedActive) this.ratePlan.graphTicks = [];
             }
-            return this._setClockInterval(this.ratePlan.requestedIntervalMs);
+            return this._setClockInterval(this.ratePlan.requestedIntervalMs, changed && !this.unlimitedActive);
         }
         return this._setClockInterval(ms);
     }
 
     setSamplingPlan(plan) {
         const ratePlan = new MultiRatePlan({ ...plan, unlimited: plan.unlimited === true && this.mode !== "debug" });
+        const previous = this.ratePlan;
+        const sameConsumers =
+            previous &&
+            isDeepStrictEqual(previous.graphItems, ratePlan.graphItems) &&
+            isDeepStrictEqual(previous.sidebarItems, ratePlan.sidebarItems);
+        if (sameConsumers) {
+            if (previous.graphIntervalMs === ratePlan.graphIntervalMs && this.unlimited === (plan.unlimited === true))
+                return;
+            // Changing only the rate does not invalidate measured probe costs or cached sidebar values.
+            ratePlan.latest = previous.latest;
+            ratePlan.nextSidebar = previous.nextSidebar;
+            ratePlan.sidebarTicks = previous.sidebarTicks;
+            this.ratePlan = ratePlan;
+            this.unlimited = plan.unlimited === true;
+            this._resetHostHold();
+            this._setClockInterval(ratePlan.requestedIntervalMs, true);
+            return;
+        }
         this.sampleEpoch++;
         this.setWatch(ratePlan.items);
         this.ratePlan = ratePlan;
@@ -481,9 +502,10 @@ class ManagedOpenOcdSession {
         if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) this._scheduleNext(0);
     }
 
-    _setClockInterval(ms) {
+    _setClockInterval(ms, force = false) {
         const interval = clampInteger(ms, 100, 5, 10000);
-        if (interval === this.targetIntervalMs) return;
+        if (interval === this.targetIntervalMs && !force) return;
+        this.sampleEpoch++;
         this.options.intervalMs = interval;
         this.targetIntervalMs = interval;
         const p95 = this._computeP95Duration();
@@ -498,7 +520,7 @@ class ManagedOpenOcdSession {
         this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
         this._recentCycleTimestamps = [];
         this._clearSamplingTimer();
-        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed && !this.busy) {
+        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) {
             this._scheduleNext(0);
         }
     }

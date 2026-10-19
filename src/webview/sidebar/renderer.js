@@ -683,7 +683,8 @@ function renderAvailableContents(content) {
         document.getElementById("availableDiagnostics"),
         variableWarnings,
         "",
-        t("common.diagnostics")
+        t("common.diagnostics"),
+        t
     );
     const pool = visibleAvailable();
     const allCount = document.getElementById("allCount");
@@ -745,7 +746,7 @@ function renderAvailableContents(content) {
             const nm = document.createElement("span");
             nm.className = "available-name";
             const on = selected.has(sym.name);
-            EmberProbeRuntime.renderVariableName(nm, sbDisplayName(sym), sym.name);
+            EmberProbeRuntime.renderSymbolName(nm, sbDisplayName(sym), sym);
             nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole")) + availableOriginTitle(sym);
             const compEntry = {
                 name: sym.name,
@@ -964,7 +965,7 @@ function renderAvailableContents(content) {
             );
             const n = document.createElement("span");
             n.className = "available-name";
-            EmberProbeRuntime.renderVariableName(n, sbDisplayName(sym), sym.name);
+            EmberProbeRuntime.renderSymbolName(n, sbDisplayName(sym), sym);
             n.title += availableOriginTitle(sym);
             cell.appendChild(n);
             const ty = document.createElement("span");

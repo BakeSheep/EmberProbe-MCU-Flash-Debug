@@ -2534,7 +2534,7 @@ input[type="number"]::-webkit-outer-spin-button {
     position: absolute;
     z-index: 0;
     inset: 0 auto 0 0;
-    width: calc(10px + (100% - 20px) * var(--frequency-position, 0));
+    width: calc(11px + (100% - 22px) * var(--frequency-position, 0));
     border-radius: 3px;
     background: var(--vscode-button-background);
     overflow: hidden;
@@ -2555,8 +2555,9 @@ input[type="number"]::-webkit-outer-spin-button {
 .frequency-thumb {
     position: absolute;
     z-index: 2;
-    top: 1px;
-    left: calc((100% - 20px) * var(--frequency-position, 0));
+    top: 50%;
+    /* Keep the 20px thumb one pixel inside either end of the track. */
+    left: calc(1px + (100% - 22px) * var(--frequency-position, 0));
     width: 20px;
     height: 26px;
     border: 1px solid #0002;
@@ -2564,11 +2565,8 @@ input[type="number"]::-webkit-outer-spin-button {
     background: #fff;
     box-shadow: 0 1px 3px #0003;
     pointer-events: none;
+    transform: translateY(-50%);
     transition: left 110ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.frequency-field.is-unlimited {
-    border-color: #a47de0;
-    background: color-mix(in srgb, #9365e8 14%, var(--vscode-input-background));
 }
 .frequency-ticks {
     position: absolute;
@@ -2579,7 +2577,7 @@ input[type="number"]::-webkit-outer-spin-button {
 .frequency-ticks i {
     position: absolute;
     top: 10px;
-    left: calc(10px + (100% - 20px) * var(--stop));
+    left: calc(11px + (100% - 22px) * var(--stop));
     width: 1px;
     height: 8px;
     background: var(--vscode-descriptionForeground);
@@ -2591,8 +2589,8 @@ input[type="number"]::-webkit-outer-spin-button {
 .frequency-slider #frequencyPreset {
     position: absolute;
     z-index: 3;
-    inset: 0;
-    width: 100%;
+    inset: 0 1px;
+    width: calc(100% - 2px);
     height: 100%;
     margin: 0;
     padding: 0;
@@ -2628,3 +2626,37 @@ input[type="number"]::-webkit-outer-spin-button {
         transition: none;
     }
 }
+
+/* Readable variables retain a secondary, always-visible compilation-unit identity. */
+.source-qualified-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    vertical-align: middle;
+}
+.symbol-name-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.symbol-source {
+    flex: 0 2 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ac-choice-hint {
+    padding: 6px 9px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+.ac-choice-hint[hidden] { display: none; }

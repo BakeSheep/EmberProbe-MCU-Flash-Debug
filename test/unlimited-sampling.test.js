@@ -218,15 +218,19 @@ async function testSessionAndFairness() {
         await wait(1050);
         assert.strictEqual(session.stats().hostHoldMs, 0, "hold time ages out of the one-second window");
         assert.strictEqual(session.stats().limitedBy, "probe");
-        // An in-flight unlimited read must not contaminate the new plan's warm-up.
+        // Rate-only changes retain calibration, while discarding an old in-flight cycle.
         await waitFor(() => session.busy, "tick in flight before leaving unlimited");
+        const durations = session._recentDurations.slice();
+        const scheduleNext = session._scheduleNext;
+        session._scheduleNext = () => {};
         session.setSamplingPlan(plan(false));
         assertStats(session.stats(), false, false);
-        assert.strictEqual(session.effectiveIntervalMs, 100);
-        assert.strictEqual(session._warmingUp, true);
-        assert.strictEqual(session.stats().p95DurationMs, 0);
+        assert.strictEqual(session.effectiveIntervalMs, Math.max(5, Math.ceil(session._computeP95Duration() / 0.7)));
+        assert.strictEqual(session._warmingUp, false);
+        assert.deepStrictEqual(session._recentDurations, durations);
         await waitFor(() => !session.busy, "old cycle releases ownership");
-        assert(session._recentDurations.length <= 1, "old unlimited cycle is discarded");
+        assert.deepStrictEqual(session._recentDurations, durations, "old unlimited cycle is discarded");
+        session._scheduleNext = scheduleNext;
         session.setSamplingEnabled(false);
         await session.waitForIdle();
         assert.strictEqual(session.timer, null);

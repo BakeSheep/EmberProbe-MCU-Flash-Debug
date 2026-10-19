@@ -232,9 +232,7 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         assert.strictEqual(symbol("b/main.c::s_counter").sourceFile, "src/b/main.c");
         assert.strictEqual(symbol("main.c::calls.0").displayName, "main.c::calls");
         assert.strictEqual(symbol("main.c::g_localConfig").isComposite, true);
-        const sameName = result.warnings.filter((warning) => warning.startsWith("3 variable names are defined"));
-        assert.strictEqual(sameName.length, 1, "the refined warning replaces the first one");
-        assert(sameName[0].includes("s_counter (a/main.c::s_counter, b/main.c::s_counter, other.c::s_counter)"));
+        assert.deepStrictEqual(result.warnings, [], "same-named variables are normal source-qualified list entries");
 
         const sections = elf.parseElfSections(buffer).sections;
         const reads = [];

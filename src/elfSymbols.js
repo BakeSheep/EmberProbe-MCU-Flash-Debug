@@ -135,18 +135,23 @@ function refineSameNameSymbols(symbols, variables) {
     ]);
     return { symbols: refined, identities };
 }
-// 供 ELF 加载告警使用：概括同名多编译单元变量，提示改用 文件名::变量名。t 为 i18n 翻译函数。
+// Explicit diagnostics only; normal ELF loading presents same-named variables as source-qualified list entries.
 function sameNameSymbolWarning(symbols, t) {
     const groups = new Map();
     for (const symbol of symbols || []) {
         if (!symbol.elfName) continue;
         if (!groups.has(symbol.elfName)) groups.set(symbol.elfName, []);
-        groups.get(symbol.elfName).push(symbol.name);
+        groups.get(symbol.elfName).push(symbol);
     }
     if (!groups.size) return "";
     const shown = Array.from(groups)
         .slice(0, 5)
-        .map(([name, ids]) => `${name} (${ids.slice(0, 4).join(", ")}${ids.length > 4 ? ", …" : ""})`);
+        .map(([name, entries]) => {
+            const readable = entries.find((symbol) => symbol.displayName && symbol.displayName !== symbol.name);
+            const label = readable ? variableScope(readable.displayName)?.name || readable.displayName : name;
+            const ids = entries.slice(0, 4).map((symbol) => symbol.displayName || symbol.name);
+            return `${label} (${ids.join(", ")}${entries.length > 4 ? ", …" : ""})`;
+        });
     return t("live.sameNameSymbols", { count: groups.size, names: shown.join("; ") + (groups.size > 5 ? "; …" : "") });
 }
 function symbolCandidates(symbols) {
@@ -210,7 +215,7 @@ function createSymbolResolver(symbols) {
         Object.assign(
             new Error(
                 `Variable name is ambiguous: ${requestedName} matches ${matches.length} variables in different ` +
-                    `compilation units; qualify it as file::name, e.g. ${matches[0].name}`
+                    `compilation units; qualify it as file::name, e.g. ${matches[0].displayName || matches[0].name}`
             ),
             { code: "VARIABLE_AMBIGUOUS", details: { requestedName, candidates: symbolCandidates(matches) } }
         );

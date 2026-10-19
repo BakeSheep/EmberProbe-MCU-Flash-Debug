@@ -165,7 +165,6 @@ function renderUnlimited(syncInput) {
         tick.title = i === 4 ? t("lw.unlimited") : frequencyPresets[i] + " Hz";
     });
     paintFrequencyPosition(index, false);
-    field.classList.toggle("is-unlimited", unlimited);
     $("frequencyToggle").setAttribute("aria-label", t("lw.frequencyPresets"));
     if (unlimited && unlimitedState.suppressed) field.title = t("lw.unlimitedSuppressed");
     else if (unlimitedState.active && unlimitedState.limitedBy)
@@ -258,6 +257,7 @@ function selectFrequencyPreset() {
     if (!Number.isInteger(index) || index < 0 || index > (unlimitedState.available ? 4 : 3)) return;
     if (index === 4) {
         if (!unlimitedState.enabled) {
+            sampleTimes = [];
             unlimitedState.enabled = true;
             post({ type: "setUnlimitedSampling", enabled: true });
         }
@@ -265,6 +265,7 @@ function selectFrequencyPreset() {
     } else commitFrequency(frequencyPresets[index]);
 }
 function commitFrequency(value) {
+    if (unlimitedState.enabled || value !== requestedFrequencyHz) sampleTimes = [];
     if (unlimitedState.enabled) {
         unlimitedState.enabled = false;
         unlimitedState.active = false;
@@ -616,6 +617,7 @@ function rerenderLive() {
     renderElfDiagnostics();
     renderVars();
     if (!$("overlay").classList.contains("hidden")) renderImport();
+    if ($("acDrop").classList.contains("open")) renderAutocomplete(ambiguityChoices);
     updateRun();
     applySideLayout();
     $("freeze").textContent = frozen ? t("lw.resume") : t("lw.freeze");
@@ -1843,8 +1845,7 @@ function renderImport() {
             if (open) arrow.classList.add("open");
             var nm = document.createElement("span");
             nm.className = "imp-name";
-            nm.textContent = "\u25c7 " + displayNameFor(s);
-            nm.title = displayNameFor(s);
+            EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
             nmWrap.append(arrow, nm);
             var ty = document.createElement("span");
             ty.className = "ty";
@@ -1967,8 +1968,8 @@ function renderImport() {
             cb2.dataset.symbolName = s.name;
             cb2.checked = checkedNames.has(s.name);
             var nm2 = document.createElement("span");
-            nm2.textContent = (s.isComposite ? "\u25c7 " : "") + displayNameFor(s);
-            nm2.title = displayNameFor(s);
+            nm2.className = "imp-name";
+            EmberProbeRuntime.renderSymbolName(nm2, displayNameFor(s), s);
             var ty2 = document.createElement("span");
             ty2.className = "ty";
             ty2.textContent = s.typeName || s.watchType || defType(s.size);
@@ -2012,13 +2013,19 @@ function hideImport() {
     cancelImportMemberSearch();
 }
 var autocompleteMatches = [],
-    autocompleteIndex = -1;
+    autocompleteIndex = -1,
+    ambiguityChoices = null,
+    variableRequestId = 0,
+    pendingVariableRequest = null;
 function hideAutocomplete() {
     $("acDrop").classList.remove("open");
     $("addName").setAttribute("aria-expanded", "false");
     $("addName").removeAttribute("aria-activedescendant");
     autocompleteMatches = [];
     autocompleteIndex = -1;
+    ambiguityChoices = null;
+    pendingVariableRequest = null;
+    $("acChoiceHint").hidden = true;
 }
 function selectAutocomplete(index) {
     autocompleteIndex = index;
@@ -2034,11 +2041,15 @@ function selectAutocomplete(index) {
     }
 }
 function acceptAutocomplete(symbol) {
+    if (ambiguityChoices || symbol.addressAmbiguous) {
+        resolveTypedVariable(symbol.name);
+        return;
+    }
     addSymbol(symbol);
     $("addName").value = "";
     hideAutocomplete();
 }
-function renderAutocomplete() {
+function renderAutocomplete(candidates) {
     var drop = $("acDrop");
     if (!drop) return;
     var q = ($("addName").value || "").trim().toLowerCase();
@@ -2049,16 +2060,20 @@ function renderAutocomplete() {
         drop.classList.remove("open");
         return;
     }
-    var matches = allSymbols
-        .filter(function (s) {
-            return s.name.toLowerCase().indexOf(q) >= 0 || displayNameFor(s).toLowerCase().indexOf(q) >= 0;
-        })
-        .slice(0, 12);
+    var matches = Array.isArray(candidates)
+        ? candidates
+        : allSymbols
+              .filter(function (s) {
+                  return s.name.toLowerCase().indexOf(q) >= 0 || displayNameFor(s).toLowerCase().indexOf(q) >= 0;
+              })
+              .slice(0, 12);
     if (!matches.length) {
         drop.classList.remove("open");
         return;
     }
     autocompleteMatches = matches;
+    ambiguityChoices = Array.isArray(candidates) ? matches : null;
+    $("acChoiceHint").hidden = !ambiguityChoices;
     matches.forEach(function (s, index) {
         var it = document.createElement("div");
         it.className = "ac-item";
@@ -2067,11 +2082,10 @@ function renderAutocomplete() {
         it.setAttribute("aria-selected", "false");
         var nm = document.createElement("span");
         nm.className = "ac-name";
-        nm.textContent = (s.isComposite ? "\u25c7 " : "") + displayNameFor(s);
-        nm.title = displayNameFor(s);
+        EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
         var ty = document.createElement("span");
         ty.className = "ac-type";
-        ty.textContent = s.typeName || s.watchType || defType(s.size);
+        ty.textContent = s.typeName || s.watchType || (ambiguityChoices ? s.address : defType(s.size));
         it.append(nm, ty);
         it.onmousedown = function (e) {
             e.preventDefault();
@@ -2081,6 +2095,20 @@ function renderAutocomplete() {
     });
     drop.classList.add("open");
     $("addName").setAttribute("aria-expanded", "true");
+}
+function resolveTypedVariable(name) {
+    hideAutocomplete();
+    pendingVariableRequest = { id: ++variableRequestId, query: $("addName").value.trim(), name: name };
+    post({ type: "resolveVariable", name: name, version: impVersion, requestId: variableRequestId });
+}
+function currentVariableReply(message) {
+    return (
+        pendingVariableRequest &&
+        pendingVariableRequest.id === message.requestId &&
+        pendingVariableRequest.name === message.requestedName &&
+        pendingVariableRequest.query === $("addName").value.trim() &&
+        message.version === impVersion
+    );
 }
 function importSelected() {
     var leafCbs = [],
@@ -3099,7 +3127,7 @@ function loop(now) {
 }
 function renderElfDiagnostics() {
     for (const id of ["elfDiagnostics", "importDiagnostics"])
-        EmberProbeRuntime.renderElfDiagnostics($(id), impWarnings, impError, t("common.diagnostics"));
+        EmberProbeRuntime.renderElfDiagnostics($(id), impWarnings, impError, t("common.diagnostics"), t);
 }
 window.EmberProbeMessages.connect(window, {
     sidebarImportResult: function (m) {
@@ -3276,6 +3304,7 @@ window.EmberProbeMessages.connect(window, {
         impTypesReady = true;
         renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
+        if ($("acDrop").classList.contains("open")) renderAutocomplete(ambiguityChoices);
     },
     layoutExpansionResult: function (m) {
         layoutExpansionUi.receive(m);
@@ -3306,7 +3335,19 @@ window.EmberProbeMessages.connect(window, {
     },
     addResolved: function (m) {
         if (m.version && m.version !== impVersion) return;
+        if (m.requestId !== undefined) {
+            if (!currentVariableReply(m)) return;
+            $("addName").value = "";
+            hideAutocomplete();
+        }
         addSymbol(m.symbol, true);
+    },
+    variableChoices: function (m) {
+        if (!currentVariableReply(m)) return;
+        // A reply must not steal focus back after the user has moved to another control.
+        if (document.activeElement !== $("addName")) return;
+        $("addName").focus();
+        renderAutocomplete(m.candidates);
     },
     liveSample: function (m) {
         onSamples(m.samples || []);
@@ -3365,6 +3406,10 @@ window.EmberProbeMessages.connect(window, {
             : setStatusKey(running ? "sb.sampling" : "sb.stopped", null, m.error ? "error" : "");
     },
     liveError: function (m) {
+        if (m.requestId !== undefined) {
+            if (!currentVariableReply(m)) return;
+            pendingVariableRequest = null;
+        }
         setStatusMsg({ key: m.key, params: m.params, message: m.message || t("lw.error") }, "error");
     },
     setLang: function (m) {
@@ -3384,13 +3429,14 @@ function addByName() {
     var sym = allSymbols.find(function (s) {
         return s.name === n;
     });
-    if (sym) addSymbol(sym);
-    else post({ type: "resolveVariable", name: n, version: impVersion });
+    if (!sym || sym.addressAmbiguous) {
+        resolveTypedVariable(n);
+        return;
+    }
+    addSymbol(sym);
     $("addName").value = "";
     hideAutocomplete();
 }
-// Pointer and touch users submit a typed (for example CU-qualified) name without the keyboard.
-$("addBtn").onclick = addByName;
 $("addName").oninput = function () {
     if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
     renderAutocomplete();
@@ -3648,12 +3694,14 @@ window.EmberProbeMessages.connect(window, {
     },
     liveUnlimited: function (m) {
         if (frequencyDrag && unlimitedState.available !== (m.available === true)) finishFrequencyDrag(false);
+        if (unlimitedState.enabled !== (m.available === true && m.enabled === true)) sampleTimes = [];
         unlimitedState.available = m.available === true;
         unlimitedState.enabled = unlimitedState.available && m.enabled === true;
         if (!unlimitedState.enabled) unlimitedState.active = false;
         renderUnlimited(true);
     },
     liveFrequency: function (m) {
+        if (requestedFrequencyHz !== m.frequencyHz) sampleTimes = [];
         requestedFrequencyHz = m.frequencyHz;
         MAXPTS = retainedSampleLimit(requestedFrequencyHz, m.intervalMs);
         renderUnlimited(true);

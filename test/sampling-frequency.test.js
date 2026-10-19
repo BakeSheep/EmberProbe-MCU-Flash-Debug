@@ -69,6 +69,12 @@ assert.strictEqual(
     provider.samplingFrequencyConfigurationChanged();
     assert.strictEqual(provider._liveFrequencyHz, 45);
     assert.strictEqual(provider._liveIntervalMs, 22);
+    let finishSave;
+    config.update = () => new Promise((resolve) => (finishSave = resolve));
+    const saving = provider._saveLiveFrequency(200);
+    assert.strictEqual(intervals.at(-1), 5, "apply the runtime rate before workspace persistence finishes");
+    finishSave();
+    await saving;
     console.log("Sampling frequency conversion and workspace persistence tests passed");
 })().catch((error) => {
     console.error(error);

@@ -1,9 +1,11 @@
 "use strict";
 (function (root, factory) {
-    const runtime = factory();
+    const runtime = factory(
+        typeof module === "object" && module.exports ? require("./elfDiagnostics") : root.EmberProbeElfDiagnostics
+    );
     if (typeof module === "object" && module.exports) module.exports = runtime;
     else root.EmberProbeRuntime = runtime;
-})(typeof globalThis === "object" ? globalThis : this, function () {
+})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics) {
     const MAX_COMPOSITE_DEPTH = 32;
     const MAX_TYPE_ALIASES = 256;
     const MAX_LAYOUT_PATH_DEPTH = 256;
@@ -83,6 +85,30 @@
         if (baseName !== name && base?.displayName && base.displayName !== baseName)
             return base.displayName + name.slice(baseName.length);
         return item.displayName || name;
+    }
+    // Lists keep compilation-unit scope secondary, while the identity remains the raw symbol name.
+    function renderSymbolName(element, name, symbol) {
+        element.classList.remove("source-qualified-name");
+        const scope = variableScope(name);
+        if (!scope) {
+            renderVariableName(element, name, symbol.name);
+            return;
+        }
+        element.textContent = "";
+        element.classList.remove("qualified-name");
+        element.classList.add("source-qualified-name");
+        const label = element.ownerDocument.createElement("span");
+        label.className = "symbol-name-label";
+        label.textContent = scope.name;
+        const source = element.ownerDocument.createElement("span");
+        source.className = "symbol-source";
+        source.textContent = scope.file;
+        element.append(label, source);
+        element.dataset.rawName = symbol.name;
+        element.setAttribute("aria-label", name);
+        element.title = name + (symbol.sourceFile ? "\n" + symbol.sourceFile : "");
+        if (Number.isFinite(symbol.address)) element.title += "\n0x" + symbol.address.toString(16).toUpperCase();
+        else if (/^0x[\da-f]+$/i.test(symbol.address || "")) element.title += "\n" + symbol.address;
     }
     function variableNameParts(name) {
         let depth = 0;
@@ -1203,10 +1229,15 @@
                 : null;
         return JSON.stringify(shape(tree));
     }
-    function renderElfDiagnostics(element, warnings, error, label) {
+    function renderElfDiagnostics(element, warnings, error, label, t) {
         if (!element) return;
+        error = elfDiagnostics.formatDiagnostic(error, t);
         const entries = Array.isArray(warnings)
-            ? [...new Set(warnings.filter((item) => typeof item === "string" && item.trim()))].slice(0, 64)
+            ? [
+                  ...new Set(
+                      warnings.map((item) => elfDiagnostics.formatDiagnostic(item, t)).filter((item) => item.trim())
+                  )
+              ].slice(0, 64)
             : [];
         const wasOpen = element.querySelector("details")?.open === true && !element.hidden;
         element.replaceChildren();
@@ -1302,6 +1333,7 @@
         shortVariableName,
         uniqueShortVariableNames,
         renderVariableName,
+        renderSymbolName,
         translate,
         runtimeWatchEntry,
         memberPathSegments,

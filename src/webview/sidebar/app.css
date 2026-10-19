@@ -576,3 +576,29 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 .write-risk-tip[hidden] {
     display: none;
 }
+
+/* Readable variables retain a secondary, always-visible compilation-unit identity. */
+.source-qualified-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    vertical-align: middle;
+}
+.symbol-name-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.symbol-source {
+    flex: 0 2 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vscode-descriptionForeground);
+    font-size: 10px;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

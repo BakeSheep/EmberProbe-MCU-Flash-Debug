@@ -70,6 +70,15 @@ function createProvider(settings) {
     assert.strictEqual(plans.length, before);
     assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", available: true, enabled: false });
     provider._debugBridge.hasSession = false;
+    let finishSave;
+    const updateState = provider._context.workspaceState.update;
+    provider._context.workspaceState.update = () => new Promise((resolve) => (finishSave = resolve));
+    const savingUnlimited = provider._setUnlimitedSampling(true);
+    assert.strictEqual(plans.at(-1).unlimited, true, "apply the plan before workspace persistence finishes");
+    finishSave();
+    await savingUnlimited;
+    provider._context.workspaceState.update = updateState;
+    await provider._setUnlimitedSampling(false);
 
     // Status exposes the worker statistics, with safe defaults for sessions without them.
     provider._samplingCoordinator = { status: () => ({}), backpressured: false };
@@ -119,7 +128,7 @@ function createProvider(settings) {
         assert.deepStrictEqual(graph.messages.at(-1), { type: "setUnlimitedSampling", enabled: true, panelId: 3 });
 
         graph.send({ type: "liveUnlimited", available: true, enabled: true });
-        assert(field.classList.contains("is-unlimited"));
+        assert(!field.classList.contains("is-unlimited"), "unlimited changes the track, not the input decoration");
         assert.strictEqual(doc.getElementById("frequency").value, "-");
         assert.strictEqual(doc.getElementById("frequency").disabled, false, "a numeric edit can exit unlimited");
 

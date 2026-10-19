@@ -130,6 +130,7 @@ for (const lang of ["en", "zh"]) {
         pointer("pointerup");
         assert.strictEqual(input.value, "-");
         assert(track.classList.contains("is-unlimited"));
+        assert(!doc.getElementById("frequencyField").classList.contains("is-unlimited"));
         assert.strictEqual(track.style.getPropertyValue("--frequency-position"), "1");
         assert.deepStrictEqual(view.messages.at(-1), { type: "setUnlimitedSampling", enabled: true, panelId: 2 });
         view.send({ type: "liveUnlimited", available: true, enabled: true });
@@ -170,6 +171,28 @@ for (const lang of ["en", "zh"]) {
         view.send({ type: "setLang", lang: lang === "zh" ? "en" : "zh" });
         assert.strictEqual(input.value, "-");
         assert.strictEqual(slider.getAttribute("aria-valuetext"), lang === "zh" ? "Max rate" : "不限速");
+        // The local-history fallback must also discard old-rate timestamps on local and host changes.
+        view.send({ type: "liveUnlimited", available: true, enabled: false });
+        view.send({ type: "liveFrequency", frequencyHz: 200, intervalMs: 5 });
+        const samples = (first, interval) =>
+            view.send({
+                type: "liveSample",
+                samples: [first, first + interval].map((t) => ({ name: "rate-test", t, value: 1 }))
+            });
+        samples(1000, 5);
+        assert.strictEqual(doc.getElementById("rate").textContent, "200.0 Hz");
+        commit("20");
+        samples(1050, 50);
+        assert.strictEqual(doc.getElementById("rate").textContent, "20.0 Hz");
+        view.send({ type: "liveFrequency", frequencyHz: 100, intervalMs: 10 });
+        samples(1110, 10);
+        assert.strictEqual(doc.getElementById("rate").textContent, "100.0 Hz");
+        choose(4);
+        samples(1121, 1);
+        assert.strictEqual(doc.getElementById("rate").textContent, "1000.0 Hz");
+        choose(3);
+        samples(1127, 5);
+        assert.strictEqual(doc.getElementById("rate").textContent, "200.0 Hz");
         view.assertHealthy();
     } finally {
         view.close();

@@ -72,6 +72,73 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
             "lowering frequency uses the new long interval"
         );
     }
+    // Switching rates must measure only new graph ticks, even when the sidebar keeps the base clock at 20 Hz.
+    {
+        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const plan = { graphItems: [item("graph")], sidebarItems: [item("sidebar")], graphIntervalMs: 5 };
+        changing.setSamplingPlan({ ...plan, unlimited: true });
+        for (let i = 0; i < 8; i++) changing._recordCycle(1, true, i);
+        changing.ratePlan.deliver([], 0, changing.ratePlan.due(0, 0));
+        changing.ratePlan.deliver([], 1, changing.ratePlan.due(1, 0));
+        assert.strictEqual(changing.stats().actualHz, 1000);
+        const costs = changing._recentDurations.slice();
+        const cache = changing.ratePlan.latest;
+        changing.setSamplingPlan({ ...plan, unlimited: false });
+        assert.deepStrictEqual(changing._recentDurations, costs);
+        assert.strictEqual(changing.ratePlan.latest, cache);
+        assert.strictEqual(changing.effectiveIntervalMs, 5, "leaving unlimited skips initial 100 ms warm-up");
+        assert.strictEqual(changing._warmingUp, false);
+        let time = 1000;
+        for (const interval of [5, 10, 20, 50, 1000, 10000, 50, 5]) {
+            changing.setIntervalMs(interval);
+            assert.strictEqual(changing.stats().actualHz, 0, "old-rate ticks do not bias a new measurement");
+            assert.strictEqual(changing.effectiveIntervalMs, Math.min(interval, 50));
+            for (let n = 0; n < 2; n++) {
+                changing.ratePlan.deliver([], time, changing.ratePlan.due(time, changing.effectiveIntervalMs));
+                time += interval;
+            }
+            assert.strictEqual(changing.stats().actualHz, 1000 / interval, "two new ticks establish the new rate");
+            changing.setIntervalMs(interval);
+            assert.strictEqual(changing.stats().actualHz, 1000 / interval, "same-rate updates retain statistics");
+        }
+        changing._recentDurations = [20, 20, 20, 20];
+        changing.setSamplingPlan({ ...plan, unlimited: true });
+        changing.setSamplingPlan({ ...plan, unlimited: false });
+        assert.strictEqual(changing.effectiveIntervalMs, 29, "switching retains the measured safety margin");
+        changing.setSamplingPlan({ ...plan, graphItems: [item("different")] });
+        assert.strictEqual(changing.effectiveIntervalMs, 100, "changed variables still require calibration");
+        assert.deepStrictEqual(changing._recentDurations, []);
+    }
+    // A rate change during a read must discard that cycle and rearm, even with an unchanged sidebar clock.
+    {
+        const changing = new ManagedOpenOcdSession(null, {}, {});
+        changing.setSamplingPlan({
+            graphItems: [item("graph")],
+            sidebarItems: [item("sidebar")],
+            graphIntervalMs: 10000
+        });
+        changing._recentDurations = [1, 1, 1, 1];
+        changing.socket = { destroyed: false };
+        const scheduled = [],
+            delivered = [];
+        changing._scheduleNext = (delay) => scheduled.push(delay);
+        changing.handlers.onSample = (samples) => delivered.push(samples);
+        let finish;
+        changing._readItems = () => new Promise((resolve) => (finish = () => resolve({ samples: [], ok: 2 })));
+        const reading = changing._sampleTick(true);
+        changing.setIntervalMs(1000);
+        assert.strictEqual(changing.targetIntervalMs, 50);
+        assert.deepStrictEqual(scheduled, [0], "rearm immediately while the old cycle owns the socket");
+        finish();
+        await reading;
+        assert.deepStrictEqual(delivered, []);
+        assert.deepStrictEqual(changing._recentDurations, [1, 1, 1, 1]);
+        assert.deepStrictEqual(changing.ratePlan.graphTicks, []);
+        assert.deepStrictEqual(scheduled, [0], "stale cycle must not replace the new timer");
+        changing._readItems = async () => ({ samples: [], ok: 2 });
+        await changing._sampleTick(true);
+        assert.strictEqual(delivered.length, 1, "the new schedule continues delivering samples");
+    }
     const session = new ManagedOpenOcdSession(null, { intervalMs: 5 }, {});
     session.setSamplingPlan({ sidebarItems: [item("sidebar")], graphIntervalMs: 5 });
     session.setIntervalMs(10000);
