@@ -9,7 +9,7 @@ for (const lang of ["zh", "en"]) {
         try {
             const { window: w, document: doc } = page;
             assert.strictEqual(doc.getElementById("exportSource"), null);
-            assert(doc.querySelector(".export-history-note").textContent.includes(lang === "zh" ? "清空" : "cleared"));
+            assert.strictEqual(doc.querySelector(".export-history-note"), null);
             // Freezing or losing old in-memory points must not select a partial export source.
             w.frozen = true;
             w.remoteHistory.snapshotId = "snapshot";

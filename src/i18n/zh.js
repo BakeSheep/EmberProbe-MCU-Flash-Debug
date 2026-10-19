@@ -223,7 +223,6 @@ module.exports = Object.freeze({
     "lw.rangeEmpty": "当前时间范围无数据",
     "lw.fitTime": "查看保留数据",
     "lw.frozenNew": "冻结快照中没有该变量，恢复实时后显示",
-    "lw.exportHistoryNote": "默认导出从开始采样或上次清空历史以来的全部采样点，冻结不影响导出范围。",
     "cubemx.firmwareUnknown": "无法确认固件包，请检查路径和 .ioc",
     "cubemx.firmwareInstalled": "固件包已安装",
     "cubemx.firmwareMissing": "未安装所需固件包",
