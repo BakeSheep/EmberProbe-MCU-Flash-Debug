@@ -232,10 +232,20 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         assert.equal(w.analysis.snapshot.a.length, 2);
         assert.equal(w.chartData().find((s) => s.item.name === "a").arr[0].v, 1);
         w.showExport();
-        assert.equal(doc.getElementById("exportSource").value, "snapshot");
+        assert.equal(doc.getElementById("exportSource"), null);
+        assert.equal(graph.messages.at(-1).type, "samplingArchiveInfo", "frozen charts export full history");
+        graph.send({
+            type: "samplingArchiveInfo",
+            openExport: true,
+            historyRevision: 0,
+            variables: ["a"],
+            firstTimestampMs: 1000,
+            lastTimestampMs: 3104
+        });
         w.applyExport();
-        assert.equal(graph.messages.at(-1).source, "snapshot");
-        assert.ok(graph.messages.at(-1).csv.includes("1"));
+        assert.equal(graph.messages.at(-1).type, "exportCsv");
+        assert.equal(graph.messages.at(-1).source, undefined);
+        assert.equal(graph.messages.at(-1).csv, undefined);
         w.removeVar("a");
         assert.equal(w.colorFor("b"), oldColor);
         assert.ok(!w.analysis.snapshot.a);

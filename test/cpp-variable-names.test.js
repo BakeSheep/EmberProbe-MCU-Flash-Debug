@@ -212,20 +212,27 @@ try {
     assert.strictEqual(nested.document.querySelector(".curve-hit").dataset.rawName, voltageName);
     nested.send({ type: "liveSample", samples: [{ name: voltageName, value: 11.4875, t: 1000 }] });
     assert.strictEqual(nested.window.latest[voltageName], 11.4875, "display changes preserve the sampling identity");
-    nested.window.exportSource = "retained";
-    nested.window.showLocalExport();
+    nested.window.showArchiveExport({ variables: [voltageName], firstTimestampMs: 1000, lastTimestampMs: 1000 });
     assert.strictEqual(nested.document.querySelector("#exportSeries span").textContent, "pwr.data_.bus_voltage_v");
     nested.window.applyExport();
     let csv = nested.messages.findLast((message) => message.type === "exportCsv");
     assert.deepStrictEqual(Array.from(csv.names), [voltageName]);
-    assert.strictEqual(csv.csv, "\uFEFFtime,pwr.data_.bus_voltage_v\r\n1970-01-01T00:00:01.000Z,11.4875\r\n");
+    assert.strictEqual(csv.csv, undefined, "original samples are exported by the archive service");
     nested.window.freezeChart();
     nested.window.showExport();
+    assert.strictEqual(nested.messages.at(-1).type, "samplingArchiveInfo");
+    nested.send({
+        type: "samplingArchiveInfo",
+        openExport: true,
+        historyRevision: 0,
+        variables: [voltageName],
+        firstTimestampMs: 1000,
+        lastTimestampMs: 1000
+    });
     nested.window.applyExport();
     csv = nested.messages.findLast((message) => message.type === "exportCsv");
-    assert.strictEqual(csv.source, "snapshot");
-    assert(csv.csv.startsWith("\uFEFFtime,pwr.data_.bus_voltage_v\r\n"));
-    nested.window.exportSource = "archive";
+    assert.strictEqual(csv.source, undefined);
+    assert.strictEqual(csv.csv, undefined);
     nested.window.showArchiveExport({
         variables: [voltageName, "removed"],
         displayNames: { [voltageName]: "pwr.data_.bus_voltage_v", removed: "app::removed" },

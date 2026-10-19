@@ -3136,6 +3136,7 @@ class MainViewProvider {
                     }
                     case "exportCsv": {
                         const archiveScope = this._debugSamplingScope(watchKey);
+                        const historyRevision = entry.historyRevision || 0;
                         const displayNames = this._displayNamesForSeries(
                             watchKey,
                             Array.isArray(message.names) && message.names.length
@@ -3157,6 +3158,12 @@ class MainViewProvider {
                             break;
                         }
                         try {
+                            if (
+                                archiveScope !== this._debugSamplingScope(watchKey) ||
+                                historyRevision !== (entry.historyRevision || 0) ||
+                                (message.historyRevision !== undefined && message.historyRevision !== historyRevision)
+                            )
+                                throw new Error("History changed before export");
                             let result;
                             if (
                                 this._chartHistory &&

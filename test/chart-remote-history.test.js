@@ -71,14 +71,18 @@ try {
     w.showExport();
     const exportInfo = page.messages.at(-1);
     page.send({
-        type: "chartExportInfoResult",
-        ...store.status("p", w.remoteHistory.snapshotId),
-        requestId: exportInfo.requestId,
+        type: "samplingArchiveInfo",
+        openExport: true,
+        variables: ["a", "b"],
+        firstTimestampMs: 1000,
+        lastTimestampMs: 100000,
         historyRevision: 0
     });
     w.applyExport();
     const exported = page.messages.at(-1);
-    assert.strictEqual(exported.backendHistory, true);
+    assert.strictEqual(exportInfo.type, "samplingArchiveInfo");
+    assert.strictEqual(exported.backendHistory, undefined);
+    assert.strictEqual(exported.source, undefined);
     assert.deepStrictEqual(exported.names, ["a", "b"]);
     assert.ok(!exported.csv, "export requests original backend history");
     w.resumeChart();

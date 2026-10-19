@@ -241,10 +241,8 @@ module.exports = Object.freeze({
     "lw.rangeEmpty": "No samples in this time range",
     "lw.fitTime": "View retained samples",
     "lw.frozenNew": "Variable absent from snapshot; resume live to display",
-    "lw.exportSource": "Data source",
-    "lw.source.archive": "Full sampling archive",
-    "lw.source.retained": "Live retained samples",
-    "lw.source.snapshot": "Frozen snapshot",
+    "lw.exportHistoryNote":
+        "By default, export all samples since sampling started or history was last cleared. Freezing does not change the export range.",
     "cubemx.firmwareUnknown": "Unable to verify firmware; check paths and .ioc",
     "cubemx.firmwareInstalled": "Firmware installed",
     "cubemx.firmwareMissing": "Required firmware missing",

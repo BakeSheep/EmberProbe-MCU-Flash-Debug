@@ -57,9 +57,8 @@ for (const hz of [0.1, 30, 181.9, 200]) {
         graph.window.freezeChart();
         assert.strictEqual(graph.window.analysis.snapshot.tick.length, points(graph).length);
         assert.ok(graph.window.analysis.snapshot.tick.every((p) => Number.isFinite(p.t)));
-        graph.window.exportSource = "snapshot";
-        graph.window.showLocalExport();
-        assert.strictEqual(graph.window.exportCandidates[0].buffer.length, points(graph).length);
+        graph.window.showExport();
+        assert.strictEqual(graph.messages.at(-1).type, "samplingArchiveInfo", "export always requests full archive");
         const smallExport = points(graph).slice(-10);
         assert.strictEqual(buildCsv(["tick"], [smallExport]).split("\r\n").length, 12);
         graph.assertHealthy();

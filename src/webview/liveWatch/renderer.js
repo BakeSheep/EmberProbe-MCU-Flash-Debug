@@ -23,7 +23,6 @@ var remoteHistory = {
     desiredViewKey: null,
     cachedKey: null,
     operation: null,
-    exportRequest: null,
     lastRequest: -Infinity
 };
 function requestChartViewport(range, width) {
@@ -1741,7 +1740,7 @@ function clearHistory(clearArchive = true) {
     if (CFG.backendHistory) {
         remoteHistory.status = remoteHistory.liveStatus = null;
         remoteHistory.series = [];
-        remoteHistory.inFlight = remoteHistory.pending = remoteHistory.operation = remoteHistory.exportRequest = null;
+        remoteHistory.inFlight = remoteHistory.pending = remoteHistory.operation = null;
         remoteHistory.cachedKey = remoteHistory.desiredKey = remoteHistory.snapshotId = null;
         remoteHistory.desiredViewKey = null;
     }
@@ -2239,90 +2238,10 @@ function hideExport() {
     $("exportOverlay").classList.add("hidden");
     $("exportWarn").textContent = "";
 }
-var exportSource = "archive",
-    archiveExportInfo = null;
-var sourceLabel = document.createElement("label");
-sourceLabel.className = "export-source";
-var sourceText = document.createElement("span");
-sourceText.dataset.i18n = "lw.exportSource";
-sourceText.textContent = t("lw.exportSource");
-var sourceSelect = document.createElement("select");
-sourceSelect.id = "exportSource";
-["archive", "retained", "snapshot"].forEach(function (value) {
-    var option = document.createElement("option");
-    option.value = value;
-    option.dataset.i18n = "lw.source." + value;
-    option.textContent = t(option.dataset.i18n);
-    sourceSelect.append(option);
-});
-sourceLabel.append(sourceText, sourceSelect);
-$("exportSeries").before(sourceLabel);
-sourceSelect.onchange = function () {
-    exportSource = sourceSelect.value;
-    if (exportSource === "archive") {
-        if (archiveExportInfo) showArchiveExport(archiveExportInfo);
-        else post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
-    } else showLocalExport();
-};
-function showLocalExport() {
-    if (CFG.backendHistory) {
-        var requestId = ++remoteHistory.nextId;
-        remoteHistory.exportRequest = {
-            requestId: requestId,
-            source: exportSource,
-            snapshotId: remoteHistory.snapshotId
-        };
-        post({
-            type: "chartExportInfo",
-            requestId: requestId,
-            historyRevision: historyRevision,
-            snapshotId: exportSource === "snapshot" ? remoteHistory.snapshotId : null
-        });
-        return;
-    }
-    var buffers = exportSource === "snapshot" ? analysis.snapshot || {} : data;
-    buffers = Object.fromEntries(
-        Object.entries(buffers).map(function (entry) {
-            return [entry[0], retainedPoints(entry[1])];
-        })
-    );
-    var names = Object.keys(buffers).filter(function (name) {
-        return buffers[name].some(function (p) {
-            return Number.isFinite(p.v);
-        });
-    });
-    var points = names.map(function (name) {
-        return { name: name, displayName: curveDisplayName(name), buffer: buffers[name] };
-    });
-    var bounds = exportBounds(points);
-    showArchiveExport({
-        variables: names,
-        displayNames: Object.fromEntries(
-            points.map(function (item) {
-                return [item.name, item.displayName];
-            })
-        ),
-        firstTimestampMs: bounds.from,
-        lastTimestampMs: bounds.to
-    });
-    exportCandidates = points.map(function (item) {
-        return {
-            name: item.name,
-            displayName: item.displayName,
-            buffer: item.buffer.map(function (p) {
-                return { ...p };
-            })
-        };
-    });
-}
+var archiveExportInfo = null;
 function showExport() {
-    exportSource = frozen ? "snapshot" : "archive";
-    sourceSelect.value = exportSource;
-    sourceSelect.querySelector('option[value="snapshot"]').disabled = CFG.backendHistory
-        ? !remoteHistory.snapshotId
-        : !analysis.snapshot;
-    if (exportSource === "snapshot") showLocalExport();
-    else post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
+    if (historyClearPending) return;
+    post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
 }
 function showArchiveExport(info) {
     var names = Array.isArray(info && info.variables) ? info.variables : [],
@@ -2383,44 +2302,9 @@ function applyExport() {
         $("exportWarn").textContent = t("lw.exportInvalidRange");
         return;
     }
-    if (exportSource !== "archive") {
-        if (CFG.backendHistory) {
-            post({
-                type: "exportCsv",
-                source: exportSource,
-                backendHistory: true,
-                historyRevision: historyRevision,
-                snapshotId: exportSource === "snapshot" ? remoteHistory.snapshotId : null,
-                names: selected.map(function (c) {
-                    return c.name;
-                }),
-                fromMs: opts.from,
-                toMs: opts.to
-            });
-            hideExport();
-            return;
-        }
-        post({
-            type: "exportCsv",
-            source: exportSource,
-            names: selected.map(function (c) {
-                return c.name;
-            }),
-            csv: buildCsv(
-                selected.map(function (c) {
-                    return c.displayName || curveDisplayName(c.name);
-                }),
-                selected.map(function (c) {
-                    return c.buffer;
-                }),
-                opts
-            )
-        });
-        hideExport();
-        return;
-    }
     post({
         type: "exportCsv",
+        historyRevision: historyRevision,
         names: selected.map(function (c) {
             return c.name;
         }),
@@ -3594,7 +3478,7 @@ window.EmberProbeMessages.connect(window, {
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
         archiveExportInfo = m;
-        if (m.openExport && exportSource === "archive") showArchiveExport(m);
+        if (m.openExport) showArchiveExport(m);
     },
     chartValues: function (m) {
         if (!CFG.backendHistory || historyClearPending) return;
@@ -3661,28 +3545,6 @@ window.EmberProbeMessages.connect(window, {
         dirty = true;
         chartState.fastDirty = true;
         renderVars();
-    },
-    chartExportInfoResult: function (m) {
-        var request = remoteHistory.exportRequest;
-        if (
-            !request ||
-            request.requestId !== m.requestId ||
-            m.historyRevision !== historyRevision ||
-            request.source !== exportSource ||
-            (request.source === "snapshot" && request.snapshotId !== remoteHistory.snapshotId)
-        )
-            return;
-        remoteHistory.exportRequest = null;
-        if (m.error) {
-            setStatusMsg({ message: m.error }, "error");
-            return;
-        }
-        showArchiveExport({
-            variables: m.variables,
-            firstTimestampMs: m.bounds?.min,
-            lastTimestampMs: m.bounds?.max,
-            limited: m.limited
-        });
     },
     samplingHistoryCleared: function (m) {
         if (m.historyRevision === historyRevision) historyClearPending = false;

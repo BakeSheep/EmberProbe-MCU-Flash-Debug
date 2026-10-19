@@ -1371,10 +1371,9 @@ input[type="number"]::-webkit-outer-spin-button {
     font-size: 14px;
     line-height: 12px;
 }
-.export-source {
-    display: flex;
-    gap: 10px;
-    align-items: center;
+.export-history-note {
+    color: var(--vscode-descriptionForeground);
+    line-height: 1.5;
     margin: 10px 0;
 }
 .hidden,
@@ -2204,7 +2203,12 @@ input[type="number"]::-webkit-outer-spin-button {
     width: auto;
     min-width: 0;
     max-width: calc(60% - 10px);
-    font: 600 12px "Cascadia Mono", Consolas, "SFMono-Regular", "Liberation Mono", monospace;
+    font:
+        600 12px "Cascadia Mono",
+        Consolas,
+        "SFMono-Regular",
+        "Liberation Mono",
+        monospace;
     text-align: right;
 }
 .member-row > .snapshot-note {
@@ -2456,7 +2460,9 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
     border-radius: 3px;
     background: var(--vscode-input-background);
-    transition: border-color 250ms, background-color 250ms;
+    transition:
+        border-color 250ms,
+        background-color 250ms;
 }
 .frequency-field:focus-within {
     border-color: var(--vscode-focusBorder);
@@ -2659,4 +2665,6 @@ input[type="number"]::-webkit-outer-spin-button {
     font-size: 11px;
     border-bottom: 1px solid var(--vscode-panel-border);
 }
-.ac-choice-hint[hidden] { display: none; }
+.ac-choice-hint[hidden] {
+    display: none;
+}

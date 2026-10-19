@@ -95,11 +95,18 @@ try {
     assert.equal(w.exportCandidates.length, 0);
     assert.equal(w.analysis.snapshot, null);
     graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, t: end + 5 }] });
-    w.exportSource = "retained";
-    w.showLocalExport();
+    w.showExport();
+    graph.send({
+        type: "samplingArchiveInfo",
+        historyRevision: revision,
+        openExport: true,
+        variables: ["tick"],
+        firstTimestampMs: end + 5,
+        lastTimestampMs: end + 5
+    });
     w.applyExport();
-    assert.ok(graph.messages.at(-1).csv.includes(",7\r\n"));
-    assert.ok(!graph.messages.at(-1).csv.includes(",99\r\n"));
+    assert.equal(graph.messages.at(-1).historyRevision, revision);
+    assert.equal(w.exportTimelineStart, end + 5, "export bounds start in the new history generation");
     graph.send({ type: "debugSessionChanged" });
     assert.equal(
         w.historyClearPending,

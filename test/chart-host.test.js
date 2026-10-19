@@ -317,6 +317,26 @@ async function testShutdownFence(Provider) {
     assert.equal(panels[0].messages.at(-1).rowCount, 1);
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
+    const exported = [];
+    p._samplingArchive.exportCsv = async (request) => {
+        exported.push(request);
+        return { seriesCount: 1, rows: 2 };
+    };
+    await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
+    assert.equal(exported.length, 1);
+    assert.equal(exported[0].scope, "mcu.watchList");
+    assert.deepStrictEqual(exported[0].names, ["shared"]);
+    const saveDialog = vscode.window.showSaveDialog;
+    let finishSave;
+    vscode.window.showSaveDialog = () => new Promise((resolve) => (finishSave = resolve));
+    const exporting = panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
+    await panels[0].receive({ type: "clearSamplingHistory", historyRevision: 1 });
+    finishSave({ fsPath: "history.csv" });
+    await exporting;
+    assert.equal(exported.length, 1, "a clear during the save dialog must cancel the old export");
+    assert.equal(panels[0].messages.at(-1).ok, false);
+    vscode.window.showSaveDialog = saveDialog;
+    clearedScopes.length = 0;
     // Each chart keeps its curve visibility in the workspace and hands it to the reopened chart.
     assert.deepStrictEqual(
         panels[0].messages.find((message) => message.type === "curveVisibility"),

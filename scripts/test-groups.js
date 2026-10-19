@@ -141,6 +141,7 @@ const TEST_GROUPS = Object.freeze({
         "cpp-variable-names.test.js",
         "cpp-webview.test.js",
         "csv-export.test.js",
+        "sampling-export-flow.test.js",
         "cubemx-firmware.test.js",
         "cubemx-generation-safety.test.js",
         "cubemx-integration.test.js",
