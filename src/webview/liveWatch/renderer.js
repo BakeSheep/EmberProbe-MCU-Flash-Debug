@@ -126,25 +126,153 @@ function msgText(m) {
 var statusMsg = { key: "lw.ready" };
 var requestedFrequencyHz = CFG.frequencyHz;
 var unlimitedState = { available: false, enabled: false, active: false, limitedBy: null, suppressed: null };
+var frequencyPresets = [20, 50, 100, 200];
+var frequencyDrag = null;
+var frequencyMotion = { selected: false, started: 0, lastFrame: -Infinity, image: null, still: false };
 function rateText(hz) {
     var value = (Number.isFinite(hz) ? hz : 0).toFixed(1);
     return unlimitedState.active ? t("lw.unlimitedRate", { hz: value }) : value + " Hz";
 }
-function renderUnlimited() {
-    var button = $("unlimited");
-    if (!button) return;
-    button.hidden = !unlimitedState.available;
-    button.classList.toggle("ghost", !unlimitedState.enabled);
-    button.setAttribute("aria-pressed", unlimitedState.enabled ? "true" : "false");
-    // The target frequency still applies while debugging, where unlimited sampling is suppressed.
-    $("frequency").disabled = unlimitedState.enabled && !unlimitedState.suppressed;
-    if (unlimitedState.enabled && unlimitedState.suppressed) button.title = t("lw.unlimitedSuppressed");
+function renderUnlimited(syncInput) {
+    // Native pointer tracking owns the range until release; telemetry must not touch its value or bounds.
+    if (frequencyDrag) return;
+    var input = $("frequency"),
+        slider = $("frequencyPreset"),
+        field = $("frequencyField"),
+        unlimited = unlimitedState.available && unlimitedState.enabled;
+    if (syncInput === true || document.activeElement !== input)
+        input.value = unlimited ? "-" : String(requestedFrequencyHz);
+    var nearest = frequencyPresets.reduce(function (best, value, index) {
+        return Math.abs(value - requestedFrequencyHz) < Math.abs(frequencyPresets[best] - requestedFrequencyHz)
+            ? index
+            : best;
+    }, 0);
+    var index = unlimited ? 4 : nearest,
+        max = unlimitedState.available ? 4 : 3;
+    slider.max = String(max);
+    slider.value = String(index);
+    slider.setAttribute("aria-valuetext", unlimited ? t("lw.unlimited") : requestedFrequencyHz + " Hz");
+    var ticks = $("frequencyTicks");
+    if (ticks.children.length !== max + 1) {
+        ticks.replaceChildren();
+        for (var i = 0; i <= max; i++) {
+            var tick = document.createElement("i");
+            tick.style.setProperty("--stop", String(i / max));
+            ticks.appendChild(tick);
+        }
+    }
+    Array.from(ticks.children).forEach(function (tick, i) {
+        tick.title = i === 4 ? t("lw.unlimited") : frequencyPresets[i] + " Hz";
+    });
+    paintFrequencyPosition(index, false);
+    field.classList.toggle("is-unlimited", unlimited);
+    $("frequencyToggle").setAttribute("aria-label", t("lw.frequencyPresets"));
+    if (unlimited && unlimitedState.suppressed) field.title = t("lw.unlimitedSuppressed");
     else if (unlimitedState.active && unlimitedState.limitedBy)
-        button.title =
+        field.title =
             t("lw.unlimitedTitle") +
             " — " +
             t(unlimitedState.limitedBy === "host" ? "lw.unlimitedByHost" : "lw.unlimitedByProbe");
-    else button.title = t("lw.unlimitedTitle");
+    else field.title = unlimited ? t("lw.unlimitedTitle") : "";
+}
+function paintFrequencyPosition(position, preview) {
+    var max = unlimitedState.available ? 4 : 3;
+    position = Math.round(Math.min(max, Math.max(0, position)));
+    var index = Math.round(position),
+        unlimited = index === 4,
+        track = $("frequencySlider");
+    // The visible thumb and fill share the same coordinate and animation clock.
+    track.style.setProperty("--frequency-position", String(position / max));
+    Array.from($("frequencyTicks").children).forEach(function (tick, i) {
+        tick.classList.toggle("selected", i <= position);
+    });
+    track.classList.toggle("is-unlimited", unlimited);
+    if (frequencyMotion.selected !== unlimited) {
+        frequencyMotion.selected = unlimited;
+        frequencyMotion.started = performance.now();
+        frequencyMotion.lastFrame = -Infinity;
+        frequencyMotion.image = null;
+    }
+    if (preview) {
+        $("frequency").value = unlimited ? "-" : String(frequencyPresets[index]);
+        $("frequencyPreset").setAttribute(
+            "aria-valuetext",
+            unlimited ? t("lw.unlimited") : frequencyPresets[index] + " Hz"
+        );
+    }
+}
+function drawFrequencyMotion(now) {
+    if (!frequencyMotion.selected || $("frequencyPopup").hidden || document.hidden) return;
+    if (now - frequencyMotion.lastFrame < 1000 / 30) return;
+    var canvas = $("frequencyMotion");
+    var scale = Math.min(1.5, window.devicePixelRatio || 1);
+    var width = Math.min(384, Math.round(canvas.clientWidth * scale));
+    var height = Math.min(64, Math.round(canvas.clientHeight * scale));
+    if (!width || !height) return;
+    var still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    var resized = canvas.width !== width || canvas.height !== height;
+    if (frequencyMotion.image && still && frequencyMotion.still && !resized) return;
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    if (!frequencyMotion.image || resized) {
+        canvas.width = width;
+        canvas.height = height;
+        frequencyMotion.image = ctx.createImageData(width, height);
+    }
+    window.EmberProbeSamplingRateMotion.paint(
+        frequencyMotion.image.data,
+        width,
+        height,
+        still ? 2 : (now - frequencyMotion.started) / 1000
+    );
+    ctx.putImageData(frequencyMotion.image, 0, 0);
+    frequencyMotion.lastFrame = now;
+    frequencyMotion.still = still;
+}
+function finishFrequencyDrag(commit) {
+    if (!frequencyDrag) return;
+    var position = frequencyDrag.position;
+    frequencyDrag = null;
+    $("frequencySlider").classList.remove("is-dragging");
+    if (commit) {
+        $("frequencyPreset").value = String(Math.round(position));
+        selectFrequencyPreset();
+    } else renderUnlimited(true);
+}
+function positionFrequencyPopup() {
+    var popup = $("frequencyPopup");
+    popup.style.removeProperty("transform");
+    var rect = popup.getBoundingClientRect();
+    var shift = Math.max(8 - rect.left, Math.min(0, window.innerWidth - 8 - rect.right));
+    if (shift) popup.style.transform = "translateX(" + shift + "px)";
+}
+function setFrequencyPopup(open, focusSlider) {
+    $("frequencyPopup").hidden = !open;
+    if (!open) finishFrequencyDrag(false);
+    $("frequencyToggle").setAttribute("aria-expanded", String(open));
+    if (open) positionFrequencyPopup();
+    if (open && focusSlider) $("frequencyPreset").focus();
+}
+function selectFrequencyPreset() {
+    var index = Math.round(Number($("frequencyPreset").value));
+    if (!Number.isInteger(index) || index < 0 || index > (unlimitedState.available ? 4 : 3)) return;
+    if (index === 4) {
+        if (!unlimitedState.enabled) {
+            unlimitedState.enabled = true;
+            post({ type: "setUnlimitedSampling", enabled: true });
+        }
+        renderUnlimited(true);
+    } else commitFrequency(frequencyPresets[index]);
+}
+function commitFrequency(value) {
+    if (unlimitedState.enabled) {
+        unlimitedState.enabled = false;
+        unlimitedState.active = false;
+        post({ type: "setUnlimitedSampling", enabled: false });
+    }
+    requestedFrequencyHz = value;
+    renderUnlimited(true);
+    post({ type: "setFrequency", frequencyHz: requestedFrequencyHz });
 }
 function applyUnlimitedStatus(m) {
     if (typeof m.unlimitedActive === "boolean") unlimitedState.active = m.unlimitedActive;
@@ -1592,7 +1720,7 @@ function start() {
     }
     var frequencyHz = selectedFrequencyHz();
     requestedFrequencyHz = frequencyHz;
-    $("frequency").value = String(frequencyHz);
+    renderUnlimited(true);
     starting = true;
     updateRun();
     setStatusKey("lw.starting");
@@ -2966,6 +3094,7 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
 });
 function loop(now) {
     draw(now);
+    drawFrequencyMotion(now);
     requestAnimationFrame(loop);
 }
 function renderElfDiagnostics() {
@@ -3316,15 +3445,69 @@ $("timeWindow").onchange = function () {
         saveUi();
     }
 };
-$("unlimited").onclick = function () {
-    if (!unlimitedState.available) return;
-    post({ type: "setUnlimitedSampling", enabled: !unlimitedState.enabled });
+$("frequencyToggle").onclick = function () {
+    setFrequencyPopup($("frequencyPopup").hidden, true);
 };
+$("frequencyPreset").oninput = function () {
+    if (!frequencyDrag) return selectFrequencyPreset();
+    frequencyDrag.position = Math.round(Number(this.value));
+    this.value = String(frequencyDrag.position);
+    paintFrequencyPosition(frequencyDrag.position, true);
+};
+$("frequencyPreset").addEventListener("pointerdown", function (e) {
+    if (e.button !== 0 || e.isPrimary === false || frequencyDrag) return;
+    frequencyDrag = { pointerId: e.pointerId, position: Number(this.value) };
+    $("frequencySlider").classList.add("is-dragging");
+});
+document.addEventListener("pointerup", function (e) {
+    if (frequencyDrag && e.pointerId === frequencyDrag.pointerId) finishFrequencyDrag(true);
+});
+document.addEventListener("pointercancel", function (e) {
+    if (frequencyDrag && e.pointerId === frequencyDrag.pointerId) finishFrequencyDrag(false);
+});
+$("frequencyPreset").addEventListener("lostpointercapture", function (e) {
+    if (frequencyDrag && e.pointerId === frequencyDrag.pointerId) finishFrequencyDrag(false);
+});
+$("frequencyPreset").addEventListener("keydown", function (e) {
+    var max = unlimitedState.available ? 4 : 3;
+    var index = Math.round(Number(this.value));
+    if (e.key === "Home") index = 0;
+    else if (e.key === "End") index = max;
+    else if (["ArrowLeft", "ArrowDown", "PageDown"].includes(e.key)) index--;
+    else if (["ArrowRight", "ArrowUp", "PageUp"].includes(e.key)) index++;
+    else return;
+    e.preventDefault();
+    finishFrequencyDrag(false);
+    this.value = String(Math.min(max, Math.max(0, index)));
+    selectFrequencyPreset();
+});
 $("frequency").onchange = function () {
-    requestedFrequencyHz = selectedFrequencyHz();
-    $("frequency").value = String(requestedFrequencyHz);
-    post({ type: "setFrequency", frequencyHz: requestedFrequencyHz });
+    if (this.value.trim() === "-" && unlimitedState.available && unlimitedState.enabled) return;
+    commitFrequency(selectedFrequencyHz());
 };
+$("frequency").onkeydown = function (e) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Enter") {
+        e.preventDefault();
+        this.onchange();
+    } else if (e.key === "ArrowDown" && e.altKey) {
+        e.preventDefault();
+        setFrequencyPopup(true, true);
+    }
+};
+$("frequencyPicker").addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || $("frequencyPopup").hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setFrequencyPopup(false);
+    $("frequencyToggle").focus();
+});
+document.addEventListener("pointerdown", function (e) {
+    if (!$("frequencyPicker").contains(e.target)) setFrequencyPopup(false);
+});
+$("frequencyPicker").addEventListener("focusout", function (e) {
+    if (!$("frequencyPicker").contains(e.relatedTarget)) setFrequencyPopup(false);
+});
 $("norm").onclick = function () {
     axisModes[norm ? "norm" : "raw"] = { y: chartState.y, autoY: chartState.autoY, origin: chartState.axisOrigin };
     norm = !norm;
@@ -3464,15 +3647,16 @@ window.EmberProbeMessages.connect(window, {
         }
     },
     liveUnlimited: function (m) {
+        if (frequencyDrag && unlimitedState.available !== (m.available === true)) finishFrequencyDrag(false);
         unlimitedState.available = m.available === true;
-        unlimitedState.enabled = m.enabled === true;
+        unlimitedState.enabled = unlimitedState.available && m.enabled === true;
         if (!unlimitedState.enabled) unlimitedState.active = false;
-        renderUnlimited();
+        renderUnlimited(true);
     },
     liveFrequency: function (m) {
         requestedFrequencyHz = m.frequencyHz;
         MAXPTS = retainedSampleLimit(requestedFrequencyHz, m.intervalMs);
-        $("frequency").value = String(requestedFrequencyHz);
+        renderUnlimited(true);
     }
 });
 var layout = $("layout"),
@@ -3572,6 +3756,7 @@ new ResizeObserver(function () {
 }).observe(layout);
 window.addEventListener("resize", function () {
     arrangeVariableCards();
+    if (!$("frequencyPopup").hidden) positionFrequencyPopup();
 });
 new ResizeObserver(function () {
     dirty = true;
@@ -3580,6 +3765,7 @@ new ResizeObserver(function () {
 new MutationObserver(function () {
     dirty = true;
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
+renderUnlimited(true);
 updateRun();
 updateLangToggle();
 if (norm) $("norm").classList.remove("ghost");

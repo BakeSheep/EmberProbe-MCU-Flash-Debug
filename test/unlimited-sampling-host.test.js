@@ -106,22 +106,22 @@ function createProvider(settings) {
     try {
         graph.assertHealthy();
         const doc = graph.document;
-        const button = doc.getElementById("unlimited");
-        assert.ok(button, "toolbar exposes the unlimited toggle");
-        assert.strictEqual(button.hidden, true, "the toggle stays hidden until the setting is enabled");
-        button.click();
+        const slider = doc.getElementById("frequencyPreset");
+        const field = doc.getElementById("frequencyField");
+        assert.strictEqual(doc.getElementById("unlimited"), null, "the old toolbar toggle is removed");
+        assert.strictEqual(slider.max, "3", "unlimited is absent until the setting is enabled");
         assert.ok(!graph.messages.some((m) => m.type === "setUnlimitedSampling"));
 
         graph.send({ type: "liveUnlimited", available: true, enabled: false });
-        assert.strictEqual(button.hidden, false);
-        assert.strictEqual(button.getAttribute("aria-pressed"), "false");
-        button.click();
+        assert.strictEqual(slider.max, "4");
+        slider.value = "4";
+        slider.dispatchEvent(new graph.window.Event("input"));
         assert.deepStrictEqual(graph.messages.at(-1), { type: "setUnlimitedSampling", enabled: true, panelId: 3 });
 
         graph.send({ type: "liveUnlimited", available: true, enabled: true });
-        assert.strictEqual(button.getAttribute("aria-pressed"), "true");
-        assert.ok(!button.classList.contains("ghost"));
-        assert.strictEqual(doc.getElementById("frequency").disabled, true);
+        assert(field.classList.contains("is-unlimited"));
+        assert.strictEqual(doc.getElementById("frequency").value, "-");
+        assert.strictEqual(doc.getElementById("frequency").disabled, false, "a numeric edit can exit unlimited");
 
         graph.send({
             type: "liveStatus",
@@ -138,11 +138,11 @@ function createProvider(settings) {
         assert.strictEqual(rate.textContent, "Max rate · actual 640.0 Hz");
         assert.ok(rate.title.includes("Target: unlimited"));
         assert.ok(!/Infinity|NaN/.test(rate.title), "a zero interval must not render as an infinite rate");
-        assert.ok(button.title.includes("Limited by probe throughput"));
+        assert.ok(field.title.includes("Limited by probe throughput"));
 
         graph.send({ type: "chartValues", samples: [], actualHz: 902.25, unlimitedActive: true, limitedBy: "host" });
         assert.strictEqual(rate.textContent, "Max rate · actual 902.3 Hz");
-        assert.ok(button.title.includes("Limited by extension processing"));
+        assert.ok(field.title.includes("Limited by extension processing"));
 
         // Debug sessions suppress the mode: frequency input is usable again and the reason is shown.
         graph.send({
@@ -156,10 +156,11 @@ function createProvider(settings) {
         });
         assert.strictEqual(rate.textContent, "30.0 Hz");
         assert.strictEqual(doc.getElementById("frequency").disabled, false);
-        assert.ok(button.title.includes("inactive during debug sessions"));
+        assert.ok(field.title.includes("inactive during debug sessions"));
 
         graph.send({ type: "liveUnlimited", available: false, enabled: false });
-        assert.strictEqual(button.hidden, true);
+        assert.strictEqual(slider.max, "3");
+        assert.strictEqual(doc.getElementById("frequency").value, "30");
         graph.assertHealthy();
     } finally {
         graph.close();

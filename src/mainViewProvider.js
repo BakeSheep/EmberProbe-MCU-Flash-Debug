@@ -98,6 +98,7 @@ const CACHE_KEYS = {
     sidebarWatchList: "mcu.sidebarWatchList",
     sidebarWriteList: "mcu.sidebarWriteList"
 };
+const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
 // Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
@@ -324,6 +325,7 @@ class MainViewProvider {
                 this.updateView();
             },
             driverService: this._probeDriverService,
+            onDriverUnsupported: (error) => this._showJlinkDriverWarning(error.details?.instanceId),
             beforePrepare: () => this._assertProbeDriverIdle(),
             window: vscode.window,
             t: (key, params) => this._t(key, params)
@@ -5918,11 +5920,46 @@ class MainViewProvider {
         if (choice?.driver !== "segger") this._lastJlinkDriverWarning = "";
         if (notify && choice?.driver === "segger" && this._lastJlinkDriverWarning !== choice.instanceId) {
             this._lastJlinkDriverWarning = choice.instanceId;
-            vscode.window.showWarningMessage(this._t("probe.winusbRequired"));
+            this._showJlinkDriverWarning(choice.instanceId);
         }
         return choice;
     }
-    async _changeJlinkDriver(driver) {
+    _showJlinkDriverWarning(instanceId) {
+        if (
+            process.platform !== "win32" ||
+            this._context.workspaceState.get(JLINK_DRIVER_WARNING_IGNORED_KEY) === true ||
+            this._jlinkDriverWarningPending
+        )
+            return;
+        const switchDriver = this._t("probe.switchToWinUsb");
+        const ignore = this._t("probe.ignoreDriverWarning");
+        // Do not hold the failed operation's probe lease while waiting for a notification response.
+        this._jlinkDriverWarningPending = Promise.resolve(
+            vscode.window.showWarningMessage(this._t("probe.winusbRequired"), switchDriver, ignore)
+        )
+            .then(async (selected) => {
+                if (selected === ignore)
+                    await this._context.workspaceState.update(JLINK_DRIVER_WARNING_IGNORED_KEY, true);
+                else if (selected === switchDriver) {
+                    await new Promise((resolve) => setImmediate(resolve));
+                    await this._changeJlinkDriver("winusb", instanceId);
+                }
+            })
+            .catch((error) => {
+                const message = error.i18nKey ? this._t(error.i18nKey, error.i18nParams) : error.message;
+                this._webviewView?.webview.postMessage({
+                    type: "commandError",
+                    diagnostic: serializeError(error),
+                    error: message
+                });
+                vscode.window.showErrorMessage(message);
+            })
+            .finally(() => {
+                this._jlinkDriverWarningPending = null;
+            });
+        return this._jlinkDriverWarningPending;
+    }
+    async _changeJlinkDriver(driver, expectedInstanceId) {
         if (driver !== "winusb" && driver !== "segger")
             throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
         this._assertCpuIdle();
@@ -5946,6 +5983,11 @@ class MainViewProvider {
                 throw Object.assign(new Error("No uniquely selected supported J-Link is connected"), {
                     code: "PROBE_DRIVER_SELECTION_REQUIRED"
                 });
+            if (expectedInstanceId && choice.instanceId !== expectedInstanceId)
+                throw Object.assign(new Error("The selected J-Link changed; select its USB driver in the sidebar"), {
+                    code: "PROBE_DRIVER_SELECTION_CHANGED",
+                    i18nKey: "probe.driverSelectionChanged"
+                });
             if (choice.driver === driver) {
                 this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
                 return;
@@ -5967,7 +6009,7 @@ class MainViewProvider {
             this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
             if (driver === "segger") {
                 this._lastJlinkDriverWarning = choice.instanceId;
-                vscode.window.showWarningMessage(this._t("probe.winusbRequired"));
+                this._showJlinkDriverWarning(choice.instanceId);
             } else this._lastJlinkDriverWarning = "";
         } finally {
             this._probeDriverSwitching = false;

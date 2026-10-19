@@ -931,6 +931,7 @@
     function mountLivewatchHost() {
         if (livewatchHost) livewatchHost.destroy();
         livewatchHost = window.EmberProbeLiveWatchHost.create($("livewatchFrame"), {
+            unlimitedAvailable: new URLSearchParams(window.location.search).get("unlimited") === "1",
             notify: notify,
             simulator: simulator,
             getSidebarWatch: function () {

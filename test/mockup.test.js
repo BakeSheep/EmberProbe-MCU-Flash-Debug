@@ -142,6 +142,28 @@ function testSimulatorAndRegisters() {
     }
 }
 
+function testMockUnlimitedPreset() {
+    for (const unlimitedAvailable of [false, true]) {
+        const env = hostEnvironment();
+        const frame = env.frame();
+        const host = env.root.EmberProbeLiveWatchHost.create(frame, { unlimitedAvailable });
+        try {
+            env.deliver(frame, { type: "ready" });
+            assert.deepStrictEqual(latest(frame, "liveUnlimited"), {
+                type: "liveUnlimited",
+                available: unlimitedAvailable,
+                enabled: false
+            });
+            env.deliver(frame, { type: "setUnlimitedSampling", enabled: true });
+            assert.strictEqual(latest(frame, "liveUnlimited").enabled, unlimitedAvailable);
+            env.deliver(frame, { type: "setUnlimitedSampling", enabled: false });
+            assert.strictEqual(latest(frame, "liveUnlimited").enabled, false);
+        } finally {
+            host.destroy();
+        }
+    }
+}
+
 function testHostsAndRenderer() {
     const env = hostEnvironment();
     const view = render(getModernWebviewContent({ elf: "Demo.elf" }, "zh"));
@@ -622,6 +644,7 @@ async function testServer() {
 
 (async () => {
     testSimulatorAndRegisters();
+    testMockUnlimitedPreset();
     testHostsAndRenderer();
     testArchive();
     testReadableArchiveHeaders();

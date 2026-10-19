@@ -33,6 +33,7 @@ class ProbeConnectionService {
         this.detectProbe = options.detectProbe || detectProbe;
         this.driverService = options.driverService || null;
         this.beforePrepare = options.beforePrepare || (() => {});
+        this.onDriverUnsupported = options.onDriverUnsupported || (() => {});
         this.staleSessions = new WeakSet();
     }
 
@@ -88,6 +89,7 @@ class ProbeConnectionService {
                 this.onResolved(connection);
                 return connection;
             } catch (error) {
+                if (error.code === "PROBE_DRIVER_UNSUPPORTED") this.onDriverUnsupported(error);
                 if (!interactive) throw error;
                 let values;
                 // A stale remembered probe is never replaced silently; the user picks a present one instead.

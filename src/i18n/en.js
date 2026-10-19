@@ -65,7 +65,8 @@ module.exports = Object.freeze({
     "cpu.state.paused": "Paused",
     "lw.samplingSelectionHint": "All variables selected for this waveform will be sampled at the selected frequency.",
     "lw.historyLoading": "Loading recorded history…",
-    "lw.targetFrequency": "Waveform target frequency",
+    "lw.targetFrequency": "Sampling rate",
+    "lw.frequencyPresets": "Select sampling rate",
     "lw.unlimited": "Max rate",
     "lw.unlimitedTitle":
         "Experimental: sample back-to-back at probe throughput without the 200 Hz cap; inactive during debug sessions",
@@ -136,6 +137,9 @@ module.exports = Object.freeze({
         "This J-Link is using the SEGGER driver. EmberProbe needs WinUSB; select WinUSB beside Select Debugger.",
     "probe.driverUnsupported":
         "This J-Link uses the SEGGER USB driver, which EmberProbe does not support. Change it to WinUSB and try again.",
+    "probe.switchToWinUsb": "Switch to WinUSB",
+    "probe.ignoreDriverWarning": "Ignore for this workspace",
+    "probe.driverSelectionChanged": "The selected J-Link has changed. Select its USB driver in the sidebar.",
     "probe.restoreDriver": "Restore the original J-Link USB driver",
     "probe.driverInstalling": "Configuring WinUSB for J-Link; complete the Windows authorization…",
     "probe.driverReady": "J-Link USB driver is configured",

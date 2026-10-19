@@ -218,6 +218,36 @@ async function main() {
     startSwitch = true;
     finishPreflight();
     await assert.rejects(pendingOperation, { code: "PROBE_DRIVER_BUSY" });
+
+    const driverError = Object.assign(new Error("SEGGER requires WinUSB"), {
+        code: "PROBE_DRIVER_UNSUPPORTED",
+        details: { instanceId: "usb-1" }
+    });
+    const notifications = [];
+    const unsupportedDriver = new ProbeConnectionService({
+        getConfig: () => ({ debugger: "jlink.cfg" }),
+        prepareConnection: async () => {
+            throw driverError;
+        },
+        onDriverUnsupported: (error) => {
+            notifications.push(error);
+            // An unanswered desktop notification must not hold the operation's lease or delay its error.
+            return new Promise(() => {});
+        }
+    });
+    await assert.rejects(unsupportedDriver.prepare(options, true), (error) => error === driverError);
+    await assert.rejects(unsupportedDriver.prepare(options), (error) => error === driverError);
+    assert.deepStrictEqual(notifications, [driverError, driverError], "UI and Agent operations notify and still fail");
+    unsupportedDriver.prepareConnection = async () => {
+        throw Object.assign(new Error("Probe missing"), { code: "PROBE_SELECTED_NOT_FOUND" });
+    };
+    await assert.rejects(unsupportedDriver.prepare(options, true), { code: "PROBE_SELECTED_NOT_FOUND" });
+    assert.strictEqual(notifications.length, 2, "other connection errors do not trigger driver notifications");
+    unsupportedDriver.onDriverUnsupported = () => {};
+    unsupportedDriver.prepareConnection = async () => {
+        throw driverError;
+    };
+    await assert.rejects(unsupportedDriver.prepare(options), (error) => error === driverError);
     console.log("Automatic connection, streamlined history, single preflight and stale session tests passed");
 }
 main().catch((error) => {

@@ -47,12 +47,21 @@ assert.strictEqual(jlinkDriverChoice({ available: false, devices: [first] }, "12
 async function main() {
     const messages = [];
     const warnings = [];
+    const errors = [];
+    const state = new Map([["mcu.debugger", "jlink.cfg"]]);
+    let warningResponse;
     let currentInventory = { available: true, devices: [device("1234")] };
     let delayedInventory;
     const Provider = loadProvider(
         {
             workspace: { getConfiguration: () => ({ get: () => "" }) },
-            window: { showWarningMessage: (message) => warnings.push(message) }
+            window: {
+                showWarningMessage: async (...args) => {
+                    warnings.push(args);
+                    return warningResponse;
+                },
+                showErrorMessage: (message) => errors.push(message)
+            }
         },
         {
             "../skills/_emberprobe/probe-inventory": {
@@ -68,7 +77,12 @@ async function main() {
         }
     );
     const provider = Object.create(Provider.prototype);
-    provider._context = { workspaceState: { get: (key) => (key === "mcu.debugger" ? "jlink.cfg" : undefined) } };
+    provider._context = {
+        workspaceState: {
+            get: (key) => state.get(key),
+            update: async (key, value) => state.set(key, value)
+        }
+    };
     provider._webviewView = { webview: { postMessage: (message) => messages.push(message) } };
     provider._t = (key) => key;
     provider._assertConnectionEditable = () => {};
@@ -87,13 +101,20 @@ async function main() {
     };
     if (process.platform === "win32") {
         await provider._refreshJlinkDriverChoice(true);
+        await provider._jlinkDriverWarningPending;
         await provider._refreshJlinkDriverChoice(true);
         assert.strictEqual(warnings.length, 1, "the SEGGER warning appears once per detected driver state");
+        assert.deepStrictEqual(warnings[0], [
+            "probe.winusbRequired",
+            "probe.switchToWinUsb",
+            "probe.ignoreDriverWarning"
+        ]);
         assert.strictEqual(messages.at(-1).driver, "segger");
         await provider._changeJlinkDriver("winusb");
         assert.deepStrictEqual(messages.at(-1), { type: "probeDriverSwitch", busy: false });
         assert.deepStrictEqual(messages.at(-2), { type: "probeDriverChoice", driver: "winusb" });
         await provider._changeJlinkDriver("segger");
+        await provider._jlinkDriverWarningPending;
         assert.deepStrictEqual(messages.at(-2), { type: "probeDriverChoice", driver: "segger" });
         assert.strictEqual(warnings.length, 2, "restoring SEGGER warns again that WinUSB is required");
         let releaseOldScan;
@@ -118,6 +139,68 @@ async function main() {
         completeInstall();
         await changing;
         await assert.rejects(provider._changeJlinkDriver("invalid"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
+
+        let answerWarning;
+        warningResponse = new Promise((resolve) => (answerWarning = resolve));
+        const warningCount = warnings.length;
+        const notification = provider._showJlinkDriverWarning(first.id);
+        provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(warnings.length, warningCount + 1, "concurrent attempts share one notification");
+        answerWarning(undefined);
+        await notification;
+        assert.strictEqual(state.get("mcu.jlinkDriverWarningIgnored"), undefined, "closing does not persist ignore");
+
+        warningResponse = "probe.switchToWinUsb";
+        currentInventory = { available: true, devices: [device("1234")] };
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "WinUSB");
+        assert.strictEqual(errors.length, 0);
+
+        currentInventory = { available: true, devices: [device("5678")] };
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(errors.at(-1), "probe.driverSelectionChanged");
+        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_CHANGED");
+        assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink", "never switch another probe");
+
+        currentInventory = { available: true, devices: [device("1234")] };
+        provider._probeCoordinator = { anyActive: () => true, isActive: () => false };
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_BUSY", "notification preserves probe ownership");
+        provider._probeCoordinator = null;
+
+        provider._probeDriverService.ensure = async () => {
+            throw new Error("UAC cancelled");
+        };
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(errors.at(-1), "UAC cancelled");
+        assert.strictEqual(provider._probeDriverSwitching, false, "a failed switch releases the switching guard");
+
+        warningResponse = "probe.ignoreDriverWarning";
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(state.get("mcu.jlinkDriverWarningIgnored"), true);
+        const ignoredCount = warnings.length;
+        await provider._showJlinkDriverWarning(first.id);
+        provider._lastJlinkDriverWarning = "";
+        await provider._refreshJlinkDriverChoice(true);
+        assert.strictEqual(warnings.length, ignoredCount, "ignored warnings stay suppressed on selection and attempts");
+        assert.strictEqual(
+            messages.at(-1).driver,
+            "segger",
+            "the sidebar still receives the incompatible driver state"
+        );
+
+        const reopened = Object.create(Provider.prototype);
+        reopened._context = provider._context;
+        reopened._t = provider._t;
+        await reopened._showJlinkDriverWarning(first.id);
+        assert.strictEqual(warnings.length, ignoredCount, "ignore survives reopening the workspace");
+        reopened._context = { workspaceState: { get: () => undefined } };
+        warningResponse = undefined;
+        await reopened._showJlinkDriverWarning(first.id);
+        assert.strictEqual(warnings.length, ignoredCount + 1, "other workspaces are unaffected");
+    } else {
+        await provider._showJlinkDriverWarning(first.id);
+        assert.strictEqual(warnings.length, 0, "other platforms do not receive Windows driver notifications");
     }
     console.log("J-Link USB driver choice tests passed");
 }

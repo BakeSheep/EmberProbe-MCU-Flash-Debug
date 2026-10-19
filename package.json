@@ -299,7 +299,7 @@
         "emberprobe.experimental.unlimitedSampling.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "实验性：在波形窗口工具栏显示「不限速」开关。开启后独立 OpenOCD 采样不再受 200 Hz 上限约束，按探针吞吐背靠背读取；调试会话中不生效。内存历史仍按每变量最多 360,001 点保留，高频时可回看时长相应缩短，完整数据保存在磁盘归档中。详见 `docs/UNLIMITED-SAMPLING.md`。"
+          "markdownDescription": "实验性：在波形窗口的采样帧率滑条中显示「不限速」挡位。选择后独立 OpenOCD 采样不再受 200 Hz 上限约束，按探针吞吐背靠背读取；调试会话中不生效。内存历史仍按每变量最多 360,001 点保留，高频时可回看时长相应缩短，完整数据保存在磁盘归档中。详见 `docs/UNLIMITED-SAMPLING.md`。"
         },
         "emberprobe.experimental.externalGdb.enabled": {
           "type": "boolean",

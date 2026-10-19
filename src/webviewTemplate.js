@@ -33,9 +33,14 @@ function loadRendererPrelude(area) {
                       loadWebviewAsset("sidebar", "cpuLoad.js"),
                       loadWebviewAsset("sidebar", "rtos.js")
                   ]
-                : ["seriesStyles.js", "analysisState.js", "chartInspection.js", "chartControls.js", "chart.js"].map(
-                      (name) => loadWebviewAsset("liveWatch", name)
-                  ))
+                : [
+                      "seriesStyles.js",
+                      "analysisState.js",
+                      "chartInspection.js",
+                      "chartControls.js",
+                      "chart.js",
+                      "samplingRateMotion.js"
+                  ].map((name) => loadWebviewAsset("liveWatch", name)))
         ].join("\n") + "\n"
     );
 }

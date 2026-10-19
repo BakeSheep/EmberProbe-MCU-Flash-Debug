@@ -16,6 +16,8 @@
         var timer = null;
         var running = false;
         var frequencyHz = 30;
+        var unlimitedAvailable = options.unlimitedAvailable === true;
+        var unlimitedEnabled = false;
         var watchItems = data.watchList();
         var styles = Object.assign({}, data.seriesStyles);
         var stopped = false;
@@ -244,6 +246,7 @@
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
             send({ type: "liveFrequency", frequencyHz: frequencyHz, intervalMs: Math.round(1000 / frequencyHz) });
+            send({ type: "liveUnlimited", available: unlimitedAvailable, enabled: unlimitedEnabled });
             send({
                 type: "liveStatus",
                 running: false,
@@ -318,6 +321,11 @@
                             intervalMs: Math.round(1000 / frequencyHz)
                         });
                     }
+                    break;
+                case "setUnlimitedSampling":
+                    // Preview only: keep the simulator's bounded timer while mirroring the selected mode.
+                    if (typeof message.enabled === "boolean") unlimitedEnabled = unlimitedAvailable && message.enabled;
+                    send({ type: "liveUnlimited", available: unlimitedAvailable, enabled: unlimitedEnabled });
                     break;
                 case "importVariables":
                     sendVariableList();

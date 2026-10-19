@@ -28,6 +28,10 @@ On Windows x64, selecting `jlink.cfg` with a uniquely identified J-Link using th
 
 可读取序列号的唯一 J-Link 自动选定；明确设置优先，其次使用工作区成功绑定。指定或绑定的设备不在线时，不会改连另一台。多设备且无绑定时，界面只需选择设备；Agent 返回歧义错误。协议覆盖优先于有效成功记录，已知 Cortex-M 默认 SWD，其他目标保留接口脚本默认协议。预检使用 `noinit` 验证软件配置，不探测接线、不初始化目标，也不自动降速或切换重试。Windows x64 下若已识别的 J-Link 使用 SEGGER 驱动，读取、采样、调试和下载会在目标启动前报驱动不支持；用户须在“选择调试器”右侧主动选择 WinUSB，完成管理员授权。下拉栏中的 SEGGER 可恢复 EmberProbe 曾备份的原驱动。
 
+On Windows, a blocked SEGGER-driver operation also displays a VS Code warning with **Switch to WinUSB** and **Ignore for this workspace**. Switching uses the same verified driver-change flow as the sidebar and requires the same selected USB interface; retry the operation after switching completes. Ignoring suppresses future driver warning notifications in this workspace, including after reopening it. It does not bypass driver checks or hide operation errors in the extension page. Dismissing the notification without choosing Ignore allows it to appear on the next blocked operation. Concurrent attempts share one pending notification.
+
+Windows 下因 SEGGER 驱动被阻止的操作还会显示 VS Code 右下角警告，提供“切换到 WinUSB”和“忽略（当前工作区不再提醒）”按钮。切换使用侧栏已有的驱动切换流程，并重新核对所选 USB 接口；完成后需手动重试原操作。“忽略”保存在当前工作区，重新打开后仍有效，不影响其他工作区，也不绕过驱动检查或隐藏插件页面中的操作错误。仅关闭通知而未选择“忽略”时，下次操作仍会提醒；并发操作只显示一条待处理通知。
+
 Windows inventory is read through the bundled read-only helper when available, avoiding PowerShell startup on each operation. Repeated SEGGER-to-WinUSB switches reuse the previously prepared driver package. The selector stays busy until the selected WinUSB interface can be opened by OpenOCD; this check does not initialize the MCU target. Windows device installation policy checks may still take time. A later `TARGET_NOT_CONNECTED` or `cannot read IDR` error concerns the target SWD connection, even when the USB interface is ready.
 
 Windows 下优先用内置只读 helper 枚举探针，避免每次操作都启动 PowerShell。发布包中的 helper 与 libwdi 未签名，Windows 可能提示未知发布者或依本机策略阻止运行；发布流程和 helper 会核对文件哈希，但哈希不证明发布者身份。重复切换到 WinUSB 时复用已准备的驱动包；下拉栏保持加载状态，直到 OpenOCD 能打开所选接口。该检查不初始化 MCU。Windows 的驱动安装策略检查仍可能耗时。若之后出现 `TARGET_NOT_CONNECTED` 或 `cannot read IDR`，应排查目标芯片的 SWD 连接。
