@@ -44,7 +44,197 @@ assert.strictEqual(jlinkDriverChoice({ available: true, devices: [first] }, "", 
 assert.strictEqual(jlinkDriverChoice(inventory, "1234", null, "linux", "x64"), null);
 assert.strictEqual(jlinkDriverChoice({ available: false, devices: [first] }, "1234", null, "win32", "x64"), null);
 
+async function monitorLifecycle() {
+    const messages = [],
+        warnings = [],
+        scanErrors = [],
+        timers = new Set();
+    let currentInventory = { available: true, devices: [] };
+    let delayedInventory,
+        scanError,
+        dispatch,
+        onVisibility,
+        onDispose,
+        scans = 0;
+    const state = new Map([
+        ["mcu.debugger", "jlink.cfg"],
+        ["mcu.elfPath", "firmware.elf"],
+        ["mcu.mcuCore", "stm32f4x.cfg"]
+    ]);
+    const Provider = loadProvider(
+        {
+            workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+            window: { showWarningMessage: async (...args) => warnings.push(args) }
+        },
+        {
+            "../skills/_emberprobe/probe-inventory": {
+                listProbes: async () => {
+                    scans++;
+                    if (scanError) {
+                        const error = scanError;
+                        scanError = null;
+                        throw error;
+                    }
+                    if (delayedInventory) {
+                        const result = delayedInventory;
+                        delayedInventory = null;
+                        return result;
+                    }
+                    return currentInventory;
+                }
+            }
+        }
+    );
+    const provider = Object.create(Provider.prototype);
+    const view = {
+        visible: true,
+        webview: {
+            postMessage: (message) => messages.push(message),
+            onDidReceiveMessage: (callback) => {
+                dispatch = callback;
+                return { dispose() {} };
+            }
+        },
+        onDidChangeVisibility: (callback) => {
+            onVisibility = callback;
+            return { dispose() {} };
+        },
+        onDidDispose: (callback) => {
+            onDispose = callback;
+        }
+    };
+    Object.assign(provider, {
+        _context: { workspaceState: { get: (key) => state.get(key) } },
+        _probeDriverService: { reconcileInventory: async (value) => value },
+        _recentProgress: [],
+        _openOcdStatusService: { status: {} },
+        _skillStatusService: {},
+        _svdManager: { syncStatus: async () => {} },
+        _getMemoryAnalysisController: () => ({ refresh() {} }),
+        _syncSidebarTarget() {},
+        _syncChipInfo() {},
+        _postPeripheralDebugStatus() {},
+        _renderWebview: async () => {},
+        getModernWebviewContent: () => "",
+        updateView: async () => {},
+        refreshOpenOcdStatus() {},
+        refreshSkillStatus: async () => {},
+        _t: (key) => key
+    });
+    const realSetTimeout = global.setTimeout,
+        realClearTimeout = global.clearTimeout,
+        realConsoleError = console.error;
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const tick = async () => {
+        assert.strictEqual(timers.size, 1, "there is exactly one scheduled monitor check");
+        const timer = timers.values().next().value;
+        timers.delete(timer);
+        await timer.callback();
+        await flush();
+    };
+    try {
+        global.setTimeout = (callback, delay) => {
+            assert.strictEqual(delay, 3000, "inventory checks wait three seconds after completing");
+            const timer = { callback, unref() {} };
+            timers.add(timer);
+            return timer;
+        };
+        global.clearTimeout = (timer) => timers.delete(timer);
+        console.error = (...args) => scanErrors.push(args);
+        provider.resolveWebviewView(view);
+        await dispatch({ type: "initCheck" });
+        await flush();
+        if (process.platform !== "win32" || process.arch !== "x64") {
+            assert.strictEqual(scans, 0, "other platforms do not start Windows USB polling");
+            assert.strictEqual(timers.size, 0);
+            return;
+        }
+        assert.strictEqual(messages.at(-1).driver, "", "configuration before attachment hides the selector");
+        assert.strictEqual(warnings.length, 0);
+        const initialScans = scans;
+        await dispatch({ type: "initCheck" });
+        assert.strictEqual(scans, initialScans, "repeated initialization does not duplicate the monitor");
+        currentInventory = { available: true, devices: [device("1234")] };
+        await tick();
+        assert.strictEqual(messages.at(-1).driver, "segger", "late USB attachment reveals the selector");
+        assert.strictEqual(warnings.length, 1);
+        await tick();
+        assert.strictEqual(warnings.length, 1, "unchanged driver state does not repeat warnings");
+        currentInventory = { available: true, devices: [] };
+        await tick();
+        assert.strictEqual(messages.at(-1).driver, "", "removing a probe hides its selector");
+        currentInventory = { available: true, devices: [device("1234", "WinUSB")] };
+        view.visible = false;
+        onVisibility();
+        assert.strictEqual(timers.size, 0, "hidden retained views stop polling");
+        view.visible = true;
+        onVisibility();
+        await flush();
+        assert.strictEqual(messages.at(-1).driver, "winusb", "a retained view rechecks immediately when shown");
+
+        const beforeSwitchScans = scans;
+        provider._probeDriverSwitching = true;
+        await tick();
+        assert.strictEqual(scans, beforeSwitchScans, "polling does not enumerate during a driver switch");
+        provider._probeDriverSwitching = false;
+        scanError = new Error("device list changed during enumeration");
+        await tick();
+        assert.strictEqual(scanErrors.length, 1);
+        await tick();
+        assert.strictEqual(messages.at(-1).driver, "winusb", "a failed scan does not stop future checks");
+        state.set("mcu.debugger", "stlink.cfg");
+        const otherProbeScans = scans;
+        await tick();
+        assert.strictEqual(scans, otherProbeScans, "other configured adapters do not trigger J-Link inventory");
+        state.set("mcu.debugger", "jlink.cfg");
+
+        let finishHiddenScan;
+        delayedInventory = new Promise((resolve) => (finishHiddenScan = resolve));
+        const slowCheck = tick();
+        assert.strictEqual(timers.size, 0, "slow inventory does not schedule overlapping periodic requests");
+        view.visible = false;
+        onVisibility();
+        view.visible = true;
+        onVisibility();
+        await flush();
+        const visibleMessageCount = messages.length;
+        finishHiddenScan({ available: true, devices: [device("1234")] });
+        await slowCheck;
+        assert.strictEqual(messages.length, visibleMessageCount, "a hidden view's old scan cannot overwrite recheck");
+        assert.strictEqual(warnings.length, 1, "a stale scan cannot show an obsolete warning");
+
+        let finishDisposedScan;
+        delayedInventory = new Promise((resolve) => (finishDisposedScan = resolve));
+        const disposedCheck = tick();
+        onDispose();
+        const disposedMessageCount = messages.length;
+        finishDisposedScan(currentInventory);
+        await disposedCheck;
+        assert.strictEqual(messages.length, disposedMessageCount, "disposed views cannot receive pending results");
+        assert.strictEqual(timers.size, 0, "disposal prevents in-flight polling from restarting");
+
+        provider.resolveWebviewView(view);
+        await dispatch({ type: "initCheck" });
+        await flush();
+        assert.strictEqual(timers.size, 1);
+        provider._shutdownPromise = Promise.resolve();
+        provider.finishForeignDebug = () => {};
+        provider._cubemxService = { cancel() {} };
+        provider._elfService = { invalidate() {} };
+        await provider.shutdown();
+        assert.strictEqual(timers.size, 0, "shutdown releases the polling timer");
+        provider._startJlinkDriverMonitor();
+        assert.strictEqual(timers.size, 0, "shutdown cannot restart monitoring");
+    } finally {
+        provider._stopJlinkDriverMonitor();
+        global.setTimeout = realSetTimeout;
+        global.clearTimeout = realClearTimeout;
+        console.error = realConsoleError;
+    }
+}
+
 async function main() {
+    await monitorLifecycle();
     const messages = [];
     const warnings = [];
     const errors = [];
@@ -100,6 +290,15 @@ async function main() {
         }
     };
     if (process.platform === "win32") {
+        let finishOlderScan;
+        delayedInventory = new Promise((resolve) => (finishOlderScan = resolve));
+        const olderRefresh = provider._refreshJlinkDriverChoice(false);
+        await provider._refreshJlinkDriverChoice(false);
+        const latestMessageCount = messages.length;
+        finishOlderScan({ available: true, devices: [] });
+        await olderRefresh;
+        assert.strictEqual(messages.length, latestMessageCount, "an older empty scan cannot hide a newer selection");
+
         await provider._refreshJlinkDriverChoice(true);
         await provider._jlinkDriverWarningPending;
         await provider._refreshJlinkDriverChoice(true);

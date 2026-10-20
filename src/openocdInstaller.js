@@ -123,6 +123,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
         }
         return { ok: true, path: binary, version: verification.version || "", verification, error: "" };
     }
+    if (progress) progress({ message: "正在准备安装 OpenOCD…", key: "oc.preparing" });
     const parent = path.dirname(dest);
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const staging = path.join(parent, `.openocd-staging-${nonce}`);

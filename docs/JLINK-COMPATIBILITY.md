@@ -12,15 +12,15 @@ Probe selection and transport are automatic by default. Configure manual overrid
 | --- | --- |
 | `emberprobe.probeSerial` | Decimal J-Link serial; exact USB serial for other supported backends / J-Link 十进制序列号；其他受支持后端的精确 USB 序列号 |
 | `emberprobe.transport` | `auto` by default; optional `swd` / `jtag` override / 默认自动，可手动覆盖协议 |
-| `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests, `0` keeps defaults / 整数 kHz；非零值约束 target 复位事件提速，`0` 保留默认速度 |
+| `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests and is the programming clock, `0` keeps script defaults and programs at the probe's clock / 整数 kHz；非零值约束 target 复位事件提速并作为烧录时钟，`0` 保留脚本默认速度、烧录时使用探针时钟 |
 
 A unique matching probe is selected automatically within the effective interface family. USB serial strings preserve case, leading zeros and internal spaces; J-Link retains decimal validation. Explicit serial settings take precedence over interface-script serials and successful workspace history. Missing remembered devices never cause fallback to another probe. Multiple devices require an enforceable selector; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable or recognizes no matching device, an explicit or remembered serial is passed to a backend that enforces it; otherwise OpenOCD applies the interface default selection. Such connections cannot establish a verified USB success record. See [probe connection rules](PROBE-CONNECTIONS.md) for serial-less probes, Windows aliases, additional adapters and TCP interfaces.
 
 在实际接口家族内，唯一匹配的探针会自动选定。USB 序列号保留大小写、前导零及内部空格；J-Link 仍校验十进制序列号。显式配置优先于接口脚本及成功记录，原设备缺席时不自动换用其他设备。系统枚举不可用或未识别到设备时，由 OpenOCD 按接口默认方式选择。无序列号、Windows 别名、其他适配器及 TCP 接口的具体规则见[探针连接说明](PROBE-CONNECTIONS.md)。
 
-A nonzero speed setting wraps existing target reset events and caps their `adapter speed` requests. Original clock, watchdog and Flash initialization remains in place, and requests below the cap are preserved. No automatic retry or protocol change is performed. Custom scripts that change speed outside these events remain trusted user code.
+A nonzero speed setting wraps existing target reset events and caps their `adapter speed` requests. Original clock, watchdog and Flash initialization remains in place, and requests below the cap are preserved. Apart from the programming clock described in [Flash performance](FLASH-PERFORMANCE.md), no automatic retry or protocol change is performed. Custom scripts that change speed outside these events remain trusted user code.
 
-非零速度设置保留 target 原有复位事件及其时钟、看门狗和 Flash 初始化，只限制其中的 `adapter speed` 提速请求，保留低于上限的速度。不自动重试或切换协议；在这些事件之外修改速度的自定义脚本仍属于用户信任的代码。
+非零速度设置保留 target 原有复位事件及其时钟、看门狗和 Flash 初始化，只限制其中的 `adapter speed` 提速请求，保留低于上限的速度。除[烧录性能](FLASH-PERFORMANCE.md)所述的烧录时钟外，不自动重试或切换协议；在这些事件之外修改速度的自定义脚本仍属于用户信任的代码。
 
 For J-Link, explicit transport overrides take precedence. Known Cortex-M targets default to SWD; other targets retain the interface script default. OpenOCD validates the selected protocol using interface-only configuration with `noinit`. This checks software configuration, not board wiring or physical probe capabilities. There is no automatic speed reduction, protocol retry or reset.
 
@@ -35,6 +35,10 @@ Windows 下因 SEGGER 驱动被阻止的操作还会显示 VS Code 右下角警�
 Windows inventory is read through the bundled read-only helper when available, avoiding PowerShell startup on each operation. Repeated SEGGER-to-WinUSB switches reuse the previously prepared driver package. The selector stays busy until the selected WinUSB interface can be opened by OpenOCD; this check does not initialize the MCU target. Windows device installation policy checks may still take time. A later `TARGET_NOT_CONNECTED` or `cannot read IDR` error concerns the target SWD connection, even when the USB interface is ready.
 
 Windows 下优先用内置只读 helper 枚举探针，避免每次操作都启动 PowerShell。发布包中的 helper 与 libwdi 未签名，Windows 可能提示未知发布者或依本机策略阻止运行；发布流程和 helper 会核对文件哈希，但哈希不证明发布者身份。重复切换到 WinUSB 时复用已准备的驱动包；下拉栏保持加载状态，直到 OpenOCD 能打开所选接口。该检查不初始化 MCU。Windows 的驱动安装策略检查仍可能耗时。若之后出现 `TARGET_NOT_CONNECTED` 或 `cannot read IDR`，应排查目标芯片的 SWD 连接。
+
+On Windows x64, a visible sidebar configured for `jlink.cfg` checks read-only USB metadata again three seconds after each completed check. A probe attached after configuration can therefore reveal the driver dropdown without reselecting the debugger; incomplete Windows enumeration is retried on the next check. Returning to a retained sidebar checks immediately. Hidden or closed sidebars stop polling, and superseded checks cannot overwrite newer results. These checks neither open the target nor change its USB driver.
+
+Windows x64 下，侧栏可见且已选择 `jlink.cfg` 时，每次检测结束三秒后会再次读取 USB 元数据。因此先配置再插入探针也能自动显示驱动选择框，无须重新选择调试器；Windows 尚未完成枚举时会在下次检测重试。切回保留的侧栏会立即补查，隐藏或关闭侧栏则停止轮询，过期检测结果不会覆盖新结果。这些检测不连接目标芯片，也不更改 USB 驱动。
 
 Success history is workspace-local and is written only after a valid target memory read, successful debugger target connection, or successful download/chip read. It never overwrites user settings. Version 2 records include the effective interface profile fingerprint. For probes without a reliable serial, history remembers only the interface preference; every operation resolves the current physical device again. Standalone scripts without workspace storage use the same decision rules without persistent history. Explicit serial, transport and speed overrides are configured in VS Code settings. Write authorization binds the resolved physical connection and interface profile.
 
@@ -93,8 +97,9 @@ The sidebar installation action remains available for manual installation and pa
 连接硬件前自动离线解压并验证，之后复用扩展全局存储中按预置包 SHA-256 分隔的目录。
 自动准备不改写设置或系统安装；包括 `/usr/bin/openocd` 在内的显式路径继续优先。
 准备失败时停止操作，不回退到有缺陷的系统构建；侧栏仍保留手动安装并配置路径的入口。
-压缩包保留官方完整目录，其 SHA-256 为
+压缩包保留官方原始文件，并加入 [兼容配置](OPENOCD-TARGETS.md)。上游基础包 SHA-256 为
 `94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
+合入后的压缩包哈希及原始可执行文件哈希记录在 `resources/openocd-targets-manifest.json`。
 
 ### Other connection failures / 其他连接故障
 

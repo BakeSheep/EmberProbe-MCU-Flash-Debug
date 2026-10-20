@@ -197,7 +197,7 @@
           "minimum": 0,
           "maximum": 2147483647,
           "default": 0,
-          "description": "调试链路时钟（kHz）；非零值同时限制 target 复位事件的提速，保留事件中的必要降速。0 使用脚本默认值；不是变量采样频率。"
+          "description": "调试链路时钟（kHz）；非零值同时限制 target 复位事件的提速，保留事件中的必要降速，并作为 SWD 烧录时钟。0 使用脚本默认值，烧录时按探针能力提速（失败自动降回）；不是变量采样频率。"
         },
         "emberprobe.transport": {
           "type": "string",
@@ -995,6 +995,7 @@
     "docs/CPU-LOAD-MONITORING.md",
     "docs/RTOS-AWARENESS.md",
     "docs/SHARED-DEBUG-GROUPS.md",
+    "docs/OPENOCD-TARGETS.md",
     "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

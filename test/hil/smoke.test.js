@@ -139,7 +139,12 @@ async function run() {
         assert(plan.confirmationRequired && plan.confirmationId, `${operation} did not request confirmation`);
         const result = await call(operation, { elf, elfSha256, confirmationId: plan.confirmationId });
         assert.strictEqual(result.verified, true, `${operation} failed: ${result.detail || "unverified"}`);
-        return { verified: result.verified, elfSha256: result.elfSha256, lines: result.lines };
+        return {
+            verified: result.verified,
+            elfSha256: result.elfSha256,
+            ...(result.programming ? { programming: result.programming } : {}),
+            lines: result.lines
+        };
     };
     // Launch runs to the entry breakpoint; pausing early would stop before main and leave that
     // breakpoint to be hit by a later continue.
