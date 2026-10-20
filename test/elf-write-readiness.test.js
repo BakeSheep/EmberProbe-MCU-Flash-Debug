@@ -45,9 +45,15 @@ const elfSymbols = require("../src/elfSymbols");
         assert.throws(() => provider._agentWritePlan([{ name, value: 2 }], { refreshSymbols: false }), {
             code: "INVALID_WRITE_VALUE"
         });
-    assert.throws(() => provider._agentWritePlan([{ name: "flag", value: 1 }], { refreshSymbols: false }), {
-        code: "WRITE_NOT_ALLOWED"
-    });
+    // Booleans still encode for boolean targets; the missing RAM sections reject the address afterwards.
+    for (const value of [1, true, false])
+        assert.throws(() => provider._agentWritePlan([{ name: "flag", value }], { refreshSymbols: false }), {
+            code: "WRITE_NOT_ALLOWED"
+        });
+    for (const value of [null, ""])
+        assert.throws(() => provider._agentWritePlan([{ name: "flag", value }], { refreshSymbols: false }), {
+            code: "INVALID_WRITE_VALUE"
+        });
     const CachedProvider = loadProvider(
         {},
         {
@@ -110,6 +116,86 @@ const elfSymbols = require("../src/elfSymbols");
     assert.throws(() => cached._agentWritePlan([{ name: "value0", value: 42 }], { refreshSymbols: false }), {
         code: "ELF_CHANGED"
     });
+
+    // Write targets: exact names, no pointer storage, no overlapping items, bounded batches,
+    // and the RAM range check covers every encoded byte.
+    const hardened = Object.create(Provider.prototype);
+    hardened._assertCpuIdle = () => {};
+    hardened.readElfSymbols = () => ({
+        elf: { path: "hardened.elf", sha256: "hardened" },
+        memory: { sections: [{ name: ".data", flags: 3, addr: 0x20000000, size: 0x40 }] },
+        symbols: [
+            { name: "speed", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true },
+            { name: "speed_low", address: 0x20000002, size: 2, watchType: "u16", hasDwarfWriteType: true },
+            { name: "handle", address: 0x20000008, size: 4, watchType: "u32", isPointer: true },
+            {
+                name: "motor",
+                address: 0x20000010,
+                size: 8,
+                isComposite: true,
+                compositeLayout: {
+                    kind: "struct",
+                    byteSize: 8,
+                    members: [
+                        { name: "rpm", offset: 0, byteSize: 4, watchType: "f32" },
+                        {
+                            name: "bus",
+                            offset: 4,
+                            byteSize: 4,
+                            watchType: "u32",
+                            isPointer: true,
+                            pointerTarget: "data"
+                        }
+                    ]
+                }
+            },
+            {
+                name: "tail",
+                address: 0x2000003c,
+                size: 4,
+                isComposite: true,
+                compositeLayout: {
+                    kind: "struct",
+                    byteSize: 4,
+                    members: [{ name: "wide", offset: 2, byteSize: 2, watchType: "u32" }]
+                }
+            }
+        ]
+    });
+    const hardenedPlan = (values) => hardened._agentWritePlan(values, { refreshSymbols: false });
+    assert.strictEqual(hardenedPlan([{ name: "motor.rpm", value: 1.5 }]).items[0].address, 0x20000010);
+    assert.throws(
+        () => hardenedPlan([{ name: "SPEED", value: 1 }]),
+        (error) => error.code === "VARIABLE_NOT_FOUND" && error.details.candidates.some((c) => c.name === "speed"),
+        "writes never resolve a case-folded name"
+    );
+    for (const name of ["handle", "motor.bus"])
+        assert.throws(
+            () => hardenedPlan([{ name, value: 0 }]),
+            { code: "WRITE_NOT_ALLOWED" },
+            `${name} is pointer storage`
+        );
+    assert.throws(
+        () =>
+            hardenedPlan([
+                { name: "speed", value: 1 },
+                { name: "speed_low", value: 2 }
+            ]),
+        { code: "DUPLICATE_VARIABLE" },
+        "aliased or overlapping targets cannot share one batch"
+    );
+    assert.throws(() => hardenedPlan(Array.from({ length: 65 }, (_, index) => ({ name: `v${index}`, value: 0 }))), {
+        code: "INVALID_PARAMS"
+    });
+    assert.throws(
+        () => hardenedPlan([{ name: "tail.wide", value: 1 }]),
+        { code: "WRITE_NOT_ALLOWED" },
+        "four encoded bytes at the section end exceed the writable range"
+    );
+    for (const remember of ["false", 0, "true"])
+        await assert.rejects(hardened._writeAgentVariables({ values: [{ name: "speed", value: 1 }], remember }), {
+            code: "INVALID_PARAMS"
+        });
 
     const symbols = [
         { name: "raw", displayName: "app::value" },

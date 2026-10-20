@@ -66,6 +66,8 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     writeTimers = Object.create(null),
     writeLastAt = Object.create(null),
     latestWriteSeq = Object.create(null),
+    // Last value known to be on the target per write card; a failed write rolls back to it.
+    writeConfirmed = Object.create(null),
     writeSeq = 0,
     writeFbTimer = null,
     runtimeBodies = Object.create(null),
@@ -1026,6 +1028,13 @@ function widenWriteBounds(item, v) {
     item.max = max;
     return true;
 }
+function typedWriteValueError(item, value) {
+    if (isFloat(item.type)) return "";
+    const type = item.isBoolean ? "bool" : item.type;
+    if (!Number.isInteger(value)) return t("sb.writeValueNotInteger", { type, value });
+    const [min, max] = item.isBoolean ? [0, 1] : TYPE_RANGE[item.type] || [value, value];
+    return value < min || value > max ? t("sb.writeValueOutOfRange", { type, value, min, max }) : "";
+}
 function clampToType(v, type) {
     if (!Number.isFinite(v)) return 0;
     const r = TYPE_RANGE[type];
@@ -1145,6 +1154,7 @@ function mkWriteBtn(entry, disabled, reason) {
         !!entry.isConst ||
         !!entry.isReference ||
         !!entry.isMemberPointer ||
+        !!entry.isPointer ||
         !!entry.enumEncodingInferred ||
         Number.isInteger(entry.bitSize);
     const on = !disabled && inWriteList(entry.name);
@@ -1202,6 +1212,7 @@ function cancelPendingWrite(name) {
 }
 function removeWrite(name) {
     cancelPendingWrite(name);
+    delete writeConfirmed[name];
     writeList = writeList.filter((w) => w.name !== name);
     renderWrites();
     updateAvailableSelections();
@@ -1401,6 +1412,7 @@ function buildWriteCard(item, label) {
     rm.title = t("sb.removeFromWrite");
     rm.onclick = () => removeWrite(item.name);
     row.append(main, rm);
+    if (!(item.name in writeConfirmed)) writeConfirmed[item.name] = item.value;
     writeCells[item.name] = {
         item,
         row,
@@ -1472,17 +1484,22 @@ function buildWriteCard(item, label) {
             sendWrite(item, immediate);
         };
         const commitInput = () => {
-            if (input.value.trim() === fmt(item.value)) return;
-            const raw = Number(input.value.trim());
-            if (!Number.isFinite(raw)) {
+            const text = input.value.trim();
+            if (text === fmt(item.value)) return;
+            const raw = Number(text);
+            // An emptied box is not a request to write 0.
+            if (!text || !Number.isFinite(raw)) {
                 input.value = fmt(item.value);
                 return;
             }
-            const v = item.isBoolean
-                ? Math.min(1, Math.max(0, Math.round(raw)))
-                : isFloat(item.type)
-                  ? raw
-                  : clampToType(raw, item.type);
+            // Typed values are written exactly or not at all; never clamp or round them silently.
+            const invalid = typedWriteValueError(item, raw);
+            if (invalid) {
+                input.value = fmt(item.value);
+                setWriteFeedback(invalid, true);
+                return;
+            }
+            const v = raw;
             if (v !== item.value) {
                 const bounds = shiftSliderBounds(item.min, item.max, item.value, v);
                 item.min = bounds.min;
@@ -1498,7 +1515,8 @@ function buildWriteCard(item, label) {
         input.addEventListener(
             "wheel",
             (e) => {
-                if (writeGateKey(item)) return;
+                // Scrolling the panel across an unfocused value box must not write to the target.
+                if (writeGateKey(item) || document.activeElement !== input) return;
                 e.preventDefault();
                 const value = inputValue();
                 setValue(
@@ -1588,6 +1606,13 @@ function setWriteFeedback(text, isErr) {
     );
 }
 // 写入结果反馈：变量名前的小圆点渐亮后消失（成功绿点/失败红点）；失败另在标题区显示错误原因
+function knownWriteValue(item) {
+    if (isWideInt(item.type)) return latestText[item.name] ?? writeConfirmed[item.name];
+    const sampled = latest[item.name];
+    const value = sampled === null || sampled === undefined ? NaN : Number(sampled);
+    if (Number.isFinite(value)) return isFloat(item.type) ? value : Math.round(value);
+    return writeConfirmed[item.name];
+}
 function onWriteResult(m) {
     if (m.seq !== latestWriteSeq[m.name]) return;
     delete latestWriteSeq[m.name];
@@ -1602,6 +1627,15 @@ function onWriteResult(m) {
             latestText[m.name] = m.valueText ?? null;
             latestEnum[m.name] = m.enumText ?? null;
             cells.setVal(m.valueText ?? m.value);
+            writeConfirmed[m.name] = m.valueText ?? m.value;
+        } else {
+            // Show what the target still holds, not the rejected value, so steps start from it.
+            cancelPendingWrite(m.name);
+            const known = knownWriteValue(cells.item);
+            if (known !== undefined) {
+                cells.setVal(known);
+                saveWriteList();
+            }
         }
     }
     if (!m.ok) setWriteFeedback(t("sb.writeFail", { msg: msgText(m) || t("sb.commandFailed") }), true);
@@ -2074,7 +2108,10 @@ function syncWriteValues() {
         if (ae === c.input || ae === c.slider) return;
         if (isWideInt(item.type)) {
             const text = latestText[item.name];
-            if (text != null) c.setVal(text);
+            if (text != null) {
+                c.setVal(text);
+                writeConfirmed[item.name] = text;
+            }
             return;
         }
         const sampled = latest[item.name];
@@ -2083,6 +2120,7 @@ function syncWriteValues() {
         if (!Number.isFinite(v)) return;
         if (!isFloat(item.type)) v = Math.round(v);
         c.setVal(v);
+        writeConfirmed[item.name] = v;
     });
 }
 function liveStatus(m) {
@@ -2483,6 +2521,7 @@ window.EmberProbeMessages.connect(window, {
     },
     sidebarWriteList: function (m) {
         writeList = (m.items || []).slice();
+        writeConfirmed = Object.create(null);
         renderWrites();
         updateAvailableSelections();
     },

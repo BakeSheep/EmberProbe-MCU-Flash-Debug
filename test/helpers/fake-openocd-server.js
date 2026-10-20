@@ -19,6 +19,8 @@ class FakeOpenOcdServer {
         this.timeoutNext = false;
         this.activeInFlight = 0;
         this.maxInFlight = 0;
+        // Emulates Cortex-M7/AHB-AP byte lanes that acknowledge but discard 8/16-bit writes.
+        this.dropNarrowWrites = false;
     }
 
     seed(address, bytes) {
@@ -156,7 +158,7 @@ class FakeOpenOcdServer {
             for (const element of elements) {
                 for (let index = 0; index < elementBytes; index++) values.push((element >>> (index * 8)) & 0xff);
             }
-            this.seed(parseInt(write[1], 16), values);
+            if (!(this.dropNarrowWrites && elementBytes < 4)) this.seed(parseInt(write[1], 16), values);
             return { ok: true, response: "" };
         }
         if (command === "[target current] curstate") return { ok: true, response: this.state };

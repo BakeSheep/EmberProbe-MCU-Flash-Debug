@@ -87,3 +87,61 @@ Results and failure details are written to `test-results/cpp-board.json`. The ac
 `node test/hil/run-runtime-write.js` starts an isolated VS Code development host, attaches to a board running the probe-lab stress firmware (`probe_lab_stress.c`), continues it and enables managed runtime sampling of the `g_stressFrames`, `g_stressPacked`, `g_stressCh*` and related load variables. It then writes `g_stressWriteF32` while changing the sidebar watch list, the sampling rate and archive backpressure, and finally while a function breakpoint on `ProbeLab_StressBreakpoint` (hit every 3 s) stops the target. It only writes that RAM variable; it never downloads firmware or resets the target. Run `npm run bundle` first and give the runner exclusive use of the probe.
 
 Set `EMBERPROBE_HIL_CONFIRM=YES`, `RUNTIME_BOARD_ELF`, `RUNTIME_BOARD_GDB`, `RUNTIME_BOARD_PROBE` (for example `cmsis-dap.cfg`) and `RUNTIME_BOARD_TARGET` (for example `stm32h7x.cfg`); optional `RUNTIME_BOARD_OPENOCD`, `RUNTIME_BOARD_TRANSPORT`, `RUNTIME_BOARD_PROBE_SERIAL`, `RUNTIME_BOARD_ADAPTER_SPEED_KHZ`, `RUNTIME_BOARD_ROUNDS` and `RUNTIME_BOARD_STOPS`. `RUNTIME_BOARD_EXPECT=fixed` asserts that reconfiguration never fails a write, that every write is verified and that breakpoint interruptions report `DEBUG_STATE_CHANGED` with `details.written`. Without it the run only records outcomes, which is how a baseline checkout is compared: point `RUNTIME_BOARD_EXTENSION` at its bundled root and set `RUNTIME_BOARD_LABEL`. Results go to `test-results/runtime-write-<label>.json`. The run fails rather than passing when no runtime samples arrive, because the race needs real sampling load.
+
+## Automated smoke matrix (Windows + Linux through WSL2)
+
+`npm run test:hil:smoke` runs the everyday board checks for each configured board/probe profile in an isolated VS Code development host, through the same Agent Bridge dispatcher the skills use (flash and write confirmations are requested and supplied, never bypassed). Each profile performs, in order:
+
+1. `config.set`, `probe.list`, `chip.read`, `flash.execute` with verify, a separate `flash.verify`, `fault.read` (no fault may be latched), `variables.read`, and a confirmed `variables.write` round trip (write, read back, restore the original value).
+2. Optional checks without a debug session: `variables.sample` (sample count, ordered timestamps, plausible span, and optionally an increasing counter) and negative cases that must be rejected before any confirmation or hardware write (unknown symbol, read-only and out-of-bounds variables, a reused write confirmation, a flash request with a different ELF digest or without confirmation).
+3. A debug round: `debug.start` to the entry breakpoint, step over/in/out, `debug.inspect` of stack, scopes and variables, paused read and write round trip, an optional function breakpoint (hit, then disabled and confirmed not to stop, then removed), continue, running read, a running write through managed sampling (aligned 32-bit, the target must keep running), pause, then the optional RTOS task snapshot and SVD peripheral read/write/rejection checks (after the firmware has run past its init code), restart to the entry breakpoint, and stop. `--repeat N` runs this round N times after a single flash to expose intermittent run-control failures.
+4. Attach without reset: a marker value written before attaching must still be present afterwards; the original value is restored. Then `chip.read` and `fault.read` prove the probe was released and the firmware is still healthy.
+
+**Every profile erases and programs its target**, so use dedicated boards. Peripheral writes and the variable writes change the running firmware's state briefly; choose targets that cannot actuate hardware.
+
+`npm run test:hil:matrix` (Windows only) runs each profile on Windows, attaches the same probe to WSL2 with `usbipd attach --wsl`, repeats the profile under Linux with Xvfb, and always runs `usbipd detach` afterwards, including after a failure or Ctrl+C. The WSL run uses a mirror of this checkout under `$HOME/emberprobe-hil` (`--wsl-dir` overrides it), because the Windows `node_modules` holds Windows binaries; the mirror is refreshed and bundled on each matrix run and its `npm ci` is repeated only when `package-lock.json` changes.
+
+### Configuration
+
+Copy `test/hil/smoke.example.json` to `test/hil/smoke.local.json` (git-ignored) and edit it; `--config` or `EMBERPROBE_SMOKE_CONFIG` selects another file. `defaults` apply to every profile. Paths that differ between platforms are `{ "win32": ..., "linux": ... }` objects; a plain Windows `elf` path is read from WSL through `/mnt/<drive>`. Per profile:
+
+- `name`: lowercase letters, digits and `-`; selects the profile with `--profile a,b`.
+- `probe`, `target`: interface and target `.cfg` names, as in the sidebar; `transport`, `probeSerial`, `adapterSpeedKhz`, `rtos` as in the extension settings. Set `probeSerial` whenever two probes of one family are connected.
+- `openocd`: OpenOCD executable; `toolchain`: ARM GNU `bin` directory containing `arm-none-eabi-gdb` and `arm-none-eabi-objdump`.
+- `elf`: the board's smoke firmware. It is copied into the temporary workspace before the run.
+- `variables.read`: globals that must read successfully; `variables.write`: one writable RAM scalar and a test value. The original value is read first and restored after the check.
+- `debug`: `false` skips the debug-session steps.
+- `svd`: the board's SVD file (same path rules as `elf`), required by `checks.peripherals`.
+- `checks` (each entry optional; omit it to skip that check):
+    - `sampling`: `{ "variable", "count" (2-1000, default 20), "intervalMs" (5-10000, default 50), "increasing" }`; set `increasing` only for a counter the firmware advances continuously.
+    - `breakpoint`: a function the firmware calls repeatedly, such as a timer callback.
+    - `rtosTasks`: FreeRTOS task names that must appear in the snapshot.
+    - `peripherals`: `read` register paths; optional `write` `{ "target", "value" }` restored afterwards; optional `reject` entries `{ "target", "value", "code" }` that must fail with that error code. Do not configure writes to registers that drive actuators.
+    - `negative`: `readOnly` (a const/Flash variable) and `outOfBounds` (an out-of-range array element) names that must be rejected.
+- `usb.hardwareId` (`VID:PID`, for example `1366:0101` for J-Link) or `usb.busid` (from `usbipd list`): the probe handed to WSL. Use `busid` when two connected probes share a VID:PID.
+
+Run `node scripts/hil-matrix.js --doctor` first. It checks the executables and ELF for each platform, the usbipd share state and the WSL tools, without opening a probe.
+
+### One-time Windows/WSL setup
+
+1. As administrator: `winget install --exact dorssel.usbipd-win`, then for each probe `usbipd bind --hardware-id <VID:PID>` (or `--busid`). Binding is persistent and does not change the Windows driver until the probe is attached to WSL.
+2. In the WSL distribution: install Linux Node.js 20+ (nvm or NodeSource; Windows `node`/`npm` reached through interop are rejected), plus `rsync xvfb xauth usbutils` and the VS Code runtime libraries (`libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64`).
+3. Install a Linux OpenOCD (xPack recommended, same version as Windows) and the ARM GNU toolchain, and point the profile's `linux` paths at them.
+4. Install OpenOCD's udev rules (`60-openocd.rules` from the OpenOCD package's `contrib/`) into `/etc/udev/rules.d/`, then `sudo udevadm control --reload && sudo udevadm trigger`, so a non-root OpenOCD can open attached probes.
+5. If Windows uses a localhost proxy, set `networkingMode=mirrored` in `%UserProfile%\.wslconfig` (or configure a proxy inside WSL); the first WSL run downloads npm packages and the VS Code test build. When WSL downloads stay slow, download the Linux test build on Windows instead (for example `curl.exe -L -o .vscode-test/vscode-linux-x64-1.136.1.tar.gz https://update.code.visualstudio.com/1.136.1/linux-x64/stable`); the matrix seeds the WSL cache from that archive.
+
+### Running
+
+```powershell
+$env:EMBERPROBE_HIL_CONFIRM = 'YES'
+npm run test:hil:matrix -- --profile h750-jlink,h750-cmsis-dap
+npm run test:hil:matrix -- --platforms linux --profile f407-jlink
+npm run test:hil:matrix -- --pause
+npm run test:hil:matrix -- --repeat 5
+```
+
+`--pause` waits for Enter before each profile so the board or probe can be swapped. `--repeat N` (1-50) repeats the debug round. `--platforms win32` or `linux` runs one side; `--distro` selects a non-default WSL distribution; `--skip-bundle` reuses the existing Windows bundle. On a native Linux machine run `EMBERPROBE_HIL_CONFIRM=YES xvfb-run -a npm run test:hil:smoke -- --profile <name>` directly.
+
+Each run writes `test-results/hil-smoke-<platform>-<profile>.json` with the duration, result and error of every step, and the matrix adds `test-results/hil-matrix.json`. A failed run-control step also records the debug state at that moment, and a failed profile keeps its VS Code logs (OpenOCD, GDB and adapter output) under `test-results/hil-logs/<platform>-<profile>/`. A failed step stops that profile; the runner then stops any remaining debug session. It does not retry, reset the target, change adapter speed or switch drivers.
+
+WSL results establish Linux code paths (OpenOCD/GDB discovery, paths, permissions, debug and write flows), not native-Linux USB timing: USB/IP adds latency, so sampling-rate and timing comparisons still belong on a native Linux host. A probe that re-enumerates during a run (firmware update, CMSIS-DAP reboot) drops out of WSL and the Linux step fails; reattach and rerun rather than treating it as an extension failure.

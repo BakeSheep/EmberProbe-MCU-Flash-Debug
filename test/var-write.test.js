@@ -56,6 +56,16 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         () => encodeValue(NaN, "u32"),
         (e) => e.code === "INVALID_WRITE_VALUE"
     );
+    // Number() coerces these to 0/1/n; a missing or malformed value must never be written.
+    for (const type of ["u8", "i16", "u32", "i32", "f32", "f64"])
+        for (const value of [null, undefined, "", "   ", false, true, [], [7], {}])
+            assert.throws(
+                () => encodeValue(value, type),
+                { code: "INVALID_WRITE_VALUE" },
+                `${type} rejects ${JSON.stringify(value)}`
+            );
+    assert.deepStrictEqual(encodeValue(" 0x10 ", "u8"), [0x10], "numeric strings are still accepted");
+    assert.deepStrictEqual(encodeValue(5n, "u16"), [5, 0]);
     assert.strictEqual(decodeValueText(encodeValue("18446744073709551615", "u64"), "u64"), "18446744073709551615");
     assert.strictEqual(decodeValueText(encodeValue("-9223372036854775808", "i64"), "i64"), "-9223372036854775808");
     assert.deepStrictEqual(
@@ -102,7 +112,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.strictEqual(decodeValue(encodeValue("inf", "f64"), "f64"), Infinity);
     assert.strictEqual(decodeValue(encodeValue("-inf", "f64"), "f64"), -Infinity);
 
-    // —— _writeMemoryBytes：32 位读-改-写、ocd_→ 无前缀回退、失败抛错 ——
+    // —— _writeMemoryBytes：先按自然宽度写，窄写被丢弃时回退 32 位读-改-写、ocd_→ 无前缀回退、失败抛错 ——
     const okSession = new LiveWatchSession(null, {}, {});
     const sent = [];
     okSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
@@ -111,7 +121,11 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         return "";
     };
     await okSession._writeMemoryBytes(0x20000010, [0x2a, 0x00]);
-    assert.deepStrictEqual(sent, ["ocd_write_memory 0x20000010 32 {0x4433002a}"]);
+    assert.deepStrictEqual(
+        sent,
+        ["ocd_write_memory 0x20000010 16 {0x2a}", "ocd_write_memory 0x20000010 32 {0x4433002a}"],
+        "a narrow write that did not land falls back to an aligned read-modify-write"
+    );
     assert.strictEqual(okSession.writeCmd, "ocd_write_memory", "keep the primary command on success");
 
     const fallbackSession = new LiveWatchSession(null, {}, {});
@@ -123,7 +137,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         return "";
     };
     await fallbackSession._writeMemoryBytes(0x20000000, [1]);
-    assert.strictEqual(fallbackSent.length, 2);
+    assert.strictEqual(fallbackSent.length, 3);
     assert.ok(fallbackSent[1].startsWith("write_memory "), "fall back to write_memory");
     assert.strictEqual(fallbackSession.writeCmd, "write_memory", "lock the fallback command");
 
@@ -156,9 +170,33 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     await highAddressSession._writeMemoryBytes(0x90000001, [0xaa]);
     assert.deepStrictEqual(
         highAddressSent,
-        ["ocd_write_memory 0x90000000 32 {0x4433aa11}"],
+        ["ocd_write_memory 0x90000001 8 {0xaa}", "ocd_write_memory 0x90000000 32 {0x4433aa11}"],
         "high RAM addresses must remain unsigned"
     );
+
+    // Narrow writes that land never rewrite neighbouring bytes, so a DMA update made while the
+    // target is halted survives; unaligned spans use naturally aligned 8/16-bit accesses.
+    const memorySession = new LiveWatchSession(null, {}, {});
+    const ram = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    const memorySent = [];
+    memorySession._readMemoryBytes = async (address, count) =>
+        ram.slice(address - 0x20000000, address - 0x20000000 + count);
+    memorySession._sendCheckedCommand = async (cmd) => {
+        memorySent.push(cmd);
+        const [, address, width, data] = cmd.match(/^\S+ (0x[0-9a-f]+) (\d+) \{(.*)\}$/);
+        let offset = Number(address) - 0x20000000;
+        for (const value of data.split(" ").map(Number))
+            for (let index = 0; index < Number(width) / 8; index++) ram[offset++] = (value >>> (index * 8)) & 0xff;
+        ram[0] = 0x99; // DMA updates a neighbouring byte while the target is halted
+        return "";
+    };
+    await memorySession._writeMemoryBytes(0x20000001, [0xa1, 0xa2, 0xa3, 0xa4]);
+    assert.deepStrictEqual(memorySent, [
+        "ocd_write_memory 0x20000001 8 {0xa1}",
+        "ocd_write_memory 0x20000002 16 {0xa3a2}",
+        "ocd_write_memory 0x20000004 8 {0xa4}"
+    ]);
+    assert.deepStrictEqual(ram, [0x99, 0xa1, 0xa2, 0xa3, 0xa4, 0x66, 0x77, 0x88], "neighbouring bytes are kept");
 
     // —— writeOnce：串行写入、不改 watch 列表 ——
     const session = new LiveWatchSession(null, {}, {});

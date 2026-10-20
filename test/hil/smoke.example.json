@@ -1,0 +1,143 @@
+{
+  "defaults": {
+    "openocd": {
+      "win32": "D:\\software\\openOCD\\xpack-openocd-0.12.0-7\\bin\\openocd.exe",
+      "linux": "/opt/xpack-openocd-0.12.0-7/bin/openocd"
+    },
+    "toolchain": {
+      "win32": "C:\\Program Files (x86)\\Arm GNU Toolchain arm-none-eabi\\14.2 rel1\\bin",
+      "linux": "/opt/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi/bin"
+    },
+    "transport": "swd",
+    "adapterSpeedKhz": 4000
+  },
+  "profiles": [
+    {
+      "name": "h750-jlink",
+      "probe": "jlink.cfg",
+      "target": "stm32h7x.cfg",
+      "probeSerial": "",
+      "usb": {
+        "hardwareId": "1366:0101"
+      },
+      "elf": "C:\\path\\to\\h750-smoke.elf",
+      "rtos": "",
+      "variables": {
+        "read": ["g_appDebug.produced", "g_appDebug.consumed", "g_appDebug.command_gain"],
+        "write": {
+          "name": "g_appDebug.command_gain",
+          "value": "1.25"
+        }
+      },
+      "svd": "C:\\path\\to\\STM32H750x.svd",
+      "checks": {
+        "sampling": {
+          "variable": "g_appDebug.produced",
+          "increasing": true,
+          "count": 20,
+          "intervalMs": 50
+        },
+        "breakpoint": "AppRtos_OnTim7Elapsed",
+        "rtosTasks": ["imuProducer", "controlTask", "protocolTx", "protocolRx", "rtosMonitor"],
+        "peripherals": {
+          "read": ["GPIOE.GPIO_ODR", "TIM7.PSC", "RCC.C1_APB1LENR"],
+          "write": {
+            "target": "TIM7.PSC",
+            "value": "1"
+          },
+          "reject": [
+            {
+              "target": "TIM7.EGR",
+              "value": "1",
+              "code": "PERIPHERAL_WRITE_NOT_ALLOWED"
+            }
+          ]
+        },
+        "negative": {
+          "readOnly": "uxTopUsedPriority",
+          "outOfBounds": "g_appDebug.history[99]"
+        }
+      }
+    },
+    {
+      "name": "h750-cmsis-dap",
+      "probe": "cmsis-dap.cfg",
+      "target": "stm32h7x.cfg",
+      "probeSerial": "",
+      "usb": {
+        "hardwareId": "c251:f00a"
+      },
+      "elf": "C:\\path\\to\\h750-smoke.elf",
+      "variables": {
+        "read": ["g_appDebug.produced", "g_appDebug.command_gain"],
+        "write": {
+          "name": "g_appDebug.command_gain",
+          "value": "1.25"
+        }
+      },
+      "svd": "C:\\path\\to\\STM32H750x.svd",
+      "checks": {
+        "sampling": {
+          "variable": "g_appDebug.produced",
+          "increasing": true,
+          "count": 20,
+          "intervalMs": 50
+        },
+        "breakpoint": "AppRtos_OnTim7Elapsed",
+        "rtosTasks": ["imuProducer", "controlTask", "protocolTx", "protocolRx", "rtosMonitor"],
+        "peripherals": {
+          "read": ["GPIOE.GPIO_ODR", "TIM7.PSC", "RCC.C1_APB1LENR"],
+          "write": {
+            "target": "TIM7.PSC",
+            "value": "1"
+          },
+          "reject": [
+            {
+              "target": "TIM7.EGR",
+              "value": "1",
+              "code": "PERIPHERAL_WRITE_NOT_ALLOWED"
+            }
+          ]
+        },
+        "negative": {
+          "readOnly": "uxTopUsedPriority",
+          "outOfBounds": "g_appDebug.history[99]"
+        }
+      }
+    },
+    {
+      "name": "f407-jlink",
+      "probe": "jlink.cfg",
+      "target": "stm32f4x.cfg",
+      "probeSerial": "",
+      "usb": {
+        "hardwareId": "1366:0101"
+      },
+      "elf": "C:\\path\\to\\f407-smoke.elf",
+      "variables": {
+        "read": ["g_smokeCounter"],
+        "write": {
+          "name": "g_smokeGain",
+          "value": "1.25"
+        }
+      }
+    },
+    {
+      "name": "f407-cmsis-dap",
+      "probe": "cmsis-dap.cfg",
+      "target": "stm32f4x.cfg",
+      "probeSerial": "",
+      "usb": {
+        "hardwareId": "c251:f00a"
+      },
+      "elf": "C:\\path\\to\\f407-smoke.elf",
+      "variables": {
+        "read": ["g_smokeCounter"],
+        "write": {
+          "name": "g_smokeGain",
+          "value": "1.25"
+        }
+      }
+    }
+  ]
+}

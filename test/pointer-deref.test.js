@@ -217,6 +217,18 @@ const fixture = require("./fixtures/pointer-classes/elf.json");
                     (error) => !!error.code,
                     name + " must not be writable"
                 );
+            // Pointer members elsewhere in the object must not lock its fixed scalar members.
+            assert.ok(motor.runtimeLayout || motor.compositeLayout?.runtimeLayout);
+            const motorLeaves = elf.expandCompositeLeaves(motor, motor.compositeLayout, null);
+            for (const name of ["motor.speed", "motor.@base0.x"]) {
+                const [item] = provider._agentWritePlan([{ name, value: 1 }], { refreshSymbols: false }).items;
+                assert.strictEqual(item.address, motorLeaves.find((leaf) => leaf.path === name).address, name);
+            }
+            assert.throws(
+                () => provider._agentWritePlan([{ name: "motor.@base0.parent", value: 0 }], { refreshSymbols: false }),
+                { code: "WRITE_NOT_ALLOWED" },
+                "pointer storage stays read-only"
+            );
         } finally {
             fs.rmSync(temporary, { recursive: true, force: true });
         }

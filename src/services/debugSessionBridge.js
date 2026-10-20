@@ -111,6 +111,20 @@ class DebugSessionBridge {
         return !!(this.canRead && this.snapshotReady && this.capabilities.write);
     }
 
+    // A paused DAP write needs a snapshot of this stop, not live-sampling intent: Agent writes
+    // prime that snapshot themselves while sampling is off (prepareWriteSnapshot).
+    get canWritePaused() {
+        return !!(
+            this.paused &&
+            !this.transitionKind &&
+            !this.conflict &&
+            this.activeSession &&
+            this.capabilities.read &&
+            this.capabilities.write &&
+            this.snapshotReady
+        );
+    }
+
     agentStatus() {
         let state = "none";
         if (this.conflict || (this.allSessions.size && !this.hasSession)) state = "conflict";
@@ -900,7 +914,7 @@ class DebugSessionBridge {
 
     // Agent writes may arrive while live sampling is disabled, so no background
     // snapshot exists yet. Prime one from the exact write plan on the paused DAP
-    // session before applying the normal canWrite gate.
+    // session before applying the paused write gate (canWritePaused).
     async prepareWriteSnapshot(items) {
         const session = this.assertPausedAccess();
         const epoch = this.epoch;
@@ -923,74 +937,94 @@ class DebugSessionBridge {
         const session = this.activeSession;
         if (!this.paused || !session || this.capabilities.write !== true)
             throw new Error("The debugger target must be paused and support DAP writeMemory");
-        this._invalidate();
-        const waitDeadline = this.now() + 2000;
-        while (this.polling && this.canWrite && this.now() < waitDeadline)
-            await new Promise((resolve) => this.schedule(resolve, 5));
-        if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
-        if (!this.canWrite || session !== this.activeSession)
-            throw new Error("Target continued before the DAP write could start");
+        // Reserve before the first await: a second writer or a run-control request arriving while
+        // a snapshot read drains must be rejected, not interleaved with this read-modify-write.
         this.writing = true;
-        this._invalidate();
-        const epoch = this.epoch;
-        const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
         try {
-            const before = await this.read(plan, session);
-            const writes = [];
-            for (const item of items) {
-                const previous = writes[writes.length - 1];
-                if (
-                    previous &&
-                    Number(previous.address) % 4 === 0 &&
-                    previous.bytes.length % 4 === 0 &&
-                    Number(item.address) === Number(previous.address) + previous.bytes.length &&
-                    item.bytes.length % 4 === 0 &&
-                    previous.bytes.length + item.bytes.length <= 4096
-                ) {
-                    previous.bytes = Buffer.concat([Buffer.from(previous.bytes), Buffer.from(item.bytes)]);
-                    previous.name += ", " + item.name;
-                } else writes.push({ ...item });
-            }
-            for (const item of writes) {
-                if (epoch !== this.epoch || !this.canWrite)
-                    throw new Error("Target continued while a DAP write was in progress");
-                const address = Number(item.address);
-                const alignedStart = Math.floor(address / 4) * 4;
-                const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
-                const alignedBytes =
-                    address === alignedStart && item.bytes.length === alignedEnd - alignedStart
-                        ? Uint8Array.from(item.bytes)
-                        : await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
-                if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
-                    throw new Error("Target state changed before the DAP write could start");
-                if (alignedBytes.length !== alignedEnd - alignedStart)
-                    throw new Error(`DAP could not read adjacent bytes before writing ${item.name}`);
-                alignedBytes.set(item.bytes, address - alignedStart);
-                const result = unwrapResponse(
-                    await session.customRequest("writeMemory", {
-                        memoryReference: `0x${alignedStart.toString(16)}`,
-                        offset: 0,
-                        data: Buffer.from(alignedBytes).toString("base64"),
-                        allowPartial: false
-                    })
-                );
-                if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== alignedBytes.length) {
-                    throw new Error(`DAP partially wrote ${item.name}`);
-                }
-            }
-            if (epoch !== this.epoch || !this.canWrite)
-                throw new Error("Target continued before DAP write verification");
-            const after = await this.read(plan, session);
-            if (epoch === this.epoch && this.paused) {
-                this.snapshotReady = true;
-                this.snapshotPending = false;
-                this.onSamples(after, this.now());
-                this.onStatus(this.status());
-            }
-            return { before, after, halted: true };
+            this._invalidate();
+            const waitDeadline = this.now() + 2000;
+            while (this.polling && this.canWritePaused && this.now() < waitDeadline)
+                await new Promise((resolve) => this.schedule(resolve, 5));
+            if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
+            if (!this.canWritePaused || session !== this.activeSession)
+                throw new Error("Target continued before the DAP write could start");
+            this._invalidate();
+            return await this._writeAndVerifyPaused(items, session);
         } finally {
             this.writing = false;
         }
+    }
+
+    async _writeAndVerifyPaused(items, session) {
+        const epoch = this.epoch;
+        const plan = items.map((item) => ({ ...item, size: item.bytes.length }));
+        const before = await this.read(plan, session);
+        const writes = [];
+        for (const item of items) {
+            const previous = writes[writes.length - 1];
+            if (
+                previous &&
+                Number(previous.address) % 4 === 0 &&
+                previous.bytes.length % 4 === 0 &&
+                Number(item.address) === Number(previous.address) + previous.bytes.length &&
+                item.bytes.length % 4 === 0 &&
+                previous.bytes.length + item.bytes.length <= 4096
+            ) {
+                previous.bytes = Buffer.concat([Buffer.from(previous.bytes), Buffer.from(item.bytes)]);
+                previous.name += ", " + item.name;
+            } else writes.push({ ...item });
+        }
+        const writeBlock = async (address, data, name) => {
+            const result = unwrapResponse(
+                await session.customRequest("writeMemory", {
+                    memoryReference: `0x${address.toString(16)}`,
+                    offset: 0,
+                    data: Buffer.from(data).toString("base64"),
+                    allowPartial: false
+                })
+            );
+            if (Number.isFinite(result.bytesWritten) && result.bytesWritten !== data.length)
+                throw new Error(`DAP partially wrote ${name}`);
+        };
+        const assertUnchanged = () => {
+            if (epoch !== this.epoch || session !== this.activeSession || !this.canWritePaused)
+                throw new Error("Target state changed during the DAP write");
+        };
+        for (const item of writes) {
+            if (epoch !== this.epoch || !this.canWritePaused)
+                throw new Error("Target continued while a DAP write was in progress");
+            const address = Number(item.address);
+            const alignedStart = Math.floor(address / 4) * 4;
+            const alignedEnd = Math.ceil((address + item.bytes.length) / 4) * 4;
+            const bytes = Uint8Array.from(item.bytes);
+            if (address === alignedStart && bytes.length === alignedEnd - alignedStart) {
+                await writeBlock(alignedStart, bytes, item.name);
+                continue;
+            }
+            // Write only the variable's own bytes so DMA or peripheral updates to neighbouring
+            // bytes are kept; fall back to an aligned read-modify-write when a narrow access
+            // was dropped (some Cortex-M7/AHB-AP byte lanes).
+            await writeBlock(address, bytes, item.name);
+            assertUnchanged();
+            const alignedBytes = await this._readBlock(session, alignedStart, alignedEnd - alignedStart);
+            assertUnchanged();
+            if (alignedBytes.length !== alignedEnd - alignedStart)
+                throw new Error(`DAP could not read back the bytes written to ${item.name}`);
+            const offset = address - alignedStart;
+            if (bytes.every((value, index) => alignedBytes[offset + index] === value)) continue;
+            alignedBytes.set(bytes, offset);
+            await writeBlock(alignedStart, alignedBytes, item.name);
+        }
+        if (epoch !== this.epoch || !this.canWritePaused)
+            throw new Error("Target continued before DAP write verification");
+        const after = await this.read(plan, session);
+        if (epoch === this.epoch && this.paused) {
+            this.snapshotReady = true;
+            this.snapshotPending = false;
+            this.onSamples(after, this.now());
+            this.onStatus(this.status());
+        }
+        return { before, after, halted: true };
     }
 
     dispose() {

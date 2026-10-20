@@ -95,6 +95,22 @@ function bytesToElements(bytes, elementBytes) {
     return elements;
 }
 
+// Split a byte range into naturally aligned 8/16/32-bit accesses, merging equal widths.
+function naturalWriteChunks(address, bytes) {
+    const chunks = [];
+    for (let offset = 0; offset < bytes.length;) {
+        const at = address + offset;
+        const remaining = bytes.length - offset;
+        const width = at % 4 === 0 && remaining >= 4 ? 4 : at % 2 === 0 && remaining >= 2 ? 2 : 1;
+        const last = chunks[chunks.length - 1];
+        const part = bytes.slice(offset, offset + width);
+        if (last && last.width === width && last.address + last.bytes.length === at) last.bytes.push(...part);
+        else chunks.push({ address: at, width, bytes: part });
+        offset += width;
+    }
+    return chunks;
+}
+
 function elementsToBytes(elements, elementBytes) {
     const bytes = [];
     for (const element of elements) {
@@ -1539,8 +1555,9 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 对齐的单字直接写入，其他变量写入转换为对齐的 32-bit 读-改-写。
-    // 某些 Cortex-M7/AHB-AP 的 byte-lane 写入会被丢弃；字写可避开该问题并保留相邻字节。
+    // 对齐的单字直接写入。其他变量先按自然宽度只写变量自身的字节，避免 halt 期间 DMA/外设
+    // 刚更新的相邻字节被旧值覆盖；回读发现窄写被丢弃（某些 Cortex-M7/AHB-AP 的 byte-lane）
+    // 时，再退回对齐的 32-bit 读-改-写。
     async _writeMemoryBytes(addr, bytes) {
         if (this.mode === "debug") validateManagedWritePlan([{ address: addr, bytes }]);
         const address = addr >>> 0;
@@ -1548,18 +1565,36 @@ class ManagedOpenOcdSession {
         if (!input.length) return true;
         const alignedStart = (address & 0xfffffffc) >>> 0;
         const alignedEnd = Math.ceil((address + input.length) / 4) * 4;
-        let writeBytes = input;
-        if (alignedStart !== address || alignedEnd - alignedStart !== input.length) {
-            const existing = await this._readMemoryBytes(alignedStart, alignedEnd - alignedStart);
-            if (!existing) throw new Error("Memory write failed: cannot read adjacent bytes for aligned 32-bit access");
-            writeBytes = existing.slice();
-            writeBytes.splice(address - alignedStart, input.length, ...input);
+        if (alignedStart === address && alignedEnd - alignedStart === input.length) {
+            await this._writeMemoryElements(alignedStart, 4, input);
+            return true;
         }
-        const hex = "0x" + alignedStart.toString(16);
-        const data = bytesToElements(writeBytes, 4)
+        let narrowError = null;
+        try {
+            for (const chunk of naturalWriteChunks(address, input))
+                await this._writeMemoryElements(chunk.address, chunk.width, chunk.bytes);
+        } catch (error) {
+            narrowError = error;
+        }
+        const words = await this._readMemoryBytes(alignedStart, alignedEnd - alignedStart);
+        if (!words) {
+            if (narrowError) throw narrowError;
+            throw new Error("Memory write failed: cannot read back the written bytes");
+        }
+        const offset = address - alignedStart;
+        if (!narrowError && input.every((value, index) => words[offset + index] === value)) return true;
+        const writeBytes = words.slice();
+        writeBytes.splice(offset, input.length, ...input);
+        await this._writeMemoryElements(alignedStart, 4, writeBytes);
+        return true;
+    }
+
+    async _writeMemoryElements(address, width, bytes) {
+        const hex = "0x" + (address >>> 0).toString(16);
+        const data = bytesToElements(bytes, width)
             .map((value) => "0x" + value.toString(16))
             .join(" ");
-        const build = (cmd) => `${cmd} ${hex} 32 {${data}}`;
+        const build = (cmd) => `${cmd} ${hex} ${width * 8} {${data}}`;
         try {
             await this._sendCheckedCommand(build(this.writeCmd));
         } catch (error) {
@@ -1577,7 +1612,6 @@ class ManagedOpenOcdSession {
                 throw Object.assign(new Error("Memory write failed: " + error.message), { cause: error });
             }
         }
-        return true;
     }
 
     async _waitUntilIdle(timeoutMs) {

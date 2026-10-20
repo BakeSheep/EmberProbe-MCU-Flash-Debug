@@ -22,9 +22,13 @@ const ABI_OBJECT =
 const LOCAL_STATIC = /\.\d+$/;
 const asList = (value) => (Array.isArray(value) ? value : value ? [value] : []);
 const fileKey = (value) => String(value || "").replace(/\\/g, "/");
+// On a POSIX host, nm and GDB do not treat a Windows drive path as absolute and prefix comp_dir to it
+// (C:\fw\build/C:/fw/src/x.c). GDB scopes resolve only the recorded name, so keep the last drive path.
+const EMBEDDED_DRIVE_PATH = /(?:^|[\\/])([A-Za-z]:[\\/](?:(?![\\/][A-Za-z]:[\\/]).)*)$/;
 // nm reports comp_dir-relative names unnormalized (build/../Core/Src/x.c); GDB reports them normalized.
 function sourceKey(value) {
-    const file = fileKey(value);
+    const raw = String(value || "");
+    const file = fileKey(raw.match(EMBEDDED_DRIVE_PATH)?.[1] ?? raw);
     if (!file) return file;
     return (file.startsWith("//") ? "/" : "") + path.posix.normalize(file);
 }
