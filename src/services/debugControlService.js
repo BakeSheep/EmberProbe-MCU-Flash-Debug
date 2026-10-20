@@ -53,6 +53,7 @@ class DebugControlService {
         this.debugBridge = options.debugBridge;
         this.workspaceProvider = options.workspaceProvider;
         this.startDebug = options.startDebug;
+        this.waitForRelease = options.waitForRelease || (() => undefined);
         this.controlInFlight = null;
     }
 
@@ -99,8 +100,10 @@ class DebugControlService {
         const before = this.status();
         const stopped = await this.vscode.debug.stopDebugging(session);
         if (stopped === false) throw error("VS Code refused to stop the debugger session", "DEBUG_STOP_FAILED");
-        const status = await this.debugBridge.waitForState(() => !this.debugBridge.allSessions.has(session.id), 10000);
-        return { action, before, status };
+        await this.debugBridge.waitForState(() => !this.debugBridge.allSessions.has(session.id), 10000);
+        // The session leaves the bridge before its OpenOCD server exits; resolve only once the probe is free.
+        await this.waitForRelease(session);
+        return { action, before, status: this.status() };
     }
 
     _workspaceRoot() {

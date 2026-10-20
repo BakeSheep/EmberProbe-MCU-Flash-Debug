@@ -150,6 +150,7 @@ const TEST_GROUPS = Object.freeze({
         "cubemx.test.js",
         "daplink-flash.test.js",
         "debug-lifecycle-races.test.js",
+        "debug-stop-release.test.js",
         "docs-cleanup.test.js",
         "debug-server-controller.test.js",
         "external-debug.test.js",
