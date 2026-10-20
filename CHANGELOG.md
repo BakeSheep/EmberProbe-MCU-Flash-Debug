@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复调试暂停且未开启实时采样时，Agent 写变量总是失败并误报“Target continued before the DAP write could start”的问题；暂停写入只要求本次暂停的内存快照，侧边栏写入仍需开启采样。
+- Fix Agent variable writes always failing with "Target continued before the DAP write could start" while debugging is paused with live sampling off; paused writes now require only a snapshot of the current stop, and sidebar writes still require sampling.
+
+- 修复在 Linux 上调试 Windows 编译的固件时 FreeRTOS 任务列表只显示 IDLE 的问题：工具链把编译目录拼接到 Windows 绝对路径前，导致 GDB 无法解析文件限定的静态符号。
+- Fix the FreeRTOS task list showing only IDLE when debugging Windows-built firmware on Linux: the toolchain prefixed the compile directory to Windows absolute source paths, so GDB could not resolve file-scoped statics.
+
+- 新增实机冒烟测试矩阵（`npm run test:hil:smoke`、`npm run test:hil:matrix`），在 Windows 与 WSL2 Linux 上依次覆盖烧录、调试、断点、RTOS、外设、采样、运行中写入、attach 与负向用例，见 `test/hil/README.md`。
+- Add a real-board smoke matrix (`npm run test:hil:smoke`, `npm run test:hil:matrix`) covering flash, debug, breakpoints, RTOS, peripherals, sampling, running writes, attach and negative cases on Windows and WSL2 Linux; see `test/hil/README.md`.
+
 - 修复 C++ 对象中任意位置含指针或 STL 成员时，整个对象的普通成员（如 `uint32_t`）都无法写入的问题；`std::` 对象内部、`_vptr` 等库内部成员以及指针本身仍为只读。
 - Fix plain members (such as `uint32_t`) of a C++ object becoming unwritable whenever a pointer or STL member appeared anywhere in its type; members inside `std::` objects, library-internal members such as `_vptr`, and pointers themselves stay read-only.
 

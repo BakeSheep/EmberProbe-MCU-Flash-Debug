@@ -8,7 +8,7 @@ const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
 const { EmberDebugSession } = require("../src/debug/session");
-const { SymbolDirectory, debugSymbols, nmSymbols } = require("../src/debug/symbolDirectory");
+const { SymbolDirectory, debugSymbols, nmSymbols, sourceKey } = require("../src/debug/symbolDirectory");
 const { safePath } = require("../src/debug/stl");
 
 const catalog = {
@@ -106,6 +106,34 @@ function setup() {
         nmSymbols("20000008 00000004 B AppConfig::balance	C:/src/config.hpp:46")[0].expression,
         "'C:/src/config.hpp'::'AppConfig::balance'"
     );
+    // A Windows-built ELF read on Linux: nm and GDB prefix comp_dir to the recorded drive path, and
+    // GDB scopes resolve only the recorded name (observed with arm-none-eabi 15.2 in WSL).
+    assert.strictEqual(
+        nmSymbols("20002730 00000004 b xSchedulerRunning\tC:\\fw\\build\\Debug/C:/fw/Middlewares/tasks.c:369")[0]
+            .expression,
+        "'C:/fw/Middlewares/tasks.c'::xSchedulerRunning"
+    );
+    assert.strictEqual(
+        debugSymbols({
+            symbols: {
+                debug: {
+                    filename: "C:/fw/Middlewares/tasks.c",
+                    fullname: "C:/fw/build/Debug/C:/fw/Middlewares/tasks.c",
+                    symbols: { name: "xSchedulerRunning", description: "static volatile BaseType_t x;" }
+                }
+            }
+        })[0].file,
+        "C:/fw/Middlewares/tasks.c"
+    );
+    for (const [input, expected] of [
+        ["C:\\fw\\src\\x.c", "C:/fw/src/x.c"],
+        ["C:/fw/build/../Core/x.c", "C:/fw/Core/x.c"],
+        ["/home/me/fw/build/../Core/x.c", "/home/me/fw/Core/x.c"],
+        ["build/../Core/main.c", "Core/main.c"],
+        ["//server/share/x.c", "//server/share/x.c"],
+        ["", ""]
+    ])
+        assert.strictEqual(sourceKey(input), expected, input);
     assert.strictEqual(nmSymbols("20AB0000 00000004 u inlineValue")[0].isStatic, false);
     assert.strictEqual(nmSymbols("20AB0000 00000004 v weakObject")[0].isStatic, false);
     let calls = 0;

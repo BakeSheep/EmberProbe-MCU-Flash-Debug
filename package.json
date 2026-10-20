@@ -1015,6 +1015,8 @@
     "quality": "npm run lint && npm run format:check && npm run typecheck && npm run coverage",
     "test:e2e": "npm run bundle && node test/e2e/runTest.js",
     "test:hil": "node test/hil/run-hil.js",
+    "test:hil:smoke": "node test/hil/run-smoke.js",
+    "test:hil:matrix": "node scripts/hil-matrix.js",
     "release:prepare": "node scripts/release.js",
     "docs:clean": "node scripts/docs-cleanup.js",
     "bundle": "node esbuild.js",

@@ -389,6 +389,23 @@ async function testBackgroundStatusBroadcasts(debugType) {
             memoryBridge.dispose();
         }
         {
+            // Agent writes run with live sampling off: a primed snapshot of this stop is enough.
+            const { memoryBridge, ram } = pausedMemoryBridge(false);
+            Object.assign(memoryBridge, { intentEnabled: false, snapshotReady: false });
+            assert.strictEqual(memoryBridge.canWritePaused, false, "a paused write needs a snapshot of this stop");
+            await memoryBridge.prepareWriteSnapshot([{ name: "flag", address: 0x20000001, size: 1 }]);
+            assert.strictEqual(memoryBridge.canWrite, false, "sidebar writes still require live sampling");
+            assert.strictEqual(memoryBridge.canWritePaused, true);
+            await memoryBridge.writeAndVerify([{ name: "flag", address: 0x20000001, bytes: [0xaa] }]);
+            assert.strictEqual(ram[1], 0xaa);
+            memoryBridge.paused = false;
+            await assert.rejects(
+                memoryBridge.writeAndVerify([{ name: "flag", address: 0x20000001, bytes: [0xbb] }]),
+                /must be paused/
+            );
+            memoryBridge.dispose();
+        }
+        {
             // A second writer arriving while a snapshot read drains must not interleave.
             const { memoryBridge } = pausedMemoryBridge(false);
             memoryBridge.polling = true;

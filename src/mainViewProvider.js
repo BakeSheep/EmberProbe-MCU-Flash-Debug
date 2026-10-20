@@ -2697,7 +2697,7 @@ class MainViewProvider {
         // Sampling may be off, so no snapshot exists yet and canWrite is false: prime one from
         // the write plan itself instead of falling back to a second standalone OpenOCD identity.
         if (this._debugBridge.agentStatus().state === "paused") {
-            if (!this._debugBridge.canWrite) await this._debugBridge.prepareWriteSnapshot(plan.items);
+            if (!this._debugBridge.canWritePaused) await this._debugBridge.prepareWriteSnapshot(plan.items);
             const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
             return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }

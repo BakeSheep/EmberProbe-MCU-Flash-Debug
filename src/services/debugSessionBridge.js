@@ -111,6 +111,20 @@ class DebugSessionBridge {
         return !!(this.canRead && this.snapshotReady && this.capabilities.write);
     }
 
+    // A paused DAP write needs a snapshot of this stop, not live-sampling intent: Agent writes
+    // prime that snapshot themselves while sampling is off (prepareWriteSnapshot).
+    get canWritePaused() {
+        return !!(
+            this.paused &&
+            !this.transitionKind &&
+            !this.conflict &&
+            this.activeSession &&
+            this.capabilities.read &&
+            this.capabilities.write &&
+            this.snapshotReady
+        );
+    }
+
     agentStatus() {
         let state = "none";
         if (this.conflict || (this.allSessions.size && !this.hasSession)) state = "conflict";
@@ -900,7 +914,7 @@ class DebugSessionBridge {
 
     // Agent writes may arrive while live sampling is disabled, so no background
     // snapshot exists yet. Prime one from the exact write plan on the paused DAP
-    // session before applying the normal canWrite gate.
+    // session before applying the paused write gate (canWritePaused).
     async prepareWriteSnapshot(items) {
         const session = this.assertPausedAccess();
         const epoch = this.epoch;
@@ -929,10 +943,10 @@ class DebugSessionBridge {
         try {
             this._invalidate();
             const waitDeadline = this.now() + 2000;
-            while (this.polling && this.canWrite && this.now() < waitDeadline)
+            while (this.polling && this.canWritePaused && this.now() < waitDeadline)
                 await new Promise((resolve) => this.schedule(resolve, 5));
             if (this.polling) throw new Error("A DAP memory read is still in progress; write was not started");
-            if (!this.canWrite || session !== this.activeSession)
+            if (!this.canWritePaused || session !== this.activeSession)
                 throw new Error("Target continued before the DAP write could start");
             this._invalidate();
             return await this._writeAndVerifyPaused(items, session);
@@ -973,11 +987,11 @@ class DebugSessionBridge {
                 throw new Error(`DAP partially wrote ${name}`);
         };
         const assertUnchanged = () => {
-            if (epoch !== this.epoch || session !== this.activeSession || !this.canWrite)
+            if (epoch !== this.epoch || session !== this.activeSession || !this.canWritePaused)
                 throw new Error("Target state changed during the DAP write");
         };
         for (const item of writes) {
-            if (epoch !== this.epoch || !this.canWrite)
+            if (epoch !== this.epoch || !this.canWritePaused)
                 throw new Error("Target continued while a DAP write was in progress");
             const address = Number(item.address);
             const alignedStart = Math.floor(address / 4) * 4;
@@ -1001,7 +1015,8 @@ class DebugSessionBridge {
             alignedBytes.set(bytes, offset);
             await writeBlock(alignedStart, alignedBytes, item.name);
         }
-        if (epoch !== this.epoch || !this.canWrite) throw new Error("Target continued before DAP write verification");
+        if (epoch !== this.epoch || !this.canWritePaused)
+            throw new Error("Target continued before DAP write verification");
         const after = await this.read(plan, session);
         if (epoch === this.epoch && this.paused) {
             this.snapshotReady = true;

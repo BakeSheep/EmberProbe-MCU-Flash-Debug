@@ -63,6 +63,7 @@ const TEST_GROUPS = Object.freeze({
         "flash-service.test.js",
         "flash-workspace-permission.test.js",
         "hil-runner.test.js",
+        "hil-smoke-profile.test.js",
         "java-properties.test.js",
         "jlink-driver-choice.test.js",
         "jlink-probe-ready.test.js",
