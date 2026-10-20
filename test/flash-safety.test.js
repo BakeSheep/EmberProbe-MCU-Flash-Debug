@@ -295,9 +295,21 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
                 // program 自带 verify 与 reset；work-area backup 保护被用作缓冲区的目标 RAM。
                 assert(commands.includes("verify reset exit"));
                 assert(commands.includes("-work-area-backup 1"));
+                for (const line of [
+                    "Info : Reduced speed from 15000 kHz to 12000 kHz (maximum).",
+                    "EP_FLASH_SPEED=15000",
+                    "EP_FLASH_STAGE=speed_fallback"
+                ])
+                    options.onLine(line);
                 return { exitCode: 0, openocdTail: [] };
             };
-            assert.strictEqual((await service.execute(params)).verified, true);
+            const flashed = await service.execute(params);
+            assert.strictEqual(flashed.verified, true);
+            assert.deepStrictEqual(flashed.programming, {
+                unchanged: false,
+                flashClockKhz: 12000,
+                speedFallback: true
+            });
             await assert.rejects(service.execute(params), /invalid/);
         } finally {
             release?.();

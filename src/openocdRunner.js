@@ -2,7 +2,13 @@
 const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 const { spawn } = require("child_process");
 const { isSafeCfgPath, resolveOpenOcdLaunch } = require("./openocdScripts");
-const { buildFlashProgramCommand, flashPhaseFromLine } = require("../skills/_emberprobe/openocd-flash");
+const {
+    buildFlashProgramCommand,
+    flashClockTracker,
+    flashPhaseFromLine,
+    flashSpeedKhz,
+    isTentativeFlashPhase
+} = require("../skills/_emberprobe/openocd-flash");
 
 // 配置路径白名单校验：允许 geehy/apm32f4x.cfg 等 scripts 内安全相对路径。
 function isSafeCfg(name) {
@@ -26,9 +32,38 @@ function parseLine(line) {
     const clean = line.replace(/\x1b\[[0-9;]*m/g, "").trim();
     if (!clean) return null;
     const phase = flashPhaseFromLine(clean, "");
+    let match;
+    if (phase === "unchanged")
+        return {
+            stage: "program",
+            level: "success",
+            message: "固件与目标 Flash 一致，跳过擦写",
+            key: "run.unchanged",
+            unchanged: true
+        };
+    if (phase === "speed_fallback")
+        return {
+            stage: "adapter",
+            level: "info",
+            message: "高速烧录未通过，降回原时钟重新烧录",
+            key: "run.speedFallback"
+        };
+    if ((match = clean.match(/^EP_FLASH_SPEED=(\d+)$/)))
+        return {
+            stage: "adapter",
+            level: "info",
+            message: `烧录时钟 ${match[1]} kHz`,
+            key: "run.flashClock",
+            params: { clock: `${match[1]} kHz` },
+            flashClock: `${match[1]} kHz`
+        };
+    if (
+        ["preverify", "program", "program_boost", "verify", "verify_boost"].includes(phase) &&
+        /EP_FLASH_STAGE=/.test(clean)
+    )
+        return null;
     if (phase && (/EP_FLASH_STAGE=/.test(clean) || /verify started|resetting target/i.test(clean)))
         return { stage: phase, level: "info", message: clean };
-    let match;
     if (/open on-chip debugger/i.test(clean)) return { stage: "start", level: "info", message: clean };
     if (/CMSIS-DAP|ST-?LINK|J-?Link|DAPLink/i.test(clean) && /Info\s*:/i.test(clean))
         return { stage: "probe", level: "info", message: clean.replace(/^.*?Info\s*:\s*/i, "") || clean };
@@ -181,7 +216,13 @@ function runOpenOcd(vscode, options, onProgress) {
         terminal.show(true);
         const elfPath = options.elf.replace(/\\/g, "/");
         // 关键修复：ELF 路径含空格时必须加引号，否则 OpenOCD 的 TCL 解析会把路径拆成多个参数
-        const programCmd = buildFlashProgramCommand(quoteTclWord(elfPath));
+        let programCmd;
+        try {
+            programCmd = buildFlashProgramCommand(quoteTclWord(elfPath), flashSpeedKhz(options));
+        } catch (error) {
+            reject(error);
+            return;
+        }
         const preserveWorkArea = "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }";
         const args = [
             ...buildOpenOcdConfigArgs(launch, options.transport, options),
@@ -263,8 +304,20 @@ function runOpenOcd(vscode, options, onProgress) {
             onProgress({ stage: "error", level: "error", message: timeoutError.message });
         }, timeoutMs);
         const errors = [];
-        const stats = { wrote: null, verified: null, probe: "", chip: "", deviceId: "", flashSize: "", clock: "" };
+        const stats = {
+            wrote: null,
+            verified: null,
+            probe: "",
+            chip: "",
+            deviceId: "",
+            flashSize: "",
+            clock: "",
+            flashClock: "",
+            unchanged: false,
+            fallback: false
+        };
         const rawTail = [];
+        const trackFlashClock = flashClockTracker();
         // OpenOCD 默认把所有日志输出到 stderr，需逐行解析；未识别的行不展示，仅留作失败诊断
         const flushLine = (line) => {
             const text = line.replace(/\r/g, "");
@@ -274,7 +327,15 @@ function runOpenOcd(vscode, options, onProgress) {
                 // Bounded by the process output limit; classify before trimming for display.
             }
             const event = parseLine(text);
+            const flashKhz = trackFlashClock(text);
+            if (flashKhz && event) {
+                event.flashClock = `${flashKhz} kHz`;
+                event.params = { clock: event.flashClock };
+                event.message = `烧录时钟 ${event.flashClock}`;
+            }
             if (!event) return;
+            // Tcl handles these failures itself; a real failure still exits non-zero with the raw tail.
+            if (event.level === "error" && isTentativeFlashPhase(phase)) return;
             printEvent(event);
             if (event.level === "error") {
                 lastError = event.message;
@@ -287,6 +348,9 @@ function runOpenOcd(vscode, options, onProgress) {
             }
             if (event.stage === "flash" && event.flashSize && !stats.flashSize) stats.flashSize = event.flashSize;
             if (event.stage === "adapter" && event.clock && !stats.clock) stats.clock = event.clock;
+            if (event.flashClock) stats.flashClock = event.flashClock;
+            if (event.key === "run.speedFallback") stats.fallback = true;
+            if (event.unchanged) stats.unchanged = true;
             if (event.stage === "program" && event.bytes) stats.wrote = event;
             if (event.stage === "verify" && event.bytes) stats.verified = event;
             onProgress(event);
@@ -353,13 +417,19 @@ function runOpenOcd(vscode, options, onProgress) {
             }
             if (code === 0) {
                 const elfName = elfPath.split("/").pop() || elfPath;
-                print("\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m");
+                print(
+                    stats.unchanged
+                        ? "\r\n\x1b[1;32m✓ 固件与目标一致，已跳过擦写，校验通过并复位\x1b[0m"
+                        : "\r\n\x1b[1;32m✓ 固件下载并校验成功\x1b[0m"
+                );
                 print(`  固件 ${elfName}`);
                 const chipLine = [stats.chip, stats.deviceId].filter(Boolean).join(" · ");
                 if (chipLine) print(`  芯片 ${chipLine}`);
                 if (stats.flashSize) print(`  Flash 容量 ${stats.flashSize}`);
                 if (stats.probe) print(`  探针 ${stats.probe}`);
                 if (stats.clock) print(`  时钟 ${stats.clock}`);
+                if (stats.flashClock)
+                    print(`  烧录时钟 ${stats.fallback ? `${stats.flashClock} 未通过，已降速重烧` : stats.flashClock}`);
                 if (stats.wrote)
                     print(
                         `  写入 ${stats.wrote.bytes} bytes，耗时 ${stats.wrote.seconds}s${stats.wrote.speed ? `（${stats.wrote.speed}）` : ""}`
@@ -369,8 +439,22 @@ function runOpenOcd(vscode, options, onProgress) {
                         `  校验 ${stats.verified.bytes} bytes，耗时 ${stats.verified.seconds}s${stats.verified.speed ? `（${stats.verified.speed}）` : ""}`
                     );
                 print(`  目标 ${options.target} · 探针配置 ${options.probe}`);
-                onProgress({ stage: "done", level: "success", key: "run.downloadSuccess", message: "下载成功" });
-                resolve({ code });
+                onProgress(
+                    stats.unchanged
+                        ? {
+                              stage: "done",
+                              level: "success",
+                              key: "run.downloadUnchanged",
+                              message: "固件未变化，已校验并复位"
+                          }
+                        : { stage: "done", level: "success", key: "run.downloadSuccess", message: "下载成功" }
+                );
+                resolve({
+                    code,
+                    unchanged: stats.unchanged,
+                    flashClock: stats.flashClock,
+                    speedFallback: stats.fallback
+                });
             } else {
                 const failureText = code === null ? "下载已取消（终端被关闭）" : `下载失败（退出代码 ${code}）`;
                 print(`\r\n\x1b[1;31m✗ ${failureText}\x1b[0m`);

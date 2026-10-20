@@ -12,15 +12,15 @@ Probe selection and transport are automatic by default. Configure manual overrid
 | --- | --- |
 | `emberprobe.probeSerial` | Decimal J-Link serial; exact USB serial for other supported backends / J-Link 十进制序列号；其他受支持后端的精确 USB 序列号 |
 | `emberprobe.transport` | `auto` by default; optional `swd` / `jtag` override / 默认自动，可手动覆盖协议 |
-| `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests, `0` keeps defaults / 整数 kHz；非零值约束 target 复位事件提速，`0` 保留默认速度 |
+| `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests and is the programming clock, `0` keeps script defaults and programs at the probe's clock / 整数 kHz；非零值约束 target 复位事件提速并作为烧录时钟，`0` 保留脚本默认速度、烧录时使用探针时钟 |
 
 A unique matching probe is selected automatically within the effective interface family. USB serial strings preserve case, leading zeros and internal spaces; J-Link retains decimal validation. Explicit serial settings take precedence over interface-script serials and successful workspace history. Missing remembered devices never cause fallback to another probe. Multiple devices require an enforceable selector; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable or recognizes no matching device, an explicit or remembered serial is passed to a backend that enforces it; otherwise OpenOCD applies the interface default selection. Such connections cannot establish a verified USB success record. See [probe connection rules](PROBE-CONNECTIONS.md) for serial-less probes, Windows aliases, additional adapters and TCP interfaces.
 
 在实际接口家族内，唯一匹配的探针会自动选定。USB 序列号保留大小写、前导零及内部空格；J-Link 仍校验十进制序列号。显式配置优先于接口脚本及成功记录，原设备缺席时不自动换用其他设备。系统枚举不可用或未识别到设备时，由 OpenOCD 按接口默认方式选择。无序列号、Windows 别名、其他适配器及 TCP 接口的具体规则见[探针连接说明](PROBE-CONNECTIONS.md)。
 
-A nonzero speed setting wraps existing target reset events and caps their `adapter speed` requests. Original clock, watchdog and Flash initialization remains in place, and requests below the cap are preserved. No automatic retry or protocol change is performed. Custom scripts that change speed outside these events remain trusted user code.
+A nonzero speed setting wraps existing target reset events and caps their `adapter speed` requests. Original clock, watchdog and Flash initialization remains in place, and requests below the cap are preserved. Apart from the programming clock described in [Flash performance](FLASH-PERFORMANCE.md), no automatic retry or protocol change is performed. Custom scripts that change speed outside these events remain trusted user code.
 
-非零速度设置保留 target 原有复位事件及其时钟、看门狗和 Flash 初始化，只限制其中的 `adapter speed` 提速请求，保留低于上限的速度。不自动重试或切换协议；在这些事件之外修改速度的自定义脚本仍属于用户信任的代码。
+非零速度设置保留 target 原有复位事件及其时钟、看门狗和 Flash 初始化，只限制其中的 `adapter speed` 提速请求，保留低于上限的速度。除[烧录性能](FLASH-PERFORMANCE.md)所述的烧录时钟外，不自动重试或切换协议；在这些事件之外修改速度的自定义脚本仍属于用户信任的代码。
 
 For J-Link, explicit transport overrides take precedence. Known Cortex-M targets default to SWD; other targets retain the interface script default. OpenOCD validates the selected protocol using interface-only configuration with `noinit`. This checks software configuration, not board wiring or physical probe capabilities. There is no automatic speed reduction, protocol retry or reset.
 

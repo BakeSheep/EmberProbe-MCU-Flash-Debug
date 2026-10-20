@@ -10,7 +10,11 @@ const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { runOpenOcdOnce } = require("./openocdExec");
 const { probeOpenOcdCompatibility } = require("../../skills/_emberprobe/flash-common");
 const { prepareProbeConnection } = require("../../skills/_emberprobe/probe-preflight");
-const { buildFlashProgramCommand } = require("../../skills/_emberprobe/openocd-flash");
+const {
+    buildFlashProgramCommand,
+    flashClockTracker,
+    flashSpeedKhz
+} = require("../../skills/_emberprobe/openocd-flash");
 
 class AgentFlashService {
     constructor(options) {
@@ -143,12 +147,14 @@ class AgentFlashService {
                 ? ["set _ep_target [target current]; $_ep_target configure -work-area-size 0", "init", verifyCommand]
                 : [
                       "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }",
-                      buildFlashProgramCommand(word)
+                      buildFlashProgramCommand(word, flashSpeedKhz(connection))
                   ];
             if (lease.released || this.isDebugActive())
                 throw Object.assign(new Error("The debug probe is busy"), { code: "PROBE_BUSY" });
             this.request(request);
             let verifyResult;
+            const programming = { unchanged: false, flashClockKhz: 0, speedFallback: false };
+            const trackFlashClock = flashClockTracker();
             const execution = await this.run({
                 executable: launch.executable,
                 probe: request.probe,
@@ -166,6 +172,10 @@ class AgentFlashService {
                 waitForCloseOnTimeout: true,
                 onLine: (line) => {
                     if (/^\s*EP_VERIFY (OK|FAIL)\b/.test(line)) verifyResult = line;
+                    const clock = trackFlashClock(line);
+                    if (clock) programming.flashClockKhz = clock;
+                    if (/^\s*EP_FLASH_STAGE=unchanged\s*$/.test(line)) programming.unchanged = true;
+                    if (/^\s*EP_FLASH_STAGE=speed_fallback\s*$/.test(line)) programming.speedFallback = true;
                 }
             });
             const resultLines = verifyResult ? [verifyResult] : execution.openocdTail;
@@ -192,6 +202,7 @@ class AgentFlashService {
                 permission: { mode: authorization.mode, ...this.authorization.status?.(plan) },
                 ...(permissionWarning ? { permissionWarning } : {}),
                 code: verified ? 0 : 1,
+                ...(verify ? {} : { programming }),
                 detail:
                     failed ||
                     (verified ? "" : execution.diagnostic?.message || `OpenOCD exited with code ${execution.exitCode}`),

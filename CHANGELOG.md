@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 烧录提速：固件与目标 Flash 的 CRC 一致时跳过擦写（仍校验并复位）；Cortex-M + SWD 在 `reset init` 后按探针能力提高烧录时钟（ST-Link 请求 24 MHz、J-Link 15 MHz、CMSIS-DAP 10 MHz，或使用非零 `adapterSpeedKhz`），回读检查不通过或高速写入、最终校验失败时自动降回原时钟重烧一次，见 `docs/FLASH-PERFORMANCE.md`。
+- Faster flashing: an image whose CRC already matches target Flash skips erase and write (still verified and reset); for Cortex-M over SWD the programming clock is raised to the probe's capability after `reset init` (ST-Link requests 24 MHz, J-Link 15 MHz, CMSIS-DAP 10 MHz, or a nonzero `adapterSpeedKhz`), falling back to the previous clock and rewriting once if the read-back check, fast write or final verification fails; see `docs/FLASH-PERFORMANCE.md`.
+
 - 修复调试暂停且未开启实时采样时，Agent 写变量总是失败并误报“Target continued before the DAP write could start”的问题；暂停写入只要求本次暂停的内存快照，侧边栏写入仍需开启采样。
 - Fix Agent variable writes always failing with "Target continued before the DAP write could start" while debugging is paused with live sampling off; paused writes now require only a snapshot of the current stop, and sidebar writes still require sampling.
 
