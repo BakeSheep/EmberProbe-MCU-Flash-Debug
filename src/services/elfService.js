@@ -130,6 +130,7 @@ class ElfService {
                 !!info?.watchType &&
                 !info.isReference &&
                 !info.isMemberPointer &&
+                !info.isPointer &&
                 !info.isConst &&
                 !info.enumEncodingInferred;
             if (info?.enumInfo) symbol.enumInfo = info.enumInfo;

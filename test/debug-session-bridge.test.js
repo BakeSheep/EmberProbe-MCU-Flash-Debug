@@ -309,7 +309,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
         );
         assert.strictEqual(Buffer.from(requests[1].args.data, "base64").length, 8);
 
-        // A state change during the aligned read must prevent any subsequent writeMemory request.
+        // A state change while a narrow write is read back must prevent the aligned fallback write.
         for (const change of ["continued", "session-replaced", "epoch-changed"]) {
             const guarded = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
             const commands = [];
@@ -328,7 +328,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
                         }
                         return { data: Buffer.alloc(args.count, 1).toString("base64") };
                     }
-                    return { bytesWritten: 4 };
+                    return { bytesWritten: Buffer.from(args.data, "base64").length };
                 }
             };
             guarded.sessions.set(guardedSession.id, guardedSession);
@@ -338,11 +338,70 @@ async function testBackgroundStatusBroadcasts(debugType) {
             guarded.capabilities = { read: true, write: true };
             await assert.rejects(
                 guarded.writeAndVerify([{ name: "byte", address: 0x20000001, bytes: [9] }]),
-                /Target state changed before the DAP write/
+                /Target state changed during the DAP write/
             );
-            assert.deepStrictEqual(commands, ["readMemory", "readMemory"], change);
+            assert.deepStrictEqual(commands, ["readMemory", "writeMemory", "readMemory"], change);
             assert.strictEqual(guarded.writing, false);
             guarded.dispose();
+        }
+
+        // Narrow writes keep neighbouring bytes that DMA changes mid-transaction; dropped narrow
+        // writes (Cortex-M7 byte lanes) fall back to an aligned read-modify-write.
+        const pausedMemoryBridge = (dropNarrow) => {
+            const ram = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+            const writesSeen = [];
+            const memorySession = {
+                ...session,
+                id: "memory-" + dropNarrow,
+                async customRequest(command, args) {
+                    const offset = Number(args.memoryReference) - 0x20000000;
+                    if (command === "readMemory")
+                        return { data: ram.subarray(offset, offset + args.count).toString("base64") };
+                    const data = Buffer.from(args.data, "base64");
+                    writesSeen.push({ offset, length: data.length });
+                    ram[3] = 0x99; // DMA updates a neighbouring byte while the target is halted
+                    if (!dropNarrow || data.length === 4) data.copy(ram, offset);
+                    return { bytesWritten: data.length };
+                }
+            };
+            const memoryBridge = new DebugSessionBridge();
+            memoryBridge.sessions.set(memorySession.id, memorySession);
+            Object.assign(memoryBridge, { intentEnabled: true, paused: true, snapshotReady: true });
+            memoryBridge.capabilities = { read: true, write: true };
+            return { memoryBridge, ram, writesSeen };
+        };
+        {
+            const { memoryBridge, ram, writesSeen } = pausedMemoryBridge(false);
+            const narrow = await memoryBridge.writeAndVerify([{ name: "flag", address: 0x20000001, bytes: [0xaa] }]);
+            assert.deepStrictEqual(writesSeen, [{ offset: 1, length: 1 }], "only the variable's byte is written");
+            assert.deepStrictEqual([...ram], [0x11, 0xaa, 0x33, 0x99], "a concurrent DMA update survives");
+            assert.deepStrictEqual([...narrow.after[0].bytes], [0xaa]);
+            memoryBridge.dispose();
+        }
+        {
+            const { memoryBridge, ram, writesSeen } = pausedMemoryBridge(true);
+            await memoryBridge.writeAndVerify([{ name: "flag", address: 0x20000001, bytes: [0xaa] }]);
+            assert.deepStrictEqual(writesSeen, [
+                { offset: 1, length: 1 },
+                { offset: 0, length: 4 }
+            ]);
+            assert.strictEqual(ram[1], 0xaa, "a dropped narrow write is retried as an aligned word");
+            memoryBridge.dispose();
+        }
+        {
+            // A second writer arriving while a snapshot read drains must not interleave.
+            const { memoryBridge } = pausedMemoryBridge(false);
+            memoryBridge.polling = true;
+            const first = memoryBridge.writeAndVerify([{ name: "a", address: 0x20000000, bytes: [1, 2, 3, 4] }]);
+            assert.strictEqual(memoryBridge.writing, true, "the write is reserved before awaiting the poll");
+            await assert.rejects(
+                memoryBridge.writeAndVerify([{ name: "b", address: 0x20000000, bytes: [5, 6, 7, 8] }]),
+                { code: "DEBUG_CONTROL_BUSY" }
+            );
+            memoryBridge.polling = false;
+            await first;
+            assert.strictEqual(memoryBridge.writing, false);
+            memoryBridge.dispose();
         }
 
         bridge.setIntent(false);

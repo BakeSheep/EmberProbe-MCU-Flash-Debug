@@ -68,6 +68,23 @@ try {
     view.send({ ...request, type: "writeResult", ok: true, value: 7 });
     assert(!input.classList.contains("pending"));
     view.send({ type: "liveSample", samples: [{ name: symbols[60].name, value: 7 }] });
+    // A rejected write rolls the card back to the value still on the target.
+    const savedWrite = () => view.messages.findLast((message) => message.type === "saveSidebarWrite").items[0];
+    input.value = "9";
+    input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+    const rejected = view.messages.findLast((message) => message.type === "writeVariable");
+    assert.strictEqual(rejected.value, 9);
+    view.send({ ...rejected, type: "writeResult", ok: false, message: "rejected" });
+    assert.strictEqual(input.value, "7", "a failed write shows the target value again");
+    assert.strictEqual(savedWrite().value, 7, "the rejected value is not persisted");
+    view.document.querySelectorAll(".write-row .step-btn")[1].click();
+    assert.strictEqual(view.messages.findLast((message) => message.type === "writeVariable").value, 8);
+    view.send({
+        ...view.messages.findLast((message) => message.type === "writeVariable"),
+        type: "writeResult",
+        ok: true,
+        value: 8
+    });
     assert.deepStrictEqual(Array.from(box.querySelectorAll(".available-row")), rows);
     assert.strictEqual(box.scrollTop, 900);
     view.document.querySelector(".write-row .watch-remove").click();
@@ -107,6 +124,40 @@ try {
     view.assertHealthy();
 } finally {
     view.close();
+}
+
+// Pointer members are read-only like top-level pointers: no write button is offered.
+{
+    const pointerView = render(getModernWebviewContent({}, "en"));
+    try {
+        const holder = {
+            name: "holder",
+            address: 0x20002000,
+            size: 8,
+            isComposite: true,
+            compositeLayout: {
+                kind: "struct",
+                byteSize: 8,
+                members: [
+                    { name: "count", offset: 0, byteSize: 4, watchType: "u32" },
+                    { name: "next", offset: 4, byteSize: 4, watchType: "u32", isPointer: true, pointerTarget: "data" }
+                ]
+            }
+        };
+        pointerView.send({ type: "availableVariables", symbols: [holder] });
+        pointerView.send({ type: "liveStatus", running: true, canRead: true, canWrite: true });
+        const pointerBox = pointerView.document.getElementById("availableVars");
+        pointerBox.querySelector(".av-arrow").click();
+        const writeButton = (label) =>
+            [...pointerBox.querySelectorAll(".available-row.leaf")]
+                .find((row) => row.textContent.includes(label))
+                ?.querySelector(".av-write");
+        assert.strictEqual(writeButton(".count").disabled, false);
+        assert.strictEqual(writeButton(".next").disabled, true, "pointer members cannot be added to the write list");
+        pointerView.assertHealthy();
+    } finally {
+        pointerView.close();
+    }
 }
 
 (async () => {

@@ -1,5 +1,6 @@
 "use strict";
 const { MAX_COMPOSITE_DEPTH } = require("./dwarf/layoutLimits");
+const { isStdType } = require("./dwarf/memberRoles");
 // 纯 JS 解析 ELF32（小端，Cortex-M）符号表，提取全局/静态变量的地址与大小。
 // 说明：本模块为受 MCUViewer（GPLv3）的 Variable Viewer 概念启发的独立实现，未使用其任何代码。
 
@@ -185,7 +186,8 @@ function scopeMatches(symbols, file) {
 // 1. 身份名精确匹配；2. 编译单元限定名 file.c::name、'dir/file.c'::name、0xADDR::name（文件名按路径后缀匹配，
 // 只接受唯一 CU）；3. 唯一 displayName 别名（C++ 限定名）；4. 大小写不敏感的唯一匹配。
 // 同名变量分布在多个编译单元时，裸名一律以 VARIABLE_AMBIGUOUS 拒绝并列出候选，绝不默认取第一项。
-function createSymbolResolver(symbols) {
+// foldCase: false 关闭第 4 步（写入目标必须精确命名），大小写不同的候选只在错误详情中给出。
+function createSymbolResolver(symbols, { foldCase = true } = {}) {
     const list = Array.isArray(symbols) ? symbols : [];
     let exact = null,
         byKey = null,
@@ -245,6 +247,14 @@ function createSymbolResolver(symbols) {
         if (matches.length === 1) return accept(matches[0], requestedName);
         // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
         const foldedMatches = folded.get(key.toLowerCase()) || [];
+        if (!foldCase && foldedMatches.length)
+            throw Object.assign(
+                new Error(`Variable not found in current ELF (names are case-sensitive): ${requestedName}`),
+                {
+                    code: "VARIABLE_NOT_FOUND",
+                    details: { requestedName, candidates: symbolCandidates(foldedMatches) }
+                }
+            );
         if (foldedMatches.length === 1) return accept(foldedMatches[0], requestedName);
         if (foldedMatches.length > 1)
             throw Object.assign(new Error(`Variable name is ambiguous: ${requestedName}`), {
@@ -320,6 +330,9 @@ function encodeValue(value, type) {
         else view.setBigInt64(0, integer, true);
         return Array.from(new Uint8Array(view.buffer));
     }
+    // Number() turns null, "", " ", false, [] and [n] into numbers; a missing value must never write 0.
+    if (!(typeof value === "number" || typeof value === "bigint" || (typeof value === "string" && value.trim())))
+        invalid(`${type} requires a number or a non-empty numeric string: ${value}`);
     let number;
     if (type === "f64" && typeof value === "string") {
         const alias = value.trim().toLowerCase();
@@ -801,6 +814,7 @@ function resolveLayoutPath(symbol, layout, pathSpec, { finalExpansion = true } =
         path = symbol.name,
         isConst = !!layout.isConst;
     let usedExpansion = false;
+    const steps = [];
     for (let index = 0; index < pathSpec.segments.length; index++) {
         if (node.unobservable) return null;
         const current = node.compositeLayout || node;
@@ -821,6 +835,7 @@ function resolveLayoutPath(symbol, layout, pathSpec, { finalExpansion = true } =
                 isConst ||= !!entry.isConst || !!entry.compositeLayout?.isConst;
                 usedExpansion ||= !!entry.expansionRoot;
                 node = entry;
+                steps.push(entry);
             }
         } else if (["index", "range", "all"].includes(segment.kind) && current.kind === "array") {
             const total = Number(current.totalElements) || 0;
@@ -835,6 +850,7 @@ function resolveLayoutPath(symbol, layout, pathSpec, { finalExpansion = true } =
                     path,
                     isConst,
                     usedExpansion,
+                    steps,
                     pendingPathSpec: { ...pathSpec, segments: pathSpec.segments.slice(index) }
                 };
             }
@@ -844,10 +860,34 @@ function resolveLayoutPath(symbol, layout, pathSpec, { finalExpansion = true } =
             node = last && !finalExpansion ? element : layoutBranch(symbol, element, path);
             isConst ||= !!current.isConst || !!node.isConst || !!node.compositeLayout?.isConst;
             usedExpansion ||= !!node.expansionRoot;
+            steps.push(node);
         } else return null;
         if (!last && !node.compositeLayout && !["struct", "union", "class", "array"].includes(node.kind)) return null;
     }
-    return { node, offset, path, isConst, usedExpansion };
+    return { node, offset, path, isConst, usedExpansion, steps };
+}
+
+// A C++ object whose type graph holds pointers or library containers still has
+// fixed-offset user members. Accept exactly one non-pointer scalar reached only through
+// user-declared by-value members; anything inside a std:: object, an artificial member
+// (_vptr) or a library-internal member stays read-only.
+function staticRuntimeWriteLeaf(symbol, layout, pathSpec) {
+    if (!symbol || !layout || !pathSpec?.segments.length) return null;
+    const leaves = expandCompositeLeaves(symbol, layout, pathSpec);
+    if (leaves.length !== 1) return null;
+    const [leaf] = leaves;
+    if (leaf.isPointer || leaf.isReference || leaf.isMemberPointer || leaf.memberRole) return null;
+    const leafSpec = parseMemberPath(leaf.path);
+    const target = leafSpec && resolveLayoutPath(symbol, layout, leafSpec);
+    if (!target || target.pendingPathSpec || target.node.compositeLayout || !target.node.watchType) return null;
+    const library = (node) =>
+        !!node.memberRole ||
+        !!node.stdSummary ||
+        !!node.compositeLayout?.stdSummary ||
+        isStdType(node.typeName) ||
+        isStdType(node.compositeLayout?.typeName);
+    if (library(layout) || target.steps.some(library)) return null;
+    return leaf;
 }
 
 function expandedStaticLeaves(symbol, pathSpec) {
@@ -1184,5 +1224,6 @@ module.exports = {
     expandCompositeLeaves,
     resolveLayoutPath,
     expandedStaticLeaves,
+    staticRuntimeWriteLeaf,
     SUPPORTED_TYPES
 };

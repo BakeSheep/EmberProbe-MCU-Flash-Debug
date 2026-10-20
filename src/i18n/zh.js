@@ -392,6 +392,10 @@ module.exports = Object.freeze({
     "sb.addToWrite": "加入写入列表",
     "sb.removeFromWrite": "从写入列表移除",
     "sb.writeFail": "写入失败：{msg}",
+    "sb.writeFirmwareMismatch":
+        "当前 ELF 与 EmberProbe 上次烧录的固件不一致。变量地址可能已经变化，写入可能改写目标上的其他数据，且回读校验无法发现。仍要写入吗？",
+    "sb.writeFirmwareMismatchAnyway": "仍要写入",
+    "sb.writeFirmwareMismatchDeclined": "未写入：当前 ELF 与目标上的固件不一致，请先烧录当前 ELF",
     "sb.writeUnsupported": "该变量不支持直接写入",
     "sb.writeNeedSampling": "开始采样后才能写入",
     "sb.writeUnavailable": "当前暂不可写，请查看采样状态提示",
@@ -409,12 +413,14 @@ module.exports = Object.freeze({
     "sb.writeVerifyFailedRunning": "回读值与写入值不一致，运行中的固件可能在写入后立即修改了该变量",
     "sb.writeVerifyFailedHalted": "目标暂停时回读值仍与写入值不一致，请检查 RAM 可访问性、MPU/缓存配置和调试连接",
     "sb.writeRisk.subword":
-        "写入风险：该变量为 {bits} 位，无法用单次对齐 32 位访问写入。写入时会短暂暂停 CPU（halt），读-改-写所在的 32 位字后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
+        "写入风险：该变量为 {bits} 位，无法用单次对齐 32 位访问写入。写入时会短暂暂停 CPU（halt），按变量自身宽度只写它的字节（目标丢弃窄写入时改为读-改-写所在的 32 位字）后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
     "sb.writeRisk.unaligned":
-        "写入风险：该变量地址 {addr} 未按 4 字节对齐。写入时会短暂暂停 CPU（halt），读-改-写所跨的 32 位字后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
+        "写入风险：该变量地址 {addr} 未按 4 字节对齐。写入时会短暂暂停 CPU（halt），按自然对齐的 8/16 位访问只写变量自身的字节（目标丢弃窄写入时改为读-改-写所跨的 32 位字）后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
     "sb.writeRisk.wide":
         "写入风险：该变量为 {bits} 位，需要写入两个 32 位字。为避免固件读到只写了一半的值，写入时会短暂暂停 CPU（halt）后再恢复运行，可能打断实时控制（如电机控制环、通信超时、看门狗）；调试会话运行中无法写入。",
     "sb.invalidWriteValue": "请输入类型范围内的十进制整数",
+    "sb.writeValueOutOfRange": "未写入：{value} 超出 {type} 的范围 [{min}, {max}]",
+    "sb.writeValueNotInteger": "未写入：{type} 只能写入整数，{value} 不是整数",
     "sb.foldList": "收起",
     "sb.unfoldList": "展开",
     "sb.compositeUnsupported": "复合类型暂不支持",

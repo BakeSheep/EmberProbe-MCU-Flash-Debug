@@ -411,6 +411,11 @@ module.exports = Object.freeze({
     "sb.addToWrite": "Add to write list",
     "sb.removeFromWrite": "Remove from write list",
     "sb.writeFail": "Write failed: {msg}",
+    "sb.writeFirmwareMismatch":
+        "The configured ELF differs from the firmware EmberProbe last programmed. Variable addresses may have moved, so this write could overwrite other data on the target without read-back verification noticing. Write anyway?",
+    "sb.writeFirmwareMismatchAnyway": "Write anyway",
+    "sb.writeFirmwareMismatchDeclined":
+        "Not written: the configured ELF differs from the firmware on the target. Flash the current ELF first",
     "sb.writeUnsupported": "This variable cannot be written directly",
     "sb.writeNeedSampling": "Start sampling before writing",
     "sb.writeUnavailable": "Writing is temporarily unavailable; check the sampling status",
@@ -431,12 +436,14 @@ module.exports = Object.freeze({
     "sb.writeVerifyFailedHalted":
         "The value read back still differs while the target was halted; check RAM accessibility, MPU/cache configuration and the debug connection",
     "sb.writeRisk.subword":
-        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, read-modify-writes the containing 32-bit word, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+        "Write risk: this variable is {bits}-bit and cannot be written with a single aligned 32-bit access. The write briefly halts the CPU, writes only the variable's own bytes at their width (or read-modify-writes the containing 32-bit word if the target drops narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.writeRisk.unaligned":
-        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, read-modify-writes the spanned 32-bit words, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
+        "Write risk: this variable's address {addr} is not 4-byte aligned. The write briefly halts the CPU, writes only the variable's own bytes with aligned 8/16-bit accesses (or read-modify-writes the spanned 32-bit words if the target drops narrow writes), then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.writeRisk.wide":
         "Write risk: this variable is {bits}-bit and needs two 32-bit word writes. To keep firmware from reading a half-written value the write briefly halts the CPU, then resumes, which can disturb real-time control (control loops, communication timeouts, watchdogs). Not writable while a debug session is running.",
     "sb.invalidWriteValue": "Enter an in-range decimal integer",
+    "sb.writeValueOutOfRange": "Not written: {value} is outside the {type} range [{min}, {max}]",
+    "sb.writeValueNotInteger": "Not written: {type} accepts integers only, and {value} is not one",
     "sb.foldList": "Collapse",
     "sb.unfoldList": "Expand",
     "sb.compositeUnsupported": "Composite types are not supported yet",

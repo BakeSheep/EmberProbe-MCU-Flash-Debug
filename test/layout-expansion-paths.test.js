@@ -240,7 +240,15 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
         assert.throws(() => write(2), { code: "WRITE_NOT_ALLOWED" });
         delete f.sublayout.isConst;
         f.symbol.runtimeLayout = { root: 0, types: [] };
-        assert.throws(() => write(2), { code: "WRITE_NOT_ALLOWED" }, "runtime/STL write restrictions are unchanged");
+        assert.strictEqual(
+            write(2).items[0].address,
+            leaf.address,
+            "a pointer/STL elsewhere in the type graph keeps fixed user members writable"
+        );
+        const userTypeName = f.sublayout.typeName;
+        f.sublayout.typeName = "class std::array<float, 4>";
+        assert.throws(() => write(2), { code: "WRITE_NOT_ALLOWED" }, "members inside std:: objects stay read-only");
+        f.sublayout.typeName = userTypeName;
         delete f.symbol.runtimeLayout;
 
         // Persist only identity/invalid-watch markers, and re-resolve after reload.

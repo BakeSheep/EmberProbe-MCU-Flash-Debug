@@ -15,11 +15,63 @@ try {
         });
         return view.document.querySelector(".write-input");
     }
-    function wheel(element, deltaY) {
-        element.dispatchEvent(new view.window.WheelEvent("wheel", { deltaY, cancelable: true }));
+    function wheel(element, deltaY, focus = true) {
+        // Value boxes step only while focused; bound labels have no focus requirement.
+        if (focus && element.classList.contains("write-input")) element.focus();
+        const event = new view.window.WheelEvent("wheel", { deltaY, cancelable: true });
+        element.dispatchEvent(event);
+        return event;
     }
     function saved() {
         return view.messages.findLast((message) => message.type === "saveSidebarWrite").items[0];
+    }
+    {
+        const input = load("u32", 5);
+        input.blur();
+        const count = view.messages.length;
+        const event = wheel(input, -1, false);
+        assert.strictEqual(view.messages.length, count, "scrolling across an unfocused value box must not write");
+        assert.strictEqual(event.defaultPrevented, false, "an unfocused value box lets the panel scroll");
+        assert.strictEqual(input.value, "5");
+        wheel(input, -1);
+        assert.strictEqual(saved().value, 6, "a focused value box still steps with the wheel");
+        const request = view.messages.findLast((message) => message.type === "writeVariable");
+        assert.strictEqual(request.value, 6);
+        view.send({ ...request, type: "writeResult", ok: false, message: "rejected" });
+        assert.strictEqual(input.value, "5", "without samples a failed write restores the last confirmed value");
+        assert.strictEqual(saved().value, 5);
+        input.blur();
+    }
+    // Typed values are written exactly or rejected; never clamped, rounded or emptied into 0.
+    for (const [type, text, extra] of [
+        ["u32", "-1"],
+        ["u8", "5000"],
+        ["i16", "1.5"],
+        ["u8", "2", { isBoolean: true }],
+        ["u32", ""],
+        ["u32", "   "]
+    ]) {
+        const input = load(type, 1, extra);
+        const writes = view.messages.filter((message) => message.type === "writeVariable").length;
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+        assert.strictEqual(
+            view.messages.filter((message) => message.type === "writeVariable").length,
+            writes,
+            `${type} must not write ${JSON.stringify(text)}`
+        );
+        assert.strictEqual(input.value, "1", "the previous value is shown again");
+        if (text.trim()) assert.match(view.document.getElementById("writeFeedback").textContent, /^Not written/);
+        input.blur();
+    }
+    {
+        const input = load("u8", 1);
+        input.focus();
+        input.value = "255";
+        input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
+        assert.strictEqual(view.messages.findLast((message) => message.type === "writeVariable").value, 255);
+        input.blur();
     }
     for (const type of ["f32", "f64"]) {
         for (const sign of [1, -1]) {

@@ -5,6 +5,7 @@ const { ProbeConnectionService } = require("../src/services/probeConnectionServi
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
+const { FirmwareRecord } = require("../src/services/firmwareRecord");
 
 (async () => {
     const Provider = loadProvider();
@@ -296,6 +297,49 @@ const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAut
         await assert.rejects(blockedProvider._writeUiVariable("word", 42), { i18nKey: key, message: key });
     }
     assert.strictEqual(writeCalls.length, blockedWriteCount, "reporting a blocked reason never performs a write");
+
+    // UI writes with an ELF that differs from the last programmed firmware need an explicit choice.
+    const prompts = [];
+    let answer;
+    const PromptProvider = loadProvider({
+        window: {
+            showWarningMessage: async (message, options, ...choices) => {
+                prompts.push({ message, options, choices });
+                return answer;
+            }
+        }
+    });
+    const flashed = (sha256) => new FirmwareRecord({ get: () => ({ sha256 }) });
+    const prompting = Object.assign(Object.create(PromptProvider.prototype), runtimeProvider, {
+        _firmwareRecord: flashed("flashed")
+    });
+    const mismatchWrites = writeCalls.length;
+    await assert.rejects(prompting._writeUiVariable("word", 7, { requestedAt: Date.now() }), {
+        code: "ELF_TARGET_MISMATCH",
+        i18nKey: "sb.writeFirmwareMismatchDeclined"
+    });
+    assert.strictEqual(prompts.length, 1);
+    assert.strictEqual(prompts[0].options.modal, true);
+    assert.deepStrictEqual(prompts[0].choices, ["sb.writeFirmwareMismatchAnyway"]);
+    assert.strictEqual(writeCalls.length, mismatchWrites, "a declined mismatch never writes");
+    await assert.rejects(prompting._writeUiVariable("word", 7, { requestedAt: 0 }), { code: "ELF_TARGET_MISMATCH" });
+    assert.strictEqual(prompts.length, 1, "writes queued while declining are not prompted again");
+    answer = "sb.writeFirmwareMismatchAnyway";
+    await prompting._writeUiVariable("word", 7, { requestedAt: Date.now() + 1 });
+    assert.strictEqual(prompts.length, 2);
+    assert.strictEqual(writeCalls.length, mismatchWrites + 1);
+    await prompting._writeUiVariable("word", 8);
+    assert.strictEqual(prompts.length, 2, "the choice covers later writes with the same ELF digest");
+    runtimeElf.elf.sha256 = "rebuilt";
+    answer = undefined;
+    await assert.rejects(prompting._writeUiVariable("word", 9, { requestedAt: Date.now() + 2 }), {
+        code: "ELF_TARGET_MISMATCH"
+    });
+    assert.strictEqual(prompts.length, 3, "a different ELF digest asks again");
+    prompting._firmwareRecord = flashed("rebuilt");
+    await prompting._writeUiVariable("word", 9);
+    assert.strictEqual(prompts.length, 3, "matching firmware writes without a prompt");
+    runtimeElf.elf.sha256 = "runtime";
     console.log("Write connection binding, verification, managed routing and approval tests passed");
 })().catch((error) => {
     console.error(error);

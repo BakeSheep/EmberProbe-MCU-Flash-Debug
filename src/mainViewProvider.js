@@ -105,6 +105,8 @@ const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
 const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
+// One Agent write batch is shown for confirmation and, off word boundaries, runs while halted.
+const MAX_WRITE_VARIABLES = 64;
 const UNLIMITED_SAMPLING_SETTING = "experimental.unlimitedSampling.enabled";
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
@@ -2396,9 +2398,14 @@ class MainViewProvider {
             value: item?.value
         }));
         if (!requests.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
+        if (requests.length > MAX_WRITE_VARIABLES)
+            throw Object.assign(new Error(`At most ${MAX_WRITE_VARIABLES} variables can be written at once`), {
+                code: "INVALID_PARAMS"
+            });
         if (options.refreshSymbols !== false) this._elfService.invalidate();
         const elfResult = this.readElfSymbols();
-        const resolveSymbol = this._agentSymbolResolver(elfResult.symbols);
+        // A write target must be named exactly; a case-folded match could be a different variable.
+        const resolveSymbol = this._agentSymbolResolver(elfResult.symbols, { foldCase: false });
         const SHF_WRITE = 1,
             SHF_ALLOC = 2;
         let writable = [];
@@ -2415,6 +2422,7 @@ class MainViewProvider {
             writable.some((s) => address >= s.addr && address + size <= s.addr + s.size);
         const items = [];
         const seen = new Set();
+        const ranges = [];
         for (const req of requests) {
             if (!req.name)
                 throw Object.assign(new Error("Variable name is required"), { code: "INVALID_VARIABLE_NAME" });
@@ -2424,7 +2432,12 @@ class MainViewProvider {
             const symbol = resolveSymbol(baseName, req.name);
             let target;
             if (symbol && symbol.isComposite) {
-                if (symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout)
+                // A pointer/STL anywhere in the type graph adds a runtime layout; plain
+                // fixed-offset user members of such objects stay writable.
+                if (
+                    (symbol.runtimeLayout || symbol.compositeLayout?.runtimeLayout) &&
+                    !elfSymbols.staticRuntimeWriteLeaf(symbol, symbol.compositeLayout, parsed)
+                )
                     throw Object.assign(
                         new Error(`Writing C++ runtime container or dynamic member is not supported: ${req.name}`),
                         {
@@ -2457,7 +2470,8 @@ class MainViewProvider {
                     isBoolean: !!leaves[0].isBoolean,
                     isConst: !!leaves[0].isConst,
                     isReference: !!leaves[0].isReference,
-                    isMemberPointer: !!leaves[0].isMemberPointer
+                    isMemberPointer: !!leaves[0].isMemberPointer,
+                    isPointer: !!leaves[0].isPointer
                 };
                 if (leaves[0].enumEncodingInferred)
                     throw Object.assign(new Error(`Enum write encoding is unavailable: ${req.name}`), {
@@ -2473,6 +2487,10 @@ class MainViewProvider {
                 const resolvedSymbol = symbol;
                 if (resolvedSymbol?.isConst || resolvedSymbol?.isReference || resolvedSymbol?.isMemberPointer)
                     throw Object.assign(new Error(`Writing to const / read-only storage is not allowed: ${req.name}`), {
+                        code: "WRITE_NOT_ALLOWED"
+                    });
+                if (resolvedSymbol?.isPointer)
+                    throw Object.assign(new Error(`Writing pointer storage is not supported: ${req.name}`), {
                         code: "WRITE_NOT_ALLOWED"
                     });
                 if (!resolvedSymbol?.hasDwarfWriteType) {
@@ -2495,9 +2513,10 @@ class MainViewProvider {
                     isConst: !!resolvedSymbol.isConst
                 };
             }
-            if (target.isReference || target.isMemberPointer)
+            // Pointer storage is read-only for top-level variables and members alike.
+            if (target.isReference || target.isMemberPointer || target.isPointer)
                 throw Object.assign(
-                    new Error(`Writing C++ reference or member pointer storage is not supported: ${req.name}`),
+                    new Error(`Writing pointer, C++ reference or member pointer storage is not supported: ${req.name}`),
                     {
                         code: "WRITE_NOT_ALLOWED"
                     }
@@ -2517,8 +2536,19 @@ class MainViewProvider {
                 throw Object.assign(new Error(`Boolean variables accept only 0 or 1: ${req.name}`), {
                     code: "INVALID_WRITE_VALUE"
                 });
-            const bytes = elfSymbols.encodeValue(req.value, target.type);
-            if (!inWritable(target.address, target.size)) {
+            const bytes = elfSymbols.encodeValue(
+                target.isBoolean && typeof req.value === "boolean" ? Number(req.value) : req.value,
+                target.type
+            );
+            const end = target.address + Math.max(target.size, bytes.length);
+            const overlap = ranges.find((range) => target.address < range.end && range.start < end);
+            if (overlap)
+                throw Object.assign(new Error(`Write targets overlap in memory: ${overlap.name} and ${target.name}`), {
+                    code: "DUPLICATE_VARIABLE",
+                    details: { names: [overlap.name, target.name] }
+                });
+            ranges.push({ start: target.address, end, name: target.name });
+            if (!inWritable(target.address, Math.max(target.size, bytes.length))) {
                 throw Object.assign(
                     new Error(`Target address is outside writable RAM sections (.data/.bss): ${req.name}`),
                     {
@@ -2646,6 +2676,9 @@ class MainViewProvider {
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
         this._assertCpuIdle();
+        // "false" or 0 must never be read as a request to remember write permission.
+        if (params.remember !== undefined && typeof params.remember !== "boolean")
+            throw Object.assign(new Error("remember must be a boolean"), { code: "INVALID_PARAMS" });
         await this._prepareRequestedLayouts(params.values);
         const plan = this._agentWritePlan(params.values, { refreshSymbols: false });
         plan.connection = await this._prepareWriteConnection();
@@ -2698,12 +2731,46 @@ class MainViewProvider {
     // 侧边栏写入列表：用户在 UI 中直接操作，不经过 WriteAuthorization 确认；
     // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
     // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
-    async _writeUiVariable(name, value) {
+    // A rebuilt but unflashed ELF moves RAM addresses, and read-back verification reads the
+    // same wrong address. Require one explicit choice per ELF digest before UI writes proceed.
+    async _confirmUiWriteFirmware(requestedAt) {
+        let elf;
+        try {
+            elf = this.readElfSymbols().elf;
+        } catch {
+            return; // The write plan reports the ELF error itself.
+        }
+        const { firmwareConsistency } = this._firmwareConsistency({ elf });
+        if (firmwareConsistency.status !== "mismatch" || this._uiFirmwareMismatchAck === elf.sha256) return;
+        const declined = () =>
+            Object.assign(new Error(this._t("sb.writeFirmwareMismatchDeclined")), {
+                code: "ELF_TARGET_MISMATCH",
+                i18nKey: "sb.writeFirmwareMismatchDeclined",
+                details: firmwareConsistency
+            });
+        // Writes queued (e.g. by a slider drag) while the user was declining are not re-prompted.
+        const last = this._uiFirmwareMismatchDeclined;
+        if (last?.sha256 === elf.sha256 && requestedAt <= last.at) throw declined();
+        const anyway = this._t("sb.writeFirmwareMismatchAnyway");
+        const choice = await vscode.window.showWarningMessage(
+            this._t("sb.writeFirmwareMismatch"),
+            { modal: true },
+            anyway
+        );
+        if (choice === anyway) {
+            this._uiFirmwareMismatchAck = elf.sha256;
+            return;
+        }
+        this._uiFirmwareMismatchDeclined = { sha256: elf.sha256, at: Date.now() };
+        throw declined();
+    }
+    async _writeUiVariable(name, value, options = {}) {
         this._assertCpuIdle();
         if (this._liveConnectionClosing || this._liveExitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
+        await this._confirmUiWriteFirmware(options.requestedAt ?? Date.now());
         const status = this._samplingStatus();
         const dapSession = status.canWrite && this._debugBridge.canWrite ? this._debugBridge : null;
         const runtimeSession =
@@ -2716,6 +2783,15 @@ class MainViewProvider {
         }
         await this._prepareRequestedLayouts([{ name }]);
         const plan = this._agentWritePlan([{ name, value }], { refreshSymbols: false });
+        // The ELF may have been replaced while the mismatch prompt was open.
+        if (
+            this._firmwareConsistency(plan.elfResult).firmwareConsistency.status === "mismatch" &&
+            this._uiFirmwareMismatchAck !== plan.elfResult.elf.sha256
+        )
+            throw Object.assign(new Error(this._t("sb.writeFirmwareMismatchDeclined")), {
+                code: "ELF_TARGET_MISMATCH",
+                i18nKey: "sb.writeFirmwareMismatchDeclined"
+            });
         if (!status.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
         plan.connection = this._sessionWriteConnection(session);
         if (dapSession)
@@ -3377,8 +3453,8 @@ class MainViewProvider {
     // Agent 读写、观察列表与界面手动添加共用的名称解析（elfSymbols.createSymbolResolver）：身份名 →
     // 编译单元限定名（main.c::cfg）→ 唯一 displayName → 大小写不敏感的唯一匹配。同名变量分布在多个编译单元时
     // 裸名以 VARIABLE_AMBIGUOUS 拒绝。布局预取与读写规划必须共用它，否则按显示名请求的复合变量会缺布局。
-    _agentSymbolResolver(symbols) {
-        return elfSymbols.createSymbolResolver(symbols);
+    _agentSymbolResolver(symbols, options) {
+        return elfSymbols.createSymbolResolver(symbols, options);
     }
     // Return structured choices to the combobox; never select a default for an ambiguous name.
     async _resolveLiveVariable(message, post) {
@@ -5781,12 +5857,13 @@ class MainViewProvider {
                 case "writeVariable": {
                     const name = String(message.name || "").trim();
                     const seq = message.seq;
+                    const requestedAt = Date.now();
                     // 串行化：同一时刻只有一次写入在途，后续请求排队；失败只回发 writeResult，不弹全局错误
                     this._uiWritePromise = this._uiWritePromise
                         .catch(() => {})
                         .then(async () => {
                             try {
-                                const result = await this._writeUiVariable(name, message.value);
+                                const result = await this._writeUiVariable(name, message.value, { requestedAt });
                                 const r = result.results && result.results[0];
                                 webviewView.webview.postMessage({
                                     type: "writeResult",

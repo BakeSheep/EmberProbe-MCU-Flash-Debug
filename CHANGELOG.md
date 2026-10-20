@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 C++ 对象中任意位置含指针或 STL 成员时，整个对象的普通成员（如 `uint32_t`）都无法写入的问题；`std::` 对象内部、`_vptr` 等库内部成员以及指针本身仍为只读。
+- Fix plain members (such as `uint32_t`) of a C++ object becoming unwritable whenever a pointer or STL member appeared anywhere in its type; members inside `std::` objects, library-internal members such as `_vptr`, and pointers themselves stay read-only.
+
+- 侧边栏写入在当前 ELF 与 EmberProbe 上次烧录的固件不一致时先弹出确认，每个 ELF 摘要确认一次；滚轮只在数值框获得焦点时写入；清空输入、超出类型范围或非整数的输入不再被写成 0 或被静默截断；写入失败后卡片回到目标上的实际值。
+- Sidebar writes now ask for confirmation once per ELF digest when the ELF differs from the firmware EmberProbe last programmed; the wheel writes only while the value box is focused; emptied, out-of-range or non-integer input is no longer written as 0 or silently clamped; a failed write restores the card to the value on the target.
+
+- 8/16 位与未对齐写入改为先按自然宽度只写变量自身字节，仅在目标丢弃窄写入时退回 32 位读-改-写，避免暂停期间 DMA 更新的相邻字节被覆盖；暂停 DAP 写入在等待快照读取前即占用写入状态，避免与第二个写入或运行控制交错。
+- 8/16-bit and unaligned writes now write only the variable's own bytes at natural width and fall back to a 32-bit read-modify-write only when the target drops narrow writes, so DMA updates to neighbouring bytes during the halt are kept; paused DAP writes reserve the write state before waiting for a snapshot read so a second write or run control cannot interleave.
+
+- Agent 变量写入：拒绝 `null`、空字符串等非数值；指针变量与指针成员一律只读；变量名须大小写精确匹配；同一批次的目标地址不得重叠，最多 64 项；`remember` 必须为布尔值；可写段检查覆盖全部编码字节。
+- Agent variable writes reject `null`, empty strings and other non-numeric values; pointer variables and pointer members are read-only; names must match case exactly; targets in one batch must not overlap and are limited to 64; `remember` must be a boolean; the writable-section check covers every encoded byte.
+
 - 修复已开启采样时仍提示“开始采样后才能写入”的问题：按暂停快照读取、重试、失败、调试器能力及连接状态显示实际阻止原因，并在状态变化时更新写入提示。
 - Fix write controls asking to start sampling when it is already enabled: show the actual paused-snapshot, retry, failure, debugger-capability or connection reason and refresh the hint when it changes.
 

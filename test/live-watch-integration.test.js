@@ -45,14 +45,26 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         assert.deepStrictEqual(transaction.after[0].bytes, [0xaa, 0xbb]);
         assert.deepStrictEqual(fake.bytes(0x20000000, 4), [1, 0xaa, 0xbb, 4]);
         assert.ok(
-            fake.commands.includes("ocd_write_memory 0x20000000 32 {0x4bbaa01}"),
-            "unaligned byte changes should use a preserving aligned word write"
+            fake.commands.includes("ocd_write_memory 0x20000001 8 {0xaa 0xbb}"),
+            "unaligned byte changes write only the variable's own bytes"
+        );
+        assert.ok(
+            !fake.commands.some((command) => command.startsWith("ocd_write_memory 0x20000000 32")),
+            "landed narrow writes never rewrite neighbouring bytes"
         );
         assert.deepStrictEqual(
             fake.commands.filter((command) => command === "halt" || command === "resume"),
             ["halt", "resume"]
         );
         assert.strictEqual(fake.state, "running", "write transaction should restore the target run state");
+        fake.seed(0x20000100, [1, 2, 3, 4]);
+        fake.dropNarrowWrites = true;
+        fake.commands.length = 0;
+        const dropped = await session.writeAndVerify([{ name: "pair", address: 0x20000101, bytes: [0xcc, 0xdd] }]);
+        assert.deepStrictEqual(dropped.after[0].bytes, [0xcc, 0xdd], "dropped narrow writes are retried as words");
+        assert.deepStrictEqual(fake.bytes(0x20000100, 4), [1, 0xcc, 0xdd, 4]);
+        assert.ok(fake.commands.includes("ocd_write_memory 0x20000100 32 {0x4ddcc01}"));
+        fake.dropNarrowWrites = false;
         fake.commands.length = 0;
         const word = await session.writeAndVerify([
             { name: "word", address: 0x20000000, bytes: [0x78, 0x56, 0x34, 0x12] }
