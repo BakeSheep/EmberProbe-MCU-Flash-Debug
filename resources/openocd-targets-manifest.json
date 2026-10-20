@@ -1,0 +1,73 @@
+{
+    "schemaVersion": 1,
+    "upstream": {
+        "distribution": "xPack OpenOCD 0.12.0-7",
+        "revision": "e5888bda3",
+        "release": "https://github.com/xpack-dev-tools/openocd-xpack/releases/tag/v0.12.0-7"
+    },
+    "targets": [
+        {
+            "path": "target/numicroM0.cfg",
+            "canonical": "target/numicro.cfg",
+            "sha256": "f456332d2d2c3f7200c019d3d9b67089131076543b753984b6e4f07f4a8c58d9",
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/numicro.cfg"
+        },
+        {
+            "path": "target/numicroM4.cfg",
+            "canonical": "target/numicro_m4.cfg",
+            "sha256": "36819cf075ad0c27ff1676e235ad94cea9553537e92cd7829b08aec5029f2a99",
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/numicro_m4.cfg"
+        },
+        {
+            "path": "target/renesas_rz_g2.cfg",
+            "canonical": "target/renesas_rz.cfg",
+            "sha256": "e20f33ccb475afb808d62946c562400d2a44ef40df393f049250626d8c1f7ea3",
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/renesas_rz.cfg"
+        },
+        {
+            "path": "target/rp2040-core0.cfg",
+            "canonical": "target/rp2040.cfg",
+            "sha256": "5c8b7ab70c343026b8e241a7c3c495e0970599637b9cd8b752854257bf95fb28",
+            "options": {
+                "USE_CORE": 0
+            },
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/rp2040.cfg"
+        },
+        {
+            "path": "target/stm32mp13x.cfg",
+            "canonical": "target/st/stm32mp13x.cfg",
+            "sha256": "161e9e4f9fa212ddbbdb5e08d002ca8b7b2630a60a4e96f888f24db5fe137d62",
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/st/stm32mp13x.cfg"
+        },
+        {
+            "path": "target/stm32mp15x.cfg",
+            "canonical": "target/st/stm32mp15x.cfg",
+            "sha256": "b116258e473f10feab8ee97b29f374b0c5043bc0966cc8d6a26d45f924977272",
+            "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/st/stm32mp15x.cfg"
+        }
+    ],
+    "archives": [
+        {
+            "platform": "win32-x64",
+            "file": "openocd-win32-x64.tar.gz",
+            "prefix": "",
+            "scriptsRoot": "openocd/scripts",
+            "binary": "bin/openocd.exe",
+            "baseArchiveSha256": "df9384d39fcc5a6328295d480792dd725ca1b60f0b16809bafd57d5325d1be9b",
+            "binarySha256": "10567f01d37c66a0975537960d66e61f7b4e2a17eb2c9637e2c2cbc569f70c79",
+            "originalPayloadSha256": "a42c1eb507bb1d239a9f41fb08305558ec9da2b34004ca9193556e139d747f44",
+            "sha256": "4d345285d97bdab5cf67bbef4ee956b80ba8cdba56a946298b2351db0b45de52"
+        },
+        {
+            "platform": "linux-x64",
+            "file": "openocd-linux-x64.tar.gz",
+            "prefix": "xpack-openocd-0.12.0-7/",
+            "scriptsRoot": "xpack-openocd-0.12.0-7/openocd/scripts",
+            "binary": "xpack-openocd-0.12.0-7/bin/openocd",
+            "baseArchiveSha256": "94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6",
+            "binarySha256": "d2ca5d0f95dc37e138a39ce0606f0983b19d86efa0bfc67a920f3c8b102ccd8f",
+            "originalPayloadSha256": "6cca99f27496559d0d7f67eb52eb062a37096e7cfe62d5715b27e134e1a2543a",
+            "sha256": "98551c487a38f761f415bc1f91c8174ef77565b92a180ec655f3dce0658566d3"
+        }
+    ]
+}

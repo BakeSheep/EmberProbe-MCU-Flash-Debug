@@ -165,7 +165,8 @@ function shouldUseBundledDefault(executable, context) {
 // and fail closed if the bundled runtime cannot run instead of starting the affected system build.
 async function probeDefaultOpenOcd(executable, context, report) {
     if (!shouldUseBundledDefault(executable, context)) return undefined;
-    reportStatus(report, { state: "installing", key: "oc.preparing" });
+    // The installer reports progress only when it must extract; reusing a verified runtime
+    // keeps the sidebar status unchanged so flash/debug startup does not flash the install card.
     try {
         let probed;
         const result = await installer.installBundledOpenOcd(

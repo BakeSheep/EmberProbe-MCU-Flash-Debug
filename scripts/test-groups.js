@@ -80,6 +80,7 @@ const TEST_GROUPS = Object.freeze({
         "openocd-parser.test.js",
         "openocd-scripts.test.js",
         "openocd-status-service.test.js",
+        "openocd-target-bundle.test.js",
         "pointer-symbolizer.test.js",
         "pretty-printing-modes.test.js",
         "probe-automatic.test.js",

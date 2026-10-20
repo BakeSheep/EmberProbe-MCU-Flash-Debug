@@ -4,6 +4,8 @@ const { createHash } = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { spawnSync } = require("child_process");
+const targetManifest = require("../resources/openocd-targets-manifest.json");
 const installer = require("../src/openocdInstaller");
 const { discoverTargetConfigs } = require("../src/openocdScripts");
 const { probeOpenOcd, probeDefaultOpenOcd, shouldUseBundledDefault } = require("../src/openocdChecker");
@@ -53,8 +55,8 @@ const {
     const linuxArchive = path.join(projectRoot, "resources", "openocd-linux-x64.tar.gz");
     assert.strictEqual(
         createHash("sha256").update(fs.readFileSync(linuxArchive)).digest("hex"),
-        "94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6",
-        "Linux x64 预置包必须与 xPack 0.12.0-7 官方 SHA-256 一致"
+        targetManifest.archives.find((item) => item.platform === "linux-x64").sha256,
+        "Linux x64 预置包必须与合入兼容配置后的清单 SHA-256 一致"
     );
     const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "ep-test-"));
     const mockContext = {
@@ -80,9 +82,12 @@ const {
         assert.ok(bundled.path.startsWith(tmpBase), "默认运行时必须安装在扩展全局存储内");
         assert.notStrictEqual(bundled.path, "/usr/bin/openocd");
         const installedAt = fs.statSync(bundled.path).mtimeMs;
-        const reused = await probeDefaultOpenOcd("openocd", mockContext);
+        const reusedProgress = [];
+        const reused = await probeDefaultOpenOcd("openocd", mockContext, (event) => reusedProgress.push(event));
         assert.strictEqual(reused.path, bundled.path);
         assert.strictEqual(fs.statSync(bundled.path).mtimeMs, installedAt, "重复解析不得覆盖缓存的运行时");
+        assert.deepStrictEqual(reusedProgress, [], "复用已验证的运行时不得上报安装状态（避免烧录/调试时闪现安装卡片）");
+        assert.ok(progress.some((event) => event.key === "oc.preparing"));
         assert.ok(progress.some((event) => event.key === "oc.extracting"));
 
         // A damaged cached runtime must fail without falling back to the affected system build.
@@ -134,6 +139,51 @@ const {
         assert.ok(targets.includes("geehy/apm32f0x.cfg"), "预置包应包含 APM32F0 target");
         assert.ok(targets.includes("geehy/apm32f1x.cfg"), "预置包应包含 APM32F1 target");
         assert.ok(targets.includes("geehy/apm32f4x.cfg"), "预置包应包含 APM32F4 target");
+        // Configuration-only execution: explicit shutdown prevents implicit init or probe access.
+        for (const target of targetManifest.targets) {
+            const name = target.path.slice("target/".length);
+            assert.ok(targets.includes(name), `merged configuration must be discoverable: ${name}`);
+            const rz = name === "renesas_rz_g2.cfg";
+            const load = (config, options = {}) => {
+                const loaded = spawnSync(
+                    located,
+                    [
+                        "-f",
+                        rz ? "interface/dummy.cfg" : "interface/cmsis-dap.cfg",
+                        "-c",
+                        `transport select ${rz ? "jtag" : "swd"}`,
+                        ...Object.entries(options).flatMap(([key, value]) => ["-c", `set ${key} ${value}`]),
+                        "-f",
+                        config,
+                        "-c",
+                        "echo EP_TARGETS=[target names]",
+                        "-c",
+                        "echo EP_BANKS=[flash list]",
+                        "-c",
+                        "echo EP_ADAPTER=[adapter name]",
+                        "-c",
+                        "echo EP_TRANSPORT=[transport select]",
+                        "-c",
+                        "shutdown"
+                    ],
+                    { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+                );
+                const output = `${loaded.stdout || ""}\n${loaded.stderr || ""}`;
+                assert.ifError(loaded.error);
+                assert.strictEqual(loaded.status, 0, output);
+                assert.match(output, /EP_TARGETS=\S+/);
+                assert.ok(output.includes(`EP_ADAPTER=${rz ? "dummy" : "cmsis-dap"}`), output);
+                assert.ok(output.includes(`EP_TRANSPORT=${rz ? "jtag" : "swd"}`), output);
+                return output;
+            };
+            const output = load(target.path);
+            assert.deepStrictEqual(
+                output.match(/^EP_.*$/gm),
+                load(target.canonical, target.options).match(/^EP_.*$/gm),
+                `${name} must retain canonical target/bank declarations and adapter/transport`
+            );
+            if (name === "rp2040-core0.cfg") assert.match(output, /EP_TARGETS=rp2040\.core0\s*$/m);
+        }
 
         // 新包损坏时安装应失败，但已经可用的旧目录必须原样保留。
         const marker = path.join(destRoot, "existing-install.marker");

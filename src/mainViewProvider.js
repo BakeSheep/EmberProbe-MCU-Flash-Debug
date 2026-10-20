@@ -5512,6 +5512,7 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     shutdown() {
+        this._stopJlinkDriverMonitor();
         this.finishForeignDebug();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
@@ -5638,6 +5639,7 @@ class MainViewProvider {
     }
     // 实现接口要求的resolveWebviewView方法（无修改）
     resolveWebviewView(webviewView) {
+        this._stopJlinkDriverMonitor();
         this._sidebarReady = false;
         this._webviewView = webviewView;
         webviewView.webview.options = {
@@ -5724,9 +5726,7 @@ class MainViewProvider {
                     webviewView.webview.postMessage({ type: "initSuccess" });
                     if (this._probeDriverSwitching)
                         webviewView.webview.postMessage({ type: "probeDriverSwitch", busy: true });
-                    this._refreshJlinkDriverChoice(true).catch((error) =>
-                        console.error("J-Link USB driver check failed:", error.message)
-                    );
+                    this._startJlinkDriverMonitor();
                     // 回放最近的下载进度，避免视图重建后日志丢失
                     for (const progressMessage of this._recentProgress)
                         webviewView.webview.postMessage(progressMessage);
@@ -5935,7 +5935,12 @@ class MainViewProvider {
         });
         const sidebarWebview = webviewView.webview;
         const visibilityListener = webviewView.onDidChangeVisibility?.(() => {
-            if (!webviewView.visible) return;
+            if (this._webviewView !== webviewView) return;
+            if (!webviewView.visible) {
+                this._stopJlinkDriverMonitor();
+                return;
+            }
+            this._startJlinkDriverMonitor();
             // Retained documents do not initialize again. Replay environment changes missed while hidden.
             sidebarWebview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
             if (this._skillStatusService.lastStatus)
@@ -5951,6 +5956,7 @@ class MainViewProvider {
             visibilityListener?.dispose();
             this._webviewRenders?.delete(sidebarWebview);
             if (this._webviewView === webviewView) {
+                this._stopJlinkDriverMonitor();
                 this._webviewView = null;
                 this._sidebarReady = false;
             }
@@ -6059,9 +6065,44 @@ class MainViewProvider {
             return { targets: [], interfaces: [] };
         }
     }
+    _stopJlinkDriverMonitor() {
+        if (this._jlinkDriverMonitor) clearTimeout(this._jlinkDriverMonitor.timer);
+        this._jlinkDriverMonitor = null;
+        this._jlinkDriverChoiceRevision = (this._jlinkDriverChoiceRevision || 0) + 1;
+    }
+    _startJlinkDriverMonitor() {
+        if (
+            process.platform !== "win32" ||
+            process.arch !== "x64" ||
+            !this._sidebarReady ||
+            !this._webviewView ||
+            this._webviewView.visible === false ||
+            this._shutdownPromise ||
+            this._jlinkDriverMonitor
+        )
+            return;
+        const monitor = { timer: null };
+        this._jlinkDriverMonitor = monitor;
+        const poll = async () => {
+            if (this._jlinkDriverMonitor !== monitor) return;
+            try {
+                if (this._context.workspaceState.get(CACHE_KEYS.debugger) === "jlink.cfg")
+                    await this._refreshJlinkDriverChoice(true);
+            } catch (error) {
+                console.error("J-Link USB driver check failed:", error.message);
+            } finally {
+                // Wait after each completed read-only scan; slow enumeration must not pile up requests.
+                if (this._jlinkDriverMonitor === monitor) {
+                    monitor.timer = setTimeout(poll, 3000);
+                    monitor.timer.unref();
+                }
+            }
+        };
+        void poll();
+    }
     async _refreshJlinkDriverChoice(notify = false) {
-        const revision = this._jlinkDriverChoiceRevision || 0;
         if (this._probeDriverSwitching) return null;
+        const revision = (this._jlinkDriverChoiceRevision = (this._jlinkDriverChoiceRevision || 0) + 1);
         const debuggerCfg = this._context.workspaceState.get(CACHE_KEYS.debugger);
         if (process.platform !== "win32" || debuggerCfg !== "jlink.cfg") {
             this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: "" });

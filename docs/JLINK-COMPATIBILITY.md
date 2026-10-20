@@ -36,6 +36,10 @@ Windows inventory is read through the bundled read-only helper when available, a
 
 Windows 下优先用内置只读 helper 枚举探针，避免每次操作都启动 PowerShell。发布包中的 helper 与 libwdi 未签名，Windows 可能提示未知发布者或依本机策略阻止运行；发布流程和 helper 会核对文件哈希，但哈希不证明发布者身份。重复切换到 WinUSB 时复用已准备的驱动包；下拉栏保持加载状态，直到 OpenOCD 能打开所选接口。该检查不初始化 MCU。Windows 的驱动安装策略检查仍可能耗时。若之后出现 `TARGET_NOT_CONNECTED` 或 `cannot read IDR`，应排查目标芯片的 SWD 连接。
 
+On Windows x64, a visible sidebar configured for `jlink.cfg` checks read-only USB metadata again three seconds after each completed check. A probe attached after configuration can therefore reveal the driver dropdown without reselecting the debugger; incomplete Windows enumeration is retried on the next check. Returning to a retained sidebar checks immediately. Hidden or closed sidebars stop polling, and superseded checks cannot overwrite newer results. These checks neither open the target nor change its USB driver.
+
+Windows x64 下，侧栏可见且已选择 `jlink.cfg` 时，每次检测结束三秒后会再次读取 USB 元数据。因此先配置再插入探针也能自动显示驱动选择框，无须重新选择调试器；Windows 尚未完成枚举时会在下次检测重试。切回保留的侧栏会立即补查，隐藏或关闭侧栏则停止轮询，过期检测结果不会覆盖新结果。这些检测不连接目标芯片，也不更改 USB 驱动。
+
 Success history is workspace-local and is written only after a valid target memory read, successful debugger target connection, or successful download/chip read. It never overwrites user settings. Version 2 records include the effective interface profile fingerprint. For probes without a reliable serial, history remembers only the interface preference; every operation resolves the current physical device again. Standalone scripts without workspace storage use the same decision rules without persistent history. Explicit serial, transport and speed overrides are configured in VS Code settings. Write authorization binds the resolved physical connection and interface profile.
 
 成功记录保存在工作区内部状态，只有有效目标内存读取、调试目标连接或下载/芯片读取成功后才更新，不覆盖用户设置。第二版记录包含实际接口配置指纹；无可靠序列号时只记接口偏好，每次操作重新确认当前物理设备。独立脚本使用相同决策规则，但没有工作区存储时不持久记忆。显式序列号、协议和速度覆盖项在 VS Code 插件设置中配置。写入授权绑定解析后的实际连接及接口配置。
@@ -93,8 +97,9 @@ The sidebar installation action remains available for manual installation and pa
 连接硬件前自动离线解压并验证，之后复用扩展全局存储中按预置包 SHA-256 分隔的目录。
 自动准备不改写设置或系统安装；包括 `/usr/bin/openocd` 在内的显式路径继续优先。
 准备失败时停止操作，不回退到有缺陷的系统构建；侧栏仍保留手动安装并配置路径的入口。
-压缩包保留官方完整目录，其 SHA-256 为
+压缩包保留官方原始文件，并加入 [兼容配置](OPENOCD-TARGETS.md)。上游基础包 SHA-256 为
 `94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
+合入后的压缩包哈希及原始可执行文件哈希记录在 `resources/openocd-targets-manifest.json`。
 
 ### Other connection failures / 其他连接故障
 

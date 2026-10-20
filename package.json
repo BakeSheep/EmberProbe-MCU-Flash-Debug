@@ -995,6 +995,7 @@
     "docs/CPU-LOAD-MONITORING.md",
     "docs/RTOS-AWARENESS.md",
     "docs/SHARED-DEBUG-GROUPS.md",
+    "docs/OPENOCD-TARGETS.md",
     "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
