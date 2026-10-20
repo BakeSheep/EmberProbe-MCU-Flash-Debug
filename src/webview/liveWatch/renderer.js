@@ -128,9 +128,11 @@ var unlimitedState = { available: false, enabled: false, active: false, limitedB
 var frequencyPresets = [20, 50, 100, 200];
 var frequencyDrag = null;
 var frequencyMotion = { selected: false, started: 0, lastFrame: -Infinity, image: null, still: false };
-function rateText(hz) {
+var samplingBytesPerSecond = 0;
+function rateText(hz, bytesPerSecond) {
+    if (Number.isFinite(bytesPerSecond)) samplingBytesPerSecond = Math.max(0, bytesPerSecond);
     var value = (Number.isFinite(hz) ? hz : 0).toFixed(1);
-    return unlimitedState.active ? t("lw.unlimitedRate", { hz: value }) : value + " Hz";
+    return (samplingBytesPerSecond / 1000).toFixed(1) + "kb/s | " + value + "Hz";
 }
 function renderUnlimited(syncInput) {
     // Native pointer tracking owns the range until release; telemetry must not touch its value or bounds.
@@ -1763,7 +1765,7 @@ function clearHistory(clearArchive = true) {
     });
     sampleTimes = [];
     samplingOrigin = null;
-    $("rate").textContent = "0 Hz";
+    $("rate").textContent = rateText(0, 0);
     updateValues();
     resetChartView();
     dirty = true;
@@ -3237,7 +3239,7 @@ window.EmberProbeMessages.connect(window, {
         onSamples(m.samples || []);
     },
     liveCompositeSample: function (m) {
-        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz);
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
         onCompositeSamples(m.samples || []);
     },
     debugSessionChanged: function () {
@@ -3250,13 +3252,13 @@ window.EmberProbeMessages.connect(window, {
             running = m.running;
             if (!running) {
                 sampleTimes = [];
-                $("rate").textContent = "0 Hz";
+                $("rate").textContent = rateText(0, 0);
                 $("rate").title = "";
             }
         }
         applyUnlimitedStatus(m);
         if (typeof m.actualHz === "number" && running) {
-            $("rate").textContent = rateText(m.actualHz);
+            $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
         }
         if (m.effectiveIntervalMs === 0) {
             $("rate").title =
@@ -3491,7 +3493,7 @@ window.EmberProbeMessages.connect(window, {
         });
         scheduleValueRefresh();
         applyUnlimitedStatus(m);
-        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz);
+        if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
     },
     chartHistoryStatus: function (m) {
         if (!CFG.backendHistory || historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;

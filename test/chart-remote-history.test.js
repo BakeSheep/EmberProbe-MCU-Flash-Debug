@@ -254,7 +254,7 @@ try {
             "the show-all action stays visible while sampling"
         );
         assert.strictEqual(w.historyLoading.hidden, true);
-        assert.strictEqual(hiddenPage.document.getElementById("rate").textContent, "30.3 Hz");
+        assert.strictEqual(hiddenPage.document.getElementById("rate").textContent, "0.0kb/s | 30.3Hz");
     }
     assert.strictEqual(
         hiddenPage.messages.filter((message) => message.type === "chartViewport").length,
@@ -313,7 +313,7 @@ try {
         w.draw(1000 + cycle * 200);
         assert.strictEqual(
             compositePage.document.getElementById("rate").textContent,
-            "30.3 Hz",
+            "0.0kb/s | 30.3Hz",
             "composite-only sampling updates the measured rate without plotted members"
         );
         assert.ok(compositePage.document.getElementById("chartEmpty").textContent.includes("member"));
@@ -324,7 +324,7 @@ try {
     compositePage.send({ type: "liveCompositeSample", actualHz: 30.3, samples: [] });
     assert.strictEqual(
         compositePage.document.getElementById("rate").textContent,
-        "0 Hz",
+        "0.0kb/s | 0.0Hz",
         "late samples do not restore the rate after stop"
     );
     compositePage.assertHealthy();

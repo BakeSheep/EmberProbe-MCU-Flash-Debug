@@ -85,6 +85,7 @@ function createProvider(settings) {
     provider._liveSession.stats = () => ({
         effectiveIntervalMs: 0,
         actualHz: 812.5,
+        bytesPerSecond: 65000,
         unlimited: true,
         unlimitedActive: true,
         unlimitedSuppressedReason: null,
@@ -96,6 +97,7 @@ function createProvider(settings) {
     assert.strictEqual(status.unlimitedActive, true);
     assert.strictEqual(status.limitedBy, "host");
     assert.strictEqual(status.hostHoldMs, 240);
+    assert.strictEqual(status.bytesPerSecond, 65000);
     provider._liveSession.stats = () => ({ effectiveIntervalMs: 33, actualHz: 30 });
     status = provider._samplingStatus();
     assert.strictEqual(status.unlimited, false);
@@ -103,6 +105,7 @@ function createProvider(settings) {
     assert.strictEqual(status.unlimitedSuppressedReason, null);
     assert.strictEqual(status.limitedBy, null);
     assert.strictEqual(status.hostHoldMs, 0);
+    assert.strictEqual(status.bytesPerSecond, 0);
 
     // Configuration and Agent Bridge limits stay at 200 Hz; unlimited is a separate, UI-only flag.
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -136,6 +139,7 @@ function createProvider(settings) {
             type: "liveStatus",
             running: true,
             actualHz: 640,
+            bytesPerSecond: 32000,
             effectiveIntervalMs: 0,
             p95DurationMs: 1.4,
             unlimitedActive: true,
@@ -144,28 +148,44 @@ function createProvider(settings) {
             hostHoldMs: 0
         });
         const rate = doc.getElementById("rate");
-        assert.strictEqual(rate.textContent, "Max rate · actual 640.0 Hz");
+        assert.strictEqual(rate.textContent, "32.0kb/s | 640.0Hz");
         assert.ok(rate.title.includes("Target: unlimited"));
         assert.ok(!/Infinity|NaN/.test(rate.title), "a zero interval must not render as an infinite rate");
         assert.ok(field.title.includes("Limited by probe throughput"));
 
-        graph.send({ type: "chartValues", samples: [], actualHz: 902.25, unlimitedActive: true, limitedBy: "host" });
-        assert.strictEqual(rate.textContent, "Max rate · actual 902.3 Hz");
+        graph.send({
+            type: "chartValues",
+            samples: [],
+            actualHz: 902.25,
+            bytesPerSecond: 64000,
+            unlimitedActive: true,
+            limitedBy: "host"
+        });
+        assert.strictEqual(rate.textContent, "64.0kb/s | 902.3Hz");
         assert.ok(field.title.includes("Limited by extension processing"));
+        graph.send({ type: "setLang", lang: "zh" });
+        assert.strictEqual(rate.textContent, "64.0kb/s | 902.3Hz");
+        graph.send({ type: "liveCompositeSample", samples: [], actualHz: 800, bytesPerSecond: 12345 });
+        assert.strictEqual(rate.textContent, "12.3kb/s | 800.0Hz");
+        graph.send({ type: "setLang", lang: "en" });
 
         // Debug sessions suppress the mode: frequency input is usable again and the reason is shown.
         graph.send({
             type: "liveStatus",
             running: true,
             actualHz: 30,
+            bytesPerSecond: 0,
             effectiveIntervalMs: 33,
             unlimitedActive: false,
             unlimitedSuppressedReason: "debug",
             limitedBy: null
         });
-        assert.strictEqual(rate.textContent, "30.0 Hz");
+        assert.strictEqual(rate.textContent, "0.0kb/s | 30.0Hz");
         assert.strictEqual(doc.getElementById("frequency").disabled, false);
         assert.ok(field.title.includes("inactive during debug sessions"));
+        graph.send({ type: "liveStatus", running: false, actualHz: 0, bytesPerSecond: 99999 });
+        graph.send({ type: "chartValues", samples: [], actualHz: 900, bytesPerSecond: 99999 });
+        assert.strictEqual(rate.textContent, "0.0kb/s | 0.0Hz", "late telemetry cannot restore stopped rates");
 
         graph.send({ type: "liveUnlimited", available: false, enabled: false });
         assert.strictEqual(slider.max, "3");

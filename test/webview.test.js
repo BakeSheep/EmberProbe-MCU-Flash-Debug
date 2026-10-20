@@ -169,7 +169,7 @@ try {
         p95DurationMs: 3.2,
         missedDeadlines: 0
     });
-    assert.strictEqual(graph.document.getElementById("rate").textContent, "123.4 Hz");
+    assert.strictEqual(graph.document.getElementById("rate").textContent, "0.0kb/s | 123.4Hz");
     assert.ok(graph.document.getElementById("rate").title.includes("Target: 200 Hz"));
     assert.ok(graph.document.getElementById("rate").title.includes("Effective: 125.0 Hz (8 ms)"));
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));

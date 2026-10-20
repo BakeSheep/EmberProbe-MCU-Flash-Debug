@@ -487,7 +487,7 @@ async function testShutdownFence(Provider) {
     let statusCalls = 0;
     p._samplingStatus = () => {
         statusCalls++;
-        return { actualHz: 30.3 };
+        return { actualHz: 30.3, bytesPerSecond: 12345 };
     };
     p._postWebviewBatch(
         entry,
@@ -500,6 +500,7 @@ async function testShutdownFence(Provider) {
     const compositeBatch = panels[1].messages.at(-1);
     assert.strictEqual(compositeBatch.type, "liveCompositeSample");
     assert.strictEqual(compositeBatch.actualHz, 30.3, "host forwards acquisition rate even when no scalar is plotted");
+    assert.strictEqual(compositeBatch.bytesPerSecond, 12345, "host forwards measured throughput for composites");
     console.log("Chart host migration, multi-panel styles and snapshot export tests passed");
 })().catch((error) => {
     console.error(error);

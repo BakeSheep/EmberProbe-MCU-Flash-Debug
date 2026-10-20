@@ -259,7 +259,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         graph.send({ type: "liveSample", samples: [{ name: "b", value: 2, t: 1100 }] });
         assert.equal(
             doc.getElementById("rate").textContent,
-            "10.0 Hz",
+            "0.0kb/s | 10.0Hz",
             "delivery bursts do not distort measured acquisition rate"
         );
         w.clearHistory();

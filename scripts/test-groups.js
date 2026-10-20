@@ -100,6 +100,7 @@ const TEST_GROUPS = Object.freeze({
         "sampling-clock.test.js",
         "sampling-frequency.test.js",
         "sampling-rate-motion.test.js",
+        "sampling-throughput.test.js",
         "shared-debug-group.test.js",
         "skill-status-service.test.js",
         "stl-containers.test.js",

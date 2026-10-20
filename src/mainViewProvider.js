@@ -4422,6 +4422,7 @@ class MainViewProvider {
                             samples: scalars,
                             t,
                             actualHz: status.actualHz,
+                            bytesPerSecond: status.bytesPerSecond,
                             unlimitedActive: status.unlimitedActive,
                             limitedBy: status.limitedBy
                         });
@@ -4430,7 +4431,8 @@ class MainViewProvider {
                             type: "liveCompositeSample",
                             samples: composites,
                             t,
-                            actualHz: status.actualHz
+                            actualHz: status.actualHz,
+                            bytesPerSecond: status.bytesPerSecond
                         });
                 }, 50);
             return;
@@ -4701,6 +4703,7 @@ class MainViewProvider {
         status.frequencyHz = this._liveFrequencyHz;
         status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs;
         status.actualHz = stats?.actualHz ?? 0;
+        status.bytesPerSecond = stats?.bytesPerSecond ?? 0;
         status.consumers = stats?.consumers;
         status.sidebarTargetHz = 20;
         status.p95DurationMs = stats?.p95DurationMs ?? 0;
