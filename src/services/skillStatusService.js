@@ -1,8 +1,17 @@
 "use strict";
+const { canonicalPath } = require("../../skills/_emberprobe/bridge-locator");
 
 function hasWorkspaceSkills(status) {
     const workspace = status?.scopes?.workspace;
     return !!workspace && workspace.state !== "notInstalled";
+}
+
+// 全局安装已停止维护：仍含可执行脚本、且版本过期/被修改/不完整的全局副本需要提示清理。
+function legacyGlobalSkills(status) {
+    const global = status?.scopes?.global;
+    if (!global || !global.hasScripts || !["outdated", "modified", "partial"].includes(global.state)) return null;
+    const version = global.skills?.find((skill) => skill.installedVersion)?.installedVersion || "";
+    return { state: global.state, version, root: global.root };
 }
 
 class SkillStatusService {
@@ -16,6 +25,7 @@ class SkillStatusService {
         this.lastStatus = null;
         this.bridgeWarned = false;
         this.upgradePrompted = false;
+        this.approvedRoots = new Map();
     }
 
     post(status) {
@@ -69,7 +79,61 @@ class SkillStatusService {
             if (choice === manage) this.vscode.window.showInformationMessage(this.t("msg.skillsDiffers"));
         });
     }
-    async checkForCall() {
+    // meta 来自 Bridge 请求头：skill 通道按实际发起调用的副本检查；MCP 服务器代码随扩展安装，
+    // 不检查 skill 哈希；没有 meta 的旧脚本沿用合并视图检查。请求头不构成鉴权。
+    async checkForCall(meta) {
+        if (meta?.channel === "mcp") return;
+        if (meta?.channel === "skill" && typeof meta.skillRoot === "string" && meta.skillRoot)
+            return this.checkSkillRoot(meta.skillRoot);
+        return this.checkMerged();
+    }
+
+    async inspectCallerRoot(skillRoot) {
+        const status = await this.refresh(false);
+        const actual = canonicalPath(skillRoot);
+        for (const name of ["workspace", "global"]) {
+            const scope = status.scopes?.[name];
+            if (scope?.root && canonicalPath(scope.root) === actual) return { actual, scope, custom: false };
+        }
+        const scope = await this.installer.inspectSkillRoot(this.context, skillRoot, "custom");
+        return { actual, scope, custom: true };
+    }
+
+    async checkSkillRoot(skillRoot) {
+        const { actual, scope, custom } = await this.inspectCallerRoot(skillRoot);
+        // 自定义副本（不在已知的 workspace/global 根下）总是需要审批；已知根只在内容偏离时审批。
+        if (!custom && !["modified", "partial", "outdated", "notInstalled"].includes(scope.state)) return;
+        if (this.approvedRoots.get(actual) === scope.fingerprint) return;
+        const allow = this.t("approval.skillsAllow");
+        const choice = await this.vscode.window.showWarningMessage(
+            this.t(custom ? "approval.skillsCustom" : "approval.skills"),
+            {
+                modal: true,
+                detail: JSON.stringify(
+                    {
+                        root: skillRoot,
+                        scope: custom ? "custom" : scope.scope,
+                        state: scope.state,
+                        skills: scope.skills
+                    },
+                    null,
+                    2
+                )
+            },
+            allow
+        );
+        if (choice !== allow)
+            throw Object.assign(new Error(this.t("approval.denied")), { code: "SKILLS_APPROVAL_DENIED" });
+        const current = await this.inspectCallerRoot(skillRoot);
+        if (current.scope.fingerprint !== scope.fingerprint)
+            throw Object.assign(new Error("Skills changed during approval; review them again"), {
+                code: "SKILLS_CHANGED_DURING_APPROVAL"
+            });
+        // 缓存键为“根目录 + 该根目录指纹”：批准 workspace 副本不会连带放行全局副本。
+        this.approvedRoots.set(actual, scope.fingerprint);
+    }
+
+    async checkMerged() {
         const status = await this.refresh(false);
         const key = JSON.stringify(status.scopes);
         if (!["modified", "partial", "outdated"].includes(status.state) || this.approvedContents === key) return;
@@ -146,4 +210,4 @@ class SkillStatusService {
         }
     }
 }
-module.exports = { SkillStatusService, hasWorkspaceSkills };
+module.exports = { SkillStatusService, hasWorkspaceSkills, legacyGlobalSkills };

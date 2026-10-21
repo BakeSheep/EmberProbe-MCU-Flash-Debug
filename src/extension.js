@@ -28,6 +28,9 @@ function activate(context) {
             deserializeWebviewPanel: async (panel, state) => provider.restoreLiveWatchPanel(panel, state)
         }),
         vscode.commands.registerCommand("mcu-vscode.manageAgentSkills", () => provider.commandHandlers["mcu-vscode.manageAgentSkills"]()),
+        vscode.commands.registerCommand("mcu-vscode.copyMcpConfig", () => provider.commandHandlers["mcu-vscode.copyMcpConfig"]()),
+        vscode.commands.registerCommand("mcu-vscode.enableAgentAccess", () => provider.commandHandlers["mcu-vscode.enableAgentAccess"]()),
+        vscode.commands.registerCommand("mcu-vscode.disableAgentAccess", () => provider.commandHandlers["mcu-vscode.disableAgentAccess"]()),
         vscode.commands.registerCommand("mcu-vscode.downloadOfficialSvd", () => provider.commandHandlers["mcu-vscode.downloadOfficialSvd"]()),
         vscode.commands.registerCommand("mcu-vscode.selectExistingSvd", () => provider.commandHandlers["mcu-vscode.selectExistingSvd"]()),
         vscode.commands.registerCommand("mcu-vscode.switchWorkspaceSvd", () => provider.commandHandlers["mcu-vscode.switchWorkspaceSvd"]()),
@@ -41,6 +44,7 @@ function activate(context) {
             if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.experimental.unlimitedSampling")) provider.unlimitedSamplingConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
+            if (event.affectsConfiguration("emberprobe.mcp.toolsets")) provider.mcpConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
                 provider.refreshOpenOcdStatus(true);
@@ -50,6 +54,11 @@ function activate(context) {
             await provider._cpuLoadService.stop("workspace-changed").catch(() => {});
             await provider.stopAgentBridge().catch(() => {});
             provider.refreshSkillStatus(true).catch(console.error);
+            provider.mcpConfigurationChanged();
+        }),
+        vscode.workspace.onDidGrantWorkspaceTrust(() => {
+            provider.refreshSkillStatus(true).catch(console.error);
+            provider.mcpConfigurationChanged();
         }),
         {
             dispose: () => {
@@ -105,8 +114,10 @@ function activate(context) {
     provider.refreshOpenOcdStatus(false);
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
+    // 支持 MCP API 的宿主注册 server definition provider；旧版本安静跳过，外部客户端仍可用启动器。
+    const mcpRegistered = provider.activateMcp();
     if (process.env.EMBERPROBE_E2E === "1") {
-        return { debugTestProvider: provider, viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
+        return { debugTestProvider: provider, mcpRegistered, viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
     }
 }
 

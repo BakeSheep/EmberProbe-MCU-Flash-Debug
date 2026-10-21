@@ -30,11 +30,20 @@ async function run() {
         "mcu-vscode.folderAttachDebug",
         "mcu-vscode.folderDownload",
         "mcu-vscode.openLiveWatch",
-        "mcu-vscode.checkOpenOcd"
+        "mcu-vscode.checkOpenOcd",
+        "mcu-vscode.copyMcpConfig",
+        "mcu-vscode.enableAgentAccess",
+        "mcu-vscode.disableAgentAccess"
     ]) {
         assert.ok(commands.has(command), `Expected command ${command}`);
     }
     console.log("✓ activates and registers public commands");
+
+    // 支持 MCP API 的宿主注册 provider；旧版本安静跳过（单元测试覆盖跳过路径）。
+    const mcpSupported = typeof vscode.lm?.registerMcpServerDefinitionProvider === "function";
+    assert.strictEqual(extension.exports.mcpRegistered, mcpSupported);
+    assert.ok(fs.existsSync(path.join(extension.extensionPath, "dist", "mcp-server.js")), "MCP server is bundled");
+    console.log(`✓ MCP server definition provider ${mcpSupported ? "registered" : "skipped on this host"}`);
 
     const config = vscode.workspace.getConfiguration("emberprobe");
     assert.strictEqual(config.get("tclPort"), 6666);

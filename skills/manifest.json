@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "shared": [
     "agent-client.js",
+    "bridge-locator.js",
     "debug-inspection-client.js",
     "agent-workflow.md",
     "file-identity.js",

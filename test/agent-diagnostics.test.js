@@ -9,7 +9,14 @@ const os = require("os");
 const net = require("net");
 const http = require("http");
 const path = require("path");
-const { call, diagnosticForError, isReadOnlyMethod } = require("../skills/_emberprobe/agent-client");
+const {
+    call,
+    diagnosticForError,
+    isReadOnlyMethod,
+    DIAGNOSTICS,
+    RENDERINGS,
+    renderSuggestions
+} = require("../skills/_emberprobe/agent-client");
 
 // 接受连接但永不响应的服务器，用于触发客户端传输超时（请求挂起 / 状态变更晚完成）。
 function startBlackholeServer() {
@@ -36,23 +43,20 @@ function reserveClosedPort() {
     });
 }
 
-const realReadFileSync = fs.readFileSync;
-// descriptor() 会校验 host/port/token，因此用 monkeypatch 把指针文件内容指向测试端口，
-// 避免依赖真实扩展 Bridge。仅拦截 agent-bridge.json 的读取，其余委托真实实现。
+// 定位只看本测试的空注册表；用旧格式工作区指针（直接含 host/port/token）指向测试端口，
+// 避免依赖真实扩展 Bridge。
+process.env.EMBERPROBE_BRIDGE_REGISTRY = path.join(os.tmpdir(), "emberprobe-agent-diagnostics-no-registry");
+const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-diagnostics-"));
+const pointerFile = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
 function patchDescriptor(port, token) {
-    fs.readFileSync = function (target, ...rest) {
-        if (String(target).endsWith("agent-bridge.json")) {
-            return JSON.stringify({ host: "127.0.0.1", port, token });
-        }
-        return realReadFileSync.call(fs, target, ...rest);
-    };
+    fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
+    fs.writeFileSync(pointerFile, JSON.stringify({ host: "127.0.0.1", port, token }));
 }
 function unpatchDescriptor() {
-    fs.readFileSync = realReadFileSync;
+    fs.rmSync(pointerFile, { force: true });
 }
 
 (async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-diagnostics-"));
     const TOKEN = "super-secret-bridge-token";
 
     try {
@@ -180,6 +184,37 @@ function unpatchDescriptor() {
         assert.strictEqual(bareDiag.error.retryable, false);
         assert.ok(!JSON.stringify(bareDiag).includes("采样"));
         assert.ok(Array.isArray(bareDiag.error.suggestedActions) && bareDiag.error.suggestedActions.length > 0);
+        assert.ok(bareDiag.error.suggestedActions.some((text) => text.includes("对应查询方法")));
+
+        // ---- 建议动作与通道无关：skill 渲染保持原 CLI 写法，MCP 渲染成工具名，actions 机器可读 ----
+        const inactive = Object.assign(new Error("no session"), { code: "DEBUG_SESSION_NOT_ACTIVE" });
+        const skillView = diagnosticForError(inactive, { operation: "debug.control" });
+        assert.deepStrictEqual(skillView.error.suggestedActions, ["使用 mcu-debug-control --start 启动调试后重试。"]);
+        assert.deepStrictEqual(skillView.error.actions, [{ method: "debug.start" }]);
+        const mcpView = diagnosticForError(inactive, {
+            operation: "debug.control",
+            render: { channel: "mcp", method: (method) => method.replace(/\./g, "_") }
+        });
+        assert.deepStrictEqual(mcpView.error.suggestedActions, ["使用 debug_start 启动调试后重试。"]);
+        assert.deepStrictEqual(mcpView.error.actions, skillView.error.actions);
+        const timeoutView = diagnosticForError(timeoutError, {
+            operation: "config.set",
+            render: { channel: "mcp", method: (method) => method.replace(/\./g, "_") }
+        });
+        assert.ok(timeoutView.error.suggestedActions.some((text) => text.includes("先用 config_get 核对")));
+        assert.deepStrictEqual(timeoutView.error.actions, [{ method: "config.get" }]);
+        // 诊断表中不再出现 CLI 写法；所有占位符都有两种渲染
+        for (const [code, preset] of Object.entries(DIAGNOSTICS)) {
+            for (const text of preset[2]) {
+                assert.ok(!/mcu-[a-z-]+ --|(^|\s)--[a-z]/.test(text.replace("udevadm control --reload", "")), code);
+                for (const [, key] of text.matchAll(/\{\{([a-zA-Z]+)\}\}/g)) assert.ok(RENDERINGS[key], key);
+            }
+            const rendered = diagnosticForError({ code }, { render: { channel: "mcp" } });
+            assert.ok(!JSON.stringify(rendered).includes("{{"), `${code} leaves an unrendered token`);
+        }
+        assert.deepStrictEqual(renderSuggestions(["{{unknown}} {{method:}}"], { channel: "mcp" }).suggestedActions, [
+            "{{unknown}} 对应的状态查询工具"
+        ]);
 
         console.log("Agent diagnostics tests passed");
     } finally {

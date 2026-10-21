@@ -9,6 +9,7 @@ Use `scripts/analyze-fault.js` from this skill directory.
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `fault_read`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: reading and decoding Cortex-M fault status registers (CFSR/HFSR/DFSR/MMFAR/BFAR) and symbolizing PC/LR against the ELF for a crashed, frozen, or HardFault-ed target.
 - **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, and a powered target.
 - **Preconditions**: the probe is free — otherwise `PROBE_BUSY` is returned; wait or let the user stop the current owner.

@@ -2,7 +2,7 @@
 const assert = require("assert");
 const http = require("http");
 const { once } = require("events");
-const { AgentBridge, MAX_BODY } = require("../src/agentBridge");
+const { AgentBridge, MAX_BODY, requestMeta } = require("../src/agentBridge");
 
 (async () => {
     let calls = 0;
@@ -81,6 +81,59 @@ const { AgentBridge, MAX_BODY } = require("../src/agentBridge");
         await aborted;
         assert.strictEqual(calls, 3, "aborted uploads must not execute a method");
         assert.strictEqual((await send()).status, 200, "server must survive an aborted upload");
+
+        // 调用方请求头只用于定位与审计：不能替代或绕过 token，且只接受已知通道与可解码的值
+        const metas = [];
+        bridge.handler = async (_method, _params, meta) => {
+            metas.push(meta);
+            return true;
+        };
+        const sendMeta = (headers, token = bridge.token) =>
+            new Promise((resolve, reject) => {
+                const request = http.request(
+                    {
+                        host: "127.0.0.1",
+                        port,
+                        path: "/v1/call",
+                        method: "POST",
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            "Content-Length": Buffer.byteLength(validBody),
+                            ...headers
+                        }
+                    },
+                    (response) => {
+                        response.resume();
+                        response.on("end", () => resolve(response.statusCode));
+                    }
+                );
+                request.on("error", reject);
+                request.end(validBody);
+            });
+        const skillHeaders = {
+            "X-EmberProbe-Channel": "skill",
+            "X-EmberProbe-Skill-Root": encodeURIComponent("C:\\用户\\proj\\.agents\\skills")
+        };
+        assert.strictEqual(await sendMeta(skillHeaders, "wrong"), 401, "channel headers never replace the token");
+        assert.strictEqual(await sendMeta({ "X-EmberProbe-Channel": "mcp" }, ""), 401);
+        assert.strictEqual(metas.length, 0, "unauthenticated requests never reach the handler");
+        assert.strictEqual(await sendMeta(skillHeaders), 200);
+        assert.deepStrictEqual(metas.pop(), { channel: "skill", skillRoot: "C:\\用户\\proj\\.agents\\skills" });
+        assert.strictEqual(
+            await sendMeta({ "X-EmberProbe-Channel": "MCP", "X-EmberProbe-Client": encodeURIComponent("Code/1.99") }),
+            200
+        );
+        assert.deepStrictEqual(metas.pop(), { channel: "mcp", client: "Code/1.99" });
+        assert.strictEqual(await sendMeta({ "X-EmberProbe-Channel": "admin", "X-EmberProbe-Skill-Root": "x" }), 200);
+        assert.strictEqual(metas.pop(), undefined, "unknown channels carry no metadata");
+        assert.strictEqual(
+            await sendMeta({ "X-EmberProbe-Channel": "skill", "X-EmberProbe-Skill-Root": "%E0%A4%A" }),
+            200
+        );
+        assert.deepStrictEqual(metas.pop(), { channel: "skill" }, "malformed values are dropped");
+        assert.deepStrictEqual(requestMeta({ "x-emberprobe-channel": "skill", "x-emberprobe-skill-root": "a%0Ab" }), {
+            channel: "skill"
+        });
         console.log("Bridge security tests passed");
     } finally {
         server.closeAllConnections();
