@@ -121,6 +121,40 @@ const withoutSkills = { scopes: { workspace: { state: "notInstalled" }, global: 
         assert.strictEqual(events.starts.length, 0, "a global copy alone never starts the Bridge");
     });
 
+    await scenario("Start the Bridge when VS Code resolves the MCP server for this window", async () => {
+        const { provider, events, state } = createProvider(withoutSkills);
+        const settings = { "mcp.toolsets": ["debug", "core"] };
+        const global = new Map();
+        provider._context.globalState = { get: (key) => global.get(key), update: async (key, v) => global.set(key, v) };
+        provider._bridgeRegistry = {};
+        vscode.workspace.getConfiguration = () => ({ get: (key) => settings[key] });
+        vscode.workspace.workspaceFolders = [{ uri: { fsPath: "/work" } }];
+        try {
+            assert.strictEqual(provider._mcpAvailable(), true);
+            assert.strictEqual(provider._mcpToolsets(), "", "the default toolsets inject no variable");
+            settings["mcp.toolsets"] = ["cubemx", "core", "bogus"];
+            assert.strictEqual(provider._mcpToolsets(), "core,cubemx");
+            await provider._requestMcpBridge();
+            assert.deepStrictEqual(events.starts, [{ legacyPointer: false }], "MCP never writes a workspace pointer");
+            state.set("emberprobe.agentAccess", "disabled");
+            assert.strictEqual(provider._mcpAvailable(), false, "an explicit disable hides the server definition");
+            await provider._syncAgentBridge();
+            assert.strictEqual(events.stops, 1, "an explicit disable wins over an MCP request");
+            state.delete("emberprobe.agentAccess");
+            provider._mcpBridgeRequested = false;
+            await provider._syncAgentBridge();
+            assert.strictEqual(events.posts.at(-1).card, "");
+            await provider._markMcpConfigured();
+            assert.strictEqual(global.get("emberprobe.mcpConfigured"), true);
+            assert.strictEqual(events.posts.at(-1).card, "disabled", "a configured external client offers enabling");
+            vscode.workspace.workspaceFolders = [];
+            assert.strictEqual(provider._mcpAvailable(), false, "no folder, no server definition");
+        } finally {
+            vscode.workspace.workspaceFolders = [];
+            delete vscode.workspace.getConfiguration;
+        }
+    });
+
     console.log("Agent access tests passed");
 })().catch((error) => {
     console.error(error);

@@ -757,6 +757,15 @@ module.exports = Object.freeze({
     "agent.disable": "停用",
     "agent.legacyGlobal": "检测到旧版全局 EmberProbe skills（版本 {version}），已不再维护",
     "agent.cleanup": "清理",
+    "mcp.pickClient": "选择要配置的 MCP 客户端",
+    "mcp.client.claude": "Claude Code（claude mcp add 命令）",
+    "mcp.client.codex": "Codex（config.toml）",
+    "mcp.client.json": "Cursor 及其他客户端（mcpServers JSON）",
+    "mcp.configCopied": "{client} 的 EmberProbe MCP 配置已复制到剪贴板，请在客户端中粘贴；扩展不会修改客户端的配置文件",
+    "mcp.nodeMissing":
+        "配置已复制，但 PATH 中找不到 Node.js；外部客户端需要 Node.js {minimum} 或更高版本才能启动 EmberProbe MCP 服务器",
+    "mcp.nodeTooOld":
+        "配置已复制，但 PATH 中的 Node.js {version} 版本过低；外部客户端需要 Node.js {minimum} 或更高版本",
     "agent.cleanupConfirm":
         "将从用户主目录 ~/.agents/skills 移除 EmberProbe 安装的 skills，只删除 EmberProbe 清单内的条目。是否继续？",
     "live.elfFirst": "请先在侧栏选择 ELF 固件",

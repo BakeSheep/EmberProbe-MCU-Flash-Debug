@@ -1,0 +1,100 @@
+# MCP server / MCP 服务器
+
+EmberProbe 随扩展提供一个 MCP（Model Context Protocol）stdio 服务器 `dist/mcp-server.js`，让支持 MCP 的客户端以结构化工具调用 EmberProbe。它与 Agent Skills 的脚本地位对等，都是本地 Agent Bridge 的客户端：鉴权、确认 ID 校验、输入校验与探针互斥全部留在扩展进程内，MCP 服务器只做 schema 校验、确认交互映射和结果/诊断转换，不包含硬件逻辑，也不绕过确认。
+
+```
+MCP 客户端 ──stdio──> dist/mcp-server.js ──HTTP 127.0.0.1 (Bearer token)──> Agent Bridge ──> services ──> ProbeCoordinator
+skill 脚本 ──shell──> skills/*/scripts ─────┘（共用 bridge-locator 与诊断表）
+```
+
+## 启用 / Enabling
+
+Agent 访问按工作区开启，开关保存在 VS Code 的 workspace state 中，不写工作区文件：
+
+- 工作区装了 Agent Skills 且未显式设置时，沿用旧行为视为已启用；
+- 命令 `EmberProbe: 为此工作区启用 Agent 访问` / `停用`，或侧边栏 Agent 区域的“启用 / 停用”按钮；
+- 在 VS Code 中启动 EmberProbe MCP 服务器（同意 VS Code 的 MCP 信任提示后）也会为当前窗口启动 Bridge。
+
+显式停用优先于以上所有条件。工作区必须受信任。
+
+### VS Code（及兼容宿主）
+
+扩展在支持 `vscode.lm.registerMcpServerDefinitionProvider` 的版本上注册 MCP server definition provider（id `emberprobe`），旧版本安静跳过（`engines.vscode` 仍为 `^1.85.0`）。服务器以 `process.execPath` + `ELECTRON_RUN_AS_NODE=1` 启动，并注入 `EMBERPROBE_BRIDGE_INSTANCE`，直接连接本窗口的 Bridge，不做路径匹配。显式停用 Agent 访问、工作区不受信任或未打开文件夹时，不提供服务器定义。
+
+### 外部客户端 / External clients
+
+运行命令 `EmberProbe: 复制 MCP 配置`，选择客户端，配置片段会复制到剪贴板，由你自己粘贴；扩展不会修改任何客户端的配置文件。片段指向稳定路径的启动器 `<globalStorage>/mcp/emberprobe-mcp.js`，它在每次激活时被重写为当前安装的扩展路径，因此扩展升级后无需修改客户端配置。外部客户端需要 PATH 中有 Node.js 18 或更高版本，命令会报告检测结果。
+
+- Claude Code：`claude mcp add --scope user emberprobe -- node "<launcher>"`
+- Codex：`config.toml` 中的 `[mcp_servers.emberprobe]`（`command = "node"`、`args = ["<launcher>"]`）
+- Cursor 及其他客户端：`{ "mcpServers": { "emberprobe": { "command": "node", "args": ["<launcher>"] } } }`
+
+Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalStorage 中，所以只提供 stdio，不提供 HTTP 传输：stdio 服务器在每次调用时重新定位当前的 Bridge，客户端配置中没有 token。
+
+## 工作区定位 / Locating the Bridge
+
+每个 EmberProbe 窗口在 `<globalStorage>/agent-bridges/<instanceId>.json`（权限 `0o600`）登记一条记录：Bridge 运行时包含端口和 token，未运行时只保留不含 token 的“未启用”标记。客户端（skill 脚本与 MCP 服务器共用 `skills/_emberprobe/bridge-locator.js`）按以下顺序定位：
+
+1. `EMBERPROBE_BRIDGE_INSTANCE`：直接使用该实例；
+2. 目标路径：`EMBERPROBE_WORKSPACE` > MCP 客户端的第一个 `file:` root（收到 `roots/list_changed` 后重新读取）> 当前目录。skill 脚本的 `--workspace` 优先于 `EMBERPROBE_WORKSPACE`；
+3. 在已知宿主（VS Code、Insiders、Cursor、VSCodium、各类远程服务端）的 globalStorage 中查找工作区文件夹包含目标路径的实例，取最长匹配；匹配到非主根目录时照常连接，结果中给出 `bridge.workspace` 与 `BRIDGE_SECONDARY_ROOT` 提示（skill 脚本），因为配置与 ELF 解析仍以主根为准；
+4. 回退到旧版工作区指针 `.agents/skills/_emberprobe/agent-bridge.json`，从目标路径逐级向上查找。
+
+两个窗口（例如 VS Code 与 Cursor）打开同一文件夹时返回 `BRIDGE_AMBIGUOUS`，`details.instances` 列出 `hostApp`、`pid`、`startedAt`；用 `EMBERPROBE_BRIDGE_INSTANCE=<instanceId>` 指定实例，EmberProbe 不会自动挑选。找不到时返回 `BRIDGE_UNAVAILABLE`，`details` 中包含 `searchedFrom`、注册表条目数，以及命中了但未启用 Agent 访问的工作区 `bridgeDisabledFor`。协议范围（`protocol` / `minClientProtocol`）与端口、token 同源写入登记，不兼容时返回 `BRIDGE_PROTOCOL_MISMATCH`。
+
+`EMBERPROBE_BRIDGE_REGISTRY`（`path.delimiter` 分隔）设置后只搜索这些目录，测试与受控环境用它隔离。
+
+## 工具 / Tools
+
+工具按工具集暴露，工具定义会常驻 Agent 上下文，只开启需要的部分。VS Code 中由设置 `emberprobe.mcp.toolsets` 控制，外部客户端用环境变量 `EMBERPROBE_MCP_TOOLSETS`（逗号分隔，`all` 表示全部），默认 `core,debug`：
+
+| 工具集 | 工具 |
+|---|---|
+| `core` | `config_get` `config_set` `probe_list` `chip_read` `fault_read` `elf_analyze` `flash_program` `flash_verify` `permission_get` `permission_reset` `variables_read` `variables_sample` `variables_write` `variables_export_csv` `watch_add` `sampling_status` `sampling_control` `peripherals_list` `peripherals_read` `peripherals_write` |
+| `debug` | `debug_status` `debug_inspect` `debug_breakpoints_list` `debug_start` `debug_select` `debug_control` `debug_breakpoints_update` `rtos_status` `rtos_snapshot` |
+| `cubemx` | `cubemx_detect` `cubemx_inspect` `cubemx_status` `cubemx_prepare` `cubemx_candidate` `cubemx_check` `cubemx_start` `cubemx_execute` `cubemx_cancel` |
+
+- 注解：`readOnlyHint` 由 `agent-client.js` 的 `READ_ONLY_METHODS`（可重试的只读方法）与 `OBSERVATION_METHODS`（不改变状态但可能访问硬件的方法）派生；`flash_program`、写入、CubeMX 生成与 `debug_control` 标记为 `destructiveHint`；所有工具 `openWorldHint: false`。
+- schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
+- 漂移测试（`test/mcp-tools.test.js`）要求每个工具对应现有的 Bridge 路由，每个路由要么被映射，要么列入显式排除清单。
+- `flash_program` / `flash_verify` 先在服务器进程内运行与 skill 相同的预检（`flash-common.preflight`）；`ready === false` 时直接返回 `diagnostics` 与 `notes`，不进入确认。已有 24 小时工作区授权时直接执行，并在结果的 `authorization.trustedExpiresAt` 中报告到期时间。
+
+## 确认 / Confirmation
+
+敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：
+
+- 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与计划摘要（ELF 路径与 SHA-256、target、probe 与 serial、transport、速度，或写入项的地址与新旧值，或 CubeMX 项目），表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
+- 客户端不支持 elicitation 时，返回计划、确认 ID 与 `nextStep` 说明：agent 必须把计划展示给用户、等待明确回答，再带 `confirmationId`（以及用户明确选择的 `remember`）重调，与 skill 流程一致。
+- 确认 ID 过期或已使用时透传 `*_CONFIRMATION_INVALID`，服务器不会自动重新申请。
+
+MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会自动接受确认。elicitation 由客户端渲染，比聊天文本更接近人的操作证据，但 Bridge 仍不对此做认证（客户端可以被配置为自动应答），确认 ID 的计划绑定与一次性校验保持不变，见 [AGENT-TRUST-BOUNDARIES.md](AGENT-TRUST-BOUNDARIES.md)。
+
+## 长任务、超时与取消 / Long calls
+
+- Bridge 是请求/响应模式。请求带 `progressToken` 时，服务器在等待期间每 5 秒发送一次只含已耗时的 `notifications/progress`，避免客户端判定无响应；阶段性进度要等 Bridge 支持流式输出。
+- 超时预算复用 `agent-client.js` 的方法表。状态变更类调用超时后结果未知（`details.resultUnknown: true`），按诊断建议先查询状态，不自动重发。
+- 收到 `notifications/cancelled` 时，`cubemx_execute` 转发 `cubemx.cancel`；烧录与写入不中断，结果按未知处理。`variables_sample` 不转发取消，因为唯一的取消方法 `sampling.stop` 也会停止常驻采样。
+
+## 结果与诊断 / Results
+
+成功时 `structuredContent` 是 Bridge 的原始结果（数组或标量包在 `result` 中），`content` 是紧凑的 JSON 文本。失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, details } }`），由同一个 `diagnosticForError` 生成。
+
+每次 Bridge 调用都会在输出面板 “EmberProbe Agent Bridge” 中记录通道（`skill` / `mcp` / `legacy`）、客户端、方法与结果码，不记录参数值。
+
+## 客户端支持 / Client support
+
+以下行为需要在各客户端中实测后记录；本表不预设结果：
+
+| 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
+|---|---|---|---|---|---|
+| VS Code Copilot | provider | — | — | — | 待实测 |
+| Claude Code | 外部启动器 | — | — | — | 待实测 |
+| Codex | 外部启动器 | — | — | — | 待实测 |
+| Cursor | 外部启动器 | — | — | — | 待实测 |
+
+## 排错 / Troubleshooting
+
+- `BRIDGE_UNAVAILABLE` 且 `details.bridgeDisabledFor` 非空：该工作区未启用 Agent 访问，在侧边栏或命令面板中启用。
+- `BRIDGE_UNAVAILABLE` 且 `registryEntries` 为 0：没有运行中的 EmberProbe 窗口，或客户端的工作目录 / roots 不在任何打开的文件夹内；设置 `EMBERPROBE_WORKSPACE`。
+- `BRIDGE_AMBIGUOUS`：关闭多余窗口，或设置 `EMBERPROBE_BRIDGE_INSTANCE`。
+- 外部客户端无法启动服务器：确认 PATH 中的 Node.js ≥ 18，并重新运行 `EmberProbe: 复制 MCP 配置` 以重写启动器。

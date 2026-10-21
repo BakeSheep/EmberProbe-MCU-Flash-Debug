@@ -6,6 +6,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 新增 EmberProbe MCP 服务器：支持 MCP 的客户端可通过结构化工具（`flash_program`、`variables_read`、`debug_control` 等，按 `core` / `debug` / `cubemx` 工具集暴露）调用 Agent Bridge。VS Code 自动注册服务器定义；Claude Code、Codex、Cursor 等外部客户端用命令“复制 MCP 配置”获取配置片段。敏感操作的确认在支持 elicitation 的客户端中以表单完成，确认 ID 不交给 agent，其余客户端沿用聊天确认，见 `docs/MCP.md`。
+- Add the EmberProbe MCP server: MCP clients can call the Agent Bridge through structured tools (`flash_program`, `variables_read`, `debug_control` and more, grouped into `core`, `debug` and `cubemx` toolsets). VS Code registers the server automatically; for Claude Code, Codex, Cursor and other external clients the "Copy MCP Configuration" command produces a configuration snippet. Sensitive operations are confirmed through an elicitation form in clients that support it, without handing the confirmation ID to the agent; other clients keep chat confirmation. See `docs/MCP.md`.
+
+- Agent 访问改为按工作区开关（侧边栏或命令面板中启用/停用），不再取决于是否安装了工作区 skills；已装 skills 且未设置的工作区仍视为启用。Bridge 新增实例注册表，skill 脚本可在子目录、多根工作区的其他根目录中找到 Bridge；同一文件夹被两个窗口打开时不再互相覆盖，而是报告 `BRIDGE_AMBIGUOUS` 并可用 `EMBERPROBE_BRIDGE_INSTANCE` 指定。
+- Agent access is now a per-workspace switch (enable or disable it from the sidebar or the Command Palette) instead of depending on installed workspace skills; workspaces with skills and no explicit choice stay enabled. A Bridge instance registry lets skill scripts find the Bridge from subdirectories and from other roots of a multi-root workspace; two windows opening the same folder no longer overwrite each other but report `BRIDGE_AMBIGUOUS`, selectable with `EMBERPROBE_BRIDGE_INSTANCE`.
+
+- Skills 完整性检查改为针对实际发起调用的那份副本：工作区副本干净而全局副本被修改时，经全局副本发起的调用同样需要批准；从扩展未管理的位置运行的脚本总是需要批准。侧边栏会提示清理已停止维护的旧版全局 skills（`~/.agents/skills`）。每次 Bridge 调用在“EmberProbe Agent Bridge”输出面板记录通道、客户端、方法与结果码，不含参数。
+- Skill integrity checks now apply to the copy that issued each call: when the workspace copy is clean but the global copy was modified, calls from the global copy also need approval, and scripts run from a location the extension does not manage always need approval. The sidebar offers to remove unmaintained legacy global skills (`~/.agents/skills`). Each Bridge call is logged to the "EmberProbe Agent Bridge" output channel with its channel, client, method and result code, without parameters.
+
 ## [0.8.8] - 2026-10-21
 
 - 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。

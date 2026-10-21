@@ -790,6 +790,16 @@ module.exports = Object.freeze({
     "agent.disable": "Disable",
     "agent.legacyGlobal": "Legacy global EmberProbe skills found (version {version}); they are no longer maintained",
     "agent.cleanup": "Clean up",
+    "mcp.pickClient": "Choose the MCP client to configure",
+    "mcp.client.claude": "Claude Code (claude mcp add command)",
+    "mcp.client.codex": "Codex (config.toml)",
+    "mcp.client.json": "Cursor and other clients (mcpServers JSON)",
+    "mcp.configCopied":
+        "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client. The extension does not edit client configuration files",
+    "mcp.nodeMissing":
+        "Configuration copied, but Node.js was not found on PATH; external clients need Node.js {minimum} or newer to start the EmberProbe MCP server",
+    "mcp.nodeTooOld":
+        "Configuration copied, but Node.js {version} on PATH is too old; external clients need Node.js {minimum} or newer",
     "agent.cleanupConfirm":
         "Remove the EmberProbe skills from ~/.agents/skills? Only entries listed in the EmberProbe manifest are deleted.",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",

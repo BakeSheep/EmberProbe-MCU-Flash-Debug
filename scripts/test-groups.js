@@ -130,6 +130,7 @@ const TEST_GROUPS = Object.freeze({
         "agent-cu-static-variables.test.js",
         "bridge-locator.test.js",
         "bridge-security.test.js",
+        "mcp-registration.test.js",
         "mcp-server.test.js",
         "chart-controls.test.js",
         "chart-experience.test.js",

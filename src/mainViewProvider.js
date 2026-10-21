@@ -53,6 +53,8 @@ const { MemoryAnalysisController } = require("./services/memoryAnalysisControlle
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
 const { SkillStatusService, hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
 const { BridgeRegistry, cleanupStaleEntries } = require("./services/bridgeRegistry");
+const { McpRegistration } = require("./services/mcpRegistration");
+const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
@@ -104,6 +106,7 @@ const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
 // Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
+const MCP_CONFIGURED_STATE_KEY = "emberprobe.mcpConfigured";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
 const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
@@ -507,6 +510,16 @@ class MainViewProvider {
             onAudit: (entry) => this._auditAgentCall(entry),
             handlers: createAgentRoutes(this)
         });
+        this._mcpRegistration = new McpRegistration({
+            vscode,
+            context,
+            t: (key, params) => this._t(key, params),
+            isAvailable: () => this._mcpAvailable(),
+            instanceId: () => this._agentService.instanceId(),
+            toolsets: () => this._mcpToolsets(),
+            onResolve: () => this._requestMcpBridge(),
+            onConfigured: () => this._markMcpConfigured()
+        });
         this.registerCommandHandlers();
     }
     get _downloadRunning() {
@@ -638,6 +651,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.enableAgentAccess"] = async () => this.setAgentAccess("enabled");
         this.commandHandlers["mcu-vscode.disableAgentAccess"] = async () => this.setAgentAccess("disabled");
         this.commandHandlers["mcu-vscode.cleanupGlobalSkills"] = async () => this.cleanupGlobalSkills();
+        this.commandHandlers["mcu-vscode.copyMcpConfig"] = async () => this._mcpRegistration.copyConfig();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
@@ -2957,10 +2971,13 @@ class MainViewProvider {
     _agentAccessView(status = this._skillStatusService.lastStatus, decision = this._agentAccessDecision(status)) {
         const access = this._agentAccess();
         const legacyGlobal = legacyGlobalSkills(status);
-        const globalPresent = this._skillStatusService.scopeHasContent(status?.scopes?.global);
+        // 检测到全局副本或用户复制过外部 MCP 配置、但本工作区未启用时，提示启用。
+        const external =
+            this._skillStatusService.scopeHasContent(status?.scopes?.global) ||
+            this._context?.globalState?.get(MCP_CONFIGURED_STATE_KEY) === true;
         let card = "";
         if (decision.enabled && access === "enabled") card = "enabled";
-        else if (!decision.enabled && decision.state === "disabled" && (access === "disabled" || globalPresent))
+        else if (!decision.enabled && decision.state === "disabled" && (access === "disabled" || external))
             card = "disabled";
         return { access: access || "unset", enabled: decision.enabled, card, legacyGlobal };
     }
@@ -2971,7 +2988,42 @@ class MainViewProvider {
     async setAgentAccess(value) {
         await this._context.workspaceState.update(AGENT_ACCESS_STATE_KEY, value);
         await this._syncAgentBridge();
+        this._mcpRegistration?.changed();
         return true;
+    }
+    // VS Code MCP provider：受信任、打开了文件夹且未显式停用 Agent 访问的窗口才提供服务器定义。
+    _mcpAvailable() {
+        return (
+            !!vscode.workspace.isTrusted &&
+            !!vscode.workspace.workspaceFolders?.length &&
+            this._agentAccess() !== "disabled" &&
+            !!this._bridgeRegistry
+        );
+    }
+    // emberprobe.mcp.toolsets → EMBERPROBE_MCP_TOOLSETS；默认工具集返回空串，不注入环境变量。
+    _mcpToolsets() {
+        const configured = vscode.workspace.getConfiguration?.("emberprobe").get("mcp.toolsets");
+        const selected = TOOLSETS.filter((name) => Array.isArray(configured) && configured.includes(name));
+        if (!selected.length || selected.join(",") === DEFAULT_TOOLSETS.join(",")) return "";
+        return selected.join(",");
+    }
+    // VS Code 在用户同意 MCP 信任提示后解析定义：此时为本窗口启动 Bridge（不写工作区文件）。
+    async _requestMcpBridge() {
+        this._mcpBridgeRequested = true;
+        await this._syncAgentBridge();
+    }
+    async _markMcpConfigured() {
+        await this._context.globalState.update(MCP_CONFIGURED_STATE_KEY, true);
+        this._postAgentAccess(this._skillStatusService.lastStatus);
+    }
+    activateMcp() {
+        const registered = this._mcpRegistration.register();
+        if (this._context.globalStorageUri)
+            this._mcpRegistration.writeLauncher().catch((error) => console.warn("MCP launcher:", error.message));
+        return registered;
+    }
+    mcpConfigurationChanged() {
+        this._mcpRegistration.changed();
     }
     // 清理已停止维护的全局 skills 副本：只删除 EmberProbe 清单内的条目。
     async cleanupGlobalSkills() {
