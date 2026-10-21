@@ -3,7 +3,10 @@
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
-const { SkillStatusService } = require("../src/services/skillStatusService");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { SkillStatusService, legacyGlobalSkills } = require("../src/services/skillStatusService");
 const { hasWorkspaceSkills } = require("../src/services/skillStatusService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
@@ -139,6 +142,111 @@ const { createFixture } = require("./helpers/service-fixture");
         };
         skillHash = "three";
         await assert.rejects(skills.checkForCall(), { code: "SKILLS_CHANGED_DURING_APPROVAL" });
+    });
+
+    await scenario("Check the skill copy that actually issued the call", async () => {
+        const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-skill-root-")));
+        const workspaceRoot = path.join(base, "project", ".agents", "skills");
+        const globalRoot = path.join(base, "home", ".agents", "skills");
+        const customRoot = path.join(base, "checkout", "skills");
+        for (const dir of [workspaceRoot, globalRoot, customRoot]) fs.mkdirSync(dir, { recursive: true });
+        const scopes = {
+            workspace: { scope: "workspace", root: workspaceRoot, state: "installed", fingerprint: "ws-1" },
+            global: { scope: "global", root: globalRoot, state: "modified", fingerprint: "global-1" }
+        };
+        let customFingerprint = "custom-1";
+        const dialogs = [];
+        let answer = "approval.skillsAllow";
+        const skills = new SkillStatusService({
+            context: {},
+            installer: {
+                // 合并视图以 workspace 为先，旧检查会认为一切正常
+                inspectSkills: async () => ({ state: "installed", scopes }),
+                inspectSkillRoot: async (_context, root, scope) => ({
+                    scope,
+                    root,
+                    state: "outdated",
+                    fingerprint: customFingerprint
+                })
+            },
+            onStatus() {},
+            t: (key) => key,
+            vscode: {
+                window: {
+                    showWarningMessage: async (message, options) => {
+                        dialogs.push({ message, detail: JSON.parse(options.detail) });
+                        return answer;
+                    }
+                }
+            }
+        });
+        try {
+            await skills.checkForCall();
+            assert.strictEqual(dialogs.length, 0, "calls without metadata keep the merged-view behavior");
+            await skills.checkForCall({ channel: "skill", skillRoot: workspaceRoot });
+            assert.strictEqual(dialogs.length, 0, "a clean workspace copy runs without approval");
+            answer = undefined;
+            await assert.rejects(skills.checkForCall({ channel: "skill", skillRoot: globalRoot + path.sep }), {
+                code: "SKILLS_APPROVAL_DENIED"
+            });
+            assert.strictEqual(dialogs[0].message, "approval.skills");
+            assert.strictEqual(dialogs[0].detail.scope, "global");
+            answer = "approval.skillsAllow";
+            await skills.checkForCall({ channel: "skill", skillRoot: globalRoot });
+            await skills.checkForCall({ channel: "skill", skillRoot: globalRoot });
+            assert.strictEqual(dialogs.length, 2, "approval is cached per root and fingerprint");
+            scopes.workspace.state = "modified";
+            await skills.checkForCall({ channel: "skill", skillRoot: workspaceRoot });
+            assert.strictEqual(dialogs.length, 3, "approving the global copy does not approve the workspace copy");
+            scopes.global.fingerprint = "global-2";
+            await skills.checkForCall({ channel: "skill", skillRoot: globalRoot });
+            assert.strictEqual(dialogs.length, 4, "a changed global copy needs a new approval");
+            if (process.platform === "win32") {
+                await skills.checkForCall({ channel: "skill", skillRoot: globalRoot.toUpperCase() });
+                assert.strictEqual(dialogs.length, 4, "Windows roots compare case-insensitively");
+            }
+            // 不属于任何已知根的副本总是审批，并在 detail 中给出实际路径
+            await skills.checkForCall({ channel: "skill", skillRoot: customRoot });
+            assert.strictEqual(dialogs[4].message, "approval.skillsCustom");
+            assert.strictEqual(dialogs[4].detail.root, customRoot);
+            assert.strictEqual(dialogs[4].detail.scope, "custom");
+            await skills.checkForCall({ channel: "skill", skillRoot: customRoot });
+            assert.strictEqual(dialogs.length, 5);
+            customFingerprint = "custom-2";
+            await skills.checkForCall({ channel: "skill", skillRoot: customRoot });
+            assert.strictEqual(dialogs.length, 6);
+            skills.vscode.window.showWarningMessage = async () => {
+                customFingerprint = "custom-changed";
+                return "approval.skillsAllow";
+            };
+            customFingerprint = "custom-3";
+            await assert.rejects(skills.checkForCall({ channel: "skill", skillRoot: customRoot }), {
+                code: "SKILLS_CHANGED_DURING_APPROVAL"
+            });
+            // MCP 服务器代码随扩展安装，不检查 skill 哈希
+            skills.vscode.window.showWarningMessage = async () => assert.fail("MCP calls must not prompt");
+            await skills.checkForCall({ channel: "mcp", client: "test/1" });
+        } finally {
+            fs.rmSync(base, { recursive: true, force: true });
+        }
+    });
+
+    await scenario("Flag legacy global copies that still ship scripts", () => {
+        const status = (global) => ({ scopes: { workspace: null, global } });
+        assert.strictEqual(legacyGlobalSkills(status({ state: "outdated", hasScripts: false })), null);
+        assert.strictEqual(legacyGlobalSkills(status({ state: "installed", hasScripts: true })), null);
+        assert.strictEqual(legacyGlobalSkills(status({ state: "notInstalled", hasScripts: false })), null);
+        assert.deepStrictEqual(
+            legacyGlobalSkills(
+                status({
+                    state: "outdated",
+                    hasScripts: true,
+                    root: "/home/u/.agents/skills",
+                    skills: [{ installedVersion: "" }, { installedVersion: "1.1.0" }]
+                })
+            ),
+            { state: "outdated", version: "1.1.0", root: "/home/u/.agents/skills" }
+        );
     });
 })().catch((error) => {
     console.error(error);

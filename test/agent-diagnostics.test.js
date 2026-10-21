@@ -36,23 +36,20 @@ function reserveClosedPort() {
     });
 }
 
-const realReadFileSync = fs.readFileSync;
-// descriptor() 会校验 host/port/token，因此用 monkeypatch 把指针文件内容指向测试端口，
-// 避免依赖真实扩展 Bridge。仅拦截 agent-bridge.json 的读取，其余委托真实实现。
+// 定位只看本测试的空注册表；用旧格式工作区指针（直接含 host/port/token）指向测试端口，
+// 避免依赖真实扩展 Bridge。
+process.env.EMBERPROBE_BRIDGE_REGISTRY = path.join(os.tmpdir(), "emberprobe-agent-diagnostics-no-registry");
+const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-diagnostics-"));
+const pointerFile = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
 function patchDescriptor(port, token) {
-    fs.readFileSync = function (target, ...rest) {
-        if (String(target).endsWith("agent-bridge.json")) {
-            return JSON.stringify({ host: "127.0.0.1", port, token });
-        }
-        return realReadFileSync.call(fs, target, ...rest);
-    };
+    fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
+    fs.writeFileSync(pointerFile, JSON.stringify({ host: "127.0.0.1", port, token }));
 }
 function unpatchDescriptor() {
-    fs.readFileSync = realReadFileSync;
+    fs.rmSync(pointerFile, { force: true });
 }
 
 (async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-diagnostics-"));
     const TOKEN = "super-secret-bridge-token";
 
     try {

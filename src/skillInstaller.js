@@ -221,7 +221,19 @@ async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
         .createHash("sha256")
         .update(JSON.stringify([skills, runtimeContents, runtimeStatus.missing, legacy]))
         .digest("hex");
-    return { scope, root: targetRoot, state, installed, total: skills.length, skills, legacy, fingerprint };
+    // 只有含可执行脚本的副本才是“完整 skills”；只含文档的知识包不执行代码。
+    let hasScripts = await exists(path.join(targetRoot, "_emberprobe", "agent-client.js"));
+    for (const entry of manifest.skills) {
+        if (hasScripts) break;
+        hasScripts = await exists(path.join(targetRoot, entry.name, "scripts"));
+    }
+    return { scope, root: targetRoot, state, installed, total: skills.length, skills, legacy, fingerprint, hasScripts };
+}
+
+// 检查任意 skill 根目录（例如 agent 直接从自定义副本运行脚本时），用于按实际执行的副本审批。
+async function inspectSkillRoot(context, targetRoot, scope = "custom") {
+    const manifest = await readManifest(context);
+    return inspectRoot(manifest, path.join(context.extensionPath, "skills"), targetRoot, scope);
 }
 
 // 检查两个安装范围;顶层为兼容 webview 的合并视图(每个 skill 取较优状态),scopes 供菜单与提示细分
@@ -373,6 +385,7 @@ module.exports = {
     uninstallSkill,
     inspectSkills,
     inspectSkill,
+    inspectSkillRoot,
     readManifest,
     isUnmodifiedLegacySkill,
     removeUnmodifiedLegacySkills

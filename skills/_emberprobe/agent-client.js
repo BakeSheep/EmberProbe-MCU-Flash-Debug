@@ -1,50 +1,44 @@
 "use strict";
-const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const { locate } = require("./bridge-locator");
 
+// 实际发起调用的 skill 根目录（.agents/skills 或自定义副本），供扩展按副本做完整性检查。
+const SKILL_ROOT = path.resolve(__dirname, "..");
+
+// 兼容导出：返回定位到的描述（host/port/token）。新代码使用 bridge-locator 的 locate()。
 function descriptor(workspace) {
-    const root = path.resolve(workspace || process.cwd());
-    const currentPointer = path.join(root, ".agents", "skills", "_emberprobe", "agent-bridge.json");
-    const legacyPointer = path.join(root, ".emberprobe", "agent-bridge.json");
-    // 新安装把指针与共享 Skill 运行时放在一起；升级过渡期仍可读取旧位置。
-    const pointerFile = fs.existsSync(currentPointer) ? currentPointer : legacyPointer;
-    let pointer;
-    try {
-        pointer = JSON.parse(fs.readFileSync(pointerFile, "utf8"));
-    } catch {
-        throw Object.assign(new Error("EmberProbe Agent Bridge descriptor is unavailable."), {
-            code: "BRIDGE_UNAVAILABLE",
-            details: { descriptor: currentPointer }
-        });
-    }
-    // 新格式：工作区文件为指针（不含 token），真实描述文件位于用户目录；旧格式直接存 token 则原地读取
-    const file =
-        typeof pointer.descriptorPath === "string" && pointer.descriptorPath ? pointer.descriptorPath : pointerFile;
-    let value;
-    try {
-        value = JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch {
-        throw Object.assign(new Error("Invalid EmberProbe Agent Bridge descriptor"), {
-            code: "BRIDGE_DESCRIPTOR_INVALID",
-            details: { descriptor: file }
-        });
-    }
-    if (value.host !== "127.0.0.1" || !Number.isInteger(value.port) || !value.token) {
-        throw Object.assign(new Error("Invalid EmberProbe Agent Bridge descriptor"), {
-            code: "BRIDGE_DESCRIPTOR_INVALID",
-            details: { descriptor: file }
-        });
-    }
-    return value;
+    return locate(workspace).descriptor;
 }
 
 const DIAGNOSTICS = {
     BRIDGE_UNAVAILABLE: [
         "extension",
-        "EmberProbe 扩展未激活，或工作区中的 Agent Bridge 描述文件不存在。",
-        ["确认已安装并启用 EmberProbe 扩展。", "在 VS Code 中重新加载当前工作区后重试。"],
+        "EmberProbe 扩展未激活、当前工作区未启用 Agent 访问，或找不到包含当前目录的 Agent Bridge。",
+        [
+            "确认已安装并启用 EmberProbe 扩展，并在 VS Code 中打开包含当前目录的工作区。",
+            "若 details.bridgeDisabledFor 非空，请在 EmberProbe 侧边栏为该工作区启用 Agent 访问。",
+            "在 VS Code 中重新加载当前工作区后重试。"
+        ],
         true
+    ],
+    BRIDGE_AMBIGUOUS: [
+        "extension",
+        "多个 EmberProbe 窗口打开了同一文件夹，无法确定应连接哪一个。",
+        [
+            "从 details.instances 中按 hostApp、pid、startedAt 选择目标窗口，设置环境变量 EMBERPROBE_BRIDGE_INSTANCE=<instanceId> 后重试。",
+            "或关闭多余的窗口后重试；EmberProbe 不会自动挑选实例。"
+        ],
+        false
+    ],
+    BRIDGE_PROTOCOL_MISMATCH: [
+        "extension",
+        "Agent Bridge 与当前客户端（skills 脚本或 MCP 服务器）的协议版本不兼容。",
+        [
+            "在 EmberProbe 侧边栏重新安装工作区 Agent Skills，让脚本与扩展版本一致。",
+            "若扩展版本较旧，请更新 EmberProbe 扩展并重新加载窗口。"
+        ],
+        false
     ],
     BRIDGE_DESCRIPTOR_INVALID: [
         "extension",
@@ -588,14 +582,17 @@ function writeDiagnostic(error, context) {
     process.stderr.write(JSON.stringify(diagnosticForError(error, context)) + "\n");
 }
 
-function call(workspace, method, params, timeoutMs) {
-    const info = descriptor(workspace);
+// 请求头只用于定位与审计，不构成鉴权；值做 URI 编码以容纳非 ASCII 路径。
+function channelHeaders(channel) {
+    const headers = { "X-EmberProbe-Channel": channel.name };
+    if (channel.skillRoot) headers["X-EmberProbe-Skill-Root"] = encodeURIComponent(channel.skillRoot);
+    if (channel.client) headers["X-EmberProbe-Client"] = encodeURIComponent(channel.client);
+    return headers;
+}
+
+function send(located, channel, method, params, budget) {
+    const info = located.descriptor;
     const body = Buffer.from(JSON.stringify({ method, params: params || {} }));
-    // 实际(钳制后)超时预算与起始时间随超时错误一并上报，供 agent 判断耗时与恢复动作。
-    const budget = Math.max(
-        1000,
-        Math.min(2147483647, Number(timeoutMs) || (DRIVER_SETUP_METHODS.has(method) ? 360000 : 20000))
-    );
     const startedAt = Date.now();
     return new Promise((resolve, reject) => {
         const request = http.request(
@@ -607,7 +604,8 @@ function call(workspace, method, params, timeoutMs) {
                 headers: {
                     Authorization: `Bearer ${info.token}`,
                     "Content-Type": "application/json",
-                    "Content-Length": body.length
+                    "Content-Length": body.length,
+                    ...channelHeaders(channel)
                 },
                 timeout: budget
             },
@@ -636,27 +634,73 @@ function call(workspace, method, params, timeoutMs) {
                 })
             )
         );
-        request.on("error", async (error) => {
+        request.on("error", (error) => {
             // 连接层失败(ECONNREFUSED/ECONNRESET 等)保留原始传输错误码与方法上下文，
             // 由 diagnosticForError 映射为 BRIDGE_UNAVAILABLE，与请求超时区分描述。
             const err = /** @type {NodeJS.ErrnoException & { details?: Record<string, unknown> }} */ (error);
             if (err && typeof err === "object" && !err.details)
                 err.details = { method, transportError: err.code || "transport" };
-            if (err.code === "BRIDGE_TIMEOUT" && DRIVER_SETUP_METHODS.has(method)) {
-                try {
-                    const inventory = await call(workspace, "probe.list", {}, 20000);
-                    err.details = { ...err.details, driverInventory: inventory };
-                } catch (queryError) {
-                    err.details = {
-                        ...err.details,
-                        driverStatusQueryError: String(queryError?.code || queryError?.message || queryError)
-                    };
-                }
-            }
             reject(err);
         });
         request.end(body);
     });
 }
 
-module.exports = { call, descriptor, diagnosticForError, variableErrorDiagnostics, writeDiagnostic, isReadOnlyMethod };
+// 实际(钳制后)超时预算与起始时间随超时错误一并上报，供 agent 判断耗时与恢复动作。
+function requestBudget(method, timeoutMs) {
+    return Math.max(
+        1000,
+        Math.min(2147483647, Number(timeoutMs) || (DRIVER_SETUP_METHODS.has(method) ? 360000 : 20000))
+    );
+}
+
+// 通过定位模块发起一次 Bridge 调用；channel 描述调用方（skill 脚本或 MCP 服务器）。
+// 注册表条目连接被拒（窗口正在关闭）时请求从未送达，换下一个匹配实例重试是安全的。
+async function callVia(channel, workspace, method, params, timeoutMs) {
+    const budget = requestBudget(method, timeoutMs);
+    const exclude = new Set();
+    for (;;) {
+        const located = locate(workspace, { exclude, instance: channel.instance });
+        try {
+            const result = await send(located, channel, method, params, budget);
+            if (located.secondaryRoot && result && typeof result === "object" && !Array.isArray(result))
+                return { ...result, bridge: { workspace: located.primaryWorkspace, notice: "BRIDGE_SECONDARY_ROOT" } };
+            return result;
+        } catch (error) {
+            if (error?.code === "ECONNREFUSED" && located.source === "registry" && !exclude.has(located.instanceId)) {
+                exclude.add(located.instanceId);
+                continue;
+            }
+            if (error?.code === "BRIDGE_TIMEOUT" && DRIVER_SETUP_METHODS.has(method)) {
+                try {
+                    const inventory = await callVia(channel, workspace, "probe.list", {}, 20000);
+                    error.details = { ...error.details, driverInventory: inventory };
+                } catch (queryError) {
+                    error.details = {
+                        ...error.details,
+                        driverStatusQueryError: String(queryError?.code || queryError?.message || queryError)
+                    };
+                }
+            }
+            throw error;
+        }
+    }
+}
+
+function call(workspace, method, params, timeoutMs) {
+    return callVia({ name: "skill", skillRoot: SKILL_ROOT }, workspace, method, params, timeoutMs);
+}
+
+module.exports = {
+    call,
+    callVia,
+    descriptor,
+    diagnosticForError,
+    variableErrorDiagnostics,
+    writeDiagnostic,
+    isReadOnlyMethod,
+    READ_ONLY_METHODS,
+    DRIVER_SETUP_METHODS,
+    STATUS_QUERY_FOR,
+    DIAGNOSTICS
+};

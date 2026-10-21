@@ -697,7 +697,6 @@ module.exports = Object.freeze({
     "run.notFound": "OpenOCD not found: {path}",
     "msg.openWorkspaceFirst": "Open a workspace first",
     "msg.skillsInstalled": "EmberProbe Agent Skills installed into the current workspace",
-    "msg.skillsInstalledGlobal": "EmberProbe Agent Skills installed to ~/.agents/skills for all projects",
     "msg.skillsDiffers": "Installed Agent Skills differ from the bundled version; reinstall to upgrade",
     "msg.skillsModifiedBridgeWarn":
         "Installed Agent Skills have local modifications; requests routed through them may run tampered scripts. Reinstalling is recommended",
@@ -782,6 +781,16 @@ module.exports = Object.freeze({
     "approval.skills":
         "Workspace skills differ from the extension version. Allow the current contents to call the Agent Bridge?",
     "approval.skillsAllow": "Allow this version for this session",
+    "approval.skillsCustom":
+        "An agent is running EmberProbe skill scripts from a location the extension does not manage. Allow the current contents to call the Agent Bridge?",
+    "agent.accessEnabled": "Agent access is enabled for this workspace",
+    "agent.accessDisabled": "Agent access is not enabled for this workspace",
+    "agent.enable": "Enable",
+    "agent.disable": "Disable",
+    "agent.legacyGlobal": "Legacy global EmberProbe skills found (version {version}); they are no longer maintained",
+    "agent.cleanup": "Clean up",
+    "agent.cleanupConfirm":
+        "Remove the EmberProbe skills from ~/.agents/skills? Only entries listed in the EmberProbe manifest are deleted.",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",
     "live.elfReadFail": "Cannot read ELF: {path}",
     "live.elfTooLarge": "ELF exceeds the {limit} MiB safety limit and was not parsed: {path}",
