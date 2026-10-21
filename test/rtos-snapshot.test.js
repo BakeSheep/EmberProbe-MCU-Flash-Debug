@@ -3,53 +3,60 @@
 const assert = require("assert");
 const { FreeRtosSnapshot, numeric, LIMITS } = require("../src/services/freeRtosSnapshot");
 
-function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", endian = "little" } = {}) {
+function fixture({
+    shift = 0,
+    missing = "",
+    corrupt = false,
+    detached = false,
+    arch = "armv7e-m",
+    endian = "little"
+} = {}) {
     const memory = new Map();
+    // Zero-initialized kernel .bss around the list heads; other memory is readable only where set.
+    const bss = { address: 0x20001000, bytes: Buffer.alloc(0x800) };
     const definitions = {
         TCB_t: {
-            size: 48 + shift,
+            size: 80 + shift,
             fields: {
                 pxTopOfStack: [0, 4],
-                uxPriority: [4 + shift, 4],
-                pxStack: [8 + shift, 4],
-                uxBasePriority: [12 + shift, 4],
-                pcTaskName: [16 + shift, 16],
-                "xEventListItem.pvContainer": [32 + shift, 4],
-                pxEndOfStack: [40 + shift, 4],
-                ulRunTimeCounter: [44 + shift, 4]
+                xStateListItem: [4 + shift, 20],
+                xEventListItem: [24 + shift, 20],
+                "xEventListItem.pvContainer": [40 + shift, 4],
+                uxPriority: [44 + shift, 4],
+                pxStack: [48 + shift, 4],
+                uxBasePriority: [52 + shift, 4],
+                pcTaskName: [56 + shift, 16],
+                pxEndOfStack: [72 + shift, 4],
+                ulRunTimeCounter: [76 + shift, 4]
             }
         },
         List_t: { size: 20, fields: { uxNumberOfItems: [0, 4], xListEnd: [8, 12], "xListEnd.pxNext": [12, 4] } },
         ListItem_t: { size: 20, fields: { pxNext: [4, 4], pvOwner: [12, 4] } }
     };
+    // Lists and pointer variables map to their addresses; pxCurrentTCB and the scalars to their values.
     const symbols = {
         pxCurrentTCB: 0x20002000,
         pxReadyTasksLists: 0x20001000,
         pxDelayedTaskList: 0x20001100,
-        pxOverflowDelayedTaskList: 0x20001200,
+        pxOverflowDelayedTaskList: 0x20001104,
         xSuspendedTaskList: 0x20001300,
         xPendingReadyList: 0x20001400,
-        xTasksWaitingTermination: 0x20001500
+        xTasksWaitingTermination: 0x20001500,
+        xDelayedTaskList1: 0x20001600,
+        xDelayedTaskList2: 0x20001700
     };
-    function list(address, owner, nodeAddress) {
-        const bytes = Buffer.alloc(20);
-        bytes.writeUInt32LE(owner ? 1 : 0, 0);
-        bytes.writeUInt32LE(owner ? nodeAddress : address + 8, 12);
+    const pointer = (address, value) => {
+        const bytes = Buffer.alloc(4);
+        bytes.writeUInt32LE(value);
         memory.set(address, bytes);
-        if (owner) {
-            const node = Buffer.alloc(20);
-            node.writeUInt32LE(corrupt ? nodeAddress : address + 8, 4);
-            node.writeUInt32LE(owner, 12);
-            memory.set(nodeAddress, node);
-        }
-    }
-    list(symbols.pxReadyTasksLists, symbols.pxCurrentTCB, 0x20004000);
-    list(symbols.pxReadyTasksLists + 20, 0x20003000, 0x20004100);
-    for (const [name, address] of Object.entries(symbols)) if (!/[Cc]urrent|ReadyTasks/.test(name)) list(address);
-    for (const [address, name, stack, priority] of [
+    };
+    pointer(symbols.pxDelayedTaskList, symbols.xDelayedTaskList1);
+    pointer(symbols.pxOverflowDelayedTaskList, symbols.xDelayedTaskList2);
+    const tcbs = [
         [0x20002000, "Idle", 0x20005000, 0],
         [0x20003000, "Worker", 0x20006000, 1]
-    ]) {
+    ];
+    for (const [address, name, stack, priority] of tcbs) {
         const type = definitions.TCB_t;
         const bytes = Buffer.alloc(type.size);
         const write = (field, value) => bytes.writeUInt32LE(value, type.fields[field][0]);
@@ -65,8 +72,51 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
         fill.fill(0xa5, 0, 20);
         memory.set(stack, fill);
     }
+    // Links one TCB into a list through the named embedded item, or through a separate node when detached.
+    function link(listAddress, owner, member = "xStateListItem") {
+        const nodeAddress = detached ? owner + 0x8000 : owner + definitions.TCB_t.fields[member][0];
+        const header = Buffer.alloc(20);
+        header.writeUInt32LE(1, 0);
+        header.writeUInt32LE(nodeAddress, 12);
+        memory.set(listAddress, header);
+        const node = detached ? Buffer.alloc(20) : memory.get(owner).subarray(nodeAddress - owner);
+        node.writeUInt32LE(corrupt ? nodeAddress : listAddress + 8, 4);
+        node.writeUInt32LE(owner, 12);
+        if (detached) memory.set(nodeAddress, node);
+        return nodeAddress;
+    }
+    function empty(listAddress) {
+        const header = Buffer.alloc(20);
+        header.writeUInt32LE(listAddress + 8, 12);
+        memory.set(listAddress, header);
+    }
+    link(symbols.pxReadyTasksLists, 0x20002000);
+    link(symbols.pxReadyTasksLists + 20, 0x20003000);
+    for (const name of [
+        "xSuspendedTaskList",
+        "xPendingReadyList",
+        "xTasksWaitingTermination",
+        "xDelayedTaskList1",
+        "xDelayedTaskList2"
+    ])
+        empty(symbols[name]);
+    function readMemory(address, size) {
+        const bytes = Buffer.alloc(size);
+        const covered = new Uint8Array(size);
+        for (const [start, block] of [[bss.address, bss.bytes], ...memory]) {
+            const from = Math.max(start, address),
+                to = Math.min(start + block.length, address + size);
+            for (let at = from; at < to; at++) {
+                bytes[at - address] = block[at - start];
+                covered[at - address] = 1;
+            }
+        }
+        if (covered.includes(0)) throw new Error("Cannot access memory");
+        return bytes;
+    }
     const commands = [];
     let generation = 0;
+    let directory = null;
     const session = {
         paused: () => {},
         variableStore: {
@@ -75,11 +125,15 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
                 if (snapshot !== generation) throw new Error("Stale RTOS operation");
             }
         },
+        // Like the real directory, the same entry array is returned until symbols are reloaded.
         symbolDirectory: {
             load: async () =>
-                Object.keys(symbols)
+                (directory ||= Object.keys(symbols)
                     .filter((name) => name !== missing)
-                    .map((name) => ({ name, expression: name, file: "tasks.c", isStatic: false }))
+                    .map((name) => ({ name, expression: name, file: "tasks.c", isStatic: false }))),
+            reset: () => {
+                directory = null;
+            }
         },
         captureConsole: async (run) => {
             await run();
@@ -91,9 +145,8 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
                 if (session.resumeOn && command.startsWith(session.resumeOn)) generation++;
                 if (command.startsWith("-data-read-memory-bytes")) {
                     const [, address, size] = command.split(" ");
-                    const block = memory.get(Number(address));
-                    if (!block || block.length < Number(size)) throw new Error("Cannot access memory");
-                    return { memory: [{ begin: address, contents: block.subarray(0, Number(size)).toString("hex") }] };
+                    const contents = readMemory(Number(address), Number(size)).toString("hex");
+                    return { memory: [{ begin: address, contents }] };
                 }
                 if (!command.startsWith("-data-evaluate-expression")) return {};
                 const expr = JSON.parse(command.slice(command.indexOf(" ") + 1));
@@ -114,7 +167,7 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
             }
         }
     };
-    return { session, commands, memory, definitions, symbols };
+    return { session, commands, memory, definitions, symbols, link };
 }
 
 (async () => {
@@ -282,12 +335,12 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
         );
     }
     const wide = fixture();
-    wide.definitions.TCB_t.size = 56;
-    wide.definitions.TCB_t.fields.ulRunTimeCounter = [48, 8];
+    wide.definitions.TCB_t.size = 88;
+    wide.definitions.TCB_t.fields.ulRunTimeCounter = [80, 8];
     for (const address of [0x20002000, 0x20003000]) {
-        const bytes = Buffer.alloc(56);
+        const bytes = Buffer.alloc(88);
         wide.memory.get(address).copy(bytes);
-        bytes.writeBigUInt64LE(9007199254740993n, 48);
+        bytes.writeBigUInt64LE(9007199254740993n, 80);
         wide.memory.set(address, bytes);
     }
     assert.strictEqual(
@@ -304,11 +357,111 @@ function fixture({ shift = 0, missing = "", corrupt = false, arch = "armv7e-m", 
         /budget/
     );
     await assert.rejects(decoder.read(0x20001001, 20, { generation: 0, bytes: 0, deadline: Infinity }), /address/);
-    budget.memory.set(0x20001000, Buffer.alloc(10));
+    budget.memory.set(0x20008000, Buffer.alloc(10));
     await assert.rejects(
-        decoder.read(0x20001000, 20, { generation: 0, bytes: 0, deadline: Infinity }),
+        decoder.read(0x20008000, 20, { generation: 0, bytes: 0, deadline: Infinity }),
         /Cannot access/
     );
+    const reads = (commands) => commands.filter((command) => command.startsWith("-data-read-memory-bytes"));
+    {
+        const warm = fixture();
+        warm.symbols.xSchedulerRunning = 1;
+        warm.symbols.uxCurrentNumberOfTasks = 2;
+        const first = await new FreeRtosSnapshot(warm.session).snapshot();
+        const cold = warm.commands.splice(0);
+        const second = await new FreeRtosSnapshot(warm.session).snapshot();
+        assert.deepStrictEqual(second, first, "cached layouts decode the same snapshot");
+        assert.deepStrictEqual(
+            warm.commands.filter((command) => !command.startsWith("-data-read-memory-bytes")),
+            ["pxCurrentTCB", "xSchedulerRunning", "uxCurrentNumberOfTasks"].map(
+                (name) => `-data-evaluate-expression ${JSON.stringify(name)}`
+            ),
+            "a later stop reads only the kernel values that change"
+        );
+        assert.deepStrictEqual(
+            reads(warm.commands),
+            [
+                "-data-read-memory-bytes 0x20001000 1812",
+                "-data-read-memory-bytes 0x20002000 80",
+                "-data-read-memory-bytes 0x20005000 32",
+                "-data-read-memory-bytes 0x20003000 80",
+                "-data-read-memory-bytes 0x20006000 32"
+            ],
+            "list heads share one window and each node arrives with its TCB"
+        );
+        assert(cold.length > warm.commands.length * 4);
+        warm.session.symbolDirectory.reset();
+        warm.commands.length = 0;
+        assert.deepStrictEqual(await new FreeRtosSnapshot(warm.session).snapshot(), first);
+        assert(
+            warm.commands.includes('-data-evaluate-expression "sizeof(TCB_t)"'),
+            "reloaded symbols rebuild the layouts"
+        );
+    }
+    {
+        const detached = fixture({ detached: true });
+        const result = await new FreeRtosSnapshot(detached.session).snapshot();
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert.deepStrictEqual(
+            result.tasks.map((task) => [task.name, task.state]),
+            [
+                ["Idle", "running"],
+                ["Worker", "ready"]
+            ]
+        );
+        assert(reads(detached.commands).includes("-data-read-memory-bytes 0x2000a000 20"), "nodes outside TCBs");
+    }
+    {
+        const blocked = fixture();
+        const command = blocked.session.mi.command;
+        blocked.session.mi.command = async (value) => {
+            if (value === "-data-read-memory-bytes 0x20001000 1812") throw new Error("Cannot access memory");
+            return command(value);
+        };
+        const result = await new FreeRtosSnapshot(blocked.session).snapshot();
+        assert.deepStrictEqual(result.diagnostics, [], "an unreadable window falls back to per-list reads");
+        assert.deepStrictEqual(
+            result.tasks.map((task) => task.name),
+            ["Idle", "Worker"]
+        );
+        assert(reads(blocked.commands).includes("-data-read-memory-bytes 0x20001000 20"));
+    }
+    {
+        const pending = fixture();
+        pending.link(pending.symbols.xPendingReadyList, 0x20003000, "xEventListItem");
+        const result = await new FreeRtosSnapshot(pending.session).snapshot();
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert.strictEqual(result.tasks[1].state, "pending-ready", "pending-ready lists link event items");
+        assert.deepStrictEqual(
+            reads(pending.commands).filter((command) => /0x2000301[08]|0x20003000/.test(command)),
+            ["-data-read-memory-bytes 0x20003000 80"],
+            "a TCB reached from two lists is read once"
+        );
+    }
+    {
+        const absent = fixture({ missing: "xSuspendedTaskList" });
+        await new FreeRtosSnapshot(absent.session).snapshot();
+        absent.commands.length = 0;
+        const result = await new FreeRtosSnapshot(absent.session).snapshot();
+        assert(result.partial && result.diagnostics.some((message) => message.includes("xSuspendedTaskList")));
+        assert(!absent.commands.some((command) => command.includes("sizeof")), "configuration absence is cached");
+    }
+    {
+        const transient = fixture();
+        const command = transient.session.mi.command;
+        let failures = 1;
+        transient.session.mi.command = async (value) => {
+            if (value.includes("->pxEndOfStack") && failures-- > 0) throw new Error("Remote connection closed");
+            return command(value);
+        };
+        const failed = await new FreeRtosSnapshot(transient.session).snapshot();
+        assert(failed.diagnostics.some((message) => message.includes("Remote connection closed")));
+        transient.commands.length = 0;
+        const retried = await new FreeRtosSnapshot(transient.session).snapshot();
+        assert.deepStrictEqual(retried.diagnostics, [], "a transport failure is not cached");
+        assert.strictEqual(retried.tasks[0].stack.totalBytes, 32);
+        assert(transient.commands.includes('-data-evaluate-expression "sizeof(TCB_t)"'));
+    }
     assert.throws(() => numeric("0x100000000"), /ARM32/);
     console.log("FreeRTOS typed layouts, bounded snapshots, stack estimates, partial failures and stale epochs passed");
 })().catch((error) => {

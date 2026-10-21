@@ -12,6 +12,7 @@ const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRu
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
 const { scheduleSamplingTick } = require("./samplingClock");
+const { SamplingThroughput } = require("./samplingThroughput");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
@@ -288,6 +289,8 @@ class ManagedOpenOcdSession {
         this._readBatchCache = [];
         this._batchUnsupported = false;
         this._recentCycleTimestamps = [];
+        this._memoryReadBytes = 0;
+        this._samplingThroughput = new SamplingThroughput();
         this._timerResolutionHeld = false;
         this.cpuDeliveryBlocked = false;
         this._recentTclCosts = [];
@@ -410,6 +413,7 @@ class ManagedOpenOcdSession {
     }
 
     _warmUp() {
+        this._samplingThroughput.reset();
         this.effectiveIntervalMs = this.unlimitedActive ? 0 : Math.max(100, this.targetIntervalMs);
         this._recentDurations = [];
         this._consecutiveSuccesses = 0;
@@ -537,6 +541,7 @@ class ManagedOpenOcdSession {
         this._consecutiveSuccesses = 0;
         this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
         this._recentCycleTimestamps = [];
+        this._samplingThroughput.reset();
         this._clearSamplingTimer();
         if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) {
             this._scheduleNext(0);
@@ -547,6 +552,7 @@ class ManagedOpenOcdSession {
     // only execution, session or connection changes invalidate them.
     invalidateTarget() {
         this.targetEpoch++;
+        this._samplingThroughput.reset();
     }
 
     setSamplingEnabled(enabled) {
@@ -561,6 +567,7 @@ class ManagedOpenOcdSession {
             return this.samplingEnabled;
         this._resetHostHold();
         this._samplingRequested = !!enabled;
+        this._samplingThroughput.reset();
         this.sampleEpoch++;
         this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
         this._clearSamplingTimer();
@@ -621,6 +628,9 @@ class ManagedOpenOcdSession {
             targetIntervalMs: this.targetIntervalMs,
             effectiveIntervalMs: this.effectiveIntervalMs,
             actualHz,
+            bytesPerSecond: this.samplingEnabled
+                ? this._samplingThroughput.rate(Number(process.hrtime.bigint()) / 1e6)
+                : 0,
             consumers,
             p95DurationMs: Number(p95.toFixed(2)),
             missedDeadlines: this._missedDeadlines,
@@ -1325,7 +1335,9 @@ class ManagedOpenOcdSession {
                 .slice(0, 200);
             return null;
         }
-        return elementsToBytes(values, shape.elementBytes);
+        const bytes = elementsToBytes(values, shape.elementBytes);
+        this._memoryReadBytes += bytes.length;
+        return bytes;
     }
 
     _assertReadGuard(guard) {
@@ -1392,6 +1404,7 @@ class ManagedOpenOcdSession {
                 result.push(null);
             } else {
                 const bytes = elementsToBytes(values, g.shape.elementBytes);
+                if (bytes.length === g.byteCount) this._memoryReadBytes += bytes.length;
                 result.push(bytes.length === g.byteCount ? bytes : null);
             }
         }
@@ -1737,6 +1750,8 @@ class ManagedOpenOcdSession {
         }
         const epoch = this.sampleEpoch;
         const startNs = process.hrtime.bigint();
+        const targetEpoch = this.targetEpoch;
+        const readBytesBefore = this._memoryReadBytes;
         const t = Date.now();
         const clockMs = Number(startNs / 1000000n);
         let readSuccess = false;
@@ -1775,6 +1790,12 @@ class ManagedOpenOcdSession {
         } finally {
             this._releaseExclusive();
             const durationMs = Number(process.hrtime.bigint() - startNs) / 1e6;
+            if (epoch === this.sampleEpoch && targetEpoch === this.targetEpoch && this.samplingEnabled)
+                this._samplingThroughput.record(
+                    this._memoryReadBytes - readBytesBefore,
+                    Number(startNs) / 1e6,
+                    Number(startNs) / 1e6 + durationMs
+                );
             if (epoch === this.sampleEpoch) this._recordCycle(durationMs, readSuccess, t);
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
                 const nextDelay = this.ratePlan

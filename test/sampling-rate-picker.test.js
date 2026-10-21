@@ -180,19 +180,19 @@ for (const lang of ["en", "zh"]) {
                 samples: [first, first + interval].map((t) => ({ name: "rate-test", t, value: 1 }))
             });
         samples(1000, 5);
-        assert.strictEqual(doc.getElementById("rate").textContent, "200.0 Hz");
+        assert.strictEqual(doc.getElementById("rate").textContent, "0.0kb/s | 200.0Hz");
         commit("20");
         samples(1050, 50);
-        assert.strictEqual(doc.getElementById("rate").textContent, "20.0 Hz");
+        assert.strictEqual(doc.getElementById("rate").textContent, "0.0kb/s | 20.0Hz");
         view.send({ type: "liveFrequency", frequencyHz: 100, intervalMs: 10 });
         samples(1110, 10);
-        assert.strictEqual(doc.getElementById("rate").textContent, "100.0 Hz");
+        assert.strictEqual(doc.getElementById("rate").textContent, "0.0kb/s | 100.0Hz");
         choose(4);
         samples(1121, 1);
-        assert.strictEqual(doc.getElementById("rate").textContent, "1000.0 Hz");
+        assert.strictEqual(doc.getElementById("rate").textContent, "0.0kb/s | 1000.0Hz");
         choose(3);
         samples(1127, 5);
-        assert.strictEqual(doc.getElementById("rate").textContent, "200.0 Hz");
+        assert.strictEqual(doc.getElementById("rate").textContent, "0.0kb/s | 200.0Hz");
         view.assertHealthy();
     } finally {
         view.close();

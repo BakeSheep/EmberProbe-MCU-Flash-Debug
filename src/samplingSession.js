@@ -128,6 +128,7 @@ class SamplingSession {
                 targetIntervalMs: this.options.intervalMs ?? 100,
                 effectiveIntervalMs: unlimitedActive ? 0 : (this.options.intervalMs ?? 100),
                 actualHz: 0,
+                bytesPerSecond: 0,
                 p95DurationMs: 0,
                 missedDeadlines: 0,
                 pauseReason: this.stopped ? "stopped" : null
