@@ -380,7 +380,7 @@
               "performanceTrace": {
                 "type": "boolean",
                 "default": false,
-                "description": "Log native DAP queue time, duration and MI command counts without expression contents."
+                "description": "Log native DAP queue time, duration and MI command counts, launch phase timings and the time to the entry breakpoint, without expression contents or paths."
               },
               "servertype": {
                 "type": "string",
@@ -684,7 +684,7 @@
               "performanceTrace": {
                 "type": "boolean",
                 "default": false,
-                "description": "Log native DAP queue time, duration and MI command counts without expression contents."
+                "description": "Log native DAP queue time, duration and MI command counts, launch phase timings and the time to the entry breakpoint, without expression contents or paths."
               },
               "servertype": {
                 "type": "string",

@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { performance } = require("perf_hooks");
 const { quote } = require("../debug/mi");
 const { readElf32Header } = require("../elfFormat");
 
@@ -14,6 +15,8 @@ const HOOKS = [
     "postResetCommands"
 ];
 const gdbPath = (file) => file.replace(/\\/g, "/");
+// compare-sections result lines; a localized GDB prints other text, which falls back to downloading.
+const SECTION_MATCHED = /^Section \S+, range 0x[\da-f]+ -- 0x[\da-f]+: matched\.\s*$/;
 
 function address(value, signed = false) {
     if (
@@ -231,12 +234,43 @@ class DebugImages {
         if (!address || BigInt(address[1]) !== BigInt(matches[0].symbolAddress))
             throw new Error("GDB RTOS symbol lookup does not select the primary image");
     }
+    // GDB's compare-sections checks exactly what -target-download writes: every loadable section at its
+    // load address, by the server's CRC (qCRC, computed on the target by OpenOCD). A segment-wide image
+    // checksum is not equivalent: a GDB download leaves the alignment gaps between sections at the erased
+    // value, which never matches the zero fill in the ELF. Any mismatch, error or unrecognized output
+    // means "changed", so the worst case is the normal download plus one CRC pass.
+    async firmwareUnchanged() {
+        const { mi } = this.session;
+        let output;
+        try {
+            output = await this.session.captureConsole(() =>
+                mi.command(`-interpreter-exec console ${quote("compare-sections")}`, 60000)
+            );
+        } catch (error) {
+            if (mi.closed) throw error;
+            return false;
+        }
+        const lines = output.split(/\r?\n/).filter((line) => line.startsWith("Section "));
+        return (
+            lines.length > 0 &&
+            lines.every((line) => SECTION_MATCHED.test(line)) &&
+            !/MIS-MATCHED|does not match|do not match/.test(output)
+        );
+    }
+    /** @returns {Promise<{firmware: "none" | "unchanged" | "programmed", checkMs?: number}>} */
     async download() {
         const { config, mi } = this.session;
-        if (config.attach) return;
+        if (config.attach) return { firmware: "none" };
         if (config.loadFiles === undefined) {
+            const startedAt = performance.now();
+            const unchanged = await this.firmwareUnchanged();
+            const checkMs = Math.round(performance.now() - startedAt);
+            if (unchanged) {
+                this.session.variableDiagnostic("Firmware matches the target; download skipped\n");
+                return { firmware: "unchanged", checkMs };
+            }
             await mi.command("-target-download", 60000);
-            return;
+            return { firmware: "programmed", checkMs };
         }
         for (const image of config.loadFiles) {
             const binary = image.format === "bin";
@@ -250,6 +284,7 @@ class DebugImages {
         }
         // GDB load can alter its symbol tables; restore the configured identities before breakpoints.
         if (config.loadFiles.length) await this.symbols();
+        return { firmware: config.loadFiles.length ? "programmed" : "none" };
     }
 }
 

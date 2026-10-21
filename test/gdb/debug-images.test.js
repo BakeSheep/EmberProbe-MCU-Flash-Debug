@@ -168,6 +168,26 @@ const { RspMemory } = require("./rsp-memory");
             17,
             "default executable download uses its file addresses"
         );
+        // Real compare-sections over qCRC: the image just downloaded matches section by section.
+        const programmedWrites = memory.writes.length;
+        const crcPackets = memory.packets.length;
+        const visibleBefore = diagnostics.join("").length;
+        const unchanged = await adapter.debugImages.download();
+        assert.strictEqual(unchanged.firmware, "unchanged", diagnostics.join("").slice(visibleBefore));
+        assert(Number.isInteger(unchanged.checkMs));
+        assert.strictEqual(memory.writes.length, programmedWrites, "an unchanged image is not transferred");
+        assert(
+            memory.packets.slice(crcPackets).some((packet) => packet.startsWith("qCRC:")),
+            "the server CRC is used"
+        );
+        const visible = diagnostics.join("").slice(visibleBefore);
+        assert(!visible.includes("matched."), "per-section results stay out of the console");
+        assert(visible.includes("download skipped"), visible);
+        // One flipped byte in the code section is a mismatch, and the normal download restores it.
+        memory.memory.set(0x08000000, (memory.read(0x08000000, 1)[0] ^ 0xff) & 0xff);
+        assert.strictEqual((await adapter.debugImages.download()).firmware, "programmed");
+        assert(memory.writes.length > programmedWrites, "a changed image is downloaded");
+        assert.strictEqual((await adapter.debugImages.download()).firmware, "unchanged");
         adapter.config.loadFiles = normalizeDebugImages(
             { loadFiles: [{ file: primary, offset: "0x40000" }] },
             root

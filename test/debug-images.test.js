@@ -10,6 +10,26 @@ const { validateDebugConfiguration } = require("../src/services/debugConfigurati
 const { EmberDebugSession } = require("../src/debug/session");
 const { quote } = require("../src/debug/mi");
 
+const SECTION_REPORTS = {
+    unchanged: [
+        ["Section .isr_vector, range 0x8000000 -- 0x8000188: ", "~"],
+        ["matched.\n", "~"],
+        ["Section .text, range 0x8000190 -- 0x800a000: ", "~"],
+        ["matched.\n", "~"]
+    ],
+    changed: [
+        ["Section .isr_vector, range 0x8000000 -- 0x8000188: matched.\n", "~"],
+        ["Section .text, range 0x8000190 -- 0x800a000: MIS-MATCHED!\n", "~"],
+        ["warning: One or more sections of the target image does not match the loaded file\n", "&"]
+    ],
+    // An unrecognized result line, or output with no result lines at all (for example a localized GDB).
+    unknown: [
+        ["Section .isr_vector, range 0x8000000 -- 0x8000188: matched.\n", "~"],
+        ["Section .text, range 0x8000190 -- 0x800a000: unreadable\n", "~"]
+    ],
+    localized: [["Abschnitt .text, Bereich 0x8000190 -- 0x800a000: passt.\n", "~"]]
+};
+
 class ImageMi extends EventEmitter {
     constructor() {
         super();
@@ -25,6 +45,9 @@ class ImageMi extends EventEmitter {
     async command(command, timeout) {
         this.commands.push({ command, timeout });
         if (this.fail && command.includes(this.fail)) throw new Error("fixture failure");
+        // GDB streams each compare-sections result in two console records, as printf_filtered does.
+        if (command.includes("compare-sections"))
+            for (const [text, kind] of SECTION_REPORTS[this.imageVerdict] || []) this.emit("output", text, kind);
         if (command === "-thread-info") return { threads: [{ id: "1" }], "current-thread-id": "1" };
         return {};
     }
@@ -220,6 +243,52 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 reset.indexOf(consoleCommand("echo post-reset")) > reset.indexOf(consoleCommand("monitor reset halt"))
             );
             assert(!reset.some((command) => command.includes("download") || command.includes('"load ')));
+        }
+        {
+            const resets = (commands) => commands.filter((command) => command === consoleCommand("monitor reset halt"));
+            const launch = async (verdict, extra = {}) => {
+                const { adapter, mi, events } = session({});
+                mi.imageVerdict = verdict;
+                await adapter.handle("launch", { ...defaults, performanceTrace: true, ...extra });
+                const output = events.map((event) => event.body?.output || "").join("");
+                return { adapter, mi, commands: mi.commands.map((item) => item.command), output };
+            };
+            // Unchanged firmware: one reset, a CRC check, no transfer and no second reset.
+            const unchanged = await launch("unchanged");
+            const check = unchanged.commands.indexOf(consoleCommand("compare-sections"));
+            assert(check > unchanged.commands.indexOf(consoleCommand("monitor reset halt")));
+            assert.strictEqual(unchanged.mi.commands[check].timeout, 60000);
+            assert(!unchanged.commands.includes("-target-download"));
+            assert.strictEqual(resets(unchanged.commands).length, 1);
+            assert(unchanged.output.includes("download skipped"));
+            assert(!unchanged.output.includes("matched."), "per-section results stay out of the console");
+            const trace = JSON.parse(
+                unchanged.output.match(/\[EmberProbe performance\] (\{"command":"launch".*\})\n/)[1]
+            );
+            assert.strictEqual(trace.firmware, "unchanged");
+            assert(Number.isInteger(trace.checkMs) && Number.isInteger(trace.totalMs));
+            for (const phase of ["gdbStart", "gdbSetup", "symbols", "connect", "preHooks", "reset", "download"])
+                assert(Number.isInteger(trace.phases[phase]), phase);
+            assert(!("postDownloadReset" in trace.phases));
+            assert(!unchanged.output.includes(primary), "the trace carries no paths");
+            // Changed, unknown or failed checks fall through to the normal download and second reset.
+            for (const verdict of ["changed", "unknown", "localized", undefined]) {
+                const changed = await launch(verdict);
+                assert(changed.commands.includes("-target-download"));
+                assert.strictEqual(resets(changed.commands).length, 2);
+                assert(changed.output.includes('"firmware":"programmed"'));
+                assert(Number.isInteger(JSON.parse(changed.output.match(/"phases":(\{[^}]*\})/)[1]).postDownloadReset));
+            }
+            // A rejected check (target memory fault) downloads; a closed transport cannot recover and propagates.
+            const failed = session({ ...defaults });
+            failed.mi.fail = "compare-sections";
+            assert.strictEqual((await failed.adapter.debugImages.download()).firmware, "programmed");
+            assert(failed.mi.commands.some((item) => item.command === "-target-download"));
+            failed.mi.closed = true;
+            await assert.rejects(failed.adapter.debugImages.download(), /fixture failure/);
+            const silent = session({ ...defaults });
+            await silent.adapter.handle("launch", { ...defaults });
+            assert(!silent.events.some((event) => event.body?.output?.includes("[EmberProbe performance]")));
         }
         const multi = session({
             ...defaults,

@@ -84,7 +84,8 @@ const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegrati
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
-const { ensureDebugTools } = require("./services/cortexDebugPreflight");
+const { ensureDebugTools, findDebugTools } = require("./services/cortexDebugPreflight");
+const { GdbWarmup } = require("./services/gdbWarmup");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
 const os = require("os");
@@ -221,6 +222,8 @@ class MainViewProvider {
         this._samplingCoordinator = new SamplingCoordinator();
         this._debugCommandPending = false;
         this._debugLifecycle = new DebugLifecycle();
+        this._gdbWarmup = new GdbWarmup();
+        this._gdbWarmupTimer = null;
         this._terminatedDebugSessionIds = new Set();
         this._debugSessionReleases = new Map();
         this._debugReadPlanKey = "";
@@ -680,6 +683,7 @@ class MainViewProvider {
                 if (!selected) return null;
                 const finalPath = cleanWindowsPath(selected.description);
                 await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
+                this.scheduleGdbWarmup(0);
                 await this._refreshElfBindings();
                 await this.updateView();
                 vscode.window.showInformationMessage(this._t("msg.elfSelected", { name: path.basename(finalPath) }));
@@ -807,6 +811,8 @@ class MainViewProvider {
                     configuration || {}
                 );
                 if (!cortexTools) return false;
+                // Overlaps a cold GDB start with probe preflight and OpenOCD start-up.
+                void this._gdbWarmup?.warm(cortexTools.gdbPath);
                 const ownDebug = vscode.workspace.getConfiguration("emberprobe", workspaceFolder.uri);
                 const images = normalizeDebugImages(
                     configuration || {},
@@ -5689,7 +5695,29 @@ class MainViewProvider {
         this._svdManager?.library?.dispose();
         this._debugBridge.dispose();
     }
+    // Background GDB start for a workspace that has already chosen firmware; see services/gdbWarmup.js.
+    scheduleGdbWarmup(delayMs = 5000) {
+        if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
+        this._gdbWarmupTimer = setTimeout(() => {
+            this._gdbWarmupTimer = null;
+            // Workspace settings choose the executable, so an untrusted workspace never runs it.
+            if (this._shutdownPromise || !vscode.workspace.isTrusted) return;
+            if (!this._context.workspaceState.get(CACHE_KEYS.elfPath)) return;
+            const { folder } = this._commandContext();
+            if (!folder) return;
+            try {
+                const tools = findDebugTools(vscode, folder, this._context.workspaceState);
+                if (tools) void this._gdbWarmup.warm(tools.gdbPath);
+            } catch (error) {
+                console.error("GDB warm-up skipped:", error);
+            }
+        }, delayMs);
+        this._gdbWarmupTimer.unref?.();
+    }
     shutdown() {
+        if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
+        this._gdbWarmupTimer = null;
+        this._gdbWarmup?.dispose();
         this._stopJlinkDriverMonitor();
         this.finishForeignDebug();
         this._memoryAnalysisController?.dispose();

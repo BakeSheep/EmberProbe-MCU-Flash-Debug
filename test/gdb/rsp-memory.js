@@ -3,6 +3,18 @@
 // In-memory ARM remote target for opt-in real-GDB acceptance. It cannot access a probe or board.
 const net = require("net");
 
+// The qCRC checksum GDB expects (libiberty xcrc32: polynomial 0x04c11db7, MSB first, initial 0xffffffff).
+const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
+    let value = index << 24;
+    for (let bit = 0; bit < 8; bit++) value = value & 0x80000000 ? (value << 1) ^ 0x04c11db7 : value << 1;
+    return value >>> 0;
+});
+function crc32(bytes) {
+    let value = 0xffffffff;
+    for (const byte of bytes) value = ((value << 8) ^ CRC_TABLE[((value >>> 24) ^ byte) & 255]) >>> 0;
+    return value;
+}
+
 class RspMemory {
     constructor() {
         this.memory = new Map();
@@ -113,6 +125,11 @@ class RspMemory {
             this.writes.push({ address, length });
             return "OK";
         }
+        const crc = packet.match(/^qCRC:([\da-f]+),([\da-f]+)$/);
+        if (crc)
+            return `C${crc32(this.read(parseInt(crc[1], 16), parseInt(crc[2], 16)))
+                .toString(16)
+                .padStart(8, "0")}`;
         if (/^(?:H|T|!|D|k|qRcmd,)/.test(packet)) return "OK";
         return "";
     }

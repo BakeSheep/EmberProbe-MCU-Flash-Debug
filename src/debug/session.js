@@ -308,7 +308,18 @@ class EmberDebugSession extends DebugSession {
         const stopped = this.confirmThread(record.data["thread-id"]);
         if (stopped) this.thread = stopped;
         const reason = record.data.reason || "pause";
-        if (record.data.bkptno === this.entryBreakpoint) this.entryBreakpoint = null;
+        if (this.entryBreakpoint && record.data.bkptno === this.entryBreakpoint) {
+            this.entryBreakpoint = null;
+            if (this.config.performanceTrace && this.launchStartedAt !== undefined) {
+                const timing = {
+                    event: "entryStop",
+                    sinceLaunchMs: Math.round(performance.now() - this.launchStartedAt)
+                };
+                this.sendEvent(new OutputEvent(`[EmberProbe performance] ${JSON.stringify(timing)}\n`, "console"));
+            }
+            // Restarts re-arm the entry breakpoint; only the first stop measures launch.
+            this.launchStartedAt = undefined;
+        }
         if (reason.startsWith("exited")) {
             this.end();
             return;
@@ -643,27 +654,42 @@ class EmberDebugSession extends DebugSession {
         const rtos = typeof args.rtos === "string" ? args.rtos.trim() : "";
         this.config.rtos = rtos;
         this.rtosAware = rtos !== "" && rtos !== "none";
+        const trace = this.config.performanceTrace ? this.launchTrace() : null;
         this.mi.start(args.gdbPath, args.cwd || path.dirname(args.executable));
         if (external) this.sendEvent(new Event("emberprobe.externalGdbProcess", { pid: this.mi.process?.pid }));
+        // GDB answers its first command only after it has started, so this phase holds the process start-up.
         await this.mi.command("-gdb-set mi-async on");
+        trace?.phase("gdbStart");
         if (external) await this.mi.command("-gdb-set non-stop off");
         await this.mi.command("-gdb-set pagination off");
         await this.mi.command("-gdb-set confirm off");
         await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
+        trace?.phase("gdbSetup");
         await this.debugImages.symbols();
+        trace?.phase("symbols");
         await this.mi.command(
             `-target-select ${external ? args.__emberprobeExternalMode : "extended-remote"} ${args.gdbTarget}`
         );
+        trace?.phase("connect");
         await this.debugImages.hooks(attach ? "preAttachCommands" : "preLaunchCommands");
+        trace?.phase("preHooks");
         if (!external && attach) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor halt")}`);
+            trace?.phase("halt");
         } else if (!external) {
             await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
-            await this.debugImages.download();
-            // Reload the reset vector after downloading a different firmware.
-            await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+            trace?.phase("reset");
+            const download = await this.debugImages.download();
+            trace?.phase("download", download);
+            // Reload the reset vector after downloading a different firmware. An unchanged image wrote
+            // nothing, so the target is still halted at the reset vector from the reset above.
+            if (download.firmware !== "unchanged") {
+                await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+                trace?.phase("postDownloadReset");
+            }
         }
         await this.debugImages.hooks(attach ? "postAttachCommands" : "postLaunchCommands");
+        trace?.phase("postHooks");
         if (external) {
             const threads = threadList(await this.mi.command("-thread-info"));
             if (!threads.length || threads.some((thread) => !["stopped", "running"].includes(thread.state)))
@@ -681,9 +707,36 @@ class EmberDebugSession extends DebugSession {
         // which keeps the single-thread command stream byte-identical to a non-RTOS session.
         if (this.threadAware) await this.seedThreads();
         else this.threads.add(1);
+        trace?.phase("threads");
+        trace?.finish();
         this.running = false;
         this.ready = true;
         return {};
+    }
+    // Phase durations only: no paths, expressions or target data reach the trace.
+    launchTrace() {
+        const startedAt = performance.now();
+        let mark = startedAt;
+        const phases = {};
+        const details = {};
+        this.launchStartedAt = startedAt;
+        return {
+            phase: (name, detail) => {
+                const now = performance.now();
+                phases[name] = Math.round(now - mark);
+                mark = now;
+                if (detail) Object.assign(details, detail);
+            },
+            finish: () => {
+                const timing = {
+                    command: this.config.attach ? "attach" : "launch",
+                    totalMs: Math.round(performance.now() - startedAt),
+                    phases,
+                    ...details
+                };
+                this.sendEvent(new OutputEvent(`[EmberProbe performance] ${JSON.stringify(timing)}\n`, "console"));
+            }
+        };
     }
     async setBreakpoints(args, functions) {
         if (!this.ready) throw new Error("Debugger is not initialized");

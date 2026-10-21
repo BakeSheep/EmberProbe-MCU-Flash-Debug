@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const {
     resolveDebugTools,
+    findDebugTools,
     ensureDebugTools,
     readWindowsPath,
     readCurrentPath
@@ -113,6 +114,20 @@ const { executableName } = require("../src/services/cortexToolchainService");
         delete ownSettings.gdbPath;
         saved.clear();
         delete settings.gdbPath;
+        const prompts = { ...vscode.window };
+        vscode.window.showWarningMessage = async () => assert.fail("background lookup never prompts");
+        // An explicit gdbPath confines resolution to settings, so the host PATH cannot satisfy it.
+        settings.gdbPath = path.join(root, "missing");
+        assert.strictEqual(findDebugTools(vscode, folder, state), null, "background lookup never prompts");
+        saved.set("emberprobeToolchain:workspace-one", bin);
+        assert.deepStrictEqual(
+            findDebugTools(vscode, folder, state),
+            expected,
+            "background lookup uses the saved choice"
+        );
+        saved.clear();
+        delete settings.gdbPath;
+        Object.assign(vscode.window, prompts);
         currentPath = bin;
         assert.deepStrictEqual(await run(), expected, "refreshed PATH works without restarting the host");
         assert.strictEqual(await readWindowsPath("linux"), "");

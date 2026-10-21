@@ -57,6 +57,7 @@ function activate(context) {
             provider.mcpConfigurationChanged();
         }),
         vscode.workspace.onDidGrantWorkspaceTrust(() => {
+            provider.scheduleGdbWarmup();
             provider.refreshSkillStatus(true).catch(console.error);
             provider.mcpConfigurationChanged();
         }),
@@ -112,6 +113,7 @@ function activate(context) {
     );
 
     provider.refreshOpenOcdStatus(false);
+    provider.scheduleGdbWarmup();
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     // 支持 MCP API 的宿主注册 server definition provider；旧版本安静跳过，外部客户端仍可用启动器。

@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 调试启动时先用 GDB `compare-sections`（目标端 CRC）逐段比较目标与 ELF，全部一致则跳过 GDB 下载与第二次复位，不一致时照常下载；连续多次启动调试与“先下载再调试”都不再重复擦写。Windows 上在后台预先启动一次 GDB，避免开机后首次调试承担数秒的冷启动。`performanceTrace` 现在还会输出 launch 各阶段与运行到入口断点的耗时。见 `docs/FLASH-PERFORMANCE.md`。
+- Debug launch first compares every loadable section with the target through GDB `compare-sections` (an on-target CRC) and skips the GDB download and second reset when all match; a mismatch downloads normally, so repeated debug starts and download-then-debug no longer erase and rewrite unchanged firmware. On Windows, GDB is started once in the background so the first debug session after boot does not pay a multi-second cold start. `performanceTrace` now also logs per-phase launch timings and the time to the entry breakpoint. See `docs/FLASH-PERFORMANCE.md`.
+
 - 原生调试控制台支持直接输入 GDB CLI（`bt`、`info registers`、`p counter`、`x/16wx 0x20000000`）；Watch 与悬停保持表达式求值。命令使旧 DAP／Agent 句柄及侧栏／RTOS 快照失效，按真实执行状态刷新，并同步已有 VS Code 断点的修改／删除；控制台新增断点由 GDB 管理，启用状态以 `info breakpoints` 为准。见 `docs/GDB-CONSOLE.md`。
 - Accept native GDB CLI in the Debug Console (`bt`, `info registers`, `p counter`, `x/16wx 0x20000000`) while retaining expression evaluation for Watch and hover. Commands invalidate old DAP/Agent handles and sidebar/RTOS snapshots, refresh from actual execution state, and reconcile modifications/deletions of mapped VS Code breakpoints. CLI-created breakpoints remain GDB-owned; consult `info breakpoints` for enable state. See `docs/GDB-CONSOLE.md`.
 

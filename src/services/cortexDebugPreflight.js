@@ -97,28 +97,40 @@ function readCurrentPath(platform = process.platform, run = execFile, env = proc
     });
 }
 
-async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrentPath, launch = {}) {
+function debugToolOptions(vscode, folder, launch = {}) {
     const cfg = vscode.workspace.getConfiguration("cortex-debug", folder.uri);
     const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
     const platformKey = process.platform === "darwin" ? "osx" : process.platform;
     const setting = (name) => launch[name] || own.get(name) || cfg.get(`${name}.${platformKey}`) || cfg.get(name);
-    const options = {
+    return {
         gdbPath: setting("gdbPath"),
         configuredObjdump: setting("objdumpPath"),
         toolchainPath: setting("armToolchainPath"),
         prefix: setting("armToolchainPrefix") || "arm-none-eabi"
     };
+}
+
+// Settings, the remembered directory, then this process's PATH: no shell, no prompt.
+function findDebugTools(vscode, folder, state, launch = {}) {
+    const options = debugToolOptions(vscode, folder, launch);
     const configured = resolveDebugTools({ ...options, envPath: "" });
     if (configured) return configured;
-    const key = `emberprobeToolchain:${folder.uri.toString()}`;
-    const selectedOptions = { prefix: options.prefix, envPath: "" };
-    const saved = state.get(key) || state.get(`cortexDebugToolchain:${folder.uri.toString()}`);
+    const saved =
+        state.get(`emberprobeToolchain:${folder.uri.toString()}`) ||
+        state.get(`cortexDebugToolchain:${folder.uri.toString()}`);
     if (saved) {
-        const tools = resolveDebugTools({ ...selectedOptions, toolchainPath: saved });
+        const tools = resolveDebugTools({ prefix: options.prefix, envPath: "", toolchainPath: saved });
         if (tools) return tools;
     }
-    const fromPath = resolveDebugTools(options);
-    if (fromPath) return fromPath;
+    return resolveDebugTools(options);
+}
+
+async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrentPath, launch = {}) {
+    const found = findDebugTools(vscode, folder, state, launch);
+    if (found) return found;
+    const options = debugToolOptions(vscode, folder, launch);
+    const key = `emberprobeToolchain:${folder.uri.toString()}`;
+    const selectedOptions = { prefix: options.prefix, envPath: "" };
     // Long-running VS Code processes may still hold PATH from before toolchain installation.
     const currentPath = await readPath();
     if (currentPath) {
@@ -148,4 +160,4 @@ async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrent
     }
 }
 
-module.exports = { resolveDebugTools, ensureDebugTools, readWindowsPath, readCurrentPath };
+module.exports = { resolveDebugTools, findDebugTools, ensureDebugTools, readWindowsPath, readCurrentPath };
