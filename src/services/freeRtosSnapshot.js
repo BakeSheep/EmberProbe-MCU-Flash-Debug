@@ -4,6 +4,22 @@ const { quote } = require("../debug/mi");
 const { fileKey } = require("../debug/symbolDirectory");
 
 const LIMITS = Object.freeze({ tasks: 256, nodes: 4096, bytes: 256 * 1024, stack: 64 * 1024, timeMs: 15000 });
+// The kernel list heads are .bss statics of tasks.c and normally adjacent, so nearby heads are read as one block.
+const WINDOW = Object.freeze({ span: 4096, gap: 1024 });
+// member names the TCB item each list links. Tasks unblocked while the scheduler is suspended are
+// queued on xPendingReadyList by their event item; every other kernel list uses the state item.
+const KERNEL_LISTS = Object.freeze([
+    { name: "pxDelayedTaskList", state: "blocked", pointer: true, member: "xStateListItem" },
+    { name: "pxOverflowDelayedTaskList", state: "blocked", pointer: true, member: "xStateListItem" },
+    { name: "xSuspendedTaskList", state: "suspended", pointer: false, member: "xStateListItem" },
+    { name: "xPendingReadyList", state: "pending-ready", pointer: false, member: "xEventListItem" },
+    { name: "xTasksWaitingTermination", state: "deleted", pointer: false, member: "xStateListItem" }
+]);
+// The lists the delayed-list pointers alternate between; resolved only to widen the read window.
+const DELAYED_LISTS = Object.freeze(["xDelayedTaskList1", "xDelayedTaskList2"]);
+// Target checks and typed layouts depend only on the loaded symbols. The directory returns the same entry
+// array until symbols are reloaded, so keying on that array drops the cache with every symbol change.
+const kernelCache = new WeakMap();
 
 function numeric(value) {
     const match = String(value).match(/^\s*(0x[\da-f]+|\d+)(?=\s|$)/i);
@@ -22,7 +38,15 @@ class FreeRtosSnapshot {
         this.session.paused();
         const generation = this.session.variableStore.snapshot();
         const result = { kernel: { name: "FreeRTOS", supported: false }, tasks: [], partial: false, diagnostics: [] };
-        const context = { generation, bytes: 0, nodes: 0, deadline: Date.now() + LIMITS.timeMs, result };
+        const context = {
+            generation,
+            bytes: 0,
+            nodes: 0,
+            deadline: Date.now() + LIMITS.timeMs,
+            result,
+            window: [],
+            uncacheable: false
+        };
         try {
             const directory = await this.session.symbolDirectory.load();
             this.check(context);
@@ -43,27 +67,33 @@ class FreeRtosSnapshot {
                     throw new Error(`FreeRTOS ${name} is missing or ambiguous`);
                 return matches[0].expression;
             };
-            if (multiImage) {
-                const expected = await this.evaluate(`(unsigned long)&(${current[0].expression})`, context);
-                const actual = await this.evaluate("(unsigned long)&(pxCurrentTCB)", context);
-                if (
-                    !current[0].symbolAddress ||
-                    expected !== Number(BigInt(current[0].symbolAddress)) ||
-                    actual !== expected
-                )
-                    throw new Error("GDB RTOS symbol lookup does not select the primary image");
-                result.kernel.symbolImage = primary;
+            let kernel = kernelCache.get(directory);
+            if (!kernel || kernel.primary !== primary) kernel = { primary, verified: false, statics: null };
+            if (!kernel.verified) {
+                if (multiImage) {
+                    const expected = await this.evaluate(`(unsigned long)&(${current[0].expression})`, context);
+                    const actual = await this.evaluate("(unsigned long)&(pxCurrentTCB)", context);
+                    if (
+                        !current[0].symbolAddress ||
+                        expected !== Number(BigInt(current[0].symbolAddress)) ||
+                        actual !== expected
+                    )
+                        throw new Error("GDB RTOS symbol lookup does not select the primary image");
+                }
+                const width = await this.evaluate("sizeof(void*)", context);
+                const target = await this.session.captureConsole(async () => {
+                    await this.session.mi.command('-interpreter-exec console "show architecture"');
+                    await this.session.mi.command('-interpreter-exec console "show endian"');
+                });
+                this.check(context);
+                if (width !== 4 || !/little endian/i.test(target) || !/\barmv[678][\w.-]*m\b/i.test(target))
+                    throw new Error(
+                        "FreeRTOS snapshots currently require a little-endian single-core Cortex-M ARM32 target"
+                    );
+                kernel.verified = true;
+                kernelCache.set(directory, kernel);
             }
-            const width = await this.evaluate("sizeof(void*)", context);
-            const target = await this.session.captureConsole(async () => {
-                await this.session.mi.command('-interpreter-exec console "show architecture"');
-                await this.session.mi.command('-interpreter-exec console "show endian"');
-            });
-            this.check(context);
-            if (width !== 4 || !/little endian/i.test(target) || !/\barmv[678][\w.-]*m\b/i.test(target))
-                throw new Error(
-                    "FreeRTOS snapshots currently require a little-endian single-core Cortex-M ARM32 target"
-                );
+            if (multiImage) result.kernel.symbolImage = primary;
             const currentTcb = await this.evaluate(current[0].expression, context);
             const optionalSymbol = async (name) => {
                 const matches = entries.filter(
@@ -106,41 +136,18 @@ class FreeRtosSnapshot {
                 );
                 return result;
             }
-            // In multi-image sessions derive every layout from a primary-image variable. A global
-            // typedef name can resolve to a different firmware's incompatible definition.
-            const ready = multiImage ? symbol("pxReadyTasksLists") : null;
-            const tcb = await this.layout(
-                "TCB_t",
-                ["pxTopOfStack", "uxPriority", "pxStack", "pcTaskName"],
-                context,
-                multiImage ? `*(${current[0].expression})` : null
-            );
-            for (const field of ["uxBasePriority", "pxEndOfStack", "ulRunTimeCounter", "xEventListItem.pvContainer"])
-                await this.optionalField(tcb, field, context);
-            const list = await this.layout(
-                "List_t",
-                ["uxNumberOfItems", "xListEnd", "xListEnd.pxNext"],
-                context,
-                multiImage ? `(${ready})[0]` : null
-            );
-            const item = await this.layout(
-                "ListItem_t",
-                ["pxNext", "pvOwner"],
-                context,
-                multiImage ? `*((${ready})[0].xListEnd.pxNext)` : null
-            );
-            for (const { type, fields } of [
-                { type: tcb, fields: ["pxTopOfStack", "uxPriority", "pxStack"] },
-                { type: list, fields: ["uxNumberOfItems", "xListEnd.pxNext"] },
-                { type: item, fields: ["pxNext", "pvOwner"] }
-            ])
-                for (const field of fields)
-                    if (type.fields[field].size !== 4) throw new Error(`Unsupported ${type.name}.${field} width`);
-            if (tcb.fields.pcTaskName.size > 256) throw new Error("Unsupported FreeRTOS task name capacity");
+            const statics =
+                kernel.statics || (await this.statics(symbol, multiImage ? current[0].expression : null, context));
+            // Keep only layouts whose failures, if any, came from the firmware configuration. A query
+            // that failed for another reason, such as the transport, is retried on the next stop.
+            if (!context.uncacheable) kernel.statics = statics;
+            const { tcb, list, item } = statics;
             const running = scheduler === 0 ? 0 : currentTcb;
             result.kernel.supported = true;
             result.kernel.layout = "GDB typed Cortex-M ARM32";
             const tasks = new Map();
+            // TCBs already fetched together with the list node embedded in them.
+            const tcbs = new Map();
             const readTask = async (address, state) => {
                 if (tasks.has(address)) {
                     const task = tasks.get(address);
@@ -148,7 +155,7 @@ class FreeRtosSnapshot {
                     return;
                 }
                 if (tasks.size >= LIMITS.tasks) throw new Error("FreeRTOS task budget exceeded");
-                const bytes = await this.read(address, tcb.size, context);
+                const bytes = tcbs.get(address) || (await this.read(address, tcb.size, context));
                 const number = (field) => this.field(bytes, tcb, field);
                 const name = tcb.fields.pcTaskName;
                 const nameBytes = bytes.subarray(name.offset, name.offset + name.size);
@@ -197,7 +204,7 @@ class FreeRtosSnapshot {
                     } else this.diagnostic(context, `Stack bounds are unavailable for ${task.name}`);
                 }
             };
-            const walk = async (address, state) => {
+            const walk = async (address, state, member = "xStateListItem") => {
                 const header = await this.read(address, list.size, context);
                 const length = this.field(header, list, "uxNumberOfItems");
                 if (length > LIMITS.nodes) throw new Error("Invalid FreeRTOS list length");
@@ -208,45 +215,33 @@ class FreeRtosSnapshot {
                     if (seen.has(next) || seen.size >= length) throw new Error("Corrupt FreeRTOS list cycle or length");
                     if (++context.nodes > LIMITS.nodes) throw new Error("FreeRTOS list node budget exceeded");
                     seen.add(next);
-                    const node = await this.read(next, item.size, context);
+                    const node = await this.listNode(next, member, statics, tcbs, context);
                     await readTask(this.field(node, item, "pvOwner"), state);
                     next = this.field(node, item, "pxNext");
                 }
                 if (seen.size !== length) throw new Error("FreeRTOS list ended before its declared length");
             };
-            const inspect = async (name, state, pointer = false) => {
+            const inspect = async ({ name, state, pointer, member }) => {
                 try {
-                    const expression = symbol(name);
-                    await walk(
-                        await this.evaluate(pointer ? expression : `(unsigned long)&(${expression})`, context),
-                        state
-                    );
+                    const { address, error } = statics.lists[name];
+                    if (error) throw new Error(error);
+                    const head = pointer ? (await this.read(address, 4, context)).readUInt32LE(0) : address;
+                    await walk(head, state, member);
                 } catch (error) {
                     this.check(context);
                     this.diagnostic(context, `${name}: ${error.message}`);
                 }
             };
+            await this.prefetch(statics.window, context);
             try {
-                const ready = symbol("pxReadyTasksLists");
-                const count = await this.evaluate(
-                    `sizeof(${ready}) / sizeof(${multiImage ? `(${ready})[0]` : "List_t"})`,
-                    context
-                );
-                if (!count || count > 256) throw new Error("Unsupported FreeRTOS ready priority count");
-                const base = await this.evaluate(`(unsigned long)&(${ready})`, context);
+                const { base, count, error } = statics.ready;
+                if (error) throw new Error(error);
                 for (let priority = 0; priority < count; priority++) await walk(base + priority * list.size, "ready");
             } catch (error) {
                 this.check(context);
                 this.diagnostic(context, `pxReadyTasksLists: ${error.message}`);
             }
-            for (const { name, state, pointer } of [
-                { name: "pxDelayedTaskList", state: "blocked", pointer: true },
-                { name: "pxOverflowDelayedTaskList", state: "blocked", pointer: true },
-                { name: "xSuspendedTaskList", state: "suspended", pointer: false },
-                { name: "xPendingReadyList", state: "pending-ready", pointer: false },
-                { name: "xTasksWaitingTermination", state: "deleted", pointer: false }
-            ])
-                await inspect(name, state, pointer);
+            for (const kernelList of KERNEL_LISTS) await inspect(kernelList);
             if (currentTcb && !tasks.has(currentTcb)) {
                 try {
                     await readTask(currentTcb, scheduler === 0 ? "ready" : "running");
@@ -262,6 +257,134 @@ class FreeRtosSnapshot {
         }
         this.session.variableStore.check(generation);
         return result;
+    }
+    // Everything here comes from GDB's symbol and type information, never from target memory.
+    async statics(symbol, instance, context) {
+        // In multi-image sessions derive every layout from a primary-image variable. A global
+        // typedef name can resolve to a different firmware's incompatible definition.
+        const ready = instance ? symbol("pxReadyTasksLists") : null;
+        const tcb = await this.layout(
+            "TCB_t",
+            ["pxTopOfStack", "uxPriority", "pxStack", "pcTaskName"],
+            context,
+            instance ? `*(${instance})` : null
+        );
+        for (const field of ["uxBasePriority", "pxEndOfStack", "ulRunTimeCounter", "xEventListItem.pvContainer"])
+            await this.optionalField(tcb, field, context, field === "ulRunTimeCounter" ? [4, 8] : [4]);
+        const list = await this.layout(
+            "List_t",
+            ["uxNumberOfItems", "xListEnd", "xListEnd.pxNext"],
+            context,
+            instance ? `(${ready})[0]` : null
+        );
+        const item = await this.layout(
+            "ListItem_t",
+            ["pxNext", "pvOwner"],
+            context,
+            instance ? `*((${ready})[0].xListEnd.pxNext)` : null
+        );
+        for (const { type, fields } of [
+            { type: tcb, fields: ["pxTopOfStack", "uxPriority", "pxStack"] },
+            { type: list, fields: ["uxNumberOfItems", "xListEnd.pxNext"] },
+            { type: item, fields: ["pxNext", "pvOwner"] }
+        ])
+            for (const field of fields)
+                if (type.fields[field].size !== 4) throw new Error(`Unsupported ${type.name}.${field} width`);
+        if (tcb.fields.pcTaskName.size > 256) throw new Error("Unsupported FreeRTOS task name capacity");
+        // Kernel lists link TCBs through these embedded items, so one read can fetch a node with its TCB.
+        for (const field of ["xStateListItem", "xEventListItem"])
+            await this.optionalField(tcb, field, context, [item.size]);
+        const lists = {};
+        for (const { name } of KERNEL_LISTS) lists[name] = await this.address(name, symbol, context);
+        const window = [];
+        for (const { name, pointer } of KERNEL_LISTS)
+            if (lists[name].address) window.push([lists[name].address, pointer ? 4 : list.size]);
+        for (const name of DELAYED_LISTS) {
+            const { address } = await this.address(name, symbol, context, false);
+            if (address) window.push([address, list.size]);
+        }
+        const statics = { tcb, list, item, ready: await this.readyLists(symbol, instance !== null, context), lists };
+        if (statics.ready.base) window.push([statics.ready.base, statics.ready.count * list.size]);
+        statics.window = window;
+        return statics;
+    }
+    async readyLists(symbol, multiImage, context) {
+        let ready;
+        try {
+            ready = symbol("pxReadyTasksLists");
+        } catch (error) {
+            return { error: error.message };
+        }
+        try {
+            const count = await this.evaluate(
+                `sizeof(${ready}) / sizeof(${multiImage ? `(${ready})[0]` : "List_t"})`,
+                context
+            );
+            if (!count || count > 256) throw new Error("Unsupported FreeRTOS ready priority count");
+            return { base: await this.evaluate(`(unsigned long)&(${ready})`, context), count };
+        } catch (error) {
+            this.check(context);
+            context.uncacheable = true;
+            return { error: error.message };
+        }
+    }
+    // A required symbol's failure is reported each snapshot; an optional one only loses its window hint.
+    async address(name, symbol, context, required = true) {
+        let expression;
+        try {
+            expression = symbol(name);
+        } catch (error) {
+            return { error: error.message };
+        }
+        try {
+            return { address: await this.evaluate(`(unsigned long)&(${expression})`, context) };
+        } catch (error) {
+            this.check(context);
+            if (required) context.uncacheable = true;
+            return { error: error.message };
+        }
+    }
+    // Reads the kernel list heads in as few blocks as their placement allows. A block that cannot be
+    // read is dropped, so its lists fall back to their own reads and report their own failures.
+    async prefetch(ranges, context) {
+        const blocks = [];
+        for (const [address, length] of [...ranges].sort((left, right) => left[0] - right[0])) {
+            const start = address - (address % 4),
+                end = address + length;
+            const block = blocks[blocks.length - 1];
+            if (block && start - block.end <= WINDOW.gap && end - block.start <= WINDOW.span)
+                block.end = Math.max(block.end, end);
+            else blocks.push({ start, end });
+        }
+        for (const { start, end } of blocks) {
+            try {
+                const bytes = await this.read(start, Math.ceil((end - start) / 4) * 4, context);
+                context.window.push({ address: start, bytes });
+            } catch {
+                this.check(context);
+            }
+        }
+    }
+    // The node is the same memory whether read alone or inside the TCB that holds it, so fetching
+    // the presumed TCB never changes what is decoded; pvOwner only decides whether it is reused.
+    async listNode(address, member, { tcb, item }, tcbs, context) {
+        const field = tcb.fields[member];
+        const owner = field ? address - field.offset : 0;
+        if (owner > 0 && owner % 4 === 0) {
+            let bytes = tcbs.get(owner);
+            if (!bytes)
+                try {
+                    bytes = await this.read(owner, tcb.size, context);
+                } catch {
+                    this.check(context);
+                }
+            if (bytes) {
+                const node = bytes.subarray(field.offset, field.offset + item.size);
+                if (this.field(node, item, "pvOwner") === owner) tcbs.set(owner, bytes);
+                return node;
+            }
+        }
+        return this.read(address, item.size, context);
     }
     check(context) {
         this.session.variableStore.check(context.generation);
@@ -294,19 +417,22 @@ class FreeRtosSnapshot {
         if (!size || offset + size > layout.size) throw new Error(`Invalid ${layout.name}.${field} layout`);
         layout.fields[field] = { offset, size };
     }
-    async optionalField(layout, field, context) {
+    async optionalField(layout, field, context, sizes) {
         try {
             await this.addField(layout, field, context);
             const size = layout.fields[field].size;
-            if (field === "ulRunTimeCounter" ? ![4, 8].includes(size) : size !== 4)
-                throw new Error(`Unsupported optional field width: ${size}`);
+            if (!sizes.includes(size)) throw new Error(`Unsupported optional field width: ${size}`);
         } catch (error) {
             delete layout.fields[field];
             this.check(context);
             // These members depend on FreeRTOSConfig.h. Absence is supported;
             // invalid sizes/layouts and transport errors still need diagnostics.
-            if (!/\b(?:no (?:member|field)(?: or method)? named|has no (?:member|field) named)\b/i.test(error.message))
+            if (
+                !/\b(?:no (?:member|field)(?: or method)? named|has no (?:member|field) named)\b/i.test(error.message)
+            ) {
+                context.uncacheable = true;
                 this.diagnostic(context, `${layout.name}.${field}: ${error.message}`);
+            }
         }
     }
     field(bytes, layout, name) {
@@ -319,13 +445,14 @@ class FreeRtosSnapshot {
         this.check(context);
         if (!Number.isSafeInteger(address) || address <= 0 || address % 4 || address + length > 0x100000000)
             throw new Error("Invalid FreeRTOS memory address");
-        if (
-            !Number.isSafeInteger(length) ||
-            length <= 0 ||
-            length > LIMITS.stack ||
-            context.bytes + length > LIMITS.bytes
-        )
+        if (!Number.isSafeInteger(length) || length <= 0 || length > LIMITS.stack)
             throw new Error("FreeRTOS memory budget exceeded");
+        // The window was read during this same stop, and the generation check above still binds it.
+        const block = context.window?.find(
+            (entry) => address >= entry.address && address + length <= entry.address + entry.bytes.length
+        );
+        if (block) return block.bytes.subarray(address - block.address, address - block.address + length);
+        if (context.bytes + length > LIMITS.bytes) throw new Error("FreeRTOS memory budget exceeded");
         context.bytes += length;
         const result = await this.session.mi.command(`-data-read-memory-bytes ${addressText(address)} ${length}`);
         this.check(context);

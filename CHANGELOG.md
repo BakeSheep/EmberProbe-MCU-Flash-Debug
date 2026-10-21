@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- RTOS 任务面板暂停后刷新更快：类型布局按符号目录缓存，内核链表头合并为一次读取，TCB 与其链表项一次读取；以 CMSIS-RTOS v2 默认 56 个优先级、8 个任务为例，第二次暂停起 GDB/MI 命令由约 127 条降至约 20 条，见 `docs/RTOS-AWARENESS.md`。
+- Faster RTOS task panel refresh while paused: typed layouts are cached per symbol directory, kernel list heads are read as one block, and each TCB is read together with its list item; with CMSIS-RTOS v2's default 56 priorities and 8 tasks, stops after the first issue about 20 GDB/MI commands instead of about 127; see `docs/RTOS-AWARENESS.md`.
+
 - 烧录提速：固件与目标 Flash 的 CRC 一致时跳过擦写（仍校验并复位）；Cortex-M + SWD 在 `reset init` 后按探针能力提高烧录时钟（ST-Link 请求 24 MHz、J-Link 15 MHz、CMSIS-DAP 10 MHz，或使用非零 `adapterSpeedKhz`），回读检查不通过或高速写入、最终校验失败时自动降回原时钟重烧一次，见 `docs/FLASH-PERFORMANCE.md`。
 - Faster flashing: an image whose CRC already matches target Flash skips erase and write (still verified and reset); for Cortex-M over SWD the programming clock is raised to the probe's capability after `reset init` (ST-Link requests 24 MHz, J-Link 15 MHz, CMSIS-DAP 10 MHz, or a nonzero `adapterSpeedKhz`), falling back to the previous clock and rewriting once if the read-back check, fast write or final verification fails; see `docs/FLASH-PERFORMANCE.md`.
 

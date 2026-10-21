@@ -69,6 +69,10 @@ The initial stop at `main` commonly precedes task creation and scheduler startup
 
 首次自动停在 `main` 通常早于任务创建和调度器启动。任务数与当前 TCB 确认尚无任务时，面板显示启动提示，不遍历仍为零值的链表；继续运行过初始化，再暂停查看任务。`pxEndOfStack`、`ulRunTimeCounter` 是否存在取决于固件配置，缺失时省略对应统计；已经初始化的链表损坏或内存读取失败仍显示部分结果。
 
+Snapshot cost after the first stop: the target check and the typed TCB/list layouts come only from GDB's symbol information, so they are cached until the symbol directory reloads; a layout query that failed for a reason other than an absent configuration member is retried on the next stop. Each stop then evaluates only `pxCurrentTCB`, `xSchedulerRunning` and `uxCurrentNumberOfTasks`, reads the adjacent kernel list heads (the ready array, the delayed-list pointers and lists, and the suspended, pending-ready and termination lists) as one block of at most 4 KiB, and fetches each task's TCB together with the list item embedded in it. Heads that are not adjacent, or a block that cannot be read, fall back to individual reads. Stack fill scans are unchanged.
+
+首次暂停之后的快照开销：目标架构检查与 TCB、链表的类型布局只取自 GDB 符号信息，会缓存到符号目录重新加载为止；布局查询若因配置缺字段以外的原因失败，下次暂停会重新查询。此后每次暂停只求值 `pxCurrentTCB`、`xSchedulerRunning`、`uxCurrentNumberOfTasks`，把相邻的内核链表头（就绪数组、延时链表指针及链表、挂起、待就绪与待删除链表）合并为一次不超过 4 KiB 的读取，并用一次读取同时取回 TCB 及其内嵌的链表项。链表头不相邻或整块读取失败时退回逐个读取。栈填充扫描不变。
+
 Experimental OpenOCD groups use `serverGroup`, `numberOfProcessors`, `targetProcessor` and optional `targetName`. Targets receive distinct GDB ports; selection and all-target RTOS configuration precede initialization. Start one member first, then attach other cores after successful initialization. Groups share one physical lease and require explicit session selection; restart and running Tcl sampling are disabled. OpenOCD reset behavior follows target scripts and may affect the whole device. See [configuration and verification limits](SHARED-DEBUG-GROUPS.md); dual-core board acceptance remains pending.
 
 实验性 OpenOCD 共享组使用 `serverGroup`、`numberOfProcessors`、`targetProcessor` 和可选 `targetName`。每核独立 GDB 端口，初始化前选核并向全部目标配置相同 RTOS。先启动一个成员，初始化成功后通过 attach 加入其他核。组内共用一个探针租约，明确选择会话后路由；禁用组内重启和运行期 Tcl 采样。目标脚本的复位可能影响整个芯片。详见 [配置和验证边界](SHARED-DEBUG-GROUPS.md)，双核实板验收仍待完成。
