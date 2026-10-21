@@ -2407,19 +2407,26 @@ function showArchiveExport(info) {
         return;
     }
     exportCandidates = names.map(function (name) {
-        var displayName =
-            info.displayNames &&
-            Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
-            typeof info.displayNames[name] === "string" &&
-            info.displayNames[name];
+        // The host archives separate type interpretations as "name [type]". Keep that key for
+        // export, but present its variable name and sampled type in their own columns.
+        var archivedType = / \[([ui](?:8|16|32|64)|f32|f64)\]$/.exec(name),
+            variableName = archivedType ? name.slice(0, -archivedType[0].length) : name,
+            displayName =
+                info.displayNames &&
+                Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
+                typeof info.displayNames[name] === "string" &&
+                info.displayNames[name];
+        if (archivedType && displayName && displayName.endsWith(archivedType[0])) {
+            displayName = displayName.slice(0, -archivedType[0].length);
+        }
         var item =
             watch.find(function (entry) {
-                return entry.name === name;
-            }) || impSymbolByName.get(name);
+                return entry.name === variableName;
+            }) || impSymbolByName.get(variableName);
         return {
             name: name,
-            displayName: displayName || curveDisplayName(name),
-            type: item && (item.typeName || item.type || item.watchType),
+            displayName: displayName && displayName !== variableName ? displayName : curveDisplayName(variableName),
+            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType),
             buffer: [{ t: first }, { t: last }]
         };
     });

@@ -75,6 +75,67 @@ for (const lang of ["zh", "en"]) {
 }
 console.log("Full sampling archive export, language, frozen charts, selection and clear isolation passed");
 
+for (const lang of ["zh", "en"]) {
+    const page = render(getLiveWatchContent({}, lang));
+    try {
+        const { window: w, document: doc } = page;
+        // Real host archives qualify each name with its sampled type, including removed watches
+        // and multiple historical interpretations of the same variable.
+        const names = [
+            "pwr.bus_ [u32]",
+            "pwr.dev_adr_ [u8]",
+            "pwr.data_.bus_voltage_v [f32]",
+            "pwr.samples[2] [f64]",
+            "removed [i64]",
+            "pwr.bus_ [f32]",
+            "_ZN3app5countE [u16]",
+            "pwr.samples[3]"
+        ];
+        w.watch = [
+            { name: "pwr.bus_", type: "f32" },
+            { name: "pwr.data_.bus_voltage_v", type: "f32", typeName: "float" },
+            { name: "pwr.samples[3]", type: "i16" }
+        ];
+        w.showArchiveExport({
+            variables: names,
+            displayNames: {
+                "pwr.data_.bus_voltage_v [f32]": "pwr.data_.bus_voltage_v [f32]",
+                "_ZN3app5countE [u16]": "app::count [u16]"
+            },
+            firstTimestampMs: 1000,
+            lastTimestampMs: 2000
+        });
+        assert.deepStrictEqual(
+            Array.from(doc.querySelectorAll(".export-series-name"), (cell) => cell.textContent),
+            [
+                "pwr.bus_",
+                "pwr.dev_adr_",
+                "pwr.data_.bus_voltage_v",
+                "pwr.samples[2]",
+                "removed",
+                "pwr.bus_",
+                "app::count",
+                "pwr.samples[3]"
+            ]
+        );
+        assert.deepStrictEqual(
+            Array.from(doc.querySelectorAll(".export-series-type"), (cell) => cell.textContent),
+            ["u32", "u8", "f32", "f64", "i64", "f32", "u16", "i16"]
+        );
+        doc.querySelector('#exportSeries input[data-index="5"]').checked = false;
+        w.applyExport();
+        assert.deepStrictEqual(
+            page.messages.at(-1).names,
+            names.filter((_, index) => index !== 5),
+            "export keeps exact typed archive identities and independent type selections"
+        );
+        page.assertHealthy();
+    } finally {
+        page.close();
+    }
+}
+console.log("Typed archive names, historical types, removed watches and exact export identities passed");
+
 const page = render(getLiveWatchContent({}, "zh"));
 try {
     const { window: w, document: doc } = page;
