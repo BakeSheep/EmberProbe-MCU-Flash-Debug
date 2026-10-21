@@ -9,7 +9,7 @@ const vectorFields = {
     "numbers._M_impl._M_finish": "0x20001334",
     "numbers._M_impl._M_end_of_storage": "0x20001334"
 };
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
+readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     const match = /^(\d+)(.*)$/.exec(line);
     if (!match) return;
     const [, token, command] = match;
@@ -33,6 +33,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (command === "-thread-info") body = ',threads=[{id="1",name="Cortex-M",state="stopped"}],current-thread-id="1"';
     if (command.startsWith("-stack-list-frames"))
         body = ',stack=[frame={level="0",func="main",line="12",file="main.c",addr="0x08000000"}]';
+    if (command === "-stack-info-frame") body = ',frame={level="0"}';
     if (command === "-stack-list-variables --simple-values")
         body = ',variables=[{name="counter",type="int",value="3"},{name="numbers",type="std::vector<int>"}]';
     if (command.startsWith("-var-create")) body = ',name="var1",value="3",numchild="0",type="int"';
@@ -45,11 +46,26 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     }
     if (command.startsWith("-interpreter-exec console")) {
         const consoleCommand = JSON.parse(command.slice(command.indexOf('"')));
+        if (consoleCommand === "undefined-command") {
+            process.stdout.write(`&${JSON.stringify("Undefined command: undefined-command\n")}\n`);
+            process.stdout.write(`${token}^error,msg="Undefined command: undefined-command"\n`);
+            return;
+        }
+        if (consoleCommand === "bt") await new Promise((resolve) => setTimeout(resolve, 250));
         const output =
             consoleCommand === "show endian"
                 ? "The target endianness is little endian.\n"
-                : "type = std::vector<int, std::allocator<int> >\n";
+                : consoleCommand === "bt"
+                  ? "#0 main () at main.c:12\n"
+                  : consoleCommand === "p counter"
+                    ? "$1 = 3\n"
+                    : "type = std::vector<int, std::allocator<int> >\n";
         process.stdout.write(`~${JSON.stringify(output)}\n`);
+        if (["continue", "next", "step", "finish"].includes(consoleCommand)) {
+            process.stdout.write('*running,thread-id="all"\n');
+            // Stop before the CLI result, to catch state rollback on evaluate completion.
+            process.stdout.write('*stopped,reason="end-stepping-range",thread-id="1"\n');
+        }
     }
     if (command.startsWith("-data-evaluate-expression")) body = ',value="4"';
     const page = /^-var-list-children --all-values "numbers" (\d+) (\d+)$/.exec(command);

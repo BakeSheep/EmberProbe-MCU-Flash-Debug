@@ -43,6 +43,7 @@ class EmberDebugSession extends DebugSession {
         this.ended = false;
         this.config = {};
         this.silentVariableOutput = 0;
+        this.consoleLogs = null;
         this.thread = 1;
         this.threads = new Set();
         this.rtosAware = false;
@@ -63,6 +64,8 @@ class EmberDebugSession extends DebugSession {
         this.breakpoints = new Map();
         this.nextBreakpoint = 1;
         this.entryBreakpoint = null;
+        this.breakpointSyncPending = false;
+        this.breakpointSyncScheduled = false;
         this.queue = Promise.resolve();
         this.requests = [];
         this.pendingRequests = new Set();
@@ -79,8 +82,16 @@ class EmberDebugSession extends DebugSession {
         };
         this.internalStop = null;
         this.stopWaiters = new Set();
-        this.mi.on("output", (text) => {
-            if (!this.silentVariableOutput) this.sendEvent(new OutputEvent(text, "console"));
+        this.mi.on("output", (text, kind) => {
+            if (this.silentVariableOutput) return;
+            if (this.consoleLogs !== null && kind === "&") {
+                this.consoleLogs += text;
+                // Keep only a bounded diagnostic tail while normal console/target output streams live.
+                if (this.consoleLogs.length > 65536) {
+                    this.sendEvent(new OutputEvent(this.consoleLogs.slice(0, -65536), "console"));
+                    this.consoleLogs = this.consoleLogs.slice(-65536);
+                }
+            } else this.sendEvent(new OutputEvent(text, "console"));
         });
         this.mi.on("record", (record) => this.onRecord(record));
         this.mi.on("closed", (error) => {
@@ -268,7 +279,10 @@ class EmberDebugSession extends DebugSession {
     }
     onRecord(record) {
         if (this.disconnecting || this.ended) return;
-        if (record.kind === "=") return this.onAsyncThreadRecord(record);
+        if (record.kind === "=") {
+            this.onBreakpointRecord(record);
+            return this.onAsyncThreadRecord(record);
+        }
         if (record.kind !== "*") return;
         if (record.class === "running") {
             this.executionEpoch++;
@@ -299,6 +313,7 @@ class EmberDebugSession extends DebugSession {
             this.end();
             return;
         }
+        this.scheduleBreakpointSync();
         const internal = this.internalStop && reason === "signal-received" && record.data["signal-name"] === "SIGINT";
         if (this.internalStop) this.internalStop.interrupted = !!internal;
         for (const waiter of this.stopWaiters) waiter.resolve(record);
@@ -313,6 +328,94 @@ class EmberDebugSession extends DebugSession {
             const event = new StoppedEvent(dapReason, this.stopThreadId());
             Object.assign(event.body, { allThreadsStopped: true });
             this.sendEvent(event);
+        }
+    }
+    updateBreakpoint(item, bkpt) {
+        const dap = { ...item.dap };
+        if (bkpt.addr !== undefined) {
+            dap.verified = bkpt.addr !== "<PENDING>";
+            if (/^0x[\da-f]+$/i.test(bkpt.addr)) dap.instructionReference = bkpt.addr;
+            else delete dap.instructionReference;
+        }
+        if (Number(bkpt.line) > 0) dap.line = Number(bkpt.line);
+        if (bkpt.fullname || bkpt.file) {
+            const file = this.mapSource(bkpt.fullname || bkpt.file);
+            dap.source = { name: path.basename(file), path: file };
+        }
+        if (bkpt.enabled !== undefined) item.enabled = bkpt.enabled;
+        const messages = [];
+        if (!dap.verified) messages.push("Breakpoint has not resolved");
+        if (item.enabled === "n")
+            messages.push("GDB breakpoint is disabled; the VS Code checkbox is unchanged. Use info breakpoints");
+        if (messages.length) dap.message = messages.join(". ");
+        else delete dap.message;
+        if (JSON.stringify(dap) !== JSON.stringify(item.dap)) {
+            item.dap = dap;
+            this.sendEvent(new Event("breakpoint", { reason: "changed", breakpoint: dap }));
+        }
+    }
+    removeBreakpoint(group, identity, item) {
+        group.delete(identity);
+        this.sendEvent(new Event("breakpoint", { reason: "removed", breakpoint: { ...item.dap, verified: false } }));
+    }
+    onBreakpointRecord(record) {
+        if (!["breakpoint-modified", "breakpoint-deleted"].includes(record.class)) return;
+        const number = String(record.data.bkpt?.number ?? record.data.id);
+        if (record.class === "breakpoint-deleted" && number === this.entryBreakpoint) this.entryBreakpoint = null;
+        for (const group of this.breakpoints.values()) {
+            for (const [identity, item] of group) {
+                if (String(item.number) !== number) continue;
+                if (record.class === "breakpoint-deleted") this.removeBreakpoint(group, identity, item);
+                else this.updateBreakpoint(item, record.data.bkpt);
+            }
+        }
+    }
+    scheduleBreakpointSync() {
+        if (!this.breakpoints.size || this.ended) return;
+        this.breakpointSyncPending = true;
+        if (this.breakpointSyncScheduled) return;
+        this.breakpointSyncScheduled = true;
+        // Join the DAP queue: a stop can arrive inside an outstanding console command.
+        setImmediate(() => {
+            this.breakpointSyncScheduled = false;
+            if (this.ended || this.disconnecting) return;
+            const task = {
+                read: true,
+                miCount: 0,
+                execute: () => this.requestContext.run(task, () => this.reconcileBreakpoints())
+            };
+            this.requests.push(task);
+            if (!this.requestLoop) {
+                this.requestLoop = true;
+                const loop = Promise.resolve().then(() => this.drainRequests());
+                this.queue = Promise.all([this.queue, loop]).then(() => {});
+            }
+        });
+    }
+    async reconcileBreakpoints() {
+        if (!this.breakpointSyncPending || this.running || !this.ready || this.ended || this.disconnecting) return;
+        const epoch = this.executionEpoch;
+        try {
+            const result = await this.mi.command("-break-list");
+            if (this.running || epoch !== this.executionEpoch) return;
+            const body = result.BreakpointTable?.body;
+            if (!Array.isArray(body)) return;
+            const listed = new Map(
+                body.map((entry) => {
+                    const bkpt = entry.bkpt || entry;
+                    return [String(bkpt.number), bkpt];
+                })
+            );
+            for (const group of this.breakpoints.values()) {
+                for (const [identity, item] of group) {
+                    const bkpt = listed.get(String(item.number));
+                    if (bkpt) this.updateBreakpoint(item, bkpt);
+                    else this.removeBreakpoint(group, identity, item);
+                }
+            }
+            this.breakpointSyncPending = false;
+        } catch {
+            // Running targets can reject -break-list. Retry only after the next stop or console command.
         }
     }
     // GDB reports RTOS task lifecycle here. =thread-selected is deliberately ignored: it changes
@@ -545,6 +648,7 @@ class EmberDebugSession extends DebugSession {
         await this.mi.command("-gdb-set mi-async on");
         if (external) await this.mi.command("-gdb-set non-stop off");
         await this.mi.command("-gdb-set pagination off");
+        await this.mi.command("-gdb-set confirm off");
         await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
         await this.debugImages.symbols();
         await this.mi.command(
@@ -648,8 +752,9 @@ class EmberDebugSession extends DebugSession {
                         verified: item.addr !== "<PENDING>",
                         line: Number(item.line) || bp.line
                     };
+                    if (/^0x[\da-f]+$/i.test(item.addr)) dap.instructionReference = item.addr;
                     if (!dap.verified) dap.message = "Breakpoint has not resolved";
-                    updated.set(identity, { number: item.number, dap });
+                    updated.set(identity, { number: item.number, dap, enabled: item.enabled });
                     results.push(dap);
                 } catch (error) {
                     results.push({ verified: false, message: error.message, line: bp.line });
@@ -754,6 +859,7 @@ class EmberDebugSession extends DebugSession {
         if (this.clientCapabilities.supportsInvalidatedEvent) this.sendEvent(new Event("invalidated", { areas }));
     }
     async evaluate(args) {
+        if (args.context === "repl") return this.evaluateConsole(args);
         this.paused();
         if (typeof args.expression !== "string" || !args.expression.trim() || args.expression.length > 16384)
             throw new Error("Provide a nonempty expression of at most 16384 characters");
@@ -802,6 +908,68 @@ class EmberDebugSession extends DebugSession {
             this.hoverEvaluations.set(hoverKey, node);
         const { name: _name, value, ...metadata } = this.variable(item);
         return { result: value, ...metadata };
+    }
+    async evaluateConsole(args) {
+        this.checkRequest();
+        if (!this.ready) throw new Error("Debugger is not initialized");
+        const command = args.expression;
+        if (
+            typeof command !== "string" ||
+            !command.trim() ||
+            command.length > 16384 ||
+            /[\r\n\0\u2028\u2029]/.test(command)
+        )
+            throw new Error("Provide a nonempty single-line GDB command of at most 16384 characters");
+        // Resolve the supplied handle while it is valid, then discard all cached context before CLI execution.
+        if (args.frameId !== undefined) await this.selectFrame(args.frameId);
+        this.executionEpoch++;
+        await this.clearVariables({ defer: true });
+        this.invalidateVariables();
+        let failure;
+        this.consoleLogs = "";
+        try {
+            await this.mi.command(`-interpreter-exec console ${quote(command)}`);
+            return { result: "", variablesReference: 0 };
+        } catch (error) {
+            failure = error;
+            throw error;
+        } finally {
+            let log = this.consoleLogs;
+            this.consoleLogs = null;
+            // GDB commonly emits the same diagnostic as both &log and ^error. The failed DAP
+            // evaluate displays ^error; retain other log text, including warnings before that error.
+            const message = failure?.message?.trimEnd();
+            if (message && log.trimEnd().endsWith(message))
+                log = log.trimEnd().slice(0, log.trimEnd().length - message.length);
+            if (log) this.sendEvent(new OutputEvent(log, "console"));
+            this.selectedFrame = undefined;
+            if (!this.running && !this.ended && !this.disconnecting) {
+                // CLI thread/frame selection is authoritative. Read it without selecting an old cached frame.
+                const epoch = this.executionEpoch;
+                try {
+                    const threads = await this.mi.command("-thread-info");
+                    const thread = Number(threads["current-thread-id"]);
+                    const result = await this.mi.command("-stack-info-frame");
+                    const level = Number(result.frame?.level);
+                    if (
+                        epoch === this.executionEpoch &&
+                        !this.running &&
+                        Number.isInteger(thread) &&
+                        thread > 0 &&
+                        Number.isInteger(level) &&
+                        level >= 0
+                    ) {
+                        this.confirmThread(thread);
+                        this.selectedFrame = { thread, level };
+                    }
+                } catch {
+                    // No stack (or a running target) is legitimate; a transport failure uses the MI closed path.
+                }
+                if (this.breakpoints.size) this.breakpointSyncPending = true;
+                await this.reconcileBreakpoints();
+            } else if (this.breakpoints.size) this.breakpointSyncPending = true;
+            this.invalidateVariables();
+        }
     }
     async setExpression(args) {
         if (typeof args.value !== "string" || !args.value.trim()) throw new Error("Provide an expression value");

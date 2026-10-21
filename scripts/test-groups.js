@@ -38,6 +38,7 @@ const TEST_GROUPS = Object.freeze({
         "cubemx-candidate.test.js",
         "cubemx-ioc-size-guard.test.js",
         "cubemx-workspace-isolation.test.js",
+        "debug-console.test.js",
         "debug-control.test.js",
         "debug-images.test.js",
         "debug-performance.test.js",

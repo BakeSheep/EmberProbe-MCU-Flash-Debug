@@ -19,6 +19,7 @@ class RtosViewService {
             inspectionEpoch: this.bridge.inspectionEpoch || 0,
             sessionId: status.session?.id || "",
             supported: this.bridge.activeSession?.type === "emberprobe",
+            busy: !!this.bridge.replBusy,
             sessions: status.sessions || []
         };
     }
@@ -28,6 +29,10 @@ class RtosViewService {
     }
     async refresh(includeStackUsage = true) {
         if (this.bridge.writing) await this._writeIdle();
+        if (this.bridge.replBusy)
+            throw Object.assign(new Error("Wait for the GDB console command before refreshing RTOS tasks"), {
+                code: "DEBUG_CONTROL_BUSY"
+            });
         const session = this.bridge.assertUniqueSession();
         const epoch = this.bridge.stopEpoch;
         const inspectionEpoch = this.bridge.inspectionEpoch || 0;
@@ -51,6 +56,7 @@ class RtosViewService {
                 session !== this.bridge.activeSession ||
                 !this.bridge.paused ||
                 this.bridge.transitionKind ||
+                this.bridge.replBusy ||
                 epoch !== this.bridge.stopEpoch ||
                 inspectionEpoch !== (this.bridge.inspectionEpoch || 0) ||
                 this.bridge.writing

@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 原生调试控制台支持直接输入 GDB CLI（`bt`、`info registers`、`p counter`、`x/16wx 0x20000000`）；Watch 与悬停保持表达式求值。命令使旧 DAP／Agent 句柄及侧栏／RTOS 快照失效，按真实执行状态刷新，并同步已有 VS Code 断点的修改／删除；控制台新增断点由 GDB 管理，启用状态以 `info breakpoints` 为准。见 `docs/GDB-CONSOLE.md`。
+- Accept native GDB CLI in the Debug Console (`bt`, `info registers`, `p counter`, `x/16wx 0x20000000`) while retaining expression evaluation for Watch and hover. Commands invalidate old DAP/Agent handles and sidebar/RTOS snapshots, refresh from actual execution state, and reconcile modifications/deletions of mapped VS Code breakpoints. CLI-created breakpoints remain GDB-owned; consult `info breakpoints` for enable state. See `docs/GDB-CONSOLE.md`.
+
 ## [0.8.8] - 2026-10-21
 
 - 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。
