@@ -9,6 +9,9 @@ const path = require("path");
 const net = require("net");
 const { AgentService } = require("../src/services/agentService");
 const { AgentBridge } = require("../src/agentBridge");
+const { BridgeRegistry, cleanupStaleEntries } = require("../src/services/bridgeRegistry");
+const locator = require("../skills/_emberprobe/bridge-locator");
+const { call } = require("../skills/_emberprobe/agent-client");
 (async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-lifecycle-"));
     const instances = [];
@@ -100,6 +103,85 @@ const { AgentBridge } = require("../src/agentBridge");
         await fourth;
         assert.strictEqual(attempts, 4);
         await agent.stop();
+    });
+
+    await scenario("Keep both windows discoverable when two hosts open the same folder", async () => {
+        const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-two-hosts-")));
+        const workspace = path.join(base, "project");
+        fs.mkdirSync(workspace);
+        const storages = [path.join(base, "vscode"), path.join(base, "cursor")];
+        const saved = process.env.EMBERPROBE_BRIDGE_REGISTRY;
+        process.env.EMBERPROBE_BRIDGE_REGISTRY = storages
+            .map((dir) => path.join(dir, locator.REGISTRY_DIR))
+            .join(path.delimiter);
+        const [first, second] = storages.map(
+            (storageDir, index) =>
+                new AgentService({
+                    Bridge: AgentBridge,
+                    workspaceProvider: () => workspace,
+                    storageDirProvider: () => storageDir,
+                    registry: new BridgeRegistry({ storageDir, hostApp: index ? "Cursor" : "Visual Studio Code" }),
+                    handlers: { "config.get": () => ({ host: index ? "cursor" : "vscode" }) }
+                })
+        );
+        try {
+            await first.start({ legacyPointer: true });
+            await second.start({ legacyPointer: true });
+            await assert.rejects(call(workspace, "config.get"), { code: "BRIDGE_AMBIGUOUS" });
+            // 后启动者停止时只删除自己的登记；先启动者仍可被发现（旧版指针会被它删除，这是旧客户端的残留问题）
+            await second.stop();
+            assert.deepStrictEqual(await call(workspace, "config.get"), { host: "vscode" });
+            const marker = JSON.parse(fs.readFileSync(second.registry.file, "utf8"));
+            assert.strictEqual(marker.agentAccess, "disabled");
+            assert.strictEqual(marker.token, undefined, "a stopped window must not leave its token behind");
+            await second.start();
+            await first.dispose();
+            assert.strictEqual(fs.existsSync(first.registry.file), false);
+            assert.deepStrictEqual(await call(workspace, "config.get"), { host: "cursor" });
+            const entry = JSON.parse(fs.readFileSync(second.registry.file, "utf8"));
+            assert.strictEqual(entry.instanceId, second.instanceId(), "restarts keep the window instance id");
+            assert.strictEqual((await second.call("capabilities")).protocol, locator.BRIDGE_PROTOCOL);
+            if (process.platform !== "win32") assert.strictEqual(fs.statSync(second.registry.file).mode & 0o777, 0o600);
+            // 工作区文件夹变化后原子重写登记，port/token 保持不变
+            second.workspaceFoldersProvider = () => [workspace, base];
+            await second.refreshRegistration();
+            const rewritten = JSON.parse(fs.readFileSync(second.registry.file, "utf8"));
+            assert.deepStrictEqual(rewritten.workspaceFolders, [workspace, base]);
+            assert.strictEqual(rewritten.token, entry.token);
+            // 不写旧版指针的 Bridge 只通过注册表被发现
+            await second.stop();
+            await second.start({ legacyPointer: false });
+            assert.strictEqual(
+                fs.existsSync(path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json")),
+                false
+            );
+            assert.deepStrictEqual(await call(workspace, "config.get"), { host: "cursor" });
+            await second.start({ legacyPointer: true });
+            assert.ok(fs.existsSync(path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json")));
+        } finally {
+            await first.dispose();
+            await second.dispose();
+            process.env.EMBERPROBE_BRIDGE_REGISTRY = saved;
+            fs.rmSync(base, { recursive: true, force: true });
+        }
+    });
+
+    await scenario("Clean registry entries whose host process exited", async () => {
+        const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-registry-clean-"));
+        try {
+            const live = new BridgeRegistry({ storageDir });
+            const dead = new BridgeRegistry({ storageDir });
+            await live.publish({ workspaceFolders: [storageDir] });
+            await dead.publish({ workspaceFolders: [storageDir] });
+            fs.writeFileSync(path.join(live.dir, "ffffffffffffffffffffffffffffffff.json"), "not json");
+            const removed = await cleanupStaleEntries(storageDir, () => false);
+            assert.strictEqual(removed.length, 3);
+            await live.publish({ workspaceFolders: [storageDir] });
+            assert.deepStrictEqual(await cleanupStaleEntries(storageDir), []);
+            assert.ok(fs.existsSync(live.file));
+        } finally {
+            fs.rmSync(storageDir, { recursive: true, force: true });
+        }
     });
 
     console.log("Real Agent server failure, retry and connection cleanup tests passed");

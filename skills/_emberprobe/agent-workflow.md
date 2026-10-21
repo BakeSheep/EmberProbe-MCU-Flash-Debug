@@ -17,7 +17,9 @@ failures as a single JSON `diagnostic` on stderr:
 
 Always read `error.code`, `retryable`, and `details` before deciding what to do next. The
 extension's own `likelyCause`/`suggestedActions` (when present) are more specific than any
-generic guess and take priority.
+generic guess and take priority. `error.actions` lists the Bridge methods those suggestions
+refer to (for example `{ "method": "debug.start" }`); the same method is reachable through the
+matching skill script or MCP tool.
 
 ## Failure handling
 

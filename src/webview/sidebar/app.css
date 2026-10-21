@@ -600,3 +600,4 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.agent-note{display:flex;align-items:center;gap:6px;margin:4px 9px 0;padding:4px 8px;border:1px solid var(--vscode-widget-border,var(--vscode-sideBarSectionHeader-border));border-radius:5px;background:var(--vscode-editor-background)}.agent-note[hidden]{display:none}.agent-note small{flex:1;min-width:0;color:var(--vscode-descriptionForeground);font-size:11px;line-height:1.3}.agent-note.warn{border-color:var(--vscode-editorWarning-foreground,var(--vscode-widget-border))}

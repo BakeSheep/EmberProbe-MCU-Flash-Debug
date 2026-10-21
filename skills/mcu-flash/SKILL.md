@@ -7,6 +7,7 @@ description: Program MCU firmware or verify on-chip Flash against the workspace 
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `flash_program`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: programming/downloading/burning firmware, or verifying on-chip Flash against the workspace ELF.
 - **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, a powered target, and a resolvable ELF.
 - **Preconditions**: the probe is free (not sampling, downloading, or debugging); ELF, target, and probe are resolved — never guess a missing one; programming and verification need separate user authorization in the Agent conversation; programming may use a 24-hour workspace permission the user explicitly chose, verification is always one-time.

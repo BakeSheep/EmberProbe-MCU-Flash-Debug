@@ -51,7 +51,10 @@ const { createAgentRoutes } = require("./services/agentRoutes");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
-const { SkillStatusService, hasWorkspaceSkills } = require("./services/skillStatusService");
+const { SkillStatusService, hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
+const { BridgeRegistry, cleanupStaleEntries } = require("./services/bridgeRegistry");
+const { McpRegistration } = require("./services/mcpRegistration");
+const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
@@ -102,6 +105,8 @@ const CACHE_KEYS = {
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
 // Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
+const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
+const MCP_CONFIGURED_STATE_KEY = "emberprobe.mcpConfigured";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
 const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
@@ -479,14 +484,41 @@ class MainViewProvider {
             recordFlashed: (entry) => this._firmwareRecord.record(entry),
             isDebugActive: () => this._debugBridge.hasAnySession || !!this._liveDebugSession()
         });
+        // VS Code 在本窗口启动了 EmberProbe MCP 服务器（用户已在 MCP 信任提示中同意）。
+        this._mcpBridgeRequested = false;
+        this._bridgeRegistry = null;
+        const storageDir = context.globalStorageUri?.fsPath;
+        if (storageDir) {
+            // 每个窗口一条实例登记；启动时顺带清理宿主进程已退出的旧条目。
+            this._bridgeRegistry = new BridgeRegistry({
+                storageDir,
+                hostApp: vscode.env?.appName || "",
+                extensionVersion: context.extension?.packageJSON?.version || ""
+            });
+            cleanupStaleEntries(storageDir).catch(() => {});
+        }
         this._agentService = new AgentService({
             Bridge: AgentBridge,
             isTrusted: () => vscode.workspace.isTrusted,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+            workspaceFoldersProvider: () =>
+                (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath),
             // Bridge 描述文件（含 token）写入 globalStorage，工作区只留指针，避免令牌随 git/云同步泄露
             storageDirProvider: () => this._context.globalStorageUri.fsPath,
-            onCall: () => this._warnIfSkillsModified(),
+            registry: this._bridgeRegistry,
+            onCall: (_method, _params, meta) => this._warnIfSkillsModified(meta),
+            onAudit: (entry) => this._auditAgentCall(entry),
             handlers: createAgentRoutes(this)
+        });
+        this._mcpRegistration = new McpRegistration({
+            vscode,
+            context,
+            t: (key, params) => this._t(key, params),
+            isAvailable: () => this._mcpAvailable(),
+            instanceId: () => this._agentService.instanceId(),
+            toolsets: () => this._mcpToolsets(),
+            onResolve: () => this._requestMcpBridge(),
+            onConfigured: () => this._markMcpConfigured()
         });
         this.registerCommandHandlers();
     }
@@ -616,6 +648,10 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.selectIoc"] = () => this._cubemxConfiguration.select("ioc");
         this.commandHandlers["mcu-vscode.installCubeMxFirmware"] = () => this._cubemxFirmware.install();
         this.commandHandlers["mcu-vscode.manageAgentSkills"] = async () => this.manageAgentSkills();
+        this.commandHandlers["mcu-vscode.enableAgentAccess"] = async () => this.setAgentAccess("enabled");
+        this.commandHandlers["mcu-vscode.disableAgentAccess"] = async () => this.setAgentAccess("disabled");
+        this.commandHandlers["mcu-vscode.cleanupGlobalSkills"] = async () => this.cleanupGlobalSkills();
+        this.commandHandlers["mcu-vscode.copyMcpConfig"] = async () => this._mcpRegistration.copyConfig();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
@@ -2914,24 +2950,126 @@ class MainViewProvider {
     async stopAgentBridge() {
         return this._agentService.stop();
     }
-    async _syncAgentBridgeWithSkills(status) {
-        if (!vscode.workspace.isTrusted) return this.stopAgentBridge();
-        if (hasWorkspaceSkills(status)) {
-            return this.startAgentBridge();
+    // 按工作区生效的 Agent 访问开关：enabled | disabled | 未设置（undefined）。只写 workspaceState。
+    _agentAccess() {
+        const value = this._context?.workspaceState?.get(AGENT_ACCESS_STATE_KEY);
+        return value === "enabled" || value === "disabled" ? value : undefined;
+    }
+    _agentAccessDecision(status) {
+        if (!vscode.workspace.isTrusted) return { enabled: false, state: "untrusted" };
+        const access = this._agentAccess();
+        if (access === "disabled") return { enabled: false, state: "disabled" };
+        if (access === "enabled") return { enabled: true, reason: "access" };
+        // 兼容：已装工作区 skills 且未显式设置时视为启用。
+        if (hasWorkspaceSkills(status)) return { enabled: true, reason: "skills" };
+        if (this._mcpBridgeRequested) return { enabled: true, reason: "mcp" };
+        return { enabled: false, state: "disabled" };
+    }
+    async _syncAgentBridge(status = this._skillStatusService.lastStatus) {
+        const decision = this._agentAccessDecision(status);
+        try {
+            if (!decision.enabled) {
+                this._agentService.accessState = decision.state;
+                return await this.stopAgentBridge();
+            }
+            return await this._agentService.start({ legacyPointer: hasWorkspaceSkills(status) });
+        } finally {
+            this._postAgentAccess(status, decision);
         }
-        return this.stopAgentBridge();
+    }
+    _agentAccessView(status = this._skillStatusService.lastStatus, decision = this._agentAccessDecision(status)) {
+        const access = this._agentAccess();
+        const legacyGlobal = legacyGlobalSkills(status);
+        // 检测到全局副本或用户复制过外部 MCP 配置、但本工作区未启用时，提示启用。
+        const external =
+            this._skillStatusService.scopeHasContent(status?.scopes?.global) ||
+            this._context?.globalState?.get(MCP_CONFIGURED_STATE_KEY) === true;
+        let card = "";
+        if (decision.enabled && access === "enabled") card = "enabled";
+        else if (!decision.enabled && decision.state === "disabled" && (access === "disabled" || external))
+            card = "disabled";
+        return { access: access || "unset", enabled: decision.enabled, card, legacyGlobal };
+    }
+    _postAgentAccess(status, decision) {
+        this._lastAgentAccess = this._agentAccessView(status, decision);
+        this._webviewView?.webview.postMessage({ type: "agentAccess", ...this._lastAgentAccess });
+    }
+    async setAgentAccess(value) {
+        await this._context.workspaceState.update(AGENT_ACCESS_STATE_KEY, value);
+        await this._syncAgentBridge();
+        this._mcpRegistration?.changed();
+        return true;
+    }
+    // VS Code MCP provider：受信任、打开了文件夹且未显式停用 Agent 访问的窗口才提供服务器定义。
+    _mcpAvailable() {
+        return (
+            !!vscode.workspace.isTrusted &&
+            !!vscode.workspace.workspaceFolders?.length &&
+            this._agentAccess() !== "disabled" &&
+            !!this._bridgeRegistry
+        );
+    }
+    // emberprobe.mcp.toolsets → EMBERPROBE_MCP_TOOLSETS；默认工具集返回空串，不注入环境变量。
+    _mcpToolsets() {
+        const configured = vscode.workspace.getConfiguration?.("emberprobe").get("mcp.toolsets");
+        const selected = TOOLSETS.filter((name) => Array.isArray(configured) && configured.includes(name));
+        if (!selected.length || selected.join(",") === DEFAULT_TOOLSETS.join(",")) return "";
+        return selected.join(",");
+    }
+    // VS Code 在用户同意 MCP 信任提示后解析定义：此时为本窗口启动 Bridge（不写工作区文件）。
+    async _requestMcpBridge() {
+        this._mcpBridgeRequested = true;
+        await this._syncAgentBridge();
+    }
+    async _markMcpConfigured() {
+        await this._context.globalState.update(MCP_CONFIGURED_STATE_KEY, true);
+        this._postAgentAccess(this._skillStatusService.lastStatus);
+    }
+    activateMcp() {
+        const registered = this._mcpRegistration.register();
+        if (this._context.globalStorageUri)
+            this._mcpRegistration.writeLauncher().catch((error) => console.warn("MCP launcher:", error.message));
+        return registered;
+    }
+    mcpConfigurationChanged() {
+        this._mcpRegistration.changed();
+    }
+    // 清理已停止维护的全局 skills 副本：只删除 EmberProbe 清单内的条目。
+    async cleanupGlobalSkills() {
+        const confirm = this._t("agent.cleanup");
+        const choice = await vscode.window.showWarningMessage(
+            this._t("agent.cleanupConfirm"),
+            { modal: true },
+            confirm
+        );
+        if (choice !== confirm) return null;
+        const status = await skillInstaller.uninstallSkill(vscode, this._context, this._lang, "global");
+        this._skillStatusService.lastStatus = status;
+        this._skillStatusService.post(status);
+        await this._syncAgentBridge(status);
+        return true;
     }
     _postSkillStatus(status) {
         this._skillStatusService.post(status);
     }
     async refreshSkillStatus(autoUpdate = false) {
         const status = await this._skillStatusService.refresh(autoUpdate);
-        await this._syncAgentBridgeWithSkills(status);
+        await this._syncAgentBridge(status);
         return status;
     }
-    // 调用前检查实际技能摘要；自定义内容需独立 UI 批准，内容再次变化会失效。
-    async _warnIfSkillsModified() {
-        await this._skillStatusService.checkForCall();
+    // 在输出面板记录“谁执行了哪次调用”：通道、客户端、方法与结果码，不含参数值。
+    _auditAgentCall(entry) {
+        if (!vscode.window.createOutputChannel) return;
+        if (!this._agentAudit) {
+            this._agentAudit = vscode.window.createOutputChannel(this._t("agent.auditChannel"));
+            this._context.subscriptions?.push(this._agentAudit);
+        }
+        const caller = [entry.channel || "legacy", entry.client].filter(Boolean).join(" ");
+        this._agentAudit.appendLine(`${new Date().toISOString()} ${caller} ${entry.method} ${entry.code}`);
+    }
+    // 调用前检查实际发起调用的 skill 副本；自定义内容需独立 UI 批准，内容再次变化会失效。
+    async _warnIfSkillsModified(meta) {
+        await this._skillStatusService.checkForCall(meta);
     }
     // 后台生成没有自己的 withProgress 窗口（Bridge 调用立即返回 operationId），
     // 因此为运行中的操作挂一个可取消的通知，复用既有进度与取消交互
@@ -2975,7 +3113,10 @@ class MainViewProvider {
     // Agent Skills 工作区安装开关
     async manageAgentSkills() {
         const result = await this._skillStatusService.manage();
-        if (result) await this._syncAgentBridgeWithSkills(result);
+        // 显式停用过的工作区重新安装 skills 时恢复为未设置，使 skills 开关与过去一样开启 Bridge。
+        if (result && hasWorkspaceSkills(result) && this._agentAccess() === "disabled")
+            await this._context.workspaceState.update(AGENT_ACCESS_STATE_KEY, undefined);
+        if (result) await this._syncAgentBridge(result);
         return result;
     }
     // VS Code restores chart tabs left open at shutdown; each keeps its panel number and so its watch list.
@@ -5583,7 +5724,7 @@ class MainViewProvider {
             this.disposeDebugBridge();
             const agentStopped = this.stopAgentReadIfRunning();
             if (agentStopped) await agentStopped;
-            await this.stopAgentBridge().catch(() => {});
+            await this._agentService.dispose().catch(() => {});
         })();
         return this._shutdownPromise;
     }
@@ -6000,6 +6141,7 @@ class MainViewProvider {
                     ...this._skillStatusService.lastStatus,
                     busy: !!this._skillStatusService.busy
                 });
+            if (this._lastAgentAccess) sidebarWebview.postMessage({ type: "agentAccess", ...this._lastAgentAccess });
             this.refreshOpenOcdStatus(false);
             this.refreshSkillStatus().catch((error) => console.error("Agent Skills 状态检查失败：", error.message));
         });

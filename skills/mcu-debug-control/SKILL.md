@@ -19,6 +19,7 @@ has been verified at a firmware address; report adapter verification when availa
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `debug_control`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: controlling the workspace debugger session (start/stop/pause/continue/step/restart) and managing source-line or function breakpoints.
 - **Requires**: the EmberProbe Agent Bridge and VS Code's debugger APIs; `--start` also needs a complete EmberProbe debug configuration (ELF, probe, target, OpenOCD, SVD).
 - **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; breakpoints can be created before a session starts.
