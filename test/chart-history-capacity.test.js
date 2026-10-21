@@ -18,6 +18,14 @@ const itemsFor = (count) =>
     Array.from({ length: count }, (_, i) => ({ name: "buf[" + i + "]", type: "u8", address: 0x20000000 + i }));
 const samplesFor = (items, t) => items.map(({ name }, i) => ({ name, t, value: (i + t) & 255 }));
 const points = (store, scope, name, snapshotId) => [...store.points(store._source(scope, snapshotId).series.get(name))];
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(predicate, message, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+        assert(Date.now() < deadline, message);
+        await wait(5);
+    }
+}
 
 for (const count of [7800, 20000]) {
     const items = itemsFor(count);
@@ -213,11 +221,20 @@ for (const count of [7800, 20000]) {
         const [item] = itemsFor(1);
         await worker.request("configure", ["old", [item]]);
         await worker.request("append", ["old", [{ name: item.name, t: 1, value: 1 }], 1]);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        // Updates are debounced in the worker; a fixed sleep let a late pre-eviction update leak past the reset.
+        await waitFor(
+            () => updates.some((message) => message.scope === "old"),
+            "the first append publishes its status update"
+        );
         updates.length = 0;
         await worker.request("configure", ["new", [item]]);
         await worker.request("append", ["new", [{ name: item.name, t: 2, value: 2 }], 2]);
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await waitFor(
+            () =>
+                updates.some((message) => message.scope === "old") &&
+                updates.some((message) => message.scope === "new"),
+            "both panels publish a status update after the shared-budget eviction"
+        );
         const old = updates.find((message) => message.scope === "old");
         assert.ok(old, "the evicted panel receives a status update without its own append");
         assert.strictEqual(old.limited, true);
