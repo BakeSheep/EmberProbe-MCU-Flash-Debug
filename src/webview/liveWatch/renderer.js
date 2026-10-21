@@ -358,6 +358,8 @@ function savedValuePanel(state) {
 }
 var saved = api && api.getState ? api.getState() : null,
     valuePanel = savedValuePanel(saved),
+    // Two-column layout: each top-level card keeps the column it was placed in (0 or 1).
+    cardColumns = Object.assign(Object.create(null), saved && saved.cardColumns),
     sideCollapsed = !!(saved && saved.sideCollapsed),
     windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30";
 if (saved && saved.hidden) hidden = saved.hidden;
@@ -545,6 +547,7 @@ function saveUi() {
             pointerCurveDefaults: true,
             timeWindow: windowPreset,
             valuePanel: valuePanel,
+            cardColumns: cardColumns,
             sideCollapsed: sideCollapsed,
             norm: norm
         });
@@ -871,25 +874,57 @@ function renderVars() {
     if (varReorder) varReorder.refresh();
 }
 var variableCards = [];
-// Cards keep watch order even when shown in two alternating columns, so moves follow that order.
+function inColumns() {
+    return $("vars").classList.contains("independent-columns");
+}
+// Each column shows its cards in watch order, so moving a card in one column never moves the other's.
 var varReorder = EmberProbeCardReorder.attach($("vars"), {
-    order: function () {
+    order: function (name) {
         return variableCards
             .map(function (card) {
                 return card.dataset.reorderKey;
             })
-            .filter(Boolean);
+            .filter(function (key) {
+                return key && (!inColumns() || cardColumns[key] === cardColumns[name]);
+            });
     },
-    onMove: function (name, target, after) {
-        var next = EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
-            return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
-        });
-        if (next === watch) return;
+    zones: function () {
+        return $("vars").querySelectorAll(".var-column");
+    },
+    onMove: function (name, target, after, zone) {
+        var column = zone !== undefined ? Number(zone) : inColumns() ? cardColumns[target] : undefined;
+        var moved = column !== undefined && cardColumns[name] !== column;
+        if (moved) cardColumns[name] = column;
+        var next =
+            target === null
+                ? watch
+                : EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
+                      return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
+                  });
+        if (next === watch && !moved) return;
+        var reordered = next !== watch;
         watch = next;
         renderVars();
-        saveWatch();
+        if (reordered) saveWatch();
+        saveUi();
+    },
+    moveAcross: function (name, step) {
+        var column = step < 0 ? 0 : 1;
+        if (!inColumns() || cardColumns[name] === column) return;
+        cardColumns[name] = column;
+        renderVars();
+        saveUi();
     }
 });
+// Saved columns are kept; new cards join the column holding fewer cards. Unkeyed nodes (notes,
+// fallback pointee cards) follow the card before them.
+function columnFor(card, counts, previous) {
+    var key = card.dataset.reorderKey;
+    if (!key) return previous;
+    if (cardColumns[key] !== 0 && cardColumns[key] !== 1) cardColumns[key] = counts[1] < counts[0] ? 1 : 0;
+    counts[cardColumns[key]]++;
+    return cardColumns[key];
+}
 function arrangeVariableCards(force) {
     if (!variableCards.length) return;
     var box = $("vars");
@@ -902,12 +937,16 @@ function arrangeVariableCards(force) {
     var scrollTop = box.scrollTop;
     if (columns) {
         var stacks = [document.createElement("div"), document.createElement("div")];
-        stacks.forEach(function (stack) {
+        stacks.forEach(function (stack, index) {
             stack.className = "var-column";
+            stack.dataset.reorderZone = String(index);
         });
-        // Stable alternating columns: expanding a tree never moves cards in the other column.
-        variableCards.forEach(function (card, index) {
-            stacks[index % 2].appendChild(card);
+        // Independent columns: expanding a tree or moving a card never moves cards in the other column.
+        var counts = [0, 0],
+            column = 0;
+        variableCards.forEach(function (card) {
+            column = columnFor(card, counts, column);
+            stacks[column].appendChild(card);
         });
         box.replaceChildren(...stacks);
     } else {

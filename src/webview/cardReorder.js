@@ -51,6 +51,10 @@
 
     // Pointer and keyboard reordering for the cards inside a container that outlives re-renders.
     // Cards are found by `data-reorder-key`; the caller rearranges its list and re-renders in onMove.
+    // Optional `zones` (e.g. columns, marked with `data-reorder-zone`) scope drops to the zone under
+    // the pointer; an empty zone is a drop target of its own, reported as onMove(name, null, false, zone).
+    // `order(name)` lists the keys Alt+Up/Down steps through for that card, and `moveAcross(name, step)`
+    // handles Alt+Left/Right.
     function attach(container, options) {
         const doc = container.ownerDocument;
         const view = doc.defaultView;
@@ -68,9 +72,14 @@
         }
         function clearMarks() {
             container
-                .querySelectorAll(".reorder-dragging, .reorder-drop-before, .reorder-drop-after")
+                .querySelectorAll(".reorder-dragging, .reorder-drop-before, .reorder-drop-after, .reorder-drop-zone")
                 .forEach((card) =>
-                    card.classList.remove("reorder-dragging", "reorder-drop-before", "reorder-drop-after")
+                    card.classList.remove(
+                        "reorder-dragging",
+                        "reorder-drop-before",
+                        "reorder-drop-after",
+                        "reorder-drop-zone"
+                    )
                 );
             container.classList.remove("reorder-active");
         }
@@ -79,14 +88,36 @@
             if (!drag || !drag.active) return;
             container.classList.add("reorder-active");
             cardFor(drag.name)?.classList.add("reorder-dragging");
-            if (drag.target)
+            if (drag.target && drag.target.name === null) zoneFor(drag.target.zone)?.classList.add("reorder-drop-zone");
+            else if (drag.target)
                 cardFor(drag.target.name)?.classList.add(
                     drag.target.after ? "reorder-drop-after" : "reorder-drop-before"
                 );
         }
-        function hitTarget(x, y) {
+        function zones() {
+            return options.zones ? Array.from(options.zones()) : [];
+        }
+        function zoneFor(key) {
+            return zones().find((zone) => zone.dataset.reorderZone === key) || null;
+        }
+        // The zone whose horizontal span is nearest the pointer, so gaps between columns still pick one.
+        function zoneAt(x) {
             let best = null;
-            for (const card of cards()) {
+            for (const zone of zones()) {
+                const rect = zone.getBoundingClientRect();
+                if (!rect.width) continue;
+                const distance = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+                if (!best || distance < best.distance) best = { zone, distance };
+            }
+            return best ? best.zone : null;
+        }
+        function hitTarget(x, y) {
+            const zone = zoneAt(x);
+            const candidates = zone ? cards().filter((card) => zone.contains(card)) : cards();
+            if (zone && !candidates.some((card) => card.dataset.reorderKey !== drag.name))
+                return candidates.length ? null : { name: null, zone: zone.dataset.reorderZone, after: false };
+            let best = null;
+            for (const card of candidates) {
                 const rect = card.getBoundingClientRect();
                 if (!rect.width && !rect.height) continue;
                 const dx = x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
@@ -133,7 +164,7 @@
             clearMarks();
             if (done && container.hasPointerCapture?.(done.pointerId)) container.releasePointerCapture(done.pointerId);
             if (commit && done && done.active && done.target)
-                options.onMove(done.name, done.target.name, done.target.after);
+                options.onMove(done.name, done.target.name, done.target.after, done.target.zone);
         }
         function onEscape(event) {
             if (event.key !== "Escape" || !drag) return;
@@ -194,9 +225,20 @@
         });
         container.addEventListener("keydown", (event) => {
             const handle = event.target.closest?.(".reorder-handle");
-            if (!handle || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+            if (!handle || !event.altKey) return;
             const name = handle.closest("[data-reorder-key]")?.dataset.reorderKey;
-            const keys = order();
+            const across = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+            if (across && options.moveAcross) {
+                event.preventDefault();
+                event.stopPropagation();
+                focusKey = name;
+                focusAt = Date.now();
+                options.moveAcross(name, across);
+                refresh();
+                return;
+            }
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            const keys = order(name);
             const index = keys.indexOf(name);
             const down = event.key === "ArrowDown";
             const target = keys[index + (down ? 1 : -1)];

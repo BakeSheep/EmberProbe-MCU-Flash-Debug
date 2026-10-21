@@ -2447,10 +2447,14 @@ input[type="number"]::-webkit-outer-spin-button {
     left: auto;
     right: 0;
 }
-/* Narrow single-column and wide two-column variable lists; JS picks columns from the card width. */
+/* Narrow single-column and wide two-column variable lists; JS picks columns from the card width.
+   The list has a fixed height inside the floating card, so rows and stacked cards must keep their
+   content height and let the list scroll instead of being squeezed into overlapping rows. */
 .var-list {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
+    align-content: start;
     gap: 6px;
     align-items: start;
 }
@@ -2458,6 +2462,18 @@ input[type="number"]::-webkit-outer-spin-button {
 .var-column > .var-card {
     min-width: 0;
     margin: 0;
+}
+.var-column > * {
+    flex: none;
+}
+/* While dragging, an emptied column stays a visible drop target. */
+.reorder-active .var-column {
+    min-height: 48px;
+}
+.var-column.reorder-drop-zone {
+    border-radius: 5px;
+    outline: 1px dashed var(--vscode-focusBorder);
+    outline-offset: 2px;
 }
 .var-list.independent-columns {
     grid-template-columns: repeat(2, minmax(0, 1fr));

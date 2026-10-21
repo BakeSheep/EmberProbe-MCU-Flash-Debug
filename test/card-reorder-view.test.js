@@ -173,7 +173,7 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
     }
 }
 
-// Chart sidebar cards, including the alternating two-column layout.
+// Chart value-card cards, including the independent two-column layout.
 {
     const view = render(getLiveWatchContent({}, "en"), {});
     try {
@@ -184,35 +184,94 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         document.getElementById("valuePane").getBoundingClientRect = () => ({ width: paneWidth, height: 400 });
         const items = ["first", "second", "third", "fourth"].map(scalar);
         view.send({ type: "watchList", items });
-        assert.strictEqual(box.querySelectorAll(".var-column").length, 2);
         const chart = harness(view, box);
-        // Logical (watch) order, not DOM order, decides positions in the alternating columns.
-        harness.order = () => ["first", "second", "third", "fourth"];
-        chart.layout(2);
-        harness.order = null;
-        // "fourth" is drawn right of "third" (column 1, row 1); drop it on the top half of "second".
+        const columns = () =>
+            Array.from(box.querySelectorAll(".var-column"), (column) =>
+                keys(chart.cards().filter((card) => column.contains(card)))
+            );
+        // Lay columns out side by side (200px apart) and stack each column's cards from the top.
+        const layout = () =>
+            box.querySelectorAll(".var-column").forEach((column, index) => {
+                const left = index * 200;
+                column.getBoundingClientRect = () => ({
+                    left,
+                    right: left + 180,
+                    top: 0,
+                    bottom: 400,
+                    width: 180,
+                    height: 400
+                });
+                chart
+                    .cards()
+                    .filter((card) => column.contains(card))
+                    .forEach((card, row) => {
+                        card.getBoundingClientRect = () => ({
+                            left,
+                            right: left + 180,
+                            top: row * 40,
+                            bottom: row * 40 + 30,
+                            width: 180,
+                            height: 30
+                        });
+                    });
+            });
+        const saved = () => lastSaved(view, "saveWatch").items.map((item) => item.name);
+        const saves = () => view.messages.filter((message) => message.type === "saveWatch").length;
+        assert.deepStrictEqual(columns(), [
+            ["first", "third"],
+            ["second", "fourth"]
+        ]);
+        layout();
+        // Drop "fourth" on the top half of "second": only the right column changes.
         chart.drag("fourth", 210, 2);
-        assert.deepStrictEqual(
-            lastSaved(view, "saveWatch").items.map((item) => item.name),
-            ["first", "fourth", "second", "third"]
-        );
-        // The host echoes the list back; keyboard moves follow watch order across columns.
+        assert.deepStrictEqual(saved(), ["first", "fourth", "second", "third"]);
+        assert.deepStrictEqual(columns(), [
+            ["first", "third"],
+            ["fourth", "second"]
+        ]);
         view.send({ type: "watchList", items: lastSaved(view, "saveWatch").items });
+        assert.deepStrictEqual(columns(), [
+            ["first", "third"],
+            ["fourth", "second"]
+        ]);
+        // Dragging across columns moves just that card; the watch order already places it after "second".
+        layout();
+        const before = saves();
+        chart.drag("third", 210, 60);
+        assert.strictEqual(saves(), before, "a column change alone does not rewrite the watch list");
+        assert.deepStrictEqual(columns(), [["first"], ["fourth", "second", "third"]]);
+        assert.strictEqual(view.getState().cardColumns.third, 1, "card columns are saved with the panel");
+        // An emptied column is still a drop target.
+        layout();
+        chart.drag("first", 210, 2);
+        assert.deepStrictEqual(columns(), [[], ["first", "fourth", "second", "third"]]);
+        layout();
+        chart.drag("second", 20, 10);
+        assert.deepStrictEqual(columns(), [["second"], ["first", "fourth", "third"]]);
+        // Keyboard moves step through the card's own column; Alt+Left/Right switch columns.
+        chart.handle("fourth").focus();
+        chart.key("fourth", "ArrowDown");
+        assert.deepStrictEqual(saved(), ["first", "second", "third", "fourth"]);
+        assert.deepStrictEqual(columns(), [["second"], ["first", "third", "fourth"]]);
+        assert.strictEqual(document.activeElement, chart.handle("fourth"));
+        view.send({ type: "watchList", items: lastSaved(view, "saveWatch").items });
+        assert.strictEqual(document.activeElement, chart.handle("fourth"), "focus survives the host echo");
         chart.handle("first").focus();
-        chart.key("first", "ArrowDown");
-        assert.deepStrictEqual(
-            lastSaved(view, "saveWatch").items.map((item) => item.name),
-            ["fourth", "first", "second", "third"]
-        );
+        chart.key("first", "ArrowLeft");
+        assert.deepStrictEqual(columns(), [
+            ["first", "second"],
+            ["third", "fourth"]
+        ]);
         assert.strictEqual(document.activeElement, chart.handle("first"));
-        view.send({ type: "watchList", items: lastSaved(view, "saveWatch").items });
-        assert.strictEqual(document.activeElement, chart.handle("first"), "focus survives the host echo");
         const card = box.querySelector('[data-reorder-key="first"]');
         assert(card.classList.contains("var-card"));
         assert.strictEqual(card.firstElementChild.className, "reorder-handle");
         paneWidth = 300;
         window.dispatchEvent(new window.Event("resize"));
-        assert.deepStrictEqual(keys(chart.cards()), ["fourth", "first", "second", "third"]);
+        assert.deepStrictEqual(keys(chart.cards()), ["first", "second", "third", "fourth"]);
+        chart.handle("third").focus();
+        chart.key("third", "ArrowUp");
+        assert.deepStrictEqual(saved(), ["first", "third", "second", "fourth"], "one column steps through watch order");
         view.assertHealthy();
     } finally {
         view.close();

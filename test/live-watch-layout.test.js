@@ -225,8 +225,8 @@ try {
     assert.strictEqual(first.querySelector(".var-value").textContent, "7", "moved value cells still update");
     fourth.querySelector(".remove").click();
     assert.strictEqual(document.getElementById("count").textContent, "4");
-    assert.deepStrictEqual(names(box.children[0]), ["first", "third"]);
-    assert.deepStrictEqual(names(box.children[1]), ["tree", "fifth"]);
+    assert.deepStrictEqual(names(box.children[0]), ["first", "third", "fifth"], "removal keeps other cards in place");
+    assert.deepStrictEqual(names(box.children[1]), ["tree"]);
     columnsView.send({ type: "watchList", items: [] });
     assert(box.querySelector(".empty"));
     assert(!box.classList.contains("independent-columns"));
