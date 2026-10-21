@@ -38,6 +38,7 @@ async function run() {
     let session;
     let stopped = 0;
     let serverStops = 0;
+    const dapEvents = [];
     const wait = async (predicate) => {
         const deadline = Date.now() + 15000;
         while (!predicate()) {
@@ -73,6 +74,7 @@ async function run() {
                 createDebugAdapterTracker() {
                     return {
                         onDidSendMessage: (message) => {
+                            if (message.type === "event") dapEvents.push(message);
                             if (message.event === "stopped") stopped++;
                         }
                     };
@@ -153,6 +155,41 @@ async function run() {
         await assert.rejects(inspect({ action: "variables", reference: agentVector.reference }), {
             code: "DEBUG_INSPECTION_STALE"
         });
+        const consoleFrames = await inspect({ action: "stack", threadId: 1 });
+        const cli = session.customRequest("evaluate", { context: "repl", expression: "bt" });
+        await wait(() => provider._debugBridge.replBusy);
+        await assert.rejects(inspect({ action: "threads" }), { code: "DEBUG_CONTROL_BUSY" });
+        assert(provider._debugBridge.paused, "a query does not report running");
+        assert.deepStrictEqual(await cli, { result: "", variablesReference: 0 });
+        await wait(() => !provider._debugBridge.replBusy);
+        assert.strictEqual(
+            dapEvents.filter((event) => event.event === "output" && event.body.output.includes("#0 main")).length,
+            1
+        );
+        await assert.rejects(inspect({ action: "scopes", frame: consoleFrames.stackFrames[0].frame }), {
+            code: "DEBUG_INSPECTION_STALE"
+        });
+        await assert.rejects(session.customRequest("variables", { variablesReference: nextPage }));
+        await assert.rejects(session.customRequest("evaluate", { context: "repl", expression: "undefined-command" }));
+        assert(
+            !dapEvents.some(
+                (event) =>
+                    event.event === "output" && event.body.output.includes("Undefined command: undefined-command")
+            ),
+            "GDB log errors must not duplicate the DAP evaluation error"
+        );
+        await wait(() => !provider._debugBridge.replBusy);
+        assert(provider._debugBridge.paused);
+        const eventStart = dapEvents.length;
+        await session.customRequest("evaluate", { context: "repl", expression: "next" });
+        assert(provider._debugBridge.paused, "a stop preceding the CLI response remains paused");
+        assert.deepStrictEqual(
+            dapEvents
+                .slice(eventStart)
+                .filter((event) => ["continued", "stopped"].includes(event.event))
+                .map((event) => event.event),
+            ["continued", "stopped"]
+        );
         const beforeContinue = stopped;
         await session.customRequest("continue", { threadId: 1 });
         await wait(() => stopped > beforeContinue);

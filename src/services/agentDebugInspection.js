@@ -30,6 +30,7 @@ class AgentDebugInspection {
         if (session.type !== "emberprobe")
             throw fail("DEBUG_INSPECTION_UNSUPPORTED", "Paused inspection requires the native EmberProbe debugger");
         if (!this.bridge.paused) throw fail("TARGET_NOT_PAUSED", "Pause the debugger before inspection");
+        if (this.bridge.replBusy) throw fail("DEBUG_CONTROL_BUSY", "Wait for the GDB console command to finish");
         if (this.bridge.transitionKind)
             throw fail("DEBUG_STATE_TRANSITION", "Wait for debug execution control to finish");
         if (this.bridge.writing) throw fail("DEBUG_CONTROL_BUSY", "Wait for the memory write to finish");
@@ -50,6 +51,7 @@ class AgentDebugInspection {
             context.epoch !== this.bridge.stopEpoch ||
             context.inspectionEpoch !== (this.bridge.inspectionEpoch || 0) ||
             this.bridge.writing ||
+            this.bridge.replBusy ||
             !this.bridge.paused ||
             this.bridge.transitionKind
         )

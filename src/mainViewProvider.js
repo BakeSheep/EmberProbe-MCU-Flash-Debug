@@ -591,8 +591,8 @@ class MainViewProvider {
             type: "peripheralDebugStatus",
             state: status.state,
             epoch: status.epoch,
-            canRead: status.paused && status.capabilities.read === true,
-            canWrite: status.paused && status.capabilities.write === true
+            canRead: status.paused && !this._debugBridge.replBusy && status.capabilities.read === true,
+            canWrite: status.paused && !this._debugBridge.replBusy && status.capabilities.write === true
         });
     }
     async _handlePeripheralViewRequest(webview, message) {
@@ -1123,6 +1123,10 @@ class MainViewProvider {
     }
     _assertWriteSessionCurrent(session) {
         this._assertCpuIdle();
+        if (session === this._debugBridge && this._debugBridge.replBusy)
+            throw Object.assign(new Error("Wait for the GDB console command before writing"), {
+                code: "DEBUG_CONTROL_BUSY"
+            });
         const physical =
             session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
         if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
@@ -2169,7 +2173,7 @@ class MainViewProvider {
         server.invalidateTarget?.();
         server.setSamplingEnabled(false);
         if (event.state !== "continued") return;
-        if (event.transition && event.transition !== "continue") return;
+        if (event.transition && !["continue", "repl"].includes(event.transition)) return;
         const epoch = event.epoch;
         this._runtimeResumeTimer = setTimeout(() => {
             this._runtimeResumeTimer = null;
@@ -2177,6 +2181,7 @@ class MainViewProvider {
                 !this._managedDebugServer ||
                 this._managedDebugServer !== server ||
                 this._debugBridge.paused ||
+                this._debugBridge.replBusy ||
                 this._debugBridge.stopEpoch !== epoch ||
                 !this._samplingIntent
             )
@@ -2231,6 +2236,10 @@ class MainViewProvider {
     }
     async _withAgentProbe(handler, options = {}) {
         this._assertCpuIdle();
+        if (this._debugBridge.replBusy)
+            throw Object.assign(new Error("Wait for the GDB console command before inspecting memory"), {
+                code: "DEBUG_CONTROL_BUSY"
+            });
         if (this._liveConnectionClosing || this._liveExitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"

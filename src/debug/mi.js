@@ -135,7 +135,7 @@ class MiClient extends EventEmitter {
                     this.pending.delete(record.token);
                     if (record.class === "error") pending.reject(new Error(record.data.msg || "GDB command failed"));
                     else pending.resolve(record.data);
-                } else if ("~@&".includes(record.kind)) this.emit("output", record.text);
+                } else if ("~@&".includes(record.kind)) this.emit("output", record.text, record.kind);
                 else this.emit("record", record);
             } catch (error) {
                 error.message += ` (GDB/MI record: ${line.slice(0, 300)})`;

@@ -444,6 +444,34 @@ const { initializePrettyPrinting } = require("../../src/services/prettyPrinting"
             value: preserved.value
         });
         assert.strictEqual(BigInt(registerWrite.value), BigInt(preserved.value));
+        const consoleCommand = (expression) => adapter.handle("evaluate", { context: "repl", expression });
+        const beforeConsole = output.length;
+        assert.deepStrictEqual(await consoleCommand("bt"), { result: "", variablesReference: 0 });
+        assert.match(output.slice(beforeConsole).join(""), /#0/);
+        await assert.rejects(adapter.handle("scopes", { frameId: registerFrame.id }), /Stale/);
+        await consoleCommand("set variable scopeCounter = 18");
+        assert.strictEqual((await evaluate("scopeCounter")).result, "18");
+        await consoleCommand("info registers");
+        await consoleCommand("x/1wx &scopeCounter");
+        await consoleCommand("frame 1");
+        assert.strictEqual(adapter.selectedFrame.level, 1);
+        await consoleCommand("frame 0");
+        const mapped = await adapter.handle("setFunctionBreakpoints", { breakpoints: [{ name: "checkpoint" }] });
+        const group = adapter.breakpoints.get("functions");
+        const mappedNumber = [...group.values()][0].number;
+        await consoleCommand(`disable ${mappedNumber}`);
+        assert.match([...group.values()][0].dap.message, /disabled.*info breakpoints/i);
+        await consoleCommand(`enable ${mappedNumber}`);
+        assert(![...group.values()][0].dap.message);
+        await consoleCommand("break main");
+        assert.strictEqual(group.size, 1, "CLI breakpoints are not imported into VS Code");
+        await consoleCommand("info breakpoints");
+        await consoleCommand(`delete ${mappedNumber}`);
+        assert.strictEqual(group.size, 0);
+        assert(mapped.breakpoints[0].verified);
+        await assert.rejects(consoleCommand("emberprobe-undefined-command"), /Undefined command/);
+        assert(!adapter.ended);
+        await consoleCommand("p scopeCounter");
         console.log(
             `Native GCC/libstdc++ + GDB C++${standard} DWARF ${dwarf}: wrappers, nested maps, paging, writes and resume passed`
         );

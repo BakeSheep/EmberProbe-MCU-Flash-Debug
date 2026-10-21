@@ -20,6 +20,7 @@ class SamplingCoordinator {
                 this.allowed(requested) &&
                 !bridge?.paused &&
                 !bridge?.transitionKind &&
+                !bridge?.replBusy &&
                 !bridge?.conflict
         );
     }
@@ -40,7 +41,11 @@ class SamplingCoordinator {
                 !bridge.paused &&
                 !bridge.conflict
             ) {
-                const canRead = this.allowed(intent) && !!managedServer.samplingEnabled && !bridge.transitionKind;
+                const canRead =
+                    this.allowed(intent) &&
+                    !!managedServer.samplingEnabled &&
+                    !bridge.transitionKind &&
+                    !bridge.replBusy;
                 result = {
                     ...result,
                     source: "openocd",

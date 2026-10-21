@@ -80,6 +80,11 @@ class DebugSessionBridge {
         this.transitionKind = "";
         this.transitionCommand = "";
         this.transitionRequestSeq = null;
+        this.replRequests = new Set();
+    }
+
+    get replBusy() {
+        return this.replRequests.size > 0;
     }
 
     get activeSession() {
@@ -102,6 +107,7 @@ class DebugSessionBridge {
             this.intentEnabled &&
             this.paused &&
             !this.transitionKind &&
+            !this.replBusy &&
             !this.conflict &&
             this.activeSession &&
             this.capabilities.read
@@ -117,6 +123,7 @@ class DebugSessionBridge {
         return !!(
             this.paused &&
             !this.transitionKind &&
+            !this.replBusy &&
             !this.conflict &&
             this.activeSession &&
             this.capabilities.read &&
@@ -156,7 +163,7 @@ class DebugSessionBridge {
     }
 
     selectSession(selector = {}) {
-        if (this.controlInFlight || this.writing)
+        if (this.controlInFlight || this.writing || this.replBusy)
             throw Object.assign(new Error("Wait for the current debug operation before selecting another session"), {
                 code: "DEBUG_CONTROL_BUSY"
             });
@@ -200,6 +207,10 @@ class DebugSessionBridge {
 
     assertPausedAccess(options = {}) {
         this.assertUniqueSession();
+        if (this.replBusy)
+            throw Object.assign(new Error("Wait for the GDB console command to finish"), {
+                code: "DEBUG_CONTROL_BUSY"
+            });
         if (!this.paused)
             throw Object.assign(new Error("The debugger target must be paused"), { code: "TARGET_NOT_PAUSED" });
         if (this.transitionKind)
@@ -309,6 +320,7 @@ class DebugSessionBridge {
             this.transitionKind = "";
             this.transitionCommand = "";
             this.transitionRequestSeq = null;
+            this.replRequests.clear();
             const context = this.sessionContexts?.get(activeId);
             if (context) {
                 for (const field of [
@@ -321,6 +333,7 @@ class DebugSessionBridge {
                 ])
                     this[field] = context[field];
                 this.capabilities = { ...context.capabilities };
+                this.replRequests = new Set(context.replRequests);
                 this.snapshotPending = this.intentEnabled && this.paused;
             }
             this._invalidate();
@@ -362,6 +375,22 @@ class DebugSessionBridge {
         this.sessionContexts?.get(session.id)?.handleRequest(session, message);
         if (!this.sessions.has(session.id)) return;
         if (this.sessionContexts && this.activeSession?.id !== session.id) return;
+        if (
+            session.type === "emberprobe" &&
+            message.command === "evaluate" &&
+            message.arguments?.context === "repl" &&
+            Number.isInteger(message.seq)
+        ) {
+            this.replRequests.add(message.seq);
+            this.stopEpoch += 1;
+            this.inspectionEpoch += 1;
+            this._invalidate();
+            this.snapshotPending = false;
+            this.snapshotReady = false;
+            this.onTargetState({ state: "transition", transition: "repl", epoch: this.stopEpoch, session });
+            this.onStatus(this.status());
+            return;
+        }
         if (["setVariable", "setExpression", "writeMemory"].includes(message.command)) this.inspectionEpoch += 1;
         const transitions = {
             next: "step",
@@ -402,6 +431,28 @@ class DebugSessionBridge {
             if (context?.paused !== wasPaused) {
                 this.onStatus(this.status());
                 this._notifyState();
+            }
+            return;
+        }
+        if (
+            message.type === "response" &&
+            message.command === "evaluate" &&
+            this.replRequests.delete(message.request_seq)
+        ) {
+            if (!this.replBusy) {
+                this._invalidate();
+                this.inspectionEpoch += 1;
+                this.snapshotReady = false;
+                this.snapshotPending = this.intentEnabled && this.paused;
+                this.consecutiveErrors = 0;
+                this.onTargetState({
+                    state: this.paused ? "stopped" : "continued",
+                    transition: "repl",
+                    epoch: this.stopEpoch,
+                    session
+                });
+                this.onStatus(this.status());
+                this._schedule(SNAPSHOT_INITIAL_DELAY_MS);
             }
             return;
         }
@@ -502,6 +553,7 @@ class DebugSessionBridge {
             // against the live list instead of stepping a task that no longer exists.
             if (message.body?.reason === "exited" && message.body.threadId === this.threadId) this.threadId = null;
         } else if (message.event === "terminated" || message.event === "exited") {
+            this.replRequests.clear();
             const transition = this.transitionKind;
             this.transitionKind = "";
             this.transitionCommand = "";
@@ -649,14 +701,20 @@ class DebugSessionBridge {
         const session = this.assertPausedAccess();
         const epoch = this.stopEpoch;
         const data = await this._readBlock(session, Number(address), Number(count));
-        if (session !== this.activeSession || epoch !== this.stopEpoch || !this.paused || this.transitionKind)
+        if (
+            session !== this.activeSession ||
+            epoch !== this.stopEpoch ||
+            !this.paused ||
+            this.transitionKind ||
+            this.replBusy
+        )
             throw Object.assign(new Error("Target changed during memory read"), { code: "DEBUG_STATE_CHANGED" });
         return data;
     }
 
     async writePausedMemory(address, bytes) {
         const session = this.assertPausedAccess({ write: true });
-        if (this.writing || this.controlInFlight)
+        if (this.writing || this.controlInFlight || this.replBusy)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const epoch = this.stopEpoch;
         const data = Uint8Array.from(bytes || []);
@@ -677,7 +735,13 @@ class DebugSessionBridge {
                     allowPartial: false
                 })
             );
-            if (session !== this.activeSession || epoch !== this.stopEpoch || !this.paused || this.transitionKind)
+            if (
+                session !== this.activeSession ||
+                epoch !== this.stopEpoch ||
+                !this.paused ||
+                this.transitionKind ||
+                this.replBusy
+            )
                 throw Object.assign(new Error("The debugger changed during memory write"), {
                     code: "DEBUG_STATE_CHANGED"
                 });
@@ -735,7 +799,7 @@ class DebugSessionBridge {
     }
 
     async control(action, requestedThreadId) {
-        if (this.controlInFlight || this.writing)
+        if (this.controlInFlight || this.writing || this.replBusy)
             throw Object.assign(new Error("Another debug control action is still in progress"), {
                 code: "DEBUG_CONTROL_BUSY",
                 details: { action, activeAction: this.controlInFlight?.action || "write" }
@@ -832,7 +896,7 @@ class DebugSessionBridge {
         if (!session || this.conflict) throw new Error("No unique debugger session is available");
         if (!this.capabilities.read) throw new Error("The debugger does not support DAP readMemory");
         await this.beforePausedRead();
-        if (session !== this.activeSession || !this.paused || this.transitionKind)
+        if (session !== this.activeSession || !this.paused || this.transitionKind || this.replBusy)
             throw Object.assign(new Error("Target changed before the paused read"), { code: "DEBUG_STATE_CHANGED" });
         const samples = [];
         const guard = () => {
@@ -840,6 +904,7 @@ class DebugSessionBridge {
                 session !== this.activeSession ||
                 !this.paused ||
                 this.transitionKind ||
+                this.replBusy ||
                 (expectedEpoch !== null && expectedEpoch !== this.epoch)
             )
                 throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
@@ -932,7 +997,7 @@ class DebugSessionBridge {
     }
 
     async writeAndVerify(items) {
-        if (this.writing || this.controlInFlight)
+        if (this.writing || this.controlInFlight || this.replBusy)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const session = this.activeSession;
         if (!this.paused || !session || this.capabilities.write !== true)
@@ -1038,6 +1103,7 @@ class DebugSessionBridge {
         }
         this.stateWaiters.clear();
         this.controlInFlight = null;
+        this.replRequests.clear();
         this.allSessions.clear();
         this.sessions.clear();
         for (const context of this.sessionContexts?.values() || []) context.dispose();

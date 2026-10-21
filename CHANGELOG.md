@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 原生调试控制台支持直接输入 GDB CLI（`bt`、`info registers`、`p counter`、`x/16wx 0x20000000`）；Watch 与悬停保持表达式求值。命令使旧 DAP／Agent 句柄及侧栏／RTOS 快照失效，按真实执行状态刷新，并同步已有 VS Code 断点的修改／删除；控制台新增断点由 GDB 管理，启用状态以 `info breakpoints` 为准。见 `docs/GDB-CONSOLE.md`。
+- Accept native GDB CLI in the Debug Console (`bt`, `info registers`, `p counter`, `x/16wx 0x20000000`) while retaining expression evaluation for Watch and hover. Commands invalidate old DAP/Agent handles and sidebar/RTOS snapshots, refresh from actual execution state, and reconcile modifications/deletions of mapped VS Code breakpoints. CLI-created breakpoints remain GDB-owned; consult `info breakpoints` for enable state. See `docs/GDB-CONSOLE.md`.
+
 - 新增 EmberProbe MCP 服务器：支持 MCP 的客户端可通过结构化工具（`flash_program`、`variables_read`、`debug_control` 等，按 `core` / `debug` / `cubemx` 工具集暴露）调用 Agent Bridge。VS Code 自动注册服务器定义；Claude Code、Codex、Cursor 等外部客户端用命令“复制 MCP 配置”获取配置片段。敏感操作的确认在支持 elicitation 的客户端中以表单完成，确认 ID 不交给 agent，其余客户端沿用聊天确认，见 `docs/MCP.md`。
 - Add the EmberProbe MCP server: MCP clients can call the Agent Bridge through structured tools (`flash_program`, `variables_read`, `debug_control` and more, grouped into `core`, `debug` and `cubemx` toolsets). VS Code registers the server automatically; for Claude Code, Codex, Cursor and other external clients the "Copy MCP Configuration" command produces a configuration snippet. Sensitive operations are confirmed through an elicitation form in clients that support it, without handing the confirmation ID to the agent; other clients keep chat confirmation. See `docs/MCP.md`.
 

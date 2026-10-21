@@ -1032,6 +1032,8 @@
     "docs/EXTERNAL-GDB-SERVER.md",
     "docs/CPU-LOAD-MONITORING.md",
     "docs/RTOS-AWARENESS.md",
+    "docs/GDB-CONSOLE.md",
+    "docs/images/gdb-console-busy.png",
     "docs/SHARED-DEBUG-GROUPS.md",
     "docs/OPENOCD-TARGETS.md",
     "CHANGELOG.md",

@@ -32,7 +32,7 @@
         section.open = !!uiState.rtosExpanded;
         const key = (message) => `${message.sessionId}:${message.stopEpoch}:${message.inspectionEpoch || 0}`;
         const current = (message) => key(message) === key(state.debug);
-        const canRead = () => state.debug.supported && state.debug.state === "paused";
+        const canRead = () => state.debug.supported && state.debug.state === "paused" && !state.debug.busy;
         let refreshTimer;
         function deferRefresh() {
             clearTimeout(refreshTimer);
@@ -69,6 +69,7 @@
                     sessionPicker.append(option);
                 }
                 sessionPicker.value = state.debug.sessionId || "";
+                sessionPicker.disabled = !!state.debug.busy;
             }
             refresh.disabled = !canRead() || state.pending;
             refresh.title = state.error || t("rtos.refresh");
