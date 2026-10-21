@@ -75,6 +75,32 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
     sbPlacedPointees = new Set(),
     sbFallbackPointees = new Set();
+// Members and pointees follow their card when it is dragged to a new place.
+function sbAttachedEntry(entry, name) {
+    return sbBaseNameOf(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name);
+}
+const sbWatchReorder =
+    liveBox &&
+    EmberProbeCardReorder.attach(liveBox, {
+        onMove: (name, target, after) => {
+            const next = EmberProbeCardReorder.moveBlock(sideWatch, name, target, after, sbAttachedEntry);
+            if (next === sideWatch) return;
+            sideWatch = next;
+            renderValues();
+            saveSideWatch();
+        }
+    });
+const sbWriteReorder =
+    writeBox &&
+    EmberProbeCardReorder.attach(writeBox, {
+        onMove: (name, target, after) => {
+            const next = EmberProbeCardReorder.moveBlock(writeList, name, target, after);
+            if (next === writeList) return;
+            writeList = next;
+            renderWrites();
+            saveWriteList();
+        }
+    });
 function shiftSliderBounds(min, max, current, next) {
     const lo = Number(min),
         hi = Number(max),
@@ -488,7 +514,12 @@ function renderValues() {
         liveBox.appendChild(e);
         return;
     }
-    topLevel.forEach((item) => liveBox.append(...(rows.get(item.name) || [])));
+    topLevel.forEach((item) => {
+        const nodes = rows.get(item.name) || [];
+        if (nodes[0])
+            EmberProbeCardReorder.decorate(nodes[0], item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
+        liveBox.append(...nodes);
+    });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
     sideWatch
         .filter(EmberProbeRuntime.isPointeeEntry)
@@ -502,6 +533,7 @@ function renderValues() {
     document.getElementById("watchCount").textContent = String(
         sideWatch.filter((it) => !sbIsLeafChild(it.name) && !sbPlacedPointees.has(it.name)).length
     );
+    sbWatchReorder?.refresh();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
@@ -1588,7 +1620,12 @@ function renderWrites() {
         return;
     }
     const labels = EmberProbeRuntime.uniqueShortVariableNames(writeList.map((item) => sbDisplayName(item)));
-    writeList.forEach((item, index) => writeBox.appendChild(buildWriteCard(item, labels[index])));
+    writeList.forEach((item, index) => {
+        const card = buildWriteCard(item, labels[index]);
+        EmberProbeCardReorder.decorate(card, item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
+        writeBox.appendChild(card);
+    });
+    sbWriteReorder?.refresh();
 }
 function applyWriteGate(cells) {
     const gate = writeGateKey(cells.item),

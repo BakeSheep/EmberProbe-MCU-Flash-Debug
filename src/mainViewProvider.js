@@ -4744,7 +4744,11 @@ class MainViewProvider {
         const active = this._activeReadPlan();
         for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
         if (this._debugBridge.hasSession) {
-            const planKey = active.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
+            // Reordering watch cards keeps the same reads; only a changed set refreshes the snapshot.
+            const planKey = active
+                .map((item) => `${item.name}:${item.address}:${item.size}`)
+                .sort()
+                .join("|");
             this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
             if (
                 this._managedDebugServer &&

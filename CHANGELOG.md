@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 查看列表、写入列表与波形图侧边栏的变量卡片支持拖动左侧把手调整顺序，也可在把手上按 Alt+↑/↓ 移动；顺序随列表保存，仅调整顺序不会重启采样。
+- Variable cards in the watch list, write list and chart sidebar can be reordered by dragging the handle on their left, or with Alt+↑/↓ on the handle; the order is saved with the list, and reordering alone does not restart sampling.
+
 ## [0.8.8] - 2026-10-21
 
 - 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。
