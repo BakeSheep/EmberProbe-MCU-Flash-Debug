@@ -2216,27 +2216,138 @@ function setupExportTimeline(candidates) {
     $("exportAxisEnd").textContent = formatElapsed(span);
     updateExportTimeline();
 }
-function setExportTimelineMode() {
-    var selected = $("exportRanges").querySelector("input[name=exportRange]:checked"),
-        enabled = !!selected && selected.value === "custom";
-    $("exportCustom").classList.toggle("disabled", !enabled);
-    $("exportFromRange").disabled = !enabled;
-    $("exportToRange").disabled = !enabled;
-}
 function exportOptions() {
-    var radio = $("exportRanges").querySelector("input[name=exportRange]:checked"),
-        mode = radio ? radio.value : "all";
-    if (mode === "all") return {};
-    if (mode === "custom") {
-        var from = exportTimelineStart + Number($("exportFromRange").value),
-            to = exportTimelineStart + Number($("exportToRange").value);
-        if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
-        return { from: from, to: to };
+    var a = Number($("exportFromRange").value),
+        b = Number($("exportToRange").value),
+        from = exportTimelineStart + a,
+        to = exportTimelineStart + b;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
+    if (a === 0 && b === Number($("exportToRange").max)) return {};
+    return { from: from, to: to };
+}
+var exportSeriesDrag = null;
+function endExportSeriesDrag(event) {
+    var drag = exportSeriesDrag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    exportSeriesDrag = null;
+    cancelAnimationFrame(drag.frame);
+    drag.marquee.remove();
+    if (drag.box.hasPointerCapture?.(drag.pointerId)) drag.box.releasePointerCapture(drag.pointerId);
+    if (event && event.type === "pointerup" && !drag.moved && drag.checkbox) {
+        drag.checkbox.checked = !drag.checkbox.checked;
     }
-    var seconds = Number(mode);
-    return Number.isFinite(seconds) ? { from: exportOpenedAt - seconds * 1000, to: exportOpenedAt } : null;
+    setupExportTimeline(selectedExportCandidates());
+}
+function updateExportSeriesDrag() {
+    var drag = exportSeriesDrag;
+    if (!drag || !drag.moved) return;
+    var box = drag.box,
+        rect = box.getBoundingClientRect(),
+        left = rect.left + box.clientLeft,
+        top = rect.top + box.clientTop,
+        headerHeight = box.querySelector("thead").getBoundingClientRect().height,
+        x = Math.max(0, Math.min(box.clientWidth, drag.clientX - left)) + box.scrollLeft,
+        y = Math.max(headerHeight, Math.min(box.clientHeight, drag.clientY - top)) + box.scrollTop,
+        x1 = Math.min(drag.x, x),
+        x2 = Math.max(drag.x, x),
+        y1 = Math.min(drag.y, y),
+        y2 = Math.max(drag.y, y);
+    drag.marquee.hidden = false;
+    Object.assign(drag.marquee.style, {
+        left: x1 + "px",
+        top: y1 + "px",
+        width: x2 - x1 + "px",
+        height: y2 - y1 + "px"
+    });
+    drag.rows.forEach(function (row) {
+        var hit = row.left <= x2 && row.right >= x1 && row.top <= y2 && row.bottom >= y1;
+        row.checkbox.checked = hit ? !row.checked : row.checked;
+    });
+}
+function scrollExportSeriesDrag(now) {
+    var drag = exportSeriesDrag;
+    if (!drag || !drag.moved) return;
+    var box = drag.box,
+        rect = box.getBoundingClientRect(),
+        top = rect.top + box.clientTop + box.querySelector("thead").getBoundingClientRect().height,
+        bottom = rect.top + box.clientTop + box.clientHeight,
+        edge = Math.min(28, (bottom - top) / 3),
+        speed =
+            drag.clientY < top + edge
+                ? -Math.min(1, (top + edge - drag.clientY) / edge)
+                : drag.clientY > bottom - edge
+                  ? Math.min(1, (drag.clientY - bottom + edge) / edge)
+                  : 0;
+    box.scrollTop += speed * Math.min(32, now - drag.lastFrame) * 0.5;
+    drag.lastFrame = now;
+    updateExportSeriesDrag();
+    drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
+}
+function beginExportSeriesDrag(event) {
+    if (event.button !== 0 || exportSeriesDrag || !exportCandidates.length) return;
+    var box = $("exportSeries"),
+        rect = box.getBoundingClientRect(),
+        left = rect.left + box.clientLeft,
+        top = rect.top + box.clientTop;
+    if (
+        event.target.closest("thead") ||
+        event.clientX >= left + box.clientWidth ||
+        event.clientY >= top + box.clientHeight
+    )
+        return;
+    event.preventDefault();
+    var row = event.target.closest("tbody tr"),
+        marquee = document.createElement("div");
+    marquee.className = "export-marquee";
+    marquee.hidden = true;
+    box.appendChild(marquee);
+    exportSeriesDrag = {
+        box: box,
+        pointerId: event.pointerId,
+        checkbox: row && row.querySelector("input"),
+        x: event.clientX - left + box.scrollLeft,
+        y: event.clientY - top + box.scrollTop,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        marquee: marquee,
+        frame: 0,
+        lastFrame: performance.now(),
+        rows: Array.from(box.querySelectorAll("tbody tr"), function (entry) {
+            var bounds = entry.getBoundingClientRect(),
+                checkbox = entry.querySelector("input");
+            return {
+                checkbox: checkbox,
+                checked: checkbox.checked,
+                left: bounds.left - left + box.scrollLeft,
+                right: bounds.right - left + box.scrollLeft,
+                top: bounds.top - top + box.scrollTop,
+                bottom: bounds.bottom - top + box.scrollTop
+            };
+        })
+    };
+    box.setPointerCapture?.(event.pointerId);
+}
+function moveExportSeriesDrag(event) {
+    var drag = exportSeriesDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!(event.buttons & 1)) {
+        endExportSeriesDrag(event);
+        return;
+    }
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4) {
+        drag.moved = true;
+        drag.lastFrame = performance.now();
+        drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
+    }
+    updateExportSeriesDrag();
 }
 function hideExport() {
+    endExportSeriesDrag();
     $("exportOverlay").classList.add("hidden");
     $("exportWarn").textContent = "";
 }
@@ -2246,6 +2357,7 @@ function showExport() {
     post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
 }
 function showArchiveExport(info) {
+    endExportSeriesDrag();
     var names = Array.isArray(info && info.variables) ? info.variables : [],
         first = Number(info && info.firstTimestampMs),
         last = Number(info && info.lastTimestampMs);
@@ -2263,13 +2375,37 @@ function showArchiveExport(info) {
             Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
             typeof info.displayNames[name] === "string" &&
             info.displayNames[name];
-        return { name: name, displayName: displayName || curveDisplayName(name), buffer: [{ t: first }, { t: last }] };
+        var item =
+            watch.find(function (entry) {
+                return entry.name === name;
+            }) || impSymbolByName.get(name);
+        return {
+            name: name,
+            displayName: displayName || curveDisplayName(name),
+            type: item && (item.typeName || item.type || item.watchType),
+            buffer: [{ t: first }, { t: last }]
+        };
     });
     exportOpenedAt = last;
-    var box = $("exportSeries");
-    box.textContent = "";
+    var box = $("exportSeries"),
+        table = document.createElement("table"),
+        head = table.createTHead(),
+        header = head.insertRow(),
+        body = table.createTBody();
+    ["lw.exportVariableName", "lw.exportDataType"].forEach(function (key) {
+        var cell = document.createElement("th");
+        cell.scope = "col";
+        cell.dataset.i18n = key;
+        cell.textContent = t(key);
+        header.appendChild(cell);
+    });
+    box.replaceChildren(table);
+    box.scrollTop = 0;
     exportCandidates.forEach(function (item, index) {
-        var label = document.createElement("label"),
+        var row = body.insertRow(),
+            nameCell = row.insertCell(),
+            typeCell = row.insertCell(),
+            label = document.createElement("label"),
             cb = document.createElement("input"),
             name = document.createElement("span");
         cb.type = "checkbox";
@@ -2278,14 +2414,14 @@ function showArchiveExport(info) {
         cb.onchange = function () {
             setupExportTimeline(selectedExportCandidates());
         };
+        name.className = "export-series-name";
         name.textContent = name.title = item.displayName;
+        typeCell.className = "export-series-type";
+        typeCell.textContent = typeCell.title = item.type || t("lw.unknownType");
         label.append(cb, name);
-        box.appendChild(label);
+        nameCell.appendChild(label);
     });
     setupExportTimeline(exportCandidates);
-    var all = $("exportRanges").querySelector("input[value=all]");
-    if (all) all.checked = true;
-    setExportTimelineMode();
     $("exportWarn").textContent = info.limitReached
         ? t("lw.archiveTruncated")
         : info.limited
@@ -3460,7 +3596,17 @@ $("exportApply").onclick = applyExport;
 $("exportOverlay").onclick = function (e) {
     if (e.target === $("exportOverlay")) hideExport();
 };
-$("exportRanges").onchange = setExportTimelineMode;
+$("exportSeries").addEventListener("pointerdown", beginExportSeriesDrag);
+$("exportSeries").addEventListener("pointermove", moveExportSeriesDrag);
+$("exportSeries").addEventListener("pointerup", endExportSeriesDrag);
+$("exportSeries").addEventListener("pointercancel", endExportSeriesDrag);
+$("exportSeries").addEventListener("lostpointercapture", endExportSeriesDrag);
+$("exportSeries").onclick = function (event) {
+    if (event.detail) event.preventDefault();
+};
+window.addEventListener("blur", function () {
+    endExportSeriesDrag();
+});
 $("exportFromRange").oninput = function () {
     updateExportTimeline("from");
 };
