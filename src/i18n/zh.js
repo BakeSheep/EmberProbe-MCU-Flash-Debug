@@ -391,6 +391,7 @@ module.exports = Object.freeze({
     "sb.writeEmpty": "点击 ELF 变量前的 ✎ 添加",
     "sb.addToWrite": "加入写入列表",
     "sb.removeFromWrite": "从写入列表移除",
+    "sb.dragToReorder": "拖动以调整 {name} 的顺序（Alt+↑/↓）",
     "sb.writeFail": "写入失败：{msg}",
     "sb.writeFirmwareMismatch":
         "当前 ELF 与 EmberProbe 上次烧录的固件不一致。变量地址可能已经变化，写入可能改写目标上的其他数据，且回读校验无法发现。仍要写入吗？",
@@ -553,6 +554,7 @@ module.exports = Object.freeze({
     "lw.hideCurve": "隐藏曲线",
     "lw.removeVar": "移除变量",
     "lw.removeVarName": "移除 {name}",
+    "lw.dragToReorder": "拖动以调整 {name} 的顺序（Alt+↑/↓）",
     "lw.needVar": "请先添加要观察的变量",
     "lw.error": "发生错误",
     "lw.compositeUnsupported": "结构体与数组暂不支持整体采样",

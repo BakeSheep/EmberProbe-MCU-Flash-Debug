@@ -828,7 +828,12 @@ function renderVars() {
         box.appendChild(empty);
         return;
     }
-    topLevel.forEach((item) => box.append(...(cards.get(item.name) || [])));
+    topLevel.forEach(function (item) {
+        const nodes = cards.get(item.name) || [];
+        if (nodes[0])
+            EmberProbeCardReorder.decorate(nodes[0], item.name, t("lw.dragToReorder", { name: displayNameFor(item) }));
+        box.append(...nodes);
+    });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
     watch
         .filter(EmberProbeRuntime.isPointeeEntry)
@@ -853,8 +858,28 @@ function renderVars() {
     );
     variableCards = Array.from(box.children);
     arrangeVariableCards(true);
+    if (varReorder) varReorder.refresh();
 }
 var variableCards = [];
+// Cards keep watch order even when shown in two alternating columns, so moves follow that order.
+var varReorder = EmberProbeCardReorder.attach($("vars"), {
+    order: function () {
+        return variableCards
+            .map(function (card) {
+                return card.dataset.reorderKey;
+            })
+            .filter(Boolean);
+    },
+    onMove: function (name, target, after) {
+        var next = EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
+            return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
+        });
+        if (next === watch) return;
+        watch = next;
+        renderVars();
+        saveWatch();
+    }
+});
 function arrangeVariableCards(force) {
     if (!variableCards.length) return;
     var box = $("vars");

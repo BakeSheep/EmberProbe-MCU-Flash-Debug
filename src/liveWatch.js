@@ -120,6 +120,12 @@ function elementsToBytes(elements, elementBytes) {
     return bytes;
 }
 
+// Read batches are compiled by address and samples are keyed by name, so consumer order never affects a plan.
+function sameConsumerItems(a, b) {
+    const byName = (items) => [...items].sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+    return a.length === b.length && isDeepStrictEqual(byName(a), byName(b));
+}
+
 function validateManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxCommands = MAX_DEBUG_READ_COMMANDS) {
     const ranges = (Array.isArray(items) ? items : [])
         .map((item) => ({ start: Number(item?.address), size: Number(item?.size) }))
@@ -499,8 +505,8 @@ class ManagedOpenOcdSession {
         const previous = this.ratePlan;
         const sameConsumers =
             previous &&
-            isDeepStrictEqual(previous.graphItems, ratePlan.graphItems) &&
-            isDeepStrictEqual(previous.sidebarItems, ratePlan.sidebarItems);
+            sameConsumerItems(previous.graphItems, ratePlan.graphItems) &&
+            sameConsumerItems(previous.sidebarItems, ratePlan.sidebarItems);
         if (sameConsumers) {
             if (previous.graphIntervalMs === ratePlan.graphIntervalMs && this.unlimited === (plan.unlimited === true))
                 return;

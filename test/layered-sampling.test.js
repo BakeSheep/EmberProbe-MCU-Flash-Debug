@@ -109,6 +109,29 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         assert.strictEqual(changing.effectiveIntervalMs, 100, "changed variables still require calibration");
         assert.deepStrictEqual(changing._recentDurations, []);
     }
+    // Reordering watch cards keeps the same reads, so the session neither restarts nor recalibrates.
+    {
+        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const plan = {
+            graphItems: [item("a"), item("b", 2)],
+            sidebarItems: [item("c"), item("d")],
+            graphIntervalMs: 20
+        };
+        changing.setSamplingPlan(plan);
+        changing._recentDurations = [3, 3, 3, 3];
+        const epoch = changing.sampleEpoch;
+        const ratePlan = changing.ratePlan;
+        changing.setSamplingPlan({
+            ...plan,
+            graphItems: [...plan.graphItems].reverse(),
+            sidebarItems: [...plan.sidebarItems].reverse()
+        });
+        assert.strictEqual(changing.sampleEpoch, epoch, "reordered consumers keep the sample epoch");
+        assert.strictEqual(changing.ratePlan, ratePlan);
+        assert.deepStrictEqual(changing._recentDurations, [3, 3, 3, 3]);
+        changing.setSamplingPlan({ ...plan, graphItems: [item("b", 2), item("a", 2)] });
+        assert.notStrictEqual(changing.sampleEpoch, epoch, "a changed item still restarts sampling");
+    }
     // A rate change during a read must discard that cycle and rearm, even with an unchanged sidebar clock.
     {
         const changing = new ManagedOpenOcdSession(null, {}, {});

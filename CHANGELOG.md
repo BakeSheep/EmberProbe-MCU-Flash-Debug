@@ -18,6 +18,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Skills 完整性检查改为针对实际发起调用的那份副本：工作区副本干净而全局副本被修改时，经全局副本发起的调用同样需要批准；从扩展未管理的位置运行的脚本总是需要批准。侧边栏会提示清理已停止维护的旧版全局 skills（`~/.agents/skills`）。每次 Bridge 调用在“EmberProbe Agent Bridge”输出面板记录通道、客户端、方法与结果码，不含参数。
 - Skill integrity checks now apply to the copy that issued each call: when the workspace copy is clean but the global copy was modified, calls from the global copy also need approval, and scripts run from a location the extension does not manage always need approval. The sidebar offers to remove unmaintained legacy global skills (`~/.agents/skills`). Each Bridge call is logged to the "EmberProbe Agent Bridge" output channel with its channel, client, method and result code, without parameters.
 
+- 查看列表、写入列表与波形图侧边栏的变量卡片支持拖动左侧把手调整顺序，也可在把手上按 Alt+↑/↓ 移动；顺序随列表保存，仅调整顺序不会重启采样。
+- Variable cards in the watch list, write list and chart sidebar can be reordered by dragging the handle on their left, or with Alt+↑/↓ on the handle; the order is saved with the list, and reordering alone does not restart sampling.
+
 ## [0.8.8] - 2026-10-21
 
 - 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。

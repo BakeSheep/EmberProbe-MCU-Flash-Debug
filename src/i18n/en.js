@@ -410,6 +410,7 @@ module.exports = Object.freeze({
     "sb.writeEmpty": "Click ✎ in the ELF list to add",
     "sb.addToWrite": "Add to write list",
     "sb.removeFromWrite": "Remove from write list",
+    "sb.dragToReorder": "Drag to reorder {name} (Alt+↑/↓)",
     "sb.writeFail": "Write failed: {msg}",
     "sb.writeFirmwareMismatch":
         "The configured ELF differs from the firmware EmberProbe last programmed. Variable addresses may have moved, so this write could overwrite other data on the target without read-back verification noticing. Write anyway?",
@@ -577,6 +578,7 @@ module.exports = Object.freeze({
     "lw.hideCurve": "Hide curve",
     "lw.removeVar": "Remove variable",
     "lw.removeVarName": "Remove {name}",
+    "lw.dragToReorder": "Drag to reorder {name} (Alt+↑/↓)",
     "lw.needVar": "Add a variable to watch first",
     "lw.error": "An error occurred",
     "lw.compositeUnsupported": "Structs and arrays can't be sampled as a whole",

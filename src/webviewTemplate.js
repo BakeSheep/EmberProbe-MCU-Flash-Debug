@@ -26,6 +26,7 @@ function loadRendererPrelude(area) {
             loadWebviewAsset("", "elfDiagnostics.js"),
             loadWebviewAsset("", "runtime.js"),
             loadWebviewAsset("", "messages.js"),
+            loadWebviewAsset("", "cardReorder.js"),
             ...(area === "sidebar"
                 ? [
                       loadWebviewAsset("sidebar", "chipView.js"),
