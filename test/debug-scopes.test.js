@@ -280,20 +280,22 @@ function setup() {
         mi.failWrite = false;
         await adapter.handle("writeMemory", { ...request, data: "" });
         assert(adapter.handles.has(frameId), "empty writes preserve references");
+        const scopeRef = (await adapter.handle("scopes", { frameId })).scopes[0].variablesReference;
         await adapter.handle("writeMemory", request);
-        assert(!adapter.handles.has(frameId));
-        assert.deepStrictEqual(events.find((event) => event.event === "invalidated").body.areas, [
-            "stacks",
-            "variables"
-        ]);
-        const refreshed = adapter.handleFor({ kind: "frame", thread: 1, level: 0 });
-        assert.strictEqual((await adapter.handle("scopes", { frameId: refreshed })).scopes.length, 4);
+        assert(adapter.handles.has(frameId), "memory writes keep the call stack VS Code still shows");
+        assert(!adapter.handles.has(scopeRef), "memory writes drop cached variable references");
+        assert.deepStrictEqual(
+            events.find((event) => event.event === "invalidated").body.areas,
+            ["variables"],
+            "a stack refetch would redraw the current-line decoration on every write"
+        );
+        assert.strictEqual((await adapter.handle("scopes", { frameId })).scopes.length, 4);
 
         events.length = 0;
         adapter.clientCapabilities = {};
         await adapter.handle("writeMemory", request);
         assert(!events.some((event) => event.event === "invalidated"), "respect client capabilities");
-        const stale = adapter.variableStore.root({ name: "v2", type: "int" }, { thread: 1, level: 0 });
+        const stale = adapter.variableStore.root({ name: "v2", type: "int" }, { thread: 2, level: 0 });
         stale.expression = "p.x";
         mi.resume = true;
         await assert.rejects(adapter.variableStore.metadata(stale), /paused|running|Stale/);

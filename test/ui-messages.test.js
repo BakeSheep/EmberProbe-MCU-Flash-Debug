@@ -277,9 +277,45 @@ async function diagnostics() {
     }
 }
 
+// A slider drag queues writes faster than a paused DAP write-and-verify completes; only the newest
+// value of each variable may still run once the in-flight write finishes.
+async function queuedWrites() {
+    const f = fixture(),
+        first = deferred(),
+        calls = [];
+    Object.assign(f.provider, { _uiWritePromise: Promise.resolve(), _uiWriteTicket: 0, _uiWriteLatest: new Map() });
+    f.provider._writeUiVariable = async (name, value) => {
+        calls.push([name, value]);
+        if (calls.length === 1) await first.promise;
+        return { results: [{ readBack: value, readBackText: String(value) }] };
+    };
+    const inFlight = f.dispatch({ type: "writeVariable", name: "x", value: 1, seq: 1 });
+    while (!calls.length) await new Promise((resolve) => setImmediate(resolve));
+    const pending = [
+        inFlight,
+        f.dispatch({ type: "writeVariable", name: "x", value: 2, seq: 2 }),
+        f.dispatch({ type: "writeVariable", name: "y", value: 5, seq: 3 }),
+        f.dispatch({ type: "writeVariable", name: "x", value: 3, seq: 4 })
+    ];
+    await new Promise((resolve) => setImmediate(resolve));
+    first.resolve();
+    await Promise.all(pending);
+    assert.deepStrictEqual(calls, [
+        ["x", 1],
+        ["y", 5],
+        ["x", 3]
+    ]);
+    assert.deepStrictEqual(
+        f.messages.filter((message) => message.type === "writeResult").map((message) => message.seq),
+        [1, 3, 4]
+    );
+    assert.strictEqual(f.provider._uiWriteLatest.size, 0, "completed writes release their coalescing slot");
+}
+
 (async () => {
     views(await commands());
     await diagnostics();
+    await queuedWrites();
     console.log("UI error, cancellation, warning and stale snapshot regressions passed");
 })().catch((error) => {
     console.error(error);

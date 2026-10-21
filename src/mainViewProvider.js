@@ -255,6 +255,8 @@ class MainViewProvider {
         this._agentReadDelayResolve = null;
         this._agentSamplingStatus = null;
         this._uiWritePromise = Promise.resolve();
+        this._uiWriteTicket = 0;
+        this._uiWriteLatest = new Map();
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._activeReadPlan(),
             getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
@@ -2794,19 +2796,13 @@ class MainViewProvider {
             });
         if (!status.haltWrite && !plan.items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
         plan.connection = this._sessionWriteConnection(session);
-        if (dapSession)
-            this._postConsumerStatuses(
-                dapSession.status({ mode: "debug-paused-writing", key: "live.dapWriting", canWrite: false })
-            );
-        try {
-            return await this._executeWritePlan(
-                session,
-                dapSession ? "cortex-debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
-                plan
-            );
-        } finally {
-            if (dapSession) this._postConsumerStatuses(dapSession.status());
-        }
+        // UI writes are already serialized and the bridge rejects concurrent DAP operations itself;
+        // posting a "writing" status here would disable the write controls mid-drag.
+        return await this._executeWritePlan(
+            session,
+            dapSession ? "cortex-debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
+            plan
+        );
     }
     async _agentWritePermission(params) {
         this._assertCpuIdle();
@@ -5861,10 +5857,14 @@ class MainViewProvider {
                     const name = String(message.name || "").trim();
                     const seq = message.seq;
                     const requestedAt = Date.now();
-                    // 串行化：同一时刻只有一次写入在途，后续请求排队；失败只回发 writeResult，不弹全局错误
+                    const ticket = ++this._uiWriteTicket;
+                    this._uiWriteLatest.set(name, ticket);
+                    // 串行化：同一时刻只有一次写入在途，后续请求排队；失败只回发 writeResult，不弹全局错误。
+                    // 拖动滑条时排队中的旧值已被同一变量的新请求取代，直接跳过，避免松手后逐个回放积压的写入。
                     this._uiWritePromise = this._uiWritePromise
                         .catch(() => {})
                         .then(async () => {
+                            if (this._uiWriteLatest.get(name) !== ticket) return;
                             try {
                                 const result = await this._writeUiVariable(name, message.value, { requestedAt });
                                 const r = result.results && result.results[0];
@@ -5886,6 +5886,8 @@ class MainViewProvider {
                                     params: error.i18nParams,
                                     message: error.message || String(error)
                                 });
+                            } finally {
+                                if (this._uiWriteLatest.get(name) === ticket) this._uiWriteLatest.delete(name);
                             }
                         });
                     await this._uiWritePromise;

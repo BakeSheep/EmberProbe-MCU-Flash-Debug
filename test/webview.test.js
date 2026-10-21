@@ -103,6 +103,49 @@ try {
 } finally {
     sidebar.close();
 }
+for (const lang of ["en", "zh"]) {
+    const chipSidebar = render(getModernWebviewContent({}, lang));
+    try {
+        const body = chipSidebar.document.getElementById("chipBody");
+        const label = chipSidebar.document.getElementById("chipLabel");
+        for (const hasData of [false, true]) {
+            if (hasData) chipSidebar.send({ type: "chipInfo", info: { core: "Cortex-M7", targetState: "running" } });
+            for (const error of [
+                { key: "chip.busyLive" },
+                { message: "Arbitrary failure <script>bad()</script>" },
+                {}
+            ]) {
+                const previousDetails = hasData ? body.textContent : "";
+                chipSidebar.send({ type: "chipInfoStatus", state: "error", ...error });
+                assert(label.textContent, "every chip error remains visible in the header");
+                assert.strictEqual(label.title, label.textContent, "the tooltip retains the full error");
+                assert.strictEqual(
+                    body.textContent,
+                    previousDetails,
+                    "errors never add a second message below the header"
+                );
+                assert(chipSidebar.document.getElementById("chipState").classList.contains("err"));
+                assert.strictEqual(chipSidebar.document.getElementById("chipRead").disabled, false);
+                if (error.message) assert.strictEqual(label.textContent, error.message);
+                chipSidebar.send({ type: "setLang", lang: lang === "en" ? "zh" : "en" });
+                assert.strictEqual(
+                    body.querySelector(".chip-err"),
+                    null,
+                    "language changes cannot restore the duplicate"
+                );
+                if (hasData) assert(body.textContent.includes("Cortex-M7"));
+                else assert.strictEqual(body.textContent, "");
+                chipSidebar.send({ type: "chipInfoStatus", state: "reading" });
+                assert.strictEqual(chipSidebar.document.getElementById("chipRead").disabled, true);
+            }
+        }
+        chipSidebar.send({ type: "chipInfoStatus", state: "ready" });
+        assert.strictEqual(chipSidebar.document.getElementById("chipState").classList.contains("err"), false);
+        chipSidebar.assertHealthy();
+    } finally {
+        chipSidebar.close();
+    }
+}
 const jlinkSidebar = render(getModernWebviewContent({ debugger: "jlink.cfg", showJlinkDriverChoice: true }, "zh"));
 try {
     const driver = jlinkSidebar.document.getElementById("jlinkDriverChoice");

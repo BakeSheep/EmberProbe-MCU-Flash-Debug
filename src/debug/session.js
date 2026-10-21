@@ -466,14 +466,19 @@ class EmberDebugSession extends DebugSession {
             this.varCleanupRunning = false;
         }
     }
-    async clearVariables({ defer = false } = {}) {
+    // keepFrames keeps the stack frame handles VS Code still holds, for changes that cannot move frames.
+    async clearVariables({ defer = false, keepFrames = false } = {}) {
         const names = [...this.varObjects];
         this.variableStore.reset();
         this.varObjects.clear();
-        this.handles.clear();
+        if (keepFrames) {
+            for (const [id, value] of this.handles) if (value.kind !== "frame") this.handles.delete(id);
+        } else {
+            this.handles.clear();
+            this.selectedFrame = undefined;
+        }
         this.variablesByName.clear();
         this.hoverEvaluations.clear();
-        this.selectedFrame = undefined;
         if (defer) {
             this.scheduleVariableCleanup(names);
             return;
@@ -744,10 +749,9 @@ class EmberDebugSession extends DebugSession {
         }
         return item;
     }
-    invalidateVariables() {
+    invalidateVariables(areas = ["stacks", "variables"]) {
         this.hoverEvaluations.clear();
-        if (this.clientCapabilities.supportsInvalidatedEvent)
-            this.sendEvent(new Event("invalidated", { areas: ["stacks", "variables"] }));
+        if (this.clientCapabilities.supportsInvalidatedEvent) this.sendEvent(new Event("invalidated", { areas }));
     }
     async evaluate(args) {
         this.paused();
@@ -1053,8 +1057,11 @@ class EmberDebugSession extends DebugSession {
             throw new Error("Memory write limit exceeded");
         if (bytes.length) {
             await this.mi.command(`-data-write-memory-bytes ${location} ${bytes.toString("hex")}`);
-            await this.clearVariables({ defer: true });
-            this.invalidateVariables();
+            // Invalidating "stacks" makes VS Code refetch the call stack and redraw the current-line
+            // decoration, so live-tuning writes would flash the editor. Raw memory writes target
+            // data, not registers: keep the frames and refresh only the variables shown in them.
+            await this.clearVariables({ defer: true, keepFrames: true });
+            this.invalidateVariables(["variables"]);
         }
         return { bytesWritten: bytes.length, offset: 0 };
     }

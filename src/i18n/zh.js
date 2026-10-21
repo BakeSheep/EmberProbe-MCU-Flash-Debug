@@ -107,7 +107,7 @@ module.exports = Object.freeze({
     "rtos.stack": "栈使用",
     "rtos.reading": "正在读取暂停任务…",
     "rtos.stale": "历史快照 · 目标已运行或发生变化",
-    "rtos.pause": "暂停原生 EmberProbe 会话后读取任务",
+    "rtos.pause": "暂停调试会话后读取任务",
     "rtos.partial": "部分结果 · 详见诊断",
     "rtos.ready": "暂停任务快照",
     "rtos.notStarted": "FreeRTOS 调度器尚未启动 · 继续运行后再次暂停查看任务",

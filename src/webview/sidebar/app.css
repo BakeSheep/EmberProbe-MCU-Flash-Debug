@@ -288,17 +288,18 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 }
 .rtos-status {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 6px;
+    line-height: 16px;
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     border-radius: 4px;
     background: var(--vscode-editor-background);
 }
 .rtos-status-icon {
     flex: none;
-    width: 16px;
-    height: 16px;
-    color: var(--vscode-editorWarning-foreground, #cca700);
+    width: 14px;
+    height: 14px;
+    color: inherit;
     fill: none;
     stroke: currentColor;
     stroke-width: 1.3;
@@ -311,9 +312,6 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 }
 .rtos-status-text {
     min-width: 0;
-}
-.rtos-status.error .rtos-status-icon {
-    color: inherit;
 }
 .elf-diagnostics[hidden] {
     display: none;

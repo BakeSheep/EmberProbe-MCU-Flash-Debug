@@ -47,6 +47,7 @@ let sideWatch = [],
     liveCanWrite = false,
     liveWriteUnavailableKey = "sb.writeNeedSampling",
     liveHaltWrite = false,
+    liveTargetHalted = false,
     liveSnapshotReady = true,
     variableError = "",
     variableErrorKey = "",
@@ -991,6 +992,8 @@ function sbIsComposite(it) {
 }
 // 写入列表：与查看列表共用 ELF 变量栏添加；拖动时最多 10 Hz 连续写入，结果由 writeResult 反馈
 const WRITE_INTERVAL_MS = 100;
+// 调试暂停时 CPU 看不到拖动中的中间值，每次写入却会让调试器刷新变量与 RTOS 视图；只写停稳后的值
+const PAUSED_WRITE_SETTLE_MS = 300;
 const TYPE_RANGE = {
     u8: [0, 255],
     i8: [-128, 127],
@@ -1290,6 +1293,14 @@ function sendWrite(item, immediate) {
     if (immediate) {
         writeLastAt[name] = now;
         postWrite(item);
+        return;
+    }
+    if (liveTargetHalted) {
+        writeTimers[name] = setTimeout(() => {
+            delete writeTimers[name];
+            writeLastAt[name] = Date.now();
+            postWrite(item);
+        }, PAUSED_WRITE_SETTLE_MS);
         return;
     }
     const wait = WRITE_INTERVAL_MS - (now - (writeLastAt[name] || 0));
@@ -2137,6 +2148,7 @@ function liveStatus(m) {
     liveCanRead = next.canRead;
     liveCanWrite = next.canWrite;
     liveHaltWrite = next.haltWrite;
+    liveTargetHalted = m.source === "dap" && String(m.mode || "").startsWith("debug-paused");
     liveWriteUnavailableKey = EmberProbeRuntime.writeUnavailableKey({
         ...m,
         running: liveRunning,
@@ -2230,20 +2242,8 @@ function chipStatus(m) {
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
         button.disabled = probeDriverBusy || cpuProbeOwned || st === "reading";
     });
-    chipBody.querySelector(".chip-action-error")?.remove();
-    if (st === "error" && chipHasData) {
-        const note = document.createElement("div");
-        note.className = "chip-note chip-err chip-action-error";
-        note.textContent = msgText(m) || t("chip.stError");
-        chipBody.appendChild(note);
-    }
-    if (st === "error" && !chipHasData) {
-        chipBody.textContent = "";
-        const n = document.createElement("div");
-        n.className = "chip-note chip-err";
-        n.textContent = msgText(m) || t("chip.stError");
-        chipBody.appendChild(n);
-    }
+    // The header owns action errors; keep any previously read chip details without repeating the message.
+    if (st === "error" && !chipHasData) chipBody.textContent = "";
 }
 function svdStatus(m) {
     m = m || {};

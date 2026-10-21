@@ -2,6 +2,9 @@
 
 const { unwrapResponse } = require("./debugSessionBridge");
 
+// A paused variable write is short; a refresh that arrives during it waits rather than reporting an error.
+const WRITE_WAIT_MS = 2000;
+
 class RtosViewService {
     constructor(bridge) {
         this.bridge = bridge;
@@ -19,7 +22,12 @@ class RtosViewService {
             sessions: status.sessions || []
         };
     }
+    async _writeIdle() {
+        const deadline = Date.now() + WRITE_WAIT_MS;
+        while (this.bridge.writing && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     async refresh(includeStackUsage = true) {
+        if (this.bridge.writing) await this._writeIdle();
         const session = this.bridge.assertUniqueSession();
         const epoch = this.bridge.stopEpoch;
         const inspectionEpoch = this.bridge.inspectionEpoch || 0;
@@ -37,7 +45,8 @@ class RtosViewService {
             });
         const key = `${session.id}:${epoch}:${inspectionEpoch}:${includeStackUsage ? "stack" : "tasks"}`;
         if (this.pending?.key === key) return this.pending.promise;
-        const promise = session.customRequest("emberprobe.rtosSnapshot", { includeStackUsage }).then((value) => {
+        const promise = session.customRequest("emberprobe.rtosSnapshot", { includeStackUsage }).then(async (value) => {
+            await this._writeIdle();
             if (
                 session !== this.bridge.activeSession ||
                 !this.bridge.paused ||

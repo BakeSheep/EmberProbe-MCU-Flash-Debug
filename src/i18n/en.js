@@ -111,7 +111,7 @@ module.exports = Object.freeze({
     "rtos.stack": "Stack used",
     "rtos.reading": "Reading paused tasks…",
     "rtos.stale": "Previous snapshot · target resumed or changed",
-    "rtos.pause": "Pause a native EmberProbe session to read tasks",
+    "rtos.pause": "Pause the debug session to read tasks",
     "rtos.partial": "Partial snapshot · see diagnostics",
     "rtos.ready": "Paused task snapshot",
     "rtos.notStarted": "FreeRTOS scheduler has not started · continue, then pause again to inspect tasks",
