@@ -546,6 +546,8 @@ module.exports = Object.freeze({
     "lw.archiveTruncated": "Sampling history reached its size limit; later samples were not archived",
     "lw.exportTitle": "Export CSV",
     "lw.exportSeries": "Series",
+    "lw.exportSelectAll": "Select all",
+    "lw.exportInvert": "Invert",
     "lw.exportVariableName": "Variable name",
     "lw.exportDataType": "Data type",
     "lw.exportRange": "Time range",
