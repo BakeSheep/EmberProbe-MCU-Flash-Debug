@@ -128,6 +128,24 @@ async function run() {
 
     await vscode.commands.executeCommand("workbench.view.extension.mcu-vscode-container");
     await waitFor(() => extension.exports.viewState().sidebar, "sidebar renderer");
+    const provider = extension.exports.debugTestProvider;
+    assert.strictEqual((await provider._configurationSnapshot()).mcu, "");
+    const chipPosts = [];
+    const originalPost = provider._chipInfoService.onPost;
+    provider._chipInfoService.onPost = (message) => {
+        chipPosts.push(message);
+        originalPost(message);
+    };
+    try {
+        assert.strictEqual(await provider.readChipInfoAction(), null);
+        await assert.rejects(provider.readChipInfoAction(true), { code: "CONFIG_INCOMPLETE" });
+        assert.strictEqual(chipPosts.at(-1).type, "chipInfoStatus");
+        assert.strictEqual(chipPosts.at(-1).state, "error");
+        assert.strictEqual(provider._probeCoordinator.anyActive(), false);
+    } finally {
+        provider._chipInfoService.onPost = originalPost;
+    }
+    console.log("✓ missing chip configuration returns an error and releases ownership without hardware");
     assert.ok(
         !fs.existsSync(path.join(workspace, ".emberprobe")),
         "opening the EmberProbe view without workspace Skills must not create .emberprobe"

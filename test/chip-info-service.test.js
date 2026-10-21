@@ -49,6 +49,66 @@ const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connecti
         assert.ok(chipPosts.some((message) => message.type === "chipInfo"));
         assert.strictEqual(chipDiagnostics.target, "t.cfg");
         assert.ok(chipDiagnostics.timings.totalMs >= 0);
+        // Preflight failures must acknowledge the optimistic sidebar spinner without touching hardware.
+        for (const stage of ["missing-target", "probe", "lease", "executable", "connection"]) {
+            const posts = [];
+            const coordinator = new ProbeCoordinator();
+            let discovery = 0;
+            let reads = 0;
+            const failure = Object.assign(new Error(`${stage} failed`), { code: "PREFLIGHT_FAILED" });
+            const service = new ChipInfoService({
+                ...chipService,
+                context: {
+                    workspaceState: { get: (key) => (key === "target" && stage !== "missing-target" ? "t.cfg" : "") }
+                },
+                coordinator,
+                resolveProbe: async () => {
+                    discovery++;
+                    if (stage === "probe") throw failure;
+                    return "p.cfg";
+                },
+                resolveExecutable: async () => {
+                    if (stage === "executable") throw failure;
+                    return "openocd";
+                },
+                prepareConnection: async () => {
+                    if (stage === "connection") throw failure;
+                    return {};
+                },
+                chipInfo: {
+                    readChipInfo: async () => {
+                        reads++;
+                        return { core: "Cortex-M4" };
+                    }
+                },
+                onPost: (message) => posts.push(message)
+            });
+            if (stage === "lease")
+                coordinator.acquire = () => {
+                    throw failure;
+                };
+            for (const forAgent of [false, true]) {
+                posts.length = 0;
+                if (forAgent)
+                    await assert.rejects(service.read(true), {
+                        code: stage === "missing-target" ? "CONFIG_INCOMPLETE" : "PREFLIGHT_FAILED"
+                    });
+                else assert.strictEqual(await service.read(), null);
+                assert.strictEqual(posts.at(-1).type, "chipInfoStatus");
+                assert.strictEqual(posts.at(-1).state, "error", stage);
+                assert.strictEqual(coordinator.anyActive(), false, `${stage} releases probe ownership`);
+                assert.strictEqual(reads, 0, `${stage} cannot start a hardware read`);
+            }
+            if (stage === "missing-target") assert.strictEqual(discovery, 0, "validate target before probe discovery");
+            // No ELF is configured; correcting the prerequisites must still permit a chip read.
+            service.context.workspaceState.get = (key) => (key === "target" ? "t.cfg" : "");
+            service.resolveProbe = async () => "p.cfg";
+            service.resolveExecutable = async () => "openocd";
+            service.prepareConnection = async () => ({});
+            service.coordinator = new ProbeCoordinator();
+            assert.strictEqual((await service.read()).core, "Cortex-M4");
+            assert.strictEqual(service.running, false);
+        }
         assert.ok(chipDiagnostics.timings.configMs >= 0);
         assert.ok(chipDiagnostics.timings.preflightMs >= 0);
         assert.ok(chipDiagnostics.timings.openOcdMs >= 0);

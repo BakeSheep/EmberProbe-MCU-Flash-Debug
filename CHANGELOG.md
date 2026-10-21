@@ -6,6 +6,17 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-10-21
+
+- 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。
+- Show acquisition rate and read throughput together; refresh J-Link driver choices with the sidebar probe list, discard stale scans, and bundle compatible target configurations with OpenOCD on Windows and Linux.
+
+- `debug.stop` 等待调试会话释放探针后再返回，避免紧接着执行 Agent 操作时误报探针忙；共享调试组的并发清理合并为一次。
+- Make `debug.stop` wait for probe ownership to be released before returning, preventing spurious busy errors on the next Agent operation; coalesce concurrent shared-debug-group teardown.
+
+- 修复侧边栏芯片读取与控制在缺少配置、探针选择或连接预检失败时一直加载的问题；失败后恢复操作按钮并释放探针占用，SVD 状态同步失败不再覆盖芯片读取结果。README 顶部新增使用教程跳转链接。
+- Fix sidebar chip reads and controls staying busy when configuration is missing or probe selection or connection preflight fails; restore controls and release probe ownership after errors, and keep SVD synchronization errors separate from chip results. Add a tutorial shortcut at the top of the README.
+
 - RTOS 任务面板暂停后刷新更快：类型布局按符号目录缓存，内核链表头合并为一次读取，TCB 与其链表项一次读取；以 CMSIS-RTOS v2 默认 56 个优先级、8 个任务为例，第二次暂停起 GDB/MI 命令由约 127 条降至约 20 条，见 `docs/RTOS-AWARENESS.md`。
 - Faster RTOS task panel refresh while paused: typed layouts are cached per symbol directory, kernel list heads are read as one block, and each TCB is read together with its list item; with CMSIS-RTOS v2's default 56 priorities and 8 tasks, stops after the first issue about 20 GDB/MI commands instead of about 127; see `docs/RTOS-AWARENESS.md`.
 

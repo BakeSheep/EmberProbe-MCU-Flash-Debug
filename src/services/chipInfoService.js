@@ -54,33 +54,9 @@ class ChipInfoService {
         if (this.coordinator.isActive("debugStart") || this.isDebugActive()) {
             return this.rejectBusy("chip.busyDebug", "PROBE_BUSY", forAgent);
         }
-        const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || (await this.resolveProbe?.());
-        const target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
-        if (!probe || !target) return this.rejectBusy("chip.needConfig", "CONFIG_INCOMPLETE", forAgent);
-
-        const lease = this.coordinator.acquire("chipInfo");
-        const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
-        let executable;
-        try {
-            executable = await this.resolveExecutable(configured);
-        } catch (error) {
-            lease.release();
-            if (forAgent) throw error;
-            this.post({
-                state: "error",
-                key: error.i18nKey,
-                params: error.i18nParams,
-                message: error.message || String(error),
-                diagnostic: serializeError(error)
-            });
-            return null;
-        }
-        if (!executable) {
-            lease.release();
-            return this.rejectBusy("chip.notReady", "OPENOCD_NOT_READY", forAgent);
-        }
-
-        const configMs = Date.now() - startedAt;
+        let lease;
+        let target;
+        let configMs = null;
         let preflightMs = null;
         let openOcdMs = null;
         let saveMs = null;
@@ -89,9 +65,22 @@ class ChipInfoService {
             target,
             timings: { configMs, preflightMs, openOcdMs, saveMs, totalMs: Date.now() - startedAt }
         });
-        this.post({ state: "reading", key: "chip.reading" });
         let diagnostics = null;
         try {
+            const reject = (key, code) => {
+                throw Object.assign(new Error(this.t(key)), { i18nKey: key, code });
+            };
+            // A chip read needs no ELF, but probe discovery cannot supply a missing target.
+            target = this.context.workspaceState.get(this.cacheKeys.mcuCore);
+            if (!target) reject("chip.needConfig", "CONFIG_INCOMPLETE");
+            const probe = this.context.workspaceState.get(this.cacheKeys.debugger) || (await this.resolveProbe?.());
+            if (!probe) reject("chip.needConfig", "CONFIG_INCOMPLETE");
+            lease = this.coordinator.acquire("chipInfo");
+            const configured = this.vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
+            const executable = await this.resolveExecutable(configured);
+            if (!executable) reject("chip.notReady", "OPENOCD_NOT_READY");
+            configMs = Date.now() - startedAt;
+            this.post({ state: "reading", key: "chip.reading" });
             const { cwd } = this.commandContext();
             const preflightStartedAt = Date.now();
             const connection = this.prepareConnection
@@ -132,11 +121,11 @@ class ChipInfoService {
                 message: error.message || String(error),
                 diagnostic: serializeError(error)
             });
-            this.onDiagnostics(diagnosticReport(), null);
+            if (configMs !== null) this.onDiagnostics(diagnosticReport(), null);
             if (forAgent) throw error;
             return null;
         } finally {
-            lease.release();
+            lease?.release();
         }
     }
 

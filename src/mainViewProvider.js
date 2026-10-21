@@ -5935,12 +5935,24 @@ class MainViewProvider {
                     break;
                 }
                 case "readChipInfo": {
-                    await this.readChipInfoAction();
-                    await this._svdManager.syncStatus();
+                    try {
+                        await this.readChipInfoAction();
+                    } catch (error) {
+                        this._postChipInfo({ state: "error", ...toUiError(error) });
+                    }
+                    try {
+                        await this._svdManager.syncStatus();
+                    } catch (error) {
+                        webviewView.webview.postMessage({ type: "svdStatus", state: "error", ...toUiError(error) });
+                    }
                     break;
                 }
                 case "chipControl": {
-                    await this._chipInfoService.control(message.action);
+                    try {
+                        await this._chipInfoService.control(message.action);
+                    } catch (error) {
+                        this._postChipInfo({ state: "error", ...toUiError(error) });
+                    }
                     break;
                 }
                 case "cancelSvdDownload": {

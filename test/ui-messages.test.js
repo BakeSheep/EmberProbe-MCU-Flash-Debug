@@ -14,6 +14,8 @@ const { ProbeDriverService } = require("../src/services/probeDriverService");
 const { resolveOpenOcdStatus, resetCache } = require("../src/openocdChecker");
 const { diagnoseOpenOcdFailure, parseLine } = require("../src/openocdRunner");
 const { toUiError } = require("../src/services/errorEnvelope");
+const { ChipInfoService } = require("../src/services/chipInfoService");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
 
 function deferred() {
     let resolve;
@@ -160,6 +162,126 @@ async function commands() {
     assert.deepStrictEqual(f.messages.at(-1).params, params);
     assert.strictEqual(toUiError("plain failure").message, "plain failure");
     return f.messages.at(-1);
+}
+
+async function chipPreflight() {
+    const f = fixture();
+    const sidebar = render(getModernWebviewContent({}, "en"));
+    const failure = Object.assign(new Error("Probe selection required"), { code: "PROBE_SELECTION_REQUIRED" });
+    f.provider._svdManager = { syncStatus: async () => {} };
+    f.provider._chipInfoService = new ChipInfoService({
+        vscode: f.vscode,
+        context: { workspaceState: { get: (key) => (key === "target" ? "stm32h7x.cfg" : "") } },
+        cacheKeys: { debugger: "probe", mcuCore: "target" },
+        coordinator: new ProbeCoordinator(),
+        t: f.provider._t,
+        isDebugActive: () => false,
+        resolveProbe: async () => {
+            throw failure;
+        },
+        onPost: (message) => f.messages.push(message)
+    });
+    try {
+        for (const blocked of [false, true]) {
+            f.provider._assertCpuIdle = () => {
+                if (blocked) throw failure;
+            };
+            const read = sidebar.document.getElementById("chipRead");
+            read.click();
+            assert.strictEqual(read.disabled, true);
+            f.messages.length = 0;
+            await f.dispatch(sidebar.messages.at(-1));
+            const status = f.messages.findLast((message) => message.type === "chipInfoStatus");
+            assert.strictEqual(status?.state, "error", "early read failures acknowledge the sidebar request");
+            sidebar.send(status);
+            assert.strictEqual(read.disabled, false, "failed chip read can be retried");
+            assert.match(sidebar.document.getElementById("chipLabel").textContent, /Probe selection/);
+        }
+        f.provider._chipInfoService.control = async () => {
+            throw failure;
+        };
+        f.messages.length = 0;
+        await f.dispatch({ type: "chipControl", action: "pause" });
+        assert.strictEqual(f.messages.at(-1).state, "error", "control failures also finish their spinner");
+        assert.strictEqual(f.messages.at(-1).diagnostic.code, failure.code);
+        f.provider._assertCpuIdle = () => {};
+        f.provider._chipInfoService.read = async () => f.messages.push({ type: "chipInfoStatus", state: "ready" });
+        f.provider._svdManager.syncStatus = async () => {
+            throw new Error("SVD unavailable");
+        };
+        f.messages.length = 0;
+        await f.dispatch({ type: "readChipInfo" });
+        assert.deepStrictEqual(
+            f.messages.map((message) => message.type),
+            ["chipInfoStatus", "svdStatus"]
+        );
+        assert.strictEqual(f.messages[0].state, "ready", "SVD failure cannot overwrite a successful chip read");
+        assert.strictEqual(f.messages[1].state, "error");
+        sidebar.assertHealthy();
+    } finally {
+        sidebar.close();
+    }
+}
+
+async function incompleteActions() {
+    for (const ambiguous of [false, true]) {
+        for (const action of ["download", "debug", "attachDebug", "liveToggle"]) {
+            const f = fixture();
+            const sidebar = render(getModernWebviewContent({}, "en"));
+            const coordinator = new ProbeCoordinator();
+            Object.assign(f.provider, {
+                _probeCoordinator: coordinator,
+                _debugBridge: { hasAnySession: false, hasSession: false },
+                _probeConnectionService: {
+                    resolveProbe: async () => {
+                        if (ambiguous)
+                            throw Object.assign(new Error("No unique probe selected"), {
+                                code: "PROBE_SELECTION_REQUIRED"
+                            });
+                        return "cmsis-dap.cfg";
+                    }
+                },
+                _assertCpuIdle() {},
+                _liveDebugSession: () => null,
+                _postProbeOperationStatus() {},
+                _resetChartHistoryWarnings() {},
+                _clearDebugStartupWatchdog() {},
+                _resolveOpenOcdPath: async () => "openocd",
+                _postConsumerStatuses: (status, error) =>
+                    f.messages.push({
+                        type: "liveStatus",
+                        running: false,
+                        ...status,
+                        error
+                    })
+            });
+            f.provider._context.workspaceState.get = () => undefined;
+            try {
+                if (action === "liveToggle") await f.dispatch({ type: action });
+                else {
+                    const cmd = `mcu-vscode.${action}`;
+                    sidebar.document.querySelector(`[data-command="${cmd}"]`).click();
+                    await f.dispatch(sidebar.messages.at(-1));
+                }
+                assert.strictEqual(coordinator.anyActive(), false, `${action} releases its probe lease`);
+                assert(!f.provider._debugCommandPending, `${action} cannot leave a pending debug startup`);
+                assert(!f.provider._liveStartPromise, `${action} cannot leave a pending sampling startup`);
+                const reply = f.messages.findLast((message) => ["liveStatus", "commandError"].includes(message.type));
+                assert(reply, `${action} must acknowledge missing configuration`);
+                sidebar.send(reply);
+                if (action === "liveToggle") {
+                    assert.strictEqual(sidebar.document.getElementById("liveToggle").disabled, false);
+                    assert.match(
+                        sidebar.document.getElementById("liveLabel").textContent,
+                        ambiguous ? /No unique probe/ : /debugger.*MCU/
+                    );
+                } else assert(!sidebar.document.getElementById("statusText").textContent.includes("Executing"));
+                sidebar.assertHealthy();
+            } finally {
+                sidebar.close();
+            }
+        }
+    }
 }
 
 function views(errorMessage) {
@@ -313,6 +435,8 @@ async function queuedWrites() {
 }
 
 (async () => {
+    await chipPreflight();
+    await incompleteActions();
     views(await commands());
     await diagnostics();
     await queuedWrites();
