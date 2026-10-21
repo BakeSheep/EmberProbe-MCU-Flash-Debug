@@ -96,10 +96,19 @@ function startServer(reply = (method) => ({ method })) {
             assert.strictEqual(located.matchedRoot, library);
         });
 
-        await scenario("Match folders case-insensitively on Windows only", () => {
+        await scenario("Match folders case-insensitively on Windows or case-insensitive filesystems", () => {
             clearRegistries();
-            writeEntry(registry, { workspaceFolders: [project.toUpperCase()], port: 1004 });
-            if (process.platform === "win32") assert.strictEqual(locator.locate(nested).descriptor.port, 1004);
+            const upper = project.toUpperCase();
+            writeEntry(registry, { workspaceFolders: [upper], port: 1004 });
+            // macOS APFS 默认不区分大小写：realpath 会把大写路径解析回磁盘上的实际目录
+            let sameDirectory = false;
+            try {
+                sameDirectory = fs.realpathSync.native(upper) === fs.realpathSync.native(project);
+            } catch {
+                /* 区分大小写的文件系统上大写路径不存在 */
+            }
+            if (process.platform === "win32" || sameDirectory)
+                assert.strictEqual(locator.locate(nested).descriptor.port, 1004);
             else assert.throws(() => locator.locate(nested), { code: "BRIDGE_UNAVAILABLE" });
         });
 
