@@ -4,8 +4,10 @@ const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
 const { serializeError: serializeDiagnostic } = require("./services/errorEnvelope");
+const { BRIDGE_PROTOCOL, MIN_CLIENT_PROTOCOL } = require("../skills/_emberprobe/bridge-locator");
 
 const MAX_BODY = 64 * 1024;
+const CHANNELS = new Set(["skill", "mcp"]);
 
 function jsonReplacer(_key, value) {
     if (typeof value === "number" && !Number.isFinite(value)) {
@@ -23,14 +25,40 @@ function serializeError(error) {
     return { code: error?.code || "BRIDGE_ERROR", ...serializeDiagnostic(error) };
 }
 
+function decodeHeader(value, limit) {
+    if (typeof value !== "string" || !value || value.length > limit * 3) return undefined;
+    try {
+        const decoded = decodeURIComponent(value);
+        return decoded.length <= limit && !/[\0\r\n]/.test(decoded) ? decoded : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+// 调用方标识只用于定位与审计，不构成鉴权：同一用户下的进程可以伪造这些请求头。
+function requestMeta(headers) {
+    const channel = String(headers["x-emberprobe-channel"] || "").toLowerCase();
+    if (!CHANNELS.has(channel)) return undefined;
+    const meta = { channel };
+    const skillRoot = decodeHeader(headers["x-emberprobe-skill-root"], 4096);
+    const client = decodeHeader(headers["x-emberprobe-client"], 200);
+    if (skillRoot) meta.skillRoot = skillRoot;
+    if (client) meta.client = client;
+    return meta;
+}
+
 class AgentBridge {
     // storageDir 为扩展 globalStorage 目录；提供时描述文件（含 token）写入用户目录而非工作区，
     // 工作区只保留不含 token 的指针文件，避免令牌随 git 提交/云同步泄露。未提供时保持旧行为。
-    constructor(workspace, handler, storageDir) {
+    // options.legacyPointer=false 时不写旧版描述文件与工作区指针（新客户端走实例注册表）。
+    constructor(workspace, handler, storageDir, options = {}) {
         this.workspace = path.resolve(workspace);
         this.handler = handler;
         this.server = null;
         this.token = crypto.randomBytes(24).toString("hex");
+        this.legacyPointer = options.legacyPointer !== false;
+        this.legacyWritten = false;
+        this.startedAt = "";
         this.pointerPath = path.join(this.workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
         this.legacyPointerPath = path.join(this.workspace, ".emberprobe", "agent-bridge.json");
         if (storageDir) {
@@ -61,7 +89,17 @@ class AgentBridge {
             this.server.once("error", reject);
             this.server.listen(0, "127.0.0.1", () => resolve(undefined));
         });
+        this.startedAt = new Date().toISOString();
         const descriptor = this.descriptor();
+        if (this.legacyPointer) await this._writeLegacyFiles(descriptor);
+        // 升级迁移：移除旧版项目根指针，并仅在旧目录已经为空时删除目录。
+        await fs.unlink(this.legacyPointerPath).catch(() => {});
+        await fs.rmdir(path.dirname(this.legacyPointerPath)).catch(() => {});
+        return descriptor;
+    }
+
+    async _writeLegacyFiles(descriptor) {
+        this.legacyWritten = true;
         await fs.mkdir(path.dirname(this.descriptorPath), { recursive: true });
         await fs.writeFile(this.descriptorPath, stringifyJson(descriptor, 2), { mode: 0o600 });
         if (this.pointerPath !== this.descriptorPath) {
@@ -71,22 +109,27 @@ class AgentBridge {
                 stringifyJson({ protocol: 1, descriptorPath: this.descriptorPath }, 2)
             );
         }
-        // 升级迁移：移除旧版项目根指针，并仅在旧目录已经为空时删除目录。
-        await fs.unlink(this.legacyPointerPath).catch(() => {});
-        await fs.rmdir(path.dirname(this.legacyPointerPath)).catch(() => {});
-        return descriptor;
+    }
+
+    // 旧版脚本只认工作区指针；工作区装了 skills 时才写，卸载后撤回，Bridge 本身继续运行。
+    async setLegacyPointer(enabled) {
+        this.legacyPointer = !!enabled;
+        if (!this.server) return;
+        if (this.legacyPointer) await this._writeLegacyFiles(this.descriptor());
+        else await this._removeLegacyFiles();
     }
 
     descriptor() {
         const address = this.server?.address();
         return {
-            protocol: 1,
+            protocol: BRIDGE_PROTOCOL,
+            minClientProtocol: MIN_CLIENT_PROTOCOL,
             host: "127.0.0.1",
             port: address && typeof address === "object" ? address.port : 0,
             token: this.token,
             pid: process.pid,
             workspace: this.workspace,
-            startedAt: new Date().toISOString()
+            startedAt: this.startedAt || new Date().toISOString()
         };
     }
 
@@ -128,6 +171,7 @@ class AgentBridge {
             fail(413, "REQUEST_TOO_LARGE", "Request is too large");
             return;
         }
+        const meta = requestMeta(request.headers);
         request.on("data", (chunk) => {
             if (!receiving) return;
             size += chunk.length;
@@ -144,7 +188,7 @@ class AgentBridge {
                 if (!/^[a-z][a-zA-Z0-9.]*$/.test(payload.method || "")) {
                     throw Object.assign(new Error("Invalid method"), { code: "INVALID_METHOD" });
                 }
-                const result = await this.handler(payload.method, payload.params || {});
+                const result = await this.handler(payload.method, payload.params || {}, meta);
                 if (!response.writableEnded && !response.destroyed) response.end(stringifyJson({ ok: true, result }));
             } catch (error) {
                 if (response.writableEnded || response.destroyed) return;
@@ -152,6 +196,33 @@ class AgentBridge {
                 response.end(stringifyJson({ ok: false, error: serializeError(error) }));
             }
         });
+    }
+
+    async _removeLegacyFiles() {
+        if (!this.legacyWritten) return;
+        this.legacyWritten = false;
+        try {
+            const current = JSON.parse(await fs.readFile(this.descriptorPath, "utf8"));
+            if (current.token !== this.token) return;
+            await fs.unlink(this.descriptorPath).catch(() => {});
+            // 指针文件只含路径不含令牌；仍指向本实例的描述文件时一并删除，避免留下悬空引用
+            if (this.pointerPath !== this.descriptorPath) {
+                try {
+                    const pointer = JSON.parse(await fs.readFile(this.pointerPath, "utf8"));
+                    if (pointer.descriptorPath === this.descriptorPath) {
+                        await fs.unlink(this.pointerPath);
+                        // 只删除已经为空的插件目录；若用户在其中放了其他文件，rmdir 会失败并安全保留。
+                        await fs.rmdir(path.dirname(this.pointerPath)).catch(() => {});
+                    }
+                } catch {
+                    /* pointer may already be gone */
+                }
+            } else {
+                await fs.rmdir(path.dirname(this.pointerPath)).catch(() => {});
+            }
+        } catch {
+            /* descriptor may already be gone */
+        }
     }
 
     async stop() {
@@ -162,30 +233,8 @@ class AgentBridge {
                 server.close(resolve);
                 server.closeAllConnections();
             });
-        try {
-            const current = JSON.parse(await fs.readFile(this.descriptorPath, "utf8"));
-            if (current.token === this.token) {
-                await fs.unlink(this.descriptorPath).catch(() => {});
-                // 指针文件只含路径不含令牌；仍指向本实例的描述文件时一并删除，避免留下悬空引用
-                if (this.pointerPath !== this.descriptorPath) {
-                    try {
-                        const pointer = JSON.parse(await fs.readFile(this.pointerPath, "utf8"));
-                        if (pointer.descriptorPath === this.descriptorPath) {
-                            await fs.unlink(this.pointerPath);
-                            // 只删除已经为空的插件目录；若用户在其中放了其他文件，rmdir 会失败并安全保留。
-                            await fs.rmdir(path.dirname(this.pointerPath)).catch(() => {});
-                        }
-                    } catch {
-                        /* pointer may already be gone */
-                    }
-                } else {
-                    await fs.rmdir(path.dirname(this.pointerPath)).catch(() => {});
-                }
-            }
-        } catch {
-            /* descriptor may already be gone */
-        }
+        await this._removeLegacyFiles();
     }
 }
 
-module.exports = { AgentBridge, MAX_BODY, serializeError, jsonReplacer, stringifyJson };
+module.exports = { AgentBridge, MAX_BODY, serializeError, jsonReplacer, stringifyJson, requestMeta };

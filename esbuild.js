@@ -87,6 +87,20 @@ const debugBuild = esbuild.build({
     legalComments: "eof"
 });
 
+// MCP stdio 服务器：独立进程，内联 Bridge 定位模块、诊断表与 MCP SDK。
+const mcpBuild = esbuild.build({
+    absWorkingDir: __dirname,
+    entryPoints: [path.join(__dirname, "src", "mcp", "server.js")],
+    bundle: true,
+    outfile: path.join(__dirname, "dist", "mcp-server.js"),
+    platform: "node",
+    format: "cjs",
+    target: "node18",
+    // 主要体积来自 SDK 依赖的 zod/ajv；独立进程不需要可读的打包输出。
+    minify: true,
+    legalComments: "eof"
+});
+
 function stageSamplingTimer() {
     const required = [
         "koffi/package.json",
@@ -132,6 +146,7 @@ Promise.all([
     elfBuild,
     svdBuild,
     debugBuild,
+    mcpBuild,
     webviewBuild("sidebar"),
     webviewBuild("liveWatch")
 ])

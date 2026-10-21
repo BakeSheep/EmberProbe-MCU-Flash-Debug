@@ -50,6 +50,9 @@
     "onCommand:mcu-vscode.openLiveWatch",
     "onWebviewPanel:emberprobe.liveWatch",
     "onCommand:mcu-vscode.manageAgentSkills",
+    "onCommand:mcu-vscode.copyMcpConfig",
+    "onCommand:mcu-vscode.enableAgentAccess",
+    "onCommand:mcu-vscode.disableAgentAccess",
     "onCommand:mcu-vscode.downloadOfficialSvd",
     "onCommand:mcu-vscode.selectExistingSvd",
     "onCommand:mcu-vscode.switchWorkspaceSvd",
@@ -57,6 +60,12 @@
     "onDebugResolve:emberprobe"
   ],
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "emberprobe",
+        "label": "EmberProbe"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -99,6 +108,18 @@
       {
         "command": "mcu-vscode.manageAgentSkills",
         "title": "EmberProbe: 管理 Agent Skills"
+      },
+      {
+        "command": "mcu-vscode.copyMcpConfig",
+        "title": "EmberProbe: 复制 MCP 配置"
+      },
+      {
+        "command": "mcu-vscode.enableAgentAccess",
+        "title": "EmberProbe: 为此工作区启用 Agent 访问"
+      },
+      {
+        "command": "mcu-vscode.disableAgentAccess",
+        "title": "EmberProbe: 为此工作区停用 Agent 访问"
       },
       {
         "command": "mcu-vscode.downloadOfficialSvd",
@@ -295,6 +316,23 @@
             ]
           },
           "markdownDescription": "Override memory region types by their exact linker names, e.g. {\"APP_STORAGE\":\"flash\",\"FAST_HEAP\":\"ram\"}. Capacities come from the project .map or .ld file."
+        },
+        "emberprobe.mcp.toolsets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "core",
+              "debug",
+              "cubemx"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "core",
+            "debug"
+          ],
+          "markdownDescription": "EmberProbe MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义会常驻 Agent 上下文，只开启需要的工具集。见 `docs/MCP.md`。"
         },
         "emberprobe.experimental.unlimitedSampling.enabled": {
           "type": "boolean",
@@ -1032,6 +1070,7 @@
     "test:integration": "node scripts/run-tests.js --group integration"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@vscode/debugadapter": "1.68.0",
     "fast-xml-parser": "^5.11.0",
     "fzstd": "^0.1.1",

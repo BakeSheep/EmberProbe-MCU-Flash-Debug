@@ -671,7 +671,6 @@ module.exports = Object.freeze({
     "run.notFound": "找不到 OpenOCD：{path}",
     "msg.openWorkspaceFirst": "请先打开工作区",
     "msg.skillsInstalled": "EmberProbe Agent Skills 已安装到当前工作区",
-    "msg.skillsInstalledGlobal": "EmberProbe Agent Skills 已安装到用户主目录 ~/.agents/skills",
     "msg.skillsDiffers": "已安装的 Agent Skills 与插件内置版本存在差异，可重新安装进行升级",
     "msg.skillsModifiedBridgeWarn":
         "检测到已安装的 Agent Skills 被本地修改，经其发起的请求可能执行被篡改的脚本，建议重新安装",
@@ -751,6 +750,26 @@ module.exports = Object.freeze({
     "approval.denied": "用户未批准此操作",
     "approval.skills": "工作区技能与扩展提供的版本不同，是否允许当前内容调用 Agent Bridge？",
     "approval.skillsAllow": "本会话允许当前版本",
+    "approval.skillsCustom":
+        "Agent 正在从扩展未管理的位置运行 EmberProbe skills 脚本，是否允许当前内容调用 Agent Bridge？",
+    "agent.auditChannel": "EmberProbe Agent Bridge",
+    "agent.accessEnabled": "此工作区已启用 Agent 访问",
+    "agent.accessDisabled": "此工作区未启用 Agent 访问",
+    "agent.enable": "启用",
+    "agent.disable": "停用",
+    "agent.legacyGlobal": "检测到旧版全局 EmberProbe skills（版本 {version}），已不再维护",
+    "agent.cleanup": "清理",
+    "mcp.pickClient": "选择要配置的 MCP 客户端",
+    "mcp.client.claude": "Claude Code（claude mcp add 命令）",
+    "mcp.client.codex": "Codex（config.toml）",
+    "mcp.client.json": "Cursor 及其他客户端（mcpServers JSON）",
+    "mcp.configCopied": "{client} 的 EmberProbe MCP 配置已复制到剪贴板，请在客户端中粘贴；扩展不会修改客户端的配置文件",
+    "mcp.nodeMissing":
+        "配置已复制，但 PATH 中找不到 Node.js；外部客户端需要 Node.js {minimum} 或更高版本才能启动 EmberProbe MCP 服务器",
+    "mcp.nodeTooOld":
+        "配置已复制，但 PATH 中的 Node.js {version} 版本过低；外部客户端需要 Node.js {minimum} 或更高版本",
+    "agent.cleanupConfirm":
+        "将从用户主目录 ~/.agents/skills 移除 EmberProbe 安装的 skills，只删除 EmberProbe 清单内的条目。是否继续？",
     "live.elfFirst": "请先在侧栏选择 ELF 固件",
     "live.elfReadFail": "无法读取 ELF：{path}",
     "live.elfTooLarge": "ELF 超过 {limit} MiB 安全上限，已拒绝解析：{path}",

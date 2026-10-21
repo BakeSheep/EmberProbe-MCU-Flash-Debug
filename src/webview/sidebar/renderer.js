@@ -54,6 +54,7 @@ let sideWatch = [],
     variableErrorParams = null,
     variableWarnings = [],
     lastSkill = { state: "checking" },
+    lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     // Last sampled pointer targets by watch path; restored with the view so a reopened sidebar still names them.
@@ -340,6 +341,7 @@ function rerenderDynamic() {
     renderAvailable();
     applyFolds();
     renderSkillStatus(lastSkill);
+    renderAgentAccess(lastAgentAccess);
     liveStatus(lastLive);
     openocdStatus(lastOpenocd);
     chipStatus(lastChip);
@@ -2241,6 +2243,39 @@ function renderSkillStatus(m) {
     el.setAttribute("aria-checked", String(!!workspace && workspace.state !== "notInstalled"));
     el.disabled = !workspace || !!lastSkill.busy;
 }
+// Agent 访问开关与遗留全局 skills 提示；状态只来自扩展推送的 agentAccess 消息。
+function renderAgentAccess(m) {
+    lastAgentAccess = m || lastAgentAccess;
+    const card = document.getElementById("agentAccess");
+    const legacy = document.getElementById("agentLegacy");
+    if (!card || !legacy) return;
+    const state = lastAgentAccess?.card || "";
+    card.hidden = !state;
+    if (state) {
+        document.getElementById("agentAccessText").textContent = t(
+            state === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled"
+        );
+        const action = document.getElementById("agentAccessAction");
+        action.textContent = t(state === "enabled" ? "agent.disable" : "agent.enable");
+        action.dataset.agentCommand =
+            state === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess";
+        action.classList.toggle("primary", state !== "enabled");
+    }
+    const old = lastAgentAccess?.legacyGlobal;
+    legacy.hidden = !old;
+    if (old)
+        document.getElementById("agentLegacyText").textContent = t("agent.legacyGlobal", {
+            version: old.version || "?"
+        });
+}
+for (const id of ["agentAccessAction", "agentLegacyCleanup"]) {
+    const button = document.getElementById(id);
+    if (button)
+        button.onclick = () => {
+            if (!api || !button.dataset.agentCommand) return;
+            api.postMessage({ type: "executeCommand", cmd: button.dataset.agentCommand });
+        };
+}
 const skillToggle = document.getElementById("skillStatus");
 if (skillToggle)
     skillToggle.onclick = () => {
@@ -2496,6 +2531,9 @@ window.EmberProbeMessages.connect(window, {
     },
     skillStatus: function (m) {
         renderSkillStatus(m);
+    },
+    agentAccess: function (m) {
+        renderAgentAccess(m);
     },
     openocdStatus: function (m) {
         openocdStatus(m);

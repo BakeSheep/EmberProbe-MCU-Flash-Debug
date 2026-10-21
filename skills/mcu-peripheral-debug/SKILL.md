@@ -9,6 +9,7 @@ Use `scripts/peripheral.js` from this skill directory. Do not parse the SVD or c
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `peripherals_read`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: inspecting and safely modifying MCU peripheral registers and bit fields from the workspace SVD.
 - **Requires**: the EmberProbe Agent Bridge and an SVD bound to the workspace. `--read`/`--set` also need a unique paused debug session (EmberProbe built-in debugger or Cortex-Debug) and connected hardware; `--list` only parses the SVD (no hardware).
 - **Preconditions**: `--list` needs a bound SVD (else `SVD_NOT_CONFIGURED`); `--read`/`--set` need the target already paused (never pause implicitly); `--set` needs explicit per-write confirmation.

@@ -63,6 +63,10 @@ async function runFile(file, options = {}) {
     env.TMP = temp;
     env.TEMP = temp;
     delete env.OPENOCD_SCRIPTS;
+    // Bridge 定位只读测试自己的注册表，不得连到开发者正在运行的 EmberProbe 窗口。
+    env.EMBERPROBE_BRIDGE_REGISTRY = path.join(sandbox, "agent-bridges");
+    delete env.EMBERPROBE_BRIDGE_INSTANCE;
+    delete env.EMBERPROBE_WORKSPACE;
     let result;
     try {
         result = await new Promise((resolve) => {

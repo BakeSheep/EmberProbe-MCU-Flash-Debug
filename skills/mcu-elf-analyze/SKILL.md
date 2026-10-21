@@ -9,6 +9,7 @@ Use `scripts/analyze-elf.js` from this skill directory. This is a pure static an
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `elf_analyze`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: static firmware footprint analysis — Flash and RAM per section plus the largest functions and variables.
 - **Requires**: the EmberProbe Agent Bridge (to read the selected ELF path). **No probe or hardware is needed** — “no hardware” here does not mean “no Bridge”; a Bridge failure is an extension/activation problem, not a wiring problem.
 - **Preconditions**: an ELF is selected (else `ELF_NOT_CONFIGURED`) and is readable, not mid-rebuild (else `ELF_READ_FAILED`).
