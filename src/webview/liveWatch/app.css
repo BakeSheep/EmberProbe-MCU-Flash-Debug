@@ -682,31 +682,75 @@ input[type="number"]::-webkit-outer-spin-button {
     text-transform: uppercase;
 }
 .export-series {
+    position: relative;
     max-height: 180px;
     overflow: auto;
     border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
     border-radius: 3px;
-    padding: 5px;
+    user-select: none;
+    touch-action: none;
+    overscroll-behavior: contain;
+}
+.export-series table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: fixed;
+}
+.export-series th,
+.export-series td {
+    padding: 5px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+.export-series th {
+    position: sticky;
+    z-index: 2;
+    top: 0;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    font-weight: 600;
+}
+.export-series th:last-child,
+.export-series td:last-child {
+    width: 28%;
+}
+.export-series tbody tr:last-child td {
+    border-bottom: 0;
+}
+.export-series tr:has(input:checked) td {
+    background: var(--vscode-list-inactiveSelectionBackground);
+}
+.export-series tbody tr:hover td {
+    background: var(--vscode-list-hoverBackground);
 }
 .export-series label {
     display: flex;
     align-items: center;
     gap: 7px;
-    padding: 4px 5px;
+    min-width: 0;
 }
-.export-series label:hover {
-    background: var(--vscode-list-hoverBackground);
+.export-series input {
+    flex-shrink: 0;
+    margin: 0;
 }
-.export-ranges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    padding: 4px 0;
+.export-series-name,
+.export-series-type {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-.export-ranges label {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+.export-series-type {
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-editor-font-family);
+}
+.export-marquee {
+    position: absolute;
+    z-index: 3;
+    border: 1px solid var(--vscode-focusBorder);
+    background: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
+    pointer-events: none;
 }
 .export-custom {
     margin-top: 8px;
@@ -714,14 +758,6 @@ input[type="number"]::-webkit-outer-spin-button {
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
     border-radius: 5px;
     background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-sideBar-background) 12%);
-    transition:
-        opacity 0.15s,
-        filter 0.15s;
-}
-.export-custom.disabled {
-    opacity: 0.42;
-    filter: grayscale(1);
-    pointer-events: none;
 }
 .export-timeline-title,
 .export-selection {
