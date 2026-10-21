@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 波形图的当前数值栏改为悬浮在曲线上的半透明卡片：拖动标题移动、拖动边框或角缩放（也可用方向键微调），宽度足够时自动显示两列变量卡片，窗口变化时保持在可视区内并贴住所靠的边；工具栏按钮仍可隐藏或展开，位置与大小随面板保存。
+- Turn the waveform view's current-value panel into a translucent card floating over the chart: drag its title to move it, drag an edge or corner to resize it (or use arrow keys), show two columns of variable cards when it is wide enough, and keep it inside the view and docked to its edge as the window changes; the toolbar button still hides or shows it, and its position and size are saved with the panel.
+
 ## [0.8.8] - 2026-10-21
 
 - 采样界面同时显示采集频率与读取吞吐量；刷新侧边栏探针列表时更新 J-Link 驱动选项并丢弃过期扫描结果，Windows 与 Linux 内置 OpenOCD 补齐兼容目标配置。
