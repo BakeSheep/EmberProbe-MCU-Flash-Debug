@@ -217,6 +217,7 @@ class MainViewProvider {
         this._debugCommandPending = false;
         this._debugLifecycle = new DebugLifecycle();
         this._terminatedDebugSessionIds = new Set();
+        this._debugSessionReleases = new Map();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
         this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
@@ -436,7 +437,7 @@ class MainViewProvider {
             commandContext: () => this._commandContext(),
             onPost: (message) => this._webviewView?.webview.postMessage(message),
             onDiagnostics: (diag, info) => this._writeChipDiagnostics(diag, info),
-            isDebugActive: () => !!vscode.debug.activeDebugSession
+            isDebugActive: () => !!this._liveDebugSession()
         });
         this._svdManager = new SvdManager({
             workerPath: path.join(__dirname, "svdWorker.js"),
@@ -466,7 +467,8 @@ class MainViewProvider {
             vscode,
             debugBridge: this._debugBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            startDebug: () => this.commandHandlers["mcu-vscode.debug"](undefined, undefined, false)
+            startDebug: () => this.commandHandlers["mcu-vscode.debug"](undefined, undefined, false),
+            waitForRelease: (session) => this._debugSessionReleased(session)
         });
         this._agentFlashService = new AgentFlashService({
             getConfig: () => this._configurationStore.snapshot(),
@@ -475,7 +477,7 @@ class MainViewProvider {
             prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
             recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             recordFlashed: (entry) => this._firmwareRecord.record(entry),
-            isDebugActive: () => this._debugBridge.hasAnySession || !!vscode.debug.activeDebugSession
+            isDebugActive: () => this._debugBridge.hasAnySession || !!this._liveDebugSession()
         });
         this._agentService = new AgentService({
             Bridge: AgentBridge,
@@ -932,7 +934,7 @@ class MainViewProvider {
             if (
                 this._debugStarting ||
                 this._debugBridge.hasAnySession ||
-                isSupportedDebugSession(vscode.debug.activeDebugSession)
+                isSupportedDebugSession(this._liveDebugSession())
             ) {
                 vscode.window.showWarningMessage(this._t("msg.debugBusyForDownload"));
                 return false;
@@ -1931,10 +1933,21 @@ class MainViewProvider {
             // frees the group's probe lease; skipping it wedges the probe until window reload.
             await group.release(token);
         }
-        if (group.stopped && this._managedDebugGroup === group) {
+        await this._closeStoppedDebugGroup(group);
+    }
+    // A failing core and its session's terminate event can both observe the group stop; they share one teardown
+    // so OpenOCD is stopped and sampling restored exactly once, and both resolve only after it finishes.
+    _closeStoppedDebugGroup(group) {
+        if (this._debugGroupClosing?.group === group) return this._debugGroupClosing.promise;
+        if (!group.stopped || this._managedDebugGroup !== group) return Promise.resolve();
+        const promise = (async () => {
             await this._stopManagedDebugServer();
             await this.restoreSamplingAfterDebug();
-        }
+        })().finally(() => {
+            if (this._debugGroupClosing?.promise === promise) this._debugGroupClosing = null;
+        });
+        this._debugGroupClosing = { group, promise };
+        return promise;
     }
     async _handleSharedServerExit(error) {
         const group = this._managedDebugGroup;
@@ -2238,16 +2251,11 @@ class MainViewProvider {
                 throw Object.assign(new Error("Another Agent variable read is in progress"), {
                     code: "AGENT_READ_BUSY"
                 });
-            if (
-                this._downloadRunning ||
-                this._chipInfoRunning ||
-                this._debugStarting ||
-                vscode.debug.activeDebugSession
-            ) {
+            if (this._downloadRunning || this._chipInfoRunning || this._debugStarting || this._liveDebugSession()) {
                 throw Object.assign(new Error("The debug probe is busy with another operation"), {
                     code: "PROBE_BUSY",
                     details: {
-                        activeOperation: this._debugStarting || vscode.debug.activeDebugSession ? "debug" : "probe",
+                        activeOperation: this._debugStarting || this._liveDebugSession() ? "debug" : "probe",
                         debugState: this._debugBridge.agentStatus().state
                     }
                 });
@@ -2835,7 +2843,7 @@ class MainViewProvider {
         if (this._downloadRunning) busy("chip.busyDownload", "PROBE_BUSY");
         if (this._liveWatchRunning) busy("chip.busyLive", "PROBE_BUSY");
         if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
-        if (this._debugStarting || vscode.debug.activeDebugSession) busy("chip.busyDebug", "PROBE_BUSY");
+        if (this._debugStarting || this._liveDebugSession()) busy("chip.busyDebug", "PROBE_BUSY");
         const elfLoad = this._elfService.load().catch(() => null);
         const debuggerCfg =
             this._context.workspaceState.get(CACHE_KEYS.debugger) ||
@@ -4840,7 +4848,7 @@ class MainViewProvider {
             this._foreignDebugPending ||
             this._debugCommandPending ||
             this._debugBridge?.hasAnySession ||
-            isSupportedDebugSession(vscode.debug.activeDebugSession)
+            isSupportedDebugSession(this._liveDebugSession())
         )
             operation = "debug";
         else if (this._probeDriverSwitching) operation = "driver";
@@ -4996,7 +5004,7 @@ class MainViewProvider {
         const activeItems = this._activeReadPlan();
         if (
             this._debugBridge.hasSession ||
-            isSupportedDebugSession(vscode.debug.activeDebugSession) ||
+            isSupportedDebugSession(this._liveDebugSession()) ||
             this._debugStarting ||
             this._debugCommandPending
         ) {
@@ -5433,28 +5441,45 @@ class MainViewProvider {
         void this._externalDebug?.request(session, message).catch(console.error);
         this._debugBridge.handleRequest(session, message);
     }
+    // VS Code clears activeDebugSession only after the terminate event, so a session already torn down here
+    // must not keep reporting the probe as busy.
+    _liveDebugSession() {
+        const session = vscode.debug.activeDebugSession;
+        return session && !this._terminatedDebugSessionIds?.has(session.id) ? session : null;
+    }
+    // Detaching a session settles the Agent's debug.stop wait before OpenOCD has exited; this resolves once the
+    // session's probe lease is released, or rejects when the server exit cannot be confirmed.
+    _debugSessionReleased(session) {
+        return this._debugSessionReleases?.get(session?.id);
+    }
     async handleDebugSessionTerminate(session) {
         if (!session || !isSupportedDebugSession(session)) return;
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._terminatedDebugSessionIds.add(session.id);
+        const released = this._releaseTerminatedDebugSession(session);
+        // A failed release stays recorded so a concurrent debug.stop still reports it.
+        this._debugSessionReleases?.set(session.id, released);
+        const restore = await released;
+        this._debugSessionReleases?.delete(session.id);
+        if (restore) await this.restoreSamplingAfterDebug();
+    }
+    // Returns whether sampling should be restored after the probe has been released.
+    async _releaseTerminatedDebugSession(session) {
         if (this._externalDebug?.matches(session)) {
             this._clearDebugStartupWatchdog({ kind: "terminated" });
             this._debugBridge.detach(session);
             await this._externalDebug.finish(session);
             this._samplingIntent = false;
             this._debugBridge.setIntent(false);
-            return;
+            return false;
         }
         const group = this._managedDebugGroup;
         const member = group?.match(session);
         if (member) {
             this._debugBridge.detach(session);
             await group.release(member.token);
-            if (group.stopped && this._managedDebugGroup === group) {
-                await this._stopManagedDebugServer();
-                await this.restoreSamplingAfterDebug();
-            }
-            return;
+            await this._closeStoppedDebugGroup(group);
+            return false;
         }
         if (
             this._debugLifecycle.pending &&
@@ -5464,10 +5489,10 @@ class MainViewProvider {
         }
         const managed = !!this._managedDebugSessionId && session.id === this._managedDebugSessionId;
         this._debugBridge.detach(session);
-        if (this._debugBridge.hasSession) return;
+        if (this._debugBridge.hasSession) return false;
         this._debugReadPlanKey = "";
         if (managed) await this._stopManagedDebugServer();
-        await this.restoreSamplingAfterDebug();
+        return true;
     }
     handleDebugAdapterExit(session) {
         if (!session || !isSupportedDebugSession(session)) return;

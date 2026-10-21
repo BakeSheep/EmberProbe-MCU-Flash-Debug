@@ -22,7 +22,7 @@ has been verified at a firmware address; report adapter verification when availa
 - **Applies to**: controlling the workspace debugger session (start/stop/pause/continue/step/restart) and managing source-line or function breakpoints.
 - **Requires**: the EmberProbe Agent Bridge and VS Code's debugger APIs; `--start` also needs a complete EmberProbe debug configuration (ELF, probe, target, OpenOCD, SVD).
 - **Preconditions**: one control action in flight (else `DEBUG_CONTROL_BUSY` — read status instead); pause needs a running target, continue/step need a paused target; breakpoints can be created before a session starts.
-- **Side effects**: `--start` launches a session and halts the target; control actions change execution state; `--stop` ends the session; breakpoint mutations change VS Code breakpoints.
+- **Side effects**: `--start` launches a session and halts the target; control actions change execution state; `--stop` ends the session and returns once the managed OpenOCD server has released the probe (an unconfirmed server exit fails with `DEBUG_SERVER_STOP_FAILED` and the probe stays owned); breakpoint mutations change VS Code breakpoints.
 - **Success evidence**: state-changing commands complete from the corresponding DAP state event. A `--status`/`--breakpoints` read does not prove `--start` works. On timeout, read status; never auto-resend.
 
 For failure handling, retry limits, cross-skill routing, and result scoping, read [../_emberprobe/agent-workflow.md](../_emberprobe/agent-workflow.md).
