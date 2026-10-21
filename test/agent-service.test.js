@@ -31,12 +31,23 @@ const { createFixture } = require("./helpers/service-fixture");
             workspaceProvider: () => temp,
             storageDirProvider: () => path.join(temp, "global-storage"),
             onCall: (method) => bridgeCalls.push(method),
+            onAudit: (entry) => audit.push(entry),
             handlers: {
                 "config.get": async () => ({ ok: true }),
                 "chip.read": async () => ({ core: "Cortex-M4", pc: "0x1", secret: "hidden" })
             }
         });
+        const audit = [];
         assert.strictEqual(agent.isStarted(), false, "constructing the service must not create/start a bridge");
+        assert.deepStrictEqual(await agent.call("config.get", { secret: "value" }, { channel: "mcp", client: "c/1" }), {
+            ok: true
+        });
+        // 审计只记录通道、客户端、方法与结果码，不记录参数值
+        assert.deepStrictEqual(audit, [{ channel: "mcp", client: "c/1", method: "config.get", code: "OK" }]);
+        await assert.rejects(agent.call("missing"));
+        assert.deepStrictEqual(audit[1], { channel: "", client: "", method: "missing", code: "METHOD_NOT_FOUND" });
+        assert.ok(!JSON.stringify(audit).includes("value"));
+        bridgeCalls.length = 0;
         assert.deepStrictEqual(await agent.call("config.get"), { ok: true });
         assert.deepStrictEqual(await agent.call("chip.read", { sections: ["runtime"] }), { pc: "0x1" });
         const capabilities = await agent.call("capabilities");

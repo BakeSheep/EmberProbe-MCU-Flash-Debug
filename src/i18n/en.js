@@ -783,6 +783,7 @@ module.exports = Object.freeze({
     "approval.skillsAllow": "Allow this version for this session",
     "approval.skillsCustom":
         "An agent is running EmberProbe skill scripts from a location the extension does not manage. Allow the current contents to call the Agent Bridge?",
+    "agent.auditChannel": "EmberProbe Agent Bridge",
     "agent.accessEnabled": "Agent access is enabled for this workspace",
     "agent.accessDisabled": "Agent access is not enabled for this workspace",
     "agent.enable": "Enable",

@@ -504,6 +504,7 @@ class MainViewProvider {
             storageDirProvider: () => this._context.globalStorageUri.fsPath,
             registry: this._bridgeRegistry,
             onCall: (_method, _params, meta) => this._warnIfSkillsModified(meta),
+            onAudit: (entry) => this._auditAgentCall(entry),
             handlers: createAgentRoutes(this)
         });
         this.registerCommandHandlers();
@@ -2994,6 +2995,16 @@ class MainViewProvider {
         const status = await this._skillStatusService.refresh(autoUpdate);
         await this._syncAgentBridge(status);
         return status;
+    }
+    // 在输出面板记录“谁执行了哪次调用”：通道、客户端、方法与结果码，不含参数值。
+    _auditAgentCall(entry) {
+        if (!vscode.window.createOutputChannel) return;
+        if (!this._agentAudit) {
+            this._agentAudit = vscode.window.createOutputChannel(this._t("agent.auditChannel"));
+            this._context.subscriptions?.push(this._agentAudit);
+        }
+        const caller = [entry.channel || "legacy", entry.client].filter(Boolean).join(" ");
+        this._agentAudit.appendLine(`${new Date().toISOString()} ${caller} ${entry.method} ${entry.code}`);
     }
     // 调用前检查实际发起调用的 skill 副本；自定义内容需独立 UI 批准，内容再次变化会失效。
     async _warnIfSkillsModified(meta) {

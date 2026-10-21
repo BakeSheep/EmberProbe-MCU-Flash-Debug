@@ -42,6 +42,7 @@ class AgentService {
         this.workspaceProvider = options.workspaceProvider;
         this.storageDirProvider = options.storageDirProvider || null;
         this.onCall = options.onCall || null;
+        this.onAudit = options.onAudit || null;
         this.isTrusted = options.isTrusted || (() => true);
         this.handlers = { ...options.handlers };
         // 实例注册表（可选）：Bridge 运行时登记 port/token，未运行时登记不含 token 的未启用标记。
@@ -73,7 +74,24 @@ class AgentService {
         return this.registry?.instanceId || "";
     }
 
+    // 调用审计只记录通道、客户端、方法与结果码，不记录参数值。
     async call(method, params = {}, meta) {
+        try {
+            const result = await this.dispatch(method, params, meta);
+            this.onAudit?.({ channel: meta?.channel || "", client: meta?.client || "", method, code: "OK" });
+            return result;
+        } catch (error) {
+            this.onAudit?.({
+                channel: meta?.channel || "",
+                client: meta?.client || "",
+                method,
+                code: error?.code || "ERROR"
+            });
+            throw error;
+        }
+    }
+
+    async dispatch(method, params, meta) {
         if (!this.isTrusted())
             throw Object.assign(new Error("Agent Bridge requires a trusted workspace"), {
                 code: "WORKSPACE_UNTRUSTED"

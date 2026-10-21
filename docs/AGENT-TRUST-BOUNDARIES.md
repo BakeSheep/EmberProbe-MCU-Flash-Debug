@@ -18,6 +18,16 @@ was written. Probes without a reliable serial and Flash verification never remem
 perform the operation. Resetting permission clears the pending confirmations and remembered
 authorization. Old independent modal grant records are no longer consulted.
 
+The MCP server maps the same confirmation responses to MCP elicitation when the client
+supports it: the form offers only the Bridge's `choices` plus `deny`, defaults to `deny`, and
+the confirmation ID stays inside the server. A form rendered by the client is closer to
+evidence of a human action than chat text, but the Bridge still does not authenticate it (a
+client can be configured to answer automatically), so plan binding and one-time use of IDs
+are unchanged. Clients without elicitation receive the plan and ID and must confirm in chat as
+skills do. The MCP server never chooses `remember` from the initial request and never accepts
+a confirmation on its own. The Bridge records each call's channel, client, method and result
+code (not parameter values) in the "EmberProbe Agent Bridge" output channel.
+
 EmberProbe records the digest of the last image it programmed in each workspace. Agent
 reads, samples and writes report `firmwareConsistency` (`match`, `mismatch` or `unknown`)
 against the configured ELF and add an `ELF_TARGET_MISMATCH` warning on mismatch; a

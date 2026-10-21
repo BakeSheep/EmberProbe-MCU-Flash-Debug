@@ -471,6 +471,23 @@ const READ_ONLY_METHODS = new Set([
     "peripherals.list"
 ]);
 
+// 观察类方法：不改变目标、工作区或扩展状态，但可能访问硬件或首次安装 USB 驱动，
+// 因而不在可重试的只读集合内。MCP 工具的 readOnlyHint 由这两个集合派生。
+const OBSERVATION_METHODS = new Set([
+    ...READ_ONLY_METHODS,
+    "cubemx.detect",
+    "cubemx.status",
+    "chip.read",
+    "fault.read",
+    "variables.read",
+    "variables.sample",
+    "peripherals.read",
+    "sampling.status",
+    "flash.permission",
+    "variables.write.permission",
+    "cubemx.permission"
+]);
+
 // These calls may perform a one-time USB driver installation before reading hardware.
 const DRIVER_SETUP_METHODS = new Set([
     "chip.read",
@@ -700,6 +717,7 @@ module.exports = {
     writeDiagnostic,
     isReadOnlyMethod,
     READ_ONLY_METHODS,
+    OBSERVATION_METHODS,
     DRIVER_SETUP_METHODS,
     STATUS_QUERY_FOR,
     DIAGNOSTICS
