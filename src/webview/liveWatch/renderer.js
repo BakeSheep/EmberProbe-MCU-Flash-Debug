@@ -344,9 +344,22 @@ var wantImportOpen = false,
     impTypeChunks = 0,
     impSearchTimer = null,
     impSearchQuery = "";
+var PANEL_MARGIN = 8,
+    PANEL_MIN_WIDTH = 220,
+    PANEL_MIN_HEIGHT = 120,
+    PANEL_COLUMNS_WIDTH = 480;
+// Saved card geometry, or a default top-left card that keeps the former side panel width.
+function savedValuePanel(state) {
+    var p = state && state.valuePanel;
+    if (p && ["x", "y", "w"].every((key) => Number.isFinite(p[key])) && (p.h === null || Number.isFinite(p.h)))
+        return { x: p.x, y: p.y, w: p.w, h: p.h, dockRight: p.dockRight === true, dockBottom: p.dockBottom === true };
+    var width = state && Number(state.sideWidth);
+    return { x: 12, y: 40, w: width > 0 ? width : 300, h: null, dockRight: false, dockBottom: false };
+}
 var saved = api && api.getState ? api.getState() : null,
-    sideWidth = (saved && Number(saved.sideWidth)) || 260,
-    sideHeight = saved && Number.isFinite(saved.sideHeight) ? Math.max(100, saved.sideHeight) : null,
+    valuePanel = savedValuePanel(saved),
+    // Two-column layout: each top-level card keeps the column it was placed in (0 or 1).
+    cardColumns = Object.assign(Object.create(null), saved && saved.cardColumns),
     sideCollapsed = !!(saved && saved.sideCollapsed),
     windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30";
 if (saved && saved.hidden) hidden = saved.hidden;
@@ -533,8 +546,8 @@ function saveUi() {
             lastPointersVersion: lastPointersVersion,
             pointerCurveDefaults: true,
             timeWindow: windowPreset,
-            sideWidth: sideWidth,
-            sideHeight: sideHeight,
+            valuePanel: valuePanel,
+            cardColumns: cardColumns,
             sideCollapsed: sideCollapsed,
             norm: norm
         });
@@ -861,50 +874,88 @@ function renderVars() {
     if (varReorder) varReorder.refresh();
 }
 var variableCards = [];
-// Cards keep watch order even when shown in two alternating columns, so moves follow that order.
+function inColumns() {
+    return $("vars").classList.contains("independent-columns");
+}
+// Each column shows its cards in watch order, so moving a card in one column never moves the other's.
 var varReorder = EmberProbeCardReorder.attach($("vars"), {
-    order: function () {
+    order: function (name) {
         return variableCards
             .map(function (card) {
                 return card.dataset.reorderKey;
             })
-            .filter(Boolean);
+            .filter(function (key) {
+                return key && (!inColumns() || cardColumns[key] === cardColumns[name]);
+            });
     },
-    onMove: function (name, target, after) {
-        var next = EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
-            return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
-        });
-        if (next === watch) return;
+    zones: function () {
+        return $("vars").querySelectorAll(".var-column");
+    },
+    onMove: function (name, target, after, zone) {
+        var column = zone !== undefined ? Number(zone) : inColumns() ? cardColumns[target] : undefined;
+        var moved = column !== undefined && cardColumns[name] !== column;
+        if (moved) cardColumns[name] = column;
+        var next =
+            target === null
+                ? watch
+                : EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
+                      return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
+                  });
+        if (next === watch && !moved) return;
+        var reordered = next !== watch;
         watch = next;
         renderVars();
-        saveWatch();
+        if (reordered) saveWatch();
+        saveUi();
+    },
+    moveAcross: function (name, step) {
+        var column = step < 0 ? 0 : 1;
+        if (!inColumns() || cardColumns[name] === column) return;
+        cardColumns[name] = column;
+        renderVars();
+        saveUi();
     }
 });
+// Saved columns are kept; new cards join the column holding fewer cards. Unkeyed nodes (notes,
+// fallback pointee cards) follow the card before them.
+function columnFor(card, counts, previous) {
+    var key = card.dataset.reorderKey;
+    if (!key) return previous;
+    if (cardColumns[key] !== 0 && cardColumns[key] !== 1) cardColumns[key] = counts[1] < counts[0] ? 1 : 0;
+    counts[cardColumns[key]]++;
+    return cardColumns[key];
+}
 function arrangeVariableCards(force) {
     if (!variableCards.length) return;
     var box = $("vars");
-    var columns = window.innerWidth >= 560 && window.innerWidth <= 760;
+    // A collapsed card has no width; keep its columns until it is shown again.
+    var columns = sideCollapsed
+        ? box.classList.contains("independent-columns")
+        : $("valuePane").getBoundingClientRect().width >= PANEL_COLUMNS_WIDTH;
     if (!force && columns === box.classList.contains("independent-columns")) return;
     var focused = document.activeElement;
-    var pane = $("valuePane");
-    var scrollTop = pane.scrollTop;
+    var scrollTop = box.scrollTop;
     if (columns) {
         var stacks = [document.createElement("div"), document.createElement("div")];
-        stacks.forEach(function (stack) {
+        stacks.forEach(function (stack, index) {
             stack.className = "var-column";
+            stack.dataset.reorderZone = String(index);
         });
-        // Stable alternating columns: expanding a tree never moves cards in the other column.
-        variableCards.forEach(function (card, index) {
-            stacks[index % 2].appendChild(card);
+        // Independent columns: expanding a tree or moving a card never moves cards in the other column.
+        var counts = [0, 0],
+            column = 0;
+        variableCards.forEach(function (card) {
+            column = columnFor(card, counts, column);
+            stacks[column].appendChild(card);
         });
         box.replaceChildren(...stacks);
     } else {
-        // Restore watch order, DOM focus order and the original nodes at the single-column breakpoints.
+        // Restore watch order, DOM focus order and the original nodes when the card is narrow.
         box.replaceChildren(...variableCards);
     }
     box.classList.toggle("independent-columns", columns);
     if (focused && focused !== document.activeElement && box.contains(focused)) focused.focus({ preventScroll: true });
-    pane.scrollTop = scrollTop;
+    box.scrollTop = scrollTop;
 }
 function renderScalarCard(item) {
     var idx = watch.indexOf(item);
@@ -2241,27 +2292,138 @@ function setupExportTimeline(candidates) {
     $("exportAxisEnd").textContent = formatElapsed(span);
     updateExportTimeline();
 }
-function setExportTimelineMode() {
-    var selected = $("exportRanges").querySelector("input[name=exportRange]:checked"),
-        enabled = !!selected && selected.value === "custom";
-    $("exportCustom").classList.toggle("disabled", !enabled);
-    $("exportFromRange").disabled = !enabled;
-    $("exportToRange").disabled = !enabled;
-}
 function exportOptions() {
-    var radio = $("exportRanges").querySelector("input[name=exportRange]:checked"),
-        mode = radio ? radio.value : "all";
-    if (mode === "all") return {};
-    if (mode === "custom") {
-        var from = exportTimelineStart + Number($("exportFromRange").value),
-            to = exportTimelineStart + Number($("exportToRange").value);
-        if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
-        return { from: from, to: to };
+    var a = Number($("exportFromRange").value),
+        b = Number($("exportToRange").value),
+        from = exportTimelineStart + a,
+        to = exportTimelineStart + b;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
+    if (a === 0 && b === Number($("exportToRange").max)) return {};
+    return { from: from, to: to };
+}
+var exportSeriesDrag = null;
+function endExportSeriesDrag(event) {
+    var drag = exportSeriesDrag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    exportSeriesDrag = null;
+    cancelAnimationFrame(drag.frame);
+    drag.marquee.remove();
+    if (drag.box.hasPointerCapture?.(drag.pointerId)) drag.box.releasePointerCapture(drag.pointerId);
+    if (event && event.type === "pointerup" && !drag.moved && drag.checkbox) {
+        drag.checkbox.checked = !drag.checkbox.checked;
     }
-    var seconds = Number(mode);
-    return Number.isFinite(seconds) ? { from: exportOpenedAt - seconds * 1000, to: exportOpenedAt } : null;
+    setupExportTimeline(selectedExportCandidates());
+}
+function updateExportSeriesDrag() {
+    var drag = exportSeriesDrag;
+    if (!drag || !drag.moved) return;
+    var box = drag.box,
+        rect = box.getBoundingClientRect(),
+        left = rect.left + box.clientLeft,
+        top = rect.top + box.clientTop,
+        headerHeight = box.querySelector("thead").getBoundingClientRect().height,
+        x = Math.max(0, Math.min(box.clientWidth, drag.clientX - left)) + box.scrollLeft,
+        y = Math.max(headerHeight, Math.min(box.clientHeight, drag.clientY - top)) + box.scrollTop,
+        x1 = Math.min(drag.x, x),
+        x2 = Math.max(drag.x, x),
+        y1 = Math.min(drag.y, y),
+        y2 = Math.max(drag.y, y);
+    drag.marquee.hidden = false;
+    Object.assign(drag.marquee.style, {
+        left: x1 + "px",
+        top: y1 + "px",
+        width: x2 - x1 + "px",
+        height: y2 - y1 + "px"
+    });
+    drag.rows.forEach(function (row) {
+        var hit = row.left <= x2 && row.right >= x1 && row.top <= y2 && row.bottom >= y1;
+        row.checkbox.checked = hit ? !row.checked : row.checked;
+    });
+}
+function scrollExportSeriesDrag(now) {
+    var drag = exportSeriesDrag;
+    if (!drag || !drag.moved) return;
+    var box = drag.box,
+        rect = box.getBoundingClientRect(),
+        top = rect.top + box.clientTop + box.querySelector("thead").getBoundingClientRect().height,
+        bottom = rect.top + box.clientTop + box.clientHeight,
+        edge = Math.min(28, (bottom - top) / 3),
+        speed =
+            drag.clientY < top + edge
+                ? -Math.min(1, (top + edge - drag.clientY) / edge)
+                : drag.clientY > bottom - edge
+                  ? Math.min(1, (drag.clientY - bottom + edge) / edge)
+                  : 0;
+    box.scrollTop += speed * Math.min(32, now - drag.lastFrame) * 0.5;
+    drag.lastFrame = now;
+    updateExportSeriesDrag();
+    drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
+}
+function beginExportSeriesDrag(event) {
+    if (event.button !== 0 || exportSeriesDrag || !exportCandidates.length) return;
+    var box = $("exportSeries"),
+        rect = box.getBoundingClientRect(),
+        left = rect.left + box.clientLeft,
+        top = rect.top + box.clientTop;
+    if (
+        event.target.closest("thead") ||
+        event.clientX >= left + box.clientWidth ||
+        event.clientY >= top + box.clientHeight
+    )
+        return;
+    event.preventDefault();
+    var row = event.target.closest("tbody tr"),
+        marquee = document.createElement("div");
+    marquee.className = "export-marquee";
+    marquee.hidden = true;
+    box.appendChild(marquee);
+    exportSeriesDrag = {
+        box: box,
+        pointerId: event.pointerId,
+        checkbox: row && row.querySelector("input"),
+        x: event.clientX - left + box.scrollLeft,
+        y: event.clientY - top + box.scrollTop,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
+        marquee: marquee,
+        frame: 0,
+        lastFrame: performance.now(),
+        rows: Array.from(box.querySelectorAll("tbody tr"), function (entry) {
+            var bounds = entry.getBoundingClientRect(),
+                checkbox = entry.querySelector("input");
+            return {
+                checkbox: checkbox,
+                checked: checkbox.checked,
+                left: bounds.left - left + box.scrollLeft,
+                right: bounds.right - left + box.scrollLeft,
+                top: bounds.top - top + box.scrollTop,
+                bottom: bounds.bottom - top + box.scrollTop
+            };
+        })
+    };
+    box.setPointerCapture?.(event.pointerId);
+}
+function moveExportSeriesDrag(event) {
+    var drag = exportSeriesDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!(event.buttons & 1)) {
+        endExportSeriesDrag(event);
+        return;
+    }
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4) {
+        drag.moved = true;
+        drag.lastFrame = performance.now();
+        drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
+    }
+    updateExportSeriesDrag();
 }
 function hideExport() {
+    endExportSeriesDrag();
     $("exportOverlay").classList.add("hidden");
     $("exportWarn").textContent = "";
 }
@@ -2271,6 +2433,7 @@ function showExport() {
     post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
 }
 function showArchiveExport(info) {
+    endExportSeriesDrag();
     var names = Array.isArray(info && info.variables) ? info.variables : [],
         first = Number(info && info.firstTimestampMs),
         last = Number(info && info.lastTimestampMs);
@@ -2283,18 +2446,49 @@ function showArchiveExport(info) {
         return;
     }
     exportCandidates = names.map(function (name) {
-        var displayName =
-            info.displayNames &&
-            Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
-            typeof info.displayNames[name] === "string" &&
-            info.displayNames[name];
-        return { name: name, displayName: displayName || curveDisplayName(name), buffer: [{ t: first }, { t: last }] };
+        // The host archives separate type interpretations as "name [type]". Keep that key for
+        // export, but present its variable name and sampled type in their own columns.
+        var archivedType = / \[([ui](?:8|16|32|64)|f32|f64)\]$/.exec(name),
+            variableName = archivedType ? name.slice(0, -archivedType[0].length) : name,
+            displayName =
+                info.displayNames &&
+                Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
+                typeof info.displayNames[name] === "string" &&
+                info.displayNames[name];
+        if (archivedType && displayName && displayName.endsWith(archivedType[0])) {
+            displayName = displayName.slice(0, -archivedType[0].length);
+        }
+        var item =
+            watch.find(function (entry) {
+                return entry.name === variableName;
+            }) || impSymbolByName.get(variableName);
+        return {
+            name: name,
+            displayName: displayName && displayName !== variableName ? displayName : curveDisplayName(variableName),
+            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType),
+            buffer: [{ t: first }, { t: last }]
+        };
     });
     exportOpenedAt = last;
-    var box = $("exportSeries");
-    box.textContent = "";
+    var box = $("exportSeries"),
+        table = document.createElement("table"),
+        head = table.createTHead(),
+        header = head.insertRow(),
+        body = table.createTBody();
+    ["lw.exportVariableName", "lw.exportDataType"].forEach(function (key) {
+        var cell = document.createElement("th");
+        cell.scope = "col";
+        cell.dataset.i18n = key;
+        cell.textContent = t(key);
+        header.appendChild(cell);
+    });
+    box.replaceChildren(table);
+    box.scrollTop = 0;
     exportCandidates.forEach(function (item, index) {
-        var label = document.createElement("label"),
+        var row = body.insertRow(),
+            nameCell = row.insertCell(),
+            typeCell = row.insertCell(),
+            label = document.createElement("label"),
             cb = document.createElement("input"),
             name = document.createElement("span");
         cb.type = "checkbox";
@@ -2303,14 +2497,14 @@ function showArchiveExport(info) {
         cb.onchange = function () {
             setupExportTimeline(selectedExportCandidates());
         };
+        name.className = "export-series-name";
         name.textContent = name.title = item.displayName;
+        typeCell.className = "export-series-type";
+        typeCell.textContent = typeCell.title = item.type || t("lw.unknownType");
         label.append(cb, name);
-        box.appendChild(label);
+        nameCell.appendChild(label);
     });
     setupExportTimeline(exportCandidates);
-    var all = $("exportRanges").querySelector("input[value=all]");
-    if (all) all.checked = true;
-    setExportTimelineMode();
     $("exportWarn").textContent = info.limitReached
         ? t("lw.archiveTruncated")
         : info.limited
@@ -3485,7 +3679,17 @@ $("exportApply").onclick = applyExport;
 $("exportOverlay").onclick = function (e) {
     if (e.target === $("exportOverlay")) hideExport();
 };
-$("exportRanges").onchange = setExportTimelineMode;
+$("exportSeries").addEventListener("pointerdown", beginExportSeriesDrag);
+$("exportSeries").addEventListener("pointermove", moveExportSeriesDrag);
+$("exportSeries").addEventListener("pointerup", endExportSeriesDrag);
+$("exportSeries").addEventListener("pointercancel", endExportSeriesDrag);
+$("exportSeries").addEventListener("lostpointercapture", endExportSeriesDrag);
+$("exportSeries").onclick = function (event) {
+    if (event.detail) event.preventDefault();
+};
+window.addEventListener("blur", function () {
+    endExportSeriesDrag();
+});
 $("exportFromRange").oninput = function () {
     updateExportTimeline("from");
 };
@@ -3597,47 +3801,81 @@ window.EmberProbeMessages.connect(window, {
     }
 });
 var layout = $("layout"),
-    sideSplitter = $("sideSplitter"),
+    valuePane = $("valuePane"),
     sideToggle = $("sideToggle");
+function clampNumber(value, min, max) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
+}
+// The card keeps its preferred geometry; smaller views shrink and shift it without losing that preference.
+function panelGeometry(bounds) {
+    var height = valuePanel.h === null ? Math.min(Math.round(bounds.height * 0.6), 460) : valuePanel.h;
+    var w = clampNumber(valuePanel.w, PANEL_MIN_WIDTH, bounds.width - 2 * PANEL_MARGIN);
+    var h = clampNumber(height, PANEL_MIN_HEIGHT, bounds.height - 2 * PANEL_MARGIN);
+    var x = valuePanel.dockRight ? bounds.width - PANEL_MARGIN - w : valuePanel.x;
+    var y = valuePanel.dockBottom ? bounds.height - PANEL_MARGIN - h : valuePanel.y;
+    return {
+        x: Math.round(clampNumber(x, PANEL_MARGIN, bounds.width - PANEL_MARGIN - w)),
+        y: Math.round(clampNumber(y, PANEL_MARGIN, bounds.height - PANEL_MARGIN - h)),
+        w: Math.round(w),
+        h: Math.round(h)
+    };
+}
+function applyPanelGeometry() {
+    var bounds = layout.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    var g = panelGeometry(bounds);
+    valuePane.style.left = g.x + "px";
+    valuePane.style.top = g.y + "px";
+    valuePane.style.width = g.w + "px";
+    valuePane.style.height = g.h + "px";
+}
+// Cards moved against the right or bottom edge stay docked there when the view is resized.
+function setPanelGeometry(g, bounds) {
+    var x = Math.round(clampNumber(g.x, PANEL_MARGIN, bounds.width - PANEL_MARGIN - g.w)),
+        y = Math.round(clampNumber(g.y, PANEL_MARGIN, bounds.height - PANEL_MARGIN - g.h)),
+        right = bounds.width - PANEL_MARGIN - x - g.w,
+        bottom = bounds.height - PANEL_MARGIN - y - g.h;
+    valuePanel = {
+        x: x,
+        y: y,
+        w: Math.round(g.w),
+        h: Math.round(g.h),
+        dockRight: right <= 1 && x > PANEL_MARGIN + 1,
+        dockBottom: bottom <= 1 && y > PANEL_MARGIN + 1
+    };
+    applyPanelGeometry();
+    arrangeVariableCards();
+}
+function movedPanel(start, dx, dy) {
+    return { x: start.x + dx, y: start.y + dy, w: start.w, h: start.h };
+}
+// Dragging a north or west edge keeps the opposite edge where it was.
+function resizedPanel(start, edge, dx, dy, bounds) {
+    var g = { x: start.x, y: start.y, w: start.w, h: start.h };
+    if (edge.indexOf("e") >= 0) g.w = clampNumber(start.w + dx, PANEL_MIN_WIDTH, bounds.width - PANEL_MARGIN - start.x);
+    if (edge.indexOf("s") >= 0)
+        g.h = clampNumber(start.h + dy, PANEL_MIN_HEIGHT, bounds.height - PANEL_MARGIN - start.y);
+    if (edge.indexOf("w") >= 0) {
+        g.w = clampNumber(start.w - dx, PANEL_MIN_WIDTH, start.x + start.w - PANEL_MARGIN);
+        g.x = start.x + start.w - g.w;
+    }
+    if (edge.indexOf("n") >= 0) {
+        g.h = clampNumber(start.h - dy, PANEL_MIN_HEIGHT, start.y + start.h - PANEL_MARGIN);
+        g.y = start.y + start.h - g.h;
+    }
+    return g;
+}
 function applySideLayout() {
-    layout.style.setProperty("--side-width", sideWidth + "px");
-    if (sideHeight !== null) layout.style.setProperty("--side-height", sideHeight + "px");
     layout.classList.toggle("side-collapsed", sideCollapsed);
     sideToggle.setAttribute("aria-expanded", String(!sideCollapsed));
     sideToggle.setAttribute("aria-controls", "vars");
     sideToggle.setAttribute("aria-label", sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane"));
     sideToggle.textContent = (sideCollapsed ? "› " : "‹ ") + t("lw.valuePane");
     sideToggle.title = sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane");
-    updateSplitter();
-    dirty = true;
-}
-function updateSplitter() {
-    var stacked = window.innerWidth <= 760;
-    var bounds = layout.getBoundingClientRect();
-    var pane = $("valuePane").getBoundingClientRect();
-    sideSplitter.setAttribute("aria-label", t("lw.splitterHint"));
-    sideSplitter.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
-    sideSplitter.setAttribute("aria-valuemin", stacked ? "100" : "220");
-    sideSplitter.setAttribute(
-        "aria-valuemax",
-        String(Math.round(Math.max(stacked ? 100 : 220, stacked ? bounds.height - 169 : bounds.width - 300)))
-    );
-    sideSplitter.setAttribute("aria-valuenow", String(Math.round(stacked ? pane.height : pane.width)));
-    sideSplitter.tabIndex = sideCollapsed ? -1 : 0;
-}
-function resizeSide(size, stacked) {
-    var bounds = layout.getBoundingClientRect();
-    var min = stacked ? 100 : 220;
-    var max = Math.max(min, stacked ? bounds.height - 169 : bounds.width - 300);
-    size = Math.round(Math.min(max, Math.max(min, size)));
-    if (stacked) {
-        sideHeight = size;
-        layout.style.setProperty("--side-height", size + "px");
-    } else {
-        sideWidth = size;
-        layout.style.setProperty("--side-width", size + "px");
-    }
-    updateSplitter();
+    $("panelHandle").setAttribute("aria-label", t("lw.panelMoveHint"));
+    $("panelResize").setAttribute("aria-label", t("lw.panelResizeHint"));
+    applyPanelGeometry();
+    arrangeVariableCards();
     dirty = true;
 }
 sideToggle.onclick = function () {
@@ -3645,53 +3883,71 @@ sideToggle.onclick = function () {
     applySideLayout();
     saveUi();
 };
-sideSplitter.addEventListener("pointerdown", function (e) {
+function trackPanelPointer(target, e, update) {
     if (e.button !== 0) return;
-    var stacked = window.innerWidth <= 760;
     e.preventDefault();
-    if (sideCollapsed) {
-        sideCollapsed = false;
-        applySideLayout();
-    }
-    var start = stacked ? e.clientY : e.clientX,
-        bounds = $("valuePane").getBoundingClientRect(),
-        startSize = stacked ? bounds.height : bounds.width;
-    sideSplitter.classList.add("dragging");
-    sideSplitter.setPointerCapture(e.pointerId);
+    var bounds = layout.getBoundingClientRect(),
+        start = panelGeometry(bounds),
+        startX = e.clientX,
+        startY = e.clientY;
+    valuePane.classList.add("dragging");
+    target.classList.add("active");
+    target.setPointerCapture(e.pointerId);
     var move = function (ev) {
         if (ev.pointerId !== e.pointerId) return;
-        resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
+        setPanelGeometry(update(start, ev.clientX - startX, ev.clientY - startY, bounds), bounds);
     };
     var end = function (ev) {
         if (ev.pointerId !== e.pointerId) return;
-        sideSplitter.classList.remove("dragging");
-        sideSplitter.removeEventListener("pointermove", move);
-        sideSplitter.removeEventListener("pointerup", end);
-        sideSplitter.removeEventListener("pointercancel", end);
-        sideSplitter.removeEventListener("lostpointercapture", end);
-        if (sideSplitter.hasPointerCapture(ev.pointerId)) sideSplitter.releasePointerCapture(ev.pointerId);
+        valuePane.classList.remove("dragging");
+        target.classList.remove("active");
+        target.removeEventListener("pointermove", move);
+        target.removeEventListener("pointerup", end);
+        target.removeEventListener("pointercancel", end);
+        target.removeEventListener("lostpointercapture", end);
+        if (target.hasPointerCapture(ev.pointerId)) target.releasePointerCapture(ev.pointerId);
         saveUi();
     };
-    sideSplitter.addEventListener("pointermove", move);
-    sideSplitter.addEventListener("pointerup", end);
-    sideSplitter.addEventListener("pointercancel", end);
-    sideSplitter.addEventListener("lostpointercapture", end);
-});
-sideSplitter.addEventListener("keydown", function (e) {
-    var stacked = window.innerWidth <= 760;
-    var direction = stacked ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
-    if (!direction) return;
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", end);
+    target.addEventListener("pointercancel", end);
+    target.addEventListener("lostpointercapture", end);
+}
+function nudgePanel(e, update) {
+    var step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!step) return;
     e.preventDefault();
-    var bounds = $("valuePane").getBoundingClientRect();
-    resizeSide((stacked ? bounds.height : bounds.width) + direction * (e.shiftKey ? 50 : 10), stacked);
+    var bounds = layout.getBoundingClientRect(),
+        size = e.shiftKey ? 50 : 10;
+    setPanelGeometry(update(panelGeometry(bounds), step[0] * size, step[1] * size, bounds), bounds);
     saveUi();
+}
+$("panelHandle").addEventListener("pointerdown", function (e) {
+    trackPanelPointer(e.currentTarget, e, movedPanel);
+});
+$("panelHandle").addEventListener("keydown", function (e) {
+    nudgePanel(e, movedPanel);
+});
+valuePane.querySelectorAll(".float-resize").forEach(function (handle) {
+    var resize = function (start, dx, dy, bounds) {
+        return resizedPanel(start, handle.dataset.edge, dx, dy, bounds);
+    };
+    handle.addEventListener("pointerdown", function (e) {
+        trackPanelPointer(handle, e, resize);
+    });
+    handle.addEventListener("keydown", function (e) {
+        nudgePanel(e, resize);
+    });
 });
 applySideLayout();
 new ResizeObserver(function () {
-    updateSplitter();
-    arrangeVariableCards();
+    applyPanelGeometry();
 }).observe(layout);
+new ResizeObserver(function () {
+    arrangeVariableCards();
+}).observe(valuePane);
 window.addEventListener("resize", function () {
+    applyPanelGeometry();
     arrangeVariableCards();
     if (!$("frequencyPopup").hidden) positionFrequencyPopup();
 });
