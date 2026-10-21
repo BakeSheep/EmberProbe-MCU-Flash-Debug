@@ -1,7 +1,8 @@
 "use strict";
 // 把 Bridge 结果与错误转换成 MCP 工具结果。失败时 structuredContent 与 skill 脚本写到 stderr 的
-// diagnostic 完全同形，由同一个 diagnosticForError 生成。
+// diagnostic 同形，由同一个 diagnosticForError 生成；建议动作按 MCP 通道渲染成工具名。
 const { diagnosticForError } = require("../../skills/_emberprobe/agent-client");
+const { toolForMethod } = require("./tools");
 
 const MAX_TEXT = 60000;
 
@@ -22,7 +23,7 @@ function success(value) {
 }
 
 function failure(error, operation) {
-    const diagnostic = diagnosticForError(error, { operation });
+    const diagnostic = diagnosticForError(error, { operation, render: { channel: "mcp", method: toolForMethod } });
     return { isError: true, content: [{ type: "text", text: text(diagnostic) }], structuredContent: diagnostic };
 }
 

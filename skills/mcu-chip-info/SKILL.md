@@ -9,6 +9,7 @@ Use `scripts/read-chip.js` from this skill directory. EmberProbe owns the probe 
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `chip_read`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: reading attached MCU identity, debug-link, or runtime information (core, series, UID, Flash size, vendor fingerprint, debugger, transport, voltage, target state, CPU registers).
 - **Requires**: the EmberProbe Agent Bridge, OpenOCD, a connected probe, and a powered target.
 - **Preconditions**: the probe is free (single owner); request only the fields needed to answer.

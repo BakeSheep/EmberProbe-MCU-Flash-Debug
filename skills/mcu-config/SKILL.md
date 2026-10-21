@@ -9,6 +9,7 @@ Use `scripts/config.js` from this skill directory. Never edit VS Code storage or
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `config_get`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: reading or changing EmberProbe workspace configuration (ELF, debugger, MCU target, SVD, selected `.ioc`, sampling interval, Tcl port, sample history limit), and identifying the supported route for CubeMX and firmware package setup.
 - **Requires**: the EmberProbe Agent Bridge. No probe or hardware is needed.
 - **Preconditions**: read the current configuration before changing it; change only the fields the user explicitly requested; `openocdPath` and `cubemxPath` are read-only through the Bridge.

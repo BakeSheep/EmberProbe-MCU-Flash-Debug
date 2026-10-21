@@ -304,6 +304,10 @@ const writeHandler = (params) => {
             assert.strictEqual(result.structuredContent.error.code, "BRIDGE_TIMEOUT");
             assert.strictEqual(result.structuredContent.error.details.resultUnknown, true);
             assert.strictEqual(result.structuredContent.error.retryable, false);
+            // 建议动作指向 MCP 工具而不是 CLI 参数
+            const advice = result.structuredContent.error.suggestedActions.join("\n");
+            assert.ok(advice.includes("debug_status") && !advice.includes("--status"));
+            assert.deepStrictEqual(result.structuredContent.error.actions, [{ method: "debug.status" }]);
             await client.close();
         });
 
@@ -334,6 +338,21 @@ const writeHandler = (params) => {
             });
             assert.deepStrictEqual(result.structuredContent, { state: "paused" });
             assert.ok(progress.length >= 1, "at least one progress notification");
+            await client.close();
+        });
+
+        await scenario("Serve workflow prompts built from the bundled skills", async () => {
+            const { client } = await connect({ env: { EMBERPROBE_WORKSPACE: workspace } });
+            const { prompts } = await client.listPrompts();
+            assert.deepStrictEqual(
+                prompts.map((prompt) => prompt.name),
+                ["flash", "fault_triage", "variable_debug", "rtos_inspect"]
+            );
+            const flash = await client.getPrompt({ name: "flash", arguments: { goal: "Flash build/app.elf" } });
+            const text = flash.messages[0].content.text;
+            assert.ok(text.startsWith("Task: Flash build/app.elf"));
+            assert.ok(text.includes("`scripts/program.js` → flash_program") && text.includes("# MCU Flash"));
+            await assert.rejects(client.getPrompt({ name: "cubemx_generate" }), /Unknown prompt/);
             await client.close();
         });
 

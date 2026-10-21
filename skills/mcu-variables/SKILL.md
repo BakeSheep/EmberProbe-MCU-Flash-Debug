@@ -7,6 +7,7 @@ description: Read, monitor, trend, export, or explicitly modify MCU variables re
 
 ## Before you run
 
+- **MCP first**: if this session provides EmberProbe MCP tools (such as `variables_read`), use them; the scripts here are the fallback. The authorization and hardware rules on this page apply to both.
 - **Applies to**: listing, reading, controlling shared sampling, trending, or exporting variables, and — only on explicit request — modifying one.
 - **Requires**: the EmberProbe Agent Bridge; live reads/writes also need a connected, powered target. Listing ELF symbols and exporting CSV from an existing chart do not touch the probe.
 - **Preconditions**: an ELF is selected for reads; starting sampling uses the configured probe and current watch lists, sharing a compatible debug connection when available. Stopping or querying sampling needs no ELF or connected probe. A write needs explicit user confirmation with a fresh `confirmationId`.

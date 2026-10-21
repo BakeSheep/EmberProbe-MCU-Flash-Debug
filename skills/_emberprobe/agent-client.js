@@ -62,7 +62,7 @@ const DIAGNOSTICS = {
     CONFIG_INCOMPLETE: [
         "configuration",
         "EmberProbe 尚未配置调试器或 MCU 目标。",
-        ["使用 mcu-config Skill 读取并补全 debugger 与 mcu 配置。"],
+        ["使用 {{config}} 读取并补全 debugger 与 mcu 配置。"],
         false
     ],
     OPENOCD_NOT_READY: [
@@ -146,13 +146,13 @@ const DIAGNOSTICS = {
     VARIABLE_NOT_FOUND: [
         "variable_resolution",
         "当前最新 ELF 中没有该变量。",
-        ["确认变量名，必要时使用 --list 检查 ELF 符号。"],
+        ["确认变量名，必要时使用 {{list}} 检查 ELF 符号。"],
         false
     ],
     AMBIGUOUS_VARIABLE: [
         "variable_resolution",
         "变量名的大小写无关匹配不唯一。",
-        ["使用 --list 查看候选项并提供精确名称。"],
+        ["使用 {{list}} 查看候选项并提供精确名称。"],
         false
     ],
     VARIABLE_AMBIGUOUS: [
@@ -211,7 +211,7 @@ const DIAGNOSTICS = {
         "live_watch",
         "CSV 导出时间范围无效。",
         [
-            "优先使用 --last，或使用带日期且以 Z 结尾的 ISO 8601 UTC 时间戳。",
+            "优先使用 {{last}}，或使用带日期且以 Z 结尾的 ISO 8601 UTC 时间戳。",
             "裸 HH:MM[:SS] 按运行 Skill 的本机时区解析；检查 details.requestedRange.resolvedUtc 确认实际区间。"
         ],
         false
@@ -219,14 +219,14 @@ const DIAGNOSTICS = {
     CSV_SERIES_NOT_FOUND: [
         "live_watch",
         "所选曲线不在目标图表面板的历史缓冲中。",
-        ["检查变量名和 --panel 编号，或省略 --variables 导出全部有数据的曲线。"],
+        ["检查变量名和 {{panel}} 编号，或省略 {{csvVariables}} 导出全部有数据的曲线。"],
         false
     ],
     CSV_EXPORT_EMPTY: [
         "live_watch",
         "所选曲线或时间区间内没有可导出的采样点；常见原因是把 UTC 时刻作为本机 HH:MM 传入。",
         [
-            "优先用 --last 指定相对区间，或传入以 Z 结尾的完整 ISO 8601 UTC 时间戳。",
+            "优先用 {{last}} 指定相对区间，或传入以 Z 结尾的完整 ISO 8601 UTC 时间戳。",
             "检查 details.requestedRange.resolvedUtc 与 localTimeZone，再判断是否需要扩大范围。"
         ],
         true
@@ -262,7 +262,7 @@ const DIAGNOSTICS = {
     INVALID_VARIABLE_PATH: [
         "variable_resolution",
         "变量成员路径无效：基名不是复合类型，或路径无法在布局中解析。",
-        ["确认路径写法，如 sensor.x、buf[0]、buf[1:5]。", "使用 --list 检查 ELF 符号与展开能力。"],
+        ["确认路径写法，如 sensor.x、buf[0]、buf[1:5]。", "使用 {{list}} 检查 ELF 符号与展开能力。"],
         false
     ],
     CONFIG_KEY_FORBIDDEN: [
@@ -280,7 +280,7 @@ const DIAGNOSTICS = {
     SVD_NOT_CONFIGURED: [
         "configuration",
         "当前工作区没有绑定 SVD 文件。",
-        ["使用 mcu-config 选择 SVD，或在 EmberProbe 侧边栏选择/下载官方 SVD。"],
+        ["使用 {{configSvd}} 选择 SVD，或在 EmberProbe 侧边栏选择/下载官方 SVD。"],
         false
     ],
     SVD_READ_FAILED: ["configuration", "已绑定的 SVD 文件不存在或不可读。", ["重新选择 SVD 后重试。"], true],
@@ -289,7 +289,7 @@ const DIAGNOSTICS = {
         "SVD 中没有匹配的外设、寄存器或字段路径。",
         [
             "检查 details.invalidTargets 中的全部无效路径。",
-            "使用 --list 或 --query 查看当前 SVD 的实际命名后，一次性修正整批请求。"
+            "使用 {{peripheralList}} 查看当前 SVD 的实际命名后，一次性修正整批请求。"
         ],
         false
     ],
@@ -308,7 +308,7 @@ const DIAGNOSTICS = {
     TARGET_NOT_PAUSED: [
         "debug_state",
         "SVD 外设读写或当前调试操作需要芯片已暂停。",
-        ["使用 mcu-debug-control --pause 暂停当前调试会话（EmberProbe 内置调试器或 Cortex-Debug）后重试。"],
+        ["使用 {{debugPause}} 暂停当前调试会话（EmberProbe 内置调试器或 Cortex-Debug）后重试。"],
         true
     ],
     INVALID_PERIPHERAL_WRITE_VALUE: [
@@ -344,7 +344,7 @@ const DIAGNOSTICS = {
     DEBUG_SESSION_NOT_ACTIVE: [
         "debug_state",
         "当前工作区没有活动的调试会话（EmberProbe 内置调试器或 Cortex-Debug）。",
-        ["使用 mcu-debug-control --start 启动调试后重试。"],
+        ["使用 {{debugStart}} 启动调试后重试。"],
         true
     ],
     DEBUG_SESSION_CONFLICT: [
@@ -357,20 +357,20 @@ const DIAGNOSTICS = {
         "debug_capability",
         "当前调试会话不支持请求的操作或未声明对应 DAP 能力。",
         [
-            "查看 debug.status 的 capabilities；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug 或改用 mcu-debug-control --start 启动内置 emberprobe 会话。"
+            "查看 debug.status 的 capabilities；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug 或改用 {{debugStart}} 启动内置 emberprobe 会话。"
         ],
         false
     ],
     DEBUG_STATE_INVALID: [
         "debug_state",
         "请求的调试操作与当前运行/暂停状态不匹配。",
-        ["先使用 --status 读取实际状态再选择控制命令。"],
+        ["先使用 {{debugStatus}} 读取实际状态再选择控制命令。"],
         true
     ],
     INVALID_DEBUG_THREAD: [
         "debug_configuration",
         "调试线程 ID 必须是正整数。",
-        ["省略 --thread 让 EmberProbe 使用当前停止线程，或提供有效 ID。"],
+        ["省略 {{thread}} 让 EmberProbe 使用当前停止线程，或提供有效 ID。"],
         false
     ],
     DEBUG_MEMORY_READ_UNSUPPORTED: [
@@ -389,15 +389,15 @@ const DIAGNOSTICS = {
         "debug_state",
         "调试适配器未在限时内返回期望的运行/暂停事件。",
         [
-            "先运行 --status 确认实际状态，不要自动重复发送原命令。",
-            "如果目标仍在运行，且 --pause 或 --restart 也返回 DEBUG_CONTROL_TIMEOUT，由用户明确执行 --stop，再执行 --start 重建会话。"
+            "先运行 {{debugStatus}} 确认实际状态，不要自动重复发送原命令。",
+            "如果目标仍在运行，且 {{pause}} 或 {{restart}} 也返回 DEBUG_CONTROL_TIMEOUT，由用户明确执行 {{stop}}，再执行 {{start}} 重建会话。"
         ],
         true
     ],
     DEBUG_CONTROL_BUSY: [
         "debug_state",
         "上一个调试控制操作尚未被 DAP 事件确认完成。",
-        ["先运行 --status 确认状态，再决定是否发送新操作；不要并发或自动重试。"],
+        ["先运行 {{debugStatus}} 确认状态，再决定是否发送新操作；不要并发或自动重试。"],
         true
     ],
     DEBUG_INSPECTION_STALE: [
@@ -445,13 +445,13 @@ const DIAGNOSTICS = {
     BREAKPOINT_SOURCE_NOT_FOUND: [
         "debug_configuration",
         "指定的断点源文件不存在。",
-        ["检查 --source 路径与工作区。"],
+        ["检查 {{source}} 路径与工作区。"],
         false
     ],
     BREAKPOINT_NOT_FOUND: [
         "debug_configuration",
         "没有找到要删除或切换的断点。",
-        ["先使用 --breakpoints 列出当前断点。"],
+        ["先使用 {{breakpoints}} 列出当前断点。"],
         false
     ]
 };
@@ -530,6 +530,53 @@ function requiresNativeSession(operation) {
     return typeof operation === "string" && (operation.startsWith("rtos.") || operation === "debug.inspect");
 }
 
+// 建议动作中与通道相关的片段写成 {{token}}：skill 脚本渲染成原有的 CLI 写法（输出保持不变），
+// MCP 服务器渲染成工具名与参数名。methods 汇总为机器可读的 actions，与通道无关。
+const RENDERINGS = {
+    config: { skill: "mcu-config Skill", mcp: "config_get 与 config_set 工具", methods: ["config.get", "config.set"] },
+    configSvd: { skill: "mcu-config", mcp: "config_set（values.svd）", methods: ["config.set"] },
+    list: { skill: "--list", mcp: "mcu-variables 的 --list（MCP 暂无等价工具）", methods: [] },
+    peripheralList: { skill: "--list 或 --query", mcp: "peripherals_list（query）", methods: ["peripherals.list"] },
+    debugStart: { skill: "mcu-debug-control --start", mcp: "debug_start", methods: ["debug.start"] },
+    debugPause: {
+        skill: "mcu-debug-control --pause",
+        mcp: "debug_control（action: pause）",
+        methods: ["debug.control"]
+    },
+    debugStatus: { skill: "--status", mcp: "debug_status", methods: ["debug.status"] },
+    pause: { skill: "--pause", mcp: "debug_control（action: pause）", methods: ["debug.control"] },
+    restart: { skill: "--restart", mcp: "debug_control（action: restart）", methods: ["debug.control"] },
+    stop: { skill: "--stop", mcp: "debug_control（action: stop）", methods: ["debug.control"] },
+    start: { skill: "--start", mcp: "debug_start", methods: ["debug.start"] },
+    thread: { skill: "--thread", mcp: "threadId", methods: [] },
+    source: { skill: "--source", mcp: "file 参数", methods: [] },
+    breakpoints: { skill: "--breakpoints", mcp: "debug_breakpoints_list", methods: ["debug.breakpoints.list"] },
+    last: { skill: "--last", mcp: "lastSeconds", methods: [] },
+    panel: { skill: "--panel", mcp: "panelId", methods: [] },
+    csvVariables: { skill: "--variables", mcp: "variables", methods: [] }
+};
+
+// render.channel 为 "skill"（默认）或 "mcp"；render.method 把 Bridge 方法名映射为该通道的写法。
+function renderSuggestions(texts, render = {}) {
+    const channel = render.channel === "mcp" ? "mcp" : "skill";
+    const methodLabel = render.method || ((method) => method);
+    const methods = new Set();
+    const suggestedActions = texts.map((text) =>
+        String(text).replace(/\{\{([a-zA-Z]+)(?::([^}]*))?\}\}/g, (match, key, value) => {
+            if (key === "method") {
+                if (value) methods.add(value);
+                if (value) return methodLabel(value);
+                return channel === "mcp" ? "对应的状态查询工具" : "对应查询方法";
+            }
+            const rendering = RENDERINGS[key];
+            if (!rendering) return match;
+            for (const method of rendering.methods) methods.add(method);
+            return rendering[channel];
+        })
+    );
+    return { suggestedActions, actions: Array.from(methods, (method) => ({ method })) };
+}
+
 function diagnosticForError(error, context = {}) {
     let code = error?.code || "UNKNOWN_ERROR";
     if (code === "ECONNREFUSED" || code === "ECONNRESET") code = "BRIDGE_UNAVAILABLE";
@@ -541,12 +588,12 @@ function diagnosticForError(error, context = {}) {
     if (requiresNativeSession(context.operation || details.method)) {
         if (code === "DEBUG_SESSION_NOT_ACTIVE" && !error?.suggestedActions)
             suggestedActions = [
-                "RTOS 快照与暂停对象检查需要原生 emberprobe 调试会话：使用 mcu-debug-control --start 启动后重试。"
+                "RTOS 快照与暂停对象检查需要原生 emberprobe 调试会话：使用 {{debugStart}} 启动后重试。"
             ];
         else if (code === "DEBUG_SESSION_CONFLICT" && !error?.suggestedActions)
             suggestedActions = ["在 VS Code 中停止多余的调试会话，保留唯一的原生 emberprobe 会话后重试。"];
         else if (code === "TARGET_NOT_PAUSED" && !error?.suggestedActions)
-            suggestedActions = ["使用 mcu-debug-control --pause 暂停原生 emberprobe 会话后重试。"];
+            suggestedActions = ["使用 {{debugPause}} 暂停原生 emberprobe 会话后重试。"];
     }
     // 传输超时缺少服务端结果：只读方法可在前置不变时重试一次；状态变更方法结果未知，
     // 必须查询实际状态、不得自动重发，也不声称请求已取消。
@@ -563,10 +610,11 @@ function diagnosticForError(error, context = {}) {
                   ]
                 : [
                       "超时只说明未在预算内收到响应；这是状态变更请求，成败未知，需核对实际状态后再判断。",
-                      `先用 ${STATUS_QUERY_FOR[method] || "对应查询方法"} 核对实际状态，再决定下一步；不要自动重发该请求。`,
+                      `先用 {{method:${STATUS_QUERY_FOR[method] || ""}}} 核对实际状态，再决定下一步；不要自动重发该请求。`,
                       "确认未生效且前置条件允许后，才可重新发起。"
                   ];
     }
+    const rendered = renderSuggestions(suggestedActions, context.render);
     return {
         ok: false,
         type: "diagnostic",
@@ -579,7 +627,8 @@ function diagnosticForError(error, context = {}) {
             likelyCause:
                 error?.likelyCause || preset[1] || "当前错误未能自动归类，请结合 message 与 details 继续判断。",
             retryable,
-            suggestedActions,
+            suggestedActions: rendered.suggestedActions,
+            actions: rendered.actions,
             details
         }
     };
@@ -720,5 +769,7 @@ module.exports = {
     OBSERVATION_METHODS,
     DRIVER_SETUP_METHODS,
     STATUS_QUERY_FOR,
-    DIAGNOSTICS
+    DIAGNOSTICS,
+    RENDERINGS,
+    renderSuggestions
 };

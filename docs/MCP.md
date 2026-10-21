@@ -77,7 +77,11 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 
 ## 结果与诊断 / Results
 
-成功时 `structuredContent` 是 Bridge 的原始结果（数组或标量包在 `result` 中），`content` 是紧凑的 JSON 文本。失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, details } }`），由同一个 `diagnosticForError` 生成。
+成功时 `structuredContent` 是 Bridge 的原始结果（数组或标量包在 `result` 中），`content` 是紧凑的 JSON 文本。失败时 `isError: true`，`structuredContent` 与 skill 写到 stderr 的 `diagnostic` 同形（`{ ok: false, type: "diagnostic", operation, error: { code, category, likelyCause, retryable, suggestedActions, actions, details } }`），由同一个 `diagnosticForError` 生成。诊断表中与通道相关的片段写成占位符：skill 脚本渲染成原有的 CLI 写法（如 `mcu-debug-control --start`，输出不变），MCP 渲染成工具名（如 `debug_start`）；`actions: [{ method: "debug.start" }]` 是与通道无关的机器可读版本。
+
+## Prompts
+
+服务器提供 `flash`、`fault_triage`、`variable_debug`、`rtos_inspect`（`core` / `debug`）与 `cubemx_generate`（`cubemx`）五个 prompt，可选参数 `goal`。内容在调用时直接读取随扩展分发的 `skills/<name>/SKILL.md` 与 `agent-workflow.md` 的 “Failure handling” 段落，并附上脚本到 MCP 工具的对照表，唯一来源仍是 `skills/`；`test/mcp-prompts.test.js` 检查对照表中的脚本与工具都真实存在。各 `SKILL.md` 也注明：会话提供 EmberProbe MCP 工具时优先使用，脚本是回退方式。
 
 每次 Bridge 调用都会在输出面板 “EmberProbe Agent Bridge” 中记录通道（`skill` / `mcp` / `legacy`）、客户端、方法与结果码，不记录参数值。
 

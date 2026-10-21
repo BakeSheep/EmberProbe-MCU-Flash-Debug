@@ -77,6 +77,7 @@ const TEST_GROUPS = Object.freeze({
         "live-watch-integration.test.js",
         "live-watch-response.test.js",
         "live-watch-service.test.js",
+        "mcp-prompts.test.js",
         "mcp-tools.test.js",
         "member-roles.test.js",
         "openocd-compatibility.test.js",

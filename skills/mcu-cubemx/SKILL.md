@@ -5,6 +5,8 @@ description: Modify an existing STM32 .ioc configuration and regenerate initiali
 
 # CubeMX initialization code
 
+**MCP first**: if this session provides EmberProbe MCP tools (such as `cubemx_prepare`), use them; the script here is the fallback. The authorization and hardware rules on this page apply to both.
+
 Requires Windows or Linux, the EmberProbe Agent Bridge, an existing configured `.ioc`, and the matching standalone CubeMX installation with its bundled Java and installed firmware package. No hardware is required. On Linux, select the standalone `STM32CubeMX` launcher (no `.exe` suffix) with its bundled `jre/bin/java`; firmware package installation is interactive and requires a graphical desktop.
 
 Use `mcu-config` to select `iocPath`. CubeMX executable paths are read-only through the Bridge. Firmware package status is derived by the sidebar from the MCU target and optional IOC; it is not a writable `config.set` field, and `--inspect` does not verify package installation. For missing packages, use the sidebar's native interactive firmware installer; the Bridge generation workflow does not install packages or change the IOC's package version.

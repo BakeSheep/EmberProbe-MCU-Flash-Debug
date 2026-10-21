@@ -8,6 +8,8 @@ const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const {
     CallToolRequestSchema,
+    GetPromptRequestSchema,
+    ListPromptsRequestSchema,
     ListToolsRequestSchema,
     RootsListChangedNotificationSchema,
     ErrorCode,
@@ -19,6 +21,7 @@ const flashCommon = require("../../skills/_emberprobe/flash-common");
 const tools = require("./tools");
 const results = require("./results");
 const confirm = require("./confirm");
+const prompts = require("./prompts");
 
 const INSTRUCTIONS = [
     "EmberProbe drives a real MCU through the EmberProbe VS Code extension. Rules for every tool:",
@@ -56,13 +59,15 @@ function rootPath(uri) {
 function createServer(options = {}) {
     const env = options.env || process.env;
     const bridgeCall = options.call || callVia;
-    const enabled = tools.toolsFor(tools.parseToolsets(env.EMBERPROBE_MCP_TOOLSETS));
+    const toolsets = tools.parseToolsets(env.EMBERPROBE_MCP_TOOLSETS);
+    const enabled = tools.toolsFor(toolsets);
+    const enabledPrompts = prompts.promptsFor(toolsets);
     const byName = new Map(enabled.map((tool) => [tool.name, tool]));
     const validator = new AjvJsonSchemaValidator();
     const validators = new Map(enabled.map((tool) => [tool.name, validator.getValidator(tool.inputSchema)]));
     const server = new Server(
         { name: "emberprobe", title: "EmberProbe", version: readVersion() },
-        { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
+        { capabilities: { tools: {}, prompts: {} }, instructions: INSTRUCTIONS }
     );
     let roots = null;
 
@@ -229,6 +234,16 @@ function createServer(options = {}) {
     }
 
     server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: enabled.map(tools.listing) }));
+    server.setRequestHandler(ListPromptsRequestSchema, () => ({ prompts: enabledPrompts.map(prompts.listing) }));
+    server.setRequestHandler(GetPromptRequestSchema, (request) => {
+        const prompt = enabledPrompts.find((item) => item.name === request.params.name);
+        if (!prompt) throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
+        const goal = String(request.params.arguments?.goal || "").trim();
+        return {
+            description: prompt.description,
+            messages: [{ role: "user", content: { type: "text", text: prompts.promptText(prompt, goal) } }]
+        };
+    });
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         const tool = byName.get(request.params.name);
         if (!tool) throw new McpError(ErrorCode.InvalidParams, `Unknown tool: ${request.params.name}`);

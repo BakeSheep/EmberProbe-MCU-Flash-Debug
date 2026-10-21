@@ -5,6 +5,8 @@ description: Inspect paused MCU RTOS tasks, task call stacks and variables throu
 
 # MCU RTOS Inspection
 
+**MCP first**: if this session provides EmberProbe MCP tools (such as `rtos_snapshot`), use them; the script here is the fallback. The authorization and hardware rules on this page apply to both.
+
 Use `scripts/rtos.js` from this skill directory. It reads the selected debugger through the
 EmberProbe Agent Bridge; it does not open a second probe connection or change firmware.
 

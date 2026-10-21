@@ -716,12 +716,22 @@ function listing(tool) {
     };
 }
 
+// 诊断里的 Bridge 方法名在 MCP 通道中显示为对应工具名（取第一个映射该方法的工具）。
+const METHOD_TOOLS = new Map();
+for (const tool of TOOLS)
+    for (const method of tool.methods) if (!METHOD_TOOLS.has(method)) METHOD_TOOLS.set(method, tool.name);
+
+function toolForMethod(method) {
+    return METHOD_TOOLS.get(method) || method;
+}
+
 module.exports = {
     TOOLS,
     TOOLSETS,
     DEFAULT_TOOLSETS,
     EXCLUDED_METHODS,
     annotations,
+    toolForMethod,
     parseToolsets,
     toolsFor,
     listing
