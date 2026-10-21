@@ -2258,6 +2258,16 @@ function selectedExportCandidates() {
         });
     return picked;
 }
+function setExportSeriesSelection(invert) {
+    if (!exportCandidates.length) return;
+    endExportSeriesDrag();
+    $("exportSeries")
+        .querySelectorAll("input[type=checkbox]")
+        .forEach(function (cb) {
+            cb.checked = invert ? !cb.checked : true;
+        });
+    setupExportTimeline(selectedExportCandidates());
+}
 function updateExportTimeline(changed) {
     var from = $("exportFromRange"),
         to = $("exportToRange"),
@@ -3676,6 +3686,12 @@ $("timeWindow").value = windowPreset;
 $("export").onclick = showExport;
 $("exportCancel").onclick = hideExport;
 $("exportApply").onclick = applyExport;
+$("exportSelectAll").onclick = function () {
+    setExportSeriesSelection(false);
+};
+$("exportInvert").onclick = function () {
+    setExportSeriesSelection(true);
+};
 $("exportOverlay").onclick = function (e) {
     if (e.target === $("exportOverlay")) hideExport();
 };

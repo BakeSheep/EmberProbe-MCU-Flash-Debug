@@ -681,6 +681,41 @@ input[type="number"]::-webkit-outer-spin-button {
     font-weight: 600;
     text-transform: uppercase;
 }
+.export-series-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 8px 0 4px;
+}
+.export-series-heading .export-label {
+    margin: 0;
+}
+.export-series-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    overflow: hidden;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+    border-radius: 4px;
+}
+.export-series-actions button {
+    border: 0;
+    border-radius: 0;
+    padding: 2px 8px;
+    color: var(--vscode-foreground);
+    background: transparent;
+    font-size: 11px;
+}
+.export-series-actions button + button {
+    border-left: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+.export-series-actions button:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+.export-series-actions button:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -2px;
+}
 .export-series {
     position: relative;
     max-height: 180px;

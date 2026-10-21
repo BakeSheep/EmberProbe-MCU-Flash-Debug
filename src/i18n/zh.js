@@ -522,6 +522,8 @@ module.exports = Object.freeze({
     "lw.archiveTruncated": "采样历史已达大小上限，此后的样本未再归档",
     "lw.exportTitle": "导出 CSV",
     "lw.exportSeries": "曲线",
+    "lw.exportSelectAll": "全选",
+    "lw.exportInvert": "反选",
     "lw.exportVariableName": "变量名",
     "lw.exportDataType": "数据类型",
     "lw.exportRange": "时间范围",
