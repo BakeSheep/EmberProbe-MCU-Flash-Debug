@@ -117,13 +117,7 @@ input[type="number"] {
     width: 72px;
 }
 .layout {
-    display: grid;
-    grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
     min-height: calc(100vh - 86px);
-}
-.side {
-    border-right: 1px solid var(--vscode-panel-border, transparent);
-    overflow: auto;
 }
 .side-head {
     display: flex;
@@ -325,14 +319,6 @@ input[type="number"] {
     gap: 7px;
 }
 @media (max-width: 760px) {
-    .layout {
-        grid-template-columns: 1fr;
-    }
-    .side {
-        max-height: 42vh;
-        border-right: 0;
-        border-bottom: 1px solid var(--vscode-panel-border, transparent);
-    }
     .chart-wrap {
         min-height: 330px;
     }
@@ -376,7 +362,6 @@ body {
 .layout {
     min-height: 0;
     flex: 1;
-    grid-template-rows: minmax(0, 1fr);
 }
 .side {
     min-height: 0;
@@ -408,12 +393,6 @@ body {
     background: var(--vscode-errorForeground);
 }
 @media (max-width: 760px) {
-    .layout {
-        grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
-    }
-    .side {
-        max-height: none;
-    }
     .chart-wrap {
         min-height: 0;
     }
@@ -445,67 +424,136 @@ body.debug-stale .member-value {
     color: var(--vscode-descriptionForeground);
     opacity: 0.62;
 }
+/* The current-value panel floats over the chart as a translucent card that can be moved and resized. */
 .layout {
-    --side-width: 260px;
-    grid-template-columns: minmax(220px, var(--side-width)) 9px minmax(0, 1fr);
-}
-.side-splitter {
     position: relative;
-    cursor: ew-resize;
+    z-index: 0;
+    display: flex;
+}
+.chart-pane {
+    flex: 1;
+}
+.side.float-panel {
+    position: absolute;
+    z-index: 7;
+    top: 40px;
+    left: 12px;
+    width: 300px;
+    height: min(60%, 460px);
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #8885));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
+    box-shadow: 0 6px 20px #0004;
+}
+.layout.side-collapsed .side.float-panel {
+    display: none;
+}
+.float-panel.dragging {
+    user-select: none;
+    box-shadow: 0 10px 28px #0006;
+}
+.float-panel > .side-head {
+    flex: none;
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+    border-radius: 7px 7px 0 0;
+}
+.float-panel > .side-head:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+.float-panel > .side-curve-tools {
+    flex: none;
+}
+.float-panel > .var-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+.float-panel .var-card {
+    background: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 62%, transparent);
+}
+.float-resize {
+    position: absolute;
+    z-index: 1;
+    border-radius: 4px;
     touch-action: none;
 }
-.side-splitter:after {
+.float-resize[data-edge="n"],
+.float-resize[data-edge="s"] {
+    left: 10px;
+    right: 10px;
+    height: 7px;
+    cursor: ns-resize;
+}
+.float-resize[data-edge="e"],
+.float-resize[data-edge="w"] {
+    top: 10px;
+    bottom: 10px;
+    width: 7px;
+    cursor: ew-resize;
+}
+.float-resize[data-edge="n"] {
+    top: -4px;
+}
+.float-resize[data-edge="s"] {
+    bottom: -4px;
+}
+.float-resize[data-edge="e"] {
+    right: -4px;
+}
+.float-resize[data-edge="w"] {
+    left: -4px;
+}
+.float-resize[data-edge="ne"],
+.float-resize[data-edge="nw"],
+.float-resize[data-edge="se"],
+.float-resize[data-edge="sw"] {
+    width: 14px;
+    height: 14px;
+}
+.float-resize[data-edge="ne"] {
+    top: -5px;
+    right: -5px;
+    cursor: nesw-resize;
+}
+.float-resize[data-edge="nw"] {
+    top: -5px;
+    left: -5px;
+    cursor: nwse-resize;
+}
+.float-resize[data-edge="se"] {
+    right: -5px;
+    bottom: -5px;
+    cursor: nwse-resize;
+}
+.float-resize[data-edge="sw"] {
+    bottom: -5px;
+    left: -5px;
+    cursor: nesw-resize;
+}
+.float-resize[data-edge="se"]:after {
     content: "";
     position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 4px;
-    width: 1px;
-    background: var(--vscode-widget-border, var(--vscode-panel-border));
-    transition:
-        left 0.1s,
-        width 0.1s,
-        background 0.1s;
+    right: 7px;
+    bottom: 7px;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid var(--vscode-descriptionForeground);
+    border-bottom: 2px solid var(--vscode-descriptionForeground);
+    border-radius: 0 0 3px;
+    opacity: 0.55;
 }
-.side-splitter:hover:after,
-.side-splitter.dragging:after {
-    left: 3px;
-    width: 3px;
-    background: var(--vscode-focusBorder);
-}
-.layout.side-collapsed {
-    grid-template-columns: 0 9px minmax(0, 1fr);
-}
-.layout.side-collapsed .side {
-    visibility: hidden;
-    overflow: hidden;
-    border: 0;
-}
-.side-toggle {
-    padding: 1px 7px;
-    font-size: 12px;
-}
-@media (max-width: 760px) {
-    .layout {
-        grid-template-columns: 1fr;
-        grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
-    }
-    .side-splitter {
-        display: none;
-    }
-    .side {
-        grid-row: 1;
-    }
-    .chart-pane {
-        grid-row: 2;
-    }
-    .layout.side-collapsed {
-        grid-template-columns: 1fr;
-        grid-template-rows: 0 minmax(0, 1fr);
-    }
-    .layout.side-collapsed .side {
-        display: none;
-    }
+.float-resize:hover,
+.float-resize.active,
+.float-resize:focus-visible {
+    outline: none;
+    background: color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
 }
 .side-toggle {
     position: relative;
@@ -1436,9 +1484,6 @@ input[type="number"]::-webkit-outer-spin-button {
     min-height: 260px;
 }
 @media (max-width: 760px) {
-    .layout {
-        grid-template-rows: minmax(100px, 24%) minmax(0, 1fr);
-    }
     .curve-readings {
         max-height: 110px;
     }
@@ -2366,78 +2411,38 @@ input[type="number"]::-webkit-outer-spin-button {
     left: auto;
     right: 0;
 }
-.side-splitter:focus-visible:after {
-    background: var(--vscode-focusBorder);
+/* Narrow single-column and wide two-column variable lists; JS picks columns from the card width. */
+.var-list {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    align-items: start;
 }
-.side-splitter:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: -1px;
+.var-list > .var-card,
+.var-column > .var-card {
+    min-width: 0;
+    margin: 0;
 }
-@media (max-width: 760px) {
-    .layout {
-        grid-template-rows: clamp(100px, var(--side-height, 38%), max(100px, calc(100% - 169px))) 9px minmax(0, 1fr);
-    }
-    .side-splitter {
-        display: block;
-        grid-row: 2;
-        cursor: ns-resize;
-    }
-    .side-splitter:after {
-        inset: 4px 0 auto;
-        width: auto;
-        height: 1px;
-    }
-    .side-splitter:hover:after,
-    .side-splitter.dragging:after,
-    .side-splitter:focus-visible:after {
-        top: 3px;
-        left: 0;
-        width: auto;
-        height: 3px;
-    }
-    .chart-pane {
-        grid-row: 3;
-    }
-    .layout.side-collapsed {
-        grid-template-rows: 0 0 minmax(0, 1fr);
-    }
-    .layout.side-collapsed .side-splitter {
-        display: none;
-    }
-    .var-list {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-        align-items: start;
-    }
-    .var-list > .var-card,
-    .var-column > .var-card {
-        min-width: 0;
-        margin: 0;
-    }
+.var-list.independent-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-@media (min-width: 560px) and (max-width: 760px) {
-    .var-list.independent-columns {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .var-column {
-        display: flex;
-        min-width: 0;
-        flex-direction: column;
-        gap: 8px;
-    }
-    .var-card > .var-value {
-        max-width: 100px;
-        font-size: 13px;
-    }
-    .side .member-row > .member-type,
-    .side .var-main > .member-type,
-    .side .comp-head > .comp-type {
-        display: none;
-    }
-    .var-list > .empty {
-        grid-column: 1 / -1;
-    }
+.var-column {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 6px;
+}
+.independent-columns .var-card > .var-value {
+    max-width: 100px;
+    font-size: 13px;
+}
+.independent-columns .member-row > .member-type,
+.independent-columns .var-main > .member-type,
+.independent-columns .comp-head > .comp-type {
+    display: none;
+}
+.var-list > .empty {
+    grid-column: 1 / -1;
 }
 
 /* Sampling presets share one input field; the popover contains only the stepped track. */

@@ -175,18 +175,13 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
 
 // Chart sidebar cards, including the alternating two-column layout.
 {
-    const view = render(
-        getLiveWatchContent({}, "en"),
-        {},
-        {
-            beforeParse(window) {
-                window.innerWidth = 600;
-            }
-        }
-    );
+    const view = render(getLiveWatchContent({}, "en"), {});
     try {
         const { document, window } = view;
         const box = document.getElementById("vars");
+        // The floating value card picks two columns from its own width.
+        let paneWidth = 520;
+        document.getElementById("valuePane").getBoundingClientRect = () => ({ width: paneWidth, height: 400 });
         const items = ["first", "second", "third", "fourth"].map(scalar);
         view.send({ type: "watchList", items });
         assert.strictEqual(box.querySelectorAll(".var-column").length, 2);
@@ -215,7 +210,7 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         const card = box.querySelector('[data-reorder-key="first"]');
         assert(card.classList.contains("var-card"));
         assert.strictEqual(card.firstElementChild.className, "reorder-handle");
-        window.innerWidth = 900;
+        paneWidth = 300;
         window.dispatchEvent(new window.Event("resize"));
         assert.deepStrictEqual(keys(chart.cards()), ["fourth", "first", "second", "third"]);
         view.assertHealthy();
