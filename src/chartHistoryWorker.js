@@ -8,6 +8,7 @@ const readline = require("readline");
 const { ChartHistoryStore, WINDOW_MS } = require("./services/chartHistoryStore");
 const { csvField, csvHeaderField } = require("./services/samplingArchive");
 const { serializeError } = require("./services/errorEnvelope");
+const { encodeViewport } = require("./webview/liveWatch/chartTransport");
 
 async function exportHistory(store, request) {
     const capture = store.freeze(request.scope, "export", request.snapshotId);
@@ -200,7 +201,12 @@ function run(port, options = {}) {
                     timers.delete(args[0]);
                 }
             } else throw new Error("Unknown history operation");
-            if (id) port.postMessage({ id, result });
+            if (id) {
+                if (method === "viewport") {
+                    const { message, transfer } = encodeViewport(result);
+                    port.postMessage({ id, result: message }, transfer);
+                } else port.postMessage({ id, result });
+            }
         } catch (error) {
             port.postMessage(
                 id ? { id, error: serializeError(error) } : { event: "error", error: serializeError(error) }

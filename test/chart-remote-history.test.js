@@ -3,6 +3,7 @@ const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
+const { encodeViewport } = require("../src/webview/liveWatch/chartTransport");
 const page = render(getLiveWatchContent({ backendHistory: true, frequencyHz: 200 }, "en"));
 try {
     const w = page.window,
@@ -36,7 +37,7 @@ try {
     function answer(r) {
         page.send({
             type: "chartViewportResult",
-            ...store.viewport("p", r.names, r.range, r.width, r.snapshotId),
+            ...encodeViewport(store.viewport("p", r.names, r.range, r.width, r.snapshotId)).message,
             requestId: r.requestId,
             historyRevision: r.historyRevision,
             snapshotId: r.snapshotId
@@ -49,12 +50,12 @@ try {
     request();
     assert.ok(w.remoteHistory.pending, "one latest pending request replaces intermediate views");
     answer(first);
-    assert.strictEqual(w.remoteHistory.series.length, 0, "outdated visibility reply cannot restore curves");
+    assert.strictEqual(w.remoteHistory.view, null, "outdated visibility reply cannot restore curves");
     const second = page.messages.filter((message) => message.type === "chartViewport").at(-1);
     assert.deepStrictEqual(second.names, ["a", "b"]);
     answer(second);
     assert.strictEqual(JSON.stringify(w.chartState.x), viewport);
-    assert.ok(w.remoteHistory.series.find((s) => s.name === "b").visibleCount > 5000);
+    assert.ok(w.remoteHistory.view.series.find((s) => s.name === "b").visibleCount > 5000);
     w.freezeChart();
     const freezeRequest = page.messages.at(-1);
     page.send({
@@ -89,7 +90,7 @@ try {
     const stale = request();
     w.clearHistory();
     answer(stale);
-    assert.strictEqual(w.remoteHistory.series.length, 0);
+    assert.strictEqual(w.remoteHistory.view, null);
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
     assert.strictEqual(w.retainedTimeBounds(), null);
     page.send({ type: "samplingHistoryCleared", historyRevision: 1 });
@@ -124,11 +125,12 @@ for (const follow of [false, true]) {
         w.chartState.follow = follow;
         w.draw(1000);
         for (let cycle = 0; cycle < 5; cycle++) {
+            if (w.remoteHistory.view) w.remoteHistory.view.receivedAt = -Infinity;
             w.remoteHistory.lastRequest = -Infinity;
             w.dirty = true;
             w.draw(2000 + cycle * 200);
             const request = delayed.messages.filter((message) => message.type === "chartViewport").at(-1);
-            const key = w.remoteHistory.inFlight.key;
+            const purpose = w.remoteHistory.inFlight.purpose;
             const response = store.viewport("p", request.names, request.range, request.width);
             store.append("p", [{ name: "value", value: cycle + 3, t: 51000 + cycle * 1000 }], 51000 + cycle * 1000);
             delayed.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
@@ -140,12 +142,9 @@ for (const follow of [false, true]) {
                 requestId: request.requestId,
                 historyRevision: 0
             });
-            assert.strictEqual(
-                w.remoteHistory.cachedKey,
-                key,
-                "continuous sampling must not starve a valid viewport reply"
-            );
-            assert.ok(w.remoteHistory.series.length > 0);
+            const accepted = w.remoteHistory[purpose === "overview" ? "overview" : "view"];
+            assert.strictEqual(accepted.revision, response.revision, "continuous sampling accepts a valid reply");
+            assert.ok(accepted.series.length > 0);
         }
         delayed.assertHealthy();
     } finally {
@@ -153,7 +152,7 @@ for (const follow of [false, true]) {
     }
 }
 
-for (const change of [
+for (const [index, change] of [
     (w) => {
         w.chartState.x = { min: 1200, max: 1800 };
     },
@@ -166,7 +165,7 @@ for (const change of [
     (w) => {
         w.hidden.value = true;
     }
-]) {
+].entries()) {
     const changed = render(getLiveWatchContent({ backendHistory: true }, "en"));
     try {
         const w = changed.window;
@@ -187,9 +186,24 @@ for (const change of [
             type: "chartViewportResult",
             requestId: request.requestId,
             historyRevision: 0,
+            revision: 1,
+            bounds: { min: 1000, max: 2000 },
             series: [{ name: "value", arr: [{ t: 1500, v: 7 }] }]
         });
-        assert.strictEqual(w.remoteHistory.series.length, 0, "configuration changes still invalidate a delayed reply");
+        if (index === 0) {
+            assert.ok(w.remoteHistory.view.series.length, "range changes accept and translate a delayed reply");
+            assert.strictEqual(w.chartState.x.min, 1200);
+            assert.strictEqual(w.chartState.x.max, 1800);
+            w.dirty = true;
+            w.draw(1200);
+            const point = w.Inspection.pointAt(w.chartState.curveGeometry.value[0], 0),
+                geometry = w.chartState.geometry;
+            assert.strictEqual(point.raw.t, 1500);
+            assert.ok(
+                Math.abs(point.x - geometry.padL - geometry.pw / 2) < 1e-9,
+                "reply is translated to the new viewport"
+            );
+        } else assert.strictEqual(w.remoteHistory.view, null, "configuration changes invalidate a delayed reply");
     } finally {
         changed.close();
     }
@@ -272,6 +286,8 @@ try {
         type: "chartViewportResult",
         requestId: request.requestId,
         historyRevision: 0,
+        revision: 5,
+        bounds: { min: 1000, max: 1232 },
         series: [{ name: "value", arr: Array.from({ length: 5 }, (_, value) => ({ t: 1000 + value * 33, v: value })) }]
     });
     w.draw(2300);

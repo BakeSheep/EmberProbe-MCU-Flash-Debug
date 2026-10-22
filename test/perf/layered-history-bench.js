@@ -3,9 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const { ChartHistoryStore } = require("../../src/services/chartHistoryStore");
+const chartTransport = require("../../src/webview/liveWatch/chartTransport");
 const { render } = require("../helpers/render-webview");
 const { getLiveWatchContent } = require("../../src/liveWatchView");
-function run(w, Store, channels, seconds) {
+function run(w, Store, transport, channels, seconds) {
     const store = new Store();
     const items = Array.from({ length: channels }, (_, i) => ({ name: "channel" + i, type: "f32" }));
     store.configure("bench", items);
@@ -38,7 +39,13 @@ function run(w, Store, channels, seconds) {
             const range = { min: 1000000 + (seconds - span) * 1000, max: 1000000 + seconds * 1000 };
             w.chartState.x = range;
             const backend = [],
-                frontend = [];
+                frontend = [],
+                legacyTransport = [],
+                packedTransport = [],
+                panCached = [],
+                panRebuild = [];
+            let legacyBytes = 0,
+                packedBytes = 0;
             for (let frame = 0; frame < 16; frame++) {
                 const start = performance.now();
                 const viewport = store.viewport(
@@ -48,26 +55,101 @@ function run(w, Store, channels, seconds) {
                     w.document.getElementById("chart").clientWidth
                 );
                 const computed = performance.now();
-                w.remoteHistory.series = viewport.series;
-                w.remoteHistory.inFlight = { requestId: -1 }; // transport is measured separately by worker tests
+                w.remoteHistory.view = {
+                    series: viewport.series,
+                    range,
+                    width: w.document.getElementById("chart").clientWidth,
+                    configKey: w.chartHistoryConfig().configKey,
+                    revision: viewport.revision,
+                    receivedAt: w.performance.now()
+                };
+                w.remoteHistory.inFlight = { requestId: -1 };
                 w.dirty = true;
                 w.chartState.fastDirty = true;
                 w.draw(1000 + frame * 100);
                 const drawn = performance.now();
+                const legacyStart = performance.now();
+                JSON.parse(JSON.stringify(structuredClone(viewport)));
+                const legacyEnd = performance.now();
+                const packedStart = performance.now();
+                const encoded = transport.encodeViewport(viewport);
+                const packedReply = structuredClone(encoded.message, { transfer: encoded.transfer });
+                transport.decodeViewport(packedReply.series);
+                const packedEnd = performance.now();
+                if (frame === 0) {
+                    const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+                    legacyBytes = bytes(viewport);
+                    // Binary column bytes plus JSON metadata/texts; never stringify the numeric columns.
+                    const metadata = {
+                        ...packedReply,
+                        series: packedReply.series.map(({ name, item, texts }) => ({ name, item, texts }))
+                    };
+                    packedBytes =
+                        bytes(metadata) +
+                        packedReply.series.reduce(
+                            (sum, entry) =>
+                                sum +
+                                entry.t.byteLength +
+                                entry.v.byteLength +
+                                entry.ends.byteLength +
+                                entry.visibleCounts.byteLength,
+                            0
+                        );
+                }
                 if (frame >= 4) {
                     backend.push(computed - start);
                     frontend.push(drawn - computed);
+                    legacyTransport.push(legacyEnd - legacyStart);
+                    packedTransport.push(packedEnd - packedStart);
                 }
             }
+            // Hold data and y scale fixed; alternate nearby views inside the half-span margin.
+            // Compare the same translation with and without the geometry cache (Canvas is stubbed in Node).
+            w.chartState.autoY = false;
+            w.running = w.chartState.follow = true;
+            w.chartState.smoothCommit = (w.chartState.smoothCommit || 0) + 1;
+            for (let frame = 0; frame < 16; frame++) {
+                const shift = -((frame % 2) + 1) * span * 10;
+                w.chartState.x = { min: range.min + shift, max: range.max + shift };
+                w.chartState.followClock = {
+                    key: w.chartHistoryConfig().configKey,
+                    span: span * 1000,
+                    time: w.chartState.x.max,
+                    dataMax: range.max,
+                    interval: 80,
+                    committedAt: w.performance.now(),
+                    frameAt: w.performance.now()
+                };
+                w.dirty = w.chartState.fastDirty = true;
+                const geometry = w.chartState.curveGeometry;
+                let start = performance.now();
+                w.draw(3000 + frame * 200);
+                const cached = performance.now() - start;
+                if (frame >= 4 && w.chartState.curveGeometry !== geometry)
+                    throw new Error("Pan benchmark unexpectedly rebuilt cached geometry");
+                w.chartState.curveGeometry = null;
+                w.dirty = w.chartState.fastDirty = true;
+                start = performance.now();
+                w.draw(3100 + frame * 200);
+                const rebuild = performance.now() - start;
+                if (frame >= 4) {
+                    panCached.push(cached);
+                    panRebuild.push(rebuild);
+                }
+            }
+            w.chartState.autoY = true;
+            w.running = w.chartState.follow = false;
             result.scenarios.push({
                 visible,
                 span,
                 backend: quantiles(backend),
                 frontend: quantiles(frontend),
-                geometryPoints: w.chartState.curveGeometry.value.reduce(
-                    (count, series) => count + series.points.length,
-                    0
-                )
+                pan: { cached: quantiles(panCached), rebuild: quantiles(panRebuild) },
+                transport: {
+                    legacy: { ...quantiles(legacyTransport), bytes: legacyBytes },
+                    packed: { ...quantiles(packedTransport), bytes: packedBytes }
+                },
+                geometryPoints: w.chartState.curveGeometry.value.reduce((count, series) => count + series.xs.length, 0)
             });
         }
     return result;
@@ -84,7 +166,7 @@ if (process.argv.includes("--browser-html")) {
         report.style.cssText='position:fixed;inset:0;z-index:1000;background:white;color:black;overflow:auto;padding:20px';document.body.append(report);
         (async()=>{ const results=[];for(const s of ${JSON.stringify(scenarios)}){
             report.textContent='Running '+JSON.stringify(s);await new Promise(r=>setTimeout(r,20));
-            results.push(benchRun(window,window.BenchHistory.ChartHistoryStore,s.channels,s.seconds));
+            results.push(benchRun(window,window.BenchHistory.ChartHistoryStore,window.EmberProbeChartTransport,s.channels,s.seconds));
         } report.dataset.complete='true'; report.textContent=JSON.stringify({userAgent:navigator.userAgent,results},null,2);
         })().catch(e=>{report.dataset.complete='error';report.textContent=e.stack;});`;
     fs.writeFileSync(
@@ -99,7 +181,7 @@ if (process.argv.includes("--browser-html")) {
                 clientWidth: { value: 900 },
                 clientHeight: { value: 500 }
             });
-            return run(page.window, ChartHistoryStore, channels, seconds);
+            return run(page.window, ChartHistoryStore, chartTransport, channels, seconds);
         } finally {
             page.close();
         }

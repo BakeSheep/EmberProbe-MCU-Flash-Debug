@@ -334,7 +334,8 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         assert.strictEqual(page.window.remoteHistory.status.limited, true);
         assert.strictEqual(page.window.retainedTimeBounds().min, 2000);
         assert.strictEqual(page.document.getElementById("status").textContent, t("en", "lw.memoryHistoryLimited"));
-        page.window.remoteHistory.series = [{ name: "stale" }];
+        page.window.remoteHistory.view = { series: [{ name: "stale" }] };
+        page.window.remoteHistory.overview = { series: [{ name: "stale" }] };
         page.send({
             type: "chartHistoryStatus",
             revision: 2,
@@ -344,7 +345,8 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             historyRevision: 0
         });
         assert.strictEqual(page.window.retainedTimeBounds(), null);
-        assert.strictEqual(page.window.remoteHistory.series.length, 0);
+        assert.strictEqual(page.window.remoteHistory.view, null);
+        assert.strictEqual(page.window.remoteHistory.overview, null);
         page.assertHealthy();
     } finally {
         page.close();

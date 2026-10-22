@@ -163,7 +163,7 @@ try {
     };
     paint(options);
     const geometry = chartState.curveGeometry;
-    chartState.pointer = { x: geometry.value[0].points[0].x, y: geometry.value[0].points[0].y };
+    chartState.pointer = I.pointAt(geometry.value[0], 0);
     paint(options);
     assert.equal(chartState.curveGeometry, geometry, "pointer movement reuses geometry");
     assert.deepEqual(

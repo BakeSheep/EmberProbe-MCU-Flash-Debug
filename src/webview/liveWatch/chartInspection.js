@@ -13,6 +13,51 @@
         }
         return lo;
     }
+    function lowerNumber(arr, value, indices, inclusive = false) {
+        let lo = 0,
+            hi = indices ? indices.length : arr.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            const current = arr[indices ? indices[mid] : mid];
+            if (current < value || (inclusive && current === value)) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+    function pointAt(series, index) {
+        return {
+            x: series.xs[index] + series.dx,
+            y: series.ys[index] + series.dy,
+            raw: series.raw[index]
+        };
+    }
+    // Column coordinates are relative to the build origin, so translation never changes membership.
+    function envelopeIndices(xs, ys, raw) {
+        const indices = [];
+        for (let i = 0; i < xs.length;) {
+            if (raw[i].v === null) {
+                indices.push(i++);
+                continue;
+            }
+            let end = i + 1,
+                min = i,
+                max = i;
+            while (end < xs.length && raw[end].v !== null && Math.floor(xs[end]) === Math.floor(xs[i])) {
+                if (ys[end] < ys[min]) min = end;
+                if (ys[end] > ys[max]) max = end;
+                end++;
+            }
+            // Emit the four candidates in sample order without a Set or per-column sort.
+            const a = Math.min(min, max),
+                b = Math.max(min, max);
+            indices.push(i);
+            if (a !== i) indices.push(a);
+            if (b !== a && b !== i) indices.push(b);
+            if (end - 1 !== b && end - 1 !== i) indices.push(end - 1);
+            i = end;
+        }
+        return Uint32Array.from(indices);
+    }
     function visibleSegments(arr, range, width) {
         const start = arr.retainedStart || 0;
         function bound(time, inclusive) {
@@ -146,14 +191,18 @@
         if (!pointer) return [];
         const found = new Map();
         for (const s of geometry) {
-            const arr = s.points;
-            const start = Math.max(0, lowerBound(arr, pointer.x - radius, "x") - 1);
-            const end = Math.min(arr.length - 1, lowerBound(arr, pointer.x + radius, "x"));
+            const arr = s.xs || s.points;
+            const bound = (x) => (s.xs ? lowerNumber(s.xs, x - s.dx) : lowerBound(arr, x, "x"));
+            const start = Math.max(0, bound(pointer.x - radius) - 1);
+            const end = Math.min(arr.length - 1, bound(pointer.x + radius));
             let best = Infinity,
                 point = null;
             for (let i = start; i <= end; i++) {
-                const a = arr[i],
-                    b = arr[Math.min(i + 1, arr.length - 1)];
+                const a = s.xs ? pointAt(s, i) : arr[i],
+                    next = Math.min(i + 1, arr.length - 1);
+                let b = s.xs ? pointAt(s, next) : arr[next];
+                if (a.raw?.v === null) continue;
+                if (b.raw?.v === null) b = a;
                 const d = distance(pointer, a, b);
                 if (d < best) {
                     best = d;
@@ -180,5 +229,18 @@
         }
         return Number.isFinite(result) ? result : time;
     }
-    return { lowerBound, nearest, read, delta, distance, hit, adjacent, envelope, visibleSegments };
+    return {
+        lowerBound,
+        lowerNumber,
+        pointAt,
+        envelopeIndices,
+        nearest,
+        read,
+        delta,
+        distance,
+        hit,
+        adjacent,
+        envelope,
+        visibleSegments
+    };
 });

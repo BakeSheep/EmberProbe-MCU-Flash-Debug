@@ -78,7 +78,7 @@ function runScenario(w, scenario, collectHeap) {
     const shortViewHeap = collectHeap?.();
     const wholeHistory = draw(scenario.seconds);
     const fullViewHeap = collectHeap?.();
-    const geometryPoints = w.chartState.curveGeometry.value.reduce((n, series) => n + series.points.length, 0);
+    const geometryPoints = w.chartState.curveGeometry.value.reduce((n, series) => n + series.xs.length, 0);
     const drawingPoints = w.chartState.curveGeometry.value.reduce((n, series) => n + series.drawing.length, 0);
     const beforeFreeze = performance.now();
     w.freezeChart();

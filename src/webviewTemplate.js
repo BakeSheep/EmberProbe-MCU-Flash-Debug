@@ -40,6 +40,7 @@ function loadRendererPrelude(area) {
                       "analysisState.js",
                       "chartInspection.js",
                       "chartControls.js",
+                      "chartTransport.js",
                       "chart.js",
                       "samplingRateMotion.js"
                   ].map((name) => loadWebviewAsset("liveWatch", name)))

@@ -66,11 +66,11 @@ try {
     w.invalidateSeries();
     w.draw(1000);
     assert.equal(graph.document.getElementById("points").textContent, "6001 samples");
-    assert.ok(w.chartState.curveGeometry.value[0].points.length <= 4 * 903);
+    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= 4 * 903);
     w.applyWindowPreset("0");
     w.draw(1100);
     assert.equal(graph.document.getElementById("points").textContent, "240001 samples");
-    assert.ok(w.chartState.curveGeometry.value[0].points.length <= 4 * 903);
+    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= 4 * 903);
     assert.equal(w.data.tick.length, 240001, "drawing never downsamples export buffers");
     w.freezeChart();
     assert.equal(w.analysis.snapshot.tick.length, 240001);

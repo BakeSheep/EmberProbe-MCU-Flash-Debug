@@ -1,19 +1,20 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory();
-    else root.EmberProbeChart = factory();
-})(globalThis, function () {
+    if (typeof module === "object" && module.exports) module.exports = factory(require("./chartInspection"));
+    else root.EmberProbeChart = factory(root.EmberProbeChartInspection);
+})(globalThis, function (defaultInspection) {
     function exactInteger(point) {
         if (point.valueText != null && /^-?\d+$/.test(point.valueText)) return BigInt(point.valueText);
         return Number.isSafeInteger(point.v) ? BigInt(point.v) : null;
     }
 
     // Subtract in integer space before converting to canvas coordinates. Raw history stays exact for CSV.
-    function offsetSeries(series, norm, range) {
+    function offsetSeries(series, norm) {
         function originFor(items) {
-            for (const s of items) {
-                for (const p of s.arr) {
-                    if (range && (p.t < range.min || p.t > range.max)) continue;
+            for (const item of items) {
+                const arr = item.arr;
+                for (let j = arr.length - 1; j >= 0; j--) {
+                    const p = arr[j];
                     if (Number.isSafeInteger(p.v)) continue;
                     const exact = exactInteger(p);
                     if (exact !== null && !Number.isSafeInteger(Number(exact))) return exact;
@@ -36,6 +37,7 @@
                 return {
                     ...s,
                     arr: s.arr.map((p) => {
+                        if (p.v === null) return p;
                         const exact = exactInteger(p);
                         return { ...p, v: exact === null ? p.v - Number(base) : Number(exact - base) };
                     })
@@ -65,9 +67,10 @@
     }) {
         const $ = (id) => elements[id];
         const sourceSeries = series;
-        const prepareKey = JSON.stringify([norm, chartState.x]);
+        inspection = inspection || defaultInspection;
+        const prepareKey = norm;
         if (!chartState.prepared || chartState.prepared.source !== series || chartState.prepared.key !== prepareKey)
-            chartState.prepared = { source: series, key: prepareKey, value: offsetSeries(series, norm, chartState.x) };
+            chartState.prepared = { source: series, key: prepareKey, value: offsetSeries(series, norm) };
         const prepared = chartState.prepared.value;
         if (
             !norm &&
@@ -193,7 +196,17 @@
             if (chartState.visibleKey !== visibleKey) {
                 chartState.visibleKey = visibleKey;
             }
-            if (!chartState.prepared.stats) {
+            const statsKey = chartState.smoothFollowing
+                ? chartState.smoothCommit
+                : JSON.stringify([norm, chartState.x]);
+            const held = chartState.rangeStats;
+            if (
+                !held ||
+                held.key !== statsKey ||
+                held.norm !== norm ||
+                held.origin !== prepared.origin ||
+                (!chartState.smoothFollowing && held.source !== sourceSeries)
+            ) {
                 const ranges = new Map();
                 series.forEach(function (s) {
                     var lo = Infinity,
@@ -211,16 +224,25 @@
                     const previous = ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
                     ranges.set(s.item.name, { min: Math.min(previous.min, lo), max: Math.max(previous.max, hi) });
                 });
-                series.forEach((s) => {
-                    const range = ranges.get(s.item.name),
-                        base = padRange(range.min, range.max);
-                    s.vMin = base.min;
-                    s.vMax = base.max;
-                });
-                chartState.prepared.stats = { total, vMin, vMax };
+                chartState.rangeStats = {
+                    key: statsKey,
+                    source: sourceSeries,
+                    norm,
+                    origin: prepared.origin,
+                    total,
+                    vMin,
+                    vMax,
+                    ranges
+                };
             } else {
-                ({ total, vMin, vMax } = chartState.prepared.stats);
+                ({ total, vMin, vMax } = held);
             }
+            series.forEach((s) => {
+                const range = chartState.rangeStats.ranges.get(s.item.name) || { min: Infinity, max: -Infinity };
+                const base = padRange(range.min, range.max);
+                s.vMin = base.min;
+                s.vMax = base.max;
+            });
             if (!total) {
                 chartState.hits = [];
                 empty.classList.remove("hidden");
@@ -236,42 +258,68 @@
                 descColor = bs.getPropertyValue("--vscode-descriptionForeground") || "#999",
                 background = bs.getPropertyValue("--vscode-editor-background") || "#1e1e1e",
                 focus = bs.getPropertyValue("--vscode-focusBorder") || "#007fd4";
-            function X(tt) {
-                return padL + ((tt - chartState.x.min) / VP.span(chartState.x)) * pw;
-            }
-            function normalizedValue(v, s) {
-                return (v - s.vMin) / (s.vMax - s.vMin || 1);
-            }
-            function Yg(v) {
-                return padT + (1 - (v - chartState.y.min) / VP.span(chartState.y)) * ph;
-            }
-            function Yp(v, s) {
-                return Yg(norm ? normalizedValue(v, s) : v);
-            }
-            const geometryKey = JSON.stringify([prepareKey, chartState.y, w, h, padR]);
+            const xSpan = VP.span(chartState.x),
+                ySpan = VP.span(chartState.y),
+                pxPerMs = pw / xSpan,
+                pxPerValue = ph / ySpan;
+            const geometryKey = JSON.stringify([
+                norm,
+                xSpan,
+                ySpan,
+                w,
+                h,
+                dpr,
+                padL,
+                padR,
+                padT,
+                padB,
+                norm ? series.map((s) => [s.vMin, s.vMax]) : null
+            ]);
+            let geometry = chartState.curveGeometry;
             if (
-                !chartState.curveGeometry ||
-                chartState.curveGeometry.source !== sourceSeries ||
-                chartState.curveGeometry.key !== geometryKey
+                !geometry ||
+                geometry.source !== sourceSeries ||
+                geometry.key !== geometryKey ||
+                chartState.x.min < geometry.min ||
+                chartState.x.max > geometry.max
             ) {
-                chartState.curveGeometry = {
+                const xRef = chartState.x.min,
+                    yRef = chartState.y.max,
+                    min = xRef - xSpan / 2,
+                    max = chartState.x.max + xSpan / 2;
+                geometry = chartState.curveGeometry = {
                     source: sourceSeries,
                     key: geometryKey,
+                    min,
+                    max,
+                    xRef,
+                    yRef,
                     value: series.map((s, index) => {
-                        const from = inspection ? Math.max(0, inspection.lowerBound(s.arr, chartState.x.min) - 1) : 0;
-                        const to = inspection
-                            ? Math.min(s.arr.length, inspection.lowerBound(s.arr, chartState.x.max) + 1)
-                            : s.arr.length;
-                        const points = s.arr
-                            .slice(from, to)
-                            .map((p, i) => ({ x: X(p.t), y: Yp(p.v, s), raw: sourceSeries[index].arr[from + i] }));
+                        const from = Math.max(0, inspection.lowerBound(s.arr, min) - 1),
+                            to = Math.min(s.arr.length, inspection.lowerBound(s.arr, max) + 1),
+                            length = to - from,
+                            xs = new Float64Array(length),
+                            ys = new Float64Array(length),
+                            raw = sourceSeries[index].arr.slice(from, to);
+                        for (let i = 0; i < length; i++) {
+                            const p = s.arr[from + i],
+                                value = norm ? (p.v - s.vMin) / (s.vMax - s.vMin || 1) : p.v;
+                            xs[i] = (p.t - xRef) * pxPerMs;
+                            ys[i] = (yRef - value) * pxPerValue;
+                        }
                         return {
                             name: s.item.name,
-                            points,
-                            drawing: inspection ? inspection.envelope(points) : points
+                            xs,
+                            ys,
+                            raw,
+                            drawing: inspection.envelopeIndices(xs, ys, raw)
                         };
                     })
                 };
+            }
+            for (const curve of geometry.value) {
+                curve.dx = padL + (geometry.xRef - chartState.x.min) * pxPerMs;
+                curve.dy = padT + (chartState.y.max - geometry.yRef) * pxPerValue;
             }
             const pointer = chartState.pointer;
             const inPlot =
@@ -331,25 +379,31 @@
                     ctx.beginPath();
                     var started = false,
                         last = null;
-                    s.drawing.forEach(function (p) {
-                        if (p.raw && p.raw.v === null) {
+                    const left = padL - s.dx,
+                        right = padL + pw - s.dx,
+                        from = Math.max(0, inspection.lowerNumber(s.xs, left, s.drawing) - 1),
+                        to = Math.min(s.drawing.length, inspection.lowerNumber(s.xs, right, s.drawing, true) + 1);
+                    for (let j = from; j < to; j++) {
+                        const i = s.drawing[j],
+                            raw = s.raw[i];
+                        if (raw.v === null) {
                             started = false;
-                            return;
+                            continue;
                         }
-                        var x = p.x,
-                            y = p.y;
+                        const x = s.xs[i] + s.dx,
+                            y = s.ys[i] + s.dy;
                         if (started) ctx.lineTo(x, y);
                         else {
                             ctx.moveTo(x, y);
                             started = true;
                         }
-                        if (p.raw.t >= chartState.x.min && p.raw.t <= chartState.x.max) last = p;
-                    });
+                        if (raw.t >= chartState.x.min && raw.t <= chartState.x.max) last = i;
+                    }
                     ctx.stroke();
-                    if (last) {
+                    if (last !== null) {
                         ctx.fillStyle = appearance.color;
                         ctx.beginPath();
-                        ctx.arc(last.x, last.y, 2.8, 0, Math.PI * 2);
+                        ctx.arc(s.xs[last] + s.dx, s.ys[last] + s.dy, 2.8, 0, Math.PI * 2);
                         ctx.fill();
                     }
                 });

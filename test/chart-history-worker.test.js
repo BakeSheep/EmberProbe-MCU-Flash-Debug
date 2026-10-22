@@ -21,6 +21,7 @@ const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require
 const { SamplingArchive } = require("../src/services/samplingArchive");
 const { exportHistory, run } = require("../src/chartHistoryWorker");
 const { deserializeError } = require("../src/services/errorEnvelope");
+const { decodeViewport } = require("../src/webview/liveWatch/chartTransport");
 async function testServiceLimits() {
     const dormant = new ChartHistoryService({ workerPath: "missing-worker.js" });
     assert.strictEqual(dormant.worker, null, "construction does not create a worker");
@@ -274,7 +275,7 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
         ]);
         const multi = await worker.request("viewport", ["multi", ["silent"], { min: 0, max: 25 }, 100]);
         assert.deepStrictEqual(
-            multi.series[0].arr.map((point) => [point.t, point.v]),
+            decodeViewport(multi.series)[0].arr.map((point) => [point.t, point.v]),
             [
                 [10, 1],
                 [15, 3],
@@ -287,15 +288,16 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
         await Promise.all([oldAppend, clearing, newAppend]);
         const afterClear = await worker.request("viewport", ["multi", ["silent"], { min: 0, max: 40 }, 100]);
         assert.deepStrictEqual(
-            afterClear.series[0].arr.map((point) => [point.t, point.v]),
+            decodeViewport(afterClear.series)[0].arr.map((point) => [point.t, point.v]),
             [[30, 6]]
         );
         await worker.request("configure", ["panel", items]);
         const restored = await worker.request("restore", [await archive.historySource("panel")]);
         assert.strictEqual(restored.bounds.min, 2000);
         const v = await worker.request("viewport", ["panel", ["silent"], { min: 0, max: 3000 }, 100]);
-        assert.strictEqual(v.series[0].arr.length, 1);
-        assert.strictEqual(v.series[0].arr[0].valueText, exact[1]);
+        assert.ok(v.series[0].t instanceof Float64Array, "worker replies retain typed arrays across IPC");
+        assert.strictEqual(decodeViewport(v.series)[0].arr.length, 1);
+        assert.strictEqual(decodeViewport(v.series)[0].arr[0].valueText, exact[1]);
         assert.strictEqual((await worker.request("setBudget", [64 * 1024 * 1024])).maxBytes, 64 * 1024 * 1024);
         await assert.rejects(worker.request("setBudget", [63 * 1024 * 1024]), /64/);
         const freeze = await worker.request("freeze", ["panel"]);
@@ -310,7 +312,7 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
         await worker.request("restore", [await archive.historySource("panel")]);
         const restoredIdentity = await worker.request("viewport", ["panel", ["silent"], { min: 0, max: 4000 }, 100]);
         assert.deepStrictEqual(
-            restoredIdentity.series[0].arr.map((point) => point.v),
+            decodeViewport(restoredIdentity.series)[0].arr.map((point) => point.v),
             [42],
             "recovery excludes old observations and changed addresses"
         );

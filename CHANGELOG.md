@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+
+- 波形图拖动、滚轮缩放与拖动时间轴时不再出现空白：拖动期间到达的历史回复照常采用，视口左右各预取一屏，缩小或拖出预取范围时先用整段历史的粗略底图补画，随后换成明细；跟随最新数据时曲线与时间轴同步推进，右端不再闪出空白条。历史回复改用类型化数组传输，10 条曲线全窗口时每次刷新的传输开销由约 40 ms 降到约 2 ms。见 `docs/LAYERED-SAMPLING.md`。
+- Panning, wheel-zooming and dragging the timeline in the waveform view no longer leave blank areas: history replies that arrive during the drag are used, one extra screen is prefetched on each side, and areas outside the prefetched range are first drawn from a coarse whole-history underlay and then replaced by detail. While following live data the curve and time axis advance together, so the right edge no longer flashes an empty strip. History replies now travel as typed arrays, cutting per-refresh transport cost for ten curves over the whole window from about 40 ms to about 2 ms. See `docs/LAYERED-SAMPLING.md`.
+- 波形图跟随最新数据（10 秒、30 秒、60 秒或自定义跨度）时随时间平滑滚动，不再每次收到数据才跳一格，且始终不超出已收到的数据；系统要求减少动态效果时保持原方式。拖动与跟随时复用已算好的曲线几何，只做平移，10 条曲线每帧绘制由约 9.5 ms 降到约 3.1 ms；绘制较慢时自动降低刷新率。较长窗口（如“全部”）只在新数据足以多出一个像素列时刷新明细。
+- While following live data with a fixed span (10 s, 30 s, 60 s or custom), the waveform now scrolls smoothly with time instead of stepping when data arrives, never running ahead of received data; it keeps the previous behaviour when the system asks for reduced motion. Panning and following reuse computed curve geometry and only translate it, cutting per-frame drawing for ten curves from about 9.5 ms to about 3.1 ms, and the refresh rate drops automatically when drawing is slow. Long windows such as "All" refresh detail only when new data would add a pixel column.
+
 - 调试启动时先用 GDB `compare-sections`（目标端 CRC）逐段比较目标与 ELF，全部一致则跳过 GDB 下载与第二次复位，不一致时照常下载；连续多次启动调试与“先下载再调试”都不再重复擦写。Windows 上在后台预先启动一次 GDB，避免开机后首次调试承担数秒的冷启动。`performanceTrace` 现在还会输出 launch 各阶段与运行到入口断点的耗时。见 `docs/FLASH-PERFORMANCE.md`。
 - Debug launch first compares every loadable section with the target through GDB `compare-sections` (an on-target CRC) and skips the GDB download and second reset when all match; a mismatch downloads normally, so repeated debug starts and download-then-debug no longer erase and rewrite unchanged firmware. On Windows, GDB is started once in the background so the first debug session after boot does not pay a multi-second cold start. `performanceTrace` now also logs per-phase launch timings and the time to the entry breakpoint. See `docs/FLASH-PERFORMANCE.md`.
 

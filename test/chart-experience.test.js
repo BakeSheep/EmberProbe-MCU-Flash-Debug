@@ -158,7 +158,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         assert.ok(doc.querySelector(".side-curve-tools #hideAll"));
         assert.equal(doc.getElementById("autoY").parentNode, doc.getElementById("freeze").parentNode);
         assert.equal(doc.querySelector(".remove").textContent, "×");
-        const hitPoint = w.chartState.curveGeometry.value[0].points[0];
+        const hitPoint = w.Inspection.pointAt(w.chartState.curveGeometry.value[0], 0);
         w.chartState.hits = [];
         doc.getElementById("chart").dispatchEvent(
             new w.MouseEvent("click", { button: 0, clientX: hitPoint.x, clientY: hitPoint.y })
@@ -168,12 +168,18 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.dirty = true;
         w.draw(150);
         assert.equal(doc.getElementById("curveTooltip").textContent, "a: 1");
-        const nextPoint = w.chartState.curveGeometry.value[0].points.at(-1);
+        const nextPoint = w.Inspection.pointAt(
+            w.chartState.curveGeometry.value[0],
+            w.chartState.curveGeometry.value[0].raw.length - 1
+        );
         w.chartState.pointer = { x: nextPoint.x, y: nextPoint.y };
         w.dirty = true;
         w.draw(250);
         assert.equal(doc.getElementById("curveTooltip").textContent, "a: 3", "frozen hover updates at new position");
-        const otherPoint = w.chartState.curveGeometry.value[1].points.at(-1);
+        const otherPoint = w.Inspection.pointAt(
+            w.chartState.curveGeometry.value[1],
+            w.chartState.curveGeometry.value[1].raw.length - 1
+        );
         w.chartState.pointer = { x: otherPoint.x, y: otherPoint.y };
         w.dirty = true;
         w.draw(350);

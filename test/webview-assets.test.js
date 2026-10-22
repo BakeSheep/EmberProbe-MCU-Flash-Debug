@@ -13,6 +13,7 @@ for (const file of [
     "../src/webview/sidebar/renderer.js",
     "../src/webview/liveWatch/app.css",
     "../src/webview/liveWatch/viewport.js",
+    "../src/webview/liveWatch/chartTransport.js",
     "../src/webview/liveWatch/renderer.js"
 ]) {
     assert.ok(fs.statSync(path.resolve(__dirname, file)).size > 100, `${file} must be a real webview asset`);

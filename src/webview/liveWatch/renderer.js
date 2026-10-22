@@ -12,21 +12,23 @@ function retainedSampleLimit(frequencyHz, intervalMs) {
 }
 var MAXPTS = retainedSampleLimit(CFG.frequencyHz, CFG.intervalMs);
 var remoteHistory = {
+    // While following, render bounds advance with detail; liveStatus always tracks the latest event.
     status: null,
     liveStatus: null,
-    series: [],
+    view: null,
+    overview: null,
+    composed: null,
     snapshotId: null,
     nextId: 0,
     inFlight: null,
     pending: null,
-    desiredKey: null,
-    desiredViewKey: null,
-    cachedKey: null,
+    target: null,
+    overviewDueAt: null,
+    lastOverviewRequest: -Infinity,
     operation: null,
     lastRequest: -Infinity
 };
-function requestChartViewport(range, width) {
-    if (!CFG.backendHistory || !range || !remoteHistory.status || historyClearPending) return;
+function chartHistoryConfig() {
     var names = watch
         .filter(function (item) {
             return !hidden[item.name] && !isCompositeItem(item);
@@ -34,58 +36,224 @@ function requestChartViewport(range, width) {
         .map(function (item) {
             return item.name;
         });
-    // Automatic following advances the range without changing the user's viewport choice.
-    var viewRange =
-        chartState.follow && chartState.x === range && !chartState.endpointDrag
-            ? [
-                  "follow",
-                  $("timeWindow").value,
-                  chartState.startPinned,
-                  $("timeWindow").value === "custom" && !chartState.startPinned ? range.max - range.min : null
-              ]
-            : range;
-    var viewKey = JSON.stringify([
+    var configKey = JSON.stringify([
         historyRevision,
         remoteHistory.snapshotId,
         names,
         watch.map(function (item) {
             return [item.name, item.type, item.address, item.bitOffset, item.bitSize];
-        }),
-        viewRange,
-        width
+        })
     ]);
-    var key = JSON.stringify([viewKey, remoteHistory.status.revision, range]);
-    remoteHistory.desiredKey = key;
-    remoteHistory.desiredViewKey = viewKey;
-    if (!names.length) {
-        remoteHistory.pending = null;
-        remoteHistory.series = [];
-        remoteHistory.cachedKey = key;
+    return { names: names, configKey: configKey };
+}
+function followingChartHistory() {
+    return !frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag;
+}
+function smoothFollowEnabled() {
+    return (
+        CFG.backendHistory &&
+        running &&
+        !remoteHistory.operation &&
+        followingChartHistory() &&
+        !chartState.startPinned &&
+        !!chartState.x &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches !== true
+    );
+}
+function resetFollowClock() {
+    chartState.followClock = null;
+    chartState.smoothFollowing = false;
+}
+// The display clock trails the committed data edge. Before a user interaction takes over the view, move a
+// following view onto that edge (keeping its span) so follow/snap decisions compare against real bounds.
+function settleFollowView() {
+    if (chartState.followClock && chartState.follow && chartState.x && chartState.bounds) {
+        var shift = chartState.bounds.max - chartState.x.max;
+        if (shift > 0) chartState.x = { min: chartState.x.min + shift, max: chartState.bounds.max };
+    }
+    resetFollowClock();
+}
+function commitFollowClock(bounds) {
+    if (!smoothFollowEnabled() || !chartHistoryBoundsValid(bounds)) {
+        resetFollowClock();
         return;
     }
-    if (key === remoteHistory.cachedKey) return;
-    remoteHistory.pending = {
-        key: key,
-        viewKey: viewKey,
-        range: { ...range },
-        width: width,
-        names: names,
+    var now = performance.now(),
+        clock = chartState.followClock,
+        span =
+            $("timeWindow").value === "custom" ? VP.span(chartState.x) : Math.max(1, parseInt(windowPreset, 10) * 1000),
+        key = chartHistoryConfig().configKey;
+    // A preset has a fixed duration even when retained history is still shorter at sampling startup.
+    chartState.x = { min: chartState.x.max - span, max: chartState.x.max };
+    if (!clock || clock.key !== key || Math.abs(clock.span - span) > 0.001 || bounds.max < clock.dataMax) {
+        clock = chartState.followClock = {
+            key: key,
+            span: span,
+            time: Math.max(bounds.min, Math.min(chartState.x.max, bounds.max)),
+            interval: 80,
+            committedAt: now,
+            frameAt: now,
+            dataMax: bounds.max
+        };
+    } else {
+        clock.interval += 0.2 * (Math.max(0, now - clock.committedAt) - clock.interval);
+        clock.committedAt = now;
+        clock.dataMax = bounds.max;
+    }
+    chartState.smoothCommit = (chartState.smoothCommit || 0) + 1;
+    advanceFollowClock(now);
+}
+function advanceFollowClock(now) {
+    var clock = chartState.followClock;
+    if (
+        !smoothFollowEnabled() ||
+        !clock ||
+        clock.key !== chartHistoryConfig().configKey ||
+        Math.abs(clock.span - VP.span(chartState.x)) > 0.001
+    ) {
+        resetFollowClock();
+        return;
+    }
+    var elapsed = Math.max(0, now - clock.frameAt),
+        target = clock.dataMax - clock.interval - 16 + Math.max(0, now - clock.committedAt),
+        rate = Math.max(0.9, Math.min(1.1, 1 + (target - clock.time) / 1000));
+    clock.time = Math.max(clock.time, Math.min(clock.dataMax, clock.time + elapsed * rate));
+    clock.frameAt = now;
+    chartState.x = { min: clock.time - clock.span, max: clock.time };
+    chartState.smoothFollowing = true;
+}
+// Freeze/resume keep the drawn views until replacements arrive; only outstanding requests are dropped.
+function cancelChartHistoryRequests() {
+    resetFollowClock();
+    remoteHistory.inFlight = remoteHistory.pending = remoteHistory.target = remoteHistory.failed = null;
+    remoteHistory.overviewDueAt = null;
+    remoteHistory.lastOverviewRequest = -Infinity;
+}
+function resetChartHistoryViews() {
+    remoteHistory.view = remoteHistory.overview = remoteHistory.composed = null;
+    cancelChartHistoryRequests();
+}
+function chartHistoryBoundsValid(bounds) {
+    return bounds && Number.isFinite(bounds.min) && Number.isFinite(bounds.max) && bounds.max >= bounds.min;
+}
+function requestChartViewport(range, width) {
+    if (!CFG.backendHistory || historyClearPending) return;
+    var config = chartHistoryConfig();
+    if (!config.names.length) {
+        remoteHistory.view = remoteHistory.overview = null;
+        remoteHistory.pending = remoteHistory.target = null;
+        remoteHistory.overviewDueAt = null;
+        return;
+    }
+    var status = frozen ? remoteHistory.status : remoteHistory.liveStatus;
+    if (!range || !status || !remoteHistory.status) return;
+    var now = performance.now(),
+        bounds = status.bounds,
+        span = Math.max(1, range.max - range.min),
+        columns = Math.min(8192, Math.max(1, Math.round(width))),
+        following = followingChartHistory(),
+        overscan = following ? Math.min(span, 5000) : span,
+        fetchRange = { min: range.min - (following ? 0 : overscan), max: range.max + overscan },
+        visibleRange = { ...range };
+    if (chartHistoryBoundsValid(bounds)) {
+        visibleRange.min = Math.max(bounds.min, range.min);
+        visibleRange.max = Math.min(bounds.max, range.max);
+        if (!following) {
+            fetchRange.min = Math.max(bounds.min, fetchRange.min);
+            fetchRange.max = Math.min(bounds.max, fetchRange.max);
+        }
+    }
+    // Clamp to retained bounds first: near an edge, the full overscan may already fit the column budget.
+    var excess = fetchRange.max - fetchRange.min - (span * 8192) / columns;
+    if (excess > 0) {
+        var trimLeft = Math.min(Math.max(0, range.min - fetchRange.min), excess / 2),
+            trimRight = Math.min(Math.max(0, fetchRange.max - range.max), excess - trimLeft);
+        trimLeft += excess - trimLeft - trimRight;
+        fetchRange.min += trimLeft;
+        fetchRange.max -= trimRight;
+    }
+    var target = {
+        configKey: config.configKey,
+        range: fetchRange,
+        width: Math.min(8192, Math.max(1, Math.round((columns * (fetchRange.max - fetchRange.min)) / span))),
+        names: config.names,
+        revision: status.revision,
         snapshotId: remoteHistory.snapshotId
     };
+    target.key = JSON.stringify([target.configKey, target.revision, target.range, target.width]);
+    target.overviewRange = chartHistoryBoundsValid(bounds) ? { ...bounds } : null;
+    target.overviewWidth = Math.min(4096, Math.max(64, Math.round(width)));
+    if (remoteHistory.target && remoteHistory.target.configKey !== target.configKey) remoteHistory.overviewDueAt = null;
+    remoteHistory.target = target;
+    var view = remoteHistory.view,
+        msPerColumn = view ? Math.max(1, view.range.max - view.range.min) / view.width : Infinity,
+        desiredResolution = span / columns,
+        followRefreshInterval = Math.max(80, span / Math.max(1, width)),
+        epsilon = Math.max(0.001, span * 1e-9),
+        needsDetail =
+            !view ||
+            view.configKey !== target.configKey ||
+            visibleRange.min < view.range.min - epsilon ||
+            visibleRange.max > view.range.max + epsilon ||
+            msPerColumn > desiredResolution * 1.5 ||
+            msPerColumn < desiredResolution / 3 ||
+            (!frozen &&
+                status.revision !== view.revision &&
+                now - view.receivedAt >= (following ? followRefreshInterval : 1000));
+    // Only the latest detail is pending. Overview work is derived from target when the slot opens.
+    // A failed request is not repeated for the same key; overview failures back off for 5 s.
+    var inFlight = remoteHistory.inFlight,
+        failed = remoteHistory.failed;
+    remoteHistory.pending =
+        needsDetail &&
+        !(inFlight && inFlight.purpose === "detail" && inFlight.key === target.key) &&
+        !(failed && failed.purpose === "detail" && failed.key === target.key)
+            ? { ...target, purpose: "detail" }
+            : null;
+    var overview = remoteHistory.overview,
+        overviewInFlight = inFlight && inFlight.purpose === "overview" && inFlight.configKey === target.configKey,
+        overviewFailed =
+            failed && failed.purpose === "overview" && failed.configKey === target.configKey && now - failed.at < 5000,
+        missingOverview = !overview || overview.configKey !== target.configKey,
+        staleOverview = !frozen && overview && overview.revision !== status.revision;
+    if (
+        target.overviewRange &&
+        !overviewInFlight &&
+        !overviewFailed &&
+        (missingOverview || (staleOverview && now - remoteHistory.lastOverviewRequest >= 1000))
+    ) {
+        if (remoteHistory.overviewDueAt === null)
+            remoteHistory.overviewDueAt = missingOverview ? now : remoteHistory.lastOverviewRequest + 1000;
+    } else remoteHistory.overviewDueAt = null;
     dispatchChartViewport();
 }
 function dispatchChartViewport() {
-    if (remoteHistory.inFlight || !remoteHistory.pending) return;
-    var elapsed = performance.now() - remoteHistory.lastRequest;
+    if (historyClearPending || remoteHistory.inFlight || !remoteHistory.target) return;
+    var now = performance.now(),
+        overviewDue = remoteHistory.overviewDueAt !== null;
+    if (!remoteHistory.pending && !overviewDue) return;
+    var elapsed = now - remoteHistory.lastRequest;
     if (elapsed < 80) {
         dirty = true;
         return;
     }
-    var request = remoteHistory.pending;
-    remoteHistory.pending = null;
+    var request;
+    if (overviewDue && (!remoteHistory.pending || now - remoteHistory.overviewDueAt > 1000)) {
+        request = {
+            ...remoteHistory.target,
+            purpose: "overview",
+            range: remoteHistory.target.overviewRange,
+            width: remoteHistory.target.overviewWidth
+        };
+        remoteHistory.lastOverviewRequest = now;
+        remoteHistory.overviewDueAt = null;
+    } else {
+        request = remoteHistory.pending;
+        remoteHistory.pending = null;
+    }
     request.requestId = ++remoteHistory.nextId;
     remoteHistory.inFlight = request;
-    remoteHistory.lastRequest = performance.now();
+    remoteHistory.lastRequest = now;
     post({
         type: "chartViewport",
         names: request.names,
@@ -1817,10 +1985,8 @@ function clearHistory(clearArchive = true) {
     historyClearPending = clearArchive;
     if (CFG.backendHistory) {
         remoteHistory.status = remoteHistory.liveStatus = null;
-        remoteHistory.series = [];
-        remoteHistory.inFlight = remoteHistory.pending = remoteHistory.operation = null;
-        remoteHistory.cachedKey = remoteHistory.desiredKey = remoteHistory.snapshotId = null;
-        remoteHistory.desiredViewKey = null;
+        resetChartHistoryViews();
+        remoteHistory.operation = remoteHistory.snapshotId = null;
     }
     archiveExportInfo = null;
     exportCandidates = [];
@@ -2568,6 +2734,8 @@ var chartState = {
     fastDirty: false
 };
 function resetChartView() {
+    resetFollowClock();
+    chartState.rangeStats = null;
     chartState.bounds = null;
     chartState.x = null;
     chartState.y = null;
@@ -2575,6 +2743,7 @@ function resetChartView() {
     chartState.follow = true;
     chartState.startPinned = false;
     chartState.endpointDrag = null;
+    chartState.timelineDrag = false;
     chartState.pointer = null;
     chartState.drag = null;
     chartState.visibleKey = "";
@@ -2586,9 +2755,12 @@ function resetChartView() {
 }
 function freezeChart() {
     syncTimeBounds();
+    resetFollowClock();
     if (CFG.backendHistory) {
         if (remoteHistory.operation || frozen) return;
         remoteHistory.operation = ++remoteHistory.nextId;
+        dirty = true;
+        chartState.fastDirty = true;
         post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
         return;
     }
@@ -2606,12 +2778,13 @@ function freezeChart() {
     chartState.fastDirty = true;
 }
 function resumeChart() {
+    resetFollowClock();
     $("freeze").textContent = t("lw.freeze");
     if (CFG.backendHistory) {
         remoteHistory.operation = null;
         remoteHistory.snapshotId = null;
         remoteHistory.status = remoteHistory.liveStatus;
-        remoteHistory.cachedKey = null;
+        cancelChartHistoryRequests();
         post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
     }
     Analysis.resume(analysis);
@@ -2776,17 +2949,82 @@ canvas.addEventListener("click", function (e) {
         return;
     if (Inspection.hit(chartState.curveGeometry.value, point).length) freezeChart();
 });
+// Keep the neighbour inside each cut so coarse and detailed lines meet without bridging gaps.
+// The coarse underlay is drawn only outside the detail curve. A segment that continues across a cut joins the
+// detail curve's own end point, so no coarse point lands inside the detail range (where it would shift on every
+// commit and make the curve's visible end jump); a segment ending before the cut keeps its gap.
+function chartOverviewOutside(arr, range, first, last) {
+    if (!arr.length) return [];
+    var parts = [],
+        leftCut = first ? first.t : range.min,
+        rightCut = last ? last.t : range.max;
+    if (arr[0].t < leftCut) {
+        var left = Inspection.lowerBound(arr, leftCut),
+            before = arr.slice(0, left);
+        if (left < arr.length && first) before.push(first);
+        parts.push(before);
+    }
+    if (arr[arr.length - 1].t > rightCut) {
+        var right = Inspection.lowerBound(arr, rightCut);
+        while (right < arr.length && arr[right].t === rightCut) right++;
+        var after = arr.slice(right);
+        if (right > 0 && last) after.unshift(last);
+        parts.push(after);
+    }
+    return parts;
+}
 function chartData(range, width) {
     if (CFG.backendHistory) {
         requestChartViewport(range, width);
-        return remoteHistory.series.flatMap(function (part) {
+        // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
+        // arrives, but only for curves whose type/address identity is unchanged.
+        var configKey = chartHistoryConfig().configKey,
+            view = remoteHistory.view,
+            overview = remoteHistory.overview,
+            cached = remoteHistory.composed;
+        if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
+            return cached.series;
+        var composed = [];
+        function identity(item) {
+            return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
+        }
+        function add(part, arr, detail, current) {
             var idx = watch.findIndex(function (item) {
                 return item.name === part.name;
             });
-            return idx < 0 || hidden[part.name]
-                ? []
-                : [{ item: part.item || watch[idx], idx: idx, arr: part.arr, visibleCount: part.visibleCount }];
-        });
+            if (idx < 0 || hidden[part.name] || isCompositeItem(watch[idx]) || !arr.length) return;
+            if (!current && (!part.item || identity(part.item) !== identity(watch[idx]))) return;
+            composed.push({
+                item: part.item || watch[idx],
+                idx: idx,
+                arr: arr,
+                ...(detail ? { visibleCount: part.visibleCount } : {})
+            });
+        }
+        if (view)
+            view.series.forEach(function (part) {
+                add(part, part.arr, true, view.configKey === configKey);
+            });
+        var ends = new Map();
+        if (view)
+            view.series.forEach(function (part) {
+                if (!part.arr.length) return;
+                var end = ends.get(part.name);
+                if (!end) ends.set(part.name, { first: part.arr[0], last: part.arr[part.arr.length - 1] });
+                else end.last = part.arr[part.arr.length - 1];
+            });
+        if (overview)
+            overview.series.forEach(function (part) {
+                var end = ends.get(part.name),
+                    segments = view
+                        ? chartOverviewOutside(part.arr, view.range, end && end.first, end && end.last)
+                        : [part.arr];
+                segments.forEach(function (arr) {
+                    add(part, arr, false, overview.configKey === configKey);
+                });
+            });
+        remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
+        return composed;
     }
     var key = JSON.stringify([
         dataRevision,
@@ -2857,6 +3095,7 @@ function setWindowCustom() {
     $("timeWindow").value = "custom";
 }
 function applyWindowPreset(value) {
+    resetFollowClock();
     if (value !== "custom") windowPreset = String(value);
     var custom = $("timeWindow").querySelector("option[value=custom]");
     custom.hidden = true;
@@ -2917,6 +3156,8 @@ function syncTimeBounds() {
     chartState.bounds = next;
     if (!chartState.x) {
         applyWindowPreset(windowPreset);
+    } else if (changed && chartState.follow && smoothFollowEnabled() && chartState.followClock) {
+        // Detail bounds are committed atomically, while the display clock owns the fixed-span view.
     } else if (changed && chartState.follow) {
         // While resizing, keep the chosen left edge fixed and only advance the attached right edge.
         if (chartState.endpointDrag)
@@ -2964,27 +3205,46 @@ function refreshChartTimeline() {
     }
     overview.classList.remove("disabled");
     from.disabled = to.disabled = false;
-    var total = Math.max(1, Math.round(VP.span(chartState.bounds))),
-        a = Math.max(0, Math.round(chartState.x.min - chartState.bounds.min)),
-        b = Math.min(total, Math.round(chartState.x.max - chartState.bounds.min)),
-        percent = VP.toPercent(chartState.x, chartState.bounds),
-        origin = Number.isFinite(samplingOrigin) ? samplingOrigin : chartState.bounds.min;
+    // While smooth following, the timeline ends at the display clock rather than the stepped data edge, so the
+    // selection stays pinned to the right end instead of sawing between commits.
+    var bounds =
+            chartState.smoothFollowing && chartState.follow
+                ? { min: chartState.bounds.min, max: Math.max(chartState.bounds.min + 1, chartState.x.max) }
+                : chartState.bounds,
+        total = Math.max(1, Math.round(VP.span(bounds))),
+        a = Math.max(0, Math.round(chartState.x.min - bounds.min)),
+        b = Math.min(total, Math.round(chartState.x.max - bounds.min)),
+        percent = VP.toPercent(chartState.x, bounds),
+        origin = Number.isFinite(samplingOrigin) ? samplingOrigin : bounds.min;
     from.min = to.min = "0";
     from.max = to.max = String(total);
     from.value = String(a);
     to.value = String(b);
     $("chartRangeFill").style.left = percent.left + "%";
     $("chartRangeFill").style.width = percent.width + "%";
-    $("chartAxisStart").textContent = formatElapsed(chartState.bounds.min - origin);
-    $("chartAxisEnd").textContent = formatElapsed(chartState.bounds.max - origin);
+    $("chartAxisStart").textContent = formatElapsed(bounds.min - origin);
+    $("chartAxisEnd").textContent = formatElapsed(bounds.max - origin);
     overview.title = t("lw.chartSelectedRange", {
         from: formatElapsed(chartState.x.min - origin),
         to: formatElapsed(chartState.x.max - origin)
     });
 }
 function draw(now) {
+    var smooth = smoothFollowEnabled();
+    if (!smooth) {
+        if (chartState.followClock && followingChartHistory() && !remoteHistory.operation && chartState.bounds) {
+            chartState.x = VP.followEnd(chartState.x, chartState.bounds, chartState.bounds, minimumXSpan());
+            dirty = true;
+        }
+        resetFollowClock();
+    } else {
+        advanceFollowClock(performance.now());
+        dirty = true;
+    }
     if (!dirty) return;
-    if (!chartState.fastDirty && now - lastDraw < 80) return;
+    var interval = smooth ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
+    if ((smooth || !chartState.fastDirty) && now - lastDraw < interval) return;
+    var drawStarted = performance.now();
     lastDraw = now;
     dirty = false;
     chartState.fastDirty = false;
@@ -3016,19 +3276,20 @@ function draw(now) {
     historyLoading.textContent = t("lw.historyLoading");
     historyLoading.hidden =
         !CFG.backendHistory ||
-        !hasBounds ||
         !watch.some(function (item) {
             return !hidden[item.name] && !isCompositeItem(item);
         }) ||
         !(
             remoteHistory.operation ||
-            (remoteHistory.desiredKey !== remoteHistory.cachedKey &&
+            ([remoteHistory.pending, remoteHistory.inFlight].some(function (request) {
+                return request && request.configKey === chartHistoryConfig().configKey;
+            }) &&
                 watch.some(function (item) {
                     return (
                         !hidden[item.name] &&
                         !isCompositeItem(item) &&
                         !series.some(function (part) {
-                            return part.item.name === item.name;
+                            return part.item.name === item.name && part.arr.length;
                         })
                     );
                 }))
@@ -3037,6 +3298,11 @@ function draw(now) {
         $("chartEmpty").textContent = t("lw.historyLoading");
     }
     if (controls) controls.refresh(series);
+    var duration = performance.now() - drawStarted;
+    chartState.drawDuration =
+        chartState.drawDuration == null
+            ? duration
+            : chartState.drawDuration + 0.2 * (duration - chartState.drawDuration);
 }
 function chartRegion(x, y) {
     var g = chartState.geometry;
@@ -3097,6 +3363,7 @@ canvas.addEventListener("pointerdown", function (e) {
     if ((e.button !== 0 && e.button !== 1) || chartRegion(p.x, p.y) !== "plot" || !chartState.x || !chartState.y)
         return;
     e.preventDefault();
+    settleFollowView();
     chartState.drag = {
         mode: e.button === 1 ? "x" : "pan",
         moved: false,
@@ -3134,6 +3401,7 @@ canvas.addEventListener(
         var scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 120 : 1,
             factor = Math.exp(Math.max(-4, Math.min(4, e.deltaY * scale * 0.0015)));
         if (region === "plot" || region === "x") {
+            settleFollowView();
             var anchor =
                 chartState.x.min + ((p.x - chartState.geometry.padL) / chartState.geometry.pw) * VP.span(chartState.x);
             chartState.x = VP.zoomClamped(chartState.x, factor, anchor, chartState.bounds, minimumXSpan());
@@ -3153,10 +3421,15 @@ canvas.addEventListener(
 );
 function updateTimelineEndpoint(edge) {
     if (!chartState.bounds || !chartState.x) return;
+    // Keyboard changes arrive without a pointerdown; settle the trailing display clock here instead.
+    if (!chartState.endpointDrag) settleFollowView();
     var input = edge === "min" ? $("chartFromRange") : $("chartToRange"),
         value = chartState.bounds.min + Number(input.value),
-        tolerance = endTolerance();
+        tolerance = endTolerance(),
+        // Moving the left handle never detaches a right end that was attached when the change started.
+        keepEnd = edge === "min" && (chartState.endpointDrag ? chartState.endpointFollow : chartState.follow);
     chartState.x = VP.updateEndpoint(chartState.x, edge, value, chartState.bounds, minimumXSpan());
+    if (keepEnd) chartState.x.max = chartState.bounds.max;
     if (edge === "min" && chartState.x.min - chartState.bounds.min <= tolerance)
         chartState.x.min = chartState.bounds.min;
     if (edge === "max" && chartState.bounds.max - chartState.x.max <= tolerance)
@@ -3169,7 +3442,9 @@ function updateTimelineEndpoint(edge) {
 }
 function beginTimelineEndpoint(edge, event) {
     if (!chartState.bounds || !chartState.x || (event && event.button !== 0)) return;
+    settleFollowView();
     chartState.endpointDrag = edge;
+    chartState.endpointFollow = chartState.follow;
     if (event && Number.isFinite(event.pointerId) && event.currentTarget.setPointerCapture)
         event.currentTarget.setPointerCapture(event.pointerId);
 }
@@ -3177,6 +3452,7 @@ function endTimelineEndpoint() {
     // Include samples delivered between the last input event and releasing the handle.
     syncTimeBounds();
     chartState.endpointDrag = null;
+    chartState.endpointFollow = false;
     chartState.follow = !!(chartState.x && chartState.bounds && chartState.x.max === chartState.bounds.max);
     chartState.fastDirty = true;
     dirty = true;
@@ -3206,12 +3482,14 @@ $("chartToRange").onpointerup =
 $("chartRangeFill").addEventListener("pointerdown", function (e) {
     if (!chartState.bounds || !chartState.x) return;
     e.preventDefault();
+    settleFollowView();
     var fill = this,
         track = $("chartTimeline"),
         startX = e.clientX,
         startRange = { min: chartState.x.min, max: chartState.x.max },
         pointerId = e.pointerId;
     chartState.follow = false;
+    chartState.timelineDrag = true;
     fill.classList.add("dragging");
     fill.setPointerCapture(pointerId);
     var move = function (ev) {
@@ -3225,6 +3503,7 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
     };
     var end = function (ev) {
         if (ev.pointerId !== pointerId) return;
+        chartState.timelineDrag = false;
         fill.classList.remove("dragging");
         if (fill.hasPointerCapture(pointerId)) fill.releasePointerCapture(pointerId);
         fill.removeEventListener("pointermove", move);
@@ -3745,11 +4024,19 @@ window.EmberProbeMessages.connect(window, {
         if (m.limited && !remoteHistory.liveStatus?.limited) setStatusKey("lw.memoryHistoryLimited", null, "warning");
         remoteHistory.liveStatus = m;
         if (!m.bounds && m.limited && !frozen) {
-            remoteHistory.series = [];
-            remoteHistory.cachedKey = null;
+            resetChartHistoryViews();
         }
         if (!frozen) {
-            remoteHistory.status = m;
+            var config = chartHistoryConfig(),
+                view = remoteHistory.view;
+            if (
+                !followingChartHistory() ||
+                !config.names.length ||
+                !view ||
+                view.configKey !== config.configKey ||
+                performance.now() - view.receivedAt > 1000
+            )
+                remoteHistory.status = m;
             dirty = true;
         }
         if (samplingOrigin === null && m.bounds) samplingOrigin = m.bounds.min;
@@ -3760,21 +4047,47 @@ window.EmberProbeMessages.connect(window, {
         remoteHistory.inFlight = null;
         if (
             m.historyRevision === historyRevision &&
-            request.viewKey === remoteHistory.desiredViewKey &&
+            !historyClearPending &&
+            request.configKey === chartHistoryConfig().configKey &&
             (m.snapshotId || null) === remoteHistory.snapshotId
         ) {
             if (m.error) {
                 setStatusMsg({ message: m.error }, "error");
-                remoteHistory.cachedKey = request.key;
+                remoteHistory.failed = {
+                    key: request.key,
+                    configKey: request.configKey,
+                    purpose: request.purpose,
+                    at: performance.now()
+                };
             } else {
-                remoteHistory.series = m.series || [];
-                remoteHistory.cachedKey = request.key;
+                remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
+                    series: window.EmberProbeChartTransport.decodeViewport(m.series || []),
+                    range: request.range,
+                    width: request.width,
+                    configKey: request.configKey,
+                    revision: m.revision,
+                    receivedAt: performance.now()
+                };
+                if (
+                    request.purpose === "detail" &&
+                    !frozen &&
+                    (followingChartHistory() || m.revision >= (remoteHistory.status?.revision ?? -Infinity))
+                ) {
+                    remoteHistory.status = {
+                        revision: m.revision,
+                        bounds: m.bounds,
+                        variables: m.variables,
+                        limited: m.limited,
+                        bytes: m.bytes,
+                        maxBytes: m.maxBytes
+                    };
+                    commitFollowClock(m.bounds);
+                    syncTimeBounds();
+                }
             }
             dirty = true;
         }
-        if (remoteHistory.pending && remoteHistory.pending.key === remoteHistory.cachedKey)
-            remoteHistory.pending = null;
-        dispatchChartViewport();
+        requestChartViewport(chartState.x, canvas.clientWidth);
     },
     chartFreezeResult: function (m) {
         if (m.historyRevision !== historyRevision || m.requestId !== remoteHistory.operation) return;
@@ -3785,7 +4098,7 @@ window.EmberProbeMessages.connect(window, {
         }
         remoteHistory.snapshotId = m.snapshotId;
         remoteHistory.status = m;
-        remoteHistory.cachedKey = null;
+        cancelChartHistoryRequests();
         frozen = true;
         $("freeze").textContent = t("lw.resume");
         chartState.follow = false;
