@@ -140,6 +140,7 @@ const TEST_GROUPS = Object.freeze({
         "chart-controls.test.js",
         "chart-experience.test.js",
         "chart-host.test.js",
+        "csv-export-progress.test.js",
         "chart-history-worker.test.js",
         "chart-history-summary.test.js",
         "chart-history-capacity.test.js",

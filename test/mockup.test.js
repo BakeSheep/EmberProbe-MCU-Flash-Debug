@@ -19,6 +19,7 @@ function hostEnvironment() {
     const listeners = new Set();
     const jobs = new Map();
     const downloads = [];
+    const downloadNames = [];
     let now = 1700000000000;
     let nextId = 0;
     const root = {
@@ -57,7 +58,12 @@ function hostEnvironment() {
             revokeObjectURL() {}
         },
         document: {
-            createElement: () => ({ click() {}, remove() {} }),
+            createElement: () => ({
+                click() {
+                    downloadNames.push(this.download);
+                },
+                remove() {}
+            }),
             body: { appendChild() {} }
         }
     });
@@ -94,7 +100,7 @@ function hostEnvironment() {
         }
         now = end;
     }
-    return { root, frame, deliver, advance, downloads, jobs, time: () => now };
+    return { root, frame, deliver, advance, downloads, downloadNames, jobs, time: () => now };
 }
 
 function latest(frame, type) {
@@ -249,7 +255,14 @@ function testArchive() {
         env.deliver(frame, { type: "start", items: liveData.watchList(), frequencyHz: 10 });
         const first = env.time();
         env.advance(200);
-        env.deliver(frame, { type: "exportCsv", names: ["g_motor_rpm"], fromMs: first + 100, toMs: first + 100 });
+        env.deliver(frame, {
+            type: "exportCsv",
+            names: ["g_motor_rpm"],
+            fromMs: first + 100,
+            toMs: first + 100,
+            fileName: "motor.csv"
+        });
+        assert.equal(env.downloadNames.at(-1), "motor.csv");
         const csv = env.downloads.at(-1);
         assert.ok(csv.startsWith("\uFEFFtime,g_motor_rpm\r\n"));
         assert.ok(csv.includes(new Date(first + 100).toISOString()));

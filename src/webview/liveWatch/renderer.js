@@ -809,6 +809,8 @@ function applyI18n() {
     for (i = 0; i < els.length; i++) els[i].title = t(els[i].getAttribute("data-i18n-title"));
     els = document.querySelectorAll("[data-i18n-ph]");
     for (i = 0; i < els.length; i++) els[i].placeholder = t(els[i].getAttribute("data-i18n-ph"));
+    els = document.querySelectorAll("[data-i18n-aria]");
+    for (i = 0; i < els.length; i++) els[i].setAttribute("aria-label", t(els[i].getAttribute("data-i18n-aria")));
     renderUnlimited();
 }
 function updateLangToggle() {
@@ -2455,9 +2457,21 @@ function setExportSeriesSelection(invert) {
     $("exportSeries")
         .querySelectorAll("input[type=checkbox]")
         .forEach(function (cb) {
+            if (cb.closest("tr").hidden) return;
             cb.checked = invert ? !cb.checked : true;
         });
     setupExportTimeline(selectedExportCandidates());
+}
+function filterExportSeries() {
+    endExportSeriesDrag();
+    var query = $("exportSearch").value.trim().toLowerCase();
+    $("exportSeries")
+        .querySelectorAll("tbody tr")
+        .forEach(function (row) {
+            var item = exportCandidates[Number(row.querySelector("input").dataset.index)];
+            row.hidden = !item.displayName.toLowerCase().includes(query) && !item.name.toLowerCase().includes(query);
+        });
+    $("exportSeries").scrollTop = 0;
 }
 function updateExportTimeline(changed) {
     var from = $("exportFromRange"),
@@ -2592,7 +2606,7 @@ function beginExportSeriesDrag(event) {
         marquee: marquee,
         frame: 0,
         lastFrame: performance.now(),
-        rows: Array.from(box.querySelectorAll("tbody tr"), function (entry) {
+        rows: Array.from(box.querySelectorAll("tbody tr:not([hidden])"), function (entry) {
             var bounds = entry.getBoundingClientRect(),
                 checkbox = entry.querySelector("input");
             return {
@@ -2635,6 +2649,21 @@ function showExport() {
 }
 function showArchiveExport(info) {
     endExportSeriesDrag();
+    var stamp = new Date(),
+        pad = function (n) {
+            return String(n).padStart(2, "0");
+        };
+    $("exportFileName").value = "";
+    $("exportFileName").placeholder =
+        "emberprobe-live-" +
+        stamp.getFullYear() +
+        pad(stamp.getMonth() + 1) +
+        pad(stamp.getDate()) +
+        "-" +
+        pad(stamp.getHours()) +
+        pad(stamp.getMinutes()) +
+        pad(stamp.getSeconds());
+    $("exportSearch").value = "";
     var names = Array.isArray(info && info.variables) ? info.variables : [],
         first = Number(info && info.firstTimestampMs),
         last = Number(info && info.lastTimestampMs);
@@ -2726,6 +2755,7 @@ function applyExport() {
     }
     post({
         type: "exportCsv",
+        fileName: ($("exportFileName").value.trim() || $("exportFileName").placeholder).replace(/\.csv$/i, "") + ".csv",
         historyRevision: historyRevision,
         names: selected.map(function (c) {
             return c.name;
@@ -3990,6 +4020,7 @@ $("timeWindow").value = windowPreset;
 $("export").onclick = showExport;
 $("exportCancel").onclick = hideExport;
 $("exportApply").onclick = applyExport;
+$("exportSearch").oninput = filterExportSeries;
 $("exportSelectAll").onclick = function () {
     setExportSeriesSelection(false);
 };
@@ -4135,10 +4166,16 @@ window.EmberProbeMessages.connect(window, {
     samplingHistoryCleared: function (m) {
         if (m.historyRevision === historyRevision) historyClearPending = false;
     },
+    exportCsvProgress: function (m) {
+        $("export").disabled = true;
+        setStatusKey("lw.exportProgress", { percent: Math.max(0, Math.min(100, Math.round(Number(m.percent) || 0))) });
+    },
     exportCsvResult: function (m) {
+        $("export").disabled = false;
         if (m.ok) {
             setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
-        }
+        } else if (m.aborted) setStatusKey("lw.exportCancelled");
+        else if (!m.cancelled && m.message) setStatusKey("lw.exportFailed", { msg: m.message }, "error");
     },
     liveUnlimited: function (m) {
         if (unlimitedState.enabled !== (m.enabled === true)) sampleTimes = [];

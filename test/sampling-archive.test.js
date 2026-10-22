@@ -555,6 +555,40 @@ async function main() {
         }
     }
 
+    // Exports write "<target>.part", report rising progress, and cancel without leaving any file behind.
+    const progressRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-sampling-export-progress-"));
+    const progressArchive = new SamplingArchive({ rootDir: path.join(progressRoot, "history") });
+    try {
+        for (let i = 0; i < 20000; i++) progressArchive.append([{ name: "Tick", valueText: String(i) }], 1000 + i);
+        const target = path.join(progressRoot, "out.csv");
+        fs.writeFileSync(target + ".part", "stale");
+        const fractions = [];
+        let sawPart = false;
+        const result = await progressArchive.exportCsv({
+            outputPath: target,
+            onProgress: (fraction) => fractions.push(fraction),
+            isCancelled: () => {
+                sawPart ||= fs.existsSync(target + ".part") && fs.statSync(target + ".part").size > 5;
+                return false;
+            }
+        });
+        assert.strictEqual(result.rows, 20000);
+        assert.ok(sawPart, "the in-progress file is the visible .part name");
+        assert.ok(fractions.length >= 1 && fractions.at(-1) === 1, "progress reaches 100%");
+        assert.ok(fractions.every((value, i) => !i || value > fractions[i - 1]));
+        assert.strictEqual(fs.existsSync(target + ".part"), false, "a leftover .part is replaced, then renamed");
+        assert.ok(fs.readFileSync(target, "utf8").endsWith(",19999\r\n"));
+        const cancelledTarget = path.join(progressRoot, "cancelled.csv");
+        await assert.rejects(progressArchive.exportCsv({ outputPath: cancelledTarget, isCancelled: () => true }), {
+            code: "CSV_EXPORT_CANCELLED"
+        });
+        assert.strictEqual(fs.existsSync(cancelledTarget), false);
+        assert.strictEqual(fs.existsSync(cancelledTarget + ".part"), false);
+    } finally {
+        await progressArchive.dispose();
+        fs.rmSync(progressRoot, { recursive: true, force: true });
+    }
+
     // A failed export must not leave either a target CSV or an internal temporary file.
     const failureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-sampling-export-failure-"));
     const failureArchive = new SamplingArchive({ rootDir: path.join(failureRoot, "history") });

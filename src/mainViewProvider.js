@@ -3463,7 +3463,18 @@ class MainViewProvider {
                         );
                         const stamp = new Date(),
                             pad = (n) => String(n).padStart(2, "0");
-                        const name = `emberprobe-live-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.csv`;
+                        const defaultName = `emberprobe-live-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.csv`;
+                        // Treat webview input as a file name, never as a relative or absolute path.
+                        const requestedName =
+                            typeof message.fileName === "string" ? message.fileName.trim().replace(/\.csv$/i, "") : "";
+                        const name =
+                            requestedName &&
+                            requestedName.length <= 180 &&
+                            !/[<>:"/\\|?*\u0000-\u001f]/.test(requestedName) &&
+                            !/[. ]$/.test(requestedName) &&
+                            !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(requestedName)
+                                ? requestedName + ".csv"
+                                : defaultName;
                         const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
                         const target = await vscode.window.showSaveDialog({
                             defaultUri: folder
@@ -3514,7 +3525,7 @@ class MainViewProvider {
                                     rows: liveWatchView.csvDataRowCount(message.csv)
                                 };
                             } else
-                                result = await this._samplingArchive.exportCsv({
+                                result = await this._exportArchiveCsvWithProgress(post, {
                                     scope: archiveScope,
                                     outputPath: target.fsPath,
                                     names: message.names,
@@ -3522,9 +3533,15 @@ class MainViewProvider {
                                     fromMs: message.fromMs,
                                     toMs: message.toMs
                                 });
-                            vscode.window.showInformationMessage(
-                                this._t("msg.csvExported", { file: path.basename(target.fsPath) })
-                            );
+                            const reveal = this._t("msg.revealInFolder");
+                            Promise.resolve(
+                                vscode.window.showInformationMessage(
+                                    this._t("msg.csvExported", { file: path.basename(target.fsPath) }),
+                                    reveal
+                                )
+                            ).then((choice) => {
+                                if (choice === reveal) vscode.commands.executeCommand("revealFileInOS", target);
+                            });
                             post({
                                 type: "exportCsvResult",
                                 ok: true,
@@ -3532,8 +3549,12 @@ class MainViewProvider {
                                 rowCount: result.rows
                             });
                         } catch (error) {
-                            vscode.window.showErrorMessage(this._t("msg.csvExportFailed", { msg: error.message }));
-                            post({ type: "exportCsvResult", ok: false, message: error.message });
+                            if (error.code === "CSV_EXPORT_CANCELLED")
+                                post({ type: "exportCsvResult", ok: false, cancelled: true, aborted: true });
+                            else {
+                                vscode.window.showErrorMessage(this._t("msg.csvExportFailed", { msg: error.message }));
+                                post({ type: "exportCsvResult", ok: false, message: error.message });
+                            }
                         }
                         break;
                     }
@@ -4580,6 +4601,36 @@ class MainViewProvider {
             102400
         );
         this._samplingArchive?.setMaxBytes(mib * 1024 * 1024);
+    }
+    // Long archive exports report progress in a cancellable notification and in the waveform panel's status line.
+    _exportArchiveCsvWithProgress(post, request) {
+        return vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: this._t("msg.csvExporting", { file: path.basename(request.outputPath) }),
+                cancellable: true
+            },
+            async (progress, token) => {
+                let percent = 0,
+                    postedAt = 0;
+                post({ type: "exportCsvProgress", percent: 0 });
+                return this._samplingArchive.exportCsv({
+                    ...request,
+                    isCancelled: () => token.isCancellationRequested,
+                    onProgress: (fraction) => {
+                        const next = Math.min(99, Math.floor(fraction * 100));
+                        if (next <= percent) return;
+                        progress.report({ increment: next - percent, message: next + "%" });
+                        percent = next;
+                        const now = Date.now();
+                        if (now - postedAt >= 200) {
+                            postedAt = now;
+                            post({ type: "exportCsvProgress", percent: next });
+                        }
+                    }
+                });
+            }
+        );
     }
     // Disk budget for the chart: bytes used, the write rate over the last ~10 s and the time left at that rate.
     _samplingArchiveBudget(now = Date.now()) {

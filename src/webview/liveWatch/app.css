@@ -674,6 +674,26 @@ input[type="number"]::-webkit-outer-spin-button {
 .export-panel {
     width: min(640px, 94vw);
 }
+.export-filename {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    color: var(--vscode-descriptionForeground);
+}
+.export-filename input {
+    flex: 1;
+    min-width: 0;
+}
+.export-filename input::placeholder,
+.export-search::placeholder {
+    color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+    opacity: 1;
+}
+.export-search {
+    width: 100%;
+    margin-bottom: 6px;
+}
 .export-label {
     margin: 8px 0 4px;
     color: var(--vscode-descriptionForeground);

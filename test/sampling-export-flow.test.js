@@ -30,6 +30,39 @@ for (const lang of ["zh", "en"]) {
                 lastTimestampMs: 4 * 60 * 60 * 1000
             };
             page.send(info);
+            const fileName = doc.getElementById("exportFileName"),
+                search = doc.getElementById("exportSearch"),
+                heading = doc.querySelector(".export-series-heading"),
+                series = doc.getElementById("exportSeries");
+            assert.strictEqual(fileName.value, "", "the default name is a placeholder, not an input value");
+            assert.match(fileName.placeholder, /^emberprobe-live-\d{8}-\d{6}$/);
+            assert.strictEqual(fileName.nextElementSibling.textContent, ".csv");
+            assert.strictEqual(fileName.parentElement.nextElementSibling, heading);
+            assert.strictEqual(heading.nextElementSibling, search);
+            assert.strictEqual(search.nextElementSibling, series);
+            assert.strictEqual(search.placeholder, lang === "zh" ? "搜索曲线" : "Search series");
+            const filter = (value) => {
+                search.value = value;
+                search.dispatchEvent(new w.Event("input"));
+            };
+            filter(" APP::CHOSEN ");
+            assert.deepStrictEqual(
+                Array.from(series.querySelectorAll("tbody tr"), (row) => row.hidden),
+                [true, false],
+                "search matches displayed names regardless of case and surrounding spaces"
+            );
+            doc.getElementById("exportInvert").click();
+            assert.deepStrictEqual(
+                Array.from(w.selectedExportCandidates(), (item) => item.name),
+                ["old"],
+                "filtering and inverting preserve hidden selections"
+            );
+            doc.getElementById("exportSelectAll").click();
+            filter("no match");
+            doc.getElementById("exportInvert").click();
+            assert.strictEqual(w.selectedExportCandidates().length, 2, "empty results leave selections intact");
+            filter("");
+            assert.ok(Array.from(series.querySelectorAll("tbody tr")).every((row) => !row.hidden));
             assert.strictEqual(doc.querySelector('input[name="exportRange"]'), null);
             assert.strictEqual(doc.getElementById("exportFromRange").disabled, false);
             assert.strictEqual(doc.getElementById("exportFromRange").value, "0");
@@ -56,13 +89,16 @@ for (const lang of ["zh", "en"]) {
             const exported = page.messages.at(-1);
             assert.deepStrictEqual(exported.names, ["chosen"]);
             assert.strictEqual(exported.historyRevision, 0);
+            assert.strictEqual(exported.fileName, fileName.placeholder + ".csv");
             for (const field of ["source", "snapshotId", "backendHistory", "csv", "fromMs", "toMs"])
                 assert.strictEqual(exported[field], undefined, field);
             w.showExport();
             page.send(info);
+            fileName.value = "  电源采样.CSV  ";
             doc.getElementById("exportFromRange").value = String(info.lastTimestampMs - info.firstTimestampMs - 10000);
             w.updateExportTimeline("from");
             w.applyExport();
+            assert.strictEqual(page.messages.at(-1).fileName, "电源采样.csv", "custom names get one CSV extension");
             assert.strictEqual(page.messages.at(-1).fromMs, info.lastTimestampMs - 10000);
             assert.strictEqual(page.messages.at(-1).toMs, info.lastTimestampMs);
             w.clearHistory();
@@ -81,6 +117,8 @@ for (const lang of ["zh", "en"]) {
                 firstTimestampMs: info.lastTimestampMs + 10,
                 lastTimestampMs: info.lastTimestampMs + 20
             });
+            assert.strictEqual(fileName.value, "", "reopening restores the suggested name");
+            assert.strictEqual(search.value, "", "reopening clears the series filter");
             w.applyExport();
             assert.strictEqual(page.messages.at(-1).historyRevision, revision);
             assert.strictEqual(w.exportTimelineStart, info.lastTimestampMs + 10);
@@ -140,6 +178,16 @@ for (const lang of ["zh", "en"]) {
             ["u32", "u8", "f32", "f64", "i64", "f32", "u16", "i16"]
         );
         doc.querySelector('#exportSeries input[data-index="5"]').checked = false;
+        doc.getElementById("exportSearch").value = "_ZN3app";
+        doc.getElementById("exportSearch").dispatchEvent(new w.Event("input"));
+        assert.deepStrictEqual(
+            Array.from(
+                doc.querySelectorAll("#exportSeries tbody tr:not([hidden]) .export-series-name"),
+                (el) => el.textContent
+            ),
+            ["app::count"],
+            "search also matches the original archive name"
+        );
         w.applyExport();
         assert.deepStrictEqual(
             page.messages.at(-1).names,

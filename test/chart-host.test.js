@@ -236,8 +236,14 @@ async function testShutdownFence(Provider) {
             ["mcu.watchList.2", [{ name: "shared" }]],
             ["mcu.watchList", [{ name: "first" }, { name: "shared" }]]
         ]);
+    const progress = { titles: [], reports: [], cancel: false },
+        commands = [],
+        saveOptions = [];
+    let infoChoice;
     const vscode = {
         ViewColumn: { Active: 1 },
+        ProgressLocation: { Notification: 15 },
+        commands: { executeCommand: async (...args) => commands.push(args) },
         Uri: { joinPath: (_folder, name) => ({ fsPath: name }), file: (name) => ({ fsPath: name }) },
         workspace: {
             getConfiguration: () => ({ get: (_key, fallback) => fallback }),
@@ -261,9 +267,24 @@ async function testShutdownFence(Provider) {
                 panels.push(p);
                 return p;
             },
-            showSaveDialog: async () => ({ fsPath: "snapshot.csv" }),
-            showInformationMessage() {},
-            showErrorMessage() {}
+            showSaveDialog: async (options) => {
+                saveOptions.push(options);
+                return { fsPath: "snapshot.csv" };
+            },
+            showInformationMessage: async () => infoChoice,
+            showErrorMessage() {},
+            withProgress: async (options, task) => {
+                progress.titles.push(options.title);
+                assert.strictEqual(options.cancellable, true);
+                return task(
+                    { report: (value) => progress.reports.push(value) },
+                    {
+                        get isCancellationRequested() {
+                            return progress.cancel;
+                        }
+                    }
+                );
+            }
         }
     };
     const P = loadProvider(vscode),
@@ -315,6 +336,25 @@ async function testShutdownFence(Provider) {
     assert.equal(writes[0], "time,shared\r\nnow,42\r\n");
     assert.equal(panels[0].messages.at(-1).ok, true);
     assert.equal(panels[0].messages.at(-1).rowCount, 1);
+    assert.match(saveOptions.at(-1).defaultUri.fsPath, /^emberprobe-live-\d{8}-\d{6}\.csv$/);
+    for (const [fileName, expected] of [
+        ["电源采样.csv", "电源采样.csv"],
+        ["  capture.CSV  ", "capture.csv"],
+        ["capture", "capture.csv"],
+        ["../outside.csv", null],
+        ["C:\\outside.csv", null],
+        ["bad\u0000name.csv", null],
+        ["CON.csv", null],
+        ["name..csv", null],
+        ["x".repeat(181), null],
+        [7, null],
+        [" ", null]
+    ]) {
+        await panels[0].receive({ type: "exportCsv", source: "snapshot", csv: "time\r\n", fileName });
+        const suggested = saveOptions.at(-1).defaultUri.fsPath;
+        if (expected) assert.strictEqual(suggested, expected);
+        else assert.match(suggested, /^emberprobe-live-\d{8}-\d{6}\.csv$/, "invalid file names use the default");
+    }
     await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
     assert.equal(panels[0].messages.at(-1).ok, false);
     const exported = [];
@@ -326,14 +366,46 @@ async function testShutdownFence(Provider) {
     assert.equal(exported.length, 1);
     assert.equal(exported[0].scope, "mcu.watchList");
     assert.deepStrictEqual(exported[0].names, ["shared"]);
-    const saveDialog = vscode.window.showSaveDialog;
+    assert.equal(progress.titles.length, 1, "archive exports run inside a cancellable progress notification");
+    assert.equal(panels[0].messages.at(-1).ok, true);
+    // Progress reaches the notification and the panel; cancelling stops the export without an error.
+    const archiveExport = p._samplingArchive.exportCsv;
+    p._samplingArchive.exportCsv = async (request) => {
+        request.onProgress(0.25);
+        request.onProgress(0.5);
+        progress.cancel = true;
+        assert.equal(request.isCancelled(), true);
+        throw Object.assign(new Error("cancelled"), { code: "CSV_EXPORT_CANCELLED" });
+    };
+    await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
+    assert.deepStrictEqual(
+        progress.reports.map((report) => report.increment),
+        [25, 25]
+    );
+    assert.ok(panels[0].messages.some((m) => m.type === "exportCsvProgress" && m.percent === 25));
+    assert.deepStrictEqual(panels[0].messages.at(-1), {
+        type: "exportCsvResult",
+        ok: false,
+        cancelled: true,
+        aborted: true
+    });
+    progress.cancel = false;
+    p._samplingArchive.exportCsv = archiveExport;
+    // "Show in Folder" on the success notification reveals the exported file.
+    infoChoice = "msg.revealInFolder";
+    await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(commands.at(-1), ["revealFileInOS", { fsPath: "snapshot.csv" }]);
+    infoChoice = undefined;
+    const saveDialog = vscode.window.showSaveDialog,
+        exportsBefore = exported.length;
     let finishSave;
     vscode.window.showSaveDialog = () => new Promise((resolve) => (finishSave = resolve));
     const exporting = panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
     await panels[0].receive({ type: "clearSamplingHistory", historyRevision: 1 });
     finishSave({ fsPath: "history.csv" });
     await exporting;
-    assert.equal(exported.length, 1, "a clear during the save dialog must cancel the old export");
+    assert.equal(exported.length, exportsBefore, "a clear during the save dialog must cancel the old export");
     assert.equal(panels[0].messages.at(-1).ok, false);
     vscode.window.showSaveDialog = saveDialog;
     clearedScopes.length = 0;

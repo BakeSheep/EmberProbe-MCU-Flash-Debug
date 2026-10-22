@@ -210,13 +210,13 @@
             });
         }
 
-        function triggerDownload(csv) {
+        function triggerDownload(csv, fileName) {
             try {
                 var blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
                 var url = URL.createObjectURL(blob);
                 var anchor = document.createElement("a");
                 anchor.href = url;
-                anchor.download = "emberprobe-live-watch.csv";
+                anchor.download = fileName || "emberprobe-live-watch.csv";
                 document.body.appendChild(anchor);
                 anchor.click();
                 anchor.remove();
@@ -428,7 +428,7 @@
                         }
                     }
                     var rows = root.EmberProbeMockCsv.csvDataRowCount(csv);
-                    var ok = rows > 0 && triggerDownload(csv);
+                    var ok = rows > 0 && triggerDownload(csv, message.fileName);
                     if (!ok) send({ type: "liveError", key: "lw.noDataToExport" });
                     send({
                         type: "exportCsvResult",
