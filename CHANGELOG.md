@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.8.9-beta.1] - 2026-10-22
+
 - 波形历史导出 CSV 提速约 4–6 倍（50 分钟、10 条曲线、200 Hz 的 119 MiB CSV 约 1.3 秒），导出内容不变。导出时 VS Code 通知显示进度并可取消，波形窗口状态栏同步显示百分比；写入中的文件名为 `.csv.part`，完成后才改为最终文件名，取消或失败时自动删除；完成通知提供「在文件夹中显示」。修正变量名为 `__proto__` 且该行无值时导出为 `[object Object]` 的问题。见 `docs/LAYERED-SAMPLING.md`。
 - Exporting waveform history to CSV is about 4–6× faster (a 119 MiB CSV of 50 minutes, ten curves at 200 Hz takes about 1.3 s) with unchanged content. A VS Code notification shows progress and can cancel the export, and the waveform status line shows the percentage; the file is written as `.csv.part` and only renamed to its final name when complete, and it is removed on cancel or failure. The completion notification offers "Show in Folder". A variable named `__proto__` with no value in a row no longer exports as `[object Object]`. See `docs/LAYERED-SAMPLING.md`.
 - 不限速采样转为正式功能：采样帧率滑条始终提供「不限速」挡位，移除实验性设置 `emberprobe.experimental.unlimitedSampling.enabled`（残留在设置中的该项不再起作用），选择仍按工作区保存，调试会话中照旧不生效。采样中磁盘归档剩余不足 1 小时时，工具栏速率旁显示「归档剩 mm:ss」，剩余约 10 分钟与 1 分钟时各提示一次；`emberprobe.samplingArchiveMaxMiB` 修改立即生效，调高后已写满停止的采样可重新开始。见 `docs/UNLIMITED-SAMPLING.md`。
@@ -41,6 +43,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 波形图的当前数值栏新增悬浮卡片样式：标题栏右上角的按钮可在侧边栏与悬浮卡片之间切换，× 按钮关闭数值栏（工具栏按钮可重新打开）。悬浮卡片为带边框与阴影的不透明卡片，拖动标题移动、拖动边框或角缩放（也可用方向键微调），窗口变化时保持在可视区内并贴住所靠的边。侧边栏或卡片宽度足够时显示两列变量卡片：每张卡片保持所在列，拖到另一列或按 Alt+←/→ 只移动这一张，删除卡片不会打乱其余卡片。样式、位置与大小随面板保存。
 - Add a floating-card style for the waveform view's current-value panel: buttons at the top right of its title bar switch between the sidebar and the floating card, and × closes the panel (the toolbar button reopens it). The floating card is opaque with a border and shadow; drag its title to move it, drag an edge or corner to resize it (or use arrow keys), and it stays inside the view and docked to its edge as the window changes. When the sidebar or card is wide enough, variable cards show in two columns: each card keeps its column, dragging it to the other column or pressing Alt+Left/Right moves only that card, and removing a card leaves the others in place. The style, position and size are saved with the panel.
+
+- 自动检测配置在同一工程中优先选择带调试信息（DWARF）的 ELF：较新的 Release 构建不再挤掉 Debug 构建，变量列表不再因此显示 `DWARF_MISSING` 与“未知类型”。只读取节头表，无法判断时沿用原排序。
+- Auto-detection now prefers an ELF with debug info (DWARF) within the same project, so a newer Release build no longer displaces the Debug build and leaves the variable list showing `DWARF_MISSING` and unknown types. Only the section header table is read; when it cannot be checked the previous ordering applies.
+- 修复 WSLg（WSL 图形界面）中鼠标无法拖动悬浮数值卡片、侧边栏分隔条、卡片排序把手与导出曲线框选的问题：WSLg 把鼠标拖动中的移动报告为另一个 ID 的 pen 指针，这些移动现在会跟随拖动；触摸仍按各自的指针区分。
+- Fix mouse drags under WSLg (the WSL graphical environment) for the floating value card, the sidebar splitter, card reorder handles and the export curve marquee: WSLg reports moves during a mouse drag as a pen pointer with another ID, and those moves now follow the drag; touch points are still kept apart.
 
 ## [0.8.8] - 2026-10-21
 
