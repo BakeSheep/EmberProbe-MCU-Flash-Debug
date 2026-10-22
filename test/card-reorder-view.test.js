@@ -39,7 +39,7 @@ function harness(view, container) {
             });
         });
     };
-    const pointer = (target, type, x, y, id = 1) => {
+    const pointer = (target, type, x, y, id = 1, pointerType = undefined) => {
         const event = new window.MouseEvent(type, {
             clientX: x,
             clientY: y,
@@ -48,6 +48,7 @@ function harness(view, container) {
             cancelable: true
         });
         Object.defineProperty(event, "pointerId", { value: id });
+        Object.defineProperty(event, "pointerType", { value: pointerType });
         target.dispatchEvent(event);
     };
     const handle = (name) =>
@@ -151,6 +152,24 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         watch.pointer(watch.handle("beta"), "pointerdown", 2, 2);
         watch.pointer(view.window, "pointerup", 3, 3);
         assert.strictEqual(view.messages.filter((message) => message.type === "saveSidebarWatch").length, saves + 1);
+
+        // Another touch point does not drag; WSLg moves a mouse drag as a pen with another id.
+        watch.layout();
+        watch.pointer(watch.handle("gamma"), "pointerdown", 2, 2, 1, "touch");
+        watch.pointer(view.window, "pointermove", 10, 105, 2, "touch");
+        watch.pointer(view.window, "pointerup", 10, 105, 1, "touch");
+        assert.strictEqual(view.messages.filter((message) => message.type === "saveSidebarWatch").length, saves + 1);
+        watch.pointer(watch.handle("gamma"), "pointerdown", 2, 2, 1, "mouse");
+        watch.pointer(view.window, "pointermove", 10, 105, 17, "pen");
+        watch.pointer(view.window, "pointerup", 10, 105, 1, "mouse");
+        assert.deepStrictEqual(
+            lastSaved(view, "saveSidebarWatch").items.map((item) => item.name),
+            ["beta", "alpha", "gamma", "plant", "plant.gain"],
+            "pen moves follow a mouse drag"
+        );
+        watch.layout();
+        watch.drag("gamma", 10, 5);
+        assert.deepStrictEqual(keys(watch.cards()), ["gamma", "beta", "alpha", "plant"]);
 
         // Keyboard moves keep focus on the moved card's handle.
         watch.handle("beta").focus();

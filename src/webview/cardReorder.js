@@ -8,6 +8,15 @@
     const EDGE_SCROLL_STEP = 8;
     const FOCUS_RESTORE_MS = 2000;
 
+    // Whether `event` continues the drag that `start` began. WSLg reports one mouse as two pointers:
+    // presses as "mouse" and moves as "pen" with another id. Mouse and pen share the one system
+    // cursor, so they follow the drag whatever their id; touch points must match exactly.
+    function samePointer(event, start) {
+        if (event.pointerId === start.pointerId) return true;
+        const cursor = (type) => type === "mouse" || type === "pen";
+        return cursor(event.pointerType) && cursor(start.pointerType);
+    }
+
     // Moves `name` and its attached entries (members, pointees) as one block before or after `targetName`.
     // Returns the original array when nothing moves so callers can skip saving.
     function moveBlock(list, name, targetName, after, isAttached) {
@@ -203,6 +212,7 @@
             drag = {
                 name: card.dataset.reorderKey,
                 pointerId: event.pointerId,
+                pointerType: event.pointerType,
                 startX: event.clientX,
                 startY: event.clientY,
                 x: event.clientX,
@@ -221,7 +231,7 @@
             doc.addEventListener("keydown", onEscape, true);
         });
         view.addEventListener("pointermove", (event) => {
-            if (!drag || event.pointerId !== drag.pointerId) return;
+            if (!drag || !samePointer(event, drag)) return;
             drag.x = event.clientX;
             drag.y = event.clientY;
             if (
@@ -293,5 +303,5 @@
         return { refresh, cancel: () => finish(false) };
     }
 
-    return { moveBlock, decorate, attach };
+    return { moveBlock, decorate, attach, samePointer };
 });

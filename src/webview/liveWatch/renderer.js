@@ -2605,6 +2605,7 @@ function beginExportSeriesDrag(event) {
     exportSeriesDrag = {
         box: box,
         pointerId: event.pointerId,
+        pointerType: event.pointerType,
         checkbox: row && row.querySelector("input"),
         x: event.clientX - left + box.scrollLeft,
         y: event.clientY - top + box.scrollTop,
@@ -2633,7 +2634,7 @@ function beginExportSeriesDrag(event) {
 }
 function moveExportSeriesDrag(event) {
     var drag = exportSeriesDrag;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || !EmberProbeCardReorder.samePointer(event, drag)) return;
     if (!(event.buttons & 1)) {
         endExportSeriesDrag(event);
         return;
@@ -4401,7 +4402,7 @@ sideSplitter.addEventListener("pointerdown", function (e) {
     sideSplitter.classList.add("dragging");
     sideSplitter.setPointerCapture(e.pointerId);
     var move = function (ev) {
-        if (ev.pointerId !== e.pointerId) return;
+        if (!EmberProbeCardReorder.samePointer(ev, e)) return;
         resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
     };
     var end = function (ev) {
@@ -4439,7 +4440,7 @@ function trackPanelPointer(target, e, update) {
     target.classList.add("active");
     target.setPointerCapture(e.pointerId);
     var move = function (ev) {
-        if (ev.pointerId !== e.pointerId) return;
+        if (!EmberProbeCardReorder.samePointer(ev, e)) return;
         setPanelGeometry(update(start, ev.clientX - startX, ev.clientY - startY, bounds), bounds);
     };
     var end = function (ev) {

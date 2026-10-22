@@ -142,9 +142,10 @@ try {
         target.hasPointerCapture = (id) => captures.has(id);
         target.releasePointerCapture = (id) => captures.delete(id);
     }
-    const pointer = (target, type, x, y, id = 1, button = 0) => {
+    const pointer = (target, type, x, y, id = 1, button = 0, pointerType = undefined) => {
         const event = new window.MouseEvent(type, { clientX: x, clientY: y, button, cancelable: true });
         Object.defineProperty(event, "pointerId", { value: id });
+        Object.defineProperty(event, "pointerType", { value: pointerType });
         target.dispatchEvent(event);
     };
     const key = (target, value, shiftKey = false) =>
@@ -231,6 +232,19 @@ try {
     key(handle("se"), "ArrowLeft", true);
     key(handle("se"), "ArrowUp");
     assert.deepStrictEqual(rect(), [462, 8, 220, 474], "keys resize from the focusable corner");
+    // WSLg presses as a mouse but moves as a pen with another id.
+    pointer(handle("se"), "pointerdown", 0, 0, 1, 0, "mouse");
+    pointer(handle("se"), "pointermove", 5, 5, 17, 0, "pen");
+    pointer(handle("se"), "pointerup", 5, 5, 1, 0, "mouse");
+    assert.deepStrictEqual(rect(), [462, 8, 225, 479], "pen moves follow a mouse drag");
+    pointer(handle("se"), "pointerdown", 0, 0, 1, 0, "touch");
+    pointer(handle("se"), "pointermove", -5, -5, 2, 0, "touch");
+    pointer(handle("se"), "pointerup", -5, -5, 1, 0, "touch");
+    assert.deepStrictEqual(rect(), [462, 8, 225, 479], "another touch point does not resize");
+    pointer(handle("se"), "pointerdown", 0, 0);
+    pointer(handle("se"), "pointermove", -5, -5);
+    pointer(handle("se"), "pointerup", -5, -5);
+    assert.deepStrictEqual(rect(), [462, 8, 220, 474]);
 
     resizeLayout(300, 200);
     assert.deepStrictEqual(rect(), [72, 8, 220, 184], "small views shrink and shift the card");
