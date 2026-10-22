@@ -1,12 +1,12 @@
 "use strict";
 const { parentPort, workerData, isMainThread } = require("worker_threads");
-const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
-const readline = require("readline");
-const { ChartHistoryStore, WINDOW_MS } = require("./services/chartHistoryStore");
+const { WINDOW_MS } = require("./services/chartHistoryStore");
+const { ArchiveChartHistoryStore } = require("./services/archiveChartHistoryStore");
 const { csvField, csvHeaderField } = require("./services/samplingArchive");
+const { readArchive } = require("./services/samplingArchiveFormat");
 const { serializeError } = require("./services/errorEnvelope");
 const { encodeViewport } = require("./webview/liveWatch/chartTransport");
 
@@ -114,17 +114,14 @@ async function restoreHistory(store, request) {
                 code: "CHART_HISTORY_RESTORE_CANCELLED"
             });
     };
-    const input = fs.createReadStream(request.dataPath, { start: request.fromOffset || 0, end: request.cutoff - 1 });
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
+    const records = readArchive(request.dataPath, {
+        start: request.fromOffset ?? request.startOffset ?? 0,
+        end: request.cutoff,
+        dictionary: request.dictionary
+    });
     try {
-        for await (const line of lines) {
+        for await (const record of records) {
             checkUnchanged();
-            let record;
-            try {
-                record = JSON.parse(line);
-            } catch {
-                continue;
-            }
             if (
                 record.scope !== request.scope ||
                 (record.generation || 0) !== request.generation ||
@@ -154,14 +151,13 @@ async function restoreHistory(store, request) {
         // A clear/configure handled while awaiting end-of-file discarded what was restored.
         checkUnchanged();
     } finally {
-        lines.close();
-        input.destroy();
+        await records.return(undefined);
     }
     return store.status(request.scope);
 }
 
 function run(port, options = {}) {
-    const store = new ChartHistoryStore(options.maxBytes);
+    const store = new ArchiveChartHistoryStore(options);
     const timers = new Map();
     const update = (scope) => {
         if (timers.has(scope)) return;
@@ -185,17 +181,27 @@ function run(port, options = {}) {
                     "markLimited",
                     "status",
                     "viewport",
+                    "touchViewport",
                     "freeze",
                     "resume",
+                    "release",
+                    "archiveProgress",
                     "clear",
                     "remove",
                     "setBudget"
                 ].includes(method)
             ) {
-                result = store[method](...args);
+                const operation =
+                    method === "viewport" ? "archiveViewport" : method === "freeze" ? "freezeArchive" : method;
+                result = await store[operation](...args);
+                if (method === "configure") {
+                    await store.resolveBounds(args[0]);
+                    result = store.status(args[0]);
+                }
                 if (["markLimited", "configure", "clear"].includes(method)) update(args[0]);
                 // An append can evict live blocks belonging to another panel under the shared budget.
-                if (["append", "setBudget"].includes(method)) for (const scope of store.scopes.keys()) update(scope);
+                if (["append", "setBudget", "archiveProgress"].includes(method))
+                    for (const scope of store.scopes.keys()) update(scope);
                 if (method === "remove" && timers.has(args[0])) {
                     clearTimeout(timers.get(args[0]));
                     timers.delete(args[0]);

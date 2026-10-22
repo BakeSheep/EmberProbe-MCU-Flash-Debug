@@ -298,8 +298,22 @@ class MainViewProvider {
                 `sampling-history-${process.pid}-${crypto.randomBytes(6).toString("hex")}`
             ),
             maxBytes: archiveLimitMiB * 1024 * 1024,
+            onWritten: (bytes) =>
+                this._chartHistory?.archiveProgress({
+                    dataPath: this._samplingArchive.dataPath,
+                    bytes,
+                    limited: this._samplingArchive.limitReached || !!this._samplingArchive.failed
+                }),
             onBackpressure: (paused) => this._setSamplingArchiveBackpressure(paused),
             onError: (error) => {
+                this._chartHistory?.archiveProgress(
+                    {
+                        dataPath: this._samplingArchive.dataPath,
+                        bytes: this._samplingArchive.indexedBytes,
+                        limited: true
+                    },
+                    true
+                );
                 this.stopLiveWatch();
                 this._postLive({ type: "liveError", ...toUiError(error) });
             }
@@ -3371,7 +3385,18 @@ class MainViewProvider {
                         entry._pendingScalars = [];
                         entry._pendingComposites = [];
                         if (this._chartHistory && !this._chartHistory.failed)
-                            await this._chartHistory.request("clear", [this._debugSamplingScope(watchKey)]);
+                            await this._chartHistory.request("clear", [
+                                this._debugSamplingScope(watchKey),
+                                this._samplingArchive.generations?.get(this._debugSamplingScope(watchKey)) || 0
+                            ]);
+                        this._chartHistory?.archiveProgress(
+                            {
+                                dataPath: this._samplingArchive.dataPath,
+                                bytes: this._samplingArchive.indexedBytes,
+                                limited: this._samplingArchive.limitReached || !!this._samplingArchive.failed
+                            },
+                            true
+                        );
                         post({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
                         break;
                     }
@@ -4197,7 +4222,6 @@ class MainViewProvider {
     }
     _limitChartHistory(entry, scope, tick) {
         this._discardChartHistoryAppend(entry);
-        this._warnChartHistoryLimited();
         const revision = entry.historyRevision || 0;
         const marker = entry._historyLimit;
         if (marker?.scope === scope && marker.revision === revision) return marker.task;
@@ -4206,6 +4230,9 @@ class MainViewProvider {
             : this._chartHistory.request("markLimited", [scope, tick]);
         const pending = (this._pendingChartHistoryAppends ||= new Set());
         const tracked = task
+            .then((status) => {
+                if (status?.limited) this._warnChartHistoryLimited();
+            })
             .catch((error) => this._chartHistory.fail(error))
             .finally(() => {
                 pending.delete(tracked);
@@ -4311,7 +4338,7 @@ class MainViewProvider {
         }));
         entry.historyIdentities = new Map(entry.historyItems.map((item) => [item.name, item.historyIdentity]));
         this._chartHistory
-            .request("configure", [scope, entry.historyItems])
+            .request("configure", [scope, entry.historyItems, this._samplingArchive.generations?.get(scope) || 0])
             .then((status) => {
                 if (entry.historySignature === signature && entry.ready)
                     entry.post({ type: "chartHistoryStatus", ...status, historyRevision: entry.historyRevision || 0 });
@@ -4368,7 +4395,7 @@ class MainViewProvider {
                 if (Number.isFinite(gapTick) && (names || gapTick > restoredThrough)) {
                     const status = await this._chartHistory.request("markLimited", [scope, gapTick]);
                     if (current()) {
-                        this._warnChartHistoryLimited();
+                        if (status.limited) this._warnChartHistoryLimited();
                         entry.post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
                     }
                 }
@@ -4405,15 +4432,14 @@ class MainViewProvider {
                                 const scope = this._debugSamplingScope(entry.watchKey);
                                 await this._chartHistory.request("configure", [
                                     scope,
-                                    entry.historyItems || this._scalarWatchList(entry.watchKey)
+                                    entry.historyItems || this._scalarWatchList(entry.watchKey),
+                                    this._samplingArchive.generations?.get(scope) || 0
                                 ]);
                                 if (!token.active) return;
                                 if (entry.historyViewportNames?.length)
-                                    await this._chartHistory.request("viewport", [
+                                    await this._chartHistory.request("touchViewport", [
                                         scope,
-                                        entry.historyViewportNames,
-                                        { min: 0, max: 1 },
-                                        1
+                                        entry.historyViewportNames
                                     ]);
                                 if (!token.active) return;
                                 await this._restoreChartHistory(entry, undefined, token);

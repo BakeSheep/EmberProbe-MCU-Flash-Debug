@@ -51,6 +51,9 @@ class ChartHistoryService {
         this.worker = null;
         this.termination = null;
         this.limitedScopes = new Map();
+        this.archiveSource = null;
+        this.archiveTimer = null;
+        this.archiveSentAt = 0;
     }
     start() {
         if (this.disposed || this.worker) return;
@@ -83,10 +86,28 @@ class ChartHistoryService {
                 this.fail(new Error(`History worker exited (${code})`));
             }
         });
+        if (this.archiveSource) this.archiveProgress(this.archiveSource, true);
+    }
+    archiveProgress(progress, immediate = false) {
+        this.archiveSource = progress;
+        if (this.disposed || this.failed || !this.worker) return;
+        const send = () => {
+            this.archiveTimer = null;
+            this.archiveSentAt = Date.now();
+            this.request("archiveProgress", [this.archiveSource]).catch((error) => this.fail(error));
+        };
+        if (immediate) {
+            if (this.archiveTimer) clearTimeout(this.archiveTimer);
+            send();
+        } else if (!this.archiveTimer) {
+            this.archiveTimer = setTimeout(send, Math.max(0, 250 - (Date.now() - this.archiveSentAt)));
+        }
     }
     fail(error) {
         if (this.failed || this.disposed) return;
         this.failed = error;
+        if (this.archiveTimer) clearTimeout(this.archiveTimer);
+        this.archiveTimer = null;
         for (const request of this.pending.values()) request.reject(error);
         this.pending.clear();
         this.queuedBytes = 0;
@@ -98,8 +119,7 @@ class ChartHistoryService {
         if (this.failed || this.disposed) return Promise.reject(this.failed || new Error("History service disposed"));
         if (["clear", "remove"].includes(method)) this.limitedScopes.delete(args[0]);
         const bytes = method === "append" ? estimateHistoryBytes(args) : 0;
-        if (this.queuedBytes + bytes > MAX_BACKLOG_BYTES)
-            return this.limit(args[0], args[2]).then(() => ({ limited: true }));
+        if (this.queuedBytes + bytes > MAX_BACKLOG_BYTES) return this.limit(args[0], args[2]);
         try {
             this.start();
         } catch (error) {
@@ -137,6 +157,8 @@ class ChartHistoryService {
         this.pending.clear();
         this.queuedBytes = 0;
         this.limitedScopes.clear();
+        if (this.archiveTimer) clearTimeout(this.archiveTimer);
+        this.archiveTimer = null;
         this.termination = this.termination || worker?.terminate() || Promise.resolve();
         await this.termination;
         this.termination = null;
@@ -146,6 +168,8 @@ class ChartHistoryService {
     }
     async dispose() {
         this.disposed = true;
+        if (this.archiveTimer) clearTimeout(this.archiveTimer);
+        this.archiveTimer = null;
         for (const request of this.pending.values()) request.reject(new Error("History service disposed"));
         this.pending.clear();
         this.queuedBytes = 0;

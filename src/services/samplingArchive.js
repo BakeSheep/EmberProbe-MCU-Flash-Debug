@@ -3,7 +3,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const readline = require("readline");
+const { ArchiveEncoder, FILE_HEADER, scanArchive } = require("./samplingArchiveFormat");
 
 const fsp = fs.promises;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
@@ -11,6 +11,8 @@ const BACKPRESSURE_BYTES = 1024 * 1024;
 const DRAIN_BATCH_BYTES = 256 * 1024;
 const DRAIN_DELAY_MS = 150;
 const AGENT_CSV_MAX_BYTES = 64 * 1024 * 1024;
+const INDEX_BLOCK_BYTES = 64 * 1024;
+const HISTORY_WINDOW_MS = 30 * 60 * 1000;
 
 function codedError(code, message) {
     return Object.assign(new Error(message), { code });
@@ -83,10 +85,14 @@ function sampleValueText(sample) {
 class SamplingArchive {
     constructor(options) {
         this.rootDir = path.resolve(options.rootDir);
-        this.dataPath = path.join(this.rootDir, "samples.ndjson");
+        this.dataPath = path.join(this.rootDir, "samples.bin");
+        this.encoder = new ArchiveEncoder();
+        this.timeIndex = [];
+        this.indexedBytes = 0;
         this.maxBytes = Math.max(1024 * 1024, Number(options.maxBytes) || DEFAULT_MAX_BYTES);
         this.onError = options.onError || (() => {});
         this.onBackpressure = options.onBackpressure || (() => {});
+        this.onWritten = options.onWritten || (() => {});
         this.queue = [];
         this.queuedBytes = 0;
         this.writtenBytes = 0;
@@ -114,6 +120,13 @@ class SamplingArchive {
     async _reset() {
         await fsp.rm(this.rootDir, { recursive: true, force: true });
         await fsp.mkdir(this.rootDir, { recursive: true, mode: 0o700 });
+    }
+
+    // Raising the limit lets a session that hit it record again; lowering it never discards written data.
+    setMaxBytes(bytes) {
+        this.maxBytes = Math.max(1024 * 1024, Number(bytes) || DEFAULT_MAX_BYTES);
+        if (this.limitReached && this.writtenBytes + this.queuedBytes < this.maxBytes) this.limitReached = false;
+        return this.status();
     }
 
     status(scope = "") {
@@ -152,22 +165,32 @@ class SamplingArchive {
                 .filter((sample) => sample?.historyIdentity)
                 .map((sample) => [sample.name, sample.historyIdentity])
         );
-        const line = Buffer.from(
-            `${JSON.stringify({
+        let buffer;
+        try {
+            buffer = this.encoder.encodeRow({
                 t: timestamp,
-                v: values,
                 scope,
-                generation: generation || undefined,
-                identities: Object.keys(identities).length ? identities : undefined
-            })}\n`
-        );
-        if (this.writtenBytes + this.queuedBytes + line.length > this.maxBytes) {
+                generation,
+                values: Object.entries(values).map(([key, text]) => ({
+                    key,
+                    text,
+                    identity: Object.hasOwn(identities, key) ? identities[key] : undefined
+                }))
+            });
+        } catch (error) {
+            this.failed = error;
+            this.onError(error);
+            return false;
+        }
+        const header = this.rows === 0 ? FILE_HEADER : Buffer.alloc(0);
+        if (this.writtenBytes + this.queuedBytes + header.length + buffer.length > this.maxBytes) {
             this.limitReached = true;
             this.onError(codedError("SAMPLING_ARCHIVE_FULL", "Sampling history reached its configured size limit"));
             return false;
         }
-        this.queue.push(line);
-        this.queuedBytes += line.length;
+        if (header.length) buffer = Buffer.concat([header, buffer]);
+        this.queue.push({ buffer, t: timestamp });
+        this.queuedBytes += buffer.length;
         this.rows += 1;
         let history = this.scopes.get(scope);
         if (!history) {
@@ -229,7 +252,8 @@ class SamplingArchive {
         if (!this.handle) this.handle = await fsp.open(this.dataPath, "a+", 0o600);
         const batch = this.queue;
         this.queue = [];
-        const buffer = Buffer.concat(batch);
+        const buffer = Buffer.concat(batch.map((entry) => entry.buffer));
+        const batchStart = this.writtenBytes;
         let offset = 0;
         while (offset < buffer.length) {
             const { bytesWritten } = await this.handle.write(buffer, offset, buffer.length - offset);
@@ -240,6 +264,19 @@ class SamplingArchive {
             this.queuedBytes -= bytesWritten;
             this.writtenBytes += bytesWritten;
         }
+        let recordOffset = batchStart;
+        for (const entry of batch) {
+            let block = this.timeIndex[this.timeIndex.length - 1];
+            if (!block || recordOffset - block.offset >= INDEX_BLOCK_BYTES) {
+                block = { offset: recordOffset, tMin: entry.t, tMax: entry.t };
+                this.timeIndex.push(block);
+            }
+            block.tMin = Math.min(block.tMin, entry.t);
+            block.tMax = Math.max(block.tMax, entry.t);
+            recordOffset += entry.buffer.length;
+        }
+        this.indexedBytes = recordOffset;
+        this.onWritten(this.indexedBytes);
         this._setBackpressure(this.queuedBytes >= BACKPRESSURE_BYTES);
     }
 
@@ -257,8 +294,23 @@ class SamplingArchive {
     async historySource(scope) {
         const generation = this.generations.get(scope) || 0;
         const lastTimestampMs = this.status(scope).lastTimestampMs;
-        const cutoff = await this.flush();
-        return { scope, generation, lastTimestampMs, cutoff, dataPath: this.dataPath };
+        await this.flush();
+        // A new drain can start while flush's stat is pending. Its partial write must never
+        // become a catch-up boundary; only fully written, indexed batches are seekable.
+        const cutoff = this.indexedBytes;
+        const block =
+            lastTimestampMs == null
+                ? null
+                : this.timeIndex.find((entry) => entry.tMax >= lastTimestampMs - HISTORY_WINDOW_MS);
+        return {
+            scope,
+            generation,
+            lastTimestampMs,
+            cutoff,
+            dataPath: this.dataPath,
+            dictionary: this.encoder.dictionary(),
+            startOffset: block?.offset ?? 0
+        };
     }
 
     exportCsv(request) {
@@ -308,10 +360,11 @@ class SamplingArchive {
         const toMs = Number.isFinite(Number(request.toMs)) ? Number(request.toMs) : Infinity;
         if (fromMs > toMs) throw codedError("INVALID_CSV_RANGE", "CSV export time range is invalid");
 
-        const temporaryPath = path.join(
-            path.dirname(targetPath),
-            `.${path.basename(targetPath)}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`
-        );
+        // A visible ".part" name tells users the file is still being written; it is renamed atomically when done.
+        const temporaryPath = `${targetPath}.part`;
+        const onProgress = typeof request.onProgress === "function" ? request.onProgress : null;
+        const isCancelled = typeof request.isCancelled === "function" ? request.isCancelled : () => false;
+        const cancelled = () => codedError("CSV_EXPORT_CANCELLED", "CSV export was cancelled");
         let output;
         let rowCount = 0;
         let valueRows = 0;
@@ -323,9 +376,16 @@ class SamplingArchive {
         const tooLarge = () =>
             codedError("CSV_EXPORT_TOO_LARGE", "CSV result exceeds 64 MiB; use the chart's archive export");
         try {
-            output = await fsp.open(temporaryPath, "wx", 0o600);
+            try {
+                output = await fsp.open(temporaryPath, "wx", 0o600);
+            } catch (error) {
+                // A leftover from an interrupted export of the same target.
+                if (error.code !== "EEXIST") throw error;
+                await fsp.rm(temporaryPath, { force: true });
+                output = await fsp.open(temporaryPath, "wx", 0o600);
+            }
             // Display labels affect only the header; archived values stay keyed by ELF identity.
-            const header = `\uFEFFtime,${names
+            const header = `﻿time,${names
                 .map((name) => {
                     const label = request.displayNames?.get(name);
                     return csvHeaderField(typeof label === "string" && label ? label : name);
@@ -334,41 +394,99 @@ class SamplingArchive {
             let outputBytes = Buffer.byteLength(header);
             if (outputBytes > maxOutputBytes) throw tooLarge();
             await output.write(header);
-            const input = fs.createReadStream(this.dataPath, { start: 0, end: cutoff - 1 });
-            const lines = readline.createInterface({ input, crlfDelay: Infinity });
-            let batch = "";
-            for await (const line of lines) {
-                if (!line) continue;
-                let record;
-                try {
-                    record = JSON.parse(line);
-                } catch {
-                    continue;
+            const columns = new Map(names.map((name, index) => [name, index])),
+                cells = new Array(names.length).fill(""),
+                present = new Array(names.length).fill(false),
+                channelColumn = [];
+            let scopeId = -1,
+                rowTime = 0,
+                lines = [],
+                pendingChars = 0,
+                second = NaN,
+                secondPrefix = "";
+            // ISO text is computed once per second; out-of-range years keep Date's own formatting.
+            const iso = (t) => {
+                if (!(t >= 0 && t < 253402300800000)) return new Date(t).toISOString();
+                const whole = Math.floor(t / 1000);
+                if (whole !== second) {
+                    second = whole;
+                    secondPrefix = new Date(whole * 1000).toISOString().slice(0, 20);
                 }
-                if (!Number.isFinite(record.t) || record.t < fromMs || record.t > toMs) continue;
-                if ((record.scope || "") !== scope) continue;
-                if ((record.generation || 0) !== generation) continue;
-                const values = record.v && typeof record.v === "object" ? record.v : {};
-                const csvRow = `${new Date(record.t).toISOString()},${names.map((name) => csvField(values[name])).join(",")}\r\n`;
-                outputBytes += Buffer.byteLength(csvRow);
+                const ms = Math.floor(t - whole * 1000);
+                return secondPrefix + (ms < 10 ? "00" : ms < 100 ? "0" : "") + ms + "Z";
+            };
+            const writeLines = async () => {
+                if (!lines.length) return;
+                const text = lines.join("");
+                lines = [];
+                pendingChars = 0;
+                outputBytes += Buffer.byteLength(text);
                 if (outputBytes > maxOutputBytes) throw tooLarge();
-                batch += csvRow;
-                rowCount += 1;
-                if (names.some((name) => values[name] != null)) {
-                    valueRows += 1;
-                    firstValueTimestampMs =
-                        firstValueTimestampMs === null ? record.t : Math.min(firstValueTimestampMs, record.t);
-                    lastValueTimestampMs =
-                        lastValueTimestampMs === null ? record.t : Math.max(lastValueTimestampMs, record.t);
+                await output.write(text);
+            };
+            const visitor = {
+                // Duplicate keys within a row keep the last value, like the former JSON records.
+                lastValueOnly: true,
+                definition(type, id, state) {
+                    if (type === 1 && state.scopes[id] === scope) scopeId = id;
+                    if (type === 2) channelColumn[id] = columns.get(state.channels[id].key) ?? -1;
+                },
+                row(at, next, rowScope, rowGeneration, t) {
+                    if (rowScope !== scopeId || rowGeneration !== generation || t < fromMs || t > toMs) return false;
+                    rowTime = t;
+                    cells.fill("");
+                    present.fill(false);
+                    return true;
+                },
+                select: (id) => channelColumn[id] >= 0,
+                value(id, kind, number, text) {
+                    const column = channelColumn[id];
+                    present[column] = kind !== 0;
+                    // Finite numbers never need quoting or formula guards; other text keeps the CSV rules.
+                    cells[column] =
+                        kind === 0
+                            ? ""
+                            : kind === 4
+                              ? csvField(text)
+                              : Number.isFinite(number)
+                                ? String(number)
+                                : csvField(String(number));
+                },
+                rowEnd() {
+                    const line = iso(rowTime) + "," + cells.join(",") + "\r\n";
+                    lines.push(line);
+                    pendingChars += line.length;
+                    rowCount += 1;
+                    if (present.includes(true)) {
+                        valueRows += 1;
+                        firstValueTimestampMs =
+                            firstValueTimestampMs === null ? rowTime : Math.min(firstValueTimestampMs, rowTime);
+                        lastValueTimestampMs =
+                            lastValueTimestampMs === null ? rowTime : Math.max(lastValueTimestampMs, rowTime);
+                    }
+                    firstTimestampMs = firstTimestampMs === null ? rowTime : Math.min(firstTimestampMs, rowTime);
+                    lastTimestampMs = lastTimestampMs === null ? rowTime : Math.max(lastTimestampMs, rowTime);
                 }
-                firstTimestampMs = firstTimestampMs === null ? record.t : Math.min(firstTimestampMs, record.t);
-                lastTimestampMs = lastTimestampMs === null ? record.t : Math.max(lastTimestampMs, record.t);
-                if (batch.length >= 64 * 1024) {
-                    await output.write(batch);
-                    batch = "";
-                }
-            }
-            if (batch) await output.write(batch);
+            };
+            let reported = -1;
+            await scanArchive(
+                this.dataPath,
+                {
+                    end: cutoff,
+                    onChunk: async (position, total) => {
+                        if (isCancelled()) throw cancelled();
+                        if (pendingChars >= 1024 * 1024) await writeLines();
+                        const fraction = total ? position / total : 1;
+                        if (onProgress && fraction - reported >= 0.01) {
+                            reported = fraction;
+                            onProgress(fraction);
+                        }
+                    }
+                },
+                visitor
+            );
+            if (isCancelled()) throw cancelled();
+            await writeLines();
             await output.datasync();
             await output.close();
             output = null;

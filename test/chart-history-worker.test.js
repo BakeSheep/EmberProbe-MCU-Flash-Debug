@@ -19,9 +19,61 @@ const {
 } = require("../src/services/chartHistoryStore");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
 const { SamplingArchive } = require("../src/services/samplingArchive");
-const { exportHistory, run } = require("../src/chartHistoryWorker");
+const { exportHistory, restoreHistory, run } = require("../src/chartHistoryWorker");
 const { deserializeError } = require("../src/services/errorEnvelope");
 const { decodeViewport } = require("../src/webview/liveWatch/chartTransport");
+
+async function testSeekRestore() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "archive-seek-"));
+    const archive = new SamplingArchive({ rootDir: path.join(dir, "history") });
+    const createReadStream = fsSync.createReadStream;
+    let bytesRead = 0;
+    try {
+        // Over four days of interleaved scopes, with only the last 30 minutes needed for restore.
+        for (let i = 1; i <= 40000; i++) {
+            archive.append([{ name: "x [f32]", value: i }], i * 10000, "panel");
+            if (i % 100 === 0) archive.append([{ name: "x [f32]", value: -i }], i * 10000, "other");
+        }
+        const source = await archive.historySource("panel");
+        assert.ok(source.startOffset > source.cutoff * 0.8, "the time index skips old blocks");
+        assert.ok(archive.timeIndex.length > 10);
+        assert.ok(archive.timeIndex.length < source.cutoff / 65536 + 1);
+        fsSync.createReadStream = (...args) => {
+            const input = createReadStream(...args);
+            input.on("data", (chunk) => (bytesRead += chunk.length));
+            return input;
+        };
+        const sought = new ChartHistoryStore();
+        const scanned = new ChartHistoryStore();
+        for (const store of [sought, scanned]) store.configure("panel", [{ name: "x", type: "f32" }]);
+        await restoreHistory(sought, source);
+        const soughtBytes = bytesRead;
+        assert.ok(soughtBytes < source.cutoff / 5, `seek reads ${soughtBytes} of ${source.cutoff} bytes`);
+        bytesRead = 0;
+        await restoreHistory(scanned, { ...source, startOffset: 0 });
+        assert.strictEqual(bytesRead, source.cutoff);
+        const points = (store) => [...store.points(store._scope("panel").series.get("x"))];
+        assert.deepStrictEqual(points(sought), points(scanned));
+        assert.strictEqual(points(sought).length, 181, "inclusive 30-minute window is unchanged");
+        const nextTime = source.lastTimestampMs + 10000;
+        archive.append([{ name: "x [f32]", value: 123 }], nextTime, "panel");
+        archive.append([{ name: "new [f32]", value: 456 }], nextTime, "panel");
+        const catchup = await archive.historySource("panel");
+        bytesRead = 0;
+        await restoreHistory(sought, { ...catchup, fromOffset: source.cutoff });
+        assert.strictEqual(bytesRead, catchup.cutoff - source.cutoff);
+        assert.strictEqual(points(sought).at(-1).v, 123);
+        assert.strictEqual(points(sought).filter((point) => point.t === nextTime).length, 1);
+        console.log(
+            `Seek restore: ${soughtBytes}/${source.cutoff} bytes, identical 181-point window; catch-up boundary passed`
+        );
+    } finally {
+        fsSync.createReadStream = createReadStream;
+        await archive.dispose();
+        await fs.rm(dir, { recursive: true, force: true });
+    }
+}
+
 async function testServiceLimits() {
     const dormant = new ChartHistoryService({ workerPath: "missing-worker.js" });
     assert.strictEqual(dormant.worker, null, "construction does not create a worker");
@@ -174,7 +226,7 @@ async function testRestoreCancellation(source, configuredItems) {
         assert.strictEqual(
             (await request("status", ["panel"])).bounds?.min,
             source.lastTimestampMs,
-            "every archived line is applied before end-of-file"
+            "every archived row is applied before end-of-file"
         );
         await request("clear", ["panel"]);
         gate.end();
@@ -188,6 +240,7 @@ async function testRestoreCancellation(source, configuredItems) {
 
 const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address: 0x20000000 }));
 (async () => {
+    await testSeekRestore();
     await testServiceLimits();
     const store = new ChartHistoryStore();
     store.configure("panel", items);

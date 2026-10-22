@@ -4,6 +4,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { ArchiveEncoder, decodeRecords, FILE_HEADER } = require("../src/services/samplingArchiveFormat");
 const elfSymbols = require("../src/elfSymbols");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const { getLiveWatchContent } = require("../src/liveWatchView");
@@ -37,14 +38,12 @@ async function testDraining(parentDir) {
         await new Promise((resolve) => setTimeout(resolve, 200));
         assert.strictEqual(writes.length, 1, "the normal timer drains without an explicit flush");
         await archive.flush();
+        assert.deepStrictEqual(fs.readFileSync(archive.dataPath).subarray(0, 16), FILE_HEADER);
+        assert.strictEqual(archive.status().bytes, fs.statSync(archive.dataPath).size);
         assert.strictEqual(writes.length, 1, "twenty ticks share one concatenated disk write");
         assert.strictEqual(syncs, 0, "neither a normal drain nor flush syncs the temporary archive");
         assert.deepStrictEqual(
-            fs
-                .readFileSync(archive.dataPath, "utf8")
-                .trim()
-                .split("\n")
-                .map((line) => JSON.parse(line).v.tick),
+            decodeRecords(fs.readFileSync(archive.dataPath)).rows.map((row) => row.v.tick),
             Array.from({ length: 20 }, (_, i) => String(i))
         );
 
@@ -81,7 +80,7 @@ async function testDraining(parentDir) {
         assert.strictEqual(archive.drainTimer, null);
         assert.strictEqual(archive.writtenBytes, expectedBytes);
         assert.strictEqual(syncs, 0);
-        assert.strictEqual(fs.readFileSync(archive.dataPath, "utf8").trim().split("\n").length, 22);
+        assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 22);
         archive.append([{ name: "tick", value: 22 }], 1110);
         await archive.dispose();
         assert.strictEqual(archive.queuedBytes, 0, "dispose flushes bytes still waiting for the batching timer");
@@ -154,9 +153,194 @@ async function testDraining(parentDir) {
     }
 }
 
+async function testLegacyCsv(parentDir) {
+    const archive = new SamplingArchive({ rootDir: path.join(parentDir, "csv-parity") });
+    const lines = [];
+    const generations = new Map();
+    // Retain the old NDJSON line builder as an independent compatibility fixture.
+    const append = (samples, timestamp, scope = "") => {
+        const v = Object.create(null);
+        for (const sample of samples) {
+            if (!sample || typeof sample.name !== "string") continue;
+            v[sample.name] = sampleValueText(sample);
+        }
+        const identities = Object.fromEntries(
+            samples.filter((sample) => sample?.historyIdentity).map((sample) => [sample.name, sample.historyIdentity])
+        );
+        lines.push(
+            `${JSON.stringify({
+                t: timestamp,
+                v,
+                scope,
+                generation: generations.get(scope) || undefined,
+                identities: Object.keys(identities).length ? identities : undefined
+            })}\n`
+        );
+        assert.strictEqual(archive.append(samples, timestamp, scope), true);
+    };
+    try {
+        const names = ["=formula", "b", "text", "nullable", "__proto__"];
+        append(
+            [
+                { name: names[0], value: -0 },
+                { name: "b", valueText: "18446744073709551615" },
+                { name: "text", valueText: 'line,"quoted"\r\n中🙂' },
+                { name: "nullable", value: null },
+                { name: "__proto__", valueText: "safe" }
+            ],
+            1000
+        );
+        append(
+            [
+                { name: "b", value: 1, historyIdentity: "old" },
+                { name: "b", valueText: "-1.5", historyIdentity: "new" },
+                { name: "text", valueText: "=SUM(1,2)" }
+            ],
+            2000
+        );
+        append([{ name: "nullable", value: null }], 3000);
+        append(
+            [
+                { name: "b", valueText: "0.10000000149011612" },
+                { name: "text", valueText: "-enum" }
+            ],
+            4000
+        );
+        append(
+            [
+                { name: "b", valueText: "NaN" },
+                { name: "text", valueText: "" }
+            ],
+            5000,
+            "other"
+        );
+        const check = async (request = {}) => {
+            const expectedRows = lines
+                .map(JSON.parse)
+                .filter(
+                    (row) =>
+                        row.scope === "" &&
+                        (row.generation || 0) === (generations.get("") || 0) &&
+                        row.t >= (request.fromMs ?? -Infinity) &&
+                        row.t <= (request.toMs ?? Infinity)
+                );
+            const expected =
+                "\uFEFFtime," +
+                names.map((name) => csvHeaderField(request.displayNames?.get(name) || name)).join(",") +
+                "\r\n" +
+                expectedRows
+                    .map(
+                        (row) =>
+                            // Own-property lookup: an absent "__proto__" column is empty, not "[object Object]".
+                            `${new Date(row.t).toISOString()},${names.map((name) => csvField(Object.hasOwn(row.v, name) ? row.v[name] : null)).join(",")}\r\n`
+                    )
+                    .join("");
+            const outputPath = path.join(parentDir, "parity.csv");
+            const exported = await archive.exportCsv({ ...request, names, outputPath });
+            assert.deepStrictEqual(
+                fs.readFileSync(outputPath),
+                Buffer.from(expected),
+                "legacy CSV bytes are unchanged"
+            );
+            const read = await archive.readCsv({ ...request, names });
+            assert.strictEqual(read.csv, expected);
+            assert.strictEqual(read.rows, expectedRows.length);
+            assert.strictEqual(
+                exported.valueRows,
+                expectedRows.filter((row) => names.some((name) => Object.hasOwn(row.v, name) && row.v[name] != null))
+                    .length
+            );
+        };
+        await check();
+        await check({ fromMs: 2000, toMs: 3000, displayNames: new Map([["b", "@display,label"]]) });
+        archive.clear();
+        generations.set("", 1);
+        append(
+            names.map((name) => ({ name, valueText: name === "b" ? "Infinity" : "" })),
+            6000
+        );
+        await check();
+    } finally {
+        await archive.dispose();
+    }
+}
+
+async function testSourceBoundary(parentDir) {
+    const archive = new SamplingArchive({ rootDir: path.join(parentDir, "source-boundary") });
+    const stat = fs.promises.stat;
+    let release;
+    try {
+        archive.append([{ name: "x", value: 1 }], 1000);
+        const firstEnd = await archive.flush();
+        const write = archive.handle.write.bind(archive.handle);
+        let entered;
+        const writing = new Promise((resolve) => (entered = resolve));
+        const gate = new Promise((resolve) => (release = resolve));
+        let first = true;
+        archive.handle.write = async (...args) => {
+            if (!first) return write(...args);
+            first = false;
+            const result = await write(args[0], args[1], 3);
+            entered();
+            await gate;
+            return result;
+        };
+        fs.promises.stat = async (...args) => {
+            archive.append([{ name: "new", value: 2 }], 2000);
+            archive._ensureDrain();
+            await writing;
+            return stat(...args);
+        };
+        const source = await archive.historySource("");
+        assert.strictEqual(source.cutoff, firstEnd, "an in-flight partial write cannot become a seek boundary");
+        assert.strictEqual((await stat(archive.dataPath)).size, firstEnd + 3);
+        assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).end, firstEnd);
+    } finally {
+        fs.promises.stat = stat;
+        release?.();
+        await archive.dispose();
+    }
+}
+
+async function testHeaderBudget(parentDir) {
+    const archive = new SamplingArchive({ rootDir: path.join(parentDir, "header-budget"), maxBytes: 1024 * 1024 });
+    try {
+        await archive.ready;
+        assert.strictEqual(fs.existsSync(archive.dataPath), false, "the header is deferred until the first drain");
+        assert.strictEqual(path.basename(archive.dataPath), "samples.bin");
+        assert.strictEqual((await archive.historySource("unknown")).startOffset, 0);
+        const overhead =
+            FILE_HEADER.length + new ArchiveEncoder().encodeRow({ t: 1000, values: [{ key: "x", text: "" }] }).length;
+        assert.strictEqual(
+            archive.append([{ name: "x", valueText: "x".repeat(archive.maxBytes - overhead) }], 1000),
+            true
+        );
+        assert.strictEqual(archive.status().bytes, archive.maxBytes, "the header participates in the exact byte limit");
+        assert.strictEqual(await archive.flush(), archive.maxBytes);
+        assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 1);
+        assert.strictEqual(archive.append([{ name: "x", value: 1 }], 2000), false);
+        assert.strictEqual(archive.status().limitReached, true);
+        // Lowering the limit keeps written data and the full state; raising it lets the session record again.
+        archive.setMaxBytes(512 * 1024);
+        assert.strictEqual(archive.maxBytes, 1024 * 1024, "the limit never drops below 1 MiB");
+        assert.strictEqual(archive.status().limitReached, true);
+        archive.setMaxBytes(2 * 1024 * 1024);
+        assert.strictEqual(archive.status().limitReached, false);
+        assert.strictEqual(archive.append([{ name: "x", value: 1 }], 2000), true);
+        assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 1);
+        await archive.flush();
+        assert.strictEqual(decodeRecords(fs.readFileSync(archive.dataPath)).rows.length, 2);
+    } finally {
+        await archive.dispose();
+    }
+}
+
 async function main() {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-sampling-archive-"));
     const archiveRoot = path.join(temporaryRoot, "history");
+    await testLegacyCsv(temporaryRoot);
+    await testSourceBoundary(temporaryRoot);
+    await testHeaderBudget(temporaryRoot);
     const pauses = [];
     const errors = [];
     const archive = new SamplingArchive({
@@ -303,10 +487,11 @@ async function main() {
         assert.deepStrictEqual(archive.status("panel-a").variables, ["new"]);
         assert.equal((await archive.readCsv({ scope: "panel-a" })).rows, 1);
 
-        // A torn final line (for example after process interruption) is ignored, preserving prior complete rows.
+        // A torn final binary record is ignored, preserving prior complete rows.
         await archive.flush();
-        fs.appendFileSync(archive.dataPath, '{"t":10000,"v":');
-        archive.writtenBytes += Buffer.byteLength('{"t":10000,"v":');
+        const tail = new ArchiveEncoder().encodeRow({ t: 10000, values: [{ key: "Tick", text: "4" }] });
+        fs.appendFileSync(archive.dataPath, tail.subarray(0, -1));
+        archive.writtenBytes += tail.length - 1;
         const recoveredCsv = path.join(temporaryRoot, "recovered.csv");
         const recovered = await archive.exportCsv({ outputPath: recoveredCsv, names: ["Tick"] });
         assert.strictEqual(recovered.rows, 3);

@@ -11,6 +11,7 @@ const { LiveWatchService, buildChartHistoryItems } = require("../src/services/li
 const { ChartHistoryStore, INITIAL_BLOCK_POINTS, blockBytes } = require("../src/services/chartHistoryStore");
 const { ChartHistoryService, MAX_BACKLOG_BYTES, estimateHistoryBytes } = require("../src/services/chartHistoryService");
 const { SamplingArchive } = require("../src/services/samplingArchive");
+const { decodeRecords } = require("../src/services/samplingArchiveFormat");
 const { t } = require("../src/i18n");
 
 const parents = Array.from({ length: 2 }, (_, i) => ({
@@ -89,7 +90,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         assert.strictEqual(entry._historyBatch, null);
         assert.strictEqual(warnings.length, 1);
         const source = await archive.historySource("p");
-        const records = (await fs.readFile(source.dataPath, "utf8")).trim().split("\n").map(JSON.parse);
+        const records = decodeRecords(await fs.readFile(source.dataPath)).rows;
         assert.strictEqual(records.length, 5);
         assert.ok(records.every((record) => Object.keys(record.v).length === 20000));
         assert.strictEqual(records.at(-1).v[leaves.at(-1).name + " [u8]"], "4");
@@ -117,7 +118,14 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         };
         const request = recovering.request.bind(recovering);
         recovering.request = (method, args) => {
-            if (method === "restore") restores++;
+            if (method === "restore") {
+                restores++;
+                assert.ok(
+                    Array.isArray(args[0].dictionary.channels),
+                    "host forwards the binary dictionary in recovery"
+                );
+                assert.ok(Number.isSafeInteger(args[0].startOffset), "host forwards the indexed restore boundary");
+            }
             return request(method, args);
         };
         p._chartHistory = recovering;
