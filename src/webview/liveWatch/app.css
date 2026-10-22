@@ -133,6 +133,7 @@ input[type="number"] {
 .side-head strong {
     font-size: 11px;
     text-transform: uppercase;
+    white-space: nowrap;
 }
 .badge {
     margin-left: 6px;

@@ -4211,10 +4211,45 @@ function panelFloating() {
 function clampNumber(value, min, max) {
     return Math.min(Math.max(value, min), Math.max(min, max));
 }
+function px(value) {
+    return parseFloat(value) || 0;
+}
+// The card stays wide enough for its title bar and curve buttons on one line each; their localized
+// labels set the width. The sample rate truncates with an ellipsis instead of widening the card.
+// Conditionally hidden buttons (restore) are measured too, so the card does not widen when they appear.
+function panelMinWidth() {
+    var rows = [panelHandle, valuePane.querySelector(".side-curve-tools")].filter(Boolean),
+        hiddenChildren = rows.flatMap(function (row) {
+            return Array.from(row.children).filter(function (child) {
+                return child.hidden;
+            });
+        });
+    hiddenChildren.forEach(function (child) {
+        child.hidden = false;
+    });
+    var content = rows.reduce(function (widest, row) {
+        var style = getComputedStyle(row),
+            children = Array.from(row.children).filter(function (child) {
+                return child.id !== "rate" && child.getBoundingClientRect().width > 0;
+            });
+        var width =
+            px(style.paddingLeft) + px(style.paddingRight) + px(style.columnGap) * Math.max(0, children.length - 1);
+        children.forEach(function (child) {
+            var childStyle = getComputedStyle(child);
+            width += child.getBoundingClientRect().width + px(childStyle.marginLeft) + px(childStyle.marginRight);
+        });
+        return Math.max(widest, width);
+    }, 0);
+    hiddenChildren.forEach(function (child) {
+        child.hidden = true;
+    });
+    var pane = getComputedStyle(valuePane);
+    return Math.max(PANEL_MIN_WIDTH, Math.ceil(content + px(pane.borderLeftWidth) + px(pane.borderRightWidth)));
+}
 // The card keeps its preferred geometry; smaller views shrink and shift it without losing that preference.
 function panelGeometry(bounds) {
     var height = valuePanel.h === null ? Math.min(Math.round(bounds.height * 0.6), 460) : valuePanel.h;
-    var w = clampNumber(valuePanel.w, PANEL_MIN_WIDTH, bounds.width - 2 * PANEL_MARGIN);
+    var w = clampNumber(valuePanel.w, panelMinWidth(), bounds.width - 2 * PANEL_MARGIN);
     var h = clampNumber(height, PANEL_MIN_HEIGHT, bounds.height - 2 * PANEL_MARGIN);
     var x = valuePanel.dockRight ? bounds.width - PANEL_MARGIN - w : valuePanel.x;
     var y = valuePanel.dockBottom ? bounds.height - PANEL_MARGIN - h : valuePanel.y;
@@ -4263,12 +4298,13 @@ function movedPanel(start, dx, dy) {
 }
 // Dragging a north or west edge keeps the opposite edge where it was.
 function resizedPanel(start, edge, dx, dy, bounds) {
-    var g = { x: start.x, y: start.y, w: start.w, h: start.h };
-    if (edge.indexOf("e") >= 0) g.w = clampNumber(start.w + dx, PANEL_MIN_WIDTH, bounds.width - PANEL_MARGIN - start.x);
+    var g = { x: start.x, y: start.y, w: start.w, h: start.h },
+        minWidth = panelMinWidth();
+    if (edge.indexOf("e") >= 0) g.w = clampNumber(start.w + dx, minWidth, bounds.width - PANEL_MARGIN - start.x);
     if (edge.indexOf("s") >= 0)
         g.h = clampNumber(start.h + dy, PANEL_MIN_HEIGHT, bounds.height - PANEL_MARGIN - start.y);
     if (edge.indexOf("w") >= 0) {
-        g.w = clampNumber(start.w - dx, PANEL_MIN_WIDTH, start.x + start.w - PANEL_MARGIN);
+        g.w = clampNumber(start.w - dx, minWidth, start.x + start.w - PANEL_MARGIN);
         g.x = start.x + start.w - g.w;
     }
     if (edge.indexOf("n") >= 0) {

@@ -253,6 +253,16 @@ try {
     assert.strictEqual(view.getState().panelMode, "floating");
     assert.deepStrictEqual(rect(), [462, 8, 220, 474], "floating again restores the card");
 
+    // Wide localized curve buttons raise the minimum so that row (8px padding each side) never wraps.
+    for (const button of pane.querySelectorAll(".side-curve-tools button"))
+        button.getBoundingClientRect = () => ({ width: 75, height: 20 });
+    resizeLayout(700, 500);
+    assert.deepStrictEqual(rect(), [376, 8, 316, 474], "the card widens to fit its button row");
+    pointer(handle("w"), "pointerdown", 0, 0);
+    pointer(handle("w"), "pointermove", 500, 0);
+    pointer(handle("w"), "pointerup", 500, 0);
+    assert.strictEqual(view.getState().valuePanel.w, 316, "resizing stops at the button row width");
+
     view.assertHealthy();
 } finally {
     floatingView.close();
