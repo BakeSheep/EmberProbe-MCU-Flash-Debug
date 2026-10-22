@@ -225,72 +225,97 @@ function runtimeItem(name, address) {
     assert.strictEqual(fallback.fake.commands.filter((command) => command.startsWith("join [list")).length, 1);
     assert.strictEqual(fallback.fake.commands.length, 41, "fallback reads the same groups separately on every tick");
 
-    const runtime = readerFixture();
-    const big = { name: "big", address: BASE, size: 1536 };
-    const bigAlias = { name: "big-alias", address: BASE, size: 4 };
-    const tail = { name: "tail", address: BASE + 2048, size: 4 };
-    const firstRuntime = runtimeItem("runtime-a", BASE + 3072);
-    const secondRuntime = runtimeItem("runtime-b", BASE + 3076);
-    runtime.session.setWatch([big, firstRuntime, bigAlias, secondRuntime, tail]);
-    runtime.fake.seed(
-        BASE,
-        Array.from({ length: big.size }, (_, index) => index & 0xff)
-    );
-    const deadline = Date.now() + 30000;
-    const budgets = [];
-    const originalSample = RuntimeObjectReader.prototype.sample;
-    RuntimeObjectReader.prototype.sample = async function () {
-        budgets.push({ budget: this.budget, bytes: this.budget.bytes, commands: this.budget.commands });
-        return originalSample.call(this);
-    };
-    let runtimeCompilations;
-    try {
-        runtimeCompilations = await countReadCompilations(async () => {
-            for (let tick = 0; tick < 100; tick++) {
-                runtime.fake.seed(firstRuntime.address, [tick, 0, 0, 0]);
-                runtime.fake.seed(secondRuntime.address, [tick + 1, 0, 0, 0]);
-                const result = await runtime.session._readItems(runtime.session.watch, tick, {
-                    epoch: runtime.session.sampleEpoch,
-                    deadline
-                });
-                assert.strictEqual(result.ok, 5);
-                assert.deepStrictEqual(
-                    result.samples.slice(0, 2).map((sample) => sample.name),
-                    ["runtime-a", "runtime-b"]
-                );
-                assert.deepStrictEqual(
-                    result.samples.slice(0, 2).map((sample) => sample.runtimeTree.value),
-                    [tick, tick + 1]
-                );
-                assertFixedSamples(result.samples.slice(2), [big, bigAlias, tail], runtime.fake, tick);
-            }
-        });
-    } finally {
-        RuntimeObjectReader.prototype.sample = originalSample;
-    }
-    assert.strictEqual(runtimeCompilations, 0, "runtime budgeting and fixed reads reuse the precompiled fixed subset");
-    for (let tick = 0; tick < 100; tick++) {
-        const first = budgets[tick * 2];
-        const second = budgets[tick * 2 + 1];
-        assert.strictEqual(first.bytes, 1544, "budget reserves item sizes even for overlapping fixed items");
-        assert.strictEqual(first.commands, 3, "budget counts split transfer units, including multi-group batches");
-        assert.strictEqual(second.bytes, 1548);
-        assert.strictEqual(second.commands, 4);
-        assert.strictEqual(first.budget, second.budget, "runtime items share the per-cycle budget");
-        assert.strictEqual(first.budget.deadline, deadline);
-        if (tick) assert.notStrictEqual(first.budget, budgets[(tick - 1) * 2].budget, "budgets reset each tick");
+    for (const mode of ["debug", "standalone"]) {
+        const runtime = readerFixture();
+        runtime.session.mode = mode;
+        const big = { name: "big", address: BASE, size: 1536 };
+        const bigAlias = { name: "big-alias", address: BASE, size: 4 };
+        const tail = { name: "tail", address: BASE + 2048, size: 4 };
+        const firstRuntime = runtimeItem("runtime-a", BASE + 3072);
+        const secondRuntime = runtimeItem("runtime-b", BASE + 3076);
+        runtime.session.setWatch([big, firstRuntime, bigAlias, secondRuntime, tail]);
+        runtime.fake.seed(
+            BASE,
+            Array.from({ length: big.size }, (_, index) => index & 0xff)
+        );
+        const deadline = Date.now() + 30000;
+        const budgets = [];
+        const originalSample = RuntimeObjectReader.prototype.sample;
+        RuntimeObjectReader.prototype.sample = async function () {
+            budgets.push({ budget: this.budget, bytes: this.budget.bytes, commands: this.budget.commands });
+            return originalSample.call(this);
+        };
+        let runtimeCompilations;
+        try {
+            runtimeCompilations = await countReadCompilations(async () => {
+                for (let tick = 0; tick < 100; tick++) {
+                    runtime.fake.seed(firstRuntime.address, [tick, 0, 0, 0]);
+                    runtime.fake.seed(secondRuntime.address, [tick + 1, 0, 0, 0]);
+                    const result = await runtime.session._readItems(runtime.session.watch, tick, {
+                        epoch: runtime.session.sampleEpoch,
+                        deadline
+                    });
+                    assert.strictEqual(result.ok, 5);
+                    assert.deepStrictEqual(
+                        result.samples.slice(0, 2).map((sample) => sample.name),
+                        ["runtime-a", "runtime-b"]
+                    );
+                    assert.deepStrictEqual(
+                        result.samples.slice(0, 2).map((sample) => sample.runtimeTree.value),
+                        [tick, tick + 1]
+                    );
+                    assertFixedSamples(result.samples.slice(2), [big, bigAlias, tail], runtime.fake, tick);
+                }
+            });
+        } finally {
+            RuntimeObjectReader.prototype.sample = originalSample;
+        }
+        assert.strictEqual(
+            runtimeCompilations,
+            0,
+            "runtime budgeting and fixed reads reuse the precompiled fixed subset"
+        );
+        for (let tick = 0; tick < 100; tick++) {
+            const first = budgets[tick * 2];
+            const second = budgets[tick * 2 + 1];
+            // Debug mode reserves fixed reads in the per-cycle budget; standalone fixed reads are unbudgeted.
+            const fixedBytes = mode === "debug" ? 1544 : 0;
+            const fixedCommands = mode === "debug" ? 3 : 0;
+            assert.strictEqual(first.bytes, fixedBytes, "debug budget reserves item sizes even for overlapping items");
+            assert.strictEqual(first.commands, fixedCommands, "debug budget counts split transfer units");
+            assert.strictEqual(second.bytes, fixedBytes + 4);
+            assert.strictEqual(second.commands, fixedCommands + 1);
+            assert.strictEqual(first.budget, second.budget, "runtime items share the per-cycle budget");
+            assert.strictEqual(first.budget.deadline, deadline);
+            if (tick) assert.notStrictEqual(first.budget, budgets[(tick - 1) * 2].budget, "budgets reset each tick");
+        }
     }
 
     for (const fixedItems of [
         [{ name: "all-bytes", address: BASE, size: 4096 }],
         Array.from({ length: 32 }, (_, index) => ({ name: "command-" + index, address: BASE + index * 8, size: 1 }))
     ]) {
+        const watch = [...fixedItems, runtimeItem("limited-runtime", BASE + 6144)];
         const limited = readerFixture();
-        limited.session.setWatch([...fixedItems, runtimeItem("limited-runtime", BASE + 6144)]);
+        limited.session.mode = "debug";
+        // Debug planning would reject this plan; the cycle itself must still stop the runtime read.
+        limited.session.watch = watch;
+        limited.session._readBatchCache = [];
         const result = await limited.session._readItems(limited.session.watch, 0);
         assert.strictEqual(result.samples[0].diagnostic.code, "LIVE_READ_BUDGET_EXCEEDED");
         assert.ok(result.samples.slice(1).every((sample) => sample.bytes?.length > 0));
         assert.ok(limited.fake.commands.every((command) => !command.includes("0x20001800")));
+
+        const standalone = readerFixture();
+        standalone.session.setWatch(watch);
+        standalone.fake.seed(BASE + 6144, [7, 0, 0, 0]);
+        const independent = await standalone.session._readItems(standalone.session.watch, 0);
+        assert.strictEqual(
+            independent.samples[0].runtimeTree.value,
+            7,
+            "standalone fixed reads leave the runtime budget"
+        );
+        assert.ok(independent.samples.slice(1).every((sample) => sample.bytes?.length > 0));
     }
 
     const guarded = readerFixture();

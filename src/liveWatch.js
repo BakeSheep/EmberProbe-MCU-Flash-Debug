@@ -166,6 +166,30 @@ function validateManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxComm
     return total;
 }
 
+// Sampling keeps every item that fits the per-cycle budget. Smaller items are admitted first so one
+// oversized struct cannot starve the rest; the result keeps the input order of each side.
+function partitionManagedReadPlan(items, maxBytes = MAX_DEBUG_READ_BYTES, maxCommands = MAX_DEBUG_READ_COMMANDS) {
+    const list = Array.isArray(items) ? items : [];
+    const order = list
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => Number(a.item?.size) - Number(b.item?.size) || a.index - b.index);
+    const admitted = [];
+    const rejected = new Set();
+    for (const entry of order) {
+        try {
+            validateManagedReadPlan([...admitted, entry.item], maxBytes, maxCommands);
+            admitted.push(entry.item);
+        } catch (error) {
+            if (error.code !== "LIVE_READ_BUDGET_EXCEEDED") throw error;
+            rejected.add(entry.item);
+        }
+    }
+    return {
+        allowed: list.filter((item) => !rejected.has(item)),
+        overBudget: list.filter((item) => rejected.has(item))
+    };
+}
+
 function validateManagedWritePlan(items) {
     if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
     for (const item of items) {
@@ -1447,10 +1471,15 @@ class ManagedOpenOcdSession {
         let ok = 0;
         const fixedItems = items.filter((entry) => !entry.runtimeLayout);
         const runtimeItems = items.filter((entry) => entry.runtimeLayout);
+        // Debug mode bounds the whole cycle, so fixed reads are reserved first. Standalone fixed reads
+        // have no per-cycle budget and must not consume the runtime objects' own one.
+        const shared = this.mode === "debug";
         const runtimeBudget = runtimeItems.length
             ? {
-                  bytes: fixedItems.reduce((total, entry) => total + entry.size, 0),
-                  commands: this._getReadBatches(fixedItems).reduce((total, batch) => total + batch.length, 0),
+                  bytes: shared ? fixedItems.reduce((total, entry) => total + entry.size, 0) : 0,
+                  commands: shared
+                      ? this._getReadBatches(fixedItems).reduce((total, batch) => total + batch.length, 0)
+                      : 0,
                   deadline: guard?.deadline || Date.now() + MAX_DEBUG_CYCLE_MS
               }
             : null;
@@ -1936,6 +1965,7 @@ module.exports = {
     bytesToElements,
     elementsToBytes,
     validateManagedReadPlan,
+    partitionManagedReadPlan,
     validateManagedWritePlan,
     MAX_DEBUG_READ_BYTES,
     MAX_DEBUG_READ_COMMANDS,

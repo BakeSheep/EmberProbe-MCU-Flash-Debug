@@ -76,11 +76,50 @@ function hasStaticLocation(value, addrSize) {
 const { readSections, parseAbbrev, readULEB } = require("./binary");
 const { cstr } = require("./binary");
 const { createFormReader } = require("./forms");
+// Whole-parse safety budgets. Tests may lower them through options.budgets to exercise degradation
+// without millions of DIEs; an override can never raise a budget above its production value.
+const DEFAULT_BUDGETS = Object.freeze({
+    dies: 2000000,
+    units: 20000,
+    abbrevs: 20000,
+    attrs: 200000,
+    sectionBytes: 32 * 1024 * 1024,
+    companionBytes: 64 * 1024 * 1024
+});
+function parseBudgets(overrides) {
+    const budgets = { ...DEFAULT_BUDGETS };
+    for (const key of Object.keys(DEFAULT_BUDGETS)) {
+        const value = overrides?.[key];
+        if (Number.isSafeInteger(value) && value > 0 && value < DEFAULT_BUDGETS[key]) budgets[key] = value;
+    }
+    return budgets;
+}
+// Counts unit headers from `from` without decoding DIEs; used only to report what a partial parse dropped.
+function countUnits(data, from, end) {
+    let count = 0;
+    let p = from;
+    while (p + 4 <= end) {
+        let length = data.readUInt32LE(p);
+        let header = 4;
+        if (length === 0xffffffff) {
+            if (p + 12 > end) break;
+            const length64 = data.readBigUInt64LE(p + 4);
+            if (length64 > BigInt(Number.MAX_SAFE_INTEGER)) break;
+            length = Number(length64);
+            header = 12;
+        }
+        if (!length) break;
+        count++;
+        p += header + length;
+    }
+    return count;
+}
 function _parseDwarfInternal(buffer, options = {}) {
     const elf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const diagnostics = [];
+    const budgets = parseBudgets(options.budgets);
     let totalUnits = 0;
-    const sectionBudget = { decoded: 0, max: 32 * 1024 * 1024 };
+    const sectionBudget = { decoded: 0, max: budgets.sectionBytes };
     const sections = readSections(elf, diagnostics, sectionBudget);
     const info = sections.get(".debug_info");
     const abbrevSec = sections.get(".debug_abbrev");
@@ -125,7 +164,7 @@ function _parseDwarfInternal(buffer, options = {}) {
     // 就能让 N 份完整缩写表同时存活，直至扩展宿主 OOM。
     const MAX_ABBREV_CACHE_ENTRIES = 8;
     const abbrevCache = new Map();
-    const abbrevBudget = { abbrevs: 0, attrs: 0, maxAbbrevs: 20000, maxAttrs: 200000 };
+    const abbrevBudget = { abbrevs: 0, attrs: 0, maxAbbrevs: budgets.abbrevs, maxAttrs: budgets.attrs };
     const abbrevCacheGet = (key) => {
         if (!abbrevCache.has(key)) return undefined;
         const value = abbrevCache.get(key);
@@ -140,8 +179,28 @@ function _parseDwarfInternal(buffer, options = {}) {
     };
     // §3：DIE 预算改为整个解析全局。旧实现 guard 定义在 CU 循环内，每个 CU 都重置，
     // 而 dies/childrenMap/variableOffsets 从不重置，因此预算只约束单个 CU。
-    const MAX_DIES_TOTAL = 2000000;
+    const MAX_DIES_TOTAL = budgets.dies;
     let totalDies = 0;
+    // A budget error keeps every complete unit: the journal records what the unit being parsed added,
+    // so that unit alone is rolled back and nothing half-parsed can reach type or layout building.
+    let journal = null;
+    let partial = null;
+    const position = { inputIndex: 0, sectionName: null, offset: 0 };
+    const rollbackUnit = () => {
+        if (!journal) return;
+        for (const key of journal.keys) {
+            dies.delete(key);
+            childrenMap.delete(key);
+            parentOf.delete(key);
+        }
+        units.length = journal.units;
+        variableOffsets.length = journal.variables;
+        subprogramOffsets.length = journal.subprograms;
+        skippedOffsets.length = journal.skipped;
+        if (journal.signature !== undefined) signatures.delete(journal.signature);
+        for (const [input, parent] of journal.parents) input.parent = parent;
+        journal = null;
+    };
     // A retry reuses decoded sections and companion inputs. Each pass counts every DIE
     // (including terminators) with the original budgets, and there can be at most two passes.
     let retainLocals = false;
@@ -157,429 +216,465 @@ function _parseDwarfInternal(buffer, options = {}) {
     };
     for (let pass = 0; pass < 2; pass++) {
         const passDiagnostics = pass === 0 ? diagnostics : [];
-        for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
-            const input = inputs[inputIndex];
-            str = input.sections.get(".debug_str");
-            lineStr = input.sections.get(".debug_line_str");
-            strOffsets = input.sections.get(".debug_str_offsets");
-            for (const sectionName of [".debug_info", ".debug_types"]) {
-                const section = input.sections.get(sectionName);
-                if (!section) continue;
-                const buf = section.data;
-                const infoEnd = section.size;
-                const abbrevSec = input.sections.get(".debug_abbrev");
-                if (!abbrevSec) continue;
-                abbrevCache.clear();
-                let p = 0;
-                while (p + 4 <= infoEnd) {
-                    if (++totalUnits > 20000)
-                        throw Object.assign(new Error("DWARF compilation unit budget exceeded"), {
-                            code: "DWARF_BUDGET_EXCEEDED"
-                        });
-                    const cuStart = p;
-                    let unitLength = buf.readUInt32LE(p);
-                    p += 4;
-                    let offsetSize = 4;
-                    if (unitLength === 0xffffffff) {
-                        if (p + 8 > infoEnd) {
+        try {
+            for (let inputIndex = 0; inputIndex < inputs.length; inputIndex++) {
+                const input = inputs[inputIndex];
+                str = input.sections.get(".debug_str");
+                lineStr = input.sections.get(".debug_line_str");
+                strOffsets = input.sections.get(".debug_str_offsets");
+                for (const sectionName of [".debug_info", ".debug_types"]) {
+                    const section = input.sections.get(sectionName);
+                    if (!section) continue;
+                    const buf = section.data;
+                    const infoEnd = section.size;
+                    const abbrevSec = input.sections.get(".debug_abbrev");
+                    if (!abbrevSec) continue;
+                    abbrevCache.clear();
+                    let p = 0;
+                    while (p + 4 <= infoEnd) {
+                        Object.assign(position, { inputIndex, sectionName, offset: p });
+                        if (++totalUnits > budgets.units)
+                            throw Object.assign(new Error("DWARF compilation unit budget exceeded"), {
+                                code: "DWARF_BUDGET_EXCEEDED"
+                            });
+                        const cuStart = p;
+                        journal = {
+                            units: units.length,
+                            variables: variableOffsets.length,
+                            subprograms: subprogramOffsets.length,
+                            skipped: skippedOffsets.length,
+                            keys: [],
+                            signature: undefined,
+                            parents: []
+                        };
+                        let unitLength = buf.readUInt32LE(p);
+                        p += 4;
+                        let offsetSize = 4;
+                        if (unitLength === 0xffffffff) {
+                            if (p + 8 > infoEnd) {
+                                appendDiagnostic(passDiagnostics, {
+                                    code: "DWARF_CU_INVALID",
+                                    stage: "header",
+                                    offset: cuStart,
+                                    message: "Truncated DWARF64 header"
+                                });
+                                break;
+                            }
+                            const length64 = buf.readBigUInt64LE(p);
+                            p += 8;
+                            if (length64 > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF64 unit");
+                            unitLength = Number(length64);
+                            offsetSize = 8;
+                        }
+                        const headerSize = offsetSize === 8 ? 12 : 4;
+                        if (unitLength === 0) {
                             appendDiagnostic(passDiagnostics, {
-                                code: "DWARF_CU_INVALID",
+                                code: "DWARF_UNSUPPORTED",
                                 stage: "header",
                                 offset: cuStart,
-                                message: "Truncated DWARF64 header"
+                                message: "Unsupported DWARF unit length"
                             });
                             break;
                         }
-                        const length64 = buf.readBigUInt64LE(p);
-                        p += 8;
-                        if (length64 > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF64 unit");
-                        unitLength = Number(length64);
-                        offsetSize = 8;
-                    }
-                    const headerSize = offsetSize === 8 ? 12 : 4;
-                    if (unitLength === 0) {
-                        appendDiagnostic(passDiagnostics, {
-                            code: "DWARF_UNSUPPORTED",
-                            stage: "header",
-                            offset: cuStart,
-                            message: "Unsupported DWARF unit length"
-                        });
-                        break;
-                    }
-                    const cuEnd = Math.min(cuStart + headerSize + unitLength, infoEnd);
-                    const cuBuffer = buf.subarray(0, cuEnd);
-                    const readFormValue = createFormReader({ buf: cuBuffer, str, lineStr });
-                    try {
-                        const version = buf.readUInt16LE(p);
-                        p += 2;
-                        if (![2, 3, 4, 5].includes(version)) throw new Error("Unsupported DWARF version " + version);
-                        const readOffset = () => {
-                            const value = offsetSize === 8 ? buf.readBigUInt64LE(p) : BigInt(buf.readUInt32LE(p));
-                            p += offsetSize;
-                            if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF offset");
-                            return Number(value);
-                        };
-                        let addrSize,
-                            abbrevOff,
-                            unitType = sectionName === ".debug_types" ? 2 : 1;
-                        if (version >= 5) {
-                            unitType = buf[p++];
-                            addrSize = buf[p];
-                            p += 1;
-                            abbrevOff = readOffset();
-                        } else {
-                            abbrevOff = readOffset();
-                            addrSize = buf[p];
-                            p += 1;
-                        }
-                        const unit = {
-                            sectionBase,
-                            cuStart,
-                            version,
-                            offsetSize,
-                            input,
-                            strings: { str, strOffsets },
-                            addrSize
-                        };
-                        unit.isType = [2, 6].includes(unitType);
-                        if ([2, 6].includes(unitType)) {
-                            const signature = buf.subarray(p, p + 8).toString("hex");
-                            p += 8;
-                            const target = sectionBase + cuStart + readOffset();
-                            if (signatures.has(signature) && signatures.get(signature) !== target) {
-                                // Identical type units can occur in multiple split files; the signature is their identity.
-                                unit.duplicateSignature = signature;
-                            } else signatures.set(signature, target);
-                        } else if ([4, 5].includes(unitType)) {
-                            unit.dwoId = buf.readBigUInt64LE(p).toString();
-                            p += 8;
-                        } else if (![1, 3].includes(unitType))
-                            throw new Error("Unsupported DWARF unit type " + unitType);
-                        if (cuStart + headerSize + unitLength > infoEnd || p > cuEnd)
-                            throw new Error("Truncated DWARF unit");
-                        unit.addrBase = input.parent?.addrBase || 0;
-                        unit.addresses = input.sections.get(".debug_addr") || input.parent?.addresses;
-                        units.push(unit);
-                        if (retainLocals)
-                            for (const companionInput of inputs) {
-                                const parent = companionInput.parent;
-                                if (
-                                    parent?.input === input &&
-                                    parent.sectionBase === sectionBase &&
-                                    parent.cuStart === cuStart
-                                )
-                                    companionInput.parent = unit;
+                        const cuEnd = Math.min(cuStart + headerSize + unitLength, infoEnd);
+                        const cuBuffer = buf.subarray(0, cuEnd);
+                        const readFormValue = createFormReader({ buf: cuBuffer, str, lineStr });
+                        try {
+                            const version = buf.readUInt16LE(p);
+                            p += 2;
+                            if (![2, 3, 4, 5].includes(version))
+                                throw new Error("Unsupported DWARF version " + version);
+                            const readOffset = () => {
+                                const value = offsetSize === 8 ? buf.readBigUInt64LE(p) : BigInt(buf.readUInt32LE(p));
+                                p += offsetSize;
+                                if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Oversized DWARF offset");
+                                return Number(value);
+                            };
+                            let addrSize,
+                                abbrevOff,
+                                unitType = sectionName === ".debug_types" ? 2 : 1;
+                            if (version >= 5) {
+                                unitType = buf[p++];
+                                addrSize = buf[p];
+                                p += 1;
+                                abbrevOff = readOffset();
+                            } else {
+                                abbrevOff = readOffset();
+                                addrSize = buf[p];
+                                p += 1;
                             }
-                        let abbrev = abbrevCacheGet(abbrevOff);
-                        if (!abbrev) {
-                            abbrev = parseAbbrev(abbrevSec.data, abbrevOff, abbrevBudget);
-                            abbrevCacheSet(abbrevOff, abbrev);
-                        }
-                        const cuRel = sectionBase + cuStart;
-                        let strOffsetsBase = input.parent && version < 5 ? 0 : offsetSize === 8 ? 16 : 8;
-                        const readRecord = (cur, ab) => {
-                            const rec = { tag: ab.tag, unit };
-                            for (const attr of ab.attrs) {
-                                const formContext = {
-                                    addrSize,
-                                    cuRel,
-                                    sectionBase,
-                                    offsetSize,
-                                    exactInteger: attr.at === 0x1c,
-                                    implicit: attr.implicit
-                                };
-                                const raw = readFormValue(cur, attr.form, formContext);
-                                const v =
-                                    raw?.integer64 &&
-                                    BigInt(raw.integer64) >= BigInt(Number.MIN_SAFE_INTEGER) &&
-                                    BigInt(raw.integer64) <= BigInt(Number.MAX_SAFE_INTEGER)
-                                        ? Number(raw.integer64)
-                                        : raw;
-                                switch (attr.at) {
-                                    case 0x1b: // DW_AT_comp_dir
-                                        if (v?.str !== undefined) unit.compDir = v.str;
-                                        else if (v?.strx !== undefined) unit.compDirIndex = v.strx;
-                                        break;
-                                    case 0x76: // DW_AT_dwo_name
-                                    case 0x2130: // DW_AT_GNU_dwo_name
-                                        if (v?.str !== undefined) unit.dwoName = v.str;
-                                        else if (v?.strx !== undefined) unit.dwoNameIndex = v.strx;
-                                        break;
-                                    case 0x2131: // DW_AT_GNU_dwo_id
-                                        unit.dwoId = raw?.integer64;
-                                        break;
-                                    case 0x73: // DW_AT_addr_base
-                                    case 0x2133: // DW_AT_GNU_addr_base
-                                        unit.addrBase = v;
-                                        break;
-                                    case 0x1c: // DW_AT_const_value (enumerator or template argument)
-                                        rec.constantValue = v;
-                                        break;
-                                    case DW_AT_name:
-                                        if (v && v.str !== undefined) rec.name = v.str;
-                                        else if (v && v.strx !== undefined) rec.strx = v.strx;
-                                        break;
-                                    case DW_AT_linkage_name:
-                                        if (v && v.str !== undefined) rec.linkageName = v.str;
-                                        else if (v && v.strx !== undefined) rec.linkageStrx = v.strx;
-                                        break;
-                                    case DW_AT_virtuality:
-                                        if (typeof v === "number") rec.virtuality = v;
-                                        break;
-                                    case DW_AT_artificial:
-                                        rec.isArtificial = !!v;
-                                        break;
-                                    case DW_AT_type:
-                                        if (v && v.ref !== undefined) rec.typeRef = v.ref;
-                                        else if (v?.signature) rec.typeSignature = v.signature;
-                                        break;
-                                    case 0x69: // DW_AT_signature: a declaration redirects to its type unit.
-                                        rec.definitionSignature = v?.signature;
-                                        break;
-                                    case DW_AT_abstract_origin:
-                                        if (v && v.ref !== undefined) rec.abstractOriginRef = v.ref;
-                                        break;
-                                    case DW_AT_specification:
-                                        if (v && v.ref !== undefined) rec.specificationRef = v.ref;
-                                        break;
-                                    case DW_AT_byte_size:
-                                        if (typeof v === "number") rec.byteSize = v;
-                                        break;
-                                    case DW_AT_encoding:
-                                        if (typeof v === "number") rec.encoding = v;
-                                        break;
-                                    case 0x6d: // DW_AT_enum_class
-                                        rec.enumClass = !!v;
-                                        break;
-                                    case DW_AT_location:
-                                        if (v && v.block && v.block.length >= 1) {
-                                            rec.hasAddr = false;
-                                            if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5) {
-                                                rec.address = v.block.readUInt32LE(1);
-                                                rec.hasAddr = true;
-                                            } else if ([0xa1, 0xfb].includes(v.block[0])) {
-                                                const cursor = { p: 1 };
-                                                const index = readULEB(v.block, cursor);
-                                                if (cursor.p === v.block.length) {
-                                                    rec.addressIndex = index;
+                            const unit = {
+                                sectionBase,
+                                cuStart,
+                                version,
+                                offsetSize,
+                                input,
+                                strings: { str, strOffsets },
+                                addrSize
+                            };
+                            unit.isType = [2, 6].includes(unitType);
+                            if ([2, 6].includes(unitType)) {
+                                const signature = buf.subarray(p, p + 8).toString("hex");
+                                p += 8;
+                                const target = sectionBase + cuStart + readOffset();
+                                if (signatures.has(signature) && signatures.get(signature) !== target) {
+                                    // Identical type units can occur in multiple split files; the signature is their identity.
+                                    unit.duplicateSignature = signature;
+                                } else {
+                                    if (!signatures.has(signature)) journal.signature = signature;
+                                    signatures.set(signature, target);
+                                }
+                            } else if ([4, 5].includes(unitType)) {
+                                unit.dwoId = buf.readBigUInt64LE(p).toString();
+                                p += 8;
+                            } else if (![1, 3].includes(unitType))
+                                throw new Error("Unsupported DWARF unit type " + unitType);
+                            if (cuStart + headerSize + unitLength > infoEnd || p > cuEnd)
+                                throw new Error("Truncated DWARF unit");
+                            unit.addrBase = input.parent?.addrBase || 0;
+                            unit.addresses = input.sections.get(".debug_addr") || input.parent?.addresses;
+                            units.push(unit);
+                            if (retainLocals)
+                                for (const companionInput of inputs) {
+                                    const parent = companionInput.parent;
+                                    if (
+                                        parent?.input === input &&
+                                        parent.sectionBase === sectionBase &&
+                                        parent.cuStart === cuStart
+                                    ) {
+                                        journal.parents.push([companionInput, parent]);
+                                        companionInput.parent = unit;
+                                    }
+                                }
+                            let abbrev = abbrevCacheGet(abbrevOff);
+                            if (!abbrev) {
+                                abbrev = parseAbbrev(abbrevSec.data, abbrevOff, abbrevBudget);
+                                abbrevCacheSet(abbrevOff, abbrev);
+                            }
+                            const cuRel = sectionBase + cuStart;
+                            let strOffsetsBase = input.parent && version < 5 ? 0 : offsetSize === 8 ? 16 : 8;
+                            const readRecord = (cur, ab) => {
+                                const rec = { tag: ab.tag, unit };
+                                for (const attr of ab.attrs) {
+                                    const formContext = {
+                                        addrSize,
+                                        cuRel,
+                                        sectionBase,
+                                        offsetSize,
+                                        exactInteger: attr.at === 0x1c,
+                                        implicit: attr.implicit
+                                    };
+                                    const raw = readFormValue(cur, attr.form, formContext);
+                                    const v =
+                                        raw?.integer64 &&
+                                        BigInt(raw.integer64) >= BigInt(Number.MIN_SAFE_INTEGER) &&
+                                        BigInt(raw.integer64) <= BigInt(Number.MAX_SAFE_INTEGER)
+                                            ? Number(raw.integer64)
+                                            : raw;
+                                    switch (attr.at) {
+                                        case 0x1b: // DW_AT_comp_dir
+                                            if (v?.str !== undefined) unit.compDir = v.str;
+                                            else if (v?.strx !== undefined) unit.compDirIndex = v.strx;
+                                            break;
+                                        case 0x76: // DW_AT_dwo_name
+                                        case 0x2130: // DW_AT_GNU_dwo_name
+                                            if (v?.str !== undefined) unit.dwoName = v.str;
+                                            else if (v?.strx !== undefined) unit.dwoNameIndex = v.strx;
+                                            break;
+                                        case 0x2131: // DW_AT_GNU_dwo_id
+                                            unit.dwoId = raw?.integer64;
+                                            break;
+                                        case 0x73: // DW_AT_addr_base
+                                        case 0x2133: // DW_AT_GNU_addr_base
+                                            unit.addrBase = v;
+                                            break;
+                                        case 0x1c: // DW_AT_const_value (enumerator or template argument)
+                                            rec.constantValue = v;
+                                            break;
+                                        case DW_AT_name:
+                                            if (v && v.str !== undefined) rec.name = v.str;
+                                            else if (v && v.strx !== undefined) rec.strx = v.strx;
+                                            break;
+                                        case DW_AT_linkage_name:
+                                            if (v && v.str !== undefined) rec.linkageName = v.str;
+                                            else if (v && v.strx !== undefined) rec.linkageStrx = v.strx;
+                                            break;
+                                        case DW_AT_virtuality:
+                                            if (typeof v === "number") rec.virtuality = v;
+                                            break;
+                                        case DW_AT_artificial:
+                                            rec.isArtificial = !!v;
+                                            break;
+                                        case DW_AT_type:
+                                            if (v && v.ref !== undefined) rec.typeRef = v.ref;
+                                            else if (v?.signature) rec.typeSignature = v.signature;
+                                            break;
+                                        case 0x69: // DW_AT_signature: a declaration redirects to its type unit.
+                                            rec.definitionSignature = v?.signature;
+                                            break;
+                                        case DW_AT_abstract_origin:
+                                            if (v && v.ref !== undefined) rec.abstractOriginRef = v.ref;
+                                            break;
+                                        case DW_AT_specification:
+                                            if (v && v.ref !== undefined) rec.specificationRef = v.ref;
+                                            break;
+                                        case DW_AT_byte_size:
+                                            if (typeof v === "number") rec.byteSize = v;
+                                            break;
+                                        case DW_AT_encoding:
+                                            if (typeof v === "number") rec.encoding = v;
+                                            break;
+                                        case 0x6d: // DW_AT_enum_class
+                                            rec.enumClass = !!v;
+                                            break;
+                                        case DW_AT_location:
+                                            if (v && v.block && v.block.length >= 1) {
+                                                rec.hasAddr = false;
+                                                if (addrSize === 4 && v.block[0] === 0x03 && v.block.length === 5) {
+                                                    rec.address = v.block.readUInt32LE(1);
                                                     rec.hasAddr = true;
+                                                } else if ([0xa1, 0xfb].includes(v.block[0])) {
+                                                    const cursor = { p: 1 };
+                                                    const index = readULEB(v.block, cursor);
+                                                    if (cursor.p === v.block.length) {
+                                                        rec.addressIndex = index;
+                                                        rec.hasAddr = true;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        break;
-                                    case DW_AT_declaration:
-                                        rec.isDecl = !!v;
-                                        break;
-                                    case DW_AT_str_offsets_base:
-                                        if (typeof v === "number") strOffsetsBase = v;
-                                        break;
-                                    case DW_AT_data_member_location:
-                                        if (v?.block) rec.memberExpression = Array.from(v.block);
-                                        if (typeof v === "number") {
-                                            rec.memberOffset = v;
-                                        } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
-                                            // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
-                                            // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
-                                            let bp = 1;
-                                            let val = 0,
-                                                sh = 0,
-                                                b2;
-                                            do {
-                                                if (bp >= v.block.length) break;
-                                                b2 = v.block[bp++];
-                                                val += (b2 & 0x7f) * Math.pow(2, sh);
-                                                sh += 7;
-                                            } while (b2 & 0x80);
-                                            if (
-                                                bp === v.block.length &&
-                                                !(b2 & 0x80) &&
-                                                Number.isSafeInteger(val) &&
-                                                sh <= 56
-                                            ) {
-                                                rec.memberOffset = val;
+                                            break;
+                                        case DW_AT_declaration:
+                                            rec.isDecl = !!v;
+                                            break;
+                                        case DW_AT_str_offsets_base:
+                                            if (typeof v === "number") strOffsetsBase = v;
+                                            break;
+                                        case DW_AT_data_member_location:
+                                            if (v?.block) rec.memberExpression = Array.from(v.block);
+                                            if (typeof v === "number") {
+                                                rec.memberOffset = v;
+                                            } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
+                                                // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
+                                                // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
+                                                let bp = 1;
+                                                let val = 0,
+                                                    sh = 0,
+                                                    b2;
+                                                do {
+                                                    if (bp >= v.block.length) break;
+                                                    b2 = v.block[bp++];
+                                                    val += (b2 & 0x7f) * Math.pow(2, sh);
+                                                    sh += 7;
+                                                } while (b2 & 0x80);
+                                                if (
+                                                    bp === v.block.length &&
+                                                    !(b2 & 0x80) &&
+                                                    Number.isSafeInteger(val) &&
+                                                    sh <= 56
+                                                ) {
+                                                    rec.memberOffset = val;
+                                                }
                                             }
-                                        }
-                                        if (!Number.isSafeInteger(rec.memberOffset) || rec.memberOffset < 0) {
-                                            delete rec.memberOffset;
-                                            rec.memberLocationUnsupported = true;
-                                        }
-                                        break;
-                                    case DW_AT_bit_size:
-                                        if (typeof v === "number") rec.bitSize = v;
-                                        break;
-                                    case DW_AT_bit_offset:
-                                        if (typeof v === "number") rec.bitOffset = v;
-                                        break;
-                                    case DW_AT_data_bit_offset:
-                                        if (typeof v === "number") rec.dataBitOffset = v;
-                                        break;
-                                    case DW_AT_count:
-                                        if (typeof v === "number") rec.subrangeCount = v;
-                                        break;
-                                    case DW_AT_upper_bound:
-                                        if (isEmptyUpperBound(raw, formContext.form)) rec.subrangeCount ??= 0;
-                                        else if (typeof v === "number") rec.subrangeUpperBound = v;
-                                        else if (raw?.integer64) rec.subrangeUpperBound = Infinity;
-                                        break;
+                                            if (!Number.isSafeInteger(rec.memberOffset) || rec.memberOffset < 0) {
+                                                delete rec.memberOffset;
+                                                rec.memberLocationUnsupported = true;
+                                            }
+                                            break;
+                                        case DW_AT_bit_size:
+                                            if (typeof v === "number") rec.bitSize = v;
+                                            break;
+                                        case DW_AT_bit_offset:
+                                            if (typeof v === "number") rec.bitOffset = v;
+                                            break;
+                                        case DW_AT_data_bit_offset:
+                                            if (typeof v === "number") rec.dataBitOffset = v;
+                                            break;
+                                        case DW_AT_count:
+                                            if (typeof v === "number") rec.subrangeCount = v;
+                                            break;
+                                        case DW_AT_upper_bound:
+                                            if (isEmptyUpperBound(raw, formContext.form)) rec.subrangeCount ??= 0;
+                                            else if (typeof v === "number") rec.subrangeUpperBound = v;
+                                            else if (raw?.integer64) rec.subrangeUpperBound = Infinity;
+                                            break;
+                                    }
                                 }
-                            }
-                            return rec;
-                        };
-                        const readSkippedAttributes = (cur, ab) => {
-                            let keep = false;
-                            for (const attr of ab.attrs) {
-                                const raw = readFormValue(cur, attr.form, {
-                                    addrSize,
-                                    cuRel,
-                                    sectionBase,
-                                    offsetSize,
-                                    exactInteger: attr.at === 0x1c,
-                                    implicit: attr.implicit
+                                return rec;
+                            };
+                            const readSkippedAttributes = (cur, ab) => {
+                                let keep = false;
+                                for (const attr of ab.attrs) {
+                                    const raw = readFormValue(cur, attr.form, {
+                                        addrSize,
+                                        cuRel,
+                                        sectionBase,
+                                        offsetSize,
+                                        exactInteger: attr.at === 0x1c,
+                                        implicit: attr.implicit
+                                    });
+                                    // Read every form, including indirect/block forms, with the usual validation.
+                                    // Static locals and signature-bearing records retain their original metadata.
+                                    if (
+                                        raw?.signature ||
+                                        (attr.at === DW_AT_location && hasStaticLocation(raw, addrSize))
+                                    )
+                                        keep = true;
+                                }
+                                return keep;
+                            };
+                            const storeRecord = (dieOff, rec, parentOff) => {
+                                dies.set(dieOff, rec);
+                                journal.keys.push(dieOff);
+                                if (rec.tag === DW_TAG_variable) variableOffsets.push(dieOff);
+                                if (rec.tag === DW_TAG_subprogram) subprogramOffsets.push(dieOff);
+                                if (parentOff === undefined) return;
+                                let siblings = childrenMap.get(parentOff);
+                                if (!siblings) {
+                                    childrenMap.set(parentOff, (siblings = []));
+                                    journal.keys.push(parentOff);
+                                }
+                                siblings.push(dieOff);
+                                parentOf.set(dieOff, parentOff);
+                            };
+                            const cur = { p };
+                            try {
+                                const parentStack = []; // Deferred scope frames; no relationship entry until needed.
+                                while (cur.p < cuEnd) {
+                                    if (++totalDies > MAX_DIES_TOTAL)
+                                        throw Object.assign(new Error("DWARF DIE budget exceeded"), {
+                                            code: "DWARF_BUDGET_EXCEEDED"
+                                        });
+                                    const dieOff = sectionBase + cur.p;
+                                    const code = readULEB(cuBuffer, cur);
+                                    if (code === 0) {
+                                        // 兄弟链结束标记：弹出当前父级
+                                        if (parentStack.length) parentStack.pop();
+                                        continue;
+                                    }
+                                    const ab = abbrev.get(code);
+                                    if (!ab) throw new Error("unknown abbrev code");
+                                    const parent = parentStack[parentStack.length - 1];
+                                    const attrStart = cur.p;
+                                    const skipLocal =
+                                        !retainLocals &&
+                                        parent?.inSubprogram &&
+                                        LOCAL_SCOPES.has(parent.ab.tag) &&
+                                        LOCAL_TAGS.has(ab.tag) &&
+                                        !ab.attrs.some((attr) => UNIT_ATTRIBUTES.has(attr.at));
+                                    let rec;
+                                    try {
+                                        if (!skipLocal) rec = readRecord(cur, ab);
+                                        else if (readSkippedAttributes(cur, ab)) rec = readRecord({ p: attrStart }, ab);
+                                    } catch (error) {
+                                        // The original parser reserves this relationship before reading attributes.
+                                        // Keep malformed type-child counts identical for conservative layout budgets.
+                                        if (!skipLocal && parent) {
+                                            let siblings = childrenMap.get(parent.dieOff);
+                                            if (!siblings) childrenMap.set(parent.dieOff, (siblings = []));
+                                            siblings.push(dieOff);
+                                            parentOf.set(dieOff, parent.dieOff);
+                                            journal.keys.push(parent.dieOff, dieOff);
+                                        }
+                                        throw error;
+                                    }
+                                    unit.strBase = strOffsetsBase;
+                                    if (rec) {
+                                        // Restore only ancestors needed by a kept local/type. Lexical blocks must
+                                        // remain in parentOf for local type identity, even though they have no name.
+                                        let first = parentStack.length;
+                                        while (first > 0 && !dies.has(parentStack[first - 1].dieOff)) first--;
+                                        for (let index = first; index < parentStack.length; index++) {
+                                            const frame = parentStack[index];
+                                            const ancestor = readRecord({ p: frame.attrStart }, frame.ab);
+                                            ancestor.base = frame.base;
+                                            storeRecord(frame.dieOff, ancestor, parentStack[index - 1]?.dieOff);
+                                        }
+                                        rec.base = strOffsetsBase;
+                                        storeRecord(dieOff, rec, parent?.dieOff);
+                                    } else skippedOffsets.push(dieOff);
+                                    if (ab.hasChildren)
+                                        parentStack.push({
+                                            dieOff,
+                                            ab,
+                                            attrStart,
+                                            base: strOffsetsBase,
+                                            inSubprogram: parent?.inSubprogram || ab.tag === DW_TAG_subprogram
+                                        });
+                                }
+                            } catch (e) {
+                                // 全局预算耗尽必须停止继续解析，交由外层回滚当前 CU，而不是吞掉后继续累积内存。
+                                if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
+                                appendDiagnostic(passDiagnostics, {
+                                    code: /unknown DWARF form/.test(e.message)
+                                        ? "DWARF_UNSUPPORTED"
+                                        : "DWARF_CU_INVALID",
+                                    stage: "attributes",
+                                    offset: p,
+                                    message: e.message
                                 });
-                                // Read every form, including indirect/block forms, with the usual validation.
-                                // Static locals and signature-bearing records retain their original metadata.
-                                if (raw?.signature || (attr.at === DW_AT_location && hasStaticLocation(raw, addrSize)))
-                                    keep = true;
-                            }
-                            return keep;
-                        };
-                        const storeRecord = (dieOff, rec, parentOff) => {
-                            dies.set(dieOff, rec);
-                            if (rec.tag === DW_TAG_variable) variableOffsets.push(dieOff);
-                            if (rec.tag === DW_TAG_subprogram) subprogramOffsets.push(dieOff);
-                            if (parentOff === undefined) return;
-                            let siblings = childrenMap.get(parentOff);
-                            if (!siblings) childrenMap.set(parentOff, (siblings = []));
-                            siblings.push(dieOff);
-                            parentOf.set(dieOff, parentOff);
-                        };
-                        const cur = { p };
-                        try {
-                            const parentStack = []; // Deferred scope frames; no relationship entry until needed.
-                            while (cur.p < cuEnd) {
-                                if (++totalDies > MAX_DIES_TOTAL)
-                                    throw Object.assign(new Error("DWARF DIE budget exceeded"), {
-                                        code: "DWARF_BUDGET_EXCEEDED"
-                                    });
-                                const dieOff = sectionBase + cur.p;
-                                const code = readULEB(cuBuffer, cur);
-                                if (code === 0) {
-                                    // 兄弟链结束标记：弹出当前父级
-                                    if (parentStack.length) parentStack.pop();
-                                    continue;
-                                }
-                                const ab = abbrev.get(code);
-                                if (!ab) throw new Error("unknown abbrev code");
-                                const parent = parentStack[parentStack.length - 1];
-                                const attrStart = cur.p;
-                                const skipLocal =
-                                    !retainLocals &&
-                                    parent?.inSubprogram &&
-                                    LOCAL_SCOPES.has(parent.ab.tag) &&
-                                    LOCAL_TAGS.has(ab.tag) &&
-                                    !ab.attrs.some((attr) => UNIT_ATTRIBUTES.has(attr.at));
-                                let rec;
-                                try {
-                                    if (!skipLocal) rec = readRecord(cur, ab);
-                                    else if (readSkippedAttributes(cur, ab)) rec = readRecord({ p: attrStart }, ab);
-                                } catch (error) {
-                                    // The original parser reserves this relationship before reading attributes.
-                                    // Keep malformed type-child counts identical for conservative layout budgets.
-                                    if (!skipLocal && parent) {
-                                        let siblings = childrenMap.get(parent.dieOff);
-                                        if (!siblings) childrenMap.set(parent.dieOff, (siblings = []));
-                                        siblings.push(dieOff);
-                                        parentOf.set(dieOff, parent.dieOff);
-                                    }
-                                    throw error;
-                                }
-                                unit.strBase = strOffsetsBase;
-                                if (rec) {
-                                    // Restore only ancestors needed by a kept local/type. Lexical blocks must
-                                    // remain in parentOf for local type identity, even though they have no name.
-                                    let first = parentStack.length;
-                                    while (first > 0 && !dies.has(parentStack[first - 1].dieOff)) first--;
-                                    for (let index = first; index < parentStack.length; index++) {
-                                        const frame = parentStack[index];
-                                        const ancestor = readRecord({ p: frame.attrStart }, frame.ab);
-                                        ancestor.base = frame.base;
-                                        storeRecord(frame.dieOff, ancestor, parentStack[index - 1]?.dieOff);
-                                    }
-                                    rec.base = strOffsetsBase;
-                                    storeRecord(dieOff, rec, parent?.dieOff);
-                                } else skippedOffsets.push(dieOff);
-                                if (ab.hasChildren)
-                                    parentStack.push({
-                                        dieOff,
-                                        ab,
-                                        attrStart,
-                                        base: strOffsetsBase,
-                                        inSubprogram: parent?.inSubprogram || ab.tag === DW_TAG_subprogram
-                                    });
                             }
                         } catch (e) {
-                            // 全局预算耗尽必须中止整个解析，而不是吞掉后继续下一个 CU 累积内存。
                             if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
                             appendDiagnostic(passDiagnostics, {
-                                code: /unknown DWARF form/.test(e.message) ? "DWARF_UNSUPPORTED" : "DWARF_CU_INVALID",
-                                stage: "attributes",
+                                code: "DWARF_CU_INVALID",
+                                stage: "header",
                                 offset: p,
                                 message: e.message
                             });
                         }
-                    } catch (e) {
-                        if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
+                        p = cuEnd;
+                        journal = null;
+                    }
+                    journal = null;
+                    sectionBase += infoEnd + 1;
+                }
+                position.sectionName = null;
+                for (const unit of units.filter(
+                    (entry) => entry.input === input && (entry.dwoName || entry.dwoNameIndex !== undefined)
+                )) {
+                    unit.dwoName ||= resolveStrx(unit.dwoNameIndex, unit.strBase, unit.offsetSize, unit.strings);
+                    unit.compDir ||= resolveStrx(unit.compDirIndex, unit.strBase, unit.offsetSize, unit.strings);
+                    if (retainLocals) continue; // Reuse companion sections without repeating I/O or decompression.
+                    if (!options.filePath) {
                         appendDiagnostic(passDiagnostics, {
-                            code: "DWARF_CU_INVALID",
-                            stage: "header",
-                            offset: p,
-                            message: e.message
+                            code: "DWARF_COMPANION_MISSING",
+                            stage: "sections",
+                            message: "Split DWARF requires the ELF path and its matching .dwo file"
+                        });
+                        continue;
+                    }
+                    try {
+                        if (inputs.length >= 33) throw new Error("Split DWARF companion count exceeds 32");
+                        const companion = require("./files").readCompanion(
+                            unit,
+                            options.filePath,
+                            budgets.companionBytes - externalBytes
+                        );
+                        if (loaded.has(companion.path)) continue;
+                        loaded.add(companion.path);
+                        companions.push(companion.identity);
+                        externalBytes += companion.buffer.length;
+                        inputs.push({
+                            sections: readSections(companion.buffer, diagnostics, sectionBudget),
+                            filePath: companion.path,
+                            parent: unit
+                        });
+                    } catch (error) {
+                        // A companion over the shared file or section budget ends the parse like any other budget.
+                        if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
+                        if (error.paths) companions.push(...error.paths);
+                        appendDiagnostic(passDiagnostics, {
+                            code: error.code || "DWARF_COMPANION_MISSING",
+                            stage: "sections",
+                            message: error.message
                         });
                     }
-                    p = cuEnd;
-                }
-                sectionBase += infoEnd + 1;
-            }
-            for (const unit of units.filter(
-                (entry) => entry.input === input && (entry.dwoName || entry.dwoNameIndex !== undefined)
-            )) {
-                unit.dwoName ||= resolveStrx(unit.dwoNameIndex, unit.strBase, unit.offsetSize, unit.strings);
-                unit.compDir ||= resolveStrx(unit.compDirIndex, unit.strBase, unit.offsetSize, unit.strings);
-                if (retainLocals) continue; // Reuse companion sections without repeating I/O or decompression.
-                if (!options.filePath) {
-                    appendDiagnostic(passDiagnostics, {
-                        code: "DWARF_COMPANION_MISSING",
-                        stage: "sections",
-                        message: "Split DWARF requires the ELF path and its matching .dwo file"
-                    });
-                    continue;
-                }
-                try {
-                    if (inputs.length >= 33) throw new Error("Split DWARF companion count exceeds 32");
-                    const companion = require("./files").readCompanion(
-                        unit,
-                        options.filePath,
-                        64 * 1024 * 1024 - externalBytes
-                    );
-                    if (loaded.has(companion.path)) continue;
-                    loaded.add(companion.path);
-                    companions.push(companion.identity);
-                    externalBytes += companion.buffer.length;
-                    inputs.push({
-                        sections: readSections(companion.buffer, diagnostics, sectionBudget),
-                        filePath: companion.path,
-                        parent: unit
-                    });
-                } catch (error) {
-                    if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
-                    if (error.paths) companions.push(...error.paths);
-                    appendDiagnostic(passDiagnostics, {
-                        code: error.code || "DWARF_COMPANION_MISSING",
-                        stage: "sections",
-                        message: error.message
-                    });
                 }
             }
+        } catch (error) {
+            if (error.code !== "DWARF_BUDGET_EXCEEDED") throw error;
+            rollbackUnit();
+            partial = { reason: error.message, ...position };
         }
         // Any retained reference to a skipped DIE requires full retention. Most producers never
         // need this retry; it also covers backwards, cross-CU and cyclic origin/specification graphs.
@@ -601,6 +696,7 @@ function _parseDwarfInternal(buffer, options = {}) {
             }
         if (!needsLocals) break;
         retainLocals = true;
+        partial = null;
         dies.clear();
         childrenMap.clear();
         parentOf.clear();
@@ -615,6 +711,43 @@ function _parseDwarfInternal(buffer, options = {}) {
         abbrevBudget.abbrevs = 0;
         abbrevBudget.attrs = 0;
         abbrevCache.clear();
+    }
+
+    if (partial) {
+        // Everything from the stopping point on was dropped: the rest of that section, its later
+        // sections and every later input. A stop while loading companions keeps that input's units.
+        const order = [".debug_info", ".debug_types"];
+        let droppedUnits = 0;
+        let droppedBytes = 0;
+        for (let index = partial.inputIndex; index < inputs.length; index++) {
+            for (const name of order) {
+                const section = inputs[index].sections.get(name);
+                if (!section) continue;
+                let from = 0;
+                if (index === partial.inputIndex) {
+                    if (partial.sectionName === null || order.indexOf(name) < order.indexOf(partial.sectionName))
+                        continue;
+                    if (name === partial.sectionName) from = partial.offset;
+                }
+                droppedUnits += countUnits(section.data, from, section.size);
+                droppedBytes += section.size - from;
+            }
+        }
+        const budget =
+            /^DWARF (.+) budget exceeded$/.exec(partial.reason)?.[1] ||
+            (/companion/i.test(partial.reason) ? "companion" : "safety");
+        const loaded = units.length;
+        const total = loaded + droppedUnits;
+        partial = { budget, loadedUnits: loaded, droppedUnits, droppedBytes };
+        // Bypass the diagnostic cap: the diagnostic budget itself may be what stopped the parse.
+        diagnostics.unshift({
+            code: "DWARF_PARTIAL",
+            stage: "parse",
+            message: `DWARF types are partial: ${loaded} of ${total} units loaded; parsing stopped at the ${budget} budget`,
+            i18nKey: "elfDiag.partial",
+            i18nParams: { loaded, total, budget },
+            ...partial
+        });
     }
 
     for (const input of inputs.filter((entry) => entry.parent)) {
@@ -794,6 +927,6 @@ function _parseDwarfInternal(buffer, options = {}) {
         });
     }
 
-    return { dies, childrenMap, parentOf, resolveStrx, variables, subprograms, diagnostics, companions };
+    return { dies, childrenMap, parentOf, resolveStrx, variables, subprograms, diagnostics, companions, partial };
 }
-module.exports = { parseDwarfInternal: _parseDwarfInternal };
+module.exports = { parseDwarfInternal: _parseDwarfInternal, DEFAULT_BUDGETS };

@@ -750,6 +750,8 @@ module.exports = Object.freeze({
     "live.runtimeAddressRejected": "运行时读取仅允许 ELF 可写 RAM 段",
     "live.runtimeAddressRejectedNames": "运行时读取已拒绝非 ELF 可写 RAM 变量：{names}",
     "live.runtimeBudgetExceeded": "运行时读取超过每周期安全预算（4096 字节 / 32 次读取）",
+    "live.runtimeBudgetExceededNames":
+        "运行中采样已跳过超过每周期预算（4096 字节 / 32 次读取）的变量，暂停目标后可读取：{names}",
     "live.dapSampling": "芯片已暂停，正通过调试器采样",
     "live.dapReading": "芯片已暂停，正在读取当前值…",
     "live.dapReady": "芯片已暂停，当前值已读取",
@@ -858,6 +860,9 @@ module.exports = Object.freeze({
     "elfDiag.elfSectionBounds": "ELF 节头表越界或条目大小无效。",
     "elfDiag.elfSymbols": "未找到符号表，请使用未剥离符号的 Debug 构建。",
     "elfDiag.code.DWARF_BUDGET_EXCEEDED": "DWARF 解析超过安全预算。",
+    "elfDiag.code.DWARF_PARTIAL": "仅加载了固件的部分 DWARF 类型信息。",
+    "elfDiag.partial":
+        "已加载 {loaded} / {total} 个编译单元的类型信息，解析在 {budget} 安全预算处停止；其余编译单元的变量没有类型信息，不能观察或写入。",
     "elfDiag.code.DWARF_TYPE_CYCLE": "类型布局包含无法安全展开的循环。",
     "elfDiag.code.DWARF_MISSING": "缺少必要的 DWARF 调试信息。",
     "elfDiag.code.DWARF_UNSUPPORTED": "此 DWARF 格式或编码暂不受支持。",

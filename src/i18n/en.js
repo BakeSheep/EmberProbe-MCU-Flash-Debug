@@ -780,6 +780,8 @@ module.exports = Object.freeze({
     "live.runtimeAddressRejected": "Runtime reads are restricted to writable ELF RAM sections",
     "live.runtimeAddressRejectedNames": "Runtime reads rejected outside writable ELF RAM: {names}",
     "live.runtimeBudgetExceeded": "Runtime read exceeds the per-cycle safety budget (4096 bytes / 32 reads)",
+    "live.runtimeBudgetExceededNames":
+        "Running sampling skipped items over the per-cycle budget (4096 bytes / 32 reads); pause the target to read them: {names}",
     "live.dapSampling": "Target paused; sampling through debugger",
     "live.dapReading": "Target paused; reading the current values…",
     "live.dapReady": "Target paused; current values have been read",
@@ -893,6 +895,9 @@ module.exports = Object.freeze({
     "elfDiag.elfSectionBounds": "The ELF section table is out of bounds or its entry size is invalid.",
     "elfDiag.elfSymbols": "No symbol table was found. Use an unstripped Debug build.",
     "elfDiag.code.DWARF_BUDGET_EXCEEDED": "DWARF parsing exceeded a safety budget.",
+    "elfDiag.code.DWARF_PARTIAL": "DWARF types were loaded for only part of the firmware.",
+    "elfDiag.partial":
+        "Types were loaded for {loaded} of {total} compilation units; parsing stopped at the {budget} safety budget. Variables from the remaining units have no type information and cannot be watched or written.",
     "elfDiag.code.DWARF_TYPE_CYCLE": "The type layout contains a cycle that cannot be expanded safely.",
     "elfDiag.code.DWARF_MISSING": "Required DWARF debug information is missing.",
     "elfDiag.code.DWARF_UNSUPPORTED": "This DWARF format or encoding is not supported.",

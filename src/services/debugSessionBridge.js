@@ -4,10 +4,13 @@ const { isSupportedDebugSession } = require("./debugConfiguration");
 
 const MIN_DAP_INTERVAL_MS = 250;
 const MAX_READ_BYTES = 4096;
+// Memory is frozen while paused, so a larger fixed object is read as consecutive DAP blocks and stays
+// consistent. The cap matches the adapter's readMemory limit and the runtime object size limit.
+const MAX_PAUSED_ITEM_BYTES = 65536;
 const SNAPSHOT_INITIAL_DELAY_MS = 180;
 const SNAPSHOT_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000]);
-// A paused snapshot is one-shot rather than a sampling cycle. The 4096-byte / 32-read budget still
-// bounds its work; this limit only stops a stalled adapter, and resuming cancels the read anyway.
+// A paused snapshot is one-shot rather than a sampling cycle. Runtime objects keep their own
+// 4096-byte / 32-read budget; this limit only stops a stalled adapter, and resuming cancels the read anyway.
 const PAUSED_RUNTIME_READ_MS = 5000;
 const CONTROL_TIMEOUT_MS = 5000;
 
@@ -912,26 +915,33 @@ class DebugSessionBridge {
                 });
         };
         const fixed = items.filter((item) => !item.runtimeLayout);
-        const groups = mergeReadPlan(fixed);
-        const budget = {
-            bytes: groups.reduce((sum, group) => sum + group.size, 0),
-            commands: groups.length,
-            deadline: Date.now() + PAUSED_RUNTIME_READ_MS
-        };
+        for (const item of fixed.filter((entry) => Number(entry.size) > MAX_PAUSED_ITEM_BYTES))
+            samples.push({
+                name: item.name,
+                bytes: null,
+                diagnostic: {
+                    code: "LIVE_READ_BUDGET_EXCEEDED",
+                    message: `Paused read exceeds the ${MAX_PAUSED_ITEM_BYTES}-byte object limit`
+                }
+            });
+        // Groups merge only touching ranges, so a larger group adds no bytes, only fewer requests.
+        const groups = mergeReadPlan(
+            fixed.filter((entry) => Number(entry.size) <= MAX_PAUSED_ITEM_BYTES),
+            MAX_PAUSED_ITEM_BYTES
+        );
+        // Fixed reads have no per-snapshot budget, so runtime objects start with their full one.
+        const budget = { bytes: 0, commands: 0, deadline: Date.now() + PAUSED_RUNTIME_READ_MS };
         // Memory is frozen while paused: blocks read once (fixed groups first) serve every runtime
         // object, so a pointer word or an object shared by several watches costs one DAP request.
         const cache = [];
         for (const group of groups) {
-            guard();
-            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
-                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
-            const data = await this._readBlock(session, group.address, group.size);
-            if (expectedEpoch !== null && expectedEpoch !== this.epoch)
-                throw Object.assign(new Error("DAP memory read was cancelled by a target state change"), {
-                    code: "DEBUG_STATE_CHANGED"
-                });
+            const data = new Uint8Array(group.size);
+            for (let offset = 0; offset < group.size; offset += MAX_READ_BYTES) {
+                guard();
+                const count = Math.min(MAX_READ_BYTES, group.size - offset);
+                data.set(await this._readBlock(session, group.address + offset, count), offset);
+                guard();
+            }
             for (const item of group.items) {
                 const offset = item.address - group.address;
                 const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
@@ -1122,5 +1132,6 @@ module.exports = {
     SNAPSHOT_RETRY_DELAYS_MS,
     CONTROL_TIMEOUT_MS,
     mergeReadPlan,
+    MAX_PAUSED_ITEM_BYTES,
     unwrapResponse
 };
