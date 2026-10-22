@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing stable tag to publish or retry, for example v1.2.3
+        description: Existing release tag to publish or retry, for example v1.2.3 or v1.2.3-beta.1
         required: true
         type: string
       rebuild:

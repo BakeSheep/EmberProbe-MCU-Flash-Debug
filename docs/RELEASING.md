@@ -29,7 +29,7 @@ gh run watch
 
 确认验证与质量检查通过后，提交五个版本文件及文档删除；创建标签前检查暂存区。两个 push 都须成功，再用 `gh run watch` 等待对应 Release 工作流完成。
 
-标签必须严格使用 `vX.Y.Z`，并与五个文件的版本引用一致。预发布标签（例如 `v0.8.1-beta.1`）会被拒绝，避免意外覆盖稳定渠道。发布时不要在本地运行 `npm run package`；CI 构建并上传正式 VSIX，本地打包仅用于开发验证。
+标签必须使用 `vX.Y.Z`，或下文的预发布格式 `vX.Y.Z-alpha.N` / `-beta.N` / `-rc.N`（N 从 1 开始），并与五个文件的版本引用一致；其他后缀（如 `-preview.1`、`-beta`、`+build.1`）会被拒绝。发布时不要在本地运行 `npm run package`；CI 构建并上传正式 VSIX，本地打包仅用于开发验证。
 
 工作流依次执行：
 
@@ -37,6 +37,31 @@ gh run watch
 2. 在 Windows 构建 libwdi 与 helper，验证 WDK 二进制的 Microsoft 签名，将 libwdi 的 SHA-256 编入 helper，并生成两个未签名原生文件的 SHA-256 清单。
 3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
 4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
+
+## 发布预发布版本
+
+预发布版本直接从 `master` 打标签，不另建长期分支。只有在预发布收尾期间 `master` 已开始下一版本功能时，才从预发布标签切出 `release/X.Y` 短期分支，修复同时合回 `master`，正式版发布后不再维护该分支。
+
+以 `0.9.0` 为例，依次发布 `0.9.0-beta.1`、`0.9.0-beta.2`、`0.9.0-rc.1`，最后发布 `0.9.0`。每个预发布版本的步骤与稳定版本相同，只替换版本号：
+
+```powershell
+npm run release:prepare -- 0.9.0-beta.1 --date 2026-10-22
+node scripts/validate-release.js v0.9.0-beta.1
+npm run check
+npm run quality
+git add -A docs package.json package-lock.json README.md README_EN.md CHANGELOG.md
+git commit -m "Release EmberProbe v0.9.0-beta.1"
+git tag -a v0.9.0-beta.1 -m "EmberProbe v0.9.0-beta.1"
+git push origin master
+git push origin v0.9.0-beta.1
+gh run watch
+```
+
+- 预发布标签同样触发 Release 工作流并执行全部门禁；GitHub Release 会标记为 Pre-release，不占用 “Latest”，稳定版用户默认看不到。
+- 每个预发布版本都需要非空的 `## [Unreleased]`，`release:prepare` 会将其移入 `## [0.9.0-beta.1]` 等独立章节。
+- 发布正式版 `0.9.0` 时，`release:prepare` 会把 `Unreleased` 与全部 `0.9.0-*` 章节按新到旧合并为一个 `## [0.9.0]` 章节，并删除这些预发布章节，让稳定版用户在一处看到完整变化。若 `rc` 之后没有新改动，`Unreleased` 可以为空。各预发布版本的说明仍保留在对应的 GitHub Release 中。
+- 预发布版本也会更新 README 中的当前版本号；正式版发布时恢复为稳定版本号。
+- 当前只通过 GitHub Release 分发 VSIX。VS Code Marketplace 不接受 `-beta.N` 这类版本号；如以后上架 Marketplace，需要改用 `vsce publish --pre-release` 与奇偶 minor 版本方案。
 
 ## 发布说明
 

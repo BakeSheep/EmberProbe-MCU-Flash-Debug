@@ -57,4 +57,4 @@ Use short, imperative subjects, such as `Fix debug session routing`. Reserve `Re
 
 ## Release Process
 
-When preparing a requested release, follow `docs/RELEASING.md`. Start with a non-empty `CHANGELOG.md` Unreleased section; use `release:prepare` to synchronize the five version files and validate them before the release commit. Stable `vX.Y.Z` tags trigger CI to build and publish the VSIX; never re-point a published tag or substitute a locally packaged release artifact. Preserve the bilingual release-note format documented in the release guide.
+When preparing a requested release, follow `docs/RELEASING.md`. Start with a non-empty `CHANGELOG.md` Unreleased section; use `release:prepare` to synchronize the five version files and validate them before the release commit. Stable `vX.Y.Z` tags and prerelease `vX.Y.Z-alpha.N`/`-beta.N`/`-rc.N` tags trigger CI to build and publish the VSIX (prereleases as GitHub Pre-releases); never re-point a published tag or substitute a locally packaged release artifact. Preserve the bilingual release-note format documented in the release guide.

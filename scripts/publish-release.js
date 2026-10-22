@@ -1,11 +1,14 @@
 "use strict";
 const { execFileSync } = require("child_process");
+const { parseReleaseTag } = require("./validate-release");
 function publishRelease(
     tag,
     run = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
     options = {}
 ) {
-    if (!/^v\d+\.\d+\.\d+$/.test(tag || "")) throw new Error("A stable release tag is required");
+    const { prerelease } = parseReleaseTag(tag);
+    // Prereleases stay off the "Latest" slot so stable users are not offered them.
+    const channel = prerelease ? ["--prerelease"] : [];
     let release = null;
     try {
         release = JSON.parse(run(["release", "view", tag, "--json", "isDraft"]));
@@ -17,8 +20,20 @@ function publishRelease(
         run(["release", "upload", tag, "dist/emberprobe.vsix", "--clobber"]);
         return { published: true, replaced: true };
     }
-    if (release) run(["release", "edit", tag, "--draft", "--title", "EmberProbe " + tag]);
-    else run(["release", "create", tag, "--verify-tag", "--draft", "--generate-notes", "--title", "EmberProbe " + tag]);
+    if (release) run(["release", "edit", tag, "--draft", ...channel, "--title", "EmberProbe " + tag]);
+    else {
+        run([
+            "release",
+            "create",
+            tag,
+            "--verify-tag",
+            "--draft",
+            ...channel,
+            "--generate-notes",
+            "--title",
+            "EmberProbe " + tag
+        ]);
+    }
     run(["release", "upload", tag, "dist/emberprobe.vsix", "--clobber"]);
     run(["release", "edit", tag, "--draft=false"]);
     return { published: true };

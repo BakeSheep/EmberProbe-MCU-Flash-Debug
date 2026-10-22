@@ -2,23 +2,28 @@
 const fs = require("fs");
 const path = require("path");
 
-const STABLE_TAG_RE = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
+// Stable X.Y.Z, or a numbered alpha/beta/rc prerelease of it.
+const RELEASE_VERSION_RE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha|beta|rc)\.[1-9]\d*)?$/;
 
 function releaseError(code, message, details) {
     return Object.assign(new Error(message), { code, details });
 }
 
-function validateRelease(root, value) {
+function parseReleaseTag(value) {
     const tag = String(value || "").trim();
-    const match = STABLE_TAG_RE.exec(tag);
-    if (!match) {
+    const version = tag.slice(1);
+    if (!tag.startsWith("v") || !RELEASE_VERSION_RE.test(version)) {
         throw releaseError(
             "INVALID_RELEASE_TAG",
-            `Expected a stable release tag like v1.2.3, received ${tag || "(empty)"}`
+            `Expected a release tag like v1.2.3 or v1.2.3-beta.1, received ${tag || "(empty)"}`
         );
     }
+    return { tag, version, prerelease: version.includes("-") };
+}
 
-    const version = match[1];
+function validateRelease(root, value) {
+    const release = parseReleaseTag(value);
+    const { tag, version } = release;
     const readText = (file) => fs.readFileSync(path.join(root, file), "utf8");
     const readJson = (file) => JSON.parse(readText(file));
     const pkg = readJson("package.json");
@@ -52,17 +57,18 @@ function validateRelease(root, value) {
         );
     }
 
-    return { tag, version };
+    return release;
 }
 
 if (require.main === module) {
     try {
         const result = validateRelease(path.resolve(__dirname, ".."), process.argv[2] || process.env.GITHUB_REF_NAME);
-        console.log(`Validated release ${result.tag} for version ${result.version}`);
+        const kind = result.prerelease ? "prerelease" : "release";
+        console.log(`Validated ${kind} ${result.tag} for version ${result.version}`);
     } catch (error) {
         console.error(`${error.code || "RELEASE_VALIDATION_ERROR"}: ${error.message}`);
         process.exitCode = 1;
     }
 }
 
-module.exports = { validateRelease };
+module.exports = { RELEASE_VERSION_RE, parseReleaseTag, validateRelease };

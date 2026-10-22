@@ -2,14 +2,12 @@
 const fs = require("fs");
 const path = require("path");
 const { cleanDocs } = require("./docs-cleanup");
-
-const VERSION_RE =
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const { RELEASE_VERSION_RE } = require("./validate-release");
 
 function validateVersion(value) {
     const version = String(value || "").trim();
-    if (!VERSION_RE.test(version)) {
-        throw Object.assign(new Error(`Invalid semantic version: ${value || "(empty)"}`), {
+    if (!RELEASE_VERSION_RE.test(version)) {
+        throw Object.assign(new Error(`Invalid release version (X.Y.Z or X.Y.Z-beta.N): ${value || "(empty)"}`), {
             code: "INVALID_VERSION"
         });
     }
@@ -68,20 +66,39 @@ function prepareRelease(root, nextVersion, options = {}) {
         )
     );
 
-    const changelog = read("CHANGELOG.md");
+    let changelog = read("CHANGELOG.md");
     if (changelog.includes(`## [${version}]`)) {
         throw Object.assign(new Error(`CHANGELOG already contains ${version}`), { code: "VERSION_EXISTS" });
     }
-    const unreleased = changelog.match(/## \[Unreleased\]\s*([\s\S]*?)(?=\n## \[)/);
+    // A stable release absorbs its own prerelease sections so the stable entry lists every change.
+    const prereleases = [];
+    if (!version.includes("-")) {
+        const escapedVersion = version.replace(/\./g, "\\.");
+        const section = new RegExp(
+            `\\n## \\[(${escapedVersion}-[^\\]]+)\\] - \\d{4}-\\d{2}-\\d{2}([\\s\\S]*?)(?=\\n## \\[|$)`,
+            "gu"
+        );
+        changelog = changelog.replace(section, (_match, name, body) => {
+            prereleases.push({ name, notes: body.trim() });
+            return "";
+        });
+    }
+    // Capture right after the heading: a leading \s* would eat the newline before the next
+    // heading and pull that whole section into an empty Unreleased section.
+    const unreleasedSection = /## \[Unreleased\]([\s\S]*?)(?=\n## \[|$)/;
+    const unreleased = changelog.match(unreleasedSection);
     if (!unreleased) {
         throw Object.assign(new Error("CHANGELOG has no Unreleased section"), { code: "UNRELEASED_MISSING" });
     }
-    const notes = unreleased[1].trim();
+    const notes = [unreleased[1].trim(), ...prereleases.map((entry) => entry.notes)].filter(Boolean).join("\n\n");
     if (!notes) {
         throw Object.assign(new Error("CHANGELOG Unreleased section is empty"), { code: "UNRELEASED_EMPTY" });
     }
     const releaseBlock = `## [Unreleased]\n\n## [${version}] - ${date}\n\n${notes}\n`;
-    add("CHANGELOG.md", changelog.replace(/## \[Unreleased\]\s*[\s\S]*?(?=\n## \[)/, releaseBlock));
+    add(
+        "CHANGELOG.md",
+        changelog.replace(unreleasedSection, () => releaseBlock)
+    );
 
     const changed = [];
     for (const [file, content] of files) {
@@ -91,7 +108,14 @@ function prepareRelease(root, nextVersion, options = {}) {
         if (!options.dryRun) fs.writeFileSync(path.join(root, file), content);
     }
     const docsRemoved = options.cleanDocs === false ? [] : cleanDocs(root, { dryRun: !!options.dryRun });
-    return { version, date, dryRun: !!options.dryRun, changed, docsRemoved };
+    return {
+        version,
+        date,
+        dryRun: !!options.dryRun,
+        changed,
+        docsRemoved,
+        mergedPrereleases: prereleases.map((entry) => entry.name)
+    };
 }
 
 function parseCli(argv) {
@@ -117,6 +141,9 @@ if (require.main === module) {
         console.log(
             `${result.dryRun ? "Would update" : "Updated"} ${result.changed.join(", ")} for ${result.version} (${result.date})`
         );
+        if (result.mergedPrereleases.length) {
+            console.log(`Merged CHANGELOG sections: ${result.mergedPrereleases.join(", ")}`);
+        }
         if (result.docsRemoved.length) {
             console.log(`${result.dryRun ? "Would remove" : "Removed"} docs: ${result.docsRemoved.join(", ")}`);
         }

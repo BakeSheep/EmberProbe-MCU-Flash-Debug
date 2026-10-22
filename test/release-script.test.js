@@ -73,6 +73,39 @@ try {
     assert.deepStrictEqual(skipped.docsRemoved, []);
     assert.ok(fs.existsSync(audit), "--no-clean-docs keeps docs");
     require("../scripts/validate-release").validateRelease(temp, "v1.4.0");
+
+    const readChangelog = () => fs.readFileSync(path.join(temp, "CHANGELOG.md"), "utf8");
+    const addUnreleased = (line) =>
+        fs.writeFileSync(
+            path.join(temp, "CHANGELOG.md"),
+            readChangelog().replace("## [Unreleased]", `## [Unreleased]\n\n${line}`)
+        );
+    addUnreleased("- beta one");
+    prepareRelease(temp, "1.5.0-beta.1", { date: "2026-08-01", cleanDocs: false });
+    addUnreleased("- beta two");
+    prepareRelease(temp, "1.5.0-beta.2", { date: "2026-08-02", cleanDocs: false });
+    assert.ok(fs.readFileSync(path.join(temp, "README.md"), "utf8").includes("`1.5.0-beta.2`"));
+    require("../scripts/validate-release").validateRelease(temp, "v1.5.0-beta.2");
+
+    const stable = prepareRelease(temp, "1.5.0", { date: "2026-08-03", cleanDocs: false });
+    assert.deepStrictEqual(stable.mergedPrereleases, ["1.5.0-beta.2", "1.5.0-beta.1"]);
+    const merged = readChangelog();
+    assert.ok(!merged.includes("1.5.0-beta"), "stable release absorbs its prerelease sections");
+    assert.ok(merged.includes("## [1.5.0] - 2026-08-03\n\n- beta two\n\n- beta one\n\n## [1.4.0]"));
+    assert.ok(fs.readFileSync(path.join(temp, "README_EN.md"), "utf8").includes("`1.5.0`"));
+    require("../scripts/validate-release").validateRelease(temp, "v1.5.0");
+
+    assert.throws(
+        () => prepareRelease(temp, "1.6.0", { date: "2026-08-04", cleanDocs: false }),
+        (error) => error.code === "UNRELEASED_EMPTY"
+    );
+    for (const version of ["2.0.0-preview.1", "2.0.0-beta", "2.0.0+build.1"]) {
+        assert.throws(
+            () => validateVersion(version),
+            (error) => error.code === "INVALID_VERSION",
+            version
+        );
+    }
     console.log("Release script tests passed");
 } finally {
     fs.rmSync(temp, { recursive: true, force: true });

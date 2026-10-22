@@ -25,17 +25,30 @@ try {
     writeFixture(temp);
     assert.deepStrictEqual(validateRelease(temp, "v1.2.3"), {
         tag: "v1.2.3",
-        version: "1.2.3"
+        version: "1.2.3",
+        prerelease: false
     });
 
-    assert.throws(
-        () => validateRelease(temp, "1.2.3"),
-        (error) => error.code === "INVALID_RELEASE_TAG"
-    );
+    for (const tag of ["1.2.3", "v1.2", "v1.2.3-beta", "v1.2.3-beta.0", "v1.2.3-preview.1", "v1.2.3+build.1"]) {
+        assert.throws(
+            () => validateRelease(temp, tag),
+            (error) => error.code === "INVALID_RELEASE_TAG",
+            tag
+        );
+    }
     assert.throws(
         () => validateRelease(temp, "v1.2.3-beta.1"),
-        (error) => error.code === "INVALID_RELEASE_TAG"
+        (error) => error.code === "RELEASE_VERSION_MISMATCH"
     );
+    for (const version of ["1.2.3-alpha.1", "1.2.3-beta.2", "1.2.3-rc.10"]) {
+        writeFixture(temp, version);
+        assert.deepStrictEqual(validateRelease(temp, `v${version}`), {
+            tag: `v${version}`,
+            version,
+            prerelease: true
+        });
+    }
+    writeFixture(temp);
     assert.throws(
         () => validateRelease(temp, "v1.2.4"),
         (error) => error.code === "RELEASE_VERSION_MISMATCH"

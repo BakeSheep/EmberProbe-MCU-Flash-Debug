@@ -20,6 +20,7 @@ for (const job of Object.values(ci.jobs)) {
     assert.ok(job["timeout-minutes"] <= 20);
     assert.ok(job.steps.some((s) => s.if === "failure()" && s.with?.["retention-days"] === 14));
 }
+assert.deepStrictEqual(release.on.push.tags, ["v*.*.*"], "tag trigger must cover stable and prerelease tags");
 assert.strictEqual(release.jobs.gates.uses, "./.github/workflows/ci.yml");
 assert.deepStrictEqual(release.jobs.build.needs, ["gates", "driver-helper"]);
 assert.ok(release.jobs["driver-helper"].steps.some((s) => s.run === "node scripts/verify-driver-helper.js"));
@@ -113,5 +114,30 @@ assert.throws(
         }),
     /403/
 );
-assert.throws(() => publishRelease("main"), /stable/);
+for (const [tag, prerelease] of [
+    ["v1.2.3", false],
+    ["v1.2.3-rc.1", true]
+]) {
+    for (const state of ["missing", "draft"]) {
+        const calls = [];
+        publishRelease(tag, (args) => {
+            calls.push(args);
+            if (args[1] === "view") {
+                if (state === "missing") throw new Error("release not found");
+                return '{"isDraft":true}';
+            }
+            return "";
+        });
+        const prepare = calls.find((args) => args[1] === (state === "missing" ? "create" : "edit"));
+        assert.strictEqual(prepare.includes("--prerelease"), prerelease, `${tag} ${state}`);
+    }
+}
+assert.throws(
+    () => publishRelease("main"),
+    (error) => error.code === "INVALID_RELEASE_TAG"
+);
+assert.throws(
+    () => publishRelease("v1.2.3-nightly.1"),
+    (error) => error.code === "INVALID_RELEASE_TAG"
+);
 console.log("Workflow and release behavior tests passed");
