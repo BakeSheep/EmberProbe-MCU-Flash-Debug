@@ -841,6 +841,9 @@ module.exports = Object.freeze({
     "elfDiag.elfSectionBounds": "ELF 节头表越界或条目大小无效。",
     "elfDiag.elfSymbols": "未找到符号表，请使用未剥离符号的 Debug 构建。",
     "elfDiag.code.DWARF_BUDGET_EXCEEDED": "DWARF 解析超过安全预算。",
+    "elfDiag.code.DWARF_PARTIAL": "仅加载了固件的部分 DWARF 类型信息。",
+    "elfDiag.partial":
+        "已加载 {loaded} / {total} 个编译单元的类型信息，解析在 {budget} 安全预算处停止；其余编译单元的变量没有类型信息，不能观察或写入。",
     "elfDiag.code.DWARF_TYPE_CYCLE": "类型布局包含无法安全展开的循环。",
     "elfDiag.code.DWARF_MISSING": "缺少必要的 DWARF 调试信息。",
     "elfDiag.code.DWARF_UNSUPPORTED": "此 DWARF 格式或编码暂不受支持。",

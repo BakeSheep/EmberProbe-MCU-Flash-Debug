@@ -17,7 +17,9 @@ const _parseCache = new WeakMap();
 
 function _parseDwarfCached(buffer, options = {}) {
     const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-    let parsed = options.filePath ? undefined : _parseCache.get(buf);
+    // Test budgets change the result, so such parses never enter or read the shared cache.
+    const cacheable = !options.filePath && !options.budgets;
+    let parsed = cacheable ? _parseCache.get(buf) : undefined;
     if (parsed === undefined) {
         parsed = _parseDwarfInternal(buf, options);
         let symbols = [];
@@ -28,7 +30,7 @@ function _parseDwarfCached(buffer, options = {}) {
             // Synthetic or stripped DWARF can still be inspected without a symbol table.
         }
         parsed = { ...bindVariableSymbols(parsed, symbols), symbols };
-        if (!options.filePath) _parseCache.set(buf, parsed);
+        if (cacheable) _parseCache.set(buf, parsed);
     }
     return parsed;
 }
