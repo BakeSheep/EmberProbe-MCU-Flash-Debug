@@ -20,6 +20,8 @@ const root = path.resolve(__dirname, "..");
 const results = path.join(root, "test-results");
 const wslEnv = { ...process.env, WSL_UTF8: "1" };
 const attached = new Set();
+/** @type {import("child_process").ChildProcess | null} */
+let wslHold = null;
 
 function run(command, args, options = {}) {
     return new Promise((resolve) => {
@@ -54,7 +56,38 @@ function detach(profile) {
     if (result.code !== 0) console.error(`usbipd detach failed for ${profile.name}: ${result.output.trim()}`);
 }
 
+function runningDistros() {
+    return capture("wsl.exe", ["-l", "--running", "-q"])
+        .stdout.split(/\r?\n/u)
+        .map((line) => line.replace(/\0/gu, "").trim().toLowerCase())
+        .filter(Boolean);
+}
+
+// usbipd attaches only to a running WSL 2 distribution, and WSL stops an idle one while the Windows
+// half of a profile runs. Hold a session open; `cat` exits when its stdin closes, so the session
+// ends with this process even if it is killed.
+async function holdWsl(options) {
+    if (wslHold && wslHold.exitCode === null && wslHold.signalCode === null) return;
+    wslHold = spawn("wsl.exe", ["-d", options.distro, "--exec", "cat"], {
+        stdio: ["pipe", "ignore", "ignore"],
+        env: wslEnv,
+        windowsHide: true
+    });
+    wslHold.once("error", (error) => console.error(`wsl.exe: ${error.message}`));
+    for (let attempt = 0; attempt < 20; attempt++) {
+        if (runningDistros().includes(options.distro.toLowerCase())) return;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new Error(`WSL distribution ${options.distro} did not start`);
+}
+
+function releaseWsl() {
+    wslHold?.stdin?.end();
+    wslHold = null;
+}
+
 async function attach(options, profile) {
+    await holdWsl(options);
     const result = capture("usbipd", ["attach", "--wsl", ...usbSelector(profile)]);
     if (result.code !== 0) throw new Error(`usbipd attach failed: ${result.output.trim()}`);
     attached.add(profile);
@@ -165,6 +198,7 @@ async function main() {
     const wslScript = toWslPath(path.join(root, "scripts/hil-wsl.sh"));
     let wslWork = "";
     if (platforms.includes("linux")) {
+        await holdWsl(options);
         const home = capture("wsl.exe", ["-d", options.distro, "--exec", "printenv", "HOME"]).stdout.trim();
         wslWork = (options["wsl-dir"] || "$HOME/emberprobe-hil").replace(/^\$HOME/u, home);
     }
@@ -247,14 +281,21 @@ async function main() {
     if (matrix.some((row) => !row.passed)) process.exitCode = 1;
 }
 
-// Never leave a probe attached to WSL: Windows would lose it until a manual detach.
-process.once("SIGINT", () => {
-    for (const profile of attached) detach(profile);
-    process.exit(130);
-});
+if (require.main === module) {
+    // Never leave a probe attached to WSL: Windows would lose it until a manual detach.
+    process.once("SIGINT", () => {
+        for (const profile of attached) detach(profile);
+        releaseWsl();
+        process.exit(130);
+    });
 
-main().catch((error) => {
-    for (const profile of attached) detach(profile);
-    console.error(error.message);
-    process.exitCode = 1;
-});
+    main()
+        .catch((error) => {
+            for (const profile of attached) detach(profile);
+            console.error(error.message);
+            process.exitCode = 1;
+        })
+        .finally(releaseWsl);
+}
+
+module.exports = { holdWsl, releaseWsl, runningDistros };

@@ -99,7 +99,7 @@ Set `EMBERPROBE_HIL_CONFIRM=YES`, `RUNTIME_BOARD_ELF`, `RUNTIME_BOARD_GDB`, `RUN
 
 **Every profile erases and programs its target**, so use dedicated boards. Peripheral writes and the variable writes change the running firmware's state briefly; choose targets that cannot actuate hardware.
 
-`npm run test:hil:matrix` (Windows only) runs each profile on Windows, attaches the same probe to WSL2 with `usbipd attach --wsl`, repeats the profile under Linux with Xvfb, and always runs `usbipd detach` afterwards, including after a failure or Ctrl+C. The WSL run uses a mirror of this checkout under `$HOME/emberprobe-hil` (`--wsl-dir` overrides it), because the Windows `node_modules` holds Windows binaries; the mirror is refreshed and bundled on each matrix run and its `npm ci` is repeated only when `package-lock.json` changes.
+`npm run test:hil:matrix` (Windows only) runs each profile on Windows, attaches the same probe to WSL2 with `usbipd attach --wsl`, repeats the profile under Linux with Xvfb, and always runs `usbipd detach` afterwards, including after a failure or Ctrl+C. Because `usbipd attach` needs a running distribution and WSL stops an idle one during the Windows runs, the matrix holds a WSL session open until it exits. The WSL run uses a mirror of this checkout under `$HOME/emberprobe-hil` (`--wsl-dir` overrides it), because the Windows `node_modules` holds Windows binaries; the mirror is refreshed and bundled on each matrix run and its `npm ci` is repeated only when `package-lock.json` changes.
 
 ### Configuration
 
