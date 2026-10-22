@@ -2,7 +2,8 @@
 // §2 / §3 回归：DWARF 缩写与 DIE 预算必须是「整个解析全局」而非「每次调用 / 每个 CU 独立」。
 // 旧实现下 abbrevCache 以文件可控的 abbrevOff 为键无界增长、DIE guard 在每个 CU 重置，
 // 攻击者用多个 CU / 多个缩写表偏移即可让扩展宿主累积数百 MB 堆直至 OOM。
-// 这里用程序化构造的最小 ELF32 验证全局预算会及时以 DWARF_BUDGET_EXCEEDED 中止。
+// 这里用程序化构造的最小 ELF32 验证全局预算会及时停止解析；超出预算的 CU 整体回滚，
+// 已完整解析的 CU 保留，并以一条 DWARF_PARTIAL 诊断报告（§2 Stage A）。
 const assert = require("assert");
 const { parseDwarfInternal } = require("../src/dwarf/parser");
 const { buildDwarfElf: buildElf } = require("./helpers/elf-fixture");
@@ -31,7 +32,7 @@ function abbrevTable(count, tag) {
 // —— §2：全局缩写预算 ——
 // 三个 CU 各引用一个不同的 abbrevOff，每张表 8000 个缩写。
 // 旧实现：每次 parseAbbrev 独立计数（8000 < 每调用上限 100000），三张表全部缓存存活，无错误。
-// 新实现：全局缩写预算（≤20000）在第三张表解析途中触发 DWARF_BUDGET_EXCEEDED。
+// 新实现：全局缩写预算（≤20000）在第三张表解析途中耗尽，前两个 CU 保留，第三个 CU 被丢弃。
 {
     const PER_TABLE = 8000;
     const tables = [abbrevTable(PER_TABLE, 0x24), abbrevTable(PER_TABLE, 0x24), abbrevTable(PER_TABLE, 0x24)];
@@ -58,14 +59,21 @@ function abbrevTable(count, tag) {
     }
     const infoData = Buffer.concat(infoParts);
     const elf = buildElf(infoData, abbrevData);
-    assert.throws(() => parseDwarfInternal(elf), { code: "DWARF_BUDGET_EXCEEDED" }, "全局缩写预算必须跨 CU 生效");
+    const parsed = parseDwarfInternal(elf);
+    assert.deepStrictEqual(
+        parsed.partial,
+        { budget: "global abbreviation", loadedUnits: 2, droppedUnits: 1, droppedBytes: infoParts[2].length },
+        "全局缩写预算必须跨 CU 生效"
+    );
+    assert.strictEqual(parsed.diagnostics[0].code, "DWARF_PARTIAL");
+    assert.strictEqual(parsed.dies.size, 2, "只保留前两个 CU 的根 DIE");
 }
 
 // —— §3：全局 DIE 预算 ——
 // 两个 CU，各含约 105 万个零属性 DIE。
 // 旧实现：guard 每个 CU 重置（每 CU 105 万 < 每 CU 上限 200 万），两个 CU 都完整解析，
 //         dies 映射累积约 210 万条（数百 MB 堆）且不报错。
-// 新实现：全局 DIE 预算（≤200 万）在第二个 CU 解析途中触发 DWARF_BUDGET_EXCEEDED。
+// 新实现：全局 DIE 预算（≤200 万）在第二个 CU 解析途中耗尽；第二个 CU 已存入的 DIE 全部回滚。
 {
     const DIES_PER_CU = 1050000;
     // 缩写表：code1 = compile_unit(0x11, 无子, 0 属性)，code2 = base_type(0x24, 无子, 0 属性)
@@ -87,7 +95,14 @@ function abbrevTable(count, tag) {
     }
     const infoData = Buffer.concat(infoParts);
     const elf = buildElf(infoData, abbrevData);
-    assert.throws(() => parseDwarfInternal(elf), { code: "DWARF_BUDGET_EXCEEDED" }, "全局 DIE 预算必须跨 CU 生效");
+    const parsed = parseDwarfInternal(elf);
+    assert.deepStrictEqual(
+        parsed.partial,
+        { budget: "DIE", loadedUnits: 1, droppedUnits: 1, droppedBytes: infoParts[1].length },
+        "全局 DIE 预算必须跨 CU 生效"
+    );
+    assert.strictEqual(parsed.dies.size, 1 + DIES_PER_CU, "第二个 CU 的 DIE 不得残留");
+    assert.ok([...parsed.dies.keys()].every((offset) => offset < infoParts[0].length));
 }
 
 console.log("DWARF global budget tests passed");

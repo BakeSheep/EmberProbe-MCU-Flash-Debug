@@ -202,6 +202,7 @@ class MainViewProvider {
         this._managedDebugSessionId = "";
         this._runtimeResumeTimer = null;
         this._runtimeDeniedKey = "";
+        this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
         this._livePanels = new Map();
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
@@ -1683,15 +1684,21 @@ class MainViewProvider {
                 }
             });
         }
-        liveWatch.validateManagedReadPlan(result.allowed);
-        return result;
+        // Explicit reads and writes must fit as a whole; continuous sampling drops only the items
+        // that exceed the per-cycle budget so the rest keep running.
+        if (strict) {
+            liveWatch.validateManagedReadPlan(result.allowed);
+            return { ...result, overBudget: [] };
+        }
+        const { allowed, overBudget } = liveWatch.partitionManagedReadPlan(result.allowed);
+        return { ...result, allowed, overBudget };
     }
     _configureManagedRuntimeWatch() {
         const server = this._managedDebugServer;
         if (!server || server.capabilities?.runtimeRead === false) return [];
         const plan = this._runtimeRamPlan(this._activeReadPlan());
-        this._applySamplingPlan(server, plan.allowed);
-        const deniedKey = plan.denied.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
+        const itemKey = (items) => items.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
+        const deniedKey = itemKey(plan.denied);
         if (deniedKey && deniedKey !== this._runtimeDeniedKey) {
             this._runtimeDeniedKey = deniedKey;
             const t = Date.now();
@@ -1705,6 +1712,34 @@ class MainViewProvider {
                 params: { names: plan.denied.map((item) => item.name).join(", ") }
             });
         } else if (!deniedKey) this._runtimeDeniedKey = "";
+        // Re-mark rejected items on every configuration: a paused snapshot may have filled them meanwhile.
+        if (plan.overBudget.length) {
+            const t = Date.now();
+            const message = `Runtime read exceeds the per-cycle budget (${liveWatch.MAX_DEBUG_READ_BYTES} bytes / ${liveWatch.MAX_DEBUG_READ_COMMANDS} commands)`;
+            this._handleRawSamples(
+                plan.overBudget.map((item) => ({
+                    name: item.name,
+                    bytes: null,
+                    diagnostic: { code: "LIVE_READ_BUDGET_EXCEEDED", message },
+                    t
+                })),
+                t
+            );
+        }
+        const overBudgetKey = itemKey(plan.overBudget);
+        if (overBudgetKey && overBudgetKey !== this._runtimeOverBudgetKey) {
+            this._runtimeOverBudgetKey = overBudgetKey;
+            this._postLive({
+                type: "liveError",
+                key: "live.runtimeBudgetExceededNames",
+                params: { names: plan.overBudget.map((item) => item.name).join(", ") }
+            });
+        } else if (!overBudgetKey) this._runtimeOverBudgetKey = "";
+        if (!plan.allowed.length && plan.overBudget.length)
+            throw Object.assign(new Error("Every watched item exceeds the runtime read budget"), {
+                code: "LIVE_READ_BUDGET_EXCEEDED"
+            });
+        this._applySamplingPlan(server, plan.allowed);
         return plan.allowed;
     }
     async _startManagedDebugServer(executable, probe, target, cfg, interactive = true, rtos = "", serverOptions = {}) {
@@ -1840,6 +1875,7 @@ class MainViewProvider {
             this._managedDebugToken = "";
             this._managedDebugSessionId = "";
             this._runtimeDeniedKey = "";
+            this._runtimeOverBudgetKey = "";
         }
         if (!group) lease?.release();
     }

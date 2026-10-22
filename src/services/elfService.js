@@ -18,6 +18,10 @@ const MAX_ELF_BYTES = 64 * 1024 * 1024;
 // 内部诊断仍有上限；普通类型缺失不进入整体下发到 webview 的 warnings。
 const MAX_CPP_DIAGNOSTICS = 50;
 
+function isPartialDwarf(diagnostics) {
+    return Array.isArray(diagnostics) && diagnostics.some((entry) => entry?.code === "DWARF_PARTIAL");
+}
+
 class ElfService {
     constructor(options) {
         this.context = options.context;
@@ -348,7 +352,10 @@ class ElfService {
                     result.diagnostics.push(...message.diagnostics);
                     result.typeMetadataIncomplete = message.diagnostics.some((entry) => entry.code !== "DWARF_MISSING");
                     // Symbols without DWARF records are reclassified only now; publish them as type updates.
-                    const originChanged = this._enrich(result, types, undefined, undefined, { debugComplete: true });
+                    // A partial parse dropped whole units, so a missing record no longer means "no debug info".
+                    const originChanged = this._enrich(result, types, undefined, undefined, {
+                        debugComplete: !isPartialDwarf(message.diagnostics)
+                    });
                     for (let i = 0; i < originChanged.length; i += 1000)
                         this.onChange("types", result, originChanged.slice(i, i + 1000));
                     this._recordCppDiagnostics(result, types);
@@ -656,7 +663,7 @@ class ElfService {
         const layouts = parsed?.layouts || null;
         const displayNames = parsed?.displayNames || null;
         this._enrich(result, typeMap || new Map(), layouts || new Map(), displayNames || new Map(), {
-            debugComplete: true
+            debugComplete: !isPartialDwarf(result.diagnostics)
         });
         this._recordCppDiagnostics(result, typeMap || new Map());
         for (const fn of result.functions || []) fn.displayName = displayNames?.get(fn.name) || fn.name;

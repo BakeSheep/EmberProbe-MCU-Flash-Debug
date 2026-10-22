@@ -372,9 +372,17 @@ function createUnit() {
         units.push(unit);
     }
     const budgetAbbrev = Buffer.from([1, 0x11, 1, 0, 0, 2, 0x2e, 1, 0, 0, 3, 0x05, 0, 0, 0, 0]);
-    assert.throws(() => parseDwarfInternal(buildDwarfElf(Buffer.concat(units), budgetAbbrev)), {
-        code: "DWARF_BUDGET_EXCEEDED"
+    const parsed = parseDwarfInternal(buildDwarfElf(Buffer.concat(units), budgetAbbrev));
+    assert.deepStrictEqual(parsed.partial, {
+        budget: "DIE",
+        loadedUnits: 1,
+        droppedUnits: 1,
+        droppedBytes: units[1].length
     });
+    assert.ok(
+        [...parsed.dies.keys()].every((offset) => offset < units[0].length),
+        "skipped DIEs still exhaust the budget and the second unit is rolled back"
+    );
 }
 
 console.log("DWARF local skipping, static locals, retained references, form validation and global budgets passed");

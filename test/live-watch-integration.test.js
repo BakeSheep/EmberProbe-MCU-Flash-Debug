@@ -8,6 +8,7 @@ const {
     LiveWatchSession,
     ManagedOpenOcdSession,
     validateManagedReadPlan,
+    partitionManagedReadPlan,
     MAX_DEBUG_READ_COMMANDS
 } = require("../src/liveWatch");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
@@ -185,6 +186,39 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             error.code === "LIVE_READ_BUDGET_EXCEEDED" && error.details.commandCount === MAX_DEBUG_READ_COMMANDS + 1,
         "sparse variables must not create an unbounded number of Tcl requests"
     );
+    {
+        const large = { name: "large", address: 0x20000000, size: 5000 };
+        const word = { name: "word", address: 0x20010000, size: 4 };
+        const alias = { name: "alias", address: 0x20010000, size: 2 };
+        assert.deepStrictEqual(
+            partitionManagedReadPlan([large, word, alias]),
+            { allowed: [word, alias], overBudget: [large] },
+            "one oversized struct must not disable the rest of the sampling plan"
+        );
+        const half = { name: "half", address: 0x20000000, size: 2048 };
+        const rest = { name: "rest", address: 0x20001000, size: 2048 };
+        const third = { name: "third", address: 0x20002000, size: 3000 };
+        assert.deepStrictEqual(
+            partitionManagedReadPlan([third, half, rest]),
+            { allowed: [half, rest], overBudget: [third] },
+            "smaller items are admitted first and input order is kept"
+        );
+        const sparse = Array.from({ length: MAX_DEBUG_READ_COMMANDS + 2 }, (_, index) => ({
+            name: `sparse-${index}`,
+            address: 0x20000000 + index * 8,
+            size: 1
+        }));
+        const commands = partitionManagedReadPlan(sparse);
+        assert.deepStrictEqual(commands.allowed, sparse.slice(0, MAX_DEBUG_READ_COMMANDS));
+        assert.deepStrictEqual(commands.overBudget, sparse.slice(MAX_DEBUG_READ_COMMANDS));
+        assert.doesNotThrow(() => validateManagedReadPlan(commands.allowed));
+        assert.deepStrictEqual(partitionManagedReadPlan(null), { allowed: [], overBudget: [] });
+        assert.throws(
+            () => partitionManagedReadPlan([{ name: "overflow", address: 0xffffffff, size: 2 }]),
+            (error) => error.code === "LIVE_ADDRESS_NOT_RAM",
+            "address errors are not reported as budget rejections"
+        );
+    }
     await scenario("Managed transactions survive sampling configuration changes", async () => {
         for (const operation of ["read", "write"]) {
             for (const phase of operation === "write"

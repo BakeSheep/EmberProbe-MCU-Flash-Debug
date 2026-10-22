@@ -84,18 +84,28 @@ scenario("Bound excessive compilation units", () => {
     const { parseDwarfInternal } = require("../src/dwarf/parser");
     const unit = Buffer.alloc(6);
     unit.writeUInt32LE(2);
-    assert.throws(
-        () =>
-            parseDwarfInternal(
-                buildElf32({
-                    sections: [
-                        { name: ".debug_info", data: Buffer.concat(Array(20000).fill(unit)) },
-                        { name: ".debug_abbrev", data: Buffer.from([0]) }
-                    ]
-                })
-            ),
-        { code: "DWARF_BUDGET_EXCEEDED" }
-    );
+    const elf = buildElf32({
+        sections: [
+            { name: ".debug_info", data: Buffer.concat(Array(20000).fill(unit)) },
+            { name: ".debug_abbrev", data: Buffer.from([0]) }
+        ]
+    });
+    // Invalid units exhaust the diagnostic cap first; the parse stops there instead of failing as a whole.
+    const flooded = parseDwarfInternal(elf);
+    assert.deepStrictEqual(flooded.partial, {
+        budget: "diagnostic",
+        loadedUnits: 0,
+        droppedUnits: 20000 - 1024,
+        droppedBytes: (20000 - 1024) * unit.length
+    });
+    assert.strictEqual(flooded.diagnostics.length, 1025, "the cap plus one partial notice");
+    const counted = parseDwarfInternal(elf, { budgets: { units: 5 } });
+    assert.deepStrictEqual(counted.partial, {
+        budget: "compilation unit",
+        loadedUnits: 0,
+        droppedUnits: 20000 - 5,
+        droppedBytes: (20000 - 5) * unit.length
+    });
 });
 
 console.log("DWARF budget tests passed");

@@ -248,6 +248,12 @@ scenario("Verify absolute location expressions and companion path containment", 
         assert.deepStrictEqual(result.diagnostics, []);
         assert.strictEqual(result.layouts.get("packet").members[0].name, "value");
         assert.strictEqual(result.companions[0].path, fs.realpathSync(path.join(build, "unit.dwo")));
+        // A companion over the shared file budget stops the parse but keeps the skeleton unit.
+        const limited = parseDwarf(skeleton, { filePath: file, budgets: { companionBytes: 1 } });
+        assert.strictEqual(limited.diagnostics[0].code, "DWARF_PARTIAL");
+        assert.deepStrictEqual(limited.diagnostics[0].i18nParams, { loaded: 1, total: 1, budget: "companion" });
+        assert.strictEqual(limited.layouts.has("packet"), false, "the companion over budget is never read");
+        assert.deepStrictEqual(limited.companions, []);
         assert(
             readCompanion({ dwoName: name, compDir: path.join(temp, "absent") }, file, 65536).buffer.equals(companion),
             "basename fallback"

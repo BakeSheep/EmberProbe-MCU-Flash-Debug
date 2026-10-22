@@ -82,6 +82,7 @@
     ];
     const codes = new Set([
         "DWARF_BUDGET_EXCEEDED",
+        "DWARF_PARTIAL",
         "DWARF_TYPE_CYCLE",
         "DWARF_MISSING",
         "DWARF_UNSUPPORTED",
@@ -123,6 +124,9 @@
                 message
             );
         if (fileLimit) return t("live.elfTooLarge", { limit: fileLimit[1] || fileLimit[2], path: fileLimit[3] });
+        const partial =
+            /^DWARF types are partial: (\d+) of (\d+) units loaded; parsing stopped at the (.+) budget$/.exec(message);
+        if (partial) return t("elfDiag.partial", { loaded: partial[1], total: partial[2], budget: partial[3] });
         const key = messages.get(message);
         if (key) return t(key);
         for (const [pattern, key, param] of patterns) {
