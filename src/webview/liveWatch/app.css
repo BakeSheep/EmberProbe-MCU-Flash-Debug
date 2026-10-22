@@ -117,7 +117,13 @@ input[type="number"] {
     width: 72px;
 }
 .layout {
+    display: grid;
+    grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
     min-height: calc(100vh - 86px);
+}
+.side {
+    border-right: 1px solid var(--vscode-panel-border, transparent);
+    overflow: auto;
 }
 .side-head {
     display: flex;
@@ -136,8 +142,12 @@ input[type="number"] {
     background: var(--vscode-badge-background);
     font-size: 10px;
 }
-.side-head span:last-child {
+.side-head #rate {
+    min-width: 0;
     margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--vscode-descriptionForeground);
     font-size: 10px;
 }
@@ -319,6 +329,14 @@ input[type="number"] {
     gap: 7px;
 }
 @media (max-width: 760px) {
+    .layout {
+        grid-template-columns: 1fr;
+    }
+    .side {
+        max-height: 42vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--vscode-panel-border, transparent);
+    }
     .chart-wrap {
         min-height: 330px;
     }
@@ -362,6 +380,7 @@ body {
 .layout {
     min-height: 0;
     flex: 1;
+    grid-template-rows: minmax(0, 1fr);
 }
 .side {
     min-height: 0;
@@ -393,6 +412,12 @@ body {
     background: var(--vscode-errorForeground);
 }
 @media (max-width: 760px) {
+    .layout {
+        grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
+    }
+    .side {
+        max-height: none;
+    }
     .chart-wrap {
         min-height: 0;
     }
@@ -424,16 +449,83 @@ body.debug-stale .member-value {
     color: var(--vscode-descriptionForeground);
     opacity: 0.62;
 }
-/* The current-value panel floats over the chart as a translucent card that can be moved and resized. */
 .layout {
+    --side-width: 260px;
+    grid-template-columns: minmax(220px, var(--side-width)) 9px minmax(0, 1fr);
+}
+.side-splitter {
+    position: relative;
+    cursor: ew-resize;
+    touch-action: none;
+}
+.side-splitter:after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 4px;
+    width: 1px;
+    background: var(--vscode-widget-border, var(--vscode-panel-border));
+    transition:
+        left 0.1s,
+        width 0.1s,
+        background 0.1s;
+}
+.side-splitter:hover:after,
+.side-splitter.dragging:after {
+    left: 3px;
+    width: 3px;
+    background: var(--vscode-focusBorder);
+}
+.layout.side-collapsed {
+    grid-template-columns: 0 9px minmax(0, 1fr);
+}
+.layout.side-collapsed .side {
+    visibility: hidden;
+    overflow: hidden;
+    border: 0;
+}
+.side-toggle {
+    padding: 1px 7px;
+    font-size: 12px;
+}
+@media (max-width: 760px) {
+    .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(110px, 38%) minmax(0, 1fr);
+    }
+    .side-splitter {
+        display: none;
+    }
+    .side {
+        grid-row: 1;
+    }
+    .chart-pane {
+        grid-row: 2;
+    }
+    .layout.side-collapsed {
+        grid-template-columns: 1fr;
+        grid-template-rows: 0 minmax(0, 1fr);
+    }
+    .layout.side-collapsed .side {
+        display: none;
+    }
+}
+/* Floating mode: the value panel is an opaque, raised card over the chart that can be moved and
+   resized. It stays solid so curves never show through and read as card content; the border and
+   layered shadow (VS Code's widget shadow colour, stronger on dark themes) mark its edge. */
+.layout.panel-floating {
     position: relative;
     z-index: 0;
     display: flex;
 }
-.chart-pane {
+.layout.panel-floating > .chart-pane {
     flex: 1;
 }
-.side.float-panel {
+.layout.panel-floating > .side-splitter {
+    display: none;
+}
+.layout.panel-floating > .side {
     position: absolute;
     z-index: 7;
     top: 40px;
@@ -444,45 +536,54 @@ body.debug-stale .member-value {
     display: flex;
     flex-direction: column;
     overflow: visible;
-    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #8885));
+    border: 1px solid color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
-    box-shadow: 0 6px 20px #0004;
+    background: var(--vscode-editor-background);
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 6%, transparent),
+        0 1px 2px #00000024,
+        0 4px 10px #0000001a,
+        0 14px 32px var(--vscode-widget-shadow, #0000002e);
 }
-.layout.side-collapsed .side.float-panel {
+.layout.panel-floating.side-collapsed > .side {
     display: none;
 }
-.float-panel.dragging {
+.layout.panel-floating > .side.dragging {
     user-select: none;
-    box-shadow: 0 10px 28px #0006;
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 6%, transparent),
+        0 2px 4px #00000029,
+        0 8px 18px #00000024,
+        0 22px 44px var(--vscode-widget-shadow, #0000003d);
 }
-.float-panel > .side-head {
+.panel-floating .side > .side-head {
     flex: none;
     cursor: move;
     user-select: none;
     touch-action: none;
     border-radius: 7px 7px 0 0;
 }
-.float-panel > .side-head:focus-visible {
+.panel-floating .side > .side-head:focus-visible {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
 }
-.float-panel > .side-curve-tools {
+.panel-floating .side > .side-curve-tools {
     flex: none;
 }
-.float-panel > .var-list {
+.panel-floating .side > .var-list {
     flex: 1;
     min-height: 0;
     overflow: auto;
 }
-.float-panel .var-card {
-    background: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) 62%, transparent);
-}
 .float-resize {
+    display: none;
     position: absolute;
     z-index: 1;
     border-radius: 4px;
     touch-action: none;
+}
+.panel-floating .float-resize {
+    display: block;
 }
 .float-resize[data-edge="n"],
 .float-resize[data-edge="s"] {
@@ -537,23 +638,72 @@ body.debug-stale .member-value {
     left: -5px;
     cursor: nesw-resize;
 }
-.float-resize[data-edge="se"]:after {
-    content: "";
-    position: absolute;
-    right: 7px;
-    bottom: 7px;
-    width: 6px;
-    height: 6px;
-    border-right: 2px solid var(--vscode-descriptionForeground);
-    border-bottom: 2px solid var(--vscode-descriptionForeground);
-    border-radius: 0 0 3px;
-    opacity: 0.55;
-}
-.float-resize:hover,
-.float-resize.active,
 .float-resize:focus-visible {
     outline: none;
-    background: color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+}
+.layout.panel-floating > .side:has(.float-resize[data-edge*="n"]:is(:hover, .active, :focus-visible)) {
+    border-top-color: var(--vscode-focusBorder);
+}
+.layout.panel-floating > .side:has(.float-resize[data-edge*="s"]:is(:hover, .active, :focus-visible)) {
+    border-bottom-color: var(--vscode-focusBorder);
+}
+.layout.panel-floating > .side:has(.float-resize[data-edge*="e"]:is(:hover, .active, :focus-visible)) {
+    border-right-color: var(--vscode-focusBorder);
+}
+.layout.panel-floating > .side:has(.float-resize[data-edge*="w"]:is(:hover, .active, :focus-visible)) {
+    border-left-color: var(--vscode-focusBorder);
+}
+/* Title bar actions shared by the sidebar and the floating card: switch style and close. */
+.side-actions {
+    display: flex;
+    flex: none;
+    gap: 4px;
+    margin-left: 8px;
+}
+.side-actions .panel-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    color: var(--vscode-descriptionForeground);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
+    border-radius: 5px;
+    cursor: pointer;
+}
+.side-actions .panel-icon:hover {
+    color: var(--vscode-foreground);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.side-actions .panel-icon:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+.side-actions #panelClose:hover {
+    color: var(--vscode-errorForeground);
+    border-color: color-mix(in srgb, var(--vscode-errorForeground) 55%, transparent);
+}
+.panel-icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+}
+.panel-icon svg .solid {
+    fill: currentColor;
+    stroke: none;
+    opacity: 0.55;
+}
+.panel-icon .icon-dock,
+.panel-floating .panel-icon .icon-float {
+    display: none;
+}
+.panel-floating .panel-icon .icon-dock {
+    display: block;
 }
 .side-toggle {
     position: relative;
@@ -1575,6 +1725,9 @@ input[type="number"]::-webkit-outer-spin-button {
     min-height: 260px;
 }
 @media (max-width: 760px) {
+    .layout {
+        grid-template-rows: minmax(100px, 24%) minmax(0, 1fr);
+    }
     .curve-readings {
         max-height: 110px;
     }
@@ -2502,6 +2655,45 @@ input[type="number"]::-webkit-outer-spin-button {
     left: auto;
     right: 0;
 }
+.side-splitter:focus-visible:after {
+    background: var(--vscode-focusBorder);
+}
+.side-splitter:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+}
+@media (max-width: 760px) {
+    .layout {
+        grid-template-rows: clamp(100px, var(--side-height, 38%), max(100px, calc(100% - 169px))) 9px minmax(0, 1fr);
+    }
+    .side-splitter {
+        display: block;
+        grid-row: 2;
+        cursor: ns-resize;
+    }
+    .side-splitter:after {
+        inset: 4px 0 auto;
+        width: auto;
+        height: 1px;
+    }
+    .side-splitter:hover:after,
+    .side-splitter.dragging:after,
+    .side-splitter:focus-visible:after {
+        top: 3px;
+        left: 0;
+        width: auto;
+        height: 3px;
+    }
+    .chart-pane {
+        grid-row: 3;
+    }
+    .layout.side-collapsed {
+        grid-template-rows: 0 0 minmax(0, 1fr);
+    }
+    .layout.side-collapsed .side-splitter {
+        display: none;
+    }
+}
 /* Narrow single-column and wide two-column variable lists; JS picks columns from the card width.
    The list has a fixed height inside the floating card, so rows and stacked cards must keep their
    content height and let the list scroll instead of being squeezed into overlapping rows. */
@@ -2824,6 +3016,9 @@ input[type="number"]::-webkit-outer-spin-button {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
 }
+.reorder-active {
+    position: relative;
+}
 .reorder-active,
 .reorder-active * {
     cursor: grabbing !important;
@@ -2832,11 +3027,13 @@ input[type="number"]::-webkit-outer-spin-button {
 .reorder-dragging {
     opacity: 0.45;
 }
-.reorder-drop-before {
-    box-shadow: inset 0 2px 0 var(--vscode-focusBorder);
-}
-.reorder-drop-after {
-    box-shadow: inset 0 -2px 0 var(--vscode-focusBorder);
+.reorder-insertion-line {
+    position: absolute;
+    z-index: 4;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--vscode-focusBorder);
+    pointer-events: none;
 }
 .var-card.reorderable {
     padding-left: 12px;

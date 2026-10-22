@@ -39,8 +39,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 查看列表、写入列表与波形图侧边栏的变量卡片支持拖动左侧把手调整顺序，也可在把手上按 Alt+↑/↓ 移动；顺序随列表保存，仅调整顺序不会重启采样。
 - Variable cards in the watch list, write list and chart sidebar can be reordered by dragging the handle on their left, or with Alt+↑/↓ on the handle; the order is saved with the list, and reordering alone does not restart sampling.
 
-- 波形图的当前数值栏改为悬浮在曲线上的半透明卡片：拖动标题移动、拖动边框或角缩放（也可用方向键微调），宽度足够时自动显示两列变量卡片（每张卡片保持所在列，拖到另一列或按 Alt+←/→ 只移动这一张，删除卡片不会打乱其余卡片），窗口变化时保持在可视区内并贴住所靠的边；工具栏按钮仍可隐藏或展开，位置与大小随面板保存。
-- Turn the waveform view's current-value panel into a translucent card floating over the chart: drag its title to move it, drag an edge or corner to resize it (or use arrow keys), show two columns of variable cards when it is wide enough (each card keeps its column; dragging it to the other column or pressing Alt+Left/Right moves only that card, and removing a card leaves the others in place), and keep it inside the view and docked to its edge as the window changes; the toolbar button still hides or shows it, and its position and size are saved with the panel.
+- 波形图的当前数值栏新增悬浮卡片样式：标题栏右上角的按钮可在侧边栏与悬浮卡片之间切换，× 按钮关闭数值栏（工具栏按钮可重新打开）。悬浮卡片为带边框与阴影的不透明卡片，拖动标题移动、拖动边框或角缩放（也可用方向键微调），窗口变化时保持在可视区内并贴住所靠的边。侧边栏或卡片宽度足够时显示两列变量卡片：每张卡片保持所在列，拖到另一列或按 Alt+←/→ 只移动这一张，删除卡片不会打乱其余卡片。样式、位置与大小随面板保存。
+- Add a floating-card style for the waveform view's current-value panel: buttons at the top right of its title bar switch between the sidebar and the floating card, and × closes the panel (the toolbar button reopens it). The floating card is opaque with a border and shadow; drag its title to move it, drag an edge or corner to resize it (or use arrow keys), and it stays inside the view and docked to its edge as the window changes. When the sidebar or card is wide enough, variable cards show in two columns: each card keeps its column, dragging it to the other column or pressing Alt+Left/Right moves only that card, and removing a card leaves the others in place. The style, position and size are saved with the panel.
 
 ## [0.8.8] - 2026-10-21
 

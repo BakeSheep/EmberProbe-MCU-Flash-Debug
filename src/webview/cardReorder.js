@@ -59,6 +59,9 @@
         const doc = container.ownerDocument;
         const view = doc.defaultView;
         const order = options.order || (() => cards().map((card) => card.dataset.reorderKey));
+        const insertionLine = doc.createElement("div");
+        insertionLine.className = "reorder-insertion-line";
+        insertionLine.setAttribute("aria-hidden", "true");
         let drag = null;
         let focusKey = null;
         let focusAt = 0;
@@ -71,6 +74,7 @@
             return cards().find((card) => card.dataset.reorderKey === name) || null;
         }
         function clearMarks() {
+            insertionLine.remove();
             container
                 .querySelectorAll(".reorder-dragging, .reorder-drop-before, .reorder-drop-after, .reorder-drop-zone")
                 .forEach((card) =>
@@ -89,10 +93,27 @@
             container.classList.add("reorder-active");
             cardFor(drag.name)?.classList.add("reorder-dragging");
             if (drag.target && drag.target.name === null) zoneFor(drag.target.zone)?.classList.add("reorder-drop-zone");
-            else if (drag.target)
-                cardFor(drag.target.name)?.classList.add(
-                    drag.target.after ? "reorder-drop-after" : "reorder-drop-before"
-                );
+            else if (drag.target) {
+                const target = cardFor(drag.target.name);
+                if (!target) return;
+                target.classList.add(drag.target.after ? "reorder-drop-after" : "reorder-drop-before");
+                const siblings = cards().filter((card) => card.parentElement === target.parentElement);
+                const neighbor = siblings[siblings.indexOf(target) + (drag.target.after ? 1 : -1)];
+                const rect = target.getBoundingClientRect();
+                const gap = parseFloat(view.getComputedStyle(target.parentElement).rowGap) || 0;
+                const edge = drag.target.after ? rect.bottom : rect.top;
+                const adjacent = neighbor
+                    ? neighbor.getBoundingClientRect()[drag.target.after ? "top" : "bottom"]
+                    : edge + (drag.target.after ? gap : -gap);
+                const bounds = container.getBoundingClientRect();
+                // Keep the marker outside cards so their rounded, clipped content cannot hide it.
+                Object.assign(insertionLine.style, {
+                    left: rect.left - bounds.left - container.clientLeft + container.scrollLeft + "px",
+                    top: (edge + adjacent) / 2 - bounds.top - container.clientTop + container.scrollTop - 1 + "px",
+                    width: rect.width + "px"
+                });
+                container.appendChild(insertionLine);
+            }
         }
         function zones() {
             return options.zones ? Array.from(options.zones()) : [];

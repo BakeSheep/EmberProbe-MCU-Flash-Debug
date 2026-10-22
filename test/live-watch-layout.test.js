@@ -6,7 +6,121 @@ const runtime = require("../src/webview/runtime");
 
 const view = render(
     getLiveWatchContent({}, "en"),
-    { sideWidth: 280 },
+    { sideHeight: 220 },
+    {
+        beforeParse(window) {
+            window.innerWidth = 600;
+        }
+    }
+);
+try {
+    const { document, window } = view;
+    const layout = document.getElementById("layout");
+    const pane = document.getElementById("valuePane");
+    const splitter = document.getElementById("sideSplitter");
+    layout.getBoundingClientRect = () => ({ width: window.innerWidth, height: 600 });
+    pane.getBoundingClientRect = () => ({
+        width: parseFloat(layout.style.getPropertyValue("--side-width")),
+        height: parseFloat(layout.style.getPropertyValue("--side-height"))
+    });
+    const captures = new Set();
+    splitter.setPointerCapture = (id) => captures.add(id);
+    splitter.hasPointerCapture = (id) => captures.has(id);
+    splitter.releasePointerCapture = (id) => captures.delete(id);
+    const pointer = (type, x, y, id = 1, button = 0) => {
+        const event = new window.MouseEvent(type, { clientX: x, clientY: y, button, cancelable: true });
+        Object.defineProperty(event, "pointerId", { value: id });
+        splitter.dispatchEvent(event);
+    };
+    const key = (value) => splitter.dispatchEvent(new window.KeyboardEvent("keydown", { key: value }));
+    window.applySideLayout();
+    assert.strictEqual(document.getElementById("addBtn"), null);
+    assert.strictEqual(layout.style.getPropertyValue("--side-height"), "220px");
+    assert.strictEqual(splitter.getAttribute("aria-orientation"), "horizontal");
+    pointer("pointerdown", 0, 220, 1, 2);
+    assert.strictEqual(captures.size, 0, "ignore secondary mouse buttons");
+    pointer("pointerdown", 0, 220);
+    pointer("pointermove", 0, 300, 2);
+    assert.strictEqual(layout.style.getPropertyValue("--side-height"), "220px", "ignore other pointers");
+    pointer("pointermove", 0, 300);
+    assert.strictEqual(layout.style.getPropertyValue("--side-height"), "300px");
+    pointer("pointermove", 0, 900);
+    assert.strictEqual(layout.style.getPropertyValue("--side-height"), "431px", "reserve space for the chart");
+    pointer("pointerup", 0, 900);
+    assert.strictEqual(view.getState().sideHeight, 431);
+    assert.strictEqual(captures.size, 0);
+    assert(!splitter.classList.contains("dragging"));
+    key("ArrowUp");
+    assert.strictEqual(view.getState().sideHeight, 421);
+    key("ArrowLeft");
+    assert.strictEqual(view.getState().sideHeight, 421, "use keys for the active orientation");
+    pointer("pointerdown", 0, 421);
+    pointer("pointermove", 0, -900);
+    pointer("pointercancel", 0, -900);
+    assert.strictEqual(view.getState().sideHeight, 100);
+    pointer("pointermove", 0, 400);
+    assert.strictEqual(view.getState().sideHeight, 100, "cancel removes drag listeners");
+    document.getElementById("sideToggle").click();
+    assert(layout.classList.contains("side-collapsed"));
+    assert.strictEqual(splitter.tabIndex, -1);
+    document.getElementById("sideToggle").click();
+    assert.strictEqual(splitter.tabIndex, 0);
+    window.innerWidth = 1200;
+    window.applySideLayout();
+    assert.strictEqual(splitter.getAttribute("aria-orientation"), "vertical");
+    pointer("pointerdown", 260, 0);
+    pointer("pointermove", 350, 0);
+    pointer("lostpointercapture", 350, 0);
+    assert.strictEqual(view.getState().sideWidth, 350);
+    key("ArrowRight");
+    assert.strictEqual(view.getState().sideWidth, 360);
+    assert.strictEqual(view.getState().sideHeight, 100, "wide and stacked dimensions are independent");
+
+    // Title bar actions: switch the style and close the panel.
+    const head = document.getElementById("panelHandle");
+    const mode = document.getElementById("panelMode");
+    const close = document.getElementById("panelClose");
+    assert.strictEqual(mode.closest(".side-head"), head);
+    assert.strictEqual(close.closest(".side-head"), head);
+    assert.strictEqual(mode.getAttribute("aria-pressed"), "false");
+    assert.strictEqual(mode.title, "Float as a card over the chart");
+    assert.strictEqual(head.tabIndex, -1, "the docked title bar is not a drag handle");
+    assert.strictEqual(pane.style.cssText, "", "the docked sidebar is sized by the grid");
+    close.click();
+    assert(layout.classList.contains("side-collapsed"));
+    assert.strictEqual(view.getState().sideCollapsed, true);
+    assert.strictEqual(
+        document.activeElement,
+        document.getElementById("sideToggle"),
+        "focus moves to the reopen button"
+    );
+    document.getElementById("sideToggle").click();
+    assert(!layout.classList.contains("side-collapsed"));
+
+    const card = document.getElementById("elfDiagnostics");
+    runtime.renderElfDiagnostics(card, ["<script>bad()</script>", "warning", "warning", null], "", "ELF diagnostics");
+    assert(!card.hidden);
+    assert.strictEqual(card.querySelector("details").open, false);
+    assert.strictEqual(card.querySelector("summary").textContent, "ELF diagnostics");
+    assert.strictEqual(card.querySelectorAll(".elf-warning").length, 2);
+    assert.strictEqual(card.querySelector("script"), null);
+    card.querySelector("details").open = true;
+    runtime.renderElfDiagnostics(card, [], "failure", "ELF 解析诊断");
+    assert(card.querySelector("details").open, "keep manual expansion when diagnostics or language update");
+    assert.strictEqual(card.querySelector(".elf-error").textContent, "failure");
+    runtime.renderElfDiagnostics(card, [], "", "ELF diagnostics");
+    assert(card.hidden);
+    runtime.renderElfDiagnostics(card, ["new ELF"], "", "ELF diagnostics");
+    assert.strictEqual(card.querySelector("details").open, false, "new diagnostic cards start collapsed");
+    view.assertHealthy();
+} finally {
+    view.close();
+}
+console.log("Live-watch docked sidebar, title bar actions and collapsible diagnostics tests passed");
+
+const floatingView = render(
+    getLiveWatchContent({}, "en"),
+    { panelMode: "floating", valuePanel: { x: 12, y: 40, w: 280, h: null } },
     {
         beforeParse(window) {
             window.innerWidth = 900;
@@ -14,6 +128,7 @@ const view = render(
     }
 );
 try {
+    const view = floatingView;
     const { document, window } = view;
     const layout = document.getElementById("layout");
     const pane = document.getElementById("valuePane");
@@ -40,11 +155,31 @@ try {
         window.dispatchEvent(new window.Event("resize"));
     };
     window.applySideLayout();
-    assert.strictEqual(document.getElementById("addBtn"), null);
-    assert.strictEqual(document.getElementById("sideSplitter"), null, "the docked splitter is gone");
-    assert(pane.classList.contains("float-panel"));
+    const mode = document.getElementById("panelMode");
+    assert(layout.classList.contains("panel-floating"));
+    assert.strictEqual(document.getElementById("sideSplitter").tabIndex, -1, "the splitter is idle while floating");
+    assert.strictEqual(mode.getAttribute("aria-pressed"), "true");
+    assert.strictEqual(mode.title, "Dock as a sidebar");
+    assert.strictEqual(head.tabIndex, 0);
     assert.strictEqual(pane.querySelectorAll(".float-resize").length, 8, "every edge and corner resizes");
-    assert.deepStrictEqual(rect(), [12, 40, 280, 360], "the former side width seeds the floating card");
+    assert.deepStrictEqual(rect(), [12, 40, 280, 360], "restore the saved floating geometry");
+    // Title bar buttons keep their own pointer and key events.
+    const bubbling = (target, type, init) => {
+        const event = new window.MouseEvent(type, {
+            clientX: 0,
+            clientY: 0,
+            button: 0,
+            bubbles: true,
+            cancelable: true,
+            ...init
+        });
+        Object.defineProperty(event, "pointerId", { value: 9 });
+        target.dispatchEvent(event);
+    };
+    bubbling(mode, "pointerdown");
+    assert(!pane.classList.contains("dragging"), "pressing a title bar button does not drag the card");
+    mode.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+    assert.deepStrictEqual(rect(), [12, 40, 280, 360], "arrow keys on a button do not move the card");
 
     pointer(head, "pointerdown", 100, 50, 1, 2);
     assert.strictEqual(captures.size, 0, "ignore secondary mouse buttons");
@@ -107,29 +242,25 @@ try {
     assert.strictEqual(view.getState().sideCollapsed, true);
     document.getElementById("sideToggle").click();
     assert(!layout.classList.contains("side-collapsed"));
+    mode.click();
+    assert(!layout.classList.contains("panel-floating"));
+    assert.strictEqual(pane.style.cssText, "", "docking drops the card geometry from the sidebar");
+    assert.strictEqual(view.getState().panelMode, "docked");
+    assert.strictEqual(view.getState().valuePanel.w, 220, "the card geometry is kept for later");
+    pointer(head, "pointerdown", 100, 50);
+    assert(!pane.classList.contains("dragging"), "the docked title bar does not drag");
+    mode.click();
+    assert.strictEqual(view.getState().panelMode, "floating");
+    assert.deepStrictEqual(rect(), [462, 8, 220, 474], "floating again restores the card");
 
-    const card = document.getElementById("elfDiagnostics");
-    runtime.renderElfDiagnostics(card, ["<script>bad()</script>", "warning", "warning", null], "", "ELF diagnostics");
-    assert(!card.hidden);
-    assert.strictEqual(card.querySelector("details").open, false);
-    assert.strictEqual(card.querySelector("summary").textContent, "ELF diagnostics");
-    assert.strictEqual(card.querySelectorAll(".elf-warning").length, 2);
-    assert.strictEqual(card.querySelector("script"), null);
-    card.querySelector("details").open = true;
-    runtime.renderElfDiagnostics(card, [], "failure", "ELF 解析诊断");
-    assert(card.querySelector("details").open, "keep manual expansion when diagnostics or language update");
-    assert.strictEqual(card.querySelector(".elf-error").textContent, "failure");
-    runtime.renderElfDiagnostics(card, [], "", "ELF diagnostics");
-    assert(card.hidden);
-    runtime.renderElfDiagnostics(card, ["new ELF"], "", "ELF diagnostics");
-    assert.strictEqual(card.querySelector("details").open, false, "new diagnostic cards start collapsed");
     view.assertHealthy();
 } finally {
-    view.close();
+    floatingView.close();
 }
-console.log("Live-watch floating value card and collapsible diagnostics tests passed");
+console.log("Live-watch floating value card tests passed");
 
 const restoredView = render(getLiveWatchContent({}, "en"), {
+    panelMode: "floating",
     valuePanel: { x: 40, y: 60, w: 320, h: 200, dockRight: false, dockBottom: true }
 });
 try {

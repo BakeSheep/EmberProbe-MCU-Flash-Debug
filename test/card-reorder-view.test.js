@@ -93,7 +93,14 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         assert.match(handle.getAttribute("aria-label"), /^Drag to reorder alpha/);
 
         watch.layout();
-        watch.drag("alpha", 10, 105);
+        watch.drag("alpha", 10, 105, {
+            during: () => {
+                const line = watchBox.querySelector(".reorder-insertion-line");
+                assert.strictEqual(line.parentElement, watchBox, "the marker is outside the clipped target card");
+                assert.strictEqual(line.style.top, "114px", "center the line in the 110–120px gap, not on an edge");
+                assert.strictEqual(line.style.width, "180px");
+            }
+        });
         assert.deepStrictEqual(
             lastSaved(view, "saveSidebarWatch").items.map((item) => item.name),
             ["beta", "plant", "plant.gain", "alpha", "gamma"],
@@ -101,6 +108,7 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         );
         assert.deepStrictEqual(keys(watch.cards()), ["beta", "plant", "alpha", "gamma"]);
         assert(!watchBox.querySelector(".reorder-dragging, .reorder-drop-before, .reorder-drop-after"));
+        assert(!watchBox.querySelector(".reorder-insertion-line"), "dropping removes the insertion line");
         assert.strictEqual(watch.captures.size, 0, "pointer capture is released");
 
         watch.layout();
@@ -124,6 +132,7 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
                     watchBox.querySelector('[data-reorder-key="gamma"]').classList.contains("reorder-dragging"),
                     "drag marks survive a re-render"
                 );
+                assert(watchBox.querySelector(".reorder-insertion-line"), "the line survives sampling re-renders");
             }
         });
         assert.deepStrictEqual(
@@ -134,6 +143,7 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         watch.drag("alpha", 10, 5, { cancel: true });
         assert.strictEqual(view.messages.filter((message) => message.type === "saveSidebarWatch").length, saves + 1);
         assert(!watchBox.querySelector(".reorder-dragging"), "Escape clears the drag");
+        assert(!watchBox.querySelector(".reorder-insertion-line"), "Escape removes the line");
         watch.pointer(view.window, "pointerup", 10, 5);
         assert.strictEqual(view.messages.filter((message) => message.type === "saveSidebarWatch").length, saves + 1);
 
@@ -237,7 +247,13 @@ const lastSaved = (view, type) => view.messages.findLast((message) => message.ty
         // Dragging across columns moves just that card; the watch order already places it after "second".
         layout();
         const before = saves();
-        chart.drag("third", 210, 60);
+        chart.drag("third", 210, 60, {
+            during: () => {
+                const line = box.querySelector(".reorder-insertion-line");
+                assert.strictEqual(line.style.left, "200px", "the line follows the target column");
+                assert.strictEqual(line.style.width, "180px", "the line stays within the target column");
+            }
+        });
         assert.strictEqual(saves(), before, "a column change alone does not rewrite the watch list");
         assert.deepStrictEqual(columns(), [["first"], ["fourth", "second", "third"]]);
         assert.strictEqual(view.getState().cardColumns.third, 1, "card columns are saved with the panel");

@@ -541,15 +541,18 @@ var PANEL_MARGIN = 8,
     PANEL_MIN_WIDTH = 220,
     PANEL_MIN_HEIGHT = 120,
     PANEL_COLUMNS_WIDTH = 480;
-// Saved card geometry, or a default top-left card that keeps the former side panel width.
+// Saved floating-card geometry, or a default top-left card.
 function savedValuePanel(state) {
     var p = state && state.valuePanel;
     if (p && ["x", "y", "w"].every((key) => Number.isFinite(p[key])) && (p.h === null || Number.isFinite(p.h)))
         return { x: p.x, y: p.y, w: p.w, h: p.h, dockRight: p.dockRight === true, dockBottom: p.dockBottom === true };
-    var width = state && Number(state.sideWidth);
-    return { x: 12, y: 40, w: width > 0 ? width : 300, h: null, dockRight: false, dockBottom: false };
+    return { x: 12, y: 40, w: 300, h: null, dockRight: false, dockBottom: false };
 }
 var saved = api && api.getState ? api.getState() : null,
+    sideWidth = (saved && Number(saved.sideWidth)) || 260,
+    sideHeight = saved && Number.isFinite(saved.sideHeight) ? Math.max(100, saved.sideHeight) : null,
+    // The value panel is a docked sidebar by default, or a card floating over the chart.
+    panelMode = saved && saved.panelMode === "floating" ? "floating" : "docked",
     valuePanel = savedValuePanel(saved),
     // Two-column layout: each top-level card keeps the column it was placed in (0 or 1).
     cardColumns = Object.assign(Object.create(null), saved && saved.cardColumns),
@@ -739,6 +742,9 @@ function saveUi() {
             lastPointersVersion: lastPointersVersion,
             pointerCurveDefaults: true,
             timeWindow: windowPreset,
+            sideWidth: sideWidth,
+            sideHeight: sideHeight,
+            panelMode: panelMode,
             valuePanel: valuePanel,
             cardColumns: cardColumns,
             sideCollapsed: sideCollapsed,
@@ -1129,7 +1135,10 @@ function arrangeVariableCards(force) {
         : $("valuePane").getBoundingClientRect().width >= PANEL_COLUMNS_WIDTH;
     if (!force && columns === box.classList.contains("independent-columns")) return;
     var focused = document.activeElement;
-    var scrollTop = box.scrollTop;
+    // The docked sidebar scrolls as a whole; the floating card scrolls only its list.
+    var pane = $("valuePane"),
+        paneScroll = pane.scrollTop,
+        scrollTop = box.scrollTop;
     if (columns) {
         var stacks = [document.createElement("div"), document.createElement("div")];
         stacks.forEach(function (stack, index) {
@@ -1150,6 +1159,7 @@ function arrangeVariableCards(force) {
     }
     box.classList.toggle("independent-columns", columns);
     if (focused && focused !== document.activeElement && box.contains(focused)) focused.focus({ preventScroll: true });
+    pane.scrollTop = paneScroll;
     box.scrollTop = scrollTop;
 }
 function renderScalarCard(item) {
@@ -4192,7 +4202,12 @@ window.EmberProbeMessages.connect(window, {
 });
 var layout = $("layout"),
     valuePane = $("valuePane"),
-    sideToggle = $("sideToggle");
+    sideSplitter = $("sideSplitter"),
+    sideToggle = $("sideToggle"),
+    panelHandle = $("panelHandle");
+function panelFloating() {
+    return panelMode === "floating";
+}
 function clampNumber(value, min, max) {
     return Math.min(Math.max(value, min), Math.max(min, max));
 }
@@ -4210,7 +4225,14 @@ function panelGeometry(bounds) {
         h: Math.round(h)
     };
 }
+// Inline geometry only applies to the floating card; the docked sidebar is sized by the grid.
 function applyPanelGeometry() {
+    if (!panelFloating()) {
+        ["left", "top", "width", "height"].forEach(function (name) {
+            valuePane.style.removeProperty(name);
+        });
+        return;
+    }
     var bounds = layout.getBoundingClientRect();
     if (!bounds.width || !bounds.height) return;
     var g = panelGeometry(bounds);
@@ -4256,16 +4278,60 @@ function resizedPanel(start, edge, dx, dy, bounds) {
     return g;
 }
 function applySideLayout() {
+    var floating = panelFloating();
+    layout.style.setProperty("--side-width", sideWidth + "px");
+    if (sideHeight !== null) layout.style.setProperty("--side-height", sideHeight + "px");
     layout.classList.toggle("side-collapsed", sideCollapsed);
+    layout.classList.toggle("panel-floating", floating);
     sideToggle.setAttribute("aria-expanded", String(!sideCollapsed));
     sideToggle.setAttribute("aria-controls", "vars");
     sideToggle.setAttribute("aria-label", sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane"));
     sideToggle.textContent = (sideCollapsed ? "› " : "‹ ") + t("lw.valuePane");
     sideToggle.title = sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane");
-    $("panelHandle").setAttribute("aria-label", t("lw.panelMoveHint"));
+    var mode = $("panelMode");
+    mode.title = t(floating ? "lw.panelDock" : "lw.panelFloat");
+    mode.setAttribute("aria-label", mode.title);
+    mode.setAttribute("aria-pressed", String(floating));
+    $("panelClose").title = t("lw.panelClose");
+    $("panelClose").setAttribute("aria-label", t("lw.panelClose"));
+    // Only the floating card is moved by its title bar.
+    panelHandle.tabIndex = floating ? 0 : -1;
+    panelHandle.title = floating ? t("lw.panelMoveHint") : "";
+    if (floating) panelHandle.setAttribute("aria-label", t("lw.panelMoveHint"));
+    else panelHandle.removeAttribute("aria-label");
     $("panelResize").setAttribute("aria-label", t("lw.panelResizeHint"));
     applyPanelGeometry();
+    updateSplitter();
     arrangeVariableCards();
+    dirty = true;
+}
+function updateSplitter() {
+    var stacked = window.innerWidth <= 760;
+    var bounds = layout.getBoundingClientRect();
+    var pane = valuePane.getBoundingClientRect();
+    sideSplitter.setAttribute("aria-label", t("lw.splitterHint"));
+    sideSplitter.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
+    sideSplitter.setAttribute("aria-valuemin", stacked ? "100" : "220");
+    sideSplitter.setAttribute(
+        "aria-valuemax",
+        String(Math.round(Math.max(stacked ? 100 : 220, stacked ? bounds.height - 169 : bounds.width - 300)))
+    );
+    sideSplitter.setAttribute("aria-valuenow", String(Math.round(stacked ? pane.height : pane.width)));
+    sideSplitter.tabIndex = sideCollapsed || panelFloating() ? -1 : 0;
+}
+function resizeSide(size, stacked) {
+    var bounds = layout.getBoundingClientRect();
+    var min = stacked ? 100 : 220;
+    var max = Math.max(min, stacked ? bounds.height - 169 : bounds.width - 300);
+    size = Math.round(Math.min(max, Math.max(min, size)));
+    if (stacked) {
+        sideHeight = size;
+        layout.style.setProperty("--side-height", size + "px");
+    } else {
+        sideWidth = size;
+        layout.style.setProperty("--side-width", size + "px");
+    }
+    updateSplitter();
     dirty = true;
 }
 sideToggle.onclick = function () {
@@ -4273,8 +4339,61 @@ sideToggle.onclick = function () {
     applySideLayout();
     saveUi();
 };
-function trackPanelPointer(target, e, update) {
+$("panelMode").onclick = function () {
+    panelMode = panelFloating() ? "docked" : "floating";
+    applySideLayout();
+    saveUi();
+};
+// Closing hides the panel like the toolbar toggle, which then takes focus so it can reopen it.
+$("panelClose").onclick = function () {
+    sideCollapsed = true;
+    applySideLayout();
+    saveUi();
+    sideToggle.focus();
+};
+sideSplitter.addEventListener("pointerdown", function (e) {
     if (e.button !== 0) return;
+    var stacked = window.innerWidth <= 760;
+    e.preventDefault();
+    if (sideCollapsed) {
+        sideCollapsed = false;
+        applySideLayout();
+    }
+    var start = stacked ? e.clientY : e.clientX,
+        bounds = valuePane.getBoundingClientRect(),
+        startSize = stacked ? bounds.height : bounds.width;
+    sideSplitter.classList.add("dragging");
+    sideSplitter.setPointerCapture(e.pointerId);
+    var move = function (ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
+    };
+    var end = function (ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        sideSplitter.classList.remove("dragging");
+        sideSplitter.removeEventListener("pointermove", move);
+        sideSplitter.removeEventListener("pointerup", end);
+        sideSplitter.removeEventListener("pointercancel", end);
+        sideSplitter.removeEventListener("lostpointercapture", end);
+        if (sideSplitter.hasPointerCapture(ev.pointerId)) sideSplitter.releasePointerCapture(ev.pointerId);
+        saveUi();
+    };
+    sideSplitter.addEventListener("pointermove", move);
+    sideSplitter.addEventListener("pointerup", end);
+    sideSplitter.addEventListener("pointercancel", end);
+    sideSplitter.addEventListener("lostpointercapture", end);
+});
+sideSplitter.addEventListener("keydown", function (e) {
+    var stacked = window.innerWidth <= 760;
+    var direction = stacked ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (!direction) return;
+    e.preventDefault();
+    var bounds = valuePane.getBoundingClientRect();
+    resizeSide((stacked ? bounds.height : bounds.width) + direction * (e.shiftKey ? 50 : 10), stacked);
+    saveUi();
+});
+function trackPanelPointer(target, e, update) {
+    if (e.button !== 0 || !panelFloating()) return;
     e.preventDefault();
     var bounds = layout.getBoundingClientRect(),
         start = panelGeometry(bounds),
@@ -4305,18 +4424,19 @@ function trackPanelPointer(target, e, update) {
 }
 function nudgePanel(e, update) {
     var step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
-    if (!step) return;
+    if (!step || !panelFloating()) return;
     e.preventDefault();
     var bounds = layout.getBoundingClientRect(),
         size = e.shiftKey ? 50 : 10;
     setPanelGeometry(update(panelGeometry(bounds), step[0] * size, step[1] * size, bounds), bounds);
     saveUi();
 }
-$("panelHandle").addEventListener("pointerdown", function (e) {
-    trackPanelPointer(e.currentTarget, e, movedPanel);
+// The title bar buttons keep their own clicks and keys.
+panelHandle.addEventListener("pointerdown", function (e) {
+    if (!e.target.closest("button")) trackPanelPointer(panelHandle, e, movedPanel);
 });
-$("panelHandle").addEventListener("keydown", function (e) {
-    nudgePanel(e, movedPanel);
+panelHandle.addEventListener("keydown", function (e) {
+    if (e.target === panelHandle) nudgePanel(e, movedPanel);
 });
 valuePane.querySelectorAll(".float-resize").forEach(function (handle) {
     var resize = function (start, dx, dy, bounds) {
@@ -4331,7 +4451,9 @@ valuePane.querySelectorAll(".float-resize").forEach(function (handle) {
 });
 applySideLayout();
 new ResizeObserver(function () {
+    updateSplitter();
     applyPanelGeometry();
+    arrangeVariableCards();
 }).observe(layout);
 new ResizeObserver(function () {
     arrangeVariableCards();
