@@ -58,14 +58,16 @@ Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalSt
 - schema 手写在 `src/mcp/tools.js`，全部 `additionalProperties: false`；`probeSerial` 保持字符串原样传递。最终校验仍由 Bridge 完成。
 - 漂移测试（`test/mcp-tools.test.js`）要求每个工具对应现有的 Bridge 路由，每个路由要么被映射，要么列入显式排除清单。
 - `flash_program` / `flash_verify` 先在服务器进程内运行与 skill 相同的预检（`flash-common.preflight`）；`ready === false` 时直接返回 `diagnostics` 与 `notes`，不进入确认。已有 24 小时工作区授权时直接执行，并在结果的 `authorization.trustedExpiresAt` 中报告到期时间。
+- `debug_inspect` 的 `frame` 与 `reference` 是 Bridge 在上一次列表中返回的字符串句柄（`stackFrames[].frame`、`scopes[].reference`、`variables[].reference`），不是 DAP 整数；整数在 schema 校验时即被拒绝。句柄在恢复运行、写入、控制台命令或切换会话后失效，需要重新列出。
 
 ## 确认 / Confirmation
 
 敏感工具（`flash_program`、`flash_verify`、`variables_write`、`peripherals_write`、`cubemx_start`、`cubemx_execute`）收到 Bridge 的确认响应后：
 
-- 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与计划摘要（ELF 路径与 SHA-256、target、probe 与 serial、transport、速度，或写入项的地址与新旧值，或 CubeMX 项目），表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
+- 客户端声明了 elicitation 能力时，服务器发起 `elicitation/create`：消息包含问题与按 Bridge 实际响应渲染的计划摘要——烧录的 ELF 路径与 SHA-256、target、probe 与 serial、transport、速度；变量写入的 ELF 路径与 SHA-256、连接（target、probe、serial 或调试会话）及每个写入项的名称、地址、类型与新值；外设写入的 SVD 路径与 SHA-256、寄存器地址、新旧寄存器值与所请求的字段；CubeMX 的 `.ioc`、候选文件、CubeMX 版本与配置变更（最多 16 项，其余给出数量与完整 diff 路径）。表单只提供 Bridge 给出的 `choices` 加 `deny`，默认值为 `deny`。`once` 以确认 ID 重调；`workspace` 同时带 `remember: true`；拒绝、关闭、取消或弹窗失败都返回 `CONFIRMATION_DENIED`，操作结束。确认 ID 只在服务器内部使用，不出现在返回给 agent 的内容中。
 - 客户端不支持 elicitation 时，返回计划、确认 ID 与 `nextStep` 说明：agent 必须把计划展示给用户、等待明确回答，再带 `confirmationId`（以及用户明确选择的 `remember`）重调，与 skill 流程一致。
 - 确认 ID 过期或已使用时透传 `*_CONFIRMATION_INVALID`，服务器不会自动重新申请。
+- CubeMX 生成方法 `cubemx.start` / `cubemx.execute` 只消费确认，计划由 `cubemx.prepare` 签发。因此 `cubemx_start` / `cubemx_execute` 未带确认 ID 时，服务器先以相同候选文件及其内容哈希调用 `cubemx.prepare`，再按上述方式确认；已有 24 小时项目授权时直接执行。`cubemx_prepare` 只返回计划与 `nextStep`，不返回确认 ID，agent 无法用它绕过 `cubemx_execute` / `cubemx_start` 的确认。
 
 MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会自动接受确认。elicitation 由客户端渲染，比聊天文本更接近人的操作证据，但 Bridge 仍不对此做认证（客户端可以被配置为自动应答），确认 ID 的计划绑定与一次性校验保持不变，见 [AGENT-TRUST-BOUNDARIES.md](AGENT-TRUST-BOUNDARIES.md)。
 

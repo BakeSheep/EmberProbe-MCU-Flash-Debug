@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 MCP 服务器的确认与检查问题：`cubemx_execute` / `cubemx_start` 现在先通过 `cubemx.prepare` 获取计划并请求用户确认，不再直接失败；`cubemx_prepare` 不再把确认 ID 返回给 agent，避免绕过确认对话框。确认对话框列出变量与外设写入的目标、地址与新值，ELF 与 SVD 显示路径和 SHA-256，不再显示 `[object Object]`。`debug_inspect` 的 `frame` / `reference` 改为 Bridge 返回的字符串句柄，作用域与变量查看可以通过 MCP 使用；Bridge 对整数句柄返回 `DEBUG_INSPECTION_INVALID`。见 `docs/MCP.md`。
+- Fix MCP server confirmation and inspection: `cubemx_execute` / `cubemx_start` now plan through `cubemx.prepare` and ask the user instead of failing, and `cubemx_prepare` no longer hands the confirmation ID to the agent, which could otherwise skip the approval dialog. Approval dialogs now list the targets, addresses and new values of variable and peripheral writes and show ELF and SVD paths with their SHA-256 instead of `[object Object]`. `debug_inspect` takes the Bridge's string `frame` / `reference` handles, so scopes and variables work over MCP; the Bridge rejects numeric handles with `DEBUG_INSPECTION_INVALID`. See `docs/MCP.md`.
+
 ## [0.8.9-beta.1] - 2026-10-22
 
 - 波形历史导出 CSV 提速约 4–6 倍（50 分钟、10 条曲线、200 Hz 的 119 MiB CSV 约 1.3 秒），导出内容不变。导出时 VS Code 通知显示进度并可取消，波形窗口状态栏同步显示百分比；写入中的文件名为 `.csv.part`，完成后才改为最终文件名，取消或失败时自动删除；完成通知提供「在文件夹中显示」。修正变量名为 `__proto__` 且该行无值时导出为 `[object Object]` 的问题。见 `docs/LAYERED-SAMPLING.md`。

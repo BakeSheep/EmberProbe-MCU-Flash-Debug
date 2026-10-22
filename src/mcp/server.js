@@ -113,25 +113,25 @@ function createServer(options = {}) {
     async function runConfirmable(tool, args, call, extra) {
         const request = tool.request(args);
         const params = { ...request.params };
-        if (args.confirmationId) {
-            const final = await call(
-                request.method,
-                {
-                    ...params,
-                    confirmationId: args.confirmationId,
-                    ...(args.remember ? { remember: true } : {})
-                },
-                request.timeoutMs
+        const execute = async (approval) =>
+            results.success(
+                confirm.withoutConfirmationId(await call(request.method, { ...params, ...approval }, request.timeoutMs))
             );
-            return results.success(confirm.withoutConfirmationId(final));
-        }
-        const first = await call(request.method, params, request.timeoutMs);
-        if (!first?.confirmationRequired) return results.success(first);
-        const approval = await approve(first, extra);
+        if (args.confirmationId)
+            return execute({ confirmationId: args.confirmationId, ...(args.remember ? { remember: true } : {}) });
+        // Most methods answer an ID-less call with their own plan. A tool with `plan` (CubeMX generation)
+        // asks a separate method for it, because its method only consumes a confirmation.
+        const planned = tool.plan?.(params);
+        const first = planned
+            ? await call(planned.method, planned.params, planned.timeoutMs)
+            : await call(request.method, params, request.timeoutMs);
+        // Without a required confirmation the method already ran, or a remembered permission covers the plan.
+        if (!first?.confirmationRequired) return planned ? execute({}) : results.success(first);
+        const plan = planned ? { ...planned.context, ...first } : first;
+        const approval = await approve(plan, extra);
         if (!approval)
-            return results.success(confirm.pending(first, params.requestId ? { requestId: params.requestId } : {}));
-        const final = await call(request.method, { ...params, ...approval }, request.timeoutMs);
-        return results.success(confirm.withoutConfirmationId(final));
+            return results.success(confirm.pending(plan, params.requestId ? { requestId: params.requestId } : {}));
+        return execute(approval);
     }
 
     async function runFlash(tool, args, call, target, extra) {
@@ -204,7 +204,8 @@ function createServer(options = {}) {
             if (tool.kind === "flash") return await runFlash(tool, args, call, target, extra);
             if (tool.confirm) return await runConfirmable(tool, args, call, extra);
             const request = tool.request(args);
-            return results.success(await call(request.method, request.params || {}, request.timeoutMs));
+            const value = await call(request.method, request.params || {}, request.timeoutMs);
+            return results.success(tool.result ? tool.result(value) : value);
         } catch (error) {
             return results.failure(error, tool.methods.at(-1));
         } finally {

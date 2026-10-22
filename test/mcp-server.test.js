@@ -1,9 +1,11 @@
 "use strict";
-// MCP 服务器进程内连接真实 Agent Bridge（假路由）：确认的接受/拒绝/过期、无 elicitation 回退、
+// MCP 服务器进程内连接真实 Agent Bridge：确认的接受/拒绝/过期、无 elicitation 回退、
 // 确认 ID 不泄露、超时按未知处理、取消转发、roots 变化后重新定位、进度通知与参数校验。
+// 敏感路由使用真实的授权、烧录、外设、CubeMX 与调试检查服务，确认消息按 Bridge 的真实响应形状渲染。
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -20,7 +22,21 @@ const { AgentBridge } = require("../src/agentBridge");
 const { BridgeRegistry } = require("../src/services/bridgeRegistry");
 const { REGISTRY_DIR } = require("../skills/_emberprobe/bridge-locator");
 const flashCommon = require("../skills/_emberprobe/flash-common");
+const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { createServer } = require("../src/mcp/server");
+const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
+const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthorization");
+const { FlashAuthorization } = require("../src/flashAuthorization");
+const { FirmwareRecord } = require("../src/services/firmwareRecord");
+const { AgentFlashService } = require("../src/services/agentFlashService");
+const { SvdPeripheralService } = require("../src/services/svdPeripheralService");
+const { CubeMxService } = require("../src/services/cubemxService");
+const { parseIoc } = require("../src/services/cubemxProject");
+const { AgentDebugInspection } = require("../src/services/agentDebugInspection");
+const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
+const { ProbeCoordinator } = require("../src/probeCoordinator");
+const { encodeValue, decodeValue, decodeValueText } = require("../src/elfSymbols");
+const { minimalElf } = require("./helpers/elf-fixture");
 
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-mcp-server-")));
 const storageDir = path.join(base, "storage");
@@ -28,13 +44,18 @@ process.env.EMBERPROBE_BRIDGE_REGISTRY = path.join(storageDir, REGISTRY_DIR);
 delete process.env.EMBERPROBE_BRIDGE_INSTANCE;
 delete process.env.EMBERPROBE_WORKSPACE;
 
-function deferred() {
-    let resolve;
-    const promise = new Promise((done) => {
-        resolve = done;
-    });
-    return { promise, resolve };
+function memoryStorage() {
+    const values = new Map();
+    return {
+        get: (key, fallback) => (values.has(key) ? values.get(key) : fallback),
+        update: async (key, value) => {
+            if (value === undefined) values.delete(key);
+            else values.set(key, value);
+        }
+    };
 }
+
+const sha256 = (data) => crypto.createHash("sha256").update(data).digest("hex");
 
 async function startBridge(workspace, handlers) {
     fs.mkdirSync(workspace, { recursive: true });
@@ -84,56 +105,190 @@ async function connect({ elicitation, roots, answer, env = {}, progressIntervalM
 }
 
 const workspace = path.join(base, "project");
+fs.mkdirSync(workspace, { recursive: true });
 let confirmations = 0;
-const writeHandler = (params) => {
-    if (!params.confirmationId)
+
+// variables.write: the plan and the confirmation response come from the real WriteAuthorization, composed
+// the way MainViewProvider._writeAgentVariables answers ({ ...authorization.response, ...consistency }).
+const firmware = { path: path.join(workspace, "app.elf"), sha256: "cd".repeat(32) };
+const writeAuthorization = new WriteAuthorization(memoryStorage(), { createId: () => `write-${++confirmations}` });
+function writePlan(values) {
+    return {
+        elfResult: { elf: firmware },
+        connection: writeConnectionIdentity({
+            probe: "interface/stlink.cfg",
+            target: "target/stm32f4x.cfg",
+            transport: "swd",
+            probeSerial: "0001A",
+            openocd: "openocd"
+        }),
+        items: values.map((request, index) => {
+            const bytes = encodeValue(request.value, "f32");
+            return {
+                requestedName: request.name,
+                name: request.name,
+                address: 0x20000000 + index * 4,
+                type: "f32",
+                size: 4,
+                bytes,
+                value: decodeValue(bytes, "f32"),
+                valueText: decodeValueText(bytes, "f32")
+            };
+        })
+    };
+}
+async function writeHandler(params) {
+    const plan = writePlan(params.values);
+    const consistency = { firmwareConsistency: new FirmwareRecord(null).check(firmware) };
+    const authorization = writeAuthorization.authorize(plan, {
+        confirmationId: params.confirmationId,
+        remember: params.remember
+    });
+    if (!authorization.authorized) return { ...authorization.response, ...consistency };
+    const permission = authorization.remember
+        ? { mode: "workspace", ...(await writeAuthorization.trustWorkspace(plan)), remembered: true }
+        : { mode: authorization.mode, trusted: writeAuthorization.isTrusted(plan) };
+    return {
+        source: "active-sampling",
+        elf: firmware,
+        results: plan.items.map((item) => ({ name: item.requestedName, written: item.value, verified: true })),
+        halted: false,
+        ...consistency,
+        permission
+    };
+}
+
+// peripherals.write: the real SvdPeripheralService plans, confirms and verifies against a paused fake target.
+const svdPath = path.join(workspace, "device.svd");
+const SVD = `<?xml version="1.0"?>
+<device><name>TEST</name><size>32</size><peripherals><peripheral><name>GPIOA</name>
+<baseAddress>0x40020000</baseAddress><registers><register><name>ODR</name><addressOffset>0x14</addressOffset>
+<access>read-write</access><fields><field><name>ODR5</name><bitOffset>5</bitOffset><bitWidth>1</bitWidth></field>
+</fields></register></registers></peripheral></peripherals></device>`;
+fs.writeFileSync(svdPath, SVD);
+const registers = new Map([[0x40020014, Buffer.from([0x01, 0, 0, 0])]]);
+const peripherals = new SvdPeripheralService({
+    loadBoundSvd: async () => ({ path: svdPath }),
+    authorization: new PeripheralWriteAuthorization({ createId: () => `p-${++confirmations}` }),
+    debugBridge: {
+        activeSession: { id: "debug-1" },
+        assertPausedAccess() {},
+        agentStatus: () => ({ state: "paused", epoch: 3, session: { id: "debug-1" } }),
+        readPausedMemory: async (address, count) =>
+            Uint8Array.from((registers.get(address) || Buffer.alloc(count)).subarray(0, count)),
+        writePausedMemory: async (address, bytes) => {
+            registers.set(address, Buffer.from(bytes));
+            return { bytesWritten: bytes.length };
+        }
+    }
+});
+
+// flash.authorize/execute/verify: the real AgentFlashService with OpenOCD and the probe replaced.
+const elfFile = path.join(workspace, "app.elf");
+fs.writeFileSync(elfFile, minimalElf());
+const elfDigest = sha256(fs.readFileSync(elfFile));
+const flashRuns = [];
+const flash = new AgentFlashService({
+    getConfig: () => ({ openocdPath: process.execPath }),
+    coordinator: new ProbeCoordinator(),
+    authorization: new FlashAuthorization({ storage: memoryStorage(), createId: () => `flash-${++confirmations}` }),
+    isDebugActive: () => false,
+    resolveLaunch: (executable) => ({ executable }),
+    check: async () => ({ compatible: true, version: "test" }),
+    prepare: async (request) => ({ ...request, probeSerial: "0001A" }),
+    run: async (options) => {
+        flashRuns.push(options);
+        // Programming also verifies; only flash.verify reports through the EP_VERIFY marker.
+        const verify = options.buildCommands().join("\n").includes("EP_VERIFY");
+        if (verify) options.onLine("EP_VERIFY OK");
         return {
-            confirmationRequired: true,
-            confirmationId: `write-${++confirmations}`,
-            expiresAt: new Date(Date.now() + 60000).toISOString(),
-            question: "Write kp = 0.5?",
-            choices: ["once", "workspace"],
-            values: [{ name: "kp", address: "0x20000000", current: 0.1, value: 0.5 }]
+            exitCode: 0,
+            openocdTail: [verify ? "EP_VERIFY OK" : "** Programming Finished **"],
+            commands: options.buildCommands()
         };
-    if (params.confirmationId === "expired")
-        throw Object.assign(new Error("Confirmation expired"), { code: "WRITE_CONFIRMATION_INVALID" });
-    return { results: [{ name: "kp", written: 0.5, verified: true }], remember: !!params.remember };
+    }
+});
+
+// cubemx.*: the real CubeMxService on a workspace project; only the CubeMX process is replaced.
+const IOC = [
+    "Mcu.Name=STM32F407VGTx",
+    "MxCube.Version=6.12.0",
+    "ProjectManager.ProjectName=demo",
+    "ProjectManager.TargetToolchain=CMake",
+    "ProjectManager.KeepUserCode=true",
+    "ProjectManager.UnderRoot=true",
+    "USART2.BaudRate=9600",
+    ""
+].join("\n");
+const cubeProject = path.join(workspace, "cube");
+const ioc = path.join(cubeProject, "demo.ioc");
+fs.mkdirSync(cubeProject, { recursive: true });
+fs.writeFileSync(ioc, IOC);
+fs.writeFileSync(path.join(cubeProject, "main.c"), "baud=9600;\n");
+fs.writeFileSync(path.join(cubeProject, "app.c"), "business code\n");
+let cubeGate = null;
+const cube = new CubeMxService({
+    platform: "win32",
+    storage: memoryStorage(),
+    storageDir: path.join(base, "cubemx-storage"),
+    stagingDir: path.join(base, "cubemx-stage"),
+    config: () => ({ iocPath: ioc }),
+    roots: () => [workspace],
+    installation: async () => ({ executable: "STM32CubeMX.exe", version: "6.12.0" }),
+    run: async (_tool, directory, name, options) => {
+        if (cubeGate) await cubeGate(options.signal);
+        const values = parseIoc(await fs.promises.readFile(path.join(directory, name), "utf8"));
+        await fs.promises.writeFile(path.join(directory, "main.c"), `baud=${values["USART2.BaudRate"]};\n`);
+        return { log: "generated" };
+    }
+});
+// Candidates live in the workspace but outside the generated project directory.
+const candidates = path.join(workspace, "candidates");
+fs.mkdirSync(candidates, { recursive: true });
+const candidate = (baud) => {
+    const file = path.join(candidates, `candidate-${baud}.ioc`);
+    fs.writeFileSync(file, IOC.replace("USART2.BaudRate=9600", `USART2.BaudRate=${baud}`));
+    return file;
 };
+const currentBaud = () => parseIoc(fs.readFileSync(ioc, "utf8"))["USART2.BaudRate"];
+
+// debug.inspect: the real AgentDebugInspection over a paused native session.
+const dapCalls = [];
+const debugBridge = new DebugSessionBridge({ trackSessions: false });
+debugBridge.sessions.set("core-0", {
+    id: "core-0",
+    type: "emberprobe",
+    async customRequest(command, params) {
+        dapCalls.push({ command, params });
+        if (command === "threads") return { body: { threads: [{ id: 7, name: "Worker" }] } };
+        if (command === "stackTrace") return { stackFrames: [{ id: 0, name: "app_main", line: 42 }], totalFrames: 1 };
+        if (command === "scopes") return { scopes: [{ name: "Locals", variablesReference: 10, expensive: false }] };
+        if (command === "variables")
+            return { variables: [{ name: "count", type: "int", value: "3", variablesReference: 0 }] };
+        throw new Error(`Unexpected DAP command ${command}`);
+    }
+});
+debugBridge.paused = true;
+debugBridge.stopEpoch = 1;
+const inspection = new AgentDebugInspection(debugBridge);
 
 (async () => {
-    const generation = deferred();
     const bridge = await startBridge(workspace, {
         "config.get": () => ({ workspace }),
         "variables.write": writeHandler,
-        "peripherals.write": (params) =>
-            params.confirmationId
-                ? { verified: true }
-                : {
-                      confirmationRequired: true,
-                      confirmationId: "p-1",
-                      question: "Write GPIOA.ODR?",
-                      choices: ["once"]
-                  },
+        "peripherals.write": (params) => peripherals.write(params),
         "debug.status": () => new Promise((resolve) => setTimeout(() => resolve({ state: "paused" }), 120)),
-        "cubemx.execute": () => generation.promise,
-        "cubemx.cancel": (params) => {
-            generation.resolve({ cancelled: true });
-            return { cancelled: 1, params };
-        },
-        "flash.authorize": (params) =>
-            params.elf.endsWith("trusted.elf")
-                ? { authorized: true, mode: "workspace", trustedExpiresAt: "2026-10-22T00:00:00.000Z" }
-                : {
-                      authorized: false,
-                      confirmationRequired: true,
-                      confirmationId: "flash-1",
-                      question: "Program firmware?",
-                      choices: ["once", "workspace"]
-                  },
-        "flash.execute": (params) => ({ code: 0, lines: ["** Programming Finished **"], remember: !!params.remember }),
-        "flash.verify": () => ({ code: 0, lines: ["** Verified OK **"] })
+        "debug.inspect": (params) => inspection.inspect(params),
+        "cubemx.prepare": (params) => cube.prepare(params),
+        "cubemx.execute": (params) => cube.execute(params),
+        "cubemx.start": (params) => cube.start(params),
+        "cubemx.cancel": (params) => cube.cancel(params),
+        "flash.authorize": (params) => flash.authorize(params),
+        "flash.execute": (params) => flash.execute(params),
+        "flash.verify": (params) => flash.execute(params, true)
     });
     const other = await startBridge(path.join(base, "other"), { "config.get": () => ({ workspace: "other" }) });
+    const callsSince = (before) => bridge.calls.slice(before).map((call) => call.method);
     try {
         await scenario("List default toolsets with annotations", async () => {
             const { client } = await connect();
@@ -174,7 +329,7 @@ const writeHandler = (params) => {
             await fallback.client.close();
         });
 
-        await scenario("Execute only after the user approves through elicitation", async () => {
+        await scenario("Execute a variable write only after the user approves its items", async () => {
             const { client, elicitations } = await connect({
                 elicitation: true,
                 env: { EMBERPROBE_WORKSPACE: workspace },
@@ -186,18 +341,22 @@ const writeHandler = (params) => {
                 arguments: { values: [{ name: "kp", value: 0.5 }] }
             });
             assert.ok(!result.isError);
-            assert.deepStrictEqual(result.structuredContent, {
-                results: [{ name: "kp", written: 0.5, verified: true }],
-                remember: false
-            });
+            assert.deepStrictEqual(result.structuredContent.results, [{ name: "kp", written: 0.5, verified: true }]);
+            assert.deepStrictEqual(result.structuredContent.permission, { mode: "once", trusted: false });
             const writes = bridge.calls.slice(before);
             assert.strictEqual(writes.length, 2);
-            assert.strictEqual(writes[1].params.confirmationId, writes[0].params.confirmationId ?? "write-1");
+            assert.strictEqual(writes[0].params.confirmationId, undefined);
+            assert.match(writes[1].params.confirmationId, /^write-\d+$/);
             assert.ok(!JSON.stringify(result).includes("write-"), "the confirmation ID never reaches the agent");
             const schema = elicitations[0].requestedSchema.properties.decision;
             assert.deepStrictEqual(schema.enum, ["once", "workspace", "deny"]);
             assert.strictEqual(schema.default, "deny");
-            assert.ok(elicitations[0].message.includes("kp @ 0x20000000: 0.1 → 0.5"));
+            const message = elicitations[0].message;
+            assert.ok(message.includes(`ELF: ${firmware.path}`), message);
+            assert.ok(message.includes(`ELF SHA-256: ${firmware.sha256}`), message);
+            assert.ok(message.includes("Connection: target/stm32f4x.cfg via interface/stlink.cfg serial 0001A"));
+            assert.ok(message.includes("Writes:\n  - kp @ 0x20000000 (f32): 0.5"), message);
+            assert.ok(!message.includes("[object Object]"), message);
             await client.close();
         });
 
@@ -211,7 +370,8 @@ const writeHandler = (params) => {
                 name: "variables_write",
                 arguments: { values: [{ name: "kp", value: 1 }] }
             });
-            assert.strictEqual(result.structuredContent.remember, true);
+            assert.strictEqual(result.structuredContent.permission.remembered, true);
+            await writeAuthorization.reset();
             // Bridge 只给出 once 时不会出现 workspace 选项
             const peripheral = await connect({
                 elicitation: true,
@@ -223,11 +383,38 @@ const writeHandler = (params) => {
             });
             const denied = await peripheral.client.callTool({
                 name: "peripherals_write",
-                arguments: { writes: [{ target: "GPIOA.ODR", value: 1 }] }
+                arguments: { writes: [{ target: "GPIOA.ODR.ODR5", value: 1 }] }
             });
             assert.strictEqual(denied.structuredContent.error.code, "CONFIRMATION_DENIED", "unoffered choices deny");
+            assert.deepStrictEqual([...registers.get(0x40020014)], [0x01, 0, 0, 0], "a denied write never runs");
             await client.close();
             await peripheral.client.close();
+        });
+
+        await scenario("Show the SVD, register and requested fields before a peripheral write", async () => {
+            const { client, elicitations } = await connect({
+                elicitation: true,
+                env: { EMBERPROBE_WORKSPACE: workspace },
+                answer: { action: "accept", content: { decision: "once" } }
+            });
+            const result = await client.callTool({
+                name: "peripherals_write",
+                arguments: { writes: [{ target: "GPIOA.ODR.ODR5", value: 1 }] }
+            });
+            assert.ok(!result.isError, JSON.stringify(result.structuredContent));
+            assert.strictEqual(result.structuredContent.results[0].readBack, "0x00000021");
+            const message = elicitations[0].message;
+            assert.ok(message.includes(`SVD: ${svdPath}`), message);
+            assert.ok(message.includes(`SVD SHA-256: ${sha256(SVD)}`), message);
+            assert.ok(
+                message.includes("Writes:\n  - GPIOA.ODR @ 0x40020014: 0x00000001 → 0x00000021 [GPIOA.ODR.ODR5 = 1]"),
+                message
+            );
+            assert.ok(!message.includes("[object Object]"), message);
+            const { confirmationId } = bridge.calls.at(-1).params;
+            assert.match(confirmationId, /^p-\d+$/);
+            assert.ok(!JSON.stringify(result).includes(confirmationId), "the confirmation ID never reaches the agent");
+            await client.close();
         });
 
         await scenario("End the operation when the user declines or cancels", async () => {
@@ -274,6 +461,9 @@ const writeHandler = (params) => {
             assert.ok(!plan.isError);
             assert.strictEqual(plan.structuredContent.confirmationRequired, true);
             assert.match(plan.structuredContent.confirmationId, /^write-/);
+            assert.deepStrictEqual(plan.structuredContent.items, [
+                { name: "kp", address: "0x20000000", type: "f32", value: 4 }
+            ]);
             assert.ok(plan.structuredContent.nextStep.includes("explicit answer"));
             const done = await client.callTool({
                 name: "variables_write",
@@ -283,7 +473,8 @@ const writeHandler = (params) => {
                     remember: true
                 }
             });
-            assert.strictEqual(done.structuredContent.remember, true);
+            assert.strictEqual(done.structuredContent.permission.remembered, true);
+            await writeAuthorization.reset();
             await client.close();
         });
 
@@ -311,22 +502,171 @@ const writeHandler = (params) => {
             await client.close();
         });
 
+        await scenario("Plan CubeMX generation with cubemx.prepare and ask before executing", async () => {
+            const env = { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" };
+            const { client, elicitations } = await connect({
+                elicitation: true,
+                env,
+                answer: { action: "accept", content: { decision: "once" } }
+            });
+            const candidatePath = candidate(115200);
+            // A prepare result never carries an ID the agent could use to skip the user's approval.
+            const prepared = await client.callTool({ name: "cubemx_prepare", arguments: { candidatePath } });
+            assert.ok(!prepared.isError, JSON.stringify(prepared.structuredContent));
+            assert.strictEqual(prepared.structuredContent.confirmationRequired, true);
+            assert.strictEqual(prepared.structuredContent.confirmationId, undefined);
+            assert.ok(prepared.structuredContent.nextStep.includes("cubemx_execute"));
+            assert.strictEqual(prepared.structuredContent.changes[0].requested, "115200");
+
+            const before = bridge.calls.length;
+            const result = await client.callTool({ name: "cubemx_execute", arguments: { candidatePath } });
+            assert.ok(!result.isError, JSON.stringify(result.structuredContent));
+            assert.strictEqual(result.structuredContent.generated, true);
+            assert.deepStrictEqual(callsSince(before), ["cubemx.prepare", "cubemx.execute"]);
+            const [plan, execution] = bridge.calls.slice(before);
+            assert.strictEqual(plan.params.candidateHash, sha256(fs.readFileSync(candidatePath)));
+            assert.ok(execution.params.confirmationId, "execution consumes the prepared confirmation");
+            assert.ok(!JSON.stringify(result).includes(execution.params.confirmationId));
+            assert.strictEqual(currentBaud(), "115200");
+            assert.strictEqual(fs.readFileSync(path.join(cubeProject, "main.c"), "utf8"), "baud=115200;\n");
+            const message = elicitations[0].message;
+            assert.deepStrictEqual(elicitations[0].requestedSchema.properties.decision.enum, [
+                "once",
+                "workspace",
+                "deny"
+            ]);
+            assert.ok(message.includes(`CubeMX .ioc: ${ioc}`), message);
+            assert.ok(message.includes(`Candidate .ioc: ${candidatePath}`), message);
+            assert.ok(message.includes("STM32CubeMX: STM32CubeMX.exe (6.12.0)"), message);
+            assert.ok(message.includes("Changes:\n  - USART2.BaudRate: 9600 → 115200"), message);
+            assert.ok(!message.includes("[object Object]"), message);
+            await client.close();
+        });
+
+        await scenario("Leave the .ioc untouched when the user declines CubeMX generation", async () => {
+            const { client } = await connect({
+                elicitation: true,
+                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" },
+                answer: { action: "accept", content: { decision: "deny" } }
+            });
+            const before = bridge.calls.length;
+            for (const name of ["cubemx_execute", "cubemx_start"]) {
+                const result = await client.callTool({ name, arguments: { candidatePath: candidate(4800) } });
+                assert.strictEqual(result.structuredContent.error.code, "CONFIRMATION_DENIED");
+            }
+            assert.deepStrictEqual(callsSince(before), ["cubemx.prepare", "cubemx.prepare"]);
+            assert.strictEqual(currentBaud(), "115200");
+            await client.close();
+        });
+
+        await scenario("Return the CubeMX plan for chat confirmation without elicitation", async () => {
+            const { client } = await connect({
+                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
+            });
+            const candidatePath = candidate(57600);
+            const before = bridge.calls.length;
+            const pending = await client.callTool({ name: "cubemx_execute", arguments: { candidatePath } });
+            assert.ok(!pending.isError, JSON.stringify(pending.structuredContent));
+            assert.deepStrictEqual(callsSince(before), ["cubemx.prepare"]);
+            const plan = pending.structuredContent;
+            assert.strictEqual(plan.confirmationRequired, true);
+            assert.ok(plan.confirmationId && plan.requestId && plan.nextStep.includes("explicit answer"));
+            assert.strictEqual(plan.candidatePath, candidatePath);
+            assert.strictEqual(plan.changes[0].requested, "57600");
+            assert.strictEqual(currentBaud(), "115200", "nothing runs before the user answers");
+            const done = await client.callTool({
+                name: "cubemx_execute",
+                arguments: { candidatePath, confirmationId: plan.confirmationId, requestId: plan.requestId }
+            });
+            assert.ok(!done.isError, JSON.stringify(done.structuredContent));
+            assert.strictEqual(bridge.calls.at(-1).params.confirmationId, plan.confirmationId);
+            assert.strictEqual(currentBaud(), "57600");
+            await client.close();
+        });
+
+        await scenario("Generate without asking again under a remembered CubeMX permission", async () => {
+            const decisions = ["workspace"];
+            const { client, elicitations } = await connect({
+                elicitation: true,
+                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" },
+                answer: () => ({ action: "accept", content: { decision: decisions.shift() || "deny" } })
+            });
+            const remembered = await client.callTool({
+                name: "cubemx_execute",
+                arguments: { candidatePath: candidate(38400) }
+            });
+            assert.ok(!remembered.isError, JSON.stringify(remembered.structuredContent));
+            assert.strictEqual(bridge.calls.at(-1).params.remember, true);
+            const before = bridge.calls.length;
+            const started = await client.callTool({
+                name: "cubemx_start",
+                arguments: { candidatePath: candidate(19200) }
+            });
+            assert.ok(!started.isError, JSON.stringify(started.structuredContent));
+            assert.strictEqual(elicitations.length, 1, "a remembered permission skips the dialog");
+            assert.deepStrictEqual(callsSince(before), ["cubemx.prepare", "cubemx.start"]);
+            assert.strictEqual(bridge.calls.at(-1).params.confirmationId, undefined);
+            await cube.activeExecutions.get(started.structuredContent.operationId);
+            assert.strictEqual(currentBaud(), "19200");
+            await client.close();
+        });
+
         await scenario("Forward cancellation to the Bridge's cancel method", async () => {
             const { client } = await connect({
                 env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
             });
+            let entered;
+            const running = new Promise((resolve) => {
+                entered = resolve;
+            });
+            cubeGate = (signal) =>
+                new Promise((_resolve, reject) => {
+                    entered();
+                    signal.addEventListener("abort", () => reject(new Error("CubeMX cancelled")), { once: true });
+                });
             const controller = new AbortController();
             const pending = client
                 .callTool({ name: "cubemx_execute", arguments: { requestId: "r-1" } }, CallToolResultSchema, {
                     signal: controller.signal
                 })
                 .catch((error) => error);
-            while (!bridge.calls.some((call) => call.method === "cubemx.execute"))
-                await new Promise((resolve) => setTimeout(resolve, 5));
+            await running;
             controller.abort();
             await pending;
-            await generation.promise;
+            while (cube.jobs.size) await new Promise((resolve) => setTimeout(resolve, 5));
+            cubeGate = null;
             assert.ok(bridge.calls.some((call) => call.method === "cubemx.cancel"));
+            await client.close();
+        });
+
+        await scenario("Inspect a paused session with the Bridge's string handles", async () => {
+            const { client } = await connect({ env: { EMBERPROBE_WORKSPACE: workspace } });
+            const stack = await client.callTool({
+                name: "debug_inspect",
+                arguments: { action: "stack", threadId: 7 }
+            });
+            assert.ok(!stack.isError, JSON.stringify(stack.structuredContent));
+            const frame = stack.structuredContent.stackFrames[0].frame;
+            assert.strictEqual(typeof frame, "string");
+            const scopes = await client.callTool({ name: "debug_inspect", arguments: { action: "scopes", frame } });
+            assert.ok(!scopes.isError, JSON.stringify(scopes.structuredContent));
+            assert.strictEqual(dapCalls.at(-1).params.frameId, 0);
+            const variables = await client.callTool({
+                name: "debug_inspect",
+                arguments: { action: "variables", reference: scopes.structuredContent.scopes[0].reference, count: 5 }
+            });
+            assert.ok(!variables.isError, JSON.stringify(variables.structuredContent));
+            assert.deepStrictEqual(dapCalls.at(-1).params, {
+                variablesReference: 10,
+                start: 0,
+                count: 5,
+                filter: undefined
+            });
+            assert.strictEqual(variables.structuredContent.variables[0].value, "3");
+            const before = bridge.calls.length;
+            const numeric = await client.callTool({ name: "debug_inspect", arguments: { action: "scopes", frame: 0 } });
+            assert.strictEqual(numeric.structuredContent.error.code, "INVALID_PARAMS", "DAP integers are not handles");
+            assert.strictEqual(bridge.calls.length, before);
             await client.close();
         });
 
@@ -348,8 +688,8 @@ const writeHandler = (params) => {
                 prompts.map((prompt) => prompt.name),
                 ["flash", "fault_triage", "variable_debug", "rtos_inspect"]
             );
-            const flash = await client.getPrompt({ name: "flash", arguments: { goal: "Flash build/app.elf" } });
-            const text = flash.messages[0].content.text;
+            const flashPrompt = await client.getPrompt({ name: "flash", arguments: { goal: "Flash build/app.elf" } });
+            const text = flashPrompt.messages[0].content.text;
             assert.ok(text.startsWith("Task: Flash build/app.elf"));
             assert.ok(text.includes("`scripts/program.js` → flash_program") && text.includes("# MCU Flash"));
             await assert.rejects(client.getPrompt({ name: "cubemx_generate" }), /Unknown prompt/);
@@ -368,18 +708,14 @@ const writeHandler = (params) => {
 
         await scenario("Run flash preflight, confirmation and execution", async () => {
             const realPreflight = flashCommon.preflight;
-            const elf = path.join(workspace, "app.elf");
-            fs.writeFileSync(elf, "elf");
-            const trusted = path.join(workspace, "trusted.elf");
-            fs.writeFileSync(trusted, "elf");
             const plan = (file) => ({
                 ready: true,
                 workspace,
                 elf: file,
-                elfSha256: "ab".repeat(32),
+                elfSha256: elfDigest,
                 target: "target/stm32f4x.cfg",
                 probe: "interface/stlink.cfg",
-                openocd: "openocd",
+                openocd: process.execPath,
                 transport: "swd",
                 probeSerial: "0001A",
                 adapterSpeedKhz: 0,
@@ -391,37 +727,51 @@ const writeHandler = (params) => {
                 flashCommon.preflight = async (options, deps) => {
                     assert.strictEqual(typeof deps.call, "function", "preflight uses the MCP channel");
                     return options.elf === "not-ready"
-                        ? { ...plan(elf), ready: false, notes: ["No probe"] }
-                        : plan(options.elf || elf);
+                        ? { ...plan(elfFile), ready: false, notes: ["No probe"] }
+                        : plan(options.elf || elfFile);
                 };
-                const { client } = await connect({
+                const decisions = ["once", "workspace", "once"];
+                const { client, elicitations } = await connect({
                     elicitation: true,
                     env: { EMBERPROBE_WORKSPACE: workspace },
-                    answer: { action: "accept", content: { decision: "once" } }
+                    answer: () => ({ action: "accept", content: { decision: decisions.shift() || "deny" } })
                 });
                 const before = bridge.calls.length;
                 const notReady = await client.callTool({ name: "flash_program", arguments: { elf: "not-ready" } });
                 assert.strictEqual(notReady.isError, true);
                 assert.strictEqual(notReady.structuredContent.type, "preflight");
                 assert.strictEqual(bridge.calls.length, before, "no confirmation for a failed preflight");
+
                 const programmed = await client.callTool({ name: "flash_program", arguments: {} });
-                assert.ok(!programmed.isError);
+                assert.ok(!programmed.isError, JSON.stringify(programmed.structuredContent));
+                assert.strictEqual(programmed.structuredContent.verified, true);
                 assert.deepStrictEqual(programmed.structuredContent.lines, ["** Programming Finished **"]);
                 const execute = bridge.calls.filter((call) => call.method === "flash.execute").at(-1);
-                assert.strictEqual(execute.params.confirmationId, "flash-1");
+                assert.match(execute.params.confirmationId, /^flash-\d+$/);
                 assert.strictEqual(execute.params.probeSerial, undefined, "inventory serials are not overrides");
-                assert.ok(!JSON.stringify(programmed).includes("flash-1"));
-                const remembered = await client.callTool({ name: "flash_program", arguments: { elf: trusted } });
-                assert.strictEqual(
-                    remembered.structuredContent.authorization.trustedExpiresAt,
-                    "2026-10-22T00:00:00.000Z"
-                );
+                assert.ok(!JSON.stringify(programmed).includes(execute.params.confirmationId));
+                const message = elicitations[0].message;
+                // The Bridge binds the confirmation to the normalized file identity, which is what the user sees.
+                assert.ok(message.includes(`ELF: ${normalizeFileIdentity(elfFile)}`), message);
+                assert.ok(message.includes(`ELF SHA-256: ${elfDigest}`), message);
+                assert.ok(message.includes("Target: target/stm32f4x.cfg"), message);
+                assert.ok(message.includes("Probe serial: 0001A"), message);
+                assert.ok(!message.includes("[object Object]"), message);
+
+                const remember = await client.callTool({ name: "flash_program", arguments: {} });
+                assert.ok(!remember.isError, JSON.stringify(remember.structuredContent));
+                assert.strictEqual(bridge.calls.at(-1).params.remember, true);
+                const remembered = await client.callTool({ name: "flash_program", arguments: {} });
+                assert.strictEqual(typeof remembered.structuredContent.authorization.trustedExpiresAt, "string");
                 assert.strictEqual(bridge.calls.at(-1).params.confirmationId, undefined);
+                assert.strictEqual(elicitations.length, 2, "a remembered permission skips the dialog");
+
                 const verified = await client.callTool({ name: "flash_verify", arguments: {} });
-                assert.deepStrictEqual(verified.structuredContent.lines, ["** Verified OK **"]);
+                assert.strictEqual(verified.structuredContent.verified, true);
                 const verify = bridge.calls.at(-1);
                 assert.strictEqual(verify.method, "flash.verify");
                 assert.strictEqual(verify.params.remember, undefined, "verification never remembers");
+                assert.strictEqual(flashRuns.length, 4);
                 await client.close();
             } finally {
                 flashCommon.preflight = realPreflight;

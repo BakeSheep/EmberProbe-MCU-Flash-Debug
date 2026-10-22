@@ -83,7 +83,9 @@ function candidateHash(file) {
  *   name: string, toolset: string, title: string, description: string, methods: string[],
  *   inputSchema: Record<string, any>, request?: (args: Record<string, any>) => BridgeRequest,
  *   kind?: "bridge" | "flash", confirm?: boolean, destructive?: boolean, mutates?: boolean,
- *   hardware?: boolean, operation?: string, cancel?: (args: Record<string, any>) => BridgeRequest | null
+ *   hardware?: boolean, operation?: string, cancel?: (args: Record<string, any>) => BridgeRequest | null,
+ *   plan?: (params: Record<string, any>) => BridgeRequest & { context?: Record<string, any> },
+ *   result?: (value: any) => any
  * }} ToolDefinition
  */
 /** @type {ToolDefinition[]} */
@@ -442,8 +444,12 @@ const TOOLS = [
             {
                 action: str("What to list", { enum: ["threads", "stack", "scopes", "variables"] }),
                 threadId: int("Thread for stack", 1, Number.MAX_SAFE_INTEGER),
-                frame: int("Frame id for scopes", 0, Number.MAX_SAFE_INTEGER),
-                reference: int("Variables reference", 1, Number.MAX_SAFE_INTEGER),
+                // The Bridge issues opaque string handles, never DAP integers, so a stale number cannot alias.
+                frame: str("Frame handle from a stack listing (stackFrames[].frame)", { minLength: 1, maxLength: 64 }),
+                reference: str("Reference handle from a scopes or variables listing (.reference)", {
+                    minLength: 1,
+                    maxLength: 64
+                }),
                 start: int("Page start", 0, 100000),
                 count: int("Page size", 1, 100),
                 filter: str("Child filter", { enum: ["named", "indexed"] })
@@ -591,7 +597,8 @@ const TOOLS = [
                 full: !!args.full,
                 ...(args.candidatePath ? { candidatePath: path.resolve(args.candidatePath) } : {})
             }
-        })
+        }),
+        result: withoutApproval
     },
     {
         name: "cubemx_candidate",
@@ -636,7 +643,8 @@ const TOOLS = [
             requestId: str("Idempotency key"),
             ...confirmation
         }),
-        request: (args) => cubemxRequest("cubemx.start", args)
+        request: (args) => cubemxRequest("cubemx.start", args),
+        plan: cubemxPlan
     },
     {
         name: "cubemx_execute",
@@ -652,6 +660,7 @@ const TOOLS = [
             ...confirmation
         }),
         request: (args) => cubemxRequest("cubemx.execute", args, 360000),
+        plan: cubemxPlan,
         // 同步生成不返回 operationId；取消时转发不带 ID 的 cubemx.cancel（取消本工作区正在运行的生成）。
         cancel: () => ({ method: "cubemx.cancel", params: {} })
     },
@@ -675,6 +684,35 @@ function cubemxRequest(method, args, timeoutMs = 30000) {
     // 同一次工具调用（含确认后的重调）复用同一个 requestId，Bridge 据此去重。
     params.requestId = args.requestId || crypto.randomUUID();
     return { method, params, timeoutMs };
+}
+
+// cubemx.start/execute only consume a confirmation; cubemx.prepare issues it. The plan covers exactly the
+// candidate bytes that will run (candidateHash), and the Bridge binds the ID to that identity.
+function cubemxPlan(params) {
+    return {
+        method: "cubemx.prepare",
+        params: {
+            summary: true,
+            full: false,
+            ...(params.candidatePath
+                ? { candidatePath: params.candidatePath, candidateHash: params.candidateHash }
+                : {})
+        },
+        timeoutMs: 30000,
+        context: params.candidatePath ? { candidatePath: params.candidatePath } : {}
+    };
+}
+
+// Approval for generation belongs to cubemx_start/cubemx_execute (elicitation, or their own chat plan), so a
+// prepare result never carries a confirmation ID the agent could use to skip that approval.
+function withoutApproval(result) {
+    if (!result || typeof result !== "object" || !("confirmationId" in result)) return result;
+    const { confirmationId: _id, expiresAt: _expiresAt, choices: _choices, question: _question, ...rest } = result;
+    return {
+        ...rest,
+        nextStep:
+            "To apply this plan, call cubemx_execute or cubemx_start with the same candidatePath; that call asks the user for approval."
+    };
 }
 
 // 有意不暴露为 MCP 工具的 Bridge 路由方法（漂移测试要求每个路由要么被映射，要么列在这里）。

@@ -69,6 +69,12 @@ class AgentDebugInspection {
     }
 
     resolve(key, kind) {
+        // A DAP integer is never a handle; "list again" would only return the same handle shape.
+        if (typeof key !== "string" || !key)
+            throw fail(
+                "DEBUG_INSPECTION_INVALID",
+                `${kind === "frame" ? "frame" : "reference"} must be a handle string from a previous listing`
+            );
         const value = this.handles.get(key);
         if (!value || value.kind !== kind)
             throw fail("DEBUG_INSPECTION_STALE", "Unknown or expired inspection handle; list frames/scopes again");
