@@ -9,7 +9,9 @@ function fixture({
     corrupt = false,
     detached = false,
     arch = "armv7e-m",
-    endian = "little"
+    endian = "little",
+    pointerSize = 4,
+    registerNames = ["r0", "sp", "lr", "pc", "xpsr"]
 } = {}) {
     const memory = new Map();
     // Zero-initialized kernel .bss around the list heads; other memory is readable only where set.
@@ -137,12 +139,16 @@ function fixture({
         },
         captureConsole: async (run) => {
             await run();
-            return `The target architecture is ${arch}. The target is ${endian} endian.`;
+            return (
+                `The target architecture is set to "auto" (currently "${arch}").\n` +
+                `The target endianness is set automatically (currently ${endian} endian).\n`
+            );
         },
         mi: {
             command: async (command) => {
                 commands.push(command);
                 if (session.resumeOn && command.startsWith(session.resumeOn)) generation++;
+                if (command === "-data-list-register-names") return { "register-names": registerNames };
                 if (command.startsWith("-data-read-memory-bytes")) {
                     const [, address, size] = command.split(" ");
                     const contents = readMemory(Number(address), Number(size)).toString("hex");
@@ -150,7 +156,7 @@ function fixture({
                 }
                 if (!command.startsWith("-data-evaluate-expression")) return {};
                 const expr = JSON.parse(command.slice(command.indexOf(" ") + 1));
-                if (expr === "sizeof(void*)") return { value: "4" };
+                if (expr === "sizeof(void*)") return { value: String(pointerSize) };
                 if (expr === "sizeof(pxReadyTasksLists) / sizeof(List_t)") return { value: "2" };
                 if (Object.hasOwn(symbols, expr)) return { value: String(symbols[expr]) };
                 const address = expr.match(/^\(unsigned long\)&\((\w+)\)$/);
@@ -264,17 +270,84 @@ function fixture({
         assert(!initial.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
     }
     for (const arch of ["armv6-m", "armv7e-m", "armv8-m.main", "armv8.1-m", "armv8.1-m.main"]) {
-        const result = await new FreeRtosSnapshot(fixture({ arch }).session).snapshot();
+        const target = fixture({ arch });
+        const result = await new FreeRtosSnapshot(target.session).snapshot();
         assert.strictEqual(result.kernel.supported, true, `${arch} is a Cortex-M profile`);
         assert.deepStrictEqual(result.diagnostics, []);
         assert.strictEqual(result.tasks.length, 2);
+        assert(!target.commands.includes("-data-list-register-names"), "explicit M-profile needs no fallback");
     }
-    for (const rejected of [{ arch: "armv7-a" }, { arch: "armv8.1-a" }, { endian: "big" }]) {
+    for (const arch of ["arm", "armv6", "armv7", "armv8"]) {
+        const target = fixture({ arch });
+        const result = await new FreeRtosSnapshot(target.session).snapshot();
+        assert.strictEqual(result.kernel.supported, true, `${arch} with xpsr is a Cortex-M target`);
+        assert.deepStrictEqual(result.diagnostics, []);
+        assert.strictEqual(result.tasks.length, 2);
+        assert(target.commands.includes("-data-list-register-names"));
+        target.commands.length = 0;
+        assert.deepStrictEqual(await new FreeRtosSnapshot(target.session).snapshot(), result);
+        assert(!target.commands.includes("-data-list-register-names"), "target identity is cached with the symbols");
+        target.session.symbolDirectory.reset();
+        await new FreeRtosSnapshot(target.session).snapshot();
+        assert(target.commands.includes("-data-list-register-names"), "symbol reload rechecks target identity");
+    }
+    for (const rejected of [
+        { arch: "armv7-a" },
+        { arch: "armv8.1-a" },
+        { arch: "armv7-r" },
+        { arch: "aarch64" },
+        { arch: "i386" },
+        { endian: "big" },
+        { pointerSize: 8 },
+        { arch: "arm", endian: "big" },
+        { arch: "arm", pointerSize: 8 },
+        { arch: "arm", registerNames: ["r0", "sp", "pc", "cpsr"] },
+        { arch: "arm", registerNames: ["xpsr", "cpsr"] },
+        { arch: "arm", registerNames: [] },
+        { arch: "arm", registerNames: null },
+        { arch: "arm", registerNames: "xpsr" }
+    ]) {
         const gate = fixture(rejected);
         const result = await new FreeRtosSnapshot(gate.session).snapshot();
         assert.strictEqual(result.kernel.supported, false, JSON.stringify(rejected));
         assert.deepStrictEqual(result.tasks, []);
         assert.match(result.diagnostics[0], /little-endian single-core Cortex-M ARM32/u);
+        assert.match(result.diagnostics[0], /GDB:.*pointer size/u);
+        assert(!gate.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
+    }
+    {
+        const target = fixture({ arch: "arm", registerNames: ["", null, "xPSR"] });
+        assert.strictEqual((await new FreeRtosSnapshot(target.session).snapshot()).kernel.supported, true);
+    }
+    {
+        const smp = fixture({ arch: "arm" });
+        smp.symbols.pxCurrentTCBs = 0x20002000;
+        const result = await new FreeRtosSnapshot(smp.session).snapshot();
+        assert.strictEqual(result.kernel.supported, false);
+        assert.match(result.diagnostics[0], /SMP/);
+        assert.deepStrictEqual(smp.commands, [], "SMP is rejected before target queries or memory reads");
+    }
+    {
+        const target = fixture({ arch: "arm" });
+        target.session.resumeOn = "-data-list-register-names";
+        await assert.rejects(new FreeRtosSnapshot(target.session).snapshot(), /Stale/);
+        assert(!target.commands.some((command) => command.startsWith("-data-read-memory-bytes")));
+    }
+    {
+        const target = fixture({ arch: "arm" });
+        const command = target.session.mi.command;
+        let failures = 1;
+        target.session.mi.command = async (value) => {
+            if (value === "-data-list-register-names" && failures-- > 0) throw new Error("Remote connection closed");
+            return command(value);
+        };
+        const failed = await new FreeRtosSnapshot(target.session).snapshot();
+        assert.strictEqual(failed.kernel.supported, false);
+        assert.match(failed.diagnostics[0], /Remote connection closed/);
+        assert(!target.commands.some((value) => value.startsWith("-data-read-memory-bytes")));
+        const retried = await new FreeRtosSnapshot(target.session).snapshot();
+        assert.strictEqual(retried.kernel.supported, true, "failed target queries are retried");
+        assert.deepStrictEqual(retried.diagnostics, []);
     }
     const beforeScheduler = fixture();
     beforeScheduler.symbols.xSchedulerRunning = 0;

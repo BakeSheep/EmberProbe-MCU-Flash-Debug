@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 FreeRTOS 任务面板把 GDB 报告为通用 `arm` / `armv7` 等名称的 Cortex-M 目标误判为不支持：通过当前会话的 M-profile 寄存器名称补充确认，保留小端、32 位及非 SMP 限制；架构诊断补充 GDB 实际返回的架构、字节序和指针大小。
+- Fix the FreeRTOS task panel rejecting Cortex-M targets that GDB reports as generic `arm` / `armv7` and related names: verify M-profile register names in the current session while preserving little-endian, 32-bit and non-SMP restrictions; architecture diagnostics now include GDB's reported architecture, endianness and pointer size.
 - 修复 MCP 服务器的确认与检查问题：`cubemx_execute` / `cubemx_start` 现在先通过 `cubemx.prepare` 获取计划并请求用户确认，不再直接失败；`cubemx_prepare` 不再把确认 ID 返回给 agent，避免绕过确认对话框。确认对话框列出变量与外设写入的目标、地址与新值，ELF 与 SVD 显示路径和 SHA-256，不再显示 `[object Object]`。`debug_inspect` 的 `frame` / `reference` 改为 Bridge 返回的字符串句柄，作用域与变量查看可以通过 MCP 使用；Bridge 对整数句柄返回 `DEBUG_INSPECTION_INVALID`。见 `docs/MCP.md`。
 - Fix MCP server confirmation and inspection: `cubemx_execute` / `cubemx_start` now plan through `cubemx.prepare` and ask the user instead of failing, and `cubemx_prepare` no longer hands the confirmation ID to the agent, which could otherwise skip the approval dialog. Approval dialogs now list the targets, addresses and new values of variable and peripheral writes and show ELF and SVD paths with their SHA-256 instead of `[object Object]`. `debug_inspect` takes the Bridge's string `frame` / `reference` handles, so scopes and variables work over MCP; the Bridge rejects numeric handles with `DEBUG_INSPECTION_INVALID`. See `docs/MCP.md`.
 
