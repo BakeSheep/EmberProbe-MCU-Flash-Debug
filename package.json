@@ -1016,6 +1016,7 @@
   },
   "files": [
     "dist/extension.js",
+    "dist/mcp-server.js",
     "dist/buildInfo.json",
     "dist/samplingWorker.js",
     "dist/chartHistoryWorker.js",
@@ -1030,6 +1031,7 @@
     "README.md",
     "README_EN.md",
     "docs/EXTERNAL-GDB-SERVER.md",
+    "docs/MCP.md",
     "docs/CPU-LOAD-MONITORING.md",
     "docs/RTOS-AWARENESS.md",
     "docs/GDB-CONSOLE.md",
