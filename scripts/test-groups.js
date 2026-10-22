@@ -72,6 +72,7 @@ const TEST_GROUPS = Object.freeze({
         "jlink-driver-choice.test.js",
         "jlink-probe-ready.test.js",
         "layered-sampling.test.js",
+        "large-object-read-budget.test.js",
         "layout-expansion-host.test.js",
         "layout-expansion-paths.test.js",
         "live-read-batch-cache.test.js",

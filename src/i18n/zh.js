@@ -731,6 +731,8 @@ module.exports = Object.freeze({
     "live.runtimeAddressRejected": "运行时读取仅允许 ELF 可写 RAM 段",
     "live.runtimeAddressRejectedNames": "运行时读取已拒绝非 ELF 可写 RAM 变量：{names}",
     "live.runtimeBudgetExceeded": "运行时读取超过每周期安全预算（4096 字节 / 32 次读取）",
+    "live.runtimeBudgetExceededNames":
+        "运行中采样已跳过超过每周期预算（4096 字节 / 32 次读取）的变量，暂停目标后可读取：{names}",
     "live.dapSampling": "芯片已暂停，正通过调试器采样",
     "live.dapReading": "芯片已暂停，正在读取当前值…",
     "live.dapReady": "芯片已暂停，当前值已读取",
