@@ -102,6 +102,7 @@ const TEST_GROUPS = Object.freeze({
         "provider-state.test.js",
         "release-script.test.js",
         "release-workflow.test.js",
+        "repl-focus.test.js",
         "rtos-snapshot.test.js",
         "runtime-native-layouts.test.js",
         "runtime-objects.test.js",

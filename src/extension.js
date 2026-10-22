@@ -8,12 +8,15 @@ const vscode = require("vscode");
 const openocdChecker = require("./openocdChecker");
 const { MainViewProvider } = require("./mainViewProvider");
 const { validateDebugConfiguration } = require("./services/debugConfiguration");
+const { ReplFocusRestorer } = require("./services/replFocus");
 let activeProvider = null;
 
 function activate(context) {
     console.log("MCU_VSCODE 下载与调试器已激活！");
     const provider = new MainViewProvider(context);
     activeProvider = provider;
+    const replFocus = new ReplFocusRestorer({ focusRepl: () => vscode.commands.executeCommand("workbench.debug.action.focusRepl") });
+    const userSelection = [vscode.TextEditorSelectionChangeKind.Keyboard, vscode.TextEditorSelectionChangeKind.Mouse];
 
     const subscriptions = [
         vscode.window.registerWebviewViewProvider("mcu-vscode.mainView", provider, {
@@ -90,16 +93,32 @@ function activate(context) {
         ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
             createDebugAdapterTracker(session) {
                 provider.handleDebugSessionStart(session);
+                // Only the built-in debugger returns focus to the Debug Console after console stepping.
+                const focus = type === "emberprobe" ? replFocus : null;
                 return {
-                    onWillReceiveMessage: message => provider.handleDebugAdapterRequest(session, message),
-                    onDidSendMessage: message => provider.handleDebugAdapterMessage(session, message),
+                    onWillReceiveMessage: message => {
+                        focus?.handleRequest(session, message);
+                        provider.handleDebugAdapterRequest(session, message);
+                    },
+                    onDidSendMessage: message => {
+                        focus?.handleMessage(session, message);
+                        provider.handleDebugAdapterMessage(session, message);
+                    },
                     onError: error => console.error("Debug adapter error:", error),
-                    onExit: () => provider.handleDebugAdapterExit(session)?.catch(error => {
-                        console.error("Unable to clean up after debug adapter exit:", error);
-                    })
+                    onExit: () => {
+                        focus?.sessionEnded(session);
+                        return provider.handleDebugAdapterExit(session)?.catch(error => {
+                            console.error("Unable to clean up after debug adapter exit:", error);
+                        });
+                    }
                 };
             }
         })),
+        replFocus,
+        vscode.window.onDidChangeActiveTextEditor(() => replFocus.editorActivity("reveal")),
+        vscode.window.onDidChangeTextEditorSelection(event => {
+            replFocus.editorActivity(userSelection.includes(event.kind) ? "user" : "reveal");
+        }),
         vscode.debug.onDidStartDebugSession(session => provider.handleDebugSessionStart(session)),
         vscode.debug.onDidTerminateDebugSession(session => provider.handleDebugSessionTerminate(session).catch(error => {
             console.error("Unable to restore EmberProbe sampling after debugging:", error);
