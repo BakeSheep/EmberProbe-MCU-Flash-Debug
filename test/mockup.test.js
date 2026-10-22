@@ -143,24 +143,18 @@ function testSimulatorAndRegisters() {
 }
 
 function testMockUnlimitedPreset() {
-    for (const unlimitedAvailable of [false, true]) {
-        const env = hostEnvironment();
-        const frame = env.frame();
-        const host = env.root.EmberProbeLiveWatchHost.create(frame, { unlimitedAvailable });
-        try {
-            env.deliver(frame, { type: "ready" });
-            assert.deepStrictEqual(latest(frame, "liveUnlimited"), {
-                type: "liveUnlimited",
-                available: unlimitedAvailable,
-                enabled: false
-            });
-            env.deliver(frame, { type: "setUnlimitedSampling", enabled: true });
-            assert.strictEqual(latest(frame, "liveUnlimited").enabled, unlimitedAvailable);
-            env.deliver(frame, { type: "setUnlimitedSampling", enabled: false });
-            assert.strictEqual(latest(frame, "liveUnlimited").enabled, false);
-        } finally {
-            host.destroy();
-        }
+    const env = hostEnvironment();
+    const frame = env.frame();
+    const host = env.root.EmberProbeLiveWatchHost.create(frame, {});
+    try {
+        env.deliver(frame, { type: "ready" });
+        assert.deepStrictEqual(latest(frame, "liveUnlimited"), { type: "liveUnlimited", enabled: false });
+        env.deliver(frame, { type: "setUnlimitedSampling", enabled: true });
+        assert.strictEqual(latest(frame, "liveUnlimited").enabled, true);
+        env.deliver(frame, { type: "setUnlimitedSampling", enabled: false });
+        assert.strictEqual(latest(frame, "liveUnlimited").enabled, false);
+    } finally {
+        host.destroy();
     }
 }
 

@@ -69,7 +69,7 @@ module.exports = Object.freeze({
     "lw.frequencyPresets": "Select sampling rate",
     "lw.unlimited": "Max rate",
     "lw.unlimitedTitle":
-        "Experimental: sample back-to-back at probe throughput without the 200 Hz cap; inactive during debug sessions",
+        "Sample back-to-back at probe throughput without the 200 Hz cap; inactive during debug sessions",
     "lw.unlimitedRate": "Max rate · actual {hz} Hz",
     "lw.unlimitedByProbe": "Limited by probe throughput",
     "lw.unlimitedByHost": "Limited by extension processing",
@@ -544,6 +544,9 @@ module.exports = Object.freeze({
     "lw.memoryHistoryLimited": "Memory history is limited or incomplete; the disk archive keeps recording.",
     "lw.historyRecoveryFailed": "Chart history recovery failed; sampling and the disk archive keep recording.",
     "lw.archiveTruncated": "Sampling history reached its size limit; later samples were not archived",
+    "lw.archiveRemaining": "archive {time} left",
+    "lw.archiveLow":
+        "At the current rate the sampling archive fills in about {time}, and sampling stops then. Raise emberprobe.samplingArchiveMaxMiB in Settings (applies immediately).",
     "lw.exportTitle": "Export CSV",
     "lw.exportSeries": "Series",
     "lw.exportSelectAll": "Select all",

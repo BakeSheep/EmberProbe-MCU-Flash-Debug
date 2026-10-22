@@ -200,7 +200,7 @@
           "default": 1024,
           "minimum": 64,
           "maximum": 102400,
-          "description": "当前扩展会话的自动采样历史最大磁盘占用（MiB），退出时自动删除"
+          "description": "当前扩展会话的自动采样历史最大磁盘占用（MiB），修改立即生效（调高后已写满停止的采样可重新开始），退出时自动删除"
         },
         "emberprobe.cubemxPath": {
           "type": "string",
@@ -333,11 +333,6 @@
             "debug"
           ],
           "markdownDescription": "EmberProbe MCP 服务器暴露的工具集：`core`（配置、烧录、变量、外设）、`debug`（调试控制、断点、RTOS）、`cubemx`（STM32CubeMX 生成）。工具定义会常驻 Agent 上下文，只开启需要的工具集。见 `docs/MCP.md`。"
-        },
-        "emberprobe.experimental.unlimitedSampling.enabled": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "实验性：在波形窗口的采样帧率滑条中显示「不限速」挡位。选择后独立 OpenOCD 采样不再受 200 Hz 上限约束，按探针吞吐背靠背读取；调试会话中不生效。内存历史仍按每变量最多 360,001 点保留，高频时可回看时长相应缩短，完整数据保存在磁盘归档中。详见 `docs/UNLIMITED-SAMPLING.md`。"
         },
         "emberprobe.experimental.externalGdb.enabled": {
           "type": "boolean",

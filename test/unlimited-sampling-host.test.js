@@ -6,10 +6,8 @@ const { loadProvider } = require("./helpers/load-provider");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 
-const SETTING = "experimental.unlimitedSampling.enabled";
-
-function createProvider(settings) {
-    const config = { get: (key, fallback) => settings.get(key) ?? fallback };
+function createProvider() {
+    const config = { get: (key, fallback) => fallback };
     const Provider = loadProvider({ workspace: { getConfiguration: () => config } });
     const provider = Object.create(Provider.prototype);
     const state = new Map();
@@ -32,17 +30,14 @@ function createProvider(settings) {
 }
 
 (async () => {
-    const settings = new Map();
-    const { provider, state, plans, panelMessages } = createProvider(settings);
+    const { provider, state, plans, panelMessages } = createProvider();
 
-    // The feature gate rejects requests and keeps the persisted choice untouched.
-    await assert.rejects(provider._setUnlimitedSampling(true), { code: "UNLIMITED_SAMPLING_DISABLED" });
+    // Invalid requests keep the persisted choice untouched.
     await assert.rejects(provider._setUnlimitedSampling("yes"), { code: "INVALID_PARAMS" });
     assert.strictEqual(state.size, 0);
     assert.strictEqual(plans.length, 0);
 
-    // Enabled setting: the toggle persists per workspace and re-applies the plan immediately.
-    settings.set(SETTING, true);
+    // The slider notch needs no setting: the choice persists per workspace and re-applies the plan immediately.
     assert.strictEqual(await provider._setUnlimitedSampling(true), true);
     assert.strictEqual(state.get("liveWatch.unlimitedSampling"), true);
     assert.strictEqual(plans.at(-1).unlimited, true);
@@ -51,24 +46,15 @@ function createProvider(settings) {
         plans.at(-1).graphItems.map((item) => item.name),
         ["tick"]
     );
-    assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", available: true, enabled: true });
-
-    // Turning the experimental setting off disables the mode without forgetting the user's choice.
-    settings.set(SETTING, false);
-    provider.unlimitedSamplingConfigurationChanged();
-    assert.strictEqual(plans.at(-1).unlimited, false);
-    assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", available: false, enabled: false });
-    assert.strictEqual(state.get("liveWatch.unlimitedSampling"), true);
-    settings.set(SETTING, true);
-    provider.unlimitedSamplingConfigurationChanged();
-    assert.strictEqual(plans.at(-1).unlimited, true);
+    assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", enabled: true });
+    assert.strictEqual(provider.unlimitedSamplingConfigurationChanged, undefined, "there is no gating setting");
 
     // Debug sessions keep their own read plan; toggling must not push a standalone plan into them.
     const before = plans.length;
     provider._debugBridge.hasSession = true;
     await provider._setUnlimitedSampling(false);
     assert.strictEqual(plans.length, before);
-    assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", available: true, enabled: false });
+    assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", enabled: false });
     provider._debugBridge.hasSession = false;
     let finishSave;
     const updateState = provider._context.workspaceState.update;
@@ -107,11 +93,27 @@ function createProvider(settings) {
     assert.strictEqual(status.hostHoldMs, 0);
     assert.strictEqual(status.bytesPerSecond, 0);
 
+    // Archive budget: the write rate over ~10 s gives the remaining recording time; a full archive reports zero.
+    provider._samplingArchive = { writtenBytes: 0, queuedBytes: 0, maxBytes: 100 * 1024 * 1024, limitReached: false };
+    assert.strictEqual(provider._samplingArchiveBudget(0).remainingSeconds, null, "no rate before one second");
+    provider._samplingArchive.writtenBytes = 1024 * 1024;
+    let budget = provider._samplingArchiveBudget(2000);
+    assert.strictEqual(budget.bytesPerSecond, 512 * 1024);
+    assert.strictEqual(budget.remainingSeconds, 198);
+    assert.strictEqual(budget.usedBytes, 1024 * 1024);
+    for (let t = 2250; t <= 20000; t += 250) provider._samplingArchiveBudget(t);
+    budget = provider._samplingArchiveBudget(20000);
+    assert.strictEqual(budget.bytesPerSecond, 0, "the estimate follows the recent rate, not the session average");
+    assert.strictEqual(budget.remainingSeconds, null);
+    provider._samplingArchive.limitReached = true;
+    assert.strictEqual(provider._samplingArchiveBudget(20250).remainingSeconds, 0);
+    delete provider._samplingArchive;
+
     // Configuration and Agent Bridge limits stay at 200 Hz; unlimited is a separate, UI-only flag.
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     const properties = pkg.contributes.configuration.properties;
     assert.strictEqual(properties["emberprobe.sampleFrequencyHz"].maximum, 200);
-    assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"].default, false);
+    assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"], undefined);
     await assert.rejects(provider._controlAgentSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
 
     const graph = render(getLiveWatchContent({ backendHistory: true, panelId: 3 }, "en"));
@@ -121,16 +123,13 @@ function createProvider(settings) {
         const slider = doc.getElementById("frequencyPreset");
         const field = doc.getElementById("frequencyField");
         assert.strictEqual(doc.getElementById("unlimited"), null, "the old toolbar toggle is removed");
-        assert.strictEqual(slider.max, "3", "unlimited is absent until the setting is enabled");
+        assert.strictEqual(slider.max, "4", "the unlimited notch is always offered");
         assert.ok(!graph.messages.some((m) => m.type === "setUnlimitedSampling"));
-
-        graph.send({ type: "liveUnlimited", available: true, enabled: false });
-        assert.strictEqual(slider.max, "4");
         slider.value = "4";
         slider.dispatchEvent(new graph.window.Event("input"));
         assert.deepStrictEqual(graph.messages.at(-1), { type: "setUnlimitedSampling", enabled: true, panelId: 3 });
 
-        graph.send({ type: "liveUnlimited", available: true, enabled: true });
+        graph.send({ type: "liveUnlimited", enabled: true });
         assert(!field.classList.contains("is-unlimited"), "unlimited changes the track, not the input decoration");
         assert.strictEqual(doc.getElementById("frequency").value, "-");
         assert.strictEqual(doc.getElementById("frequency").disabled, false, "a numeric edit can exit unlimited");
@@ -187,9 +186,39 @@ function createProvider(settings) {
         graph.send({ type: "chartValues", samples: [], actualHz: 900, bytesPerSecond: 99999 });
         assert.strictEqual(rate.textContent, "0.0kb/s | 0.0Hz", "late telemetry cannot restore stopped rates");
 
-        graph.send({ type: "liveUnlimited", available: false, enabled: false });
-        assert.strictEqual(slider.max, "3");
+        graph.send({ type: "liveUnlimited", enabled: false });
+        assert.strictEqual(slider.max, "4");
         assert.strictEqual(doc.getElementById("frequency").value, "30");
+
+        // A nearly full archive shows its remaining time and warns at 10 min and again at 1 min.
+        const status = doc.getElementById("status");
+        graph.send({ type: "liveStatus", running: true, actualHz: 900, bytesPerSecond: 64000 });
+        const values = (remainingSeconds) =>
+            graph.send({
+                type: "chartValues",
+                samples: [],
+                actualHz: 900,
+                bytesPerSecond: 64000,
+                archive: { usedBytes: 1, maxBytes: 2, bytesPerSecond: 1, remainingSeconds }
+            });
+        values(7200);
+        assert.strictEqual(rate.textContent, "64.0kb/s | 900.0Hz", "a distant limit stays out of the toolbar");
+        values(1800);
+        assert.strictEqual(rate.textContent, "64.0kb/s | 900.0Hz | archive 30:00 left");
+        assert.ok(!/fills in about/.test(status.textContent));
+        values(590);
+        assert.ok(status.textContent.includes("fills in about 09:50"), status.textContent);
+        assert.ok(status.textContent.includes("samplingArchiveMaxMiB"));
+        status.textContent = "";
+        values(500);
+        assert.strictEqual(status.textContent, "", "each threshold warns once");
+        values(45);
+        assert.ok(status.textContent.includes("fills in about 00:45"));
+        values(5000);
+        values(400);
+        assert.ok(status.textContent.includes("fills in about 06:40"), "raising the limit re-arms the warnings");
+        graph.send({ type: "liveStatus", running: false, actualHz: 0, bytesPerSecond: 0 });
+        assert.strictEqual(rate.textContent, "0.0kb/s | 0.0Hz", "stopped sampling shows no archive estimate");
         graph.assertHealthy();
     } finally {
         graph.close();

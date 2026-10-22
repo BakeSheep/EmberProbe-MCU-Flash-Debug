@@ -104,7 +104,7 @@ const CACHE_KEYS = {
     sidebarWriteList: "mcu.sidebarWriteList"
 };
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
-// Experimental waveform sampling without a rate cap; gated by a setting, toggled per workspace.
+// Waveform sampling without a rate cap (the slider's "Max rate" notch), remembered per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
 const MCP_CONFIGURED_STATE_KEY = "emberprobe.mcpConfigured";
@@ -113,7 +113,6 @@ const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 // One Agent write batch is shown for confirmation and, off word boundaries, runs while halted.
 const MAX_WRITE_VARIABLES = 64;
-const UNLIMITED_SAMPLING_SETTING = "experimental.unlimitedSampling.enabled";
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
@@ -231,6 +230,8 @@ class MainViewProvider {
         this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
         this._liveIntervalMs = intervalMsFromHz(this._liveFrequencyHz);
         this._unlimitedSamplingRequested = context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true;
+        /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
+        this._archiveRateSamples = [];
         this._liveConsumers = new Set();
         this._consumerTypesCache = null;
         this._watchLists = new WatchListStore({
@@ -4160,34 +4161,19 @@ class MainViewProvider {
             });
         else session.setWatch(active);
     }
-    _unlimitedSamplingAvailable() {
-        return vscode.workspace.getConfiguration("emberprobe").get(UNLIMITED_SAMPLING_SETTING) === true;
-    }
     _unlimitedSamplingEnabled() {
-        return this._unlimitedSamplingRequested === true && this._unlimitedSamplingAvailable();
+        return this._unlimitedSamplingRequested === true;
     }
     _unlimitedSamplingState() {
-        return {
-            type: "liveUnlimited",
-            available: this._unlimitedSamplingAvailable(),
-            enabled: this._unlimitedSamplingEnabled()
-        };
+        return { type: "liveUnlimited", enabled: this._unlimitedSamplingEnabled() };
     }
     async _setUnlimitedSampling(enabled) {
         if (typeof enabled !== "boolean")
             throw Object.assign(new Error("Unlimited sampling state must be a boolean"), { code: "INVALID_PARAMS" });
-        if (enabled && !this._unlimitedSamplingAvailable())
-            throw Object.assign(
-                new Error(`Unlimited sampling is disabled; enable emberprobe.${UNLIMITED_SAMPLING_SETTING} first`),
-                { code: "UNLIMITED_SAMPLING_DISABLED" }
-            );
         this._unlimitedSamplingRequested = enabled;
         this._unlimitedSamplingChanged();
         await this._context.workspaceState.update(UNLIMITED_SAMPLING_STATE_KEY, enabled);
         return this._unlimitedSamplingEnabled();
-    }
-    unlimitedSamplingConfigurationChanged() {
-        this._unlimitedSamplingChanged();
     }
     _unlimitedSamplingChanged() {
         // Only the standalone OpenOCD session honours the flag; debug sessions keep their adaptive budget.
@@ -4585,6 +4571,35 @@ class MainViewProvider {
         const value = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
         if (value !== this._liveFrequencyHz) this._setLiveInterval(intervalMsFromHz(value), value);
     }
+    // The archive lives only for this extension session, so the limit applies immediately instead of on reload.
+    samplingArchiveConfigurationChanged() {
+        const mib = validation.clampInteger(
+            vscode.workspace.getConfiguration("emberprobe").get("samplingArchiveMaxMiB", 1024),
+            1024,
+            64,
+            102400
+        );
+        this._samplingArchive?.setMaxBytes(mib * 1024 * 1024);
+    }
+    // Disk budget for the chart: bytes used, the write rate over the last ~10 s and the time left at that rate.
+    _samplingArchiveBudget(now = Date.now()) {
+        const archive = this._samplingArchive;
+        if (!archive) return null;
+        const used = archive.writtenBytes + archive.queuedBytes,
+            samples = (this._archiveRateSamples ||= []);
+        if (!samples.length || now - samples.at(-1).t >= 250) samples.push({ t: now, bytes: used });
+        while (samples.length > 2 && now - samples[1].t >= 10000) samples.shift();
+        const first = samples[0],
+            span = now - first.t,
+            bytesPerSecond = span >= 1000 && used >= first.bytes ? ((used - first.bytes) * 1000) / span : null,
+            free = Math.max(0, archive.maxBytes - used);
+        return {
+            usedBytes: used,
+            maxBytes: archive.maxBytes,
+            bytesPerSecond,
+            remainingSeconds: archive.limitReached ? 0 : bytesPerSecond > 0 ? free / bytesPerSecond : null
+        };
+    }
 
     _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
         if (!entry.ready) return;
@@ -4610,7 +4625,8 @@ class MainViewProvider {
                             actualHz: status.actualHz,
                             bytesPerSecond: status.bytesPerSecond,
                             unlimitedActive: status.unlimitedActive,
-                            limitedBy: status.limitedBy
+                            limitedBy: status.limitedBy,
+                            archive: this._samplingArchiveBudget()
                         });
                     if (composites.length)
                         entry.post({

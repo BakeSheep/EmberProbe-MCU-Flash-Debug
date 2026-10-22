@@ -66,7 +66,7 @@ module.exports = Object.freeze({
     "lw.targetFrequency": "采样帧率",
     "lw.frequencyPresets": "选择采样帧率",
     "lw.unlimited": "不限速",
-    "lw.unlimitedTitle": "实验性：按探针吞吐背靠背采样，不受 200 Hz 上限约束；调试会话中不生效",
+    "lw.unlimitedTitle": "按探针吞吐背靠背采样，不受 200 Hz 上限约束；调试会话中不生效",
     "lw.unlimitedRate": "不限速 · 实际 {hz} Hz",
     "lw.unlimitedByProbe": "受探针吞吐限制",
     "lw.unlimitedByHost": "受插件处理速度限制",
@@ -520,6 +520,9 @@ module.exports = Object.freeze({
     "lw.memoryHistoryLimited": "内存历史已受限或不完整；磁盘归档继续记录。",
     "lw.historyRecoveryFailed": "波形历史恢复失败；采样与磁盘归档继续记录。",
     "lw.archiveTruncated": "采样历史已达大小上限，此后的样本未再归档",
+    "lw.archiveRemaining": "归档剩 {time}",
+    "lw.archiveLow":
+        "按当前速度，采样归档约 {time} 后写满，届时采样会停止。可在设置中调大 emberprobe.samplingArchiveMaxMiB（立即生效）。",
     "lw.exportTitle": "导出 CSV",
     "lw.exportSeries": "曲线",
     "lw.exportSelectAll": "全选",

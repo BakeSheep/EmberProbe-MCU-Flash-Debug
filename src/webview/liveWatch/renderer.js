@@ -292,15 +292,40 @@ function msgText(m) {
 }
 var statusMsg = { key: "lw.ready" };
 var requestedFrequencyHz = CFG.frequencyHz;
-var unlimitedState = { available: false, enabled: false, active: false, limitedBy: null, suppressed: null };
+var unlimitedState = { enabled: false, active: false, limitedBy: null, suppressed: null };
 var frequencyPresets = [20, 50, 100, 200];
+// The slider's last notch (after the presets) is unlimited sampling.
+var UNLIMITED_NOTCH = frequencyPresets.length;
 var frequencyDrag = null;
 var frequencyMotion = { selected: false, started: 0, lastFrame: -Infinity, image: null, still: false };
 var samplingBytesPerSecond = 0;
+// Disk archive budget from the host; warnings re-arm when the limit is raised.
+var archiveBudget = null,
+    archiveWarned = 0;
+function archiveRemainingSeconds() {
+    var seconds = archiveBudget && archiveBudget.remainingSeconds;
+    return running && typeof seconds === "number" && Number.isFinite(seconds) ? Math.max(0, seconds) : null;
+}
 function rateText(hz, bytesPerSecond) {
     if (Number.isFinite(bytesPerSecond)) samplingBytesPerSecond = Math.max(0, bytesPerSecond);
-    var value = (Number.isFinite(hz) ? hz : 0).toFixed(1);
-    return (samplingBytesPerSecond / 1000).toFixed(1) + "kb/s | " + value + "Hz";
+    var value = (Number.isFinite(hz) ? hz : 0).toFixed(1),
+        text = (samplingBytesPerSecond / 1000).toFixed(1) + "kb/s | " + value + "Hz",
+        remaining = archiveRemainingSeconds();
+    // Only a nearly full archive is worth the toolbar space.
+    if (remaining !== null && remaining < 3600)
+        text += " | " + t("lw.archiveRemaining", { time: formatElapsed(remaining * 1000) });
+    return text;
+}
+function applyArchiveBudget(budget) {
+    if (!budget || typeof budget !== "object") return;
+    archiveBudget = budget;
+    var remaining = archiveRemainingSeconds();
+    if (remaining === null) return;
+    var level = remaining <= 60 ? 2 : remaining <= 600 ? 1 : 0;
+    if (level > archiveWarned) {
+        archiveWarned = level;
+        setStatusKey("lw.archiveLow", { time: formatElapsed(remaining * 1000) }, "warning");
+    } else if (remaining > 900) archiveWarned = 0;
 }
 function renderUnlimited(syncInput) {
     // Native pointer tracking owns the range until release; telemetry must not touch its value or bounds.
@@ -308,7 +333,7 @@ function renderUnlimited(syncInput) {
     var input = $("frequency"),
         slider = $("frequencyPreset"),
         field = $("frequencyField"),
-        unlimited = unlimitedState.available && unlimitedState.enabled;
+        unlimited = unlimitedState.enabled;
     if (syncInput === true || document.activeElement !== input)
         input.value = unlimited ? "-" : String(requestedFrequencyHz);
     var nearest = frequencyPresets.reduce(function (best, value, index) {
@@ -316,8 +341,8 @@ function renderUnlimited(syncInput) {
             ? index
             : best;
     }, 0);
-    var index = unlimited ? 4 : nearest,
-        max = unlimitedState.available ? 4 : 3;
+    var index = unlimited ? UNLIMITED_NOTCH : nearest,
+        max = UNLIMITED_NOTCH;
     slider.max = String(max);
     slider.value = String(index);
     slider.setAttribute("aria-valuetext", unlimited ? t("lw.unlimited") : requestedFrequencyHz + " Hz");
@@ -331,7 +356,7 @@ function renderUnlimited(syncInput) {
         }
     }
     Array.from(ticks.children).forEach(function (tick, i) {
-        tick.title = i === 4 ? t("lw.unlimited") : frequencyPresets[i] + " Hz";
+        tick.title = i === UNLIMITED_NOTCH ? t("lw.unlimited") : frequencyPresets[i] + " Hz";
     });
     paintFrequencyPosition(index, false);
     $("frequencyToggle").setAttribute("aria-label", t("lw.frequencyPresets"));
@@ -344,10 +369,10 @@ function renderUnlimited(syncInput) {
     else field.title = unlimited ? t("lw.unlimitedTitle") : "";
 }
 function paintFrequencyPosition(position, preview) {
-    var max = unlimitedState.available ? 4 : 3;
+    var max = UNLIMITED_NOTCH;
     position = Math.round(Math.min(max, Math.max(0, position)));
     var index = Math.round(position),
-        unlimited = index === 4,
+        unlimited = index === UNLIMITED_NOTCH,
         track = $("frequencySlider");
     // The visible thumb and fill share the same coordinate and animation clock.
     track.style.setProperty("--frequency-position", String(position / max));
@@ -423,8 +448,8 @@ function setFrequencyPopup(open, focusSlider) {
 }
 function selectFrequencyPreset() {
     var index = Math.round(Number($("frequencyPreset").value));
-    if (!Number.isInteger(index) || index < 0 || index > (unlimitedState.available ? 4 : 3)) return;
-    if (index === 4) {
+    if (!Number.isInteger(index) || index < 0 || index > UNLIMITED_NOTCH) return;
+    if (index === UNLIMITED_NOTCH) {
         if (!unlimitedState.enabled) {
             sampleTimes = [];
             unlimitedState.enabled = true;
@@ -3909,7 +3934,7 @@ $("frequencyPreset").addEventListener("lostpointercapture", function (e) {
     if (frequencyDrag && e.pointerId === frequencyDrag.pointerId) finishFrequencyDrag(false);
 });
 $("frequencyPreset").addEventListener("keydown", function (e) {
-    var max = unlimitedState.available ? 4 : 3;
+    var max = UNLIMITED_NOTCH;
     var index = Math.round(Number(this.value));
     if (e.key === "Home") index = 0;
     else if (e.key === "End") index = max;
@@ -3922,7 +3947,7 @@ $("frequencyPreset").addEventListener("keydown", function (e) {
     selectFrequencyPreset();
 });
 $("frequency").onchange = function () {
-    if (this.value.trim() === "-" && unlimitedState.available && unlimitedState.enabled) return;
+    if (this.value.trim() === "-" && unlimitedState.enabled) return;
     commitFrequency(selectedFrequencyHz());
 };
 $("frequency").onkeydown = function (e) {
@@ -4017,6 +4042,7 @@ window.EmberProbeMessages.connect(window, {
         });
         scheduleValueRefresh();
         applyUnlimitedStatus(m);
+        applyArchiveBudget(m.archive);
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
     },
     chartHistoryStatus: function (m) {
@@ -4115,10 +4141,8 @@ window.EmberProbeMessages.connect(window, {
         }
     },
     liveUnlimited: function (m) {
-        if (frequencyDrag && unlimitedState.available !== (m.available === true)) finishFrequencyDrag(false);
-        if (unlimitedState.enabled !== (m.available === true && m.enabled === true)) sampleTimes = [];
-        unlimitedState.available = m.available === true;
-        unlimitedState.enabled = unlimitedState.available && m.enabled === true;
+        if (unlimitedState.enabled !== (m.enabled === true)) sampleTimes = [];
+        unlimitedState.enabled = m.enabled === true;
         if (!unlimitedState.enabled) unlimitedState.active = false;
         renderUnlimited(true);
     },

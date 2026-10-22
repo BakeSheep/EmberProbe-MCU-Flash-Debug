@@ -37,8 +37,8 @@ for (const lang of ["en", "zh"]) {
             "Hz is outside the input border"
         );
         assert(popup.hidden);
-        assert.strictEqual(slider.max, "3");
-        assert.strictEqual(doc.getElementById("frequencyTicks").children.length, 4);
+        assert.strictEqual(slider.max, "4", "the unlimited notch is always the last stop");
+        assert.strictEqual(doc.getElementById("frequencyTicks").children.length, 5);
         assert.strictEqual(popup.textContent, "", "the popup contains only the track and ticks");
         toggle.click();
         assert(!popup.hidden);
@@ -67,7 +67,7 @@ for (const lang of ["en", "zh"]) {
         pointer("pointerdown");
         choose(1.35);
         assert.strictEqual(slider.value, "1");
-        assert(Math.abs(Number(track.style.getPropertyValue("--frequency-position")) - 1 / 3) < 1e-9);
+        assert(Math.abs(Number(track.style.getPropertyValue("--frequency-position")) - 1 / 4) < 1e-9);
         assert.strictEqual(input.value, "50", "the thumb, fill and input all stay at the selected stop");
         choose(1.49);
         assert.strictEqual(input.value, "50", "no movement before crossing the midpoint");
@@ -118,9 +118,6 @@ for (const lang of ["en", "zh"]) {
         assert.strictEqual(input.value, "0.1");
         assert(!view.messages.some((m) => m.type === "setUnlimitedSampling"), "finite edits do not enable unlimited");
 
-        view.send({ type: "liveUnlimited", available: true, enabled: false });
-        assert.strictEqual(slider.max, "4");
-        assert.strictEqual(doc.getElementById("frequencyTicks").children.length, 5);
         count = settings().length;
         pointer("pointerdown");
         choose(3.8);
@@ -133,7 +130,7 @@ for (const lang of ["en", "zh"]) {
         assert(!doc.getElementById("frequencyField").classList.contains("is-unlimited"));
         assert.strictEqual(track.style.getPropertyValue("--frequency-position"), "1");
         assert.deepStrictEqual(view.messages.at(-1), { type: "setUnlimitedSampling", enabled: true, panelId: 2 });
-        view.send({ type: "liveUnlimited", available: true, enabled: true });
+        view.send({ type: "liveUnlimited", enabled: true });
         view.send({ type: "liveFrequency", frequencyHz: 100, intervalMs: 10 });
         assert.strictEqual(input.value, "-", "finite fallback updates do not overwrite unlimited display");
         view.send({ type: "watchList", items: [{ name: "counter", type: "u32", address: 0x20000000 }] });
@@ -163,16 +160,14 @@ for (const lang of ["en", "zh"]) {
             { type: "setUnlimitedSampling", enabled: false, panelId: 2 },
             { type: "setFrequency", frequencyHz: 50, panelId: 2 }
         ]);
-        view.send({ type: "liveUnlimited", available: false, enabled: true });
-        assert.strictEqual(slider.max, "3", "host capability revocation removes the extra stop");
-        assert.strictEqual(input.value, "50");
-        assert(!track.classList.contains("is-unlimited"));
-        view.send({ type: "liveUnlimited", available: true, enabled: true });
+        view.send({ type: "liveUnlimited", enabled: true });
+        assert.strictEqual(slider.max, "4");
+        assert(track.classList.contains("is-unlimited"), "the host can restore the saved unlimited choice");
         view.send({ type: "setLang", lang: lang === "zh" ? "en" : "zh" });
         assert.strictEqual(input.value, "-");
         assert.strictEqual(slider.getAttribute("aria-valuetext"), lang === "zh" ? "Max rate" : "不限速");
         // The local-history fallback must also discard old-rate timestamps on local and host changes.
-        view.send({ type: "liveUnlimited", available: true, enabled: false });
+        view.send({ type: "liveUnlimited", enabled: false });
         view.send({ type: "liveFrequency", frequencyHz: 200, intervalMs: 5 });
         const samples = (first, interval) =>
             view.send({
@@ -198,4 +193,4 @@ for (const lang of ["en", "zh"]) {
         view.close();
     }
 }
-console.log("Sampling-rate presets, gated unlimited, editable fallback, popover focus and language tests passed");
+console.log("Sampling-rate presets, unlimited notch, editable fallback, popover focus and language tests passed");
