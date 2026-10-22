@@ -22,6 +22,34 @@ function elfHeader(machine) {
     return header;
 }
 
+// ELF32 header + section name table + section headers (null, .shstrtab, then `sections`).
+function elfWithSections(machine, sections) {
+    const names = ["", ".shstrtab", ...sections.map((section) => section.name)];
+    const offsets = [];
+    let strtab = "";
+    for (const name of names) {
+        offsets.push(strtab.length);
+        strtab += `${name}\0`;
+    }
+    const strtabBytes = Buffer.from(strtab, "latin1");
+    const shoff = 52 + strtabBytes.length;
+    const table = Buffer.alloc(names.length * 40);
+    const entry = (index, type, offset, size) => {
+        table.writeUInt32LE(offsets[index], index * 40);
+        table.writeUInt32LE(type, index * 40 + 4);
+        table.writeUInt32LE(offset, index * 40 + 16);
+        table.writeUInt32LE(size, index * 40 + 20);
+    };
+    entry(1, 3, 52, strtabBytes.length);
+    sections.forEach((section, i) => entry(i + 2, section.type ?? 1, 0, section.size ?? 16));
+    const header = elfHeader(machine);
+    header.writeUInt32LE(shoff, 32);
+    header.writeUInt16LE(40, 46);
+    header.writeUInt16LE(names.length, 48);
+    header.writeUInt16LE(1, 50);
+    return Buffer.concat([header, strtabBytes, table]);
+}
+
 function write(root, relative, content, mtime) {
     const file = path.join(root, relative);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -176,6 +204,31 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     assert.strictEqual(targets.chooseElf(images.slice(2), { target: "stm32f4x.cfg" }).elf, "");
     assert.strictEqual(targets.chooseElf(images).elf, path.resolve("/w/riscv/fw.elf"));
 
+    // Debug info outranks mtime: a newer stripped Release image loses to an older Debug image.
+    const debugElf = path.resolve("/w/app/build/Debug/app.elf");
+    const releaseElf = path.resolve("/w/app/build/Release/app.elf");
+    const builds = [
+        { file: releaseElf, mtimeMs: 1001, arch: "arm", dwarf: false },
+        { file: debugElf, mtimeMs: 1000, arch: "arm", dwarf: true }
+    ];
+    const projectDir = path.resolve("/w/app");
+    assert.strictEqual(targets.chooseElf(builds, { target: "stm32f4x.cfg", projectDir }).elf, debugElf);
+    const bothDebug = builds.map((image) => ({ ...image, dwarf: true }));
+    assert.strictEqual(targets.chooseElf(bothDebug, { target: "stm32f4x.cfg", projectDir }).elf, releaseElf);
+    const unknown = [builds[0], { ...builds[1], dwarf: undefined }];
+    assert.strictEqual(targets.chooseElf(unknown, { projectDir }).elf, debugElf, "unknown DWARF ranks like DWARF");
+    const unknownNewer = [{ ...builds[0], dwarf: undefined }, builds[1]];
+    assert.strictEqual(targets.chooseElf(unknownNewer, { projectDir }).elf, releaseElf, "unknown ties go by mtime");
+    const unchecked = builds.map(({ dwarf: _dwarf, ...image }) => image);
+    assert.strictEqual(targets.chooseElf(unchecked, { projectDir }).elf, releaseElf, "no DWARF data keeps mtime order");
+    // The project root still decides first, and architecture rejection ignores debug info.
+    const outside = [{ file: path.resolve("/w/vendor/debug.elf"), mtimeMs: 2000, arch: "arm", dwarf: true }, builds[0]];
+    assert.strictEqual(targets.chooseElf(outside, { projectDir }).elf, releaseElf);
+    const foreign = [...builds, { file: path.resolve("/w/riscv/fw.elf"), mtimeMs: 5000, arch: "riscv", dwarf: true }];
+    const foreignChoice = targets.chooseElf(foreign, { target: "stm32f4x.cfg", projectDir });
+    assert.strictEqual(foreignChoice.elf, debugElf);
+    assert.deepStrictEqual(foreignChoice.rejected, [path.resolve("/w/riscv/fw.elf")]);
+
     // Probe names must start at a word boundary.
     assert.deepStrictEqual(probeCandidates("Microsoft Host Link Adapter\nMenu Link"), []);
     assert.deepStrictEqual(probeCandidates("STLINK-V3\nNuvoton Nu-Link"), ["stlink.cfg", "nulink.cfg"]);
@@ -261,6 +314,44 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
         await assert.rejects(store.update({ elf: "tools/notes.txt" }), { code: "INVALID_FILE_TYPE" });
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    // CubeIDE Debug/Release layout: the older Debug image with .debug_info is detected over a
+    // Release image built a second later without it.
+    const buildRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "auto-detect-dwarf-")));
+    try {
+        const now = Date.now() / 1000;
+        write(buildRoot, "F407_car/F407_car.ioc", "Mcu.UserName=STM32F407VGTx\n", now - 50);
+        const debugImage = write(
+            buildRoot,
+            "F407_car/build/Debug/F407_car.elf",
+            elfWithSections(40, [{ name: ".text" }, { name: ".debug_info" }]),
+            now - 1
+        );
+        const releaseImage = write(
+            buildRoot,
+            "F407_car/build/Release/F407_car.elf",
+            elfWithSections(40, [{ name: ".text" }, { name: ".ARM.attributes" }]),
+            now
+        );
+        const placeholder = write(
+            buildRoot,
+            "F407_car/build/Nobits/F407_car.elf",
+            elfWithSections(40, [{ name: ".debug_info", type: 8 }]),
+            now
+        );
+        const truncated = write(buildRoot, "F407_car/build/Truncated/F407_car.elf", elfHeader(40).subarray(0, 40), now);
+        const vscode = fakeVscode(buildRoot);
+        const byFile = new Map((await autoDetect.elfImages(vscode)).map((image) => [image.file, image]));
+        assert.strictEqual(byFile.get(debugImage).dwarf, true);
+        assert.strictEqual(byFile.get(releaseImage).dwarf, false);
+        assert.strictEqual(byFile.get(placeholder).dwarf, false, "an SHT_NOBITS .debug_info carries no DWARF");
+        assert.strictEqual(byFile.get(truncated).dwarf, undefined, "a header too short to check stays unknown");
+        fs.rmSync(truncated);
+        const detected = await autoDetect.detectWorkspace(vscode, { detectProbe: noProbe });
+        assert.strictEqual(detected.elf, debugImage);
+    } finally {
+        fs.rmSync(buildRoot, { recursive: true, force: true });
     }
 
     // runAutoDetect: busy sessions skip connection fields without a partial write or error;

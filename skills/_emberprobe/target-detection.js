@@ -282,8 +282,10 @@ function isInside(file, dir) {
 
 /**
  * Picks the firmware image for a target. Images whose architecture contradicts the target
- * are never chosen; images under the detected project root win over newer images elsewhere.
- * @param {Array<{ file: string, mtimeMs: number, arch: string }>} images
+ * are never chosen; images under the detected project root win over newer images elsewhere,
+ * then images with debug info win over newer stripped (Release) images. `dwarf` is only
+ * `false` when the section headers were checked; unknown ranks like an image with DWARF.
+ * @param {Array<{ file: string, mtimeMs: number, arch: string, dwarf?: boolean }>} images
  * @param {{ target?: string, projectDir?: string }} [options]
  * @returns {{ elf: string, rejected: string[] }}
  */
@@ -292,8 +294,18 @@ function chooseElf(images, options = {}) {
     const compatible = images.filter((image) => !expected || !image.arch || image.arch === expected);
     const rejected = images.filter((image) => !compatible.includes(image)).map((image) => image.file);
     const ranked = compatible
-        .map((image) => ({ ...image, local: isInside(image.file, options.projectDir) ? 0 : 1 }))
-        .sort((a, b) => a.local - b.local || b.mtimeMs - a.mtimeMs || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+        .map((image) => ({
+            ...image,
+            local: isInside(image.file, options.projectDir) ? 0 : 1,
+            stripped: image.dwarf === false ? 1 : 0
+        }))
+        .sort(
+            (a, b) =>
+                a.local - b.local ||
+                a.stripped - b.stripped ||
+                b.mtimeMs - a.mtimeMs ||
+                (a.file < b.file ? -1 : a.file > b.file ? 1 : 0)
+        );
     return { elf: ranked[0]?.file || "", rejected };
 }
 

@@ -6,29 +6,80 @@ const {
     probeFromText: debuggerFromInventory
 } = require("../skills/_emberprobe/probe-detection");
 const targets = require("../skills/_emberprobe/target-detection");
+const elfFormat = require("./elfFormat");
 
 const MAX_ELF_CANDIDATES = 2000;
+const ELF_HEADER_BYTES = 52;
+// Firmware images need a few KiB for both tables; larger ones are left unchecked.
+const MAX_SECTION_TABLE_BYTES = 64 * 1024;
+const MAX_SECTION_NAMES_BYTES = 64 * 1024;
+const SHT_NOBITS = 8;
+const DWARF_INFO_SECTIONS = new Set([".debug_info", ".zdebug_info"]);
 
-async function readHeader(file) {
+async function readAt(handle, offset, length) {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, offset);
+    return buffer.subarray(0, bytesRead);
+}
+
+// Reads only the section header table and section name table. Returns undefined when the
+// layout cannot be checked, so the image keeps ranking like one with debug info.
+async function hasDwarf(handle, header) {
+    try {
+        const elf = elfFormat.readElf32Header(header);
+        if (!elf.shoff) return false;
+        const tableBytes = elf.shnum * elf.shentsize;
+        if (!elf.shnum || elf.shentsize < 40 || tableBytes > MAX_SECTION_TABLE_BYTES) return undefined;
+        const table = await readAt(handle, elf.shoff, tableBytes);
+        if (table.length < tableBytes) return undefined;
+        const entries = Array.from({ length: elf.shnum }, (_, index) => {
+            const at = index * elf.shentsize;
+            return {
+                nameOffset: table.readUInt32LE(at),
+                type: table.readUInt32LE(at + 4),
+                offset: table.readUInt32LE(at + 16),
+                size: table.readUInt32LE(at + 20)
+            };
+        });
+        const names = entries[elf.shstrndx];
+        if (!names || names.size > MAX_SECTION_NAMES_BYTES) return undefined;
+        const strings = await readAt(handle, names.offset, names.size);
+        if (strings.length < names.size) return undefined;
+        // readSectionNames addresses the name table by file offset; it was read on its own.
+        const local = entries.slice();
+        local[elf.shstrndx] = { ...names, offset: 0 };
+        return elfFormat
+            .readSectionNames(strings, local, elf.shstrndx)
+            .some(
+                (name, index) =>
+                    DWARF_INFO_SECTIONS.has(name) && entries[index].size > 0 && entries[index].type !== SHT_NOBITS
+            );
+    } catch {
+        return undefined;
+    }
+}
+
+async function readImageInfo(file) {
     const handle = await fs.open(file, "r");
     try {
-        const header = Buffer.alloc(20);
-        const { bytesRead } = await handle.read(header, 0, header.length, 0);
-        return header.subarray(0, bytesRead);
+        const header = await readAt(handle, 0, ELF_HEADER_BYTES);
+        const info = targets.elfHeaderInfo(header);
+        return info && { arch: info.arch, dwarf: await hasDwarf(handle, header) };
     } finally {
         await handle.close();
     }
 }
 
-// Every ELF image in the workspace with its mtime and architecture; non-ELF *.out files are dropped.
+// Every ELF image in the workspace with its mtime, architecture and DWARF presence
+// (undefined when unknown); non-ELF *.out files are dropped.
 async function elfImages(vscode) {
     const files = await vscode.workspace.findFiles(targets.ELF_FILE_GLOB, targets.ELF_EXCLUDE_GLOB, MAX_ELF_CANDIDATES);
     const images = await Promise.all(
         files.map(async (uri) => {
             try {
-                const [stat, header] = await Promise.all([fs.stat(uri.fsPath), readHeader(uri.fsPath)]);
-                const info = stat.isFile() && targets.elfHeaderInfo(header);
-                return info ? { file: uri.fsPath, mtimeMs: stat.mtimeMs, arch: info.arch } : null;
+                const stat = await fs.stat(uri.fsPath);
+                const info = stat.isFile() && (await readImageInfo(uri.fsPath));
+                return info ? { file: uri.fsPath, mtimeMs: stat.mtimeMs, ...info } : null;
             } catch {
                 return null;
             }
