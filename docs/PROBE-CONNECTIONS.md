@@ -28,6 +28,10 @@ If multiple matching devices are present, selection must be enforceable by OpenO
 
 ## TCP interfaces / TCP 接口
 
+采样连接使用预检解析的后端种类：`tcp`（CMSIS-DAP TCP / ST-Link TCP）的 Tcl RPC 超时为 5000 ms，其他后端仍为 2000 ms，超时报错仍是 `OPENOCD_RPC_TIMEOUT`。独立 TCP 采样在 `init` 后用 `info commands poll_interval` 守卫把目标后台轮询设为 500 ms（`poll_period` 只控制服务器主循环，不改变目标轮询）；当前随包 OpenOCD 尚无 `poll_interval`，保持默认 100 ms，较新的自定义 OpenOCD 才生效。调试模式不改轮询。持续轮询失败仍须至少 3 次且跨越 3000 ms 才锁定，500 ms 轮询下约 3 秒触发。
+
+Sampling uses the preflight-resolved backend kind: TCP Tcl RPCs allow 5000 ms; other backends retain 2000 ms and the same `OPENOCD_RPC_TIMEOUT` handling. Only standalone TCP sampling sets 500 ms background target polling after initialization through `poll_interval`, guarded by `info commands poll_interval` (`poll_period` only times the server loop). The bundled OpenOCD does not have `poll_interval` yet and keeps the 100 ms default; newer custom builds apply it. Debug polling defaults stay unchanged. The existing failure lock still requires at least three failures spanning 3000 ms, about three seconds with continuous 500 ms polling.
+
 CMSIS-DAP TCP requires explicit backend selection and a host in the interface script. A configured TCP host with `backend auto` returns `PROBE_BACKEND_AMBIGUOUS` to avoid implicit USB/TCP fallback. Port defaults to 4441. For example:
 
 ```tcl

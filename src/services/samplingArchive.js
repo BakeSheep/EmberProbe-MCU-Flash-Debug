@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { ArchiveEncoder, FILE_HEADER, scanArchive } = require("./samplingArchiveFormat");
+const { createSampleTimeFormatter } = require("./sampleTime");
 
 const fsp = fs.promises;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
@@ -190,6 +191,22 @@ class SamplingArchive {
     }
 
     append(samples, timestampMs, scope = "") {
+        const groups = new Map();
+        for (const sample of Array.isArray(samples) ? samples : []) {
+            if (!sample || typeof sample.name !== "string") continue;
+            const t = Number.isFinite(sample.t) ? sample.t : timestampMs;
+            if (!groups.has(t)) groups.set(t, []);
+            groups.get(t).push(sample);
+        }
+        let appended = false;
+        for (const [t, group] of groups) {
+            if (!this._appendRow(group, t, scope)) return false;
+            appended = true;
+        }
+        return appended;
+    }
+
+    _appendRow(samples, timestampMs, scope) {
         if (this.closed || this.failed || this.limitReached) return false;
         const values = Object.create(null);
         for (const sample of Array.isArray(samples) ? samples : []) {
@@ -434,20 +451,8 @@ class SamplingArchive {
             let scopeId = -1,
                 rowTime = 0,
                 lines = [],
-                pendingChars = 0,
-                second = NaN,
-                secondPrefix = "";
-            // ISO text is computed once per second; out-of-range years keep Date's own formatting.
-            const iso = (t) => {
-                if (!(t >= 0 && t < 253402300800000)) return new Date(t).toISOString();
-                const whole = Math.floor(t / 1000);
-                if (whole !== second) {
-                    second = whole;
-                    secondPrefix = new Date(whole * 1000).toISOString().slice(0, 20);
-                }
-                const ms = Math.floor(t - whole * 1000);
-                return secondPrefix + (ms < 10 ? "00" : ms < 100 ? "0" : "") + ms + "Z";
-            };
+                pendingChars = 0;
+            const iso = createSampleTimeFormatter();
             const writeLines = async () => {
                 if (!lines.length) return;
                 const text = lines.join("");

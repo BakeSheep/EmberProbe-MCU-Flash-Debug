@@ -88,16 +88,15 @@ async function wait(ms) {
         slowSession._recentDurations = [20, 20, 20, 20];
         slowSession.setIntervalMs(5);
         assert.strictEqual(slowSession.targetIntervalMs, 5);
-        assert.strictEqual(slowSession.effectiveIntervalMs, 29, "Slow probes retain a measured safety margin");
+        assert.strictEqual(slowSession.effectiveIntervalMs, 24, "Slow probes retain a measured safety margin");
 
-        // Test backoff when duration exceeds 70% of effective interval
-        // At 5 ms, 70% is 3.5 ms. Record durations of 4.0 ms
+        // Standalone backs off when mean duration exceeds 85% of the effective interval.
         for (let i = 0; i < 32; i++) {
-            session._recordCycle(4.0);
+            session._recordCycle(4.5);
         }
         session._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
         session._evaluateAdaptiveSchedule();
-        assert.ok(session.effectiveIntervalMs > 5, "Must back off when P95 duration > 70%");
+        assert.ok(session.effectiveIntervalMs > 5, "Must back off when mean duration > 85%");
         assert.strictEqual(session.effectiveIntervalMs, 10);
         assert.strictEqual(session._consecutiveSuccesses, 0, "Success counter must reset on backoff");
 

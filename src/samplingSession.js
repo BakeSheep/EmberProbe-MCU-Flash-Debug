@@ -88,10 +88,10 @@ class SamplingSession {
     notify(method, args) {
         this.request(method, args).catch((error) => this.handlers.onError?.(error.message));
     }
-    setWatch(items) {
+    setWatch(items, ramSectionRanges = []) {
         if (this.mode === "debug") require("./liveWatch").validateManagedReadPlan(items);
         this._samplingPlan = null;
-        this.notify("setWatch", [items]);
+        this.notify("setWatch", [items, ramSectionRanges]);
     }
     setSamplingPlan(plan) {
         if (this.mode === "debug") {

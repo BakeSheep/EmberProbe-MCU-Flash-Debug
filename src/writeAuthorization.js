@@ -20,7 +20,11 @@ function writeConnectionIdentity(connection) {
             ...(connection.stopEpoch === undefined ? {} : { stopEpoch: connection.stopEpoch })
         };
     }
-    return { kind: "openocd", ...resolvedConnectionIdentity(connection), ...normalizeTargetSelection(connection) };
+    const effective =
+        connection.mode !== "debug" && connection.samplingAdapterSpeedKhz
+            ? { ...connection, adapterSpeedKhz: connection.samplingAdapterSpeedKhz }
+            : connection;
+    return { kind: "openocd", ...resolvedConnectionIdentity(effective), ...normalizeTargetSelection(connection) };
 }
 
 function connectionFingerprint(plan) {

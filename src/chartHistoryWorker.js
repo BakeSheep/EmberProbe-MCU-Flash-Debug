@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const { WINDOW_MS } = require("./services/chartHistoryStore");
 const { ArchiveChartHistoryStore } = require("./services/archiveChartHistoryStore");
 const { csvField, csvHeaderField } = require("./services/samplingArchive");
+const { createSampleTimeFormatter } = require("./services/sampleTime");
 const { readArchive } = require("./services/samplingArchiveFormat");
 const { serializeError } = require("./services/errorEnvelope");
 const { encodeViewport } = require("./webview/liveWatch/chartTransport");
@@ -48,6 +49,7 @@ async function exportHistory(store, request) {
         );
         const iterators = names.map((name) => store.points(source.series.get(name)));
         const current = iterators.map((iterator) => iterator.next());
+        const iso = createSampleTimeFormatter();
         while (current.some((entry) => !entry.done)) {
             const time = Math.min(...current.map((entry) => (entry.done ? Infinity : entry.value.t)));
             const cells = current.map((entry, i) => {
@@ -60,7 +62,7 @@ async function exportHistory(store, request) {
                 return point.v === null ? "" : csvField(point.valueText ?? point.v);
             });
             if (time < from || time > to) continue;
-            batch += `${new Date(time).toISOString()},${cells.join(",")}\r\n`;
+            batch += `${iso(time)},${cells.join(",")}\r\n`;
             rows++;
             if (batch.length >= 65536) {
                 await write(batch);

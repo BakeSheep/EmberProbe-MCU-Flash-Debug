@@ -3255,7 +3255,8 @@ function formatChartTime(ms) {
         ":" +
         two(d.getSeconds()) +
         "." +
-        String(d.getMilliseconds()).padStart(3, "0")
+        String(d.getMilliseconds()).padStart(3, "0") +
+        (Number.isInteger(ms) ? "" : (ms - Math.floor(ms)).toFixed(3).slice(2, 5).replace(/0+$/, ""))
     );
 }
 function refreshChartTimeline() {

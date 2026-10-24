@@ -6,6 +6,23 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 优化 / Improved
+
+- 新增可选补丁版 OpenOCD 的 scatter 采样原型：合并每轮固定地址读取为尽量少的单次 DAP flush 请求，自动探测并在失败时回退；随包 OpenOCD 仍为官方 xPack 0.12.0-7。
+- Added an opt-in patched-OpenOCD scatter sampling prototype: combines fixed reads into as few single-DAP-flush requests as possible, with automatic detection and fallback; bundled OpenOCD remains official xPack 0.12.0-7.
+
+- 采样时间改为每轮读取的中点，精确到亚毫秒（原为读取前的整毫秒），同一轮变量共享同一时间；历史、二进制归档、CSV 与图表保留亚毫秒信息。固定 RAM 读取可在同一可写 ELF 节内扩至对齐 32 位字并再次合并，保持变量字节与调试预算。
+- Each sampling cycle is stamped at the midpoint of its reads with sub-millisecond precision (previously whole milliseconds before reading); all variables of a cycle share that time, and history, binary archives, CSV and charts keep the sub-ms part. Fixed RAM reads can widen to aligned 32-bit words within one writable ELF section and merge again, preserving variable bytes and debug budgets.
+- 新增独立采样链路时钟 `samplingAdapterSpeedKhz`（0 沿用通用时钟），修改后重连且写入授权绑定实际时钟；调试及烧录仍用通用设置。TCP 采样 RPC 超时延长至 5000 ms，仅独立 TCP 采样在 OpenOCD 支持 `poll_interval` 时把目标轮询调为 500 ms（随包版本尚不支持，保持默认）。
+- Added standalone `samplingAdapterSpeedKhz` (0 inherits the general clock), reconnecting on changes and binding writes to the effective clock; debug and flash retain the general setting. TCP sampling RPCs allow 5000 ms; only standalone TCP sampling sets 500 ms target polling where OpenOCD provides `poll_interval` (the bundled build does not yet, so it keeps the default).
+
+- 采样 Tcl 连接先自测无回显响应，通过后独立与托管调试均省去逐字符回显，调试模式同时省去响应临时文件；不兼容或日志验证不足时安全回退。固定地址读取合并同一可写 ELF 节内不超过 32 字节的间隙，保持变量内容与调试预算不变。
+- Sampling Tcl connections self-test no-echo replies before acquisition; compatible standalone and managed debug sessions avoid per-character echo, and debug sessions also avoid response files, with legacy fallback when compatibility or log verification is insufficient. Fixed reads merge gaps up to 32 bytes within one writable allocated ELF section while preserving variable data and debug budgets.
+- 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
+- Standalone adaptive scheduling uses mean cycle duration at 85% duty (70% with CPU-load sampling configured); debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
+
+### 修复 / Fixed
+
 - 修复 Windows 下更新 SEGGER J-Link 驱动后切换到 WinUSB 一直报 “The original SEGGER driver could not be backed up safely”：SEGGER 更新会发布新的 `oemNN.inf`，原先 helper 仍按旧备份记录校验。现在设备当前驱动已校验为 SEGGER jlink 且与备份不一致时，先把当前驱动导出到单独目录再原子替换备份与记录；导出后记录缺失的中断状态也能自动恢复，不再需要手动删除 `C:\ProgramData\EmberProbe\drivers`。见 `docs/JLINK-COMPATIBILITY.md`。
 - Fix switching a J-Link to WinUSB on Windows failing with "The original SEGGER driver could not be backed up safely" after a SEGGER driver update: the update publishes a new `oemNN.inf` while the helper still checked the old backup record. When the current driver is a verified SEGGER jlink driver that differs from the backup, the helper now exports it to a separate folder and then replaces the backup and its record atomically; an interrupted backup whose export has no record is also recovered, so `C:\ProgramData\EmberProbe\drivers` no longer has to be deleted by hand. See `docs/JLINK-COMPATIBILITY.md`.
 - 修复 FreeRTOS 任务面板把 GDB 报告为通用 `arm` / `armv7` 等名称的 Cortex-M 目标误判为不支持：通过当前会话的 M-profile 寄存器名称补充确认，保留小端、32 位及非 SMP 限制；架构诊断补充 GDB 实际返回的架构、字节序和指针大小。

@@ -140,10 +140,10 @@ function buildChartHistoryItems(items, elfSymbols) {
     return [...byName.values()];
 }
 
-function filterRuntimeRamPlan(items, sections) {
+function writableRamSectionRanges(sections) {
     const SHF_WRITE = 1;
     const SHF_ALLOC = 2;
-    const ranges = (Array.isArray(sections) ? sections : [])
+    return (Array.isArray(sections) ? sections : [])
         .filter(
             (section) =>
                 (Number(section.flags) & (SHF_WRITE | SHF_ALLOC)) === (SHF_WRITE | SHF_ALLOC) &&
@@ -162,6 +162,11 @@ function filterRuntimeRamPlan(items, sections) {
                 range.end <= 0x100000000 &&
                 range.end > range.start
         );
+}
+
+function filterRuntimeRamPlan(items, sections) {
+    const SHF_ALLOC = 2;
+    const ranges = writableRamSectionRanges(sections);
     const allowed = [];
     const denied = [];
     for (const item of Array.isArray(items) ? items : []) {
@@ -452,5 +457,6 @@ module.exports = {
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,
-    filterRuntimeRamPlan
+    filterRuntimeRamPlan,
+    writableRamSectionRanges
 };
