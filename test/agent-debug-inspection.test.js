@@ -95,7 +95,14 @@ const { diagnosticForError } = require("../skills/_emberprobe/agent-client");
         { action: "variables", reference, filter: "all" }
     ])
         await assert.rejects(inspection.inspect(params), { code: "DEBUG_INSPECTION_INVALID" });
-    await assert.rejects(inspection.inspect({ action: "variables", reference: 10 }), {
+    // DAP integers are not handles: a numeric reference is malformed rather than expired.
+    for (const params of [
+        { action: "variables", reference: 10 },
+        { action: "scopes", frame: 0 },
+        { action: "scopes", frame: "" }
+    ])
+        await assert.rejects(inspection.inspect(params), { code: "DEBUG_INSPECTION_INVALID" });
+    await assert.rejects(inspection.inspect({ action: "variables", reference: "unknown-handle" }), {
         code: "DEBUG_INSPECTION_STALE"
     });
     await assert.rejects(inspection.inspect({ action: "scopes", frame: reference }), {

@@ -251,8 +251,10 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 mi.imageVerdict = verdict;
                 await adapter.handle("launch", { ...defaults, performanceTrace: true, ...extra });
                 const output = events.map((event) => event.body?.output || "").join("");
-                return { adapter, mi, commands: mi.commands.map((item) => item.command), output };
+                const loaded = events.filter((event) => event.event === "emberprobe.firmwareLoaded");
+                return { adapter, mi, commands: mi.commands.map((item) => item.command), output, loaded };
             };
+            const { size, mtimeMs } = fs.statSync(primary);
             // Unchanged firmware: one reset, a CRC check, no transfer and no second reset.
             const unchanged = await launch("unchanged");
             const check = unchanged.commands.indexOf(consoleCommand("compare-sections"));
@@ -271,6 +273,12 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 assert(Number.isInteger(trace.phases[phase]), phase);
             assert(!("postDownloadReset" in trace.phases));
             assert(!unchanged.output.includes(primary), "the trace carries no paths");
+            // The extension's firmware record follows the launch: a confirmed image carries the stamp of the
+            // executable GDB read, so the record can tell it from a later rebuild.
+            assert.deepStrictEqual(
+                unchanged.loaded.map((event) => event.body),
+                [{ image: "executable", firmware: "unchanged", size, mtimeMs }]
+            );
             // Changed, unknown or failed checks fall through to the normal download and second reset.
             for (const verdict of ["changed", "unknown", "localized", undefined]) {
                 const changed = await launch(verdict);
@@ -278,7 +286,39 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 assert.strictEqual(resets(changed.commands).length, 2);
                 assert(changed.output.includes('"firmware":"programmed"'));
                 assert(Number.isInteger(JSON.parse(changed.output.match(/"phases":(\{[^}]*\})/)[1]).postDownloadReset));
+                assert.deepStrictEqual(
+                    changed.loaded.map((event) => event.body),
+                    [{ image: "executable", firmware: "programmed", size, mtimeMs }]
+                );
             }
+            {
+                // A rebuild while GDB downloads leaves no stamp: the target holds an unidentified version.
+                const rebuilt = session({});
+                rebuilt.mi.imageVerdict = "changed";
+                const command = rebuilt.mi.command.bind(rebuilt.mi);
+                rebuilt.mi.command = async (text, timeout) => {
+                    if (text === "-target-download") fs.writeFileSync(primary, Buffer.concat([elf, Buffer.alloc(4)]));
+                    return command(text, timeout);
+                };
+                try {
+                    await rebuilt.adapter.handle("launch", { ...defaults });
+                } finally {
+                    fs.writeFileSync(primary, elf);
+                }
+                assert.deepStrictEqual(
+                    rebuilt.events.filter((event) => event.event === "emberprobe.firmwareLoaded").map((e) => e.body),
+                    [{ image: "executable", firmware: "programmed" }]
+                );
+            }
+            // Custom load images are not the executable; attach programs nothing and reports nothing.
+            const custom = await launch("changed", { loadFiles: [{ file: bin, address: "0x20000000" }] });
+            assert.deepStrictEqual(
+                custom.loaded.map((event) => event.body),
+                [{ image: "custom", firmware: "programmed" }]
+            );
+            const attached = session({});
+            await attached.adapter.handle("attach", { ...defaults });
+            assert(!attached.events.some((event) => event.event === "emberprobe.firmwareLoaded"));
             // A rejected check (target memory fault) downloads; a closed transport cannot recover and propagates.
             const failed = session({ ...defaults });
             failed.mi.fail = "compare-sections";

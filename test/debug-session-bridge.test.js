@@ -681,6 +681,64 @@ async function testBackgroundStatusBroadcasts(debugType) {
         }
     });
 
+    await scenario("Refresh the paused snapshot after Variables view writes and invalidation", async () => {
+        const bridge = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
+        const session = { id: "ui-write", type: "cortex-debug", customRequest: async () => ({}) };
+        try {
+            bridge.attach(session);
+            bridge.setIntent(true);
+            bridge.handleMessage(session, {
+                type: "response",
+                command: "initialize",
+                success: true,
+                body: { supportsReadMemoryRequest: true }
+            });
+            bridge.handleMessage(session, { type: "event", event: "stopped" });
+            const settle = () => {
+                // Stand in for a completed snapshot read so each step starts from a ready snapshot.
+                bridge._invalidate();
+                bridge.snapshotReady = true;
+                bridge.snapshotPending = false;
+            };
+            const refreshed = () => bridge.snapshotPending === true && bridge.snapshotReady === false;
+
+            for (const command of ["setVariable", "setExpression", "writeMemory"]) {
+                settle();
+                bridge.handleRequest(session, { type: "request", command, seq: 7 });
+                assert.ok(!refreshed(), `${command}: nothing changes before the write succeeds`);
+                bridge.handleMessage(session, { type: "response", command, request_seq: 7, success: true });
+                assert.ok(refreshed(), `${command}: a successful UI write refreshes the snapshot`);
+                assert.ok(bridge.timer, `${command}: the refresh read is scheduled`);
+                assert.strictEqual(bridge.writeRequests.size, 0);
+            }
+
+            settle();
+            bridge.handleRequest(session, { type: "request", command: "setVariable", seq: 8 });
+            bridge.handleMessage(session, { type: "response", command: "setVariable", request_seq: 8, success: false });
+            assert.ok(!refreshed(), "a rejected write leaves the snapshot alone");
+            bridge.handleMessage(session, { type: "response", command: "setVariable", request_seq: 99, success: true });
+            assert.ok(!refreshed(), "a response to a request the bridge did not see is ignored");
+
+            bridge.handleMessage(session, { type: "event", event: "invalidated", body: { areas: ["variables"] } });
+            assert.ok(refreshed(), "an invalidated event refreshes the snapshot");
+
+            // EmberProbe's own verified write publishes its read-back; a refresh would abort it.
+            settle();
+            bridge.writing = true;
+            bridge.handleRequest(session, { type: "request", command: "writeMemory", seq: 9 });
+            bridge.handleMessage(session, { type: "response", command: "writeMemory", request_seq: 9, success: true });
+            bridge.handleMessage(session, { type: "event", event: "invalidated" });
+            assert.ok(!refreshed(), "the bridge's own write is not interrupted");
+            bridge.writing = false;
+
+            bridge.handleRequest(session, { type: "request", command: "setVariable", seq: 10 });
+            bridge.handleMessage(session, { type: "event", event: "terminated" });
+            assert.strictEqual(bridge.writeRequests.size, 0, "a terminated session drops pending writes");
+        } finally {
+            bridge.dispose();
+        }
+    });
+
     await scenario("Reject short memory reads and changed stop epochs", async () => {
         const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
         const bridge = new DebugSessionBridge();

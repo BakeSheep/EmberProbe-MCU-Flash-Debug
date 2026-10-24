@@ -263,8 +263,8 @@ class MainViewProvider {
         });
         this._agentReadSession = null;
         this._agentReadCancelled = false;
-        this._agentReadDelayTimer = null;
-        this._agentReadDelayResolve = null;
+        // Running variables.sample loops, so cancellation can stop them during an interval wait.
+        this._agentSampleRuns = new Set();
         this._agentSamplingStatus = null;
         this._uiWritePromise = Promise.resolve();
         this._uiWriteTicket = 0;
@@ -1615,17 +1615,32 @@ class MainViewProvider {
         this._agentSamplingStatus = running ? { running, key, params, agentOwned: true } : null;
         this._postLive({ type: "liveStatus", running, key, params, agentOwned: running });
     }
-    _waitAgentInterval(intervalMs) {
+    // Each wait owns its timer: reads sharing a live or debug connection run concurrently, and a
+    // shared timer let one wait clear another's, leaving that sample loop pending forever.
+    // `run` is the sample loop's entry in _agentSampleRuns; cancelling the run ends its wait early.
+    _waitAgentInterval(intervalMs, run = null) {
         return new Promise((resolve) => {
+            let timer = null;
             const finish = () => {
-                if (this._agentReadDelayTimer) clearTimeout(this._agentReadDelayTimer);
-                this._agentReadDelayTimer = null;
-                this._agentReadDelayResolve = null;
+                clearTimeout(timer);
+                if (run?.wake === finish) run.wake = null;
                 resolve(undefined);
             };
-            this._agentReadDelayResolve = finish;
-            this._agentReadDelayTimer = setTimeout(finish, intervalMs);
+            if (run) run.wake = finish;
+            timer = setTimeout(finish, intervalMs);
         });
+    }
+    _wakeAgentReadDelays() {
+        for (const run of [...(this._agentSampleRuns || [])]) if (run.temporary) run.wake?.();
+    }
+    // sampling.stop must also end samples on a connection the Agent read borrows (live sampling or a
+    // running/paused debug server), not only its own temporary probe session.
+    _cancelSharedAgentSamples() {
+        for (const run of [...(this._agentSampleRuns || [])]) {
+            if (run.temporary) continue;
+            run.cancelled = true;
+            run.wake?.();
+        }
     }
     async _runAgentSamples(params, count, intervalMs, syncStatus) {
         const layoutErrors = new Map();
@@ -1656,21 +1671,27 @@ class MainViewProvider {
                     this._postAgentSampling(true, "live.agentSampling", { current: 0, total: count });
                 const result = [];
                 const effectiveIntervalMs = intervalMs;
-                for (let index = 0; index < count; index++) {
-                    if (temporary && !this._agentReadRunning)
-                        throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
-                            code: "AGENT_READ_CANCELLED"
-                        });
-                    result.push(
-                        this._decodeAgentSample(
-                            plan,
-                            await session.readOnce(this._runtimeReadRanges(readItems, elfResult)),
-                            compositePlan
-                        )
-                    );
-                    if (temporary && syncStatus)
-                        this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
-                    if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs);
+                const run = { temporary, cancelled: false, wake: null };
+                (this._agentSampleRuns ??= new Set()).add(run);
+                try {
+                    for (let index = 0; index < count; index++) {
+                        if ((temporary && !this._agentReadRunning) || run.cancelled)
+                            throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
+                                code: "AGENT_READ_CANCELLED"
+                            });
+                        result.push(
+                            this._decodeAgentSample(
+                                plan,
+                                await session.readOnce(this._runtimeReadRanges(readItems, elfResult)),
+                                compositePlan
+                            )
+                        );
+                        if (temporary && syncStatus)
+                            this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
+                        if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs, run);
+                    }
+                } finally {
+                    this._agentSampleRuns.delete(run);
                 }
                 return {
                     source,
@@ -2484,8 +2505,7 @@ class MainViewProvider {
                 await this._confirmAgentExit(session);
                 if (this._agentReadSession === session) this._agentReadSession = null;
                 operationLease?.release();
-                if (this._agentReadLease === operationLease && this._agentReadDelayResolve)
-                    this._agentReadDelayResolve();
+                if (this._agentReadLease === operationLease) this._wakeAgentReadDelays();
                 if (syncStatus && this._agentReadLease === operationLease) {
                     const key = this._agentReadCancelled
                         ? "live.agentStopped"
@@ -4965,7 +4985,9 @@ class MainViewProvider {
             // Use the same watch union, probe ownership and UI notifications as the sidebar.
             await this.startLiveWatch(undefined, params.intervalMs ?? this._liveIntervalMs, "sidebar", false);
         } else if (action === "stop") {
-            // Cancel temporary Agent reads as well as persistent sampling; leave debugging active.
+            // Cancel Agent samples (temporary or on a borrowed connection) as well as persistent sampling;
+            // leave debugging active.
+            this._cancelSharedAgentSamples();
             const agentStopped = this.stopAgentReadIfRunning();
             const liveStopped = this.stopLiveWatch({ variablesOnly: true });
             await Promise.all([agentStopped, liveStopped]);
@@ -5724,6 +5746,21 @@ class MainViewProvider {
     }
     handleDebugAdapterMessage(session, message) {
         void this._externalDebug?.message(session, message).catch(console.error);
+        if (
+            message?.type === "event" &&
+            message.event === "emberprobe.firmwareLoaded" &&
+            !this._externalDebug?.matches(session) &&
+            this._matchesManagedDebugSession(session)
+        ) {
+            const { cwd, executable } = session.configuration || {};
+            void this._firmwareRecord
+                ?.recordDebugLaunch(
+                    executable && path.resolve(cwd || "", executable),
+                    message.body,
+                    this._managedDebugServer?.options
+                )
+                .catch((error) => console.error("Unable to record debug firmware:", error));
+        }
         if (this._managedDebugGroup?.match(session)) {
             this._managedDebugGroup.message(session, message);
             this._debugBridge.handleMessage(session, message);
@@ -5877,6 +5914,15 @@ class MainViewProvider {
         this._elfService.invalidate();
         if (this._shutdownPromise) return this._shutdownPromise;
         this._shutdownPromise = (async () => {
+            // Close probe access and the Agent Bridge first: a call arriving mid-shutdown must not start a
+            // new OpenOCD process after sampling and debugging have already been stopped.
+            this._probeCoordinator?.close();
+            this._agentService?.close();
+            await this._agentService?.stop().catch(() => {});
+            this._cancelSharedAgentSamples();
+            const agentStopped = this.stopAgentReadIfRunning();
+            // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
+            if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
             await this._cpuLoadService?.stop();
             this._clearDebugStartupWatchdog();
             if (this._managedDebugGroup) {
@@ -5906,8 +5952,6 @@ class MainViewProvider {
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
             this.disposeDebugBridge();
-            const agentStopped = this.stopAgentReadIfRunning();
-            if (agentStopped) await agentStopped;
             await this._agentService.dispose().catch(() => {});
         })();
         return this._shutdownPromise;
@@ -5915,7 +5959,7 @@ class MainViewProvider {
     stopAgentReadIfRunning() {
         if (!this._agentReadRunning && !this._agentReadSession) return null;
         this._agentReadCancelled = true;
-        if (this._agentReadDelayResolve) this._agentReadDelayResolve();
+        this._wakeAgentReadDelays();
         this._postAgentSampling(false, "live.agentStopped");
         const session = this._agentReadSession;
         const lease = this._agentReadLease;

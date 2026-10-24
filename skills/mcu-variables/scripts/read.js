@@ -4,6 +4,7 @@ const path = require("path");
 const net = require("net");
 const crypto = require("crypto");
 const { call, variableErrorDiagnostics, writeDiagnostic } = require("../../_emberprobe/agent-client");
+const { leavesDirectory } = require("../../_emberprobe/file-identity");
 
 const TYPES = new Set(["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"]);
 const WIDTH = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
@@ -518,7 +519,7 @@ function workspaceOutputPath(workspace, requested) {
     const root = fs.realpathSync(path.resolve(workspace));
     const output = path.resolve(root, raw);
     const relative = path.relative(root, output);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (!relative || leavesDirectory(relative)) {
         throw Object.assign(new Error("--output must be a relative path inside the workspace"), {
             code: "PATH_OUTSIDE_WORKSPACE"
         });
@@ -530,7 +531,7 @@ function workspaceOutputPath(workspace, requested) {
         ancestor = parent;
     }
     const ancestorRelative = path.relative(root, fs.realpathSync(ancestor));
-    if (ancestorRelative.startsWith("..") || path.isAbsolute(ancestorRelative)) {
+    if (leavesDirectory(ancestorRelative)) {
         throw Object.assign(new Error("--output resolves through a symlink outside the workspace"), {
             code: "PATH_OUTSIDE_WORKSPACE"
         });

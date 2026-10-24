@@ -150,7 +150,6 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     "setSamplingEnabled",
                     "invalidateTarget",
                     "readOnce",
-                    "writeOnce",
                     "writeAndVerify",
                     "waitForIdle",
                     "waitForExit",

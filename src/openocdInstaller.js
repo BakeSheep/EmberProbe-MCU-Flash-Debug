@@ -8,6 +8,7 @@
 const fs = require("fs");
 const { createHash } = require("crypto");
 const path = require("path");
+const { leavesDirectory } = require("../skills/_emberprobe/file-identity");
 const tar = require("tar");
 
 // 预置包相对扩展根的目录；package.json 的 files 字段需包含 "resources/**/*"
@@ -87,7 +88,7 @@ function globFirst(root, predicate) {
 function assertSafeEntryPath(staging, entryPath) {
     const target = path.resolve(staging, String(entryPath || ""));
     const relative = path.relative(staging, target);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    if (leavesDirectory(relative)) {
         throw Object.assign(new Error(`Refusing unsafe archive entry: ${entryPath}`), { code: "UNSAFE_ARCHIVE_ENTRY" });
     }
 }

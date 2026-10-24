@@ -4,6 +4,7 @@
 // Pure functions only: callers own file enumeration, size budgets and I/O.
 
 const path = require("path");
+const { leavesDirectory } = require("./file-identity");
 
 // Matches never start inside a longer identifier (rp2040 in "xrp2040"), but underscores,
 // separators and compiler define flags may precede them: "startup_stm32f407xx.s",
@@ -277,7 +278,7 @@ function elfHeaderInfo(header) {
 function isInside(file, dir) {
     if (!dir) return false;
     const relative = path.relative(dir, file);
-    return !!relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+    return !!relative && !leavesDirectory(relative);
 }
 
 /**

@@ -2065,32 +2065,6 @@ class ManagedOpenOcdSession {
         return result;
     }
 
-    // 在现有 Tcl 连接上写入一组变量一次（items: [{address, bytes}]），语义同 readOnce。
-    async writeOnce(items, timeoutMs = 2500) {
-        if (this.mode === "debug") {
-            throw Object.assign(new Error("Runtime writes are disabled for managed debug sessions"), {
-                code: "RUNTIME_WRITE_DISABLED"
-            });
-        }
-        if (!Array.isArray(items) || !items.length) return 0;
-        if (this.stopped || !this.socket || this.socket.destroyed)
-            throw new Error("OpenOCD Tcl service is not connected");
-        const deadline = Date.now() + timeoutMs;
-        await this._acquireExclusive(deadline);
-        try {
-            if (this.stopped || !this.socket || this.socket.destroyed)
-                throw new Error("OpenOCD Tcl service is not connected");
-            let written = 0;
-            for (const item of items) {
-                await this._writeMemoryBytes(item.address, item.bytes);
-                written++;
-            }
-            return written;
-        } finally {
-            this._releaseExclusive();
-        }
-    }
-
     async _sampleTick(fromScheduler = false) {
         if (this._initializing || this._detectingScatter) return;
         if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;

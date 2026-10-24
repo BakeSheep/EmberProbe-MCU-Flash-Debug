@@ -168,9 +168,6 @@ class SamplingSession {
     async selectCpuIdleTask(...args) {
         return (await this.request("selectCpuIdleTask", args)).result;
     }
-    async writeOnce(...args) {
-        return (await this.request("writeOnce", args)).result;
-    }
     async writeAndVerify(...args) {
         if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length)
             require("./liveWatch").validateManagedWritePlan(args[0]);

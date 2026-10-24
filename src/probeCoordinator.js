@@ -17,6 +17,12 @@ class ProbeCoordinator {
     constructor(onChange = () => {}) {
         this._state = new Map(PROBE_OPERATIONS.map((name) => [name, null]));
         this.onChange = onChange;
+        this.closed = false;
+    }
+
+    // Extension shutdown: existing leases still release, but nothing may start a new probe process.
+    close() {
+        this.closed = true;
     }
 
     _validate(name) {
@@ -43,6 +49,13 @@ class ProbeCoordinator {
 
     acquire(name) {
         this._validate(name);
+        if (this.closed)
+            throw Object.assign(new Error(`The extension is shutting down; cannot start ${name}`), {
+                code: "PROBE_BUSY",
+                requestedOperation: name,
+                activeOperation: "shutdown",
+                retryable: false
+            });
         if (this.anyActive()) throw this._busy(name);
         const lease = new ProbeLease(this, name);
         this._state.set(name, lease);

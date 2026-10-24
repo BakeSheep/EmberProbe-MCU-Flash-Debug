@@ -310,6 +310,22 @@ static int secure_directory(const wchar_t *path, SECURITY_ATTRIBUTES *attributes
         NULL, NULL, dacl, NULL) == ERROR_SUCCESS;
 }
 
+static const wchar_t storage_sddl[] = L"D:P(A;;FA;;;SY)(A;;FA;;;BA)";
+
+static int secure_storage_directory(const wchar_t *path) {
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    SECURITY_ATTRIBUTES attributes;
+    int ok;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(storage_sddl, SDDL_REVISION_1, &descriptor, NULL))
+        return 0;
+    ZeroMemory(&attributes, sizeof(attributes));
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor;
+    ok = secure_directory(path, &attributes, descriptor);
+    LocalFree(descriptor);
+    return ok;
+}
+
 static int storage_path(const wchar_t *id, wchar_t *base, wchar_t *original, wchar_t *driver) {
     PWSTR program_data = NULL;
     PSECURITY_DESCRIPTOR descriptor = NULL;
@@ -325,8 +341,8 @@ static int storage_path(const wchar_t *id, wchar_t *base, wchar_t *original, wch
         return 0;
     }
     CoTaskMemFree(program_data);
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            L"D:P(A;;FA;;;SY)(A;;FA;;;BA)", SDDL_REVISION_1, &descriptor, NULL)) return 0;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(storage_sddl, SDDL_REVISION_1, &descriptor, NULL))
+        return 0;
     ZeroMemory(&attributes, sizeof(attributes));
     attributes.nLength = sizeof(attributes);
     attributes.lpSecurityDescriptor = descriptor;
@@ -369,23 +385,36 @@ static int manifest_path(const wchar_t *base, wchar_t *manifest) {
     return swprintf(manifest, MAX_PATH, L"%ls\\original-driver.txt", base) > 0;
 }
 
+/* The manifest is replaced in one rename, so a reader sees either the old or the new complete record. */
 static int save_manifest(const wchar_t *base, const wchar_t *id, const wchar_t *inf) {
-    wchar_t file[MAX_PATH];
+    wchar_t file[MAX_PATH], pending[MAX_PATH];
     FILE *stream;
-    if (!manifest_path(base, file) || _wfopen_s(&stream, file, L"wt, ccs=UNICODE") != 0) return 0;
-    fwprintf(stream, L"%ls\n%ls\n", id, inf);
-    return fclose(stream) == 0;
+    int written;
+    if (!manifest_path(base, file) || swprintf(pending, MAX_PATH, L"%ls.new", file) < 0 ||
+        _wfopen_s(&stream, pending, L"wt, ccs=UNICODE") != 0) return 0;
+    written = fwprintf(stream, L"%ls\n%ls\n", id, inf) > 0;
+    if (fclose(stream) != 0 || !written ||
+        !MoveFileExW(pending, file, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(pending);
+        return 0;
+    }
+    return 1;
 }
 
-static int read_manifest(const wchar_t *base, const wchar_t *id, wchar_t *inf) {
-    wchar_t file[MAX_PATH], saved_id[256];
+static int read_manifest_fields(const wchar_t *base, wchar_t *saved_id, wchar_t *inf) {
+    wchar_t file[MAX_PATH];
     FILE *stream;
     if (!manifest_path(base, file) || _wfopen_s(&stream, file, L"rt, ccs=UNICODE") != 0) return 0;
     if (!fgetws(saved_id, 256, stream) || !fgetws(inf, 256, stream)) { fclose(stream); return 0; }
     fclose(stream);
     saved_id[wcscspn(saved_id, L"\r\n")] = 0;
     inf[wcscspn(inf, L"\r\n")] = 0;
-    return _wcsicmp(saved_id, id) == 0 && valid_oem_inf(inf);
+    return 1;
+}
+
+static int read_manifest(const wchar_t *base, const wchar_t *id, wchar_t *inf) {
+    wchar_t saved_id[256];
+    return read_manifest_fields(base, saved_id, inf) && _wcsicmp(saved_id, id) == 0 && valid_oem_inf(inf);
 }
 
 static int find_exported_inf(const wchar_t *folder, wchar_t *found) {
@@ -401,20 +430,54 @@ static int find_exported_inf(const wchar_t *folder, wchar_t *found) {
     return 1;
 }
 
-static int empty_directory(const wchar_t *folder) {
-    wchar_t pattern[MAX_PATH];
+/* Removes a helper-owned folder. A reparse point is deleted itself and its target is never traversed. */
+static int remove_tree(const wchar_t *path, int depth) {
+    wchar_t pattern[MAX_PATH], child[MAX_PATH];
     WIN32_FIND_DATAW item;
     HANDLE search;
-    if (swprintf(pattern, MAX_PATH, L"%ls\\*", folder) < 0) return 0;
-    search = FindFirstFileW(pattern, &item);
-    if (search == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
-    do {
-        if (wcscmp(item.cFileName, L".") && wcscmp(item.cFileName, L"..")) {
-            FindClose(search);
-            return 0;
-        }
-    } while (FindNextFileW(search, &item));
-    FindClose(search);
+    DWORD attributes = GetFileAttributesW(path);
+    if (attributes == INVALID_FILE_ATTRIBUTES)
+        return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
+    if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) SetFileAttributesW(path, FILE_ATTRIBUTE_NORMAL);
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) return DeleteFileW(path) != FALSE;
+    if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (depth > 8 || swprintf(pattern, MAX_PATH, L"%ls\\*", path) < 0) return 0;
+        search = FindFirstFileW(pattern, &item);
+        if (search == INVALID_HANDLE_VALUE) return 0;
+        do {
+            if (!wcscmp(item.cFileName, L".") || !wcscmp(item.cFileName, L"..")) continue;
+            if (swprintf(child, MAX_PATH, L"%ls\\%ls", path, item.cFileName) < 0 || !remove_tree(child, depth + 1)) {
+                FindClose(search);
+                return 0;
+            }
+        } while (FindNextFileW(search, &item));
+        FindClose(search);
+    }
+    return RemoveDirectoryW(path) != FALSE;
+}
+
+/* 0: the backup is the verified current driver; 1: missing, partial or outdated; -1: another device's record. */
+static int backup_state(const wchar_t *base, const wchar_t *id, const wchar_t *inf, const wchar_t *original) {
+    wchar_t manifest[MAX_PATH], saved_id[256], saved_inf[256], exported[MAX_PATH];
+    if (!manifest_path(base, manifest)) return -1;
+    if (GetFileAttributesW(manifest) == INVALID_FILE_ATTRIBUTES || !read_manifest_fields(base, saved_id, saved_inf))
+        return 1;
+    if (_wcsicmp(saved_id, id) != 0) return -1;
+    return _wcsicmp(saved_inf, inf) == 0 && find_exported_inf(original, exported) ? 0 : 1;
+}
+
+/* Called only while the device is bound to the verified SEGGER jlink driver, which then is the driver to
+   restore. A complete export replaces the old backup; an interrupted refresh is repeated on the next install. */
+static int refresh_backup(const wchar_t *base, const wchar_t *id, const wchar_t *inf, const wchar_t *original) {
+    wchar_t staging[MAX_PATH], previous[MAX_PATH], exported[MAX_PATH];
+    if (swprintf(staging, MAX_PATH, L"%ls\\original.new", base) < 0 ||
+        swprintf(previous, MAX_PATH, L"%ls\\original.old", base) < 0) return 0;
+    if (!remove_tree(staging, 0) || !remove_tree(previous, 0) || !secure_storage_directory(staging) ||
+        !run_pnputil_export(inf, staging) || !find_exported_inf(staging, exported)) return 0;
+    if (GetFileAttributesW(original) != INVALID_FILE_ATTRIBUTES &&
+        !MoveFileExW(original, previous, MOVEFILE_WRITE_THROUGH)) return 0;
+    if (!MoveFileExW(staging, original, MOVEFILE_WRITE_THROUGH) || !save_manifest(base, id, inf)) return 0;
+    remove_tree(previous, 0);
     return 1;
 }
 
@@ -492,32 +555,28 @@ static int install_winusb(const wchar_t *id, HDEVINFO set, SP_DEVINFO_DATA *devi
     wdi_error_fn error_text;
     int result = 0, status;
     wchar_t *separator;
-    wchar_t existing_inf[256], manifest[MAX_PATH], cached_inf[MAX_PATH], cached_cat[MAX_PATH];
+    wchar_t cached_inf[MAX_PATH], cached_cat[MAX_PATH];
     DWORD inf_attributes, cat_attributes;
-    int reuse_package = 0;
-    if (!manifest_path(base, manifest)) return 21;
-    if (GetFileAttributesW(manifest) != INVALID_FILE_ATTRIBUTES) {
-        if (!read_manifest(base, id, existing_inf) || _wcsicmp(existing_inf, inf) != 0 ||
-            !find_exported_inf(original, manifest)) return 21;
-        if (swprintf(cached_inf, MAX_PATH, L"%ls\\emberprobe-winusb.inf", driver) > 0 &&
-            swprintf(cached_cat, MAX_PATH, L"%ls\\emberprobe-winusb.cat", driver) > 0) {
-            inf_attributes = GetFileAttributesW(cached_inf);
-            cat_attributes = GetFileAttributesW(cached_cat);
-            reuse_package = inf_attributes != INVALID_FILE_ATTRIBUTES &&
-                cat_attributes != INVALID_FILE_ATTRIBUTES &&
-                !(inf_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
-                !(cat_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
-            if (reuse_package) {
-                int attempted = 0;
-                if (bind_driver_from_inf(set, device, cached_inf, &attempted)) return 0;
-                if (attempted) {
-                    /* Fast bind was attempted and failed. Do not call libwdi. */
-                    return 25;
-                }
+    int reuse_package = 0, backup = backup_state(base, id, inf, original);
+    /* A SEGGER update publishes a new oemNN.inf; the backup then follows the verified current driver. */
+    if (backup < 0 || (backup > 0 && !refresh_backup(base, id, inf, original))) return 21;
+    if (swprintf(cached_inf, MAX_PATH, L"%ls\\emberprobe-winusb.inf", driver) > 0 &&
+        swprintf(cached_cat, MAX_PATH, L"%ls\\emberprobe-winusb.cat", driver) > 0) {
+        inf_attributes = GetFileAttributesW(cached_inf);
+        cat_attributes = GetFileAttributesW(cached_cat);
+        reuse_package = inf_attributes != INVALID_FILE_ATTRIBUTES &&
+            cat_attributes != INVALID_FILE_ATTRIBUTES &&
+            !(inf_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+            !(cat_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+        if (reuse_package) {
+            int attempted = 0;
+            if (bind_driver_from_inf(set, device, cached_inf, &attempted)) return 0;
+            if (attempted) {
+                /* Fast bind was attempted and failed. Do not call libwdi. */
+                return 25;
             }
         }
-    } else if (!empty_directory(original) || !run_pnputil_export(inf, original) ||
-               !find_exported_inf(original, manifest) || !save_manifest(base, id, inf)) return 21;
+    }
     if (!GetModuleFileNameW(NULL, executable, MAX_PATH)) return 22;
     separator = wcsrchr(executable, L'\\');
     if (!separator) return 22;

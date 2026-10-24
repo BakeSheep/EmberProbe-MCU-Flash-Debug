@@ -17,8 +17,8 @@ const KERNEL_LISTS = Object.freeze([
 ]);
 // The lists the delayed-list pointers alternate between; resolved only to widen the read window.
 const DELAYED_LISTS = Object.freeze(["xDelayedTaskList1", "xDelayedTaskList2"]);
-// Target checks and typed layouts depend only on the loaded symbols. The directory returns the same entry
-// array until symbols are reloaded, so keying on that array drops the cache with every symbol change.
+// Target metadata and typed layouts are stable within the session until symbols are reloaded. The directory
+// returns the same entry array until then, so keying on that array drops the cache with every symbol change.
 const kernelCache = new WeakMap();
 
 function numeric(value) {
@@ -86,9 +86,25 @@ class FreeRtosSnapshot {
                     await this.session.mi.command('-interpreter-exec console "show endian"');
                 });
                 this.check(context);
-                if (width !== 4 || !/little endian/i.test(target) || !/\barmv[678][\w.-]*m\b/i.test(target))
+                const architecture = target.match(/\barm(?:v[\w.-]+)?\b/i)?.[0] || "";
+                const arm32LittleEndian = width === 4 && /little endian/i.test(target);
+                let cortexM = /^armv[678][\w.-]*m\b/i.test(architecture);
+                if (arm32LittleEndian && !cortexM && /^arm(?:v[678])?$/i.test(architecture)) {
+                    // GDB can report only "arm"/"armv7" for a Cortex-M ELF/AXF. Its M-profile register
+                    // description uses xpsr instead of cpsr; listing names reads metadata, not registers.
+                    const registers = await this.session.mi.command("-data-list-register-names");
+                    this.check(context);
+                    const names = Array.isArray(registers["register-names"])
+                        ? registers["register-names"]
+                              .filter((name) => typeof name === "string")
+                              .map((name) => name.toLowerCase())
+                        : [];
+                    cortexM = names.includes("xpsr") && !names.includes("cpsr");
+                }
+                if (!arm32LittleEndian || !cortexM)
                     throw new Error(
-                        "FreeRTOS snapshots currently require a little-endian single-core Cortex-M ARM32 target"
+                        "FreeRTOS snapshots currently require a little-endian single-core Cortex-M ARM32 target. " +
+                            `GDB: pointer size ${width} bytes; ${target.trim().replace(/\s+/g, " ").slice(0, 512)}`
                     );
                 kernel.verified = true;
                 kernelCache.set(directory, kernel);

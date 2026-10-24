@@ -198,25 +198,8 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     ]);
     assert.deepStrictEqual(ram, [0x99, 0xa1, 0xa2, 0xa3, 0xa4, 0x66, 0x77, 0x88], "neighbouring bytes are kept");
 
-    // —— writeOnce：串行写入、不改 watch 列表 ——
-    const session = new LiveWatchSession(null, {}, {});
-    session.socket = { destroyed: false };
-    const written = [];
-    session._writeMemoryBytes = async (address, bytes) => {
-        written.push({ address, bytes });
-        return true;
-    };
-    const count = await session.writeOnce([
-        { address: 0x20000000, bytes: [1, 0, 0, 0] },
-        { address: 0x20000004, bytes: [2] }
-    ]);
-    assert.strictEqual(count, 2);
-    assert.deepStrictEqual(
-        written.map((w) => w.address),
-        [0x20000000, 0x20000004]
-    );
-    assert.deepStrictEqual(session.watch, [], "one-shot writes must not modify the UI watch list");
-    assert.strictEqual(await session.writeOnce([]), 0);
+    // Every runtime write goes through writeAndVerify; no unverified write path remains.
+    assert.strictEqual(LiveWatchSession.prototype.writeOnce, undefined);
 
     // Concurrent transactions must finish verification and resume before the next writer enters.
     const concurrent = new LiveWatchSession(null, {}, {});

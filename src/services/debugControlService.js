@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeFileIdentity, leavesDirectory } = require("../../skills/_emberprobe/file-identity");
 
 function sourcePath(breakpoint) {
     return breakpoint?.location?.uri?.fsPath || "";
@@ -54,6 +55,7 @@ class DebugControlService {
         this.workspaceProvider = options.workspaceProvider;
         this.startDebug = options.startDebug;
         this.waitForRelease = options.waitForRelease || (() => undefined);
+        this.platform = options.platform || process.platform;
         this.controlInFlight = null;
     }
 
@@ -118,7 +120,7 @@ class DebugControlService {
         if (!requested) throw error("A source breakpoint requires --file", "INVALID_BREAKPOINT");
         const file = path.resolve(workspace, requested);
         const relative = path.relative(workspace, file);
-        if (relative.startsWith("..") || path.isAbsolute(relative))
+        if (leavesDirectory(relative))
             throw error(
                 "Source breakpoint paths must stay inside the current workspace",
                 "BREAKPOINT_PATH_OUTSIDE_WORKSPACE"
@@ -147,7 +149,14 @@ class DebugControlService {
         const item = describeBreakpoint(breakpoint);
         if (item.type !== locator.type) return false;
         if (locator.type === "function") return item.function === locator.function;
-        return path.resolve(item.file) === locator.file && item.line === locator.line && item.column === locator.column;
+        // VS Code's Uri.fsPath lowercases the Windows drive letter while a requested path may not.
+        const paths = this.platform === "win32" ? path.win32 : path.posix;
+        const identity = (file) => normalizeFileIdentity(paths.resolve(file), this.platform);
+        return (
+            identity(item.file) === identity(locator.file) &&
+            item.line === locator.line &&
+            item.column === locator.column
+        );
     }
 
     _create(locator, params, enabled = params.enabled !== false) {

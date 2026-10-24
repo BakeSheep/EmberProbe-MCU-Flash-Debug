@@ -31,6 +31,15 @@ function threadList(result) {
     return Array.isArray(threads) ? threads : threads ? [threads] : [];
 }
 
+async function fileStamp(file) {
+    try {
+        const stat = await fs.promises.stat(file);
+        return stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : null;
+    } catch {
+        return null;
+    }
+}
+
 // The MI command sequence follows Cortex-Debug's GDB/MI backend. This adapter
 // owns only GDB; the extension owns the OpenOCD server and probe lease.
 class EmberDebugSession extends DebugSession {
@@ -665,6 +674,11 @@ class EmberDebugSession extends DebugSession {
         await this.mi.command("-gdb-set confirm off");
         await initializePrettyPrinting(this.mi, this.config, (message) => this.variableDiagnostic(message));
         trace?.phase("gdbSetup");
+        // Stamped before GDB first reads the executable, so a rebuild before the download is detected.
+        const executableStamp =
+            !external && !attach && this.config.loadFiles === undefined
+                ? await fileStamp(path.resolve(this.config.cwd || "", this.config.executable))
+                : null;
         await this.debugImages.symbols();
         trace?.phase("symbols");
         await this.mi.command(
@@ -687,6 +701,7 @@ class EmberDebugSession extends DebugSession {
                 await this.mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
                 trace?.phase("postDownloadReset");
             }
+            await this.reportFirmware(download, executableStamp);
         }
         await this.debugImages.hooks(attach ? "postAttachCommands" : "postLaunchCommands");
         trace?.phase("postHooks");
@@ -712,6 +727,24 @@ class EmberDebugSession extends DebugSession {
         this.running = false;
         this.ready = true;
         return {};
+    }
+    // Tells the extension what the target now runs, so its last-flashed-firmware record follows debug launches.
+    // The stamp is sent only when the executable kept the same size and mtime across the download.
+    async reportFirmware(download, before) {
+        if (download.firmware === "none") return;
+        if (this.config.loadFiles !== undefined) {
+            this.sendEvent(new Event("emberprobe.firmwareLoaded", { image: "custom", firmware: download.firmware }));
+            return;
+        }
+        const after = before && (await fileStamp(path.resolve(this.config.cwd || "", this.config.executable)));
+        const unchanged = !!after && after.size === before.size && after.mtimeMs === before.mtimeMs;
+        this.sendEvent(
+            new Event("emberprobe.firmwareLoaded", {
+                image: "executable",
+                firmware: download.firmware,
+                ...(unchanged ? before : {})
+            })
+        );
     }
     // Phase durations only: no paths, expressions or target data reach the trace.
     launchTrace() {
