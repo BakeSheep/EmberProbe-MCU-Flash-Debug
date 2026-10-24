@@ -110,8 +110,8 @@ function createServer(options = {}) {
         }
     }
 
-    async function runConfirmable(tool, args, call, extra) {
-        const request = tool.request(args);
+    async function runConfirmable(tool, args, call, target, extra) {
+        const request = tool.request(args, { workspace: target });
         const params = { ...request.params };
         const execute = async (approval) =>
             results.success(
@@ -202,8 +202,8 @@ function createServer(options = {}) {
         extra.signal?.addEventListener("abort", onAbort, { once: true });
         try {
             if (tool.kind === "flash") return await runFlash(tool, args, call, target, extra);
-            if (tool.confirm) return await runConfirmable(tool, args, call, extra);
-            const request = tool.request(args);
+            if (tool.confirm) return await runConfirmable(tool, args, call, target, extra);
+            const request = tool.request(args, { workspace: target });
             const value = await call(request.method, request.params || {}, request.timeoutMs);
             return results.success(tool.result ? tool.result(value) : value);
         } catch (error) {

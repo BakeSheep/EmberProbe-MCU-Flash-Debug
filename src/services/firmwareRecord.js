@@ -1,5 +1,6 @@
 "use strict";
 const { normalizeFileIdentity } = require("../../skills/_emberprobe/file-identity");
+const { inspectElf } = require("../../skills/_emberprobe/elf-file");
 
 const DEFAULT_STORAGE_KEY = "agent.lastFlashedFirmware";
 
@@ -11,6 +12,7 @@ class FirmwareRecord {
         this.storage = storage;
         this.storageKey = options.storageKey || DEFAULT_STORAGE_KEY;
         this.now = options.now || (() => Date.now());
+        this.inspectElf = options.inspectElf || null;
     }
 
     /**
@@ -26,6 +28,33 @@ class FirmwareRecord {
             probeSerial: String(connection.probeSerial || ""),
             flashedAt: new Date(this.now()).toISOString()
         });
+    }
+
+    // The target was programmed with something this record cannot identify; report "unknown", not a stale match.
+    async forget() {
+        if (this.storage && this.saved()) await this.storage.update(this.storageKey, undefined);
+    }
+
+    /**
+     * Follows a built-in debugger launch, which programs the ELF (or confirms it with compare-sections).
+     * The adapter stamps the executable before GDB reads it and after the download; the hash is recorded
+     * only when the file still has that stamp, so a rebuild during or after launch is never recorded.
+     * @param {string} executable
+     * @param {{ image?: string, firmware?: string, size?: number, mtimeMs?: number }} loaded
+     * @param {{ target?: string, probe?: string, probeSerial?: string }} [connection]
+     */
+    async recordDebugLaunch(executable, loaded = {}, connection = {}) {
+        if (loaded.firmware !== "programmed" && loaded.firmware !== "unchanged") return;
+        if (loaded.image === "executable" && executable && Number.isFinite(loaded.size)) {
+            try {
+                const elf = await (this.inspectElf || inspectElf)(executable);
+                if (elf.size === loaded.size && elf.mtimeMs === loaded.mtimeMs)
+                    return await this.record({ elf: elf.path, sha256: elf.sha256, connection });
+            } catch {
+                // An unreadable or changing ELF leaves the target firmware unidentified.
+            }
+        }
+        await this.forget();
     }
 
     saved() {

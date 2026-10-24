@@ -77,11 +77,18 @@ function candidateHash(file) {
     return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
+// Relative paths name workspace files, as the Bridge resolves them; the MCP server's own cwd is
+// whatever directory the client launched it from.
+function workspacePath(context, file) {
+    return context?.workspace ? path.resolve(context.workspace, file) : path.resolve(file);
+}
+
 /**
  * @typedef {{ method: string, params?: Record<string, any>, timeoutMs?: number }} BridgeRequest
  * @typedef {{
  *   name: string, toolset: string, title: string, description: string, methods: string[],
- *   inputSchema: Record<string, any>, request?: (args: Record<string, any>) => BridgeRequest,
+ *   inputSchema: Record<string, any>,
+ *   request?: (args: Record<string, any>, context?: { workspace?: string }) => BridgeRequest,
  *   kind?: "bridge" | "flash", confirm?: boolean, destructive?: boolean, mutates?: boolean,
  *   hardware?: boolean, operation?: string, cancel?: (args: Record<string, any>) => BridgeRequest | null,
  *   plan?: (params: Record<string, any>) => BridgeRequest & { context?: Record<string, any> },
@@ -590,12 +597,12 @@ const TOOLS = [
         description: "Validate the project or a candidate .ioc and summarize what generation would change.",
         methods: ["cubemx.prepare"],
         inputSchema: object({ full: bool("Full report"), candidatePath: str("Candidate .ioc path") }),
-        request: (args) => ({
+        request: (args, context) => ({
             method: "cubemx.prepare",
             params: {
                 summary: !args.full,
                 full: !!args.full,
-                ...(args.candidatePath ? { candidatePath: path.resolve(args.candidatePath) } : {})
+                ...(args.candidatePath ? { candidatePath: workspacePath(context, args.candidatePath) } : {})
             }
         }),
         result: withoutApproval
@@ -615,9 +622,9 @@ const TOOLS = [
             },
             ["outputPath"]
         ),
-        request: (args) => ({
+        request: (args, context) => ({
             method: "cubemx.candidate",
-            params: { ...args, outputPath: path.resolve(args.outputPath) }
+            params: { ...args, outputPath: workspacePath(context, args.outputPath) }
         })
     },
     {
@@ -643,7 +650,7 @@ const TOOLS = [
             requestId: str("Idempotency key"),
             ...confirmation
         }),
-        request: (args) => cubemxRequest("cubemx.start", args),
+        request: (args, context) => cubemxRequest("cubemx.start", args, context),
         plan: cubemxPlan
     },
     {
@@ -659,7 +666,7 @@ const TOOLS = [
             requestId: str("Idempotency key"),
             ...confirmation
         }),
-        request: (args) => cubemxRequest("cubemx.execute", args, 360000),
+        request: (args, context) => cubemxRequest("cubemx.execute", args, context, 360000),
         plan: cubemxPlan,
         // 同步生成不返回 operationId；取消时转发不带 ID 的 cubemx.cancel（取消本工作区正在运行的生成）。
         cancel: () => ({ method: "cubemx.cancel", params: {} })
@@ -675,10 +682,10 @@ const TOOLS = [
     }
 ];
 
-function cubemxRequest(method, args, timeoutMs = 30000) {
+function cubemxRequest(method, args, context, timeoutMs = 30000) {
     const params = {};
     if (args.candidatePath) {
-        params.candidatePath = path.resolve(args.candidatePath);
+        params.candidatePath = workspacePath(context, args.candidatePath);
         params.candidateHash = candidateHash(params.candidatePath);
     }
     // 同一次工具调用（含确认后的重调）复用同一个 requestId，Bridge 据此去重。

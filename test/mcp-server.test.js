@@ -279,6 +279,7 @@ const inspection = new AgentDebugInspection(debugBridge);
         "peripherals.write": (params) => peripherals.write(params),
         "debug.status": () => new Promise((resolve) => setTimeout(() => resolve({ state: "paused" }), 120)),
         "debug.inspect": (params) => inspection.inspect(params),
+        "cubemx.candidate": (params) => cube.generateCandidate(params),
         "cubemx.prepare": (params) => cube.prepare(params),
         "cubemx.execute": (params) => cube.execute(params),
         "cubemx.start": (params) => cube.start(params),
@@ -581,6 +582,37 @@ const inspection = new AgentDebugInspection(debugBridge);
             assert.ok(!done.isError, JSON.stringify(done.structuredContent));
             assert.strictEqual(bridge.calls.at(-1).params.confirmationId, plan.confirmationId);
             assert.strictEqual(currentBaud(), "57600");
+            await client.close();
+        });
+
+        await scenario("Resolve relative CubeMX paths against the workspace, not the server's cwd", async () => {
+            // The client launched the server from `base`; the workspace is a different directory.
+            const { client } = await connect({
+                env: { EMBERPROBE_WORKSPACE: workspace, EMBERPROBE_MCP_TOOLSETS: "cubemx" }
+            });
+            const relative = path.join("candidates", "relative.ioc");
+            const absolute = path.join(candidates, "relative.ioc");
+            const written = await client.callTool({
+                name: "cubemx_candidate",
+                arguments: { outputPath: relative, changes: { "USART2.BaudRate": "230400" } }
+            });
+            assert.ok(!written.isError, JSON.stringify(written.structuredContent));
+            assert.strictEqual(bridge.calls.at(-1).params.outputPath, absolute);
+            assert.ok(fs.readFileSync(absolute, "utf8").includes("USART2.BaudRate=230400"));
+            assert.ok(!fs.existsSync(path.join(base, relative)), "nothing is written under the server's cwd");
+
+            const prepared = await client.callTool({ name: "cubemx_prepare", arguments: { candidatePath: relative } });
+            assert.ok(!prepared.isError, JSON.stringify(prepared.structuredContent));
+            assert.strictEqual(bridge.calls.at(-1).params.candidatePath, absolute);
+            assert.strictEqual(prepared.structuredContent.changes[0].requested, "230400");
+
+            const before = bridge.calls.length;
+            const pending = await client.callTool({ name: "cubemx_execute", arguments: { candidatePath: relative } });
+            assert.ok(!pending.isError, JSON.stringify(pending.structuredContent));
+            assert.deepStrictEqual(callsSince(before), ["cubemx.prepare"]);
+            assert.strictEqual(bridge.calls.at(-1).params.candidateHash, sha256(fs.readFileSync(absolute)));
+            assert.strictEqual(pending.structuredContent.candidatePath, absolute);
+            assert.strictEqual(currentBaud(), "57600", "nothing runs before the user answers");
             await client.close();
         });
 

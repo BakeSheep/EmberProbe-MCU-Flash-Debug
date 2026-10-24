@@ -60,6 +60,17 @@ class AgentService {
         this.lifecycleEpoch = 0;
         this.startPromise = null;
         this.stopPromise = null;
+        this.closed = false;
+    }
+
+    // Extension shutdown: refuse calls already in transit and any later restart of the Bridge.
+    close() {
+        this.closed = true;
+    }
+
+    assertOpen() {
+        if (this.closed)
+            throw Object.assign(new Error("The extension is shutting down"), { code: "EXTENSION_SHUTTING_DOWN" });
     }
 
     methods() {
@@ -110,7 +121,9 @@ class AgentService {
                 code: "METHOD_NOT_FOUND"
             });
         }
+        this.assertOpen();
         if (this.onCall) await this.onCall(method, params, meta);
+        this.assertOpen();
         const result = await handler(params);
         return method === "chip.read" ? this.selectChipFields(result, params) : result;
     }
@@ -129,6 +142,10 @@ class AgentService {
 
     // options.legacyPointer：是否为旧版脚本写工作区指针（工作区装了 skills 时为真）。
     start(options = {}) {
+        if (this.closed)
+            return Promise.reject(
+                Object.assign(new Error("The extension is shutting down"), { code: "EXTENSION_SHUTTING_DOWN" })
+            );
         if (!this.isTrusted())
             return Promise.reject(
                 Object.assign(new Error("Agent Bridge requires a trusted workspace"), { code: "WORKSPACE_UNTRUSTED" })

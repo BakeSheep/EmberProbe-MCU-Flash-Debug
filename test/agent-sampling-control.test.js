@@ -301,6 +301,71 @@ function fixture() {
         }
     });
 
+    await scenario("Keep concurrent sample interval waits independent", async () => {
+        const Provider = loadProvider({ debug: {}, workspace: {} });
+        const host = Object.create(Provider.prototype);
+        const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve("hung"), ms).unref());
+        // Two variables.sample calls sharing a live connection: the shorter wait used to clear the longer one's
+        // timer and drop its resolver, leaving the second call pending forever.
+        const long = host._waitAgentInterval(40).then(() => "done");
+        const short = host._waitAgentInterval(5).then(() => "done");
+        assert.strictEqual(await short, "done");
+        assert.strictEqual(await Promise.race([long, timeout(1000)]), "done");
+
+        // Cancelling the temporary-probe read wakes only its own waits.
+        const started = Date.now();
+        const temporaryRun = { temporary: true, cancelled: false, wake: null };
+        const sharedRun = { temporary: false, cancelled: false, wake: null };
+        host._agentSampleRuns = new Set([temporaryRun, sharedRun]);
+        const temporary = host._waitAgentInterval(60000, temporaryRun).then(() => "woken");
+        const shared = host._waitAgentInterval(30, sharedRun).then(() => Date.now() - started);
+        host._wakeAgentReadDelays();
+        assert.strictEqual(await Promise.race([temporary, timeout(1000)]), "woken");
+        assert.ok((await shared) >= 25, "a shared-connection wait keeps its interval");
+        assert.strictEqual(sharedRun.cancelled, false);
+        assert.strictEqual(temporaryRun.wake, null, "settled waits are not retained");
+    });
+
+    await scenario("Stop a variables.sample running on a borrowed connection", async () => {
+        const Provider = loadProvider({ debug: {}, workspace: {} });
+        const host = Object.create(Provider.prototype);
+        let reads = 0;
+        const stops = [];
+        Object.assign(host, {
+            _prepareRequestedLayouts: async () => {},
+            _agentVariablePlan: () => ({ elfResult: { elf: {} }, plan: [], compositePlan: [], variableErrors: [] }),
+            _runtimeReadRanges: () => [],
+            _decodeAgentSample: () => ({ timestamp: reads }),
+            _firmwareConsistency: () => ({}),
+            // A live-sampling (or debug server) connection is reused, not a temporary probe session.
+            _withAgentProbe: (handler) =>
+                handler({
+                    session: { readOnce: async () => (reads++, []) },
+                    source: "live-sampling",
+                    temporary: false
+                }),
+            stopAgentReadIfRunning: () => (stops.push("agent"), null),
+            stopLiveWatch: async () => stops.push("live"),
+            _samplingStatus: () => ({ running: false }),
+            _liveIntervalMs: 100
+        });
+        const sampling = host._sampleAgentVariables({ variables: [{ name: "tick" }], count: 1000, intervalMs: 60000 });
+        const outcome = sampling.then(
+            () => "completed",
+            (error) => error.code
+        );
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.strictEqual(reads, 1, "the first sample is read before the interval wait");
+        await host._controlAgentSampling("stop");
+        assert.strictEqual(
+            await Promise.race([outcome, new Promise((r) => setTimeout(() => r("hung"), 1000).unref())]),
+            "AGENT_READ_CANCELLED"
+        );
+        assert.strictEqual(reads, 1, "no sample is read after the stop");
+        assert.deepStrictEqual(stops, ["agent", "live"]);
+        assert.strictEqual(host._agentSampleRuns.size, 0);
+    });
+
     console.log("Agent sampling control and shared UI state tests passed");
 })().catch((error) => {
     console.error(error);
