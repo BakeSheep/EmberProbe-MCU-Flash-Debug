@@ -1,9 +1,9 @@
 # Bundled OpenOCD target configurations
 
 Both `resources/openocd-win32-x64.tar.gz` and `resources/openocd-linux-x64.tar.gz`
-contain six EmberProbe compatibility configurations in addition to the original xPack
-OpenOCD 0.12.0-7 payload. The executable, original scripts, libraries, licenses, file
-permissions and link targets are preserved. These names reuse existing implementations;
+contain six EmberProbe compatibility configurations alongside the reviewed EmberProbe
+scatter build based on xPack OpenOCD 0.12.0-7. Repacking preserves that build's executable,
+scripts, libraries, licenses, file permissions and link targets. These names reuse existing implementations;
 they do not add flash drivers or establish support for new chip families.
 
 | Added configuration | Existing implementation | Purpose |
@@ -30,24 +30,26 @@ the source of selectable target configurations.
 
 Reviewable wrapper sources are in `resources/openocd-targets/target/`.
 `resources/openocd-targets-manifest.json` records their canonical source URLs, hashes,
-original base-archive hashes, executable hashes and current augmented archive hashes.
-An aggregate digest pins all original non-directory entries, including permissions and
+build/patch/source identities, executable hashes and current augmented archive hashes.
+An aggregate digest pins all reviewed non-directory entries, including permissions and
 link targets. Each runtime archive contains the same provenance under
 `distro-info/emberprobe-targets.json` inside its distribution root.
 
-To rebuild from either the original or already augmented archives:
+To regenerate both runtime packages from the locked build outputs:
 
 ```sh
-node scripts/package-openocd-targets.js
+npm run openocd:package -- --input test-results/openocd-scatter-release
+npm run check:openocd-bundle
 node test/openocd-target-bundle.test.js
 node test/openocd-installer.test.js
 ```
 
-The packager rejects unexpected original payload changes and conflicting wrapper files.
+The packager rejects mixed builds, missing dependencies/sources and conflicting wrapper files.
 It streams the original tar entries without extracting them on the build host, preserving
 Linux executable permissions and links when rebuilding on Windows. The installer already
-uses archive hashes in its cache key, so an existing installation receives a new cache
-directory when the augmented package is first selected.
+uses archive hashes in its cache key, so the default runtime receives a new cache
+directory without replacing a runtime used by another window. See the
+[build and source distribution guide](../native/openocd/README.md).
 
 ## Compatibility boundary
 

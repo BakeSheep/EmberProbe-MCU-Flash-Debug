@@ -145,11 +145,14 @@ jobs:
         run: npm run check
       - name: Verify bundle
         run: npm run bundle
+      - name: Verify bundled OpenOCD and native smoke tests
+        run: npm run check:openocd-bundle
       - name: Verify VSIX STL budget and exclusions
         if: runner.os == 'Linux'
         run: |
           npm run package
           node scripts/verify-stl-vsix.js
+          node scripts/verify-openocd-vsix.js
       - name: Upload failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

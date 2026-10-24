@@ -27,6 +27,18 @@ assert.ok(release.jobs["driver-helper"].steps.some((s) => s.run === "node script
 assert.ok(!release.jobs["driver-helper"].steps.some((s) => /sign-driver-helper\.ps1/.test(s.run || "")));
 assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-driver-helper.js"));
 assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-driver-helper.js dist/emberprobe.vsix"));
+assert.ok(release.jobs.build.steps.some((s) => s.run === "node scripts/verify-openocd-vsix.js dist/emberprobe.vsix"));
+assert.ok(ci.jobs.check.steps.some((s) => s.run === "npm run check:openocd-bundle"));
+assert.ok(
+    release.jobs.build.steps.some(
+        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/upload-artifact@v4"
+    )
+);
+assert.ok(
+    release.jobs.publish.steps.some(
+        (s) => s.with?.name === "emberprobe-openocd-source" && s.uses === "actions/download-artifact@v4"
+    )
+);
 assert.strictEqual(release.jobs.publish.needs, "build");
 assert.strictEqual(release.permissions.contents, "read");
 assert.strictEqual(release.jobs.publish.permissions.contents, "write");
@@ -66,6 +78,9 @@ for (const state of ["missing", "draft", "public"]) {
             ["upload", "edit"]
         );
         assert.ok(calls[calls.length - 1].includes("--draft=false"));
+        assert.ok(
+            calls.find((args) => args[1] === "upload").includes("native/openocd/emberprobe-openocd-source.tar.gz")
+        );
     }
 }
 for (const replaceAsset of [true, false, "true"]) {
@@ -81,7 +96,14 @@ for (const replaceAsset of [true, false, "true"]) {
     assert.strictEqual(result.published, replaceAsset === true);
     assert.strictEqual(calls.length, replaceAsset === true ? 2 : 1);
     if (replaceAsset === true)
-        assert.deepStrictEqual(calls[1], ["release", "upload", "v1.2.3", "dist/emberprobe.vsix", "--clobber"]);
+        assert.deepStrictEqual(calls[1], [
+            "release",
+            "upload",
+            "v1.2.3",
+            "dist/emberprobe.vsix",
+            "native/openocd/emberprobe-openocd-source.tar.gz",
+            "--clobber"
+        ]);
 }
 assert.throws(
     () =>

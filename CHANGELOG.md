@@ -8,8 +8,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
-- 新增可选补丁版 OpenOCD 的 scatter 采样原型：合并每轮固定地址读取为尽量少的单次 DAP flush 请求，自动探测并在失败时回退；随包 OpenOCD 仍为官方 xPack 0.12.0-7。
-- Added an opt-in patched-OpenOCD scatter sampling prototype: combines fixed reads into as few single-DAP-flush requests as possible, with automatic detection and fallback; bundled OpenOCD remains official xPack 0.12.0-7.
+- Windows/Linux x64 默认使用内置 scatter 补丁版 OpenOCD，合并固定地址采样读取以减少 DAP flush；保留外部 OpenOCD 路径与不支持 scatter 时的普通读取回退。双平台资源、补丁、依赖和对应源码统一校验，完整源码作为 Release 附件提供。
+- Windows/Linux x64 now default to bundled OpenOCD with the scatter patch, combining fixed-address sampling reads to reduce DAP flushes. Explicit external paths and ordinary-read fallback remain available. Both runtimes, patches, dependencies and corresponding sources are verified together; complete sources accompany the VSIX as a Release asset.
 
 - 采样时间改为每轮读取的中点，精确到亚毫秒（原为读取前的整毫秒），同一轮变量共享同一时间；历史、二进制归档、CSV 与图表保留亚毫秒信息。固定 RAM 读取可在同一可写 ELF 节内扩至对齐 32 位字并再次合并，保持变量字节与调试预算。
 - Each sampling cycle is stamped at the midpoint of its reads with sub-millisecond precision (previously whole milliseconds before reading); all variables of a cycle share that time, and history, binary archives, CSV and charts keep the sub-ms part. Fixed RAM reads can widen to aligned 32-bit words within one writable ELF section and merge again, preserving variable bytes and debug budgets.

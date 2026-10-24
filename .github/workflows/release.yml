@@ -73,6 +73,9 @@ jobs:
       - name: Package VSIX
         run: npm run package
 
+      - name: Verify OpenOCD runtimes and corresponding sources
+        run: node scripts/verify-openocd-vsix.js dist/emberprobe.vsix
+
       - name: Verify VSIX includes native helper bytes
         run: node scripts/verify-driver-helper.js dist/emberprobe.vsix
 
@@ -84,6 +87,14 @@ jobs:
         with:
           name: emberprobe-vsix
           path: dist/emberprobe.vsix
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload verified corresponding sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: emberprobe-openocd-source
+          path: native/openocd/emberprobe-openocd-source.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -113,7 +124,14 @@ jobs:
           name: emberprobe-vsix
           path: dist
 
+      - name: Download verified corresponding sources
+        uses: actions/download-artifact@v4
+        with:
+          name: emberprobe-openocd-source
+          path: native/openocd
+
       - name: Publish verified release
+        # Both assets come from the build job that verified their shared identity.
         run: node scripts/publish-release.js
 
   driver-helper:

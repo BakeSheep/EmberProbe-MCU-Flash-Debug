@@ -72,7 +72,9 @@ async function packageTargets() {
                 JSON.stringify(
                     {
                         upstream: manifest.upstream,
-                        baseArchiveSha256: archive.baseArchiveSha256,
+                        ...(manifest.schemaVersion === 2
+                            ? { build: manifest.build, source: manifest.source }
+                            : { baseArchiveSha256: archive.baseArchiveSha256 }),
                         binarySha256: archive.binarySha256,
                         originalPayloadSha256: archive.originalPayloadSha256,
                         targets: manifest.targets

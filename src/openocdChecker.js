@@ -158,10 +158,14 @@ function hasBundledArchive(context) {
 
 function shouldUseBundledDefault(executable, context) {
     const target = String(executable || "").trim();
-    return installer.platformKey() === "linux-x64" && (!target || target === "openocd") && hasBundledArchive(context);
+    return (
+        ["linux-x64", "win32-x64"].includes(installer.platformKey()) &&
+        (!target || target === "openocd") &&
+        hasBundledArchive(context)
+    );
 }
 
-// Resolve the Linux default before hardware startup. Keep the configured value unchanged,
+// Resolve the bundled default before hardware startup. Keep the configured value unchanged,
 // and fail closed if the bundled runtime cannot run instead of starting the affected system build.
 async function probeDefaultOpenOcd(executable, context, report) {
     if (!shouldUseBundledDefault(executable, context)) return undefined;

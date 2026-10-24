@@ -208,8 +208,8 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
     } catch (error) {
         // Another VS Code window may have published this exact archive while we extracted it.
         // Reuse its verified runtime without moving or replacing files it may already be running.
-        if (reuse && ["EEXIST", "ENOTEMPTY"].includes(error.code) && fs.existsSync(dest)) {
-            fs.rmSync(staging, { recursive: true, force: true });
+        if (reuse && ["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code) && fs.existsSync(dest)) {
+            fs.rmSync(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
             return installBundledOpenOcd(vscode, context, progress, verifyBinary, { reuse: true });
         }
         // 新目录切换失败时恢复旧安装；staging/backup 都限定在扩展全局存储子目录内。

@@ -1,5 +1,5 @@
 {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "upstream": {
         "distribution": "xPack OpenOCD 0.12.0-7",
         "revision": "e5888bda3",
@@ -53,21 +53,56 @@
             "prefix": "",
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd.exe",
-            "baseArchiveSha256": "df9384d39fcc5a6328295d480792dd725ca1b60f0b16809bafd57d5325d1be9b",
-            "binarySha256": "10567f01d37c66a0975537960d66e61f7b4e2a17eb2c9637e2c2cbc569f70c79",
-            "originalPayloadSha256": "a42c1eb507bb1d239a9f41fb08305558ec9da2b34004ca9193556e139d747f44",
-            "sha256": "4d345285d97bdab5cf67bbef4ee956b80ba8cdba56a946298b2351db0b45de52"
+            "binarySha256": "5488e2d8bc4836b43e6348c001ae3633d16dd79bf592a6bb4f9b0b0807433b12",
+            "originalPayloadSha256": "c1d54ad8a039944a9f85ead235187af7a929c1244c4f51e78b5779ea1ad1894e",
+            "requiredFiles": [
+                "bin/openocd.exe",
+                "distro-info/licenses/openocd-0.12.0/COPYING",
+                "bin/libusb-1.0.dll",
+                "bin/libftdi1.dll"
+            ],
+            "sha256": "f1e428c92c9f47c13ad71f12476e59fbdcc5351bad6c6eca19b211b795161cc9"
         },
         {
             "platform": "linux-x64",
             "file": "openocd-linux-x64.tar.gz",
-            "prefix": "xpack-openocd-0.12.0-7/",
-            "scriptsRoot": "xpack-openocd-0.12.0-7/openocd/scripts",
-            "binary": "xpack-openocd-0.12.0-7/bin/openocd",
-            "baseArchiveSha256": "94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6",
-            "binarySha256": "d2ca5d0f95dc37e138a39ce0606f0983b19d86efa0bfc67a920f3c8b102ccd8f",
-            "originalPayloadSha256": "6cca99f27496559d0d7f67eb52eb062a37096e7cfe62d5715b27e134e1a2543a",
-            "sha256": "98551c487a38f761f415bc1f91c8174ef77565b92a180ec655f3dce0658566d3"
+            "prefix": "",
+            "scriptsRoot": "openocd/scripts",
+            "binary": "bin/openocd",
+            "binarySha256": "4bda2e41d54aa33c2a4a582712ba79cac361c3b1f66187ed81f0a64c3686697c",
+            "originalPayloadSha256": "83f3f1ce0b7f483b2909fe9fda55c3605323dd05389c55f91bf1724633dec478",
+            "requiredFiles": [
+                "bin/openocd",
+                "distro-info/licenses/openocd-0.12.0/COPYING",
+                "libexec/libusb-1.0.so.0",
+                "libexec/libftdi1.so.2",
+                "libexec/libhidapi-hidraw.so.0",
+                "libexec/libudev.so.1",
+                "distro-info/licenses/libudev-241/LICENSE.LGPL2.1",
+                "distro-info/licenses/libudev-241/SOURCE.txt"
+            ],
+            "sha256": "34c52a2d0177a2707b08e2a90339771227994c2206e2511c349e90ffa1f5e10c"
         }
-    ]
+    ],
+    "build": {
+        "distribution": "EmberProbe OpenOCD 0.12.0-7 + scatter v1",
+        "buildId": "158e3c409685b33ec42e6a02153d75cc5f9e93153da7cbe17dd200ee18778781",
+        "identity": {
+            "lockSha256": "f5d8f73ee69cb0d4163d395f21dd440057c537f8dc63020849ab754fc4b206da",
+            "patchSha256": "c6b04faf24609b8083e452fa5de7f3177b415af97334a6bd3cc772924bf2f63b",
+            "buildScriptSha256": "4da69d593e5a24ab00c32c3f3ff6c729589819fe377a2d992b910f2f55267c42",
+            "prepareScriptSha256": "cc45e8c155b6219babb6c0c425b5fed4a6eb2fdaae94a00de8172b8edf42c967",
+            "image": "ilegeul/debian@sha256:bce3e1f8db63c5fe3ad382bfcaeb8b595214b90b45facf9170de96e2c76334e9",
+            "openocdRevision": "e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3",
+            "xpackRevision": "10eb7ea34d422bc3405d1b322952ef4a68c84cc4",
+            "submodules": {
+                "jimtcl": "5bac7c99ad65864c87da513e22e2f01703fa4e03",
+                "src/jtag/drivers/libjaylink": "5b9ab7b06249af69d349c3ce8b29e8769845071e"
+            }
+        }
+    },
+    "source": {
+        "file": "native/openocd/emberprobe-openocd-source.tar.gz",
+        "sha256": "539d3eb0f16cc47450b157e44dfc8bc903b89d10dc18f4e34e8232273c1a86d9"
+    }
 }

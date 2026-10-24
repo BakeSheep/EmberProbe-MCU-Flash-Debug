@@ -199,6 +199,7 @@ const TEST_GROUPS = Object.freeze({
         "openocd-entrypoints.test.js",
         "openocd-exec.test.js",
         "openocd-installer.test.js",
+        "openocd-runtime-package.test.js",
         "peripheral-view.test.js",
         "peripheral-viewer-integration.test.js",
         "probe-connection.test.js",

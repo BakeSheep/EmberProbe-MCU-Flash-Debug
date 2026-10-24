@@ -1,9 +1,11 @@
-# OpenOCD scatter-read prototype
+# Bundled OpenOCD scatter build
 
-Opt-in P2 experiment based on upstream OpenOCD
-[`e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3`](https://github.com/openocd-org/openocd/tree/e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3),
-the revision used by xPack **0.12.0-7**. The bundled archives and target manifest
-remain official xPack files. This build is separate from release automation.
+The Windows x64 and Linux x64 VSIX resources contain an EmberProbe build based on
+upstream OpenOCD revision `e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3`, the source
+used by xPack 0.12.0-7, plus the scatter patch. These are modified builds, not
+official xPack binaries. Default `openocd` configuration uses the bundled runtime
+on both platforms. Explicit paths, including older manually installed paths,
+remain selected until the user resets the setting or reinstalls the bundle.
 
 ## Command and design
 
@@ -48,55 +50,45 @@ and upstream notices, and provide corresponding source as required when
 distributing modified binaries. The extension's license is unchanged. xPack's
 output includes dependency license files.
 
-## Build inside WSL Ubuntu x86_64
+## Locked builds and packaging
+
+Run from Linux x86_64 or WSL with Docker and Node installed. The wrapper runs both
+native xPack configurations inside the Debian 10 XBB image pinned by digest in
+`build-lock.json`. The lock also records the OpenOCD/xPack revisions, submodules,
+toolchain versions and source download hashes. No floating submodule updates are used.
 
 ```sh
-export EMBERPROBE_OPENOCD_BUILD_DIR="$HOME/.cache/emberprobe-openocd"
 bash native/openocd/build.sh
+npm run openocd:package -- --input test-results/openocd-scatter-release
+npm run check:openocd-bundle
+npm run package
+node scripts/verify-openocd-vsix.js dist/emberprobe.vsix
 ```
 
-The script uses native actions from
-[`openocd-xpack` tag `v0.12.0-7`](https://github.com/xpack-dev-tools/openocd-xpack/tree/v0.12.0-7),
-revision `10eb7ea34d422bc3405d1b322952ef4a68c84cc4`, with xpm 0.20.5. There are
-no `README-MAINTAINER*.md` files at that tag; instructions moved to
-[`website/docs/maintainer`](https://github.com/xpack-dev-tools/openocd-xpack/tree/v0.12.0-7/website/docs/maintainer).
-Actions and toolchain versions are in
-[`build-assets/package.json`](https://github.com/xpack-dev-tools/openocd-xpack/blob/v0.12.0-7/build-assets/package.json);
-recipes are in `build-assets/scripts/`. Both `xpm run build --config win32-x64`
-(MinGW cross build) and `--config linux-x64` run on Linux. Docker is an optional
-wrapper, so a separate upstream configure-based fallback is unnecessary.
+Build caches remain outside the repository. A build identity includes the lock,
+patch and build recipes; each platform must identify the same build. The packager
+stages both platforms and corresponding sources, verifies them, then publishes the
+manifest last with rollback on failure. Updating a patch or recipe requires a new
+build, not manually editing hashes. Normal release CI verifies prebuilt resources
+and performs native smoke checks on Windows/Linux; it does not compile OpenOCD.
 
-The wrapper keeps xPack's dependency recipes and drivers: GCC 14.2.0-2.1,
-MinGW GCC 14.2.0-1.1, libusb 1.0.29, hidapi 0.15.0, libftdi 1.5, internal
-JimTcl/libjaylink, and the xPack greeting. It drops the patch into the helper's
-conventional `build-assets/patches/` directory and inserts an apply hook after
-OpenOCD download, before bootstrap; this tag has no OpenOCD patch hook.
+Runtime archives retain scripts, dependency libraries and licenses under
+`distro-info/licenses/`. `BUILD-INFO.json` and `distro-info/emberprobe-targets.json`
+record build identities and target wrappers. Linux modes and links survive packaging
+on Windows because the packager streams the original tar entries.
 
-Prerequisites: gcc/make/autoconf/automake/pkg-config/git/node/npm and standard
-Ubuntu tools (patch, tar, curl/wget, xz, zip/unzip, lsb-release, realpath, flock,
-apt-get and dpkg-deb). xpm supplies the additional build tools. Apt indexes and
-network access must be available. No sudo or system package installation is
-used: libudev development/runtime debs are downloaded and extracted locally.
-The helper's libudev copy uses those files. xPack's build smoke tests (which start
-`openocd.exe` through Wine) and Wine priming are disabled; check the Windows
-binary on a Windows host instead. All downloads,
-npm/xpm stores, workspaces and temporary files stay under the build cache, which
-must be outside the repo without spaces or shell metacharacters (xPack scripts
-also contain unquoted paths). A lock prevents overlapping builds. The workspace is keyed by the patch hash, so
-script-only fixes reuse finished components; a changed patch gets a fresh workspace.
+## Corresponding sources
 
-This follows the official recipes but is **not a reproducible official release**:
-Ubuntu 26.04 replaces the XBB container baseline, libudev versions follow apt
-indexes, and xPack updates submodules with `--remote`. `BUILD-INFO.txt` records
-the actual submodule revisions, deb hashes, source revision, patch/build-script
-SHA256 and configuration. Keep cache/build logs for repeat comparisons.
+`native/openocd/emberprobe-openocd-source.tar.gz` is maintained alongside the
+runtime archives and uploaded with every VSIX in the same GitHub Release. It contains
+the actual OpenOCD source and submodules, dependency source inputs, build recipes,
+lock and scatter patch, with a source inventory. The VSIX contains the patch, lock,
+recipes, this guide and dependency licenses; the full source archive stays outside
+it. The resource manifest pins the source archive hash. Public Release creation occurs
+only after both the VSIX and source asset upload succeeds; retries replace both assets.
 
-Checked so far (2026-10-24, WSL Ubuntu 26.04 host): the patch compiles in the
-win32-x64 and linux-x64 builds. The Linux binary registers the command and returns
-the unsupported error for the same dummy target. On Windows the binary reports `0.12.0+dev-02228-ge5888bda3`,
-registers both command forms after `init`, returns the `EMBERPROBE_SCATTER_UNSUPPORTED`
-error for an unexamined dummy Cortex-M target, and passes EmberProbe's no-echo
-self-test.
+Historical prototype validation below used Ubuntu 26.04 builds. It does not establish
+hardware compatibility or timings for a newly packaged build.
 
 Read-only board comparison (2026-10-24, Windows 11, 16 scattered RAM globals from
 each firmware ELF, unlimited mode, 10 s, SWD at the target script's default clock,
@@ -117,31 +109,18 @@ A wider matrix (clustered fields, 32 variables, 1 KB blocks, fixed target rates 
 a higher sampling clock, compared with the pre-P0 baseline) is in
 [`docs/UNLIMITED-SAMPLING.md`](../../docs/UNLIMITED-SAMPLING.md).
 
-Outputs, including required DLLs/libraries and licenses:
+## Default selection and fallback
 
-```text
-test-results/openocd-scatter/win32-x64/bin/openocd.exe
-test-results/openocd-scatter/win32-x64/openocd/scripts/
-test-results/openocd-scatter/win32-x64/BUILD-INFO.txt
-test-results/openocd-scatter/linux-x64/bin/openocd
-test-results/openocd-scatter/linux-x64/openocd/scripts/
-test-results/openocd-scatter/linux-x64/BUILD-INFO.txt
-```
+Windows/Linux x64 prepare the bundled runtime offline when `emberprobe.openocdPath`
+is left at `openocd`. The installation directory includes the archive hash, so an
+extension update does not replace programs used by another window. Installation
+failure is reported before hardware startup. macOS and ARM64 still use external tools.
+An explicit path is never silently replaced; reset the setting or use the existing
+bundled-install action to move from an older manually configured runtime.
 
-Only these output trees are written inside the repo. For a separate source build,
-check out the base revision and use `git am /path/to/0001-emberprobe-read-scatter.patch`
-or `patch -p1 < /path/to/0001-emberprobe-read-scatter.patch`.
-
-## Opt in and fallback
-
-Set `emberprobe.openocdPath` to the output `bin/openocd.exe` or `bin/openocd`;
-keep its sibling scripts/libraries in place and reconnect sampling. After the
-no-echo self-test, each Tcl connection checks `emberprobe_read_scatter version`;
-exactly `1` enables it. Because the command refuses until the target has been
-examined, an `EMBERPROBE_SCATTER_UNSUPPORTED` answer at connect is asked once more
-after the first fully successful sampling cycle. `stats().scatterReads` reports
-its current state. Stock
-OpenOCD continues using ordinary batches. No new setting is added.
+Each connection probes `emberprobe_read_scatter version`. Unsupported targets and
+external unpatched OpenOCD keep ordinary reads. An unexamined target is checked again
+after the first successful cycle. `stats().scatterReads` reports the selected path.
 
 Fixed-address compiler units are combined into as few bounded calls as possible.
 Runtime objects retain the existing reader and budgets. Strict hex validation

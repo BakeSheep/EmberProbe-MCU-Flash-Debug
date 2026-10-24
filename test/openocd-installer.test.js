@@ -67,8 +67,10 @@ const {
     assert.strictEqual(shouldUseBundledDefault("/custom/openocd", mockContext), false);
     assert.strictEqual(await probeDefaultOpenOcd("/custom/openocd", mockContext), undefined);
     assert.strictEqual(shouldUseBundledDefault("openocd", { asAbsolutePath: () => "/missing/archive.tar.gz" }), false);
-    if (process.platform === "linux" && process.arch === "x64") {
-        assert.strictEqual(archive, linuxArchive, "Linux x64 必须发现其离线预置包");
+    if (["linux", "win32"].includes(process.platform) && process.arch === "x64") {
+        assert.strictEqual(shouldUseBundledDefault("openocd", mockContext), true);
+        assert.strictEqual(shouldUseBundledDefault("", mockContext), true);
+        if (process.platform === "linux") assert.strictEqual(archive, linuxArchive);
         const progress = [];
         const [bundled, otherWindow] = await Promise.all([
             probeDefaultOpenOcd("openocd", mockContext, (event) => progress.push(event)),

@@ -1046,7 +1046,13 @@
     "native/vendor/libwdi/COPYING",
     "native/vendor/libwdi/COPYING-LGPL",
     "dist/debugAdapter.js",
-    "dist/svdWorker.js"
+    "dist/svdWorker.js",
+    "resources/openocd-targets-manifest.json",
+    "native/openocd/0001-emberprobe-read-scatter.patch",
+    "native/openocd/build-lock.json",
+    "native/openocd/build.sh",
+    "native/openocd/prepare-build.js",
+    "native/openocd/README.md"
   ],
   "scripts": {
     "test": "npm run check",
@@ -1074,7 +1080,9 @@
     "check:syntax": "node scripts/run-tests.js --syntax",
     "test:unit": "node scripts/run-tests.js --tests",
     "test:fast": "node scripts/run-tests.js --group fast",
-    "test:integration": "node scripts/run-tests.js --group integration"
+    "test:integration": "node scripts/run-tests.js --group integration",
+    "openocd:package": "node scripts/package-openocd-runtime.js",
+    "check:openocd-bundle": "node scripts/check-openocd-bundle.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

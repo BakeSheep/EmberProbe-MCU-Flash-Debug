@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "image": "ilegeul/debian@sha256:bce3e1f8db63c5fe3ad382bfcaeb8b595214b90b45facf9170de96e2c76334e9",
+  "imageTag": "amd64-10-xbb-v6.0.0",
+  "openocdRevision": "e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3",
+  "xpackRevision": "10eb7ea34d422bc3405d1b322952ef4a68c84cc4",
+  "xpmVersion": "0.20.5",
+  "submodules": {
+    "jimtcl": "5bac7c99ad65864c87da513e22e2f01703fa4e03",
+    "src/jtag/drivers/libjaylink": "5b9ab7b06249af69d349c3ce8b29e8769845071e"
+  },
+  "toolchains": {
+    "gcc": "14.2.0-2.1",
+    "mingw-w64-gcc": "14.2.0-1.1",
+    "xbb-helper": "4.2.0"
+  },
+  "downloads": {
+    "autoconf-2.72.tar.xz": {
+      "sha256": "ba885c1319578d6c94d46e9b0dceb4014caafe2490e437a0dbca3f270a223f5a"
+    },
+    "automake-1.16.5.tar.xz": {
+      "sha256": "f01d58cd6d9d77fbdca9eb4bbd5ead1988228fdb73d6f7a201f5f8d6b118b469"
+    },
+    "hidapi-0.15.0.zip": {
+      "sha256": "dea0c29849e7cac86a4561bf36ba0d97a755a16dc99b9e75714f4af7ea2af2f1"
+    },
+    "libftdi1-1.5.tar.bz2": {
+      "sha256": "7c7091e9c86196148bd41177b4590dccb1510bfe6cea5bf7407ff194482eb049"
+    },
+    "libiconv-1.18.tar.gz": {
+      "sha256": "3b08f5f4f9b4eb82f151a7040bfd6fe6c6fb922efe4b1659c66ea933276965e8"
+    },
+    "libtool-2.4.7.tar.xz": {
+      "sha256": "4f7f217f057ce655ff22559ad221a0fd8ef84ad1fc5fcb6990cecc333aa1635d"
+    },
+    "libusb-1.0.29.tar.bz2": {
+      "sha256": "5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85"
+    },
+    "pkg-config-0.29.2.tar.gz": {
+      "sha256": "6fc69c01688c9458a57eb9a1664c9aba372ccda420a02bf4429fe610e7e7d591"
+    },
+    "texinfo-7.2.tar.gz": {
+      "sha256": "e86de7dfef6b352aa1bf647de3a6213d1567c70129eccbf8977706d9c91919c8"
+    },
+    "systemd_241.orig.tar.gz": {
+      "sha256": "b2561a8e1d10a2c248253f0dda31a85dd6d69f2b54177de55e02cd1d2778316e",
+      "url": "https://archive.debian.org/debian-security/pool/updates/main/s/systemd/systemd_241.orig.tar.gz"
+    },
+    "systemd_241-7~deb10u10.debian.tar.xz": {
+      "sha256": "50eea7b07c8b989ab70c1ff672c84546026b6529115bb621c35dfec3e42ac76b",
+      "url": "https://archive.debian.org/debian-security/pool/updates/main/s/systemd/systemd_241-7~deb10u10.debian.tar.xz"
+    },
+    "systemd_241-7~deb10u10.dsc": {
+      "sha256": "a3a53f8d6966cff56a75a7a0026e93c6aca2e86838f4271fee1be9eb0cca3336",
+      "url": "https://archive.debian.org/debian-security/pool/updates/main/s/systemd/systemd_241-7~deb10u10.dsc"
+    },
+    "xbb-helper-4.2.0.tar.gz": {
+      "sha256": "db004bd870de1de7f5b46340d16f1488dc96493349908591c504696a67a39298"
+    }
+  },
+  "systemPackages": {
+    "libudev1": "241-7~deb10u10",
+    "libudev-dev": "241-7~deb10u10"
+  },
+  "helperIntegrity": "sha512-WdpbzEqM3qiy+qv2OfYdlGZfK510GmeQ/gK6O3PonimZOOVTYk0pjxTHohlzK014j8fbDxGAmORRjCZxD+jyLQ=="
+}

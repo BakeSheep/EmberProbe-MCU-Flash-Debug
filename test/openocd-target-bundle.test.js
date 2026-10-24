@@ -7,12 +7,14 @@ const path = require("path");
 const tar = require("tar");
 const { archiveInventory, originalPayloadDigest } = require("../scripts/package-openocd-targets");
 const { MCU_CORE_LIST } = require("../src/services/targetCatalog");
+const { verifyBundle } = require("../scripts/openocd-bundle");
 const manifest = require("../resources/openocd-targets-manifest.json");
 const root = path.resolve(__dirname, "..");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 (async () => {
-    assert.strictEqual(manifest.schemaVersion, 1);
+    assert.strictEqual(manifest.schemaVersion, 2);
+    await verifyBundle();
     assert.strictEqual(manifest.targets.length, 6);
     assert.strictEqual(new Set(manifest.targets.map((target) => target.path)).size, 6);
     assert.deepStrictEqual(manifest.archives.map((archive) => archive.platform).sort(), ["linux-x64", "win32-x64"]);
@@ -56,7 +58,7 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
         assert.strictEqual(provenance.originalPayloadSha256, archive.originalPayloadSha256);
         assert.strictEqual(provenance.binarySha256, archive.binarySha256);
     }
-    console.log("Both OpenOCD archives preserve upstream payloads and contain all catalog configurations");
+    console.log("Both patched OpenOCD archives preserve reviewed payloads and contain all catalog configurations");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

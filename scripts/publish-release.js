@@ -1,6 +1,7 @@
 "use strict";
 const { execFileSync } = require("child_process");
 const { parseReleaseTag } = require("./validate-release");
+const RELEASE_ASSETS = ["dist/emberprobe.vsix", "native/openocd/emberprobe-openocd-source.tar.gz"];
 function publishRelease(
     tag,
     run = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
@@ -17,7 +18,7 @@ function publishRelease(
     }
     if (release && !release.isDraft) {
         if (options.replaceAsset !== true) return { published: false, reason: "already-public" };
-        run(["release", "upload", tag, "dist/emberprobe.vsix", "--clobber"]);
+        run(["release", "upload", tag, ...RELEASE_ASSETS, "--clobber"]);
         return { published: true, replaced: true };
     }
     if (release) run(["release", "edit", tag, "--draft", ...channel, "--title", "EmberProbe " + tag]);
@@ -34,7 +35,7 @@ function publishRelease(
             "EmberProbe " + tag
         ]);
     }
-    run(["release", "upload", tag, "dist/emberprobe.vsix", "--clobber"]);
+    run(["release", "upload", tag, ...RELEASE_ASSETS, "--clobber"]);
     run(["release", "edit", tag, "--draft=false"]);
     return { published: true };
 }
@@ -50,4 +51,4 @@ if (require.main === module) {
         process.exitCode = 1;
     }
 }
-module.exports = { publishRelease };
+module.exports = { publishRelease, RELEASE_ASSETS };

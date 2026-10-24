@@ -38,6 +38,18 @@ gh run watch
 3. 校验标签与发布元数据，将原生文件下载到打包任务，核对 SHA-256，生成 VSIX 并核对包内字节与清单一致。
 4. 创建 GitHub Draft Release 并上传已验证的 VSIX；附件上传成功后转为正式 Release。
 
+### 内置 OpenOCD 资源
+
+Windows/Linux x64 随包使用 EmberProbe scatter 补丁构建。更新补丁、构建锁或构建配方后，按
+[`native/openocd/README.md`](../native/openocd/README.md) 在固定 Debian 10 XBB 镜像中重新生成双平台资源和对应源码；
+用 `npm run openocd:package -- --input test-results/openocd-scatter-release` 暂存校验后整体更新并审查提交。
+普通发布不重新编译 OpenOCD。CI 在 Windows/Linux 执行 `npm run check:openocd-bundle` 的无硬件检查，
+打包后用 `node scripts/verify-openocd-vsix.js dist/emberprobe.vsix` 检查包内实际资源字节。
+
+`native/openocd/emberprobe-openocd-source.tar.gz` 必须与运行时资源和清单一起维护。
+正式 Release 同时提供 `emberprobe.vsix` 和 `emberprobe-openocd-source.tar.gz`，完整源码不放入 VSIX。
+两类附件均上传成功后才公开 Draft；重试及获授权的附件替换会同时处理二者。开发验证不授权发布。
+
 ## 发布预发布版本
 
 预发布版本直接从 `master` 打标签，不另建长期分支。只有在预发布收尾期间 `master` 已开始下一版本功能时，才从预发布标签切出 `release/X.Y` 短期分支，修复同时合回 `master`，正式版发布后不再维护该分支。

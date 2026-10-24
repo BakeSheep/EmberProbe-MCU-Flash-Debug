@@ -12,7 +12,7 @@ const manifest = JSON.parse(
 );
 
 // Interface-only compatibility check: dummy adapter + noinit never opens a hardware probe.
-async function main() {
+async function main({ scatter = false } = {}) {
     const archive = manifest.archives.find((entry) => entry.platform === `${process.platform}-${process.arch}`);
     if (!archive) throw new Error(`No bundled OpenOCD for ${process.platform}-${process.arch}`);
     const root = path.resolve(__dirname, "..");
@@ -84,6 +84,24 @@ async function main() {
         assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42", "connection remains usable");
         session.noEchoResponses = true;
         assert.strictEqual(await session._executeCheckedCommand("expr {6 * 7}"), "42");
+        if (scatter) {
+            // Dummy JTAG only; creating an unexamined Cortex-M never opens a hardware probe.
+            await session._sendCommand("jtag newtap ep cpu -irlen 4 -expected-id 0x4ba00477");
+            await session._sendCommand("dap create ep.dap -chain-position ep.cpu");
+            await session._sendCommand("target create ep.cpu cortex_m -dap ep.dap -defer-examine");
+            // The dummy adapter cannot examine a physical DAP. Initialization still
+            // registers execution commands; its expected transport error is caught.
+            await session._sendCommand("catch {init} _ep_init");
+            const unsupported = await session._sendCommand(
+                "catch {emberprobe_read_scatter version} _ep_scatter; set _ep_scatter"
+            );
+            assert.ok(unsupported.includes("EMBERPROBE_SCATTER_UNSUPPORTED"), unsupported);
+            const targetUnsupported = await session._sendCommand(
+                "catch {ep.cpu emberprobe_read_scatter version} _ep_scatter; set _ep_scatter"
+            );
+            assert.ok(targetUnsupported.includes("EMBERPROBE_SCATTER_UNSUPPORTED"), targetUnsupported);
+            assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42");
+        }
         await assert.rejects(session._executeCheckedCommand("error {expected Tcl rejection}"), {
             code: "OPENOCD_TCL_ERROR"
         });
