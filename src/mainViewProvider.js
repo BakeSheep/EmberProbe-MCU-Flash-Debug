@@ -70,7 +70,8 @@ const {
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,
-    filterRuntimeRamPlan
+    filterRuntimeRamPlan,
+    writableRamSectionRanges
 } = require("./services/liveWatchService");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
@@ -4201,8 +4202,14 @@ class MainViewProvider {
         return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
     }
     _applySamplingPlan(session, active) {
+        let ramSectionRanges = [];
+        try {
+            ramSectionRanges = writableRamSectionRanges(this.readElfSymbols().memory?.sections);
+        } catch {
+            /* ELF 不可用时只合并重叠或相邻读取。 */
+        }
         if (typeof session.setSamplingPlan !== "function") {
-            session.setWatch(active);
+            session.setWatch(active, ramSectionRanges);
             return;
         }
         const { graphs, sidebar } = this._consumerTypes();
@@ -4213,10 +4220,11 @@ class MainViewProvider {
             session.setSamplingPlan({
                 graphItems,
                 sidebarItems,
+                ramSectionRanges,
                 graphIntervalMs: this._liveIntervalMs,
                 unlimited: this._unlimitedSamplingEnabled()
             });
-        else session.setWatch(active);
+        else session.setWatch(active, ramSectionRanges);
     }
     _unlimitedSamplingEnabled() {
         return this._unlimitedSamplingRequested === true;

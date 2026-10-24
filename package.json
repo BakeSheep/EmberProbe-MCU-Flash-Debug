@@ -1045,6 +1045,7 @@
     "test": "npm run check",
     "check": "node scripts/run-tests.js",
     "check:release": "node scripts/run-tests.js --release",
+    "check:openocd-noecho": "node scripts/check-openocd-noecho.js",
     "lint": "eslint src skills scripts test mockup",
     "format": "prettier --write \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.js\" \"skills/**/*.js\" \"scripts/**/*.js\" \"test/**/*.js\" \"mockup/**/*.js\" \".github/workflows/*.yml\" \"*.json\"",

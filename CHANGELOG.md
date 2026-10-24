@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 优化 / Improved
+
+- 采样 Tcl 连接先自测无回显响应，通过后独立与托管调试均省去逐字符回显，调试模式同时省去响应临时文件；不兼容或日志验证不足时安全回退。固定地址读取合并同一可写 ELF 节内不超过 32 字节的间隙，保持变量内容与调试预算不变。
+- Sampling Tcl connections self-test no-echo replies before acquisition; compatible standalone and managed debug sessions avoid per-character echo, and debug sessions also avoid response files, with legacy fallback when compatibility or log verification is insufficient. Fixed reads merge gaps up to 32 bytes within one writable allocated ELF section while preserving variable data and debug budgets.
+- 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
+- Standalone adaptive scheduling uses mean cycle duration at 85% duty (70% with CPU-load sampling configured); debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
+
 ## [0.8.9-beta.1] - 2026-10-22
 
 - 波形历史导出 CSV 提速约 4–6 倍（50 分钟、10 条曲线、200 Hz 的 119 MiB CSV 约 1.3 秒），导出内容不变。导出时 VS Code 通知显示进度并可取消，波形窗口状态栏同步显示百分比；写入中的文件名为 `.csv.part`，完成后才改为最终文件名，取消或失败时自动删除；完成通知提供「在文件夹中显示」。修正变量名为 `__proto__` 且该行无值时导出为 `[object Object]` 的问题。见 `docs/LAYERED-SAMPLING.md`。

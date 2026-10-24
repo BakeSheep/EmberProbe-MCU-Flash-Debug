@@ -30,8 +30,8 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
             );
             for (const sample of samples) assert.ok(sample.t <= time);
         }
-        assert.strictEqual(sidebarTicks, 200);
-        assert.strictEqual(sideReads, 200, `sidebar-exclusive reads at ${hz} Hz`);
+        assert.ok(sidebarTicks >= 200 && sidebarTicks <= 201, `sidebar piggy-back at ${hz} Hz`);
+        assert.ok(sideReads <= sidebarTicks && sideReads >= 100, `sidebar cached reuse at ${hz} Hz`);
         assert.strictEqual(graphTicks, Math.ceil(10000 / Math.round(1000 / hz)));
         assert.ok(sharedReads <= graphTicks + sidebarTicks);
         assert.ok(sharedReads >= graphTicks);
@@ -47,6 +47,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         changing.ratePlan.due(1000, 50);
         const sidebarDeadline = changing.ratePlan.nextSidebar;
         changing.setIntervalMs(nextInterval);
+        assert.strictEqual(changing.ratePlan.nextSidebar, sidebarDeadline, "rate changes preserve the sidebar phase");
         assert.deepStrictEqual(
             changing.ratePlan.due(1001, changing.targetIntervalMs).graphNames,
             ["graph"],
@@ -55,7 +56,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         assert.strictEqual(
             changing.ratePlan.nextSidebar,
             sidebarDeadline,
-            "changing graph frequency preserves the sidebar deadline"
+            "piggy-back is limited to half the shorter period, so a sidebar deadline 49 ms away keeps its own tick"
         );
         const graphDeadline = changing.ratePlan.nextGraph;
         changing.setIntervalMs(nextInterval);
@@ -104,7 +105,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         changing._recentDurations = [20, 20, 20, 20];
         changing.setSamplingPlan({ ...plan, unlimited: true });
         changing.setSamplingPlan({ ...plan, unlimited: false });
-        assert.strictEqual(changing.effectiveIntervalMs, 29, "switching retains the measured safety margin");
+        assert.strictEqual(changing.effectiveIntervalMs, 24, "switching retains the measured safety margin");
         changing.setSamplingPlan({ ...plan, graphItems: [item("different")] });
         assert.strictEqual(changing.effectiveIntervalMs, 100, "changed variables still require calibration");
         assert.deepStrictEqual(changing._recentDurations, []);

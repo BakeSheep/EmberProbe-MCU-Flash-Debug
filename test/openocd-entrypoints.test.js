@@ -150,6 +150,7 @@ function load(file, overrides) {
     for (const names of ["stm32h7x.cpu0 stm32h7x.cpu1", "stm32h7x.cpu0", "bad;shutdown stm32h7x.cpu1"]) {
         const grouped = new live.ManagedOpenOcdSession(null, { ...multi.options, serverGroup: "dual" }, {});
         grouped._waitForTclListening = async () => {};
+        grouped._detectNoEcho = async () => true;
         grouped._connectWithRetry = async () => {
             const socket = new EventEmitter();
             socket.destroy = () => {

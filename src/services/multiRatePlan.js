@@ -35,15 +35,22 @@ class MultiRatePlan {
         );
     }
     due(now, effectiveIntervalMs) {
+        const advance = (next, period) => (!next || now - next > period ? now + period : next + period);
+        const graphPeriod = Math.max(this.graphIntervalMs, effectiveIntervalMs);
+        const sidebarPeriod = Math.max(SIDEBAR_INTERVAL_MS, effectiveIntervalMs);
         const graph = this.graphItems.length > 0 && (this.unlimitedActive || now >= this.nextGraph);
-        const sidebar = this.sidebarItems.length > 0 && now >= this.nextSidebar;
-        if (graph) this.nextGraph = now + Math.max(this.graphIntervalMs, effectiveIntervalMs);
-        if (sidebar) this.nextSidebar = now + Math.max(SIDEBAR_INTERVAL_MS, effectiveIntervalMs);
+        // A sidebar deadline this close to a graph tick rides along instead of costing its own read cycle.
+        const early = Math.max(0, this.nextSidebar - now);
+        const sidebar =
+            this.sidebarItems.length > 0 &&
+            (early === 0 || (!this.unlimitedActive && graph && early <= Math.min(graphPeriod, sidebarPeriod) / 2));
+        if (graph) this.nextGraph = advance(this.nextGraph, graphPeriod);
+        if (sidebar) this.nextSidebar = advance(this.nextSidebar, sidebarPeriod);
         const names = new Set(graph ? this.graphItems.map((item) => item.name) : []);
         if (sidebar)
             for (const item of this.sidebarItems) {
                 const cached = this.latest.get(item.name);
-                if (!cached || now - cached.clock >= SIDEBAR_INTERVAL_MS) names.add(item.name);
+                if (!cached || now - cached.clock >= SIDEBAR_INTERVAL_MS - early) names.add(item.name);
             }
         return {
             clock: now,

@@ -138,6 +138,7 @@ function runtimeItem(name, address) {
     let clock = 0;
     layered.session.ratePlan.due = (_clock, interval) => due(clock, interval);
     const subsets = new Set();
+    const latest = new Map();
     const layeredCompilations = await countReadCompilations(async () => {
         for (let tick = 0; tick < TICKS; tick++) {
             for (const item of plan.items) layered.fake.seed(item.address, [tick & 0xff, 2, 3, 4]);
@@ -145,11 +146,16 @@ function runtimeItem(name, address) {
             const current = layered.last.due;
             subsets.add(current.graphNames.length ? (current.sidebarNames.length ? "both" : "graph") : "sidebar");
             const names = [...new Set([...current.graphNames, ...current.sidebarNames])];
-            assertFixedSamples(
+            for (const item of current.items)
+                latest.set(item.name, {
+                    name: item.name,
+                    bytes: layered.fake.bytes(item.address, item.size),
+                    t: layered.last.t
+                });
+            assert.deepStrictEqual(
                 layered.last.samples,
-                names.map((name) => plan.byName.get(name)),
-                layered.fake,
-                layered.last.t
+                names.map((name) => latest.get(name)),
+                "piggy-back keeps cached values and their original acquisition timestamps"
             );
             clock += plan.delay(clock);
         }

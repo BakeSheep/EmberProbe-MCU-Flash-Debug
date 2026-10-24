@@ -207,6 +207,7 @@ const TEST_GROUPS = Object.freeze({
         "sampling-archive-format.test.js",
         "sampling-archive.test.js",
         "sampling-isolation.test.js",
+        "sampling-read-efficiency.test.js",
         "sidebar-sections.test.js",
         "sidebar-status-restore.test.js",
         "skill-installer.test.js",
