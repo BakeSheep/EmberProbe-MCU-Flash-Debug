@@ -186,6 +186,43 @@ function load(file, overrides) {
         assert(args.indexOf("transport select swd") < args.indexOf("/scripts/target/stm32f4x.cfg"));
         assert(args.indexOf("/scripts/target/stm32f4x.cfg") < args.indexOf("adapter speed 100"));
     }
+    successfulSpawn = false;
+    for (const mode of ["standalone", "debug"]) {
+        for (const backendKind of ["tcp", "usb"]) {
+            for (const samplingAdapterSpeedKhz of [0, 4000]) {
+                const session = new live.ManagedOpenOcdSession(
+                    null,
+                    { ...options, mode, backendKind, samplingAdapterSpeedKhz, gdbPort: 13333 },
+                    {}
+                );
+                await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
+                const args = captured.at(-1);
+                const speed = mode === "standalone" && samplingAdapterSpeedKhz ? 4000 : 100;
+                assert(args.includes(`adapter speed ${speed}`));
+                assert(
+                    args.some((arg) => arg.includes("_ep_speed_event") && arg.includes(String(speed))),
+                    "sampling reuses the reset-event speed cap wrapper"
+                );
+                const polling = args.find((arg) => arg.includes("poll_interval"));
+                assert.strictEqual(!!polling, mode === "standalone" && backendKind === "tcp");
+                if (polling) {
+                    assert(polling.includes("info commands poll_interval"));
+                    assert(polling.includes("poll_interval 500"));
+                    assert(args.indexOf(polling) > args.indexOf("init"));
+                }
+                assert.strictEqual(
+                    session.options.adapterSpeedKhz,
+                    100,
+                    "launch overrides leave settings identity intact"
+                );
+            }
+        }
+    }
+    await assert.rejects(
+        runner.runOpenOcd(vscode, { ...options, samplingAdapterSpeedKhz: 4000 }, () => {}),
+        { code: "PROBE_NOT_FOUND" }
+    );
+    assert(captured.at(-1).includes("adapter speed 100"), "flash retains the general clock");
     for (const operation of ["chip-read", "pause", "continue", "reset", "fault-read"]) {
         const coordinator = new ProbeCoordinator();
         const lease = coordinator.acquire("chipInfo");

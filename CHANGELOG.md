@@ -8,6 +8,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
+- 采样时间改为每轮读取的中点，精确到亚毫秒（原为读取前的整毫秒），同一轮变量共享同一时间；历史、二进制归档、CSV 与图表保留亚毫秒信息。固定 RAM 读取可在同一可写 ELF 节内扩至对齐 32 位字并再次合并，保持变量字节与调试预算。
+- Each sampling cycle is stamped at the midpoint of its reads with sub-millisecond precision (previously whole milliseconds before reading); all variables of a cycle share that time, and history, binary archives, CSV and charts keep the sub-ms part. Fixed RAM reads can widen to aligned 32-bit words within one writable ELF section and merge again, preserving variable bytes and debug budgets.
+- 新增独立采样链路时钟 `samplingAdapterSpeedKhz`（0 沿用通用时钟），修改后重连且写入授权绑定实际时钟；调试及烧录仍用通用设置。TCP 采样 RPC 超时延长至 5000 ms，仅独立 TCP 采样在 OpenOCD 支持 `poll_interval` 时把目标轮询调为 500 ms（随包版本尚不支持，保持默认）。
+- Added standalone `samplingAdapterSpeedKhz` (0 inherits the general clock), reconnecting on changes and binding writes to the effective clock; debug and flash retain the general setting. TCP sampling RPCs allow 5000 ms; only standalone TCP sampling sets 500 ms target polling where OpenOCD provides `poll_interval` (the bundled build does not yet, so it keeps the default).
+
 - 采样 Tcl 连接先自测无回显响应，通过后独立与托管调试均省去逐字符回显，调试模式同时省去响应临时文件；不兼容或日志验证不足时安全回退。固定地址读取合并同一可写 ELF 节内不超过 32 字节的间隙，保持变量内容与调试预算不变。
 - Sampling Tcl connections self-test no-echo replies before acquisition; compatible standalone and managed debug sessions avoid per-character echo, and debug sessions also avoid response files, with legacy fallback when compatibility or log verification is insufficient. Fixed reads merge gaps up to 32 bytes within one writable allocated ELF section while preserving variable data and debug budgets.
 - 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。

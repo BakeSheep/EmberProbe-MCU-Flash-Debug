@@ -9,6 +9,8 @@ const path = require("path");
 const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
 const { randomBytes } = require("crypto");
+const { performance } = require("perf_hooks");
+const { normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
@@ -242,27 +244,51 @@ function compileReadBatches(items, ramSectionRanges = [], debug = false, reserve
     }
     let totalBytes = groups.reduce((total, group) => total + group.end - group.start, reservedBytes);
     let commands = groups.reduce((total, group) => total + Math.ceil((group.end - group.start) / MAX_BATCH_BYTES), 0);
-    for (let index = 1; index < groups.length;) {
-        const previous = groups[index - 1];
-        const group = groups[index];
-        const gap = group.start - previous.end;
+    const mergeNeighbours = () => {
+        for (let index = 1; index < groups.length;) {
+            const previous = groups[index - 1];
+            const group = groups[index];
+            const gap = Math.max(0, group.start - previous.end);
+            const end = Math.max(previous.end, group.end);
+            const nextCommands =
+                commands -
+                Math.ceil((previous.end - previous.start) / MAX_BATCH_BYTES) -
+                Math.ceil((group.end - group.start) / MAX_BATCH_BYTES) +
+                Math.ceil((end - previous.start) / MAX_BATCH_BYTES);
+            if (
+                gap <= MAX_READ_GAP_BYTES &&
+                ramSectionRanges.some((range) => previous.start >= range.start && end <= range.end) &&
+                (!debug || (totalBytes + gap <= MAX_DEBUG_READ_BYTES && nextCommands <= MAX_DEBUG_READ_COMMANDS))
+            ) {
+                previous.end = end;
+                previous.vars.push(...group.vars);
+                groups.splice(index, 1);
+                totalBytes += gap;
+                commands = nextCommands;
+            } else index++;
+        }
+    };
+    mergeNeighbours();
+    for (const group of groups) {
+        const start = Math.floor(group.start / 4) * 4;
+        const end = Math.ceil(group.end / 4) * 4;
+        const extra = end - start - (group.end - group.start);
         const nextCommands =
             commands -
-            Math.ceil((previous.end - previous.start) / MAX_BATCH_BYTES) -
             Math.ceil((group.end - group.start) / MAX_BATCH_BYTES) +
-            Math.ceil((group.end - previous.start) / MAX_BATCH_BYTES);
+            Math.ceil((end - start) / MAX_BATCH_BYTES);
         if (
-            gap <= MAX_READ_GAP_BYTES &&
-            ramSectionRanges.some((range) => previous.start >= range.start && group.end <= range.end) &&
-            (!debug || (totalBytes + gap <= MAX_DEBUG_READ_BYTES && nextCommands <= MAX_DEBUG_READ_COMMANDS))
+            extra &&
+            ramSectionRanges.some((range) => start >= range.start && end <= range.end) &&
+            (!debug || (totalBytes + extra <= MAX_DEBUG_READ_BYTES && nextCommands <= MAX_DEBUG_READ_COMMANDS))
         ) {
-            previous.end = group.end;
-            previous.vars.push(...group.vars);
-            groups.splice(index, 1);
-            totalBytes += gap;
+            group.start = start;
+            group.end = end;
+            totalBytes += extra;
             commands = nextCommands;
-        } else index++;
+        }
     }
+    mergeNeighbours();
     const batches = [];
     let currentBatch = [];
     let currentBatchBytes = 0;
@@ -328,6 +354,8 @@ class ManagedOpenOcdSession {
         this._pollFailureCount = 0;
         this._pollFailureLocked = false;
         this.now = this.options.now || Date.now;
+        this.sampleNow = this.options.sampleNow || (() => performance.timeOrigin + performance.now());
+        this.rpcTimeoutMs = this.options.backendKind === "tcp" ? 5000 : 2000;
         this.connectionFailed = false;
         this.connectionError = null;
         this._startReject = null; // start() 进行中时捕获的 reject，用于单通道上报连接期失败
@@ -862,7 +890,13 @@ class ManagedOpenOcdSession {
             this.options.transport
         );
         const args = [
-            ...buildOpenOcdConfigArgs(launch, this.options.transport, this.options),
+            ...buildOpenOcdConfigArgs(launch, this.options.transport, {
+                ...this.options,
+                adapterSpeedKhz:
+                    this.mode === "standalone"
+                        ? normalizeAdapterSpeed(this.options.samplingAdapterSpeedKhz) || this.options.adapterSpeedKhz
+                        : this.options.adapterSpeedKhz
+            }),
             "-c",
             "bindto 127.0.0.1",
             "-c",
@@ -878,7 +912,10 @@ class ManagedOpenOcdSession {
                 ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
                 : []),
             "-c",
-            "init" // 仅初始化，不 halt/不 reset，保持非侵入
+            "init", // 仅初始化，不 halt/不 reset，保持非侵入
+            ...(this.mode === "standalone" && this.options.backendKind === "tcp"
+                ? ["-c", "if {[llength [info commands poll_interval]]} { poll_interval 500 }"]
+                : [])
         ];
         this._status({ key: "lw.connecting" });
         try {
@@ -1388,7 +1425,7 @@ class ManagedOpenOcdSession {
         return new Promise((resolve, reject) => {
             if (!this.socket || this.socket.destroyed) return reject(new Error("Socket is not connected"));
             const entry = {};
-            const deadline = Date.now() + 2000;
+            const deadline = Date.now() + this.rpcTimeoutMs;
             const timer = setTimeout(() => {
                 if (this.queue.includes(entry))
                     this._abortConnection(
@@ -1396,7 +1433,7 @@ class ManagedOpenOcdSession {
                             code: "OPENOCD_RPC_TIMEOUT"
                         })
                     );
-            }, 2000);
+            }, this.rpcTimeoutMs);
             entry.resolve = (v) => {
                 clearTimeout(timer);
                 // A wake-up or busy event loop may dispatch data before the overdue timeout callback.
@@ -1961,16 +1998,22 @@ class ManagedOpenOcdSession {
         const startNs = process.hrtime.bigint();
         const targetEpoch = this.targetEpoch;
         const readBytesBefore = this._memoryReadBytes;
-        const t = Date.now();
+        const startedAt = Date.now();
+        const deadline = startedAt + MAX_DEBUG_CYCLE_MS;
+        const cycleStart = this.sampleNow();
         const clockMs = Number(startNs) / 1e6;
         let readSuccess = false;
         try {
             const due = this.ratePlan?.due(clockMs, this.effectiveIntervalMs);
             const items = due ? due.items : this.watch;
-            const guard =
-                this.mode === "debug" ? { epoch, requireSampling: true, deadline: t + MAX_DEBUG_CYCLE_MS } : null;
-            const { samples, ok } = items.length ? await this._readItems(items, t, guard) : { samples: [], ok: 0 };
+            const guard = this.mode === "debug" ? { epoch, requireSampling: true, deadline } : null;
+            const { samples, ok } = items.length
+                ? await this._readItems(items, cycleStart, guard)
+                : { samples: [], ok: 0 };
             if (epoch !== this.sampleEpoch || !this.samplingEnabled) return;
+            // One sub-millisecond stamp per cycle, centred on its reads, keeps every cycle a single archive/CSV row.
+            const t = (cycleStart + this.sampleNow()) / 2;
+            for (const sample of samples) sample.t = t;
             const delivered = due ? this.ratePlan.deliver(samples, t, due) : samples;
             if (this.handlers.onSample) this.handlers.onSample(delivered, t, due);
             if (ok === items.length) {
@@ -2005,7 +2048,7 @@ class ManagedOpenOcdSession {
                     Number(startNs) / 1e6,
                     Number(startNs) / 1e6 + durationMs
                 );
-            if (epoch === this.sampleEpoch) this._recordCycle(durationMs, readSuccess, t);
+            if (epoch === this.sampleEpoch) this._recordCycle(durationMs, readSuccess, startedAt);
             if (fromScheduler && epoch === this.sampleEpoch && this.samplingEnabled && !this.stopped) {
                 const nextDelay = this.ratePlan
                     ? this.ratePlan.delay(Number(process.hrtime.bigint()) / 1e6)

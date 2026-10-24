@@ -1131,18 +1131,27 @@ class MainViewProvider {
                 code: "PROBE_DRIVER_BUSY"
             });
     }
-    connectionConfigurationChanged() {
+    connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
         if (this._cpuLoadService?.run) void this._cpuLoadService.stop("configuration-changed").catch(() => {});
-        this._probeConnectionService.markConfigurationChanged([
-            this._liveSession,
-            this._managedDebugServer,
-            this._agentReadSession,
-            this._debugBridge.activeSession
-        ]);
+        this._probeConnectionService.markConfigurationChanged(
+            samplingSpeedOnly
+                ? [this._liveSession, this._agentReadSession].filter(Boolean)
+                : [this._liveSession, this._managedDebugServer, this._agentReadSession, this._debugBridge.activeSession]
+        );
         if (this._liveSession || this._managedDebugServer) this._postConsumerStatuses({});
         this._refreshJlinkDriverChoice(false).catch((error) =>
             console.error("J-Link USB driver check failed:", error.message)
         );
+        if (samplingSpeedChanged && this._liveSession) {
+            const stopped = this.stopLiveWatch({ preserveIntent: true, discardPending: true });
+            const generation = this._liveStartGeneration;
+            void Promise.resolve(stopped)
+                .then(() => {
+                    if (generation === this._liveStartGeneration && this._samplingIntent)
+                        return this.startLiveWatch(undefined, this._liveIntervalMs, "refresh", false);
+                })
+                .catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
+        }
     }
     _assertWriteSessionCurrent(session) {
         this._assertCpuIdle();
@@ -1188,7 +1197,12 @@ class MainViewProvider {
         const config = this._configurationStore.snapshot();
         const executable = await this._resolveOpenOcdPath(config.openocdPath);
         return writeConnectionIdentity(
-            await this._probeConnectionService.prepare({ executable, probe: config.debugger, target: config.mcu })
+            await this._probeConnectionService.prepare({
+                executable,
+                probe: config.debugger,
+                target: config.mcu,
+                sampling: true
+            })
         );
     }
     _executeAgentCubeMx(params) {
@@ -2406,7 +2420,8 @@ class MainViewProvider {
                 const connection = await this._probeConnectionService.prepare({
                     executable,
                     probe: debuggerCfg,
-                    target: mcuCore
+                    target: mcuCore,
+                    sampling: true
                 });
                 assertActive();
                 const port = await this._resolveTclPort(cfg);
@@ -5197,7 +5212,7 @@ class MainViewProvider {
         if (!current()) return null;
         if (!executable) throw new Error(this._t("live.notReady"));
         const connection = await this._probeConnectionService.prepare(
-            { executable, probe: debuggerCfg, target: mcuCore },
+            { executable, probe: debuggerCfg, target: mcuCore, sampling: true },
             true
         );
         if (!current()) return null;
@@ -5374,7 +5389,7 @@ class MainViewProvider {
             if (!executable) throw Object.assign(new Error(this._t("live.notReady")), { i18nKey: "live.notReady" });
             const { cwd } = this._commandContext();
             const connection = await this._probeConnectionService.prepare(
-                { executable, probe: debuggerCfg, target: mcuCore },
+                { executable, probe: debuggerCfg, target: mcuCore, sampling: true },
                 interactive
             );
             if (startingLease.released || generation !== this._liveStartGeneration) return;

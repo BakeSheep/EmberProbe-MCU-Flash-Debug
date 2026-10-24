@@ -72,6 +72,7 @@ class ConfigurationStore {
             rtos: cfg.get("rtos", ""),
             probeSerial: cfg.get("probeSerial", ""),
             adapterSpeedKhz: cfg.get("adapterSpeedKhz", 0),
+            samplingAdapterSpeedKhz: cfg.get("samplingAdapterSpeedKhz", 0),
             openocdPath: cfg.get("openocdPath", "openocd"),
             cubemxPath: cfg.get("cubemxPath", ""),
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",

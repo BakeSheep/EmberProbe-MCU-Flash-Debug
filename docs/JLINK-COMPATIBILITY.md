@@ -13,6 +13,11 @@ Probe selection and transport are automatic by default. Configure manual overrid
 | `emberprobe.probeSerial` | Decimal J-Link serial; exact USB serial for other supported backends / J-Link 十进制序列号；其他受支持后端的精确 USB 序列号 |
 | `emberprobe.transport` | `auto` by default; optional `swd` / `jtag` override / 默认自动，可手动覆盖协议 |
 | `emberprobe.adapterSpeedKhz` | Integer kHz; nonzero caps target reset-event requests and is the programming clock, `0` keeps script defaults and programs at the probe's clock / 整数 kHz；非零值约束 target 复位事件提速并作为烧录时钟，`0` 保留脚本默认速度、烧录时使用探针时钟 |
+| `emberprobe.samplingAdapterSpeedKhz` | Standalone sampling clock, integer kHz with the same bounds; `0` inherits `adapterSpeedKhz`, nonzero reuses reset-event caps. Changes reconnect standalone sampling; debug/flash clocks stay unchanged / 独立采样链路时钟，整数 kHz 且范围同上；`0` 沿用通用时钟，非零值复用复位事件限速；修改后重连独立采样，不改调试/烧录时钟 |
+
+独立采样写入授权绑定实际生效的链路时钟以及原有探针身份；设置变化使旧采样会话过期并重连，成功记录仍只保存探针选择信息。该设置可在 VS Code 中修改，Agent 配置快照只读提供它，不新增 MCP/Agent 修改参数。
+
+Standalone sampling write authorization includes the effective link clock and the existing probe identity. A setting change makes the old sampling session stale and reconnects it; success records still store only probe selection. Configure it in VS Code; Agent configuration snapshots expose it read-only, with no new MCP/Agent mutation parameter.
 
 A unique matching probe is selected automatically within the effective interface family. USB serial strings preserve case, leading zeros and internal spaces; J-Link retains decimal validation. Explicit serial settings take precedence over interface-script serials and successful workspace history. Missing remembered devices never cause fallback to another probe. Multiple devices require an enforceable selector; Agent callers receive a structured ambiguity error. Failed or cancelled connections do not update history. When OS inventory is unavailable or recognizes no matching device, an explicit or remembered serial is passed to a backend that enforces it; otherwise OpenOCD applies the interface default selection. Such connections cannot establish a verified USB success record. See [probe connection rules](PROBE-CONNECTIONS.md) for serial-less probes, Windows aliases, additional adapters and TCP interfaces.
 

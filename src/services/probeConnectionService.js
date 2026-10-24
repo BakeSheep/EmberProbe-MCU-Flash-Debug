@@ -5,6 +5,7 @@ const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const i18n = require("../i18n");
 const {
     normalizeProbeSerial,
+    normalizeAdapterSpeed,
     connectionIdentity,
     connectionError,
     trustedSerial
@@ -45,7 +46,12 @@ class ProbeConnectionService {
 
     settingsChanged(session) {
         const previous = session.options?.settingsIdentity;
-        return !!previous && JSON.stringify(previous) !== JSON.stringify(connectionIdentity(this.getConfig()));
+        const configured = this.getConfig();
+        return (
+            (!!previous && JSON.stringify(previous) !== JSON.stringify(connectionIdentity(configured))) ||
+            (session.options?.samplingAdapterSpeedKhz !== undefined &&
+                session.options.samplingAdapterSpeedKhz !== normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz))
+        );
     }
 
     assertCurrent(session) {
@@ -62,6 +68,7 @@ class ProbeConnectionService {
         interactive = interactive === true;
         this.beforePrepare();
         const configured = this.getConfig();
+        const samplingSpeed = options.sampling ? normalizeAdapterSpeed(configured.samplingAdapterSpeedKhz) : undefined;
         const expectedSettings = JSON.stringify(connectionIdentity(configured));
         let request = { ...configured, ...options, successfulConnection: this.getSuccessfulConnection() };
         request.probe = request.probe || request.debugger || (await this.resolveProbe());
@@ -73,13 +80,19 @@ class ProbeConnectionService {
                 this.beforePrepare();
                 const result = prepared;
                 const current = connectionIdentity(this.getConfig());
-                if (JSON.stringify(current) !== expectedSettings)
+                if (
+                    JSON.stringify(current) !== expectedSettings ||
+                    (samplingSpeed !== undefined &&
+                        samplingSpeed !== normalizeAdapterSpeed(this.getConfig().samplingAdapterSpeedKhz))
+                )
                     throw connectionError(
                         "PROBE_CONFIGURATION_CHANGED",
                         "Connection settings changed during preflight; retry the operation"
                     );
                 const connection = Object.freeze({
                     ...result,
+                    backendKind: result.profile?.kind || result.selectionIdentity?.kind,
+                    ...(samplingSpeed === undefined ? {} : { samplingAdapterSpeedKhz: samplingSpeed }),
                     selection: Object.freeze({ ...result.selection }),
                     ...(result.selectionIdentity
                         ? { selectionIdentity: Object.freeze({ ...result.selectionIdentity }) }

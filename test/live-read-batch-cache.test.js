@@ -52,11 +52,12 @@ function readerFixture() {
     return fixture;
 }
 
-function assertFixedSamples(samples, items, fake, t) {
+function assertFixedSamples(samples, items, fake) {
     assert.deepStrictEqual(
-        samples,
-        items.map((item) => ({ name: item.name, bytes: fake.bytes(item.address, item.size), t }))
+        samples.map(({ name, bytes }) => ({ name, bytes })),
+        items.map((item) => ({ name: item.name, bytes: fake.bytes(item.address, item.size) }))
     );
+    assert(samples.every((sample) => Number.isFinite(sample.t)));
 }
 
 function runtimeItem(name, address) {
@@ -150,7 +151,7 @@ function runtimeItem(name, address) {
                 latest.set(item.name, {
                     name: item.name,
                     bytes: layered.fake.bytes(item.address, item.size),
-                    t: layered.last.t
+                    t: layered.last.samples.find((sample) => sample.name === item.name).t
                 });
             assert.deepStrictEqual(
                 layered.last.samples,

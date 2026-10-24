@@ -175,7 +175,7 @@ function startupFixture(mode, branch) {
     const pair = [item("a"), item("b", 0x20000024)];
     assert.strictEqual(compileReadBatches(pair, ranges)[0][0].byteCount, 40);
     assert.strictEqual(compileReadBatches(pair).flat().length, 2);
-    assert.strictEqual(compileReadBatches([pair[0], item("b", 0x20000025)], ranges).flat().length, 2);
+    assert.strictEqual(compileReadBatches([pair[0], item("b", 0x20000025)], ranges).flat().length, 1);
     assert.strictEqual(
         compileReadBatches(pair, [
             { start: 0x20000000, end: 0x20000020 },
@@ -224,7 +224,10 @@ function startupFixture(mode, branch) {
         const result = await session._readItems(session.watch, 0);
         session.setSamplingPlan({ graphItems: pair });
         assert.notStrictEqual(session._getReadBatches(session.watch), merged, "ranges invalidate the cache");
-        assert.deepStrictEqual((await session._readItems(session.watch, 0)).samples, result.samples);
+        assert.deepStrictEqual(
+            (await session._readItems(session.watch, 0)).samples.map(({ name, bytes }) => ({ name, bytes })),
+            result.samples.map(({ name, bytes }) => ({ name, bytes }))
+        );
         assert.deepStrictEqual(
             result.samples.map((sample) => sample.bytes),
             [
