@@ -1,5 +1,12 @@
 # EmberProbe HIL runners
 
+For a separate **read-only sampling comparison** of stock and patched OpenOCD,
+use `scripts/measure-sampling-scatter.js` with `EMBERPROBE_HIL_CONFIRM=YES` on
+dedicated hardware already running firmware. It does not flash, halt, reset,
+write memory or change drivers. See [the scatter prototype guide](../../native/openocd/README.md)
+for build instructions, arguments and Hz/cycle/RPC metrics. This benchmark is
+manual and is not part of `npm run test:hil` or normal software tests.
+
 The HIL workflow flashes real hardware. It is disabled until the repository variable `HIL_ENABLED` is set to `true`.
 
 Provision one self-hosted runner for each label:

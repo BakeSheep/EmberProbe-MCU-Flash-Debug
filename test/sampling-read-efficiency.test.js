@@ -40,6 +40,10 @@ function startupFixture(mode, branch) {
             commands.push(command);
             callback?.();
             const marker = command.match(/EP_(?:NOECHO|SYNC)_[a-f0-9]+/)?.[0];
+            if (command.includes("catch {emberprobe_read_scatter version}")) {
+                queueMicrotask(() => socket.emit("data", Buffer.from("EP_OK:0\x1a")));
+                return;
+            }
             if (!marker) return;
             const reply = () => {
                 if (branch === "closed") return socket.destroy();

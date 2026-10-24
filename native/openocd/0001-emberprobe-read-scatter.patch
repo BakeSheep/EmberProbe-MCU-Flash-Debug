@@ -1,0 +1,306 @@
+From e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3 Mon Sep 17 00:00:00 2001
+From: EmberProbe contributors <emberprobe@example.invalid>
+Date: Sat, 24 Oct 2026 12:00:00 +0800
+Subject: [PATCH] target: add bounded single-run Cortex-M MEM-AP scatter reads
+
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Keep all posted read destinations alive across segments and drain once.
+Probe unknown CSW widths/packing in that same queue, using single transfers
+until packing is confirmed. Return memory-order hex as a Tcl result.
+
+Base: e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3 (xPack 0.12.0-7).
+---
+diff --git a/src/target/arm_adi_v5.c b/src/target/arm_adi_v5.c
+index 67a3fcc57..ceafa3236 100644
+--- a/src/target/arm_adi_v5.c
++++ b/src/target/arm_adi_v5.c
+@@ -727,6 +727,145 @@ static int mem_ap_read(struct adiv5_ap *ap, uint8_t *buffer, uint32_t size, uint
+ 	return retval;
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0-or-later
++ * Derived from mem_ap_read(). Keep DRW destinations alive until the queue drains,
++ * including queueing failures. No partial data is returned by this interface.
++ */
++int mem_ap_read_scatter(struct adiv5_ap *ap,
++		const struct mem_ap_read_segment *segments, unsigned int num_segments)
++{
++	if (!num_segments || num_segments > MEM_AP_SCATTER_MAX_SEGMENTS)
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++
++	unsigned int total = 0;
++	for (unsigned int i = 0; i < num_segments; i++) {
++		const struct mem_ap_read_segment *seg = &segments[i];
++		if ((seg->size != 1 && seg->size != 2 && seg->size != 4)
++				|| !seg->count || !seg->buffer
++				|| seg->count > (MEM_AP_SCATTER_MAX_BYTES - total) / seg->size)
++			return ERROR_COMMAND_ARGUMENT_INVALID;
++		if (seg->address % seg->size)
++			return ERROR_TARGET_UNALIGNED_ACCESS;
++		total += seg->size * seg->count;
++		if (seg->address + seg->size * seg->count - 1 < seg->address)
++			return ERROR_COMMAND_ARGUMENT_INVALID;
++		if ((ap->csw_size_probed_mask & seg->size)
++				&& !(ap->csw_size_supported_mask & seg->size))
++			return ERROR_TARGET_SIZE_NOT_SUPPORTED;
++	}
++
++	uint32_t *raw = calloc(total, sizeof(*raw));
++	uint8_t *sizes = calloc(total, sizeof(*sizes));
++	if (!raw || !sizes) {
++		free(raw);
++		free(sizes);
++		return ERROR_FAIL;
++	}
++
++	struct adiv5_dap *dap = ap->dap;
++	uint32_t csw_readback[3] = {0};
++	unsigned int probed = 0;
++	unsigned int packing_probe = 0;
++	unsigned int ops = 0;
++	int retval = ERROR_OK;
++	for (unsigned int i = 0; i < num_segments && retval == ERROR_OK; i++) {
++		const struct mem_ap_read_segment *seg = &segments[i];
++		uint32_t csw_size = seg->size == 4 ? CSW_32BIT :
++			seg->size == 2 ? CSW_16BIT : CSW_8BIT;
++		/* Probe CSW in the same queue, without reading target memory in an
++		 * unverified packed mode. The first call uses single transfers for
++		 * unknown modes; subsequent calls can use confirmed packed transfers.
++		 */
++		if (!(probed & seg->size) && (!(ap->csw_size_probed_mask & seg->size)
++				|| (seg->size < 4 && !ap->packed_transfers_probed))) {
++			bool pack_probe = seg->size < 4 && !dap->ti_be_32_quirks;
++			retval = mem_ap_setup_csw(ap, csw_size |
++				(pack_probe ? CSW_ADDRINC_PACKED : CSW_ADDRINC_SINGLE));
++			if (retval == ERROR_OK)
++				retval = dap_queue_ap_read(ap, MEM_AP_REG_CSW(dap), &csw_readback[csw_size]);
++			probed |= seg->size;
++			if (pack_probe)
++				packing_probe |= seg->size;
++		}
++
++		target_addr_t address = seg->address;
++		unsigned int remaining = seg->size * seg->count;
++		while (remaining && retval == ERROR_OK) {
++			bool packed = seg->size < 4 && ap->packed_transfers_probed
++				&& ap->packed_transfers_supported && remaining >= 4
++				&& max_tar_block_size(ap->tar_autoincr_block, address) >= 4;
++			unsigned int this_size = packed ? 4 : seg->size;
++			retval = mem_ap_setup_transfer(ap, csw_size |
++				(packed ? CSW_ADDRINC_PACKED : CSW_ADDRINC_SINGLE), address);
++			if (retval != ERROR_OK)
++				break;
++			sizes[ops] = this_size;
++			/* dap_queue_ap_read handles posted AP reads, including the last
++			 * pending read across CSW/TAR changes and at dap_run(). */
++			retval = dap_queue_ap_read(ap, MEM_AP_REG_DRW(dap), &raw[ops++]);
++			if (retval != ERROR_OK)
++				break;
++			mem_ap_update_tar_cache(ap);
++			address += this_size;
++			remaining -= this_size;
++		}
++	}
++
++	/* Also drain on a queueing error before releasing any read destinations.
++	 * dap_run performs the normal transport/sticky-error recovery. Do not use
++	 * mem_ap_read_tar here: that would add another flush for partial results.
++	 */
++	int run_retval = dap_run(dap);
++	if (retval == ERROR_OK)
++		retval = run_retval;
++	if (retval != ERROR_OK) {
++		ap->csw_value = 0;
++		ap->tar_valid = false;
++		goto done;
++	}
++
++	for (unsigned int size = 1, code = 0; size <= 4; size <<= 1, code++) {
++		if (!(probed & size))
++			continue;
++		ap->csw_size_probed_mask |= size;
++		if ((csw_readback[code] & CSW_SIZE_MASK) != code) {
++			retval = ERROR_TARGET_SIZE_NOT_SUPPORTED;
++			continue;
++		}
++		ap->csw_size_supported_mask |= size;
++		if (packing_probe & size) {
++			ap->packed_transfers_probed = true;
++			ap->packed_transfers_supported =
++				(csw_readback[code] & CSW_ADDRINC_MASK) == CSW_ADDRINC_PACKED;
++		}
++	}
++	if (retval != ERROR_OK) {
++		ap->csw_value = 0;
++		ap->tar_valid = false;
++		goto done;
++	}
++
++	unsigned int op = 0;
++	target_addr_t lane_xor = dap->ti_be_32_quirks ? 3 : 0;
++	for (unsigned int i = 0; i < num_segments; i++) {
++		const struct mem_ap_read_segment *seg = &segments[i];
++		target_addr_t address = seg->address;
++		unsigned int offset = 0;
++		while (offset < seg->size * seg->count) {
++			unsigned int this_size = sizes[op];
++			for (unsigned int j = 0; j < this_size; j++)
++				seg->buffer[offset++] = raw[op] >> (8 * ((address++ & 3) ^ lane_xor));
++			op++;
++		}
++	}
++	LOG_DEBUG("MEM-AP scatter: %u segments, %u bytes, one DAP run", num_segments, total);
++
++done:
++	free(sizes);
++	free(raw);
++	return retval;
++}
++
+ int mem_ap_read_buf(struct adiv5_ap *ap,
+ 		uint8_t *buffer, uint32_t size, uint32_t count, target_addr_t address)
+ {
+diff --git a/src/target/arm_adi_v5.h b/src/target/arm_adi_v5.h
+index ebd2752bd..81e7e8cbc 100644
+--- a/src/target/arm_adi_v5.h
++++ b/src/target/arm_adi_v5.h
+@@ -713,6 +713,18 @@ int mem_ap_write_atomic_u32(struct adiv5_ap *ap,
+ 		target_addr_t address, uint32_t value);
+ 
+ /* Synchronous MEM-AP memory mapped bus block transfers. */
++/* Bounded, incrementing MEM-AP reads. Buffers are caller-owned. */
++#define MEM_AP_SCATTER_MAX_SEGMENTS 64
++#define MEM_AP_SCATTER_MAX_BYTES 4096
++struct mem_ap_read_segment {
++	target_addr_t address;
++	uint32_t size;
++	uint32_t count;
++	uint8_t *buffer;
++};
++int mem_ap_read_scatter(struct adiv5_ap *ap,
++		const struct mem_ap_read_segment *segments, unsigned int num_segments);
++
+ int mem_ap_read_buf(struct adiv5_ap *ap,
+ 		uint8_t *buffer, uint32_t size, uint32_t count, target_addr_t address);
+ int mem_ap_write_buf(struct adiv5_ap *ap,
+diff --git a/src/target/target.c b/src/target/target.c
+index bdf0ff244..58212a745 100644
+--- a/src/target/target.c
++++ b/src/target/target.c
+@@ -47,6 +47,8 @@
+ #include "rtos/rtos.h"
+ #include "transport/transport.h"
+ #include "arm_cti.h"
++#include "armv7m.h"
++#include "arm_adi_v5.h"
+ #include "smp.h"
+ #include "semihosting_common.h"
+ 
+@@ -4404,6 +4406,76 @@ COMMAND_HANDLER(handle_profile_command)
+ 	return retval;
+ }
+ 
++COMMAND_HANDLER(handle_emberprobe_read_scatter)
++{
++	struct target *target = get_current_target(CMD_CTX);
++	struct armv7m_common *armv7m = target_to_armv7m_safe(target);
++	if (!armv7m || armv7m->is_hla_target || !armv7m->debug_ap
++			|| !target_was_examined(target)) {
++		command_print(CMD, "EMBERPROBE_SCATTER_UNSUPPORTED: examined Cortex-M MEM-AP required");
++		return ERROR_FAIL;
++	}
++	if (CMD_ARGC == 1 && !strcmp(CMD_ARGV[0], "version")) {
++		command_print(CMD, "1");
++		return ERROR_OK;
++	}
++	if (CMD_ARGC < 1 || CMD_ARGC > MEM_AP_SCATTER_MAX_SEGMENTS) {
++		command_print(CMD, "scatter requires 1..64 segments and at most 4096 bytes");
++		return ERROR_COMMAND_ARGUMENT_INVALID;
++	}
++
++	struct mem_ap_read_segment segments[MEM_AP_SCATTER_MAX_SEGMENTS];
++	uint8_t buffer[MEM_AP_SCATTER_MAX_BYTES];
++	unsigned int total = 0;
++	Jim_Interp *interp = CMD_CTX->interp;
++	for (unsigned int i = 0; i < CMD_ARGC; i++) {
++		Jim_Obj *list = CMD_JIMTCL_ARGV[i];
++		jim_wide address, width, count;
++		if (Jim_ListLength(interp, list) != 3
++				|| Jim_GetWide(interp, Jim_ListGetIndex(interp, list, 0), &address) != JIM_OK
++				|| Jim_GetWide(interp, Jim_ListGetIndex(interp, list, 1), &width) != JIM_OK
++				|| Jim_GetWide(interp, Jim_ListGetIndex(interp, list, 2), &count) != JIM_OK
++				|| address < 0 || (width != 8 && width != 16 && width != 32)
++				|| count < 1 || count > (MEM_AP_SCATTER_MAX_BYTES - total) / (width / 8)
++				|| address % (width / 8)
++				|| (uint64_t)address + count * (width / 8) > UINT64_C(0x100000000)) {
++			command_print(CMD, "invalid scatter segment: expected aligned {address 8|16|32 count}, 4096 bytes total");
++			return ERROR_COMMAND_ARGUMENT_INVALID;
++		}
++		segments[i] = (struct mem_ap_read_segment) {
++			.address = address, .size = width / 8, .count = count, .buffer = buffer + total,
++		};
++		total += count * (width / 8);
++	}
++
++	/* Like cortex_m_read_memory(): natural alignment (also for ARMv6-M),
++	 * direct debug_ap reads, with no cache maintenance on M7/M33. */
++	int retval = mem_ap_read_scatter(armv7m->debug_ap, segments, CMD_ARGC);
++	if (retval != ERROR_OK) {
++		command_print(CMD, "scatter memory read failed (%d)", retval);
++		return retval;
++	}
++	char *hex = malloc(total * 2 + CMD_ARGC);
++	if (!hex)
++		return ERROR_FAIL;
++	static const char digits[] = "0123456789abcdef";
++	unsigned int at = 0;
++	for (unsigned int i = 0; i < CMD_ARGC; i++) {
++		if (i)
++			hex[at++] = '\n';
++		for (unsigned int j = 0; j < segments[i].size * segments[i].count; j++) {
++			uint8_t byte = segments[i].buffer[j];
++			hex[at++] = digits[byte >> 4];
++			hex[at++] = digits[byte & 15];
++		}
++	}
++	hex[at] = '\0';
++	/* command_print is captured as the Tcl result, not LOG_USER output. */
++	command_print(CMD, "%s", hex);
++	free(hex);
++	return ERROR_OK;
++}
++
+ COMMAND_HANDLER(handle_target_read_memory)
+ {
+ 	/*
+@@ -5612,6 +5684,13 @@ static const struct command_registration target_instance_command_handlers[] = {
+ 		.help = "Set target register values",
+ 		.usage = "dict",
+ 	},
++	{
++		.name = "emberprobe_read_scatter",
++		.mode = COMMAND_EXEC,
++		.handler = handle_emberprobe_read_scatter,
++		.help = "Read bounded Cortex-M MEM-AP segments with one DAP run",
++		.usage = "version | {address width count} ...",
++	},
+ 	{
+ 		.name = "read_memory",
+ 		.mode = COMMAND_EXEC,
+@@ -6721,6 +6800,13 @@ static const struct command_registration target_exec_command_handlers[] = {
+ 		.help = "Set target register values",
+ 		.usage = "dict",
+ 	},
++	{
++		.name = "emberprobe_read_scatter",
++		.mode = COMMAND_EXEC,
++		.handler = handle_emberprobe_read_scatter,
++		.help = "Read bounded Cortex-M MEM-AP segments with one DAP run",
++		.usage = "version | {address width count} ...",
++	},
+ 	{
+ 		.name = "read_memory",
+ 		.mode = COMMAND_EXEC,
+-- 
+2.51.0

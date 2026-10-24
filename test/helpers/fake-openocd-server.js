@@ -21,6 +21,9 @@ class FakeOpenOcdServer {
         this.maxInFlight = 0;
         // Emulates Cortex-M7/AHB-AP byte lanes that acknowledge but discard 8/16-bit writes.
         this.dropNarrowWrites = false;
+        this.scatterVersion = null;
+        this.scatterFailures = 0;
+        this.scatterReply = null;
     }
 
     seed(address, bytes) {
@@ -119,6 +122,30 @@ class FakeOpenOcdServer {
 
     _execute(command) {
         this.commands.push(command);
+        if (command === "emberprobe_read_scatter version") {
+            return this.scatterVersion === null
+                ? { ok: false, response: 'invalid command name "emberprobe_read_scatter"' }
+                : { ok: true, response: this.scatterVersion };
+        }
+        if (command.startsWith("emberprobe_read_scatter ")) {
+            if (this.scatterFailures > 0) {
+                this.scatterFailures--;
+                return { ok: false, response: "scatter memory read failed" };
+            }
+            if (this.scatterReply !== null) return { ok: true, response: this.scatterReply };
+            const segments = [...command.matchAll(/\{(0x[0-9a-f]+) (8|16|32) (\d+)\}/g)];
+            const sizes = segments.map((match) => (Number(match[2]) / 8) * Number(match[3]));
+            if (!segments.length || segments.length > 64 || sizes.reduce((a, b) => a + b, 0) > 4096)
+                return { ok: false, response: "scatter limits exceeded" };
+            return {
+                ok: true,
+                response: segments
+                    .map((match, index) =>
+                        Buffer.from(this.bytes(parseInt(match[1], 16), sizes[index])).toString("hex")
+                    )
+                    .join("\n")
+            };
+        }
         if (command.startsWith("join [list")) {
             if (this.rejectBatchCommand) {
                 return { ok: false, response: 'invalid command name "join"' };

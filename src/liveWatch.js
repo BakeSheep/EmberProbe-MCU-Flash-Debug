@@ -29,6 +29,8 @@ const MAX_DEBUG_READ_COMMANDS = 32;
 const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_BATCH_GROUPS = 8;
 const MAX_BATCH_BYTES = 1024;
+const MAX_SCATTER_SEGMENTS = 64;
+const MAX_SCATTER_BYTES = 4096;
 const MAX_READ_BATCH_CACHE_ENTRIES = 8;
 const MAX_READ_GAP_BYTES = 32;
 const MAX_RAM_SECTION_RANGES = 4096;
@@ -374,6 +376,9 @@ class ManagedOpenOcdSession {
         this._silentResponseDir = "";
         this._silentResponseFile = "";
         this.noEchoResponses = false;
+        this.scatterReads = false;
+        this._scatterFailures = 0;
+        this._detectingScatter = false;
         this._initializing = false;
         this.ramSectionRanges = [];
         this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
@@ -750,6 +755,7 @@ class ManagedOpenOcdSession {
                 : 0,
             consumers,
             noEchoResponses: this.noEchoResponses,
+            scatterReads: this.scatterReads,
             p95DurationMs: Number(p95.toFixed(2)),
             missedDeadlines: this._missedDeadlines,
             pauseReason: this._pauseReason
@@ -1071,6 +1077,13 @@ class ManagedOpenOcdSession {
                         this._setupSocket();
                         this._initializing = false;
                         ready();
+                        await this._detectScatter();
+                        if (!this.socket && !this.stopped) {
+                            // No-echo support belongs to the OpenOCD binary, so it survives this reconnect.
+                            this.socket = await this._connectWithRetry(port, 1000);
+                            this._setupSocket();
+                        }
+                        if (this.stopped) throw this.connectionError || new Error("Stopped");
                         this._status({ key: "lw.connected" });
                         if (this._samplingRequested) {
                             this.samplingEnabled = true;
@@ -1277,14 +1290,14 @@ class ManagedOpenOcdSession {
             // 失控流兜底：若缓冲累积超过 1MB 仍未出现分帧符，说明响应流异常，丢弃并重置连接，避免无限增长
             if (this.pending.length > 1048576) {
                 this.pending = "";
-                this._abortConnection(new Error("Invalid OpenOCD response stream: framing delimiter missing"));
+                this._handleRpcFailure(new Error("Invalid OpenOCD response stream: framing delimiter missing"));
             }
         });
         socket.on("error", (e) => {
-            if (socket === this.socket) this._abortConnection(e);
+            if (socket === this.socket) this._handleRpcFailure(e);
         });
         socket.on("close", () => {
-            if (socket === this.socket && !this.stopped) this._abortConnection(new Error("Tcl connection closed"));
+            if (socket === this.socket && !this.stopped) this._handleRpcFailure(new Error("Tcl connection closed"));
         });
     }
 
@@ -1318,6 +1331,8 @@ class ManagedOpenOcdSession {
                     this.connectionFailed = false;
                     this.connectionError = null;
                     this._setupSocket();
+                    await this._detectScatter();
+                    if (!this.socket) continue;
                     this.setSamplingEnabled(this._samplingRequested);
                     this._status({ key: "live.debugRuntimeSampling" });
                     return true;
@@ -1420,6 +1435,17 @@ class ManagedOpenOcdSession {
     }
 
     // 串行发送单条 Tcl 命令并等待响应（带超时）
+    _handleRpcFailure(error) {
+        if (!this._detectingScatter) return this._abortConnection(error);
+        // Capability probing is optional. Discard an ambiguous FIFO before reconnecting;
+        // acquisition timeouts still go through the normal fatal connection path.
+        const socket = this.socket;
+        this.socket = null;
+        this.pending = "";
+        this._rejectQueue(error);
+        socket?.destroy();
+    }
+
     _sendCommand(cmd) {
         if (this._initializing) return this._tclReady.then(() => this._sendCommand(cmd));
         return new Promise((resolve, reject) => {
@@ -1428,7 +1454,7 @@ class ManagedOpenOcdSession {
             const deadline = Date.now() + this.rpcTimeoutMs;
             const timer = setTimeout(() => {
                 if (this.queue.includes(entry))
-                    this._abortConnection(
+                    this._handleRpcFailure(
                         Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
                             code: "OPENOCD_RPC_TIMEOUT"
                         })
@@ -1442,7 +1468,7 @@ class ManagedOpenOcdSession {
                         code: "OPENOCD_RPC_TIMEOUT"
                     });
                     reject(error);
-                    this._abortConnection(error);
+                    this._handleRpcFailure(error);
                     return;
                 }
                 resolve(v);
@@ -1455,9 +1481,27 @@ class ManagedOpenOcdSession {
             try {
                 this.socket.write(cmd + SUB);
             } catch (e) {
-                this._abortConnection(e);
+                this._handleRpcFailure(e);
             }
         });
+    }
+
+    async _detectScatter() {
+        this.scatterReads = false;
+        this._scatterFailures = 0;
+        this._detectingScatter = true;
+        const timeout = this.rpcTimeoutMs;
+        this.rpcTimeoutMs = Math.min(timeout, 500);
+        try {
+            this.scatterReads = (await this._sendCheckedCommand("emberprobe_read_scatter version")) === "1";
+        } catch (error) {
+            // Unsupported commands, malformed results and a bounded lost probe disable it. The patched
+            // command also refuses before the target is examined, so ask once more after a good cycle.
+            this._scatterRecheck = String(error?.message || "").startsWith("EMBERPROBE_SCATTER_UNSUPPORTED");
+        } finally {
+            this.rpcTimeoutMs = timeout;
+            this._detectingScatter = false;
+        }
     }
 
     async _sendCheckedCommand(cmd) {
@@ -1666,6 +1710,43 @@ class ManagedOpenOcdSession {
         return batches;
     }
 
+    async _readScatterBytes(batches, guard) {
+        const units = batches.flat();
+        const results = new Map();
+        for (let offset = 0; offset < units.length;) {
+            const segments = [];
+            let byteCount = 0;
+            while (
+                offset < units.length &&
+                segments.length < MAX_SCATTER_SEGMENTS &&
+                byteCount + units[offset].byteCount <= MAX_SCATTER_BYTES
+            ) {
+                const unit = units[offset++];
+                segments.push(unit);
+                byteCount += unit.byteCount;
+            }
+            this._assertReadGuard(guard);
+            const args = segments.map(
+                (unit) => `{0x${unit.start.toString(16)} ${unit.shape.widthBits} ${unit.shape.count}}`
+            );
+            const response = await this._sendCheckedCommand(`emberprobe_read_scatter ${args.join(" ")}`);
+            this._assertReadGuard(guard);
+            const lines = String(response).split("\n");
+            if (
+                lines.length !== segments.length ||
+                lines.some((line, index) => line.length !== segments[index].byteCount * 2 || !/^[0-9a-f]+$/.test(line))
+            ) {
+                throw Object.assign(new Error("Scatter memory read returned invalid hex segments"), {
+                    code: "OPENOCD_TCL_PROTOCOL_ERROR"
+                });
+            }
+            for (let index = 0; index < segments.length; index++)
+                results.set(segments[index], Array.from(Buffer.from(lines[index], "hex")));
+            this._memoryReadBytes += byteCount;
+        }
+        return results;
+    }
+
     async _readItems(items, t, guard = null) {
         const samples = [];
         let ok = 0;
@@ -1719,10 +1800,32 @@ class ManagedOpenOcdSession {
             }
         }
         const assembled = new Map();
+        let scatterBytes = null;
+        let scatterFailed = false;
+        if (this.scatterReads && batches.length) {
+            try {
+                scatterBytes = await this._readScatterBytes(batches, guard);
+                this._scatterFailures = 0;
+            } catch (error) {
+                if (
+                    error.code?.startsWith("LIVE_") ||
+                    this.connectionFailed ||
+                    ["OPENOCD_RPC_TIMEOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "ENOTCONN", "ETIMEDOUT"].includes(
+                        error.code
+                    ) ||
+                    /^(?:Socket is not connected|Tcl connection closed)/.test(error.message)
+                )
+                    throw error;
+                this._assertReadGuard(guard);
+                scatterFailed = true;
+                if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)
+                    this.scatterReads = false;
+            }
+        }
         for (const batch of batches) {
             this._assertReadGuard(guard);
-            let batchBytes = null;
-            if (!this._batchUnsupported) {
+            let batchBytes = scatterBytes ? batch.map((unit) => scatterBytes.get(unit)) : null;
+            if (!batchBytes && !this._batchUnsupported) {
                 try {
                     batchBytes = await this._readBatchBytes(batch);
                 } catch (error) {
@@ -1732,8 +1835,8 @@ class ManagedOpenOcdSession {
                             /(?:invalid command name|unknown command)\s+["']?(?:join|list)(?:["'\s]|$)/i.test(
                                 String(error?.message || "")
                             ));
-                    if (!incompatible) throw error;
-                    this._batchUnsupported = true;
+                    if (!incompatible && !(scatterFailed && error.code === "OPENOCD_TCL_ERROR")) throw error;
+                    if (incompatible) this._batchUnsupported = true;
                 }
             }
             this._assertReadGuard(guard);
@@ -1741,7 +1844,14 @@ class ManagedOpenOcdSession {
                 batchBytes = [];
                 for (const g of batch) {
                     this._assertReadGuard(guard);
-                    const bytes = await this._readMemoryBytes(g.start, g.byteCount);
+                    let bytes;
+                    try {
+                        bytes = await this._readMemoryBytes(g.start, g.byteCount);
+                    } catch (error) {
+                        if (!scatterFailed || error.code !== "OPENOCD_TCL_ERROR") throw error;
+                        this._lastReadError = error.message;
+                        bytes = null;
+                    }
                     this._assertReadGuard(guard);
                     batchBytes.push(bytes);
                 }
@@ -1982,7 +2092,7 @@ class ManagedOpenOcdSession {
     }
 
     async _sampleTick(fromScheduler = false) {
-        if (this._initializing) return;
+        if (this._initializing || this._detectingScatter) return;
         if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;
         if (!this.watch.length) return;
         if (!this._tryAcquireExclusive()) {
@@ -2018,6 +2128,14 @@ class ManagedOpenOcdSession {
             if (this.handlers.onSample) this.handlers.onSample(delivered, t, due);
             if (ok === items.length) {
                 readSuccess = true;
+                if (this._scatterRecheck) {
+                    this._scatterRecheck = false;
+                    try {
+                        this.scatterReads = (await this._sendCheckedCommand("emberprobe_read_scatter version")) === "1";
+                    } catch {
+                        // Still unsupported (for example an HLA target): keep the batch path.
+                    }
+                }
                 if (this._sampleErrorActive) {
                     // One successful memory read does not prove target polling recovered.
                     this._successfulReads++;
