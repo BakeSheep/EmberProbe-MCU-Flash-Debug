@@ -193,7 +193,7 @@ async function testSessionAndFairness() {
             return checked(command);
         };
         const reads = session.readOnce([{ ...graph, name: "once" }], 500);
-        const writes = session.writeOnce([{ address: graph.address, bytes: [9, 8, 7, 6] }], 500);
+        const writes = session.writeAndVerify([{ ...graph, name: "first", bytes: [9, 8, 7, 6] }], 500);
         const verifies = session.writeAndVerify([{ ...graph, name: "verify", bytes: [4, 3, 2, 1] }], 500);
         const idle = session.waitForIdle(500);
         const [readResult, written, verified, idleResult] = await Promise.all([reads, writes, verifies, idle]);
@@ -204,7 +204,7 @@ async function testSessionAndFairness() {
         );
         assert.strictEqual(verified.halted, false);
         assert.deepStrictEqual(readResult[0].bytes, [1, 2, 3, 4]);
-        assert.strictEqual(written, 1);
+        assert.deepStrictEqual(written.after[0].bytes, [9, 8, 7, 6]);
         assert.deepStrictEqual(verified.before[0].bytes, [9, 8, 7, 6]);
         assert.deepStrictEqual(verified.after[0].bytes, [4, 3, 2, 1]);
         assert.strictEqual(idleResult, true);
@@ -288,7 +288,6 @@ async function testArbiterFailures() {
             error.code === "PROBE_CONNECTION_BUSY_TIMEOUT" &&
             error.message === "Timed out waiting for the sampling connection to become idle"
     );
-    await assert.rejects(session.writeOnce([{ ...graph, bytes: [1] }], 0), { code: "PROBE_CONNECTION_BUSY_TIMEOUT" });
     await assert.rejects(session.writeAndVerify([{ ...graph, bytes: [1] }], 0), {
         code: "PROBE_CONNECTION_BUSY_TIMEOUT"
     });
@@ -303,7 +302,8 @@ async function testArbiterFailures() {
     session._writeMemoryBytes = async () => {
         throw new Error("write exception");
     };
-    await assert.rejects(session.writeOnce([{ ...graph, bytes: [1] }]), /write exception/);
+    session._readItems = async (items) => ({ samples: items.map((item) => ({ name: item.name, bytes: [0] })), ok: 1 });
+    await assert.rejects(session.writeAndVerify([{ ...graph, bytes: [1, 2, 3, 4] }]), /write exception/);
     assert.strictEqual(session.busy, false);
     const commands = [];
     session._sendCheckedCommand = async (command) => {
@@ -657,7 +657,7 @@ async function testWaitersSurvivePlans() {
         assert(session._tryAcquireExclusive());
         const pending = Promise.all([
             session.readOnce([graph]),
-            session.writeOnce([{ ...graph, bytes: [2] }]),
+            session.writeAndVerify([{ ...graph, bytes: [2] }]),
             session.writeAndVerify([{ ...graph, bytes: [3] }])
         ]);
         pending.catch(() => {});
@@ -668,7 +668,7 @@ async function testWaitersSurvivePlans() {
             session._releaseExclusive();
             const [readResult, written, verified] = await pending;
             assert.deepStrictEqual(readResult[0].bytes, [1]);
-            assert.strictEqual(written, 1);
+            assert.deepStrictEqual(written.after[0].bytes, [2]);
             assert.deepStrictEqual(verified.before[0].bytes, [2]);
             assert.deepStrictEqual(verified.after[0].bytes, [3]);
             assert.strictEqual(session.busy, false);

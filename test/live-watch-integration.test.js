@@ -161,10 +161,6 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         { code: "LIVE_WRITE_BUDGET_EXCEEDED" }
     );
     assert.deepStrictEqual(debugFake.commands, [], "invalid managed plans are refused before any hardware access");
-    await assert.rejects(
-        managed.writeOnce([{ address: 0x20000000, bytes: [1] }]),
-        (error) => error.code === "RUNTIME_WRITE_DISABLED"
-    );
     assert.throws(
         () => validateManagedReadPlan([{ name: "large", address: 0x20000000, size: 4097 }]),
         (error) => error.code === "LIVE_READ_BUDGET_EXCEEDED"

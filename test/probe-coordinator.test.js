@@ -58,4 +58,22 @@ coordinator.reset();
 assert.strictEqual(chip.released, true);
 assert.strictEqual(coordinator.anyActive(), false);
 
+// Shutdown closes the coordinator: held leases still release, but nothing new can start.
+const held = coordinator.acquire("liveWatch");
+coordinator.close();
+assert.throws(
+    () => coordinator.acquire("agentRead"),
+    (error) =>
+        error.code === "PROBE_BUSY" &&
+        error.activeOperation === "shutdown" &&
+        error.requestedOperation === "agentRead" &&
+        error.retryable === false
+);
+held.release();
+assert.strictEqual(coordinator.anyActive(), false);
+assert.throws(
+    () => coordinator.acquire("download"),
+    (error) => error.activeOperation === "shutdown"
+);
+
 console.log("Probe coordinator tests passed");

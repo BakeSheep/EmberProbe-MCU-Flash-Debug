@@ -47,7 +47,10 @@ const PROMPTS = Object.freeze([
         description: "Modify an STM32CubeMX configuration through a candidate .ioc and regenerate initialization code.",
         toolset: "cubemx",
         skill: "mcu-cubemx",
-        scripts: { "scripts/cubemx.js": "the cubemx_* tools" }
+        scripts: {
+            "scripts/cubemx.js":
+                "the cubemx_* tools. cubemx_prepare returns the plan without a confirmation ID; cubemx_execute and cubemx_start ask the user for approval themselves, so pass confirmationId only when one of them returned it"
+        }
     }
 ]);
 

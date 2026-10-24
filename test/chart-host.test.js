@@ -202,7 +202,7 @@ async function testShutdownFence(Provider) {
         disposeDebugBridge() {},
         _stopManagedDebugServer: async () => {},
         stopAgentReadIfRunning: () => null,
-        _agentService: { dispose: async () => {} },
+        _agentService: { close() {}, stop: async () => {}, dispose: async () => {} },
         _samplingArchive: {
             dispose: async () => assert.ok(appended, "archive disposal follows the history acknowledgement")
         },

@@ -82,6 +82,40 @@ const { createFixture } = require("./helpers/service-fixture");
         await assert.rejects(untrusted.start(), { code: "WORKSPACE_UNTRUSTED" });
         assert.strictEqual(attemptedWrites, 0);
     });
+
+    await scenario("Refuse calls in transit and restarts once shutdown closes the service", async () => {
+        let reads = 0;
+        let releaseCheck;
+        const closing = new AgentService({
+            Bridge: class {
+                async start() {
+                    return {};
+                }
+                async stop() {}
+            },
+            workspaceProvider: () => "workspace",
+            // The extension's pre-call check is async; shutdown can begin while it runs.
+            onCall: () =>
+                new Promise((resolve) => {
+                    releaseCheck = resolve;
+                }),
+            handlers: {
+                "variables.read": async () => {
+                    reads++;
+                    return {};
+                }
+            }
+        });
+        const inTransit = closing.call("variables.read");
+        await new Promise((resolve) => setImmediate(resolve));
+        closing.close();
+        releaseCheck();
+        await assert.rejects(inTransit, { code: "EXTENSION_SHUTTING_DOWN" });
+        await assert.rejects(closing.call("variables.read"), { code: "EXTENSION_SHUTTING_DOWN" });
+        await assert.rejects(closing.start(), { code: "EXTENSION_SHUTTING_DOWN" });
+        assert.strictEqual(reads, 0, "no handler runs after shutdown begins");
+        assert.strictEqual(closing.isStarted(), false);
+    });
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

@@ -561,7 +561,8 @@ async function main() {
     try {
         for (let i = 0; i < 20000; i++) progressArchive.append([{ name: "Tick", valueText: String(i) }], 1000 + i);
         const target = path.join(progressRoot, "out.csv");
-        fs.writeFileSync(target + ".part", "stale");
+        // An interrupted export leaves a .part that starts with the CSV header.
+        fs.writeFileSync(target + ".part", "﻿time,Tick\r\n1970-01-01T00:00:01.000Z,");
         const fractions = [];
         let sawPart = false;
         const result = await progressArchive.exportCsv({
@@ -578,6 +579,22 @@ async function main() {
         assert.ok(fractions.every((value, i) => !i || value > fractions[i - 1]));
         assert.strictEqual(fs.existsSync(target + ".part"), false, "a leftover .part is replaced, then renamed");
         assert.ok(fs.readFileSync(target, "utf8").endsWith(",19999\r\n"));
+        // A file of the same name that is not an export leftover is kept; the export writes beside it.
+        const unrelated = path.join(progressRoot, "data.csv");
+        fs.writeFileSync(unrelated + ".part", "user data");
+        fs.mkdirSync(path.join(progressRoot, "dir.csv.part"));
+        for (const name of ["data.csv", "dir.csv"]) {
+            const exported = await progressArchive.exportCsv({ outputPath: path.join(progressRoot, name) });
+            assert.strictEqual(exported.rows, 20000);
+        }
+        assert.strictEqual(fs.readFileSync(unrelated + ".part", "utf8"), "user data");
+        assert.ok(fs.statSync(path.join(progressRoot, "dir.csv.part")).isDirectory());
+        assert.ok(fs.readFileSync(unrelated, "utf8").endsWith(",19999\r\n"));
+        assert.deepStrictEqual(
+            fs.readdirSync(progressRoot).filter((name) => /^(data|dir)\.csv\.[0-9a-f]{8}\.part$/.test(name)),
+            [],
+            "the uniquely named temporary file is renamed to the target"
+        );
         const cancelledTarget = path.join(progressRoot, "cancelled.csv");
         await assert.rejects(progressArchive.exportCsv({ outputPath: cancelledTarget, isCancelled: () => true }), {
             code: "CSV_EXPORT_CANCELLED"

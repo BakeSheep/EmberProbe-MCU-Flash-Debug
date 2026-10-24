@@ -33,6 +33,15 @@ reads, samples and writes report `firmwareConsistency` (`match`, `mismatch` or `
 against the configured ELF and add an `ELF_TARGET_MISMATCH` warning on mismatch; a
 remembered variable-write permission does not apply while the ELF differs. Programming by
 other tools is not observed, so `unknown` or a stale record is evidence, not proof.
+A built-in debugger launch updates the record too, both when it programs the ELF and when
+`compare-sections` confirms the target already holds it. The record is written only when
+the executable keeps the same size and modification time from before GDB reads it until it
+is hashed. A launch with custom `loadFiles`, or one where the ELF changed during the launch,
+clears the record, so it reports `unknown` instead of a stale match.
+
+During extension shutdown the Agent Bridge stops first, calls already in flight are refused
+with `EXTENSION_SHUTTING_DOWN`, and no new probe operation can start, so an Agent call cannot
+start OpenOCD after sampling and debugging have been stopped.
 
 Confirmation responses describe the actual bounded snapshot/plan. ELF, connection, project,
 SVD, register values and debug-stop identity are recomputed when the confirmed request

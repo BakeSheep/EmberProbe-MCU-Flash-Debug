@@ -84,6 +84,8 @@ class DebugSessionBridge {
         this.transitionCommand = "";
         this.transitionRequestSeq = null;
         this.replRequests = new Set();
+        // Variables view / memory writes the UI sent; their success refreshes the paused snapshot.
+        this.writeRequests = new Set();
     }
 
     get replBusy() {
@@ -324,6 +326,7 @@ class DebugSessionBridge {
             this.transitionCommand = "";
             this.transitionRequestSeq = null;
             this.replRequests.clear();
+            this.writeRequests.clear();
             const context = this.sessionContexts?.get(activeId);
             if (context) {
                 for (const field of [
@@ -394,7 +397,10 @@ class DebugSessionBridge {
             this.onStatus(this.status());
             return;
         }
-        if (["setVariable", "setExpression", "writeMemory"].includes(message.command)) this.inspectionEpoch += 1;
+        if (["setVariable", "setExpression", "writeMemory"].includes(message.command)) {
+            this.inspectionEpoch += 1;
+            if (Number.isInteger(message.seq)) this.writeRequests.add(message.seq);
+        }
         const transitions = {
             next: "step",
             stepIn: "step",
@@ -509,8 +515,19 @@ class DebugSessionBridge {
             this.onStatus(this.status());
             return;
         }
+        if (
+            message.type === "response" &&
+            ["setVariable", "setExpression", "writeMemory"].includes(message.command) &&
+            this.writeRequests.delete(message.request_seq)
+        ) {
+            // Target memory changed while paused; the watch must not keep showing the pre-write snapshot.
+            // EmberProbe's own write (this.writing) verifies and publishes the new values itself.
+            if (message.success !== false && !this.writing) this.refreshSnapshot();
+            return;
+        }
         if (message.type !== "event") return;
         if (message.event === "invalidated" || message.event === "thread") this.inspectionEpoch += 1;
+        if (message.event === "invalidated" && !this.writing) this.refreshSnapshot();
         if (message.event === "stopped") {
             const transition = this.transitionKind;
             this.transitionKind = "";
@@ -557,6 +574,7 @@ class DebugSessionBridge {
             if (message.body?.reason === "exited" && message.body.threadId === this.threadId) this.threadId = null;
         } else if (message.event === "terminated" || message.event === "exited") {
             this.replRequests.clear();
+            this.writeRequests.clear();
             const transition = this.transitionKind;
             this.transitionKind = "";
             this.transitionCommand = "";
@@ -1114,6 +1132,7 @@ class DebugSessionBridge {
         this.stateWaiters.clear();
         this.controlInFlight = null;
         this.replRequests.clear();
+        this.writeRequests.clear();
         this.allSessions.clear();
         this.sessions.clear();
         for (const context of this.sessionContexts?.values() || []) context.dispose();

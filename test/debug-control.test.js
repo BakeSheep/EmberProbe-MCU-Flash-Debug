@@ -169,6 +169,25 @@ class FunctionBreakpoint {
             () => service.updateBreakpoints({ action: "add", type: "source", file: "../outside.c", line: 1 }),
             (error) => error.code === "BREAKPOINT_PATH_OUTSIDE_WORKSPACE"
         );
+        {
+            // VS Code reports c:\… for a breakpoint the Agent asked for as C:\…; only the drive letter folds.
+            const at = (file, platform) =>
+                new DebugControlService({
+                    vscode,
+                    debugBridge: bridge,
+                    workspaceProvider: () => root,
+                    platform
+                })._matches(new SourceBreakpoint(new Location({ fsPath: file }, new Position(3, 0))), {
+                    type: "source",
+                    file: "C:\\proj\\src\\main.c",
+                    line: 4,
+                    column: 1
+                });
+            assert.strictEqual(at("c:\\proj\\src\\main.c", "win32"), true);
+            assert.strictEqual(at("c:/proj/src/main.c", "win32"), true);
+            assert.strictEqual(at("c:\\proj\\src\\Main.c", "win32"), false, "path components stay case-sensitive");
+            assert.strictEqual(at("c:\\proj\\src\\main.c", "linux"), false);
+        }
 
         const stopped = await service.control({ action: "stop" });
         assert.strictEqual(stopped.status.state, "none");

@@ -3,6 +3,8 @@
 // 确认 ID 只在服务器内部使用，不返回给 agent。客户端不支持 elicitation 时退回聊天确认：
 // 返回计划与确认 ID，由 agent 展示给用户并等待回答后重调。
 
+// Plan fields as the Bridge returns them: flash plans, write plans (elf/connection), peripheral plans (svd)
+// and CubeMX plans (ioc/output/tool). File identities are { path, sha256 } objects.
 const PLAN_FIELDS = [
     ["elf", "ELF"],
     ["elfSha256", "ELF SHA-256"],
@@ -12,35 +14,91 @@ const PLAN_FIELDS = [
     ["transport", "Transport"],
     ["adapterSpeedKhz", "Adapter speed (kHz)"],
     ["openocd", "OpenOCD"],
+    ["connection", "Connection"],
+    ["svd", "SVD"],
     ["project", "CubeMX project"],
+    ["output", "CubeMX project"],
+    ["ioc", "CubeMX .ioc"],
     ["iocPath", "CubeMX .ioc"],
     ["candidatePath", "Candidate .ioc"],
-    ["svd", "SVD"]
+    ["tool", "STM32CubeMX"]
+];
+// Write plans list their targets under `items`; CubeMX plans under `changes`.
+const ITEM_LISTS = [
+    ["items", "Writes"],
+    ["values", "Values"],
+    ["writes", "Writes"],
+    ["changes", "Changes"]
 ];
 const MAX_ITEMS = 16;
+const MAX_VALUE = 200;
+
+function clip(text) {
+    return text.length > MAX_VALUE ? `${text.slice(0, MAX_VALUE)}…` : text;
+}
+
+function valueText(value) {
+    if (value === null) return "(unset)";
+    return clip(typeof value === "object" ? JSON.stringify(value) : String(value));
+}
+
+function fieldText(value) {
+    if (value === undefined || value === null || value === "") return "";
+    if (typeof value !== "object") return clip(String(value));
+    if (typeof value.path === "string") return clip(value.path);
+    if (typeof value.executable === "string")
+        return clip(value.version ? `${value.executable} (${value.version})` : value.executable);
+    if (value.kind === "dap") return `debugger session ${value.sessionId || "(unknown)"}`;
+    if (value.kind === "openocd")
+        return clip(
+            [value.target, value.probe && `via ${value.probe}`, value.probeSerial && `serial ${value.probeSerial}`]
+                .filter(Boolean)
+                .join(" ")
+        );
+    return valueText(value);
+}
+
+const first = (...values) => values.find((value) => value !== undefined);
 
 function itemLine(item) {
-    if (!item || typeof item !== "object") return String(item);
-    const name = item.name || item.target || item.path || item.register || "";
+    if (!item || typeof item !== "object") return valueText(item);
+    const name = item.register || item.name || item.target || item.key || item.path || "";
     const address = item.address ? ` @ ${item.address}` : "";
-    const from = item.current ?? item.currentValue ?? item.before;
-    const to = item.value ?? item.newValue ?? item.after;
-    const change = from !== undefined ? `${from} → ${to}` : `${to}`;
-    return `${name}${address}: ${change}`;
+    const type = typeof item.type === "string" && item.type ? ` (${item.type})` : "";
+    const from = first(item.current, item.currentValue, item.before, item.previous);
+    const to =
+        item.action === "deleted"
+            ? "(deleted)"
+            : valueText(first(item.value, item.newValue, item.after, item.written, item.requested));
+    // A peripheral write names the register; the fields the user asked for follow it.
+    const requested = Array.isArray(item.requested)
+        ? ` [${item.requested.map((entry) => `${entry.target} = ${entry.value}`).join(", ")}]`
+        : "";
+    return `${name}${address}${type}: ${from !== undefined ? `${valueText(from)} → ${to}` : to}${clip(requested)}`;
 }
 
 function summary(result) {
     const lines = [String(result.question || "Approve this EmberProbe operation?")];
     for (const [key, label] of PLAN_FIELDS) {
         const value = result[key] ?? result.plan?.[key];
-        if (value !== undefined && value !== null && value !== "") lines.push(`${label}: ${value}`);
+        const text = fieldText(value);
+        if (text) lines.push(`${label}: ${text}`);
+        // A file identity carries its digest unless the plan also reports it as its own field.
+        const digest = value && typeof value === "object" && typeof value.sha256 === "string" ? value.sha256 : "";
+        if (digest && !(result[`${key}Sha256`] ?? result.plan?.[`${key}Sha256`]))
+            lines.push(`${label} SHA-256: ${digest}`);
     }
-    for (const key of ["values", "writes", "changes"]) {
+    for (const [key, label] of ITEM_LISTS) {
         const items = result[key] ?? result.plan?.[key];
         if (!Array.isArray(items) || !items.length) continue;
-        lines.push(`${key[0].toUpperCase()}${key.slice(1)}:`);
-        for (const item of items.slice(0, MAX_ITEMS)) lines.push(`  - ${itemLine(item)}`);
-        if (items.length > MAX_ITEMS) lines.push(`  … ${items.length - MAX_ITEMS} more`);
+        lines.push(`${label}:`);
+        const shown = items.slice(0, MAX_ITEMS);
+        for (const item of shown) lines.push(`  - ${itemLine(item)}`);
+        const reported = key === "changes" ? result.changesSummary?.total : undefined;
+        const total = Number.isInteger(reported) && reported > items.length ? reported : items.length;
+        if (total > shown.length) lines.push(`  … ${total - shown.length} more`);
+        if (key === "changes" && result.changesSummary?.truncated && result.changesSummary.diffPath)
+            lines.push(`  Full diff: ${result.changesSummary.diffPath}`);
     }
     if (result.expiresAt) lines.push(`Expires: ${result.expiresAt}`);
     return lines.join("\n");

@@ -72,7 +72,6 @@ const { RspMemory } = require("./rsp-memory");
         mi.start(gdb, root);
         await mi.command("-gdb-set auto-load off");
         await mi.command("-gdb-set may-call-functions off");
-        await mi.command("-gdb-set architecture armv7e-m");
         await adapter.debugImages.symbols();
         await mi.command(`-target-select extended-remote ${target}`);
         await adapter.debugImages.download();
@@ -105,6 +104,13 @@ const { RspMemory } = require("./rsp-memory");
             29,
             "assignment preserves the other image"
         );
+        // OpenOCD can report a generic ARM architecture with an M-profile register description.
+        // Keep this generic to exercise target identification independently of the ELF's CPU attributes.
+        await mi.command("-gdb-set architecture arm");
+        const architecture = await adapter.captureConsole(() =>
+            mi.command('-interpreter-exec console "show architecture"')
+        );
+        assert.match(architecture, /"arm"/);
         const snapshot = await new FreeRtosSnapshot(adapter).snapshot();
         assert.deepStrictEqual(snapshot.diagnostics, [], diagnostics.join(""));
         assert(snapshot.kernel.supported && snapshot.kernel.symbolImage === primary);

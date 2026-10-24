@@ -4,6 +4,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { leavesDirectory } = require("./file-identity");
 
 // Bridge 端声明 protocol / minClientProtocol；客户端声明自己的协议与可接受的最低 Bridge 协议。
 const BRIDGE_PROTOCOL = 2;
@@ -31,7 +32,7 @@ function canonicalPath(value) {
 // root 本身或其祖先返回 true；两者都应已 canonicalPath。
 function isWithin(root, target) {
     const relative = path.relative(root, target);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    return relative === "" || !leavesDirectory(relative);
 }
 
 function isAlive(pid) {

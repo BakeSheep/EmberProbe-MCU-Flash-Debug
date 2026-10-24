@@ -3,6 +3,7 @@
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
+const crypto = require("crypto");
 const { AjvJsonSchemaValidator } = require("@modelcontextprotocol/sdk/validation/ajv-provider.js");
 const { createAgentRoutes } = require("../src/services/agentRoutes");
 const tools = require("../src/mcp/tools");
@@ -75,7 +76,53 @@ const validator = new AjvJsonSchemaValidator();
         assert.strictEqual(schema("variables_read")({ variables: [] }).valid, false);
         assert.strictEqual(schema("variables_read")({ variables: ["tick", { name: "kp", type: "f32" }] }).valid, true);
         assert.strictEqual(schema("debug_control")({ action: "erase" }).valid, false);
-        assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: 3, count: 101 }).valid, false);
+        assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: "h", count: 101 }).valid, false);
+        // The Bridge issues string handles; DAP integers must be rejected before reaching it.
+        assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: 3 }).valid, false);
+        assert.strictEqual(schema("debug_inspect")({ action: "scopes", frame: 0 }).valid, false);
+        assert.strictEqual(schema("debug_inspect")({ action: "scopes", frame: crypto.randomUUID() }).valid, true);
+        assert.strictEqual(schema("debug_inspect")({ action: "variables", reference: "" }).valid, false);
+    });
+
+    await scenario("Plan CubeMX generation through cubemx.prepare and keep its confirmation ID from the agent", () => {
+        const tool = (name) => tools.TOOLS.find((item) => item.name === name);
+        for (const name of ["cubemx_start", "cubemx_execute"]) {
+            assert.strictEqual(tool(name).confirm, true);
+            const request = tool(name).request({});
+            assert.deepStrictEqual(tool(name).plan(request.params), {
+                method: "cubemx.prepare",
+                params: { summary: true, full: false },
+                timeoutMs: 30000,
+                context: {}
+            });
+            const candidate = tool(name).plan({ candidatePath: "/ws/next.ioc", candidateHash: "ab", requestId: "r" });
+            assert.deepStrictEqual(candidate.params, {
+                summary: true,
+                full: false,
+                candidatePath: "/ws/next.ioc",
+                candidateHash: "ab"
+            });
+            assert.deepStrictEqual(candidate.context, { candidatePath: "/ws/next.ioc" });
+        }
+        // Every confirm tool either returns its own plan or names the method that does.
+        for (const item of tools.TOOLS.filter((entry) => entry.confirm && entry.kind !== "flash"))
+            assert.ok(
+                item.plan || !item.name.startsWith("cubemx_"),
+                `${item.name} consumes a confirmation it cannot issue`
+            );
+        const prepared = tool("cubemx_prepare").result({
+            ioc: "/ws/demo.ioc",
+            changes: [],
+            confirmationRequired: true,
+            confirmationId: "secret",
+            expiresAt: "2026-01-01T00:00:00.000Z",
+            choices: ["once", "workspace", "deny"],
+            question: "Allow?"
+        });
+        assert.deepStrictEqual(Object.keys(prepared).sort(), ["changes", "confirmationRequired", "ioc", "nextStep"]);
+        assert.ok(prepared.nextStep.includes("cubemx_execute"));
+        const trusted = { ioc: "/ws/demo.ioc", confirmationRequired: false, mode: "workspace" };
+        assert.strictEqual(tool("cubemx_prepare").result(trusted), trusted);
     });
 
     await scenario("Translate arguments to Bridge requests", () => {

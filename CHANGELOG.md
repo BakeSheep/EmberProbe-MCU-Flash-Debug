@@ -6,6 +6,33 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- 修复 Windows 下更新 SEGGER J-Link 驱动后切换到 WinUSB 一直报 “The original SEGGER driver could not be backed up safely”：SEGGER 更新会发布新的 `oemNN.inf`，原先 helper 仍按旧备份记录校验。现在设备当前驱动已校验为 SEGGER jlink 且与备份不一致时，先把当前驱动导出到单独目录再原子替换备份与记录；导出后记录缺失的中断状态也能自动恢复，不再需要手动删除 `C:\ProgramData\EmberProbe\drivers`。见 `docs/JLINK-COMPATIBILITY.md`。
+- Fix switching a J-Link to WinUSB on Windows failing with "The original SEGGER driver could not be backed up safely" after a SEGGER driver update: the update publishes a new `oemNN.inf` while the helper still checked the old backup record. When the current driver is a verified SEGGER jlink driver that differs from the backup, the helper now exports it to a separate folder and then replaces the backup and its record atomically; an interrupted backup whose export has no record is also recovered, so `C:\ProgramData\EmberProbe\drivers` no longer has to be deleted by hand. See `docs/JLINK-COMPATIBILITY.md`.
+- 修复 FreeRTOS 任务面板把 GDB 报告为通用 `arm` / `armv7` 等名称的 Cortex-M 目标误判为不支持：通过当前会话的 M-profile 寄存器名称补充确认，保留小端、32 位及非 SMP 限制；架构诊断补充 GDB 实际返回的架构、字节序和指针大小。
+- Fix the FreeRTOS task panel rejecting Cortex-M targets that GDB reports as generic `arm` / `armv7` and related names: verify M-profile register names in the current session while preserving little-endian, 32-bit and non-SMP restrictions; architecture diagnostics now include GDB's reported architecture, endianness and pointer size.
+- 修复 MCP 服务器的确认与检查问题：`cubemx_execute` / `cubemx_start` 现在先通过 `cubemx.prepare` 获取计划并请求用户确认，不再直接失败；`cubemx_prepare` 不再把确认 ID 返回给 agent，避免绕过确认对话框。确认对话框列出变量与外设写入的目标、地址与新值，ELF 与 SVD 显示路径和 SHA-256，不再显示 `[object Object]`。`debug_inspect` 的 `frame` / `reference` 改为 Bridge 返回的字符串句柄，作用域与变量查看可以通过 MCP 使用；Bridge 对整数句柄返回 `DEBUG_INSPECTION_INVALID`。见 `docs/MCP.md`。
+- Fix MCP server confirmation and inspection: `cubemx_execute` / `cubemx_start` now plan through `cubemx.prepare` and ask the user instead of failing, and `cubemx_prepare` no longer hands the confirmation ID to the agent, which could otherwise skip the approval dialog. Approval dialogs now list the targets, addresses and new values of variable and peripheral writes and show ELF and SVD paths with their SHA-256 instead of `[object Object]`. `debug_inspect` takes the Bridge's string `frame` / `reference` handles, so scopes and variables work over MCP; the Bridge rejects numeric handles with `DEBUG_INSPECTION_INVALID`. See `docs/MCP.md`.
+- 修复两个 `variables.sample` 共用同一个实时采样或调试连接时，其中一个永远不返回的问题：两次采样间隔原先共用一个计时器，较短的等待会清掉另一个等待的计时器。
+- Fix one of two concurrent `variables.sample` calls sharing a live-sampling or debug connection never returning: their sample intervals shared one timer, and the shorter wait cleared the other's.
+- 修复启动内置调试器烧录 ELF 后不更新“上次烧录的固件”记录的问题。这个问题会导致误报 `ELF_TARGET_MISMATCH`、记住的写入权限失效，侧边栏写入也会弹出固件不一致提示。现在调试启动烧录 ELF，或用 `compare-sections` 确认目标已是该 ELF 时，都会更新记录。自定义 `loadFiles`，或启动期间 ELF 被重新编译，会清除记录（显示为 `unknown`），不会留下过时的 match。见 `docs/AGENT-TRUST-BOUNDARIES.md`。
+- Fix a built-in debugger launch that programs the ELF not updating the last-flashed-firmware record. This caused false `ELF_TARGET_MISMATCH` warnings, made remembered write permissions stop applying, and made sidebar writes show the firmware mismatch prompt. The record now follows a launch that programs the ELF, or that confirms with `compare-sections` that the target already holds it. Custom `loadFiles`, or an ELF rebuilt during the launch, clear the record (it reports `unknown`) instead of leaving a stale match. See `docs/AGENT-TRUST-BOUNDARIES.md`.
+- 修复扩展关闭期间到达的 Agent 调用可能在采样已停止后重新启动 OpenOCD 的问题：现在先停止 Agent Bridge，拒绝仍在传输中的调用（`EXTENSION_SHUTTING_DOWN`），且不再允许启动新的探针操作。
+- Fix an Agent call arriving during extension shutdown possibly starting OpenOCD again after sampling had stopped: the Agent Bridge now stops first, calls still in transit are refused with `EXTENSION_SHUTTING_DOWN`, and no new probe operation can start.
+- 修复 CubeMX MCP 工具（`cubemx_candidate`、`cubemx_prepare`、`cubemx_execute`、`cubemx_start`）按 MCP 服务器进程的工作目录解析相对路径的问题，现在与 Bridge 一致，按工作区解析。
+- Fix the CubeMX MCP tools (`cubemx_candidate`, `cubemx_prepare`, `cubemx_execute`, `cubemx_start`) resolving relative paths against the MCP server process's working directory; they now resolve against the workspace, as the Bridge does.
+- 修复在实时采样或暂停的调试会话上运行的 `variables.sample` 无法用 `sampling.stop` 停止的问题（例如 1000 次、60 秒间隔会持续约 16 小时）：现在 `sampling.stop` 和扩展关闭会立即结束这类采样，包括正在等待采样间隔的情况。
+- Fix `sampling.stop` not ending a `variables.sample` running on a live-sampling connection or a paused debug session (for example 1000 samples at 60 s intervals ran for about 16 hours): `sampling.stop` and extension shutdown now end such samples at once, including during an interval wait.
+- 修复调试暂停时在 VS Code 变量视图修改变量、或调试器发出 `invalidated` 事件后，EmberProbe 监视列表一直显示修改前的值直到下次停止的问题：现在成功写入后会重新读取暂停快照。
+- Fix the EmberProbe watch keeping the pre-write value until the next stop after a variable was changed in the VS Code Variables view or the debugger sent an `invalidated` event: the paused snapshot is now re-read after a successful write.
+- 修复 Agent 断点按路径比较时区分 Windows 盘符大小写的问题（VS Code 报告 `c:\…`）：用 `C:\…` 重复添加不再产生重复断点，删除也不再返回 `BREAKPOINT_NOT_FOUND`。路径其余部分仍区分大小写。
+- Fix Agent breakpoint matching treating the Windows drive letter case as significant (VS Code reports `c:\…`): adding the same breakpoint as `C:\…` no longer creates duplicates, and removing it no longer returns `BREAKPOINT_NOT_FOUND`. The rest of the path stays case-sensitive.
+- 修复波形 CSV 导出会删除目标旁任意同名 `.part` 文件的问题：现在只替换上次中断导出留下的文件，其他文件保留，导出改用唯一的临时文件名。见 `docs/LAYERED-SAMPLING.md`。
+- Fix waveform CSV export deleting any file named like its `.part` next to the target: only a leftover from an interrupted export is replaced; any other file is kept and the export uses a unique temporary name. See `docs/LAYERED-SAMPLING.md`.
+- 修复工作区内名称以 `..` 开头的子目录（如 `..build`）被判定为在工作区外的问题：影响 Bridge 定位、Agent 断点、变量 CSV 输出、OpenOCD 配置脚本与 ELF 目标检测等路径检查。
+- Fix child folders whose names start with `..` (such as `..build`) being treated as outside the workspace by path checks, including Bridge discovery, Agent breakpoints, variable CSV output, OpenOCD config scripts and ELF target detection.
+- 移除没有调用方的 `writeOnce` 未校验写入路径；运行时写入统一经过带读回校验的 `writeAndVerify`。
+- Remove the unused, unverified `writeOnce` write path; all runtime writes go through `writeAndVerify`, which reads back to verify.
+
 ## [0.8.9-beta.1] - 2026-10-22
 
 - 波形历史导出 CSV 提速约 4–6 倍（50 分钟、10 条曲线、200 Hz 的 119 MiB CSV 约 1.3 秒），导出内容不变。导出时 VS Code 通知显示进度并可取消，波形窗口状态栏同步显示百分比；写入中的文件名为 `.csv.part`，完成后才改为最终文件名，取消或失败时自动删除；完成通知提供「在文件夹中显示」。修正变量名为 `__proto__` 且该行无值时导出为 `[object Object]` 的问题。见 `docs/LAYERED-SAMPLING.md`。

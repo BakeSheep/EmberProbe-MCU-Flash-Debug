@@ -87,6 +87,19 @@ function startServer(reply = (method) => ({ method })) {
             assert.strictEqual(located.secondaryRoot, false);
         });
 
+        await scenario("Treat child folders whose names start with '..' as inside the workspace", () => {
+            const { leavesDirectory } = require("../skills/_emberprobe/file-identity");
+            for (const relative of ["..build", "..build/out", "...", "..․", "a/.."])
+                assert.strictEqual(leavesDirectory(relative), false, relative);
+            for (const relative of ["..", "../x", "..\\x", path.resolve(root, "elsewhere")])
+                assert.strictEqual(leavesDirectory(relative), true, relative);
+            assert.strictEqual(locator.isWithin(project, path.join(project, "..build")), true);
+            assert.strictEqual(locator.isWithin(project, path.join(project, "..", "sibling")), false);
+            clearRegistries();
+            const owner = writeEntry(registry, { workspaceFolders: [project], port: 1009 });
+            assert.strictEqual(locator.locate(folder("work", "project", "..build")).instanceId, owner.instanceId);
+        });
+
         await scenario("Report the primary root when a secondary folder matches", () => {
             clearRegistries();
             writeEntry(registry, { workspaceFolders: [project, library], port: 1003 });

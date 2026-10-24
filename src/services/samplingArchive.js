@@ -82,6 +82,46 @@ function sampleValueText(sample) {
     return String(sample.value);
 }
 
+// Every CSV export starts with this header prefix; it identifies an interrupted export's ".part" leftover.
+const CSV_PART_SIGNATURE = Buffer.from("﻿time,", "utf8");
+
+async function isCsvExportLeftover(file) {
+    try {
+        if (!(await fsp.lstat(file)).isFile()) return false;
+        const handle = await fsp.open(file, "r");
+        try {
+            const head = Buffer.alloc(CSV_PART_SIGNATURE.length);
+            const { bytesRead } = await handle.read(head, 0, head.length, 0);
+            return bytesRead === head.length && head.equals(CSV_PART_SIGNATURE);
+        } finally {
+            await handle.close();
+        }
+    } catch {
+        return false;
+    }
+}
+
+// Reuses "<target>.part" left by an interrupted export of the same target. Any other file with that name
+// is not ours to delete, so the export then writes beside it under a unique ".part" name.
+async function openCsvPart(targetPath) {
+    const preferred = `${targetPath}.part`;
+    const open = async (file) => ({ path: file, handle: await fsp.open(file, "wx", 0o600) });
+    try {
+        return await open(preferred);
+    } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+    }
+    if (await isCsvExportLeftover(preferred)) {
+        await fsp.rm(preferred, { force: true });
+        try {
+            return await open(preferred);
+        } catch (error) {
+            if (error.code !== "EEXIST") throw error;
+        }
+    }
+    return open(`${targetPath}.${crypto.randomBytes(4).toString("hex")}.part`);
+}
+
 class SamplingArchive {
     constructor(options) {
         this.rootDir = path.resolve(options.rootDir);
@@ -361,7 +401,7 @@ class SamplingArchive {
         if (fromMs > toMs) throw codedError("INVALID_CSV_RANGE", "CSV export time range is invalid");
 
         // A visible ".part" name tells users the file is still being written; it is renamed atomically when done.
-        const temporaryPath = `${targetPath}.part`;
+        let temporaryPath = "";
         const onProgress = typeof request.onProgress === "function" ? request.onProgress : null;
         const isCancelled = typeof request.isCancelled === "function" ? request.isCancelled : () => false;
         const cancelled = () => codedError("CSV_EXPORT_CANCELLED", "CSV export was cancelled");
@@ -376,14 +416,7 @@ class SamplingArchive {
         const tooLarge = () =>
             codedError("CSV_EXPORT_TOO_LARGE", "CSV result exceeds 64 MiB; use the chart's archive export");
         try {
-            try {
-                output = await fsp.open(temporaryPath, "wx", 0o600);
-            } catch (error) {
-                // A leftover from an interrupted export of the same target.
-                if (error.code !== "EEXIST") throw error;
-                await fsp.rm(temporaryPath, { force: true });
-                output = await fsp.open(temporaryPath, "wx", 0o600);
-            }
+            ({ path: temporaryPath, handle: output } = await openCsvPart(targetPath));
             // Display labels affect only the header; archived values stay keyed by ELF identity.
             const header = `﻿time,${names
                 .map((name) => {
@@ -503,7 +536,7 @@ class SamplingArchive {
             };
         } catch (error) {
             if (output) await output.close().catch(() => {});
-            await fsp.rm(temporaryPath, { force: true }).catch(() => {});
+            if (temporaryPath) await fsp.rm(temporaryPath, { force: true }).catch(() => {});
             throw error;
         }
     }
