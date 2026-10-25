@@ -58,6 +58,107 @@
         }
         return Uint32Array.from(indices);
     }
+    // Runs of pixel columns whose samples reverse direction become a min/max band; the curve crosses each
+    // banded column once on a smoothed midpoint, so dashes follow the trend instead of the noise. Isolated
+    // spikes and monotonic steep edges keep their exact envelope. Gaps are NaN rows in the line.
+    function jitterBands(xs, ys, raw, minRun = 3, trendRadius = 3) {
+        const columns = [];
+        for (let i = 0; i < xs.length;) {
+            if (raw[i].v === null) {
+                columns.push({ gap: i++ });
+                continue;
+            }
+            const x = Math.floor(xs[i]);
+            let end = i + 1,
+                min = i,
+                max = i;
+            while (end < xs.length && raw[end].v !== null && Math.floor(xs[end]) === x) {
+                if (ys[end] < ys[min]) min = end;
+                if (ys[end] > ys[max]) max = end;
+                end++;
+            }
+            columns.push({ x, from: i, last: end - 1, min, max, noisy: false });
+            i = end;
+        }
+        // Fast jitter often reverses between columns, so each column also sees its neighbours' edge samples.
+        function reverses(from, to) {
+            let direction = 0;
+            for (let k = from + 1; k <= to; k++) {
+                const step = Math.sign(ys[k] - ys[k - 1]);
+                if (!step) continue;
+                if (direction && step !== direction) return true;
+                direction = step;
+            }
+            return false;
+        }
+        for (const c of columns) {
+            if (c.gap !== undefined || ys[c.max] - ys[c.min] < 2) continue;
+            const from = c.from > 0 && raw[c.from - 1].v !== null ? c.from - 1 : c.from,
+                to = c.last + 1 < xs.length && raw[c.last + 1].v !== null ? c.last + 1 : c.last;
+            c.noisy = reverses(from, to);
+        }
+        // A calm column or two inside noise would otherwise cut the band and redraw its full swing as a spike.
+        for (let i = 1; i < columns.length;) {
+            if (columns[i].noisy || !columns[i - 1].noisy) {
+                i++;
+                continue;
+            }
+            let end = i;
+            while (end < columns.length && !columns[end].noisy && columns[end].gap === undefined) end++;
+            const contiguous =
+                end < columns.length && columns[end].noisy && columns[end].x - columns[i - 1].x === end - i + 1;
+            if (contiguous && end - i <= 2) for (let k = i; k < end; k++) columns[k].noisy = true;
+            i = Math.max(end, i + 1);
+        }
+        const bands = [];
+        for (let i = 0; i < columns.length;) {
+            if (!columns[i].noisy) {
+                i++;
+                continue;
+            }
+            let end = i + 1;
+            while (end < columns.length && columns[end].noisy && columns[end].x === columns[end - 1].x + 1) end++;
+            if (end - i < minRun) for (let k = i; k < end; k++) columns[k].noisy = false;
+            else {
+                const run = columns.slice(i, end),
+                    mids = run.map((c) => (ys[c.min] + ys[c.max]) / 2);
+                // Only reduced extrema reach the chart, so a short moving average stands in for the column mean.
+                run.forEach((c, k) => {
+                    const a = Math.max(0, k - trendRadius),
+                        b = Math.min(run.length - 1, k + trendRadius);
+                    let sum = 0;
+                    for (let j = a; j <= b; j++) sum += mids[j];
+                    c.trend = sum / (b - a + 1);
+                });
+                bands.push({
+                    xs: Float64Array.from(run, (c) => c.x + 0.5),
+                    top: Float64Array.from(run, (c) => ys[c.min]),
+                    bottom: Float64Array.from(run, (c) => ys[c.max])
+                });
+            }
+            i = end;
+        }
+        const lineX = [],
+            lineY = [];
+        for (const c of columns) {
+            if (c.gap !== undefined) {
+                lineX.push(xs[c.gap]);
+                lineY.push(NaN);
+            } else if (c.noisy) {
+                lineX.push(c.x + 0.5);
+                lineY.push(c.trend);
+            } else {
+                let previous = -1;
+                for (const index of [c.from, Math.min(c.min, c.max), Math.max(c.min, c.max), c.last])
+                    if (index !== previous) {
+                        lineX.push(xs[index]);
+                        lineY.push(ys[index]);
+                        previous = index;
+                    }
+            }
+        }
+        return { xs: Float64Array.from(lineX), ys: Float64Array.from(lineY), bands };
+    }
     function visibleSegments(arr, range, width) {
         const start = arr.retainedStart || 0;
         function bound(time, inclusive) {
@@ -234,6 +335,7 @@
         lowerNumber,
         pointAt,
         envelopeIndices,
+        jitterBands,
         nearest,
         read,
         delta,

@@ -155,6 +155,7 @@ const TEST_GROUPS = Object.freeze({
         "chart-viewport-requests.test.js",
         "composite-history.test.js",
         "chart-presentation.test.js",
+        "chart-jitter-bands.test.js",
         "chart-smooth-render.test.js",
         "chart-render-budget.test.js",
         "chart-retention.test.js",

@@ -512,6 +512,7 @@ var watch = [],
     starting = false,
     frozen = false,
     norm = false,
+    jitterBands = true,
     allSymbols = [],
     sampleTimes = [],
     samplingOrigin = null,
@@ -561,6 +562,7 @@ var saved = api && api.getState ? api.getState() : null,
     impUserOnly = !!(saved && saved.impUserVarsOnly);
 if (saved && saved.hidden) hidden = saved.hidden;
 if (saved && typeof saved.norm === "boolean") norm = saved.norm;
+if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterBands;
 if (saved && saved.expanded) expanded = saved.expanded;
 if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
 if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
@@ -750,7 +752,8 @@ function saveUi() {
             cardColumns: cardColumns,
             sideCollapsed: sideCollapsed,
             impUserVarsOnly: impUserOnly,
-            norm: norm
+            norm: norm,
+            jitterBands: jitterBands
         });
 }
 var pointerSaveTimer = null;
@@ -3350,6 +3353,7 @@ function draw(now) {
         ctx,
         chartState,
         norm,
+        jitterBands,
         series,
         hasBounds,
         pixelRatio: window.devicePixelRatio,
@@ -4045,6 +4049,33 @@ $("norm").onclick = function () {
     chartState.autoY = mode.autoY;
     chartState.visibleKey = "";
     $("norm").classList.toggle("ghost", !norm);
+    saveUi();
+    chartState.fastDirty = true;
+    dirty = true;
+};
+function setChartSettings(open) {
+    $("chartSettingsPopup").hidden = !open;
+    $("chartSettingsToggle").setAttribute("aria-expanded", String(open));
+}
+$("chartSettingsToggle").onclick = function () {
+    setChartSettings($("chartSettingsPopup").hidden);
+};
+$("chartSettings").addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || $("chartSettingsPopup").hidden) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setChartSettings(false);
+    $("chartSettingsToggle").focus();
+});
+$("chartSettings").addEventListener("focusout", function (e) {
+    if (!$("chartSettings").contains(e.relatedTarget)) setChartSettings(false);
+});
+document.addEventListener("pointerdown", function (e) {
+    if (!$("chartSettings").contains(e.target)) setChartSettings(false);
+});
+$("jitterBands").checked = jitterBands;
+$("jitterBands").onchange = function () {
+    jitterBands = this.checked;
     saveUi();
     chartState.fastDirty = true;
     dirty = true;

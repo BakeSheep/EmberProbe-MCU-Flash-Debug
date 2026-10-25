@@ -21,6 +21,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
 - Standalone adaptive scheduling uses mean cycle duration at 85% duty (70% with CPU-load sampling configured); debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
 
+- 波形图新增“高频绘图优化”（默认开启，可在 EN 按钮左侧的齿轮下拉中关闭）：变量高频抖动时，连续折返的像素列画成半透明 min/max 包络带，曲线改沿平滑走势绘制，实线、虚线、点线都不再被锯齿切碎；孤立尖峰、单调陡沿与平稳段仍按原包络精确绘制。
+- Waveform charts add "High-frequency rendering" (on by default, toggled from the gear menu left of the EN button): runs of rapidly reversing pixel columns become a translucent min/max band and the curve follows a smoothed trend, so solid, dashed and dotted lines no longer shatter on jitter. Isolated spikes, monotonic steep edges and calm sections keep the exact envelope.
+
 ### 修复 / Fixed
 
 - 修复 Windows 下更新 SEGGER J-Link 驱动后切换到 WinUSB 一直报 “The original SEGGER driver could not be backed up safely”：SEGGER 更新会发布新的 `oemNN.inf`，原先 helper 仍按旧备份记录校验。现在设备当前驱动已校验为 SEGGER jlink 且与备份不一致时，先把当前驱动导出到单独目录再原子替换备份与记录；导出后记录缺失的中断状态也能自动恢复，不再需要手动删除 `C:\ProgramData\EmberProbe\drivers`。见 `docs/JLINK-COMPATIBILITY.md`。

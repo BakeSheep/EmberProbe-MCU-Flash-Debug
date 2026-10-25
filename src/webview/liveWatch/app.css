@@ -3057,3 +3057,76 @@ input[type="number"]::-webkit-outer-spin-button {
 .var-card.reorderable {
     padding-left: 12px;
 }
+
+/* Chart settings sit left of the language toggle and open a small option popover. */
+.toolbar > .chart-settings {
+    margin-left: auto;
+}
+.toolbar > .chart-settings + .lang-toggle {
+    margin-left: 0;
+}
+.chart-settings {
+    position: relative;
+    flex: none;
+}
+.chart-settings-toggle {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 11px;
+    color: var(--vscode-button-secondaryForeground);
+    background: var(--vscode-button-secondaryBackground);
+}
+.chart-settings-toggle:hover,
+.chart-settings-toggle[aria-expanded="true"] {
+    background: var(--vscode-button-secondaryHoverBackground);
+}
+.chart-settings-toggle:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 1px;
+}
+.chart-settings-toggle svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.2;
+    stroke-linejoin: round;
+}
+.chart-settings-popup {
+    position: absolute;
+    z-index: 12;
+    top: calc(100% + 6px);
+    right: 0;
+    width: min(250px, calc(100vw - 28px));
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    box-shadow: 0 6px 18px var(--vscode-widget-shadow, #0004);
+}
+.chart-settings-popup[hidden] {
+    display: none;
+}
+.toolbar .chart-settings-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--vscode-foreground);
+    font-size: 12px;
+    white-space: normal;
+    cursor: pointer;
+}
+.chart-settings-option input {
+    flex: none;
+    margin: 2px 0 0;
+}
+.chart-settings-option small {
+    display: block;
+    margin-top: 3px;
+    color: var(--vscode-descriptionForeground);
+    font-size: 11px;
+    line-height: 1.35;
+}

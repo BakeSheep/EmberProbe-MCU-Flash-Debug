@@ -51,6 +51,7 @@
         ctx,
         chartState,
         norm,
+        jitterBands,
         series,
         hasBounds,
         pixelRatio,
@@ -264,6 +265,7 @@
                 pxPerValue = ph / ySpan;
             const geometryKey = JSON.stringify([
                 norm,
+                !!jitterBands,
                 xSpan,
                 ySpan,
                 w,
@@ -312,7 +314,9 @@
                             xs,
                             ys,
                             raw,
-                            drawing: inspection.envelopeIndices(xs, ys, raw)
+                            ...(jitterBands
+                                ? { banded: inspection.jitterBands(xs, ys, raw) }
+                                : { drawing: inspection.envelopeIndices(xs, ys, raw) })
                         };
                     })
                 };
@@ -359,6 +363,44 @@
                     padT + ph + 18
                 );
             }
+            // Fills the noise band, strokes the trend line with the current dash, returns the last visible sample.
+            function paintBanded(s, color, left, right) {
+                const { xs, ys, bands } = s.banded,
+                    alpha = ctx.globalAlpha;
+                ctx.fillStyle = color;
+                ctx.globalAlpha = alpha * 0.28;
+                for (const band of bands) {
+                    const n = band.xs.length;
+                    if (band.xs[n - 1] < left || band.xs[0] > right) continue;
+                    ctx.beginPath();
+                    ctx.moveTo(band.xs[0] + s.dx, band.top[0] + s.dy);
+                    for (let k = 1; k < n; k++) ctx.lineTo(band.xs[k] + s.dx, band.top[k] + s.dy);
+                    for (let k = n - 1; k >= 0; k--) ctx.lineTo(band.xs[k] + s.dx, band.bottom[k] + s.dy);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                ctx.globalAlpha = alpha;
+                ctx.beginPath();
+                const from = Math.max(0, inspection.lowerNumber(xs, left) - 1),
+                    to = Math.min(xs.length, inspection.lowerNumber(xs, right, null, true) + 1);
+                let started = false;
+                for (let j = from; j < to; j++) {
+                    if (Number.isNaN(ys[j])) {
+                        started = false;
+                        continue;
+                    }
+                    if (started) ctx.lineTo(xs[j] + s.dx, ys[j] + s.dy);
+                    else {
+                        ctx.moveTo(xs[j] + s.dx, ys[j] + s.dy);
+                        started = true;
+                    }
+                }
+                ctx.stroke();
+                let i = inspection.lowerBound(s.raw, chartState.x.max);
+                if (i >= s.raw.length || s.raw[i].t > chartState.x.max) i--;
+                while (i >= 0 && s.raw[i].v === null) i--;
+                return i >= 0 && s.raw[i].t >= chartState.x.min ? i : null;
+            }
             ctx.save();
             ctx.beginPath();
             ctx.rect(padL, padT, pw, ph);
@@ -376,30 +418,34 @@
                     ctx.globalAlpha = selected && selected !== s.name ? 0.4 : 1;
                     ctx.lineWidth = selected === s.name ? 3 : 1.7;
                     ctx.lineJoin = "round";
-                    ctx.beginPath();
                     var started = false,
                         last = null;
                     const left = padL - s.dx,
-                        right = padL + pw - s.dx,
-                        from = Math.max(0, inspection.lowerNumber(s.xs, left, s.drawing) - 1),
-                        to = Math.min(s.drawing.length, inspection.lowerNumber(s.xs, right, s.drawing, true) + 1);
-                    for (let j = from; j < to; j++) {
-                        const i = s.drawing[j],
-                            raw = s.raw[i];
-                        if (raw.v === null) {
-                            started = false;
-                            continue;
+                        right = padL + pw - s.dx;
+                    if (s.banded) {
+                        last = paintBanded(s, appearance.color, left, right);
+                    } else {
+                        ctx.beginPath();
+                        const from = Math.max(0, inspection.lowerNumber(s.xs, left, s.drawing) - 1),
+                            to = Math.min(s.drawing.length, inspection.lowerNumber(s.xs, right, s.drawing, true) + 1);
+                        for (let j = from; j < to; j++) {
+                            const i = s.drawing[j],
+                                raw = s.raw[i];
+                            if (raw.v === null) {
+                                started = false;
+                                continue;
+                            }
+                            const x = s.xs[i] + s.dx,
+                                y = s.ys[i] + s.dy;
+                            if (started) ctx.lineTo(x, y);
+                            else {
+                                ctx.moveTo(x, y);
+                                started = true;
+                            }
+                            if (raw.t >= chartState.x.min && raw.t <= chartState.x.max) last = i;
                         }
-                        const x = s.xs[i] + s.dx,
-                            y = s.ys[i] + s.dy;
-                        if (started) ctx.lineTo(x, y);
-                        else {
-                            ctx.moveTo(x, y);
-                            started = true;
-                        }
-                        if (raw.t >= chartState.x.min && raw.t <= chartState.x.max) last = i;
+                        ctx.stroke();
                     }
-                    ctx.stroke();
                     if (last !== null) {
                         ctx.fillStyle = appearance.color;
                         ctx.beginPath();
