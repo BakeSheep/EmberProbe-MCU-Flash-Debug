@@ -9,6 +9,7 @@ const elfSymbols = require("../src/elfSymbols");
 const { buildDwarfElf } = require("./helpers/elf-fixture");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
+const { getLiveWatchContent } = require("../src/liveWatchView");
 
 // Path rules: library/vendor trees and generated vendor files; segments are anchored.
 for (const [file, origin] of [
@@ -219,6 +220,111 @@ try {
     restored.assertHealthy();
 } finally {
     restored.close();
+}
+
+// Live watch: filter the same origins and mark existing top-level and member watches as selected.
+const graph = render(getLiveWatchContent({}, "en"));
+try {
+    const doc = graph.document;
+    const rows = () =>
+        Array.from(doc.querySelectorAll("#impList > .imp-row input[data-symbol-name]"), (node) =>
+            String(node.dataset.symbolName)
+        );
+    const topCheckbox = (name) =>
+        Array.from(doc.querySelectorAll("#impList input[data-symbol-name]")).find(
+            (node) => node.dataset.symbolName === name
+        );
+    const search = (value) => {
+        doc.getElementById("impFilter").value = value;
+        doc.getElementById("impFilter").dispatchEvent(new graph.window.Event("input"));
+    };
+    const device = {
+        name: "device",
+        address: 0x20000050,
+        size: 28,
+        isComposite: true,
+        origin: "user",
+        compositeLayout: {
+            kind: "struct",
+            members: [
+                {
+                    name: "settings",
+                    offset: 4,
+                    compositeLayout: {
+                        kind: "struct",
+                        members: [{ name: "gain", offset: 8, byteSize: 4, watchType: "f32", kind: "scalar" }]
+                    }
+                }
+            ]
+        }
+    };
+    const graphSymbols = [
+        { name: "counter", address: 0x20000000, size: 4, watchType: "u32", origin: "user" },
+        { name: "huart1", address: 0x20000010, size: 4, watchType: "u32", origin: "vendor" },
+        { name: "pxCurrentTCB", address: 0x20000020, size: 4, watchType: "u32", origin: "rtos" },
+        { name: "legacy", address: 0x20000030, size: 4, watchType: "u32" },
+        { name: "other", address: 0x20000040, size: 4, watchType: "u32", origin: "user" },
+        device
+    ];
+    graph.send({
+        type: "watchList",
+        items: [
+            { name: "counter", address: 0x20000000, size: 4, type: "u32" },
+            { name: "device.settings.gain", address: 0x2000005c, size: 4, type: "f32" }
+        ]
+    });
+    doc.getElementById("import").click();
+    graph.send({ type: "variablesList", symbols: graphSymbols });
+    assert.deepStrictEqual(rows(), ["counter", "huart1", "pxCurrentTCB", "legacy", "other", "device"]);
+    assert.strictEqual(topCheckbox("counter").checked, true, "existing scalar watches are checked");
+    assert.strictEqual(topCheckbox("other").checked, false, "unwatched variables stay unchecked");
+    assert.strictEqual(topCheckbox("device").checked, false, "a member watch does not check its parent");
+    search("gain");
+    assert.strictEqual(
+        doc.querySelector('input[data-leaf-path="device.settings.gain"]').checked,
+        true,
+        "existing member watches are checked by their full path"
+    );
+    search("");
+    const toggle = doc.getElementById("impUserOnly");
+    assert.strictEqual(toggle.getAttribute("aria-pressed"), "false");
+    assert.strictEqual(toggle.classList.contains("secondary"), true);
+    toggle.click();
+    assert.strictEqual(toggle.getAttribute("aria-pressed"), "true");
+    assert.strictEqual(toggle.classList.contains("secondary"), false);
+    assert.deepStrictEqual(rows(), ["counter", "legacy", "other", "device"]);
+    assert.strictEqual(doc.getElementById("impCount").textContent, "User variables 4 / all 6");
+    assert.strictEqual(graph.getState().impUserVarsOnly, true);
+    assert.strictEqual(topCheckbox("counter").checked, true, "filter redraws retain existing selections");
+    search("huart");
+    assert.deepStrictEqual(rows(), [], "member and name searches exclude generated variables");
+    search("");
+    graph.send({ type: "variableTypes", version: "", symbols: [{ name: "other", origin: "vendor" }] });
+    graph.send({ type: "variableTypesDone", version: "" });
+    assert.deepStrictEqual(rows(), ["counter", "legacy", "device"], "late DWARF origins update the filter");
+    assert.strictEqual(doc.getElementById("impCount").textContent, "User variables 3 / all 6");
+    graph.send({ type: "variablesList", symbols: [graphSymbols[1]] });
+    assert.strictEqual(
+        doc.querySelector("#impList .empty").textContent,
+        "No user variables; 1 generated variables are hidden"
+    );
+    assert.strictEqual(doc.getElementById("impCount").textContent, "User variables 0 / all 1");
+    toggle.click();
+    assert.deepStrictEqual(rows(), ["huart1"]);
+    assert.strictEqual(toggle.getAttribute("aria-pressed"), "false");
+    graph.assertHealthy();
+} finally {
+    graph.close();
+}
+
+const restoredGraph = render(getLiveWatchContent({}, "zh"), { impUserVarsOnly: true });
+try {
+    const toggle = restoredGraph.document.getElementById("impUserOnly");
+    assert.strictEqual(toggle.getAttribute("aria-pressed"), "true");
+    assert.strictEqual(toggle.textContent, "仅用户");
+    restoredGraph.assertHealthy();
+} finally {
+    restoredGraph.close();
 }
 
 console.log("variable origin tests passed");

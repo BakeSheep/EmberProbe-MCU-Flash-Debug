@@ -1245,6 +1245,23 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 7px;
     margin-top: 12px;
 }
+.import-filter {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 10px;
+}
+.import-filter .filter-wrap {
+    flex: 1;
+    min-width: 0;
+    margin-bottom: 0;
+}
+.import-filter .filter-wrap > input {
+    min-width: 0;
+}
+.import-filter > button {
+    flex: none;
+}
 .filter-wrap {
     position: relative;
     display: flex;
@@ -2433,16 +2450,17 @@ input[type="number"]::-webkit-outer-spin-button {
     font: inherit;
 }
 
-/* Variable list aligned with the read/write sidebar: one line per member with the declared type
-   as a badge beside the name (never under it), sidebar-sized values, and the expansion arrow in
-   the left gutter so names line up. Only the badge shrinks when space runs out. */
+/* Keep member values flexible without offsetting swatches from nested expansion arrows. */
 .member-row {
     position: relative;
     display: flex;
     align-items: center;
     gap: 5px;
     min-height: 20px;
-    padding: 1px 3px 1px 15px;
+    padding: 1px 3px 1px 0;
+}
+.member-row.has-pointee {
+    padding-left: 15px;
 }
 .member-row > .pointer-toggle {
     position: absolute;

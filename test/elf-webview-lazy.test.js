@@ -359,19 +359,26 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         lazy.send({
             type: "variablesListChunk",
             version: "search-1",
-            symbols: Array.from({ length: 6 }, (_, i) => ({
+            symbols: Array.from({ length: 8 }, (_, i) => ({
                 ...symbol,
                 name: "device" + i,
-                compositeLayout: null
+                compositeLayout: null,
+                origin: i >= 6 ? "vendor" : "user"
             }))
         });
         lazy.send({ type: "variablesListDone", version: "search-1" });
+        doc.getElementById("impUserOnly").click();
         search("gain");
         await new Promise((resolve) => setTimeout(resolve, 220));
         assert.equal(requests().length, 0, "wait for DWARF types before searching layouts");
         lazy.send({ type: "variableTypesDone", version: "search-1" });
         await new Promise((resolve) => setTimeout(resolve, 220));
         assert.equal(requests().length, 4, "limit concurrent metadata requests");
+        assert.deepStrictEqual(
+            requests().map((request) => request.name),
+            ["device0", "device1", "device2", "device3"],
+            "member search skips hidden generated variables"
+        );
         lazy.send({ type: "compositeLayoutResult", version: "stale", name: "device0", layout });
         assert.equal(doc.querySelector(".imp-leaf-name"), null, "ignore stale ELF layouts");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device0", layout });

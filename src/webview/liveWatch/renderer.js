@@ -557,7 +557,8 @@ var saved = api && api.getState ? api.getState() : null,
     // Two-column layout: each top-level card keeps the column it was placed in (0 or 1).
     cardColumns = Object.assign(Object.create(null), saved && saved.cardColumns),
     sideCollapsed = !!(saved && saved.sideCollapsed),
-    windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30";
+    windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30",
+    impUserOnly = !!(saved && saved.impUserVarsOnly);
 if (saved && saved.hidden) hidden = saved.hidden;
 if (saved && typeof saved.norm === "boolean") norm = saved.norm;
 if (saved && saved.expanded) expanded = saved.expanded;
@@ -748,6 +749,7 @@ function saveUi() {
             valuePanel: valuePanel,
             cardColumns: cardColumns,
             sideCollapsed: sideCollapsed,
+            impUserVarsOnly: impUserOnly,
             norm: norm
         });
 }
@@ -2054,6 +2056,17 @@ const IMPORT_ROW_LIMIT = IMPORT_VARIABLE_LIMIT * 2;
 function needsImportLayout(symbol) {
     return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
 }
+function isUserVariable(symbol) {
+    return !symbol.origin || symbol.origin === "user";
+}
+function visibleImportSymbols() {
+    return impUserOnly ? allSymbols.filter(isUserVariable) : allSymbols;
+}
+function applyImportUserOnly() {
+    const button = $("impUserOnly");
+    button.classList.toggle("secondary", !impUserOnly);
+    button.setAttribute("aria-pressed", String(impUserOnly));
+}
 function cancelImportMemberSearch() {
     clearTimeout(impSearchTimer);
     impSearchTimer = null;
@@ -2068,7 +2081,7 @@ function scheduleImportMemberSearch(query) {
         impSearchTimer = null;
         if ($("overlay").classList.contains("hidden")) return;
         var slots = Math.max(0, 4 - impLayoutPending.size);
-        allSymbols
+        visibleImportSymbols()
             .filter(function (symbol) {
                 return needsImportLayout(symbol) && !impLayoutPending.has(symbol.name);
             })
@@ -2082,14 +2095,22 @@ function scheduleImportMemberSearch(query) {
 function renderImport() {
     renderElfDiagnostics();
     var f = ($("impFilter").value || "").trim().toLowerCase(),
-        box = $("impList");
+        box = $("impList"),
+        pool = visibleImportSymbols();
     var checkedNames = new Set(
-        Array.from(box.querySelectorAll("input:checked"), (cb) => cb.dataset.leafPath || cb.dataset.symbolName)
+        watch.map(function (item) {
+            return item.name;
+        })
+    );
+    Array.from(box.querySelectorAll("input:checked"), (cb) => cb.dataset.leafPath || cb.dataset.symbolName).forEach(
+        function (name) {
+            if (name) checkedNames.add(name);
+        }
     );
     box.textContent = "";
     scheduleImportMemberSearch(f);
     var memberMatches = new Map();
-    var matched = allSymbols.filter(function (s) {
+    var matched = pool.filter(function (s) {
             if (!f || s.name.toLowerCase().includes(f) || displayNameFor(s).toLowerCase().includes(f)) return true;
             if (!s.isComposite) return false;
             var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
@@ -2267,15 +2288,19 @@ function renderImport() {
         var empty = document.createElement("div");
         empty.className = "empty";
         empty.textContent =
-            f && (!impTypesReady || allSymbols.some(needsImportLayout))
+            f && (!impTypesReady || pool.some(needsImportLayout))
                 ? t("sb.searchingMembers")
-                : allSymbols.length
-                  ? t("sb.noMatch")
-                  : t("sb.noImportable");
+                : !pool.length && allSymbols.length
+                  ? t("sb.noUserVars", { count: allSymbols.length })
+                  : allSymbols.length
+                    ? t("sb.noMatch")
+                    : t("sb.noImportable");
         box.appendChild(empty);
     }
     $("impCount").textContent =
-        t("lw.totalVars", { n: allSymbols.length }) +
+        (impUserOnly
+            ? t("sb.filteredCount", { shown: pool.length, total: allSymbols.length })
+            : t("lw.totalVars", { n: allSymbols.length })) +
         (matched.length > shown.length ? t("lw.showingFirst", { n: shown.length }) : "");
 }
 function showImport(symbols) {
@@ -3663,9 +3688,6 @@ window.EmberProbeMessages.connect(window, {
         impWarnings = m.warnings || [];
         impError = m.error || "";
         renderElfDiagnostics();
-        var checked = Array.from($("impList").querySelectorAll("input:checked")).map(function (cb) {
-            return cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
-        });
         allSymbols = m.symbols || [];
         impTypesReady = true;
         impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
@@ -3675,15 +3697,7 @@ window.EmberProbeMessages.connect(window, {
             wantImportOpen = false;
             openImport();
         } else {
-            if (!$("overlay").classList.contains("hidden")) {
-                renderImport();
-                $("impList")
-                    .querySelectorAll("input")
-                    .forEach(function (cb) {
-                        var name = cb.dataset.leafPath || (allSymbols[Number(cb.dataset.idx)] || {}).name;
-                        cb.checked = checked.includes(name);
-                    });
-            }
+            if (!$("overlay").classList.contains("hidden")) renderImport();
             renderAutocomplete();
         }
     },
@@ -3931,11 +3945,18 @@ $("addName").onkeydown = function (e) {
         hideAutocomplete();
     }
 };
+applyImportUserOnly();
 $("impFilter").oninput = renderImport;
 $("impFilterClear").onclick = function () {
     $("impFilter").value = "";
     renderImport();
     $("impFilter").focus();
+};
+$("impUserOnly").onclick = function () {
+    impUserOnly = !impUserOnly;
+    applyImportUserOnly();
+    saveUi();
+    renderImport();
 };
 $("impCancel").onclick = hideImport;
 $("impAdd").onclick = importSelected;
