@@ -58,7 +58,7 @@ const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
-const { jlinkDriverChoice } = require("./services/jlinkDriverChoice");
+const { jlinkDriverChoice, resolveJlinkDriverTarget } = require("./services/jlinkDriverChoice");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity } = require("../skills/_emberprobe/probe-connection");
@@ -105,6 +105,15 @@ const CACHE_KEYS = {
     sidebarWriteList: "mcu.sidebarWriteList"
 };
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
+// A sidebar choice identifies its device the same way a blocked operation's driver error does.
+function jlinkDriverWarningTarget(choice) {
+    return {
+        instanceId: choice.instanceId,
+        deviceId: choice.connection.deviceId,
+        probeSerial: choice.connection.probeSerial || "",
+        driverKind: choice.driver === "segger" ? "repair" : "ready"
+    };
+}
 // Waveform sampling without a rate cap (the slider's "Max rate" notch), remembered per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
@@ -385,7 +394,7 @@ class MainViewProvider {
                 this.updateView();
             },
             driverService: this._probeDriverService,
-            onDriverUnsupported: (error) => this._showJlinkDriverWarning(error.details?.instanceId),
+            onDriverUnsupported: (error) => this._showJlinkDriverWarning(error.details || {}),
             beforePrepare: () => this._assertProbeDriverIdle(),
             window: vscode.window,
             t: (key, params) => this._t(key, params)
@@ -6194,7 +6203,9 @@ class MainViewProvider {
                         webviewView.webview.postMessage({
                             type: "commandError",
                             diagnostic: serializeError(error),
-                            error: error.message || String(error)
+                            error: error.i18nKey
+                                ? this._t(error.i18nKey, error.i18nParams)
+                                : error.message || String(error)
                         });
                         this._refreshJlinkDriverChoice(false).catch((refreshError) =>
                             console.error("J-Link USB driver check failed:", refreshError.message)
@@ -6541,29 +6552,58 @@ class MainViewProvider {
         if (choice?.driver !== "segger") this._lastJlinkDriverWarning = "";
         if (notify && choice?.driver === "segger" && this._lastJlinkDriverWarning !== choice.instanceId) {
             this._lastJlinkDriverWarning = choice.instanceId;
-            this._showJlinkDriverWarning(choice.instanceId);
+            this._showJlinkDriverWarning(jlinkDriverWarningTarget(choice));
         }
         return choice;
     }
-    _showJlinkDriverWarning(instanceId) {
+    _logJlinkDriverDiagnostics(target) {
+        if (!target.interfaces?.length) return;
+        if (!this._chipOutput) {
+            this._chipOutput = vscode.window.createOutputChannel(this._t("diag.channelName"));
+            this._context.subscriptions?.push(this._chipOutput);
+        }
+        this._chipOutput.appendLine(
+            `[EmberProbe] J-Link USB driver not switchable (${target.driverReason || target.driverKind}): ` +
+                `device=${target.deviceId || ""}, serial=${target.probeSerial || ""}`
+        );
+        for (const item of target.interfaces)
+            this._chipOutput.appendLine(
+                `  ${item.instanceId} | ${item.name} | service=${item.service} | ` +
+                    `provider=${item.driverProvider} | inf=${item.driverInf}`
+            );
+    }
+    // `target` identifies the exact J-Link the warning is about: instanceId, deviceId, probeSerial and driverKind.
+    _showJlinkDriverWarning(target = {}) {
         if (
             process.platform !== "win32" ||
             this._context.workspaceState.get(JLINK_DRIVER_WARNING_IGNORED_KEY) === true ||
             this._jlinkDriverWarningPending
         )
             return;
+        // Only a verified SEGGER binding of a uniquely identified interface can be switched by the helper.
+        const switchable = !target.driverKind || target.driverKind === "repair";
         const switchDriver = this._t("probe.switchToWinUsb");
         const ignore = this._t("probe.ignoreDriverWarning");
+        const probe = target.probeSerial ? `J-Link ${target.probeSerial}` : "J-Link";
+        if (!switchable) this._logJlinkDriverDiagnostics(target);
+        const message = switchable
+            ? this._t("probe.winusbRequired", { probe })
+            : this._t("probe.driverNotSwitchableWarning", {
+                  probe,
+                  reason: this._t(target.driverReasonKey || "probe.driverReasonInterface")
+              });
         // Do not hold the failed operation's probe lease while waiting for a notification response.
         this._jlinkDriverWarningPending = Promise.resolve(
-            vscode.window.showWarningMessage(this._t("probe.winusbRequired"), switchDriver, ignore)
+            switchable
+                ? vscode.window.showWarningMessage(message, switchDriver, ignore)
+                : vscode.window.showWarningMessage(message, ignore)
         )
             .then(async (selected) => {
                 if (selected === ignore)
                     await this._context.workspaceState.update(JLINK_DRIVER_WARNING_IGNORED_KEY, true);
-                else if (selected === switchDriver) {
+                else if (switchable && selected === switchDriver) {
                     await new Promise((resolve) => setImmediate(resolve));
-                    await this._changeJlinkDriver("winusb", instanceId);
+                    await this._changeJlinkDriver("winusb", target);
                 }
             })
             .catch((error) => {
@@ -6580,7 +6620,9 @@ class MainViewProvider {
             });
         return this._jlinkDriverWarningPending;
     }
-    async _changeJlinkDriver(driver, expectedInstanceId) {
+    // Without `target` the sidebar's selected J-Link is resolved from settings; a notification passes the exact
+    // device its blocked operation resolved, so a quick-picked or newly attached probe is switched, never another.
+    async _changeJlinkDriver(driver, target = null) {
         if (driver !== "winusb" && driver !== "segger")
             throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
         this._assertCpuIdle();
@@ -6593,48 +6635,55 @@ class MainViewProvider {
         this._probeDriverSwitching = true;
         this._jlinkDriverChoiceRevision = (this._jlinkDriverChoiceRevision || 0) + 1;
         this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: true });
-        try {
-            const inventory = await this._probeDriverService.reconcileInventory(await listProbes());
-            const choice = jlinkDriverChoice(
+        const resolveTarget = (inventory) => {
+            const resolved = resolveJlinkDriverTarget(
                 inventory,
                 vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
-                this._context.workspaceState.get("mcu.successfulProbeConnection")
+                this._context.workspaceState.get("mcu.successfulProbeConnection"),
+                target?.deviceId ? target : null
             );
-            if (!choice)
-                throw Object.assign(new Error("No uniquely selected supported J-Link is connected"), {
-                    code: "PROBE_DRIVER_SELECTION_REQUIRED"
-                });
-            if (expectedInstanceId && choice.instanceId !== expectedInstanceId)
+            if (resolved.error) throw resolved.error;
+            return resolved.choice;
+        };
+        try {
+            const choice = resolveTarget(await this._probeDriverService.reconcileInventory(await listProbes()));
+            if (target?.instanceId && choice.instanceId !== target.instanceId)
                 throw Object.assign(new Error("The selected J-Link changed; select its USB driver in the sidebar"), {
                     code: "PROBE_DRIVER_SELECTION_CHANGED",
                     i18nKey: "probe.driverSelectionChanged"
                 });
             if (choice.driver === driver) {
-                this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
+                if (!target) this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
                 return;
             }
             const result =
                 driver === "winusb"
                     ? await this._probeDriverService.ensure(choice.connection)
                     : await this._probeDriverService.restore(choice.connection);
-            const verified = jlinkDriverChoice(
-                driver === "winusb" ? result.inventory : result,
-                vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
-                this._context.workspaceState.get("mcu.successfulProbeConnection")
-            );
+            let verified;
+            try {
+                verified = resolveTarget(driver === "winusb" ? result.inventory : result);
+            } catch {
+                verified = null;
+            }
             if (verified?.driver !== driver || verified.instanceId !== choice.instanceId)
                 throw Object.assign(new Error("The selected J-Link driver could not be verified after switching"), {
                     code: "PROBE_DRIVER_VERIFY_FAILED"
                 });
             this._resolvedProbeConnection = null;
-            this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
+            // A notification may switch a J-Link other than the one the sidebar shows; it rescans afterwards.
+            if (!target) this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver });
             if (driver === "segger") {
                 this._lastJlinkDriverWarning = choice.instanceId;
-                this._showJlinkDriverWarning(choice.instanceId);
+                this._showJlinkDriverWarning(jlinkDriverWarningTarget(choice));
             } else this._lastJlinkDriverWarning = "";
         } finally {
             this._probeDriverSwitching = false;
             this._webviewView?.webview.postMessage({ type: "probeDriverSwitch", busy: false });
+            if (target)
+                this._refreshJlinkDriverChoice(false).catch((error) =>
+                    console.error("J-Link USB driver check failed:", error.message)
+                );
         }
     }
     getModernWebviewContent() {

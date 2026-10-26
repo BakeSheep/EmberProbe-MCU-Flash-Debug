@@ -133,8 +133,25 @@ module.exports = Object.freeze({
     "rtos.diagnostics": "Diagnostics",
     "probe.configure": "Advanced probe settings",
     "probe.usbDriver": "J-Link USB driver",
-    "probe.winusbRequired":
-        "This J-Link is using the SEGGER driver. EmberProbe needs WinUSB; select WinUSB beside Select Debugger.",
+    "probe.winusbRequired": "{probe} is using the SEGGER driver. EmberProbe needs WinUSB; choose Switch to WinUSB.",
+    "probe.driverNotSwitchableWarning":
+        "{probe} is using the SEGGER driver and EmberProbe needs WinUSB, but cannot switch it automatically: {reason}. Change it to WinUSB manually, for example with Zadig; interface details are in the EmberProbe Chip Info output.",
+    "probe.driverNotSwitchable":
+        "This J-Link's USB interface did not pass verification, so EmberProbe will not change its driver. Change it to WinUSB manually, for example with Zadig.",
+    "probe.driverReasonArch": "only Windows x64 is supported",
+    "probe.driverReasonIdentity": "this J-Link cannot be identified uniquely",
+    "probe.driverReasonProduct": "this USB product is not on the verified J-Link list",
+    "probe.driverReasonInterface": "its debug interface cannot be identified uniquely",
+    "probe.driverReasonProvider": "the current driver's provider or original INF cannot be verified",
+    "probe.driverSelectionMultiple":
+        "Several J-Links are connected, so the one to switch is unknown. Run a read or download once and pick the device, or set emberprobe.probeSerial.",
+    "probe.driverSelectionRememberedMissing":
+        "The previously used J-Link ({serial}) is not connected. Run a read or download once and pick the current device, or set emberprobe.probeSerial.",
+    "probe.driverSelectionConfiguredMissing": "The J-Link set in emberprobe.probeSerial ({serial}) is not connected.",
+    "probe.driverSelectionNone": "No J-Link is connected.",
+    "probe.driverSelectionInventory": "The USB device list cannot be read, so the J-Link driver cannot be changed now.",
+    "probe.driverSelectionRequired": "Cannot determine which J-Link's driver to change.",
+    "probe.driverTargetMissing": "The J-Link from the warning has been disconnected; no driver was changed.",
     "probe.driverUnsupported":
         "This J-Link uses the SEGGER USB driver, which EmberProbe does not support. Change it to WinUSB and try again.",
     "probe.switchToWinUsb": "Switch to WinUSB",

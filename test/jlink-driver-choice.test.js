@@ -1,7 +1,8 @@
 "use strict";
 
 const assert = require("assert");
-const { jlinkDriverChoice } = require("../src/services/jlinkDriverChoice");
+const { jlinkDriverChoice, resolveJlinkDriverTarget } = require("../src/services/jlinkDriverChoice");
+const { requireJlinkWinUsb } = require("../skills/_emberprobe/jlink-driver");
 const { loadProvider } = require("./helpers/load-provider");
 
 function device(serial, service = "jlink") {
@@ -43,6 +44,91 @@ assert.strictEqual(
 assert.strictEqual(jlinkDriverChoice({ available: true, devices: [first] }, "", null, "win32", "x64").driver, "segger");
 assert.strictEqual(jlinkDriverChoice(inventory, "1234", null, "linux", "x64"), null);
 assert.strictEqual(jlinkDriverChoice({ available: false, devices: [first] }, "1234", null, "win32", "x64"), null);
+
+// A missing choice explains itself, and a warning's device is switched without re-resolving settings.
+const resolveTarget = (value, serial = "", remembered = null, target = null) =>
+    resolveJlinkDriverTarget(value, serial, remembered, target, "win32", "x64");
+assert.strictEqual(resolveTarget(inventory).error.i18nKey, "probe.driverSelectionMultiple");
+assert.strictEqual(resolveTarget(inventory).error.code, "PROBE_DRIVER_SELECTION_REQUIRED");
+const rememberedMissing = resolveTarget({ available: true, devices: [first] }, "", {
+    version: 2,
+    probe: "jlink.cfg",
+    probeSerial: "9999"
+}).error;
+assert.strictEqual(rememberedMissing.i18nKey, "probe.driverSelectionRememberedMissing");
+assert.strictEqual(rememberedMissing.i18nParams.serial, "9999");
+assert.strictEqual(
+    resolveTarget({ available: true, devices: [first] }, "9999").error.i18nKey,
+    "probe.driverSelectionConfiguredMissing"
+);
+assert.strictEqual(resolveTarget({ available: true, devices: [] }).error.i18nKey, "probe.driverSelectionNone");
+assert.strictEqual(resolveTarget({ available: false, devices: [] }).error.i18nKey, "probe.driverSelectionInventory");
+assert.strictEqual(
+    resolveJlinkDriverTarget(inventory, "1234", null, null, "linux", "x64").error.i18nKey,
+    "probe.driverSelectionNone"
+);
+const pinned = resolveTarget(inventory, "", null, { deviceId: first.id.toLowerCase(), probeSerial: "1234" }).choice;
+assert.deepStrictEqual(
+    [pinned.driver, pinned.instanceId, pinned.connection.deviceId, pinned.connection.probeSerial],
+    ["segger", first.id, first.id, "1234"],
+    "two J-Links: the warning's device is chosen even though settings select none"
+);
+assert.strictEqual(resolveTarget(inventory, "5678", null, { deviceId: first.id }).choice.driver, "segger");
+assert.strictEqual(
+    resolveTarget({ available: true, devices: [second] }, "", null, { deviceId: first.id }).error.i18nKey,
+    "probe.driverTargetMissing"
+);
+const unlisted = device("4321");
+unlisted.pid = "9999";
+const notSwitchable = resolveTarget({ available: true, devices: [unlisted] }).error;
+assert.strictEqual(notSwitchable.code, "PROBE_DRIVER_NOT_SWITCHABLE");
+assert.strictEqual(notSwitchable.i18nKey, "probe.driverNotSwitchable");
+assert.strictEqual(notSwitchable.reasonKey, "probe.driverReasonProduct");
+
+// The blocked operation's driver error carries the exact device and whether the helper may switch it.
+function driverError(connection) {
+    try {
+        requireJlinkWinUsb({ adapterFamily: "jlink", ...connection }, "win32", "x64");
+    } catch (error) {
+        return error;
+    }
+    assert.fail("SEGGER-bound J-Links are rejected");
+}
+const repairable = driverError({ deviceId: first.id, probeSerial: "1234", inventory });
+assert.strictEqual(repairable.code, "PROBE_DRIVER_UNSUPPORTED");
+assert.deepStrictEqual(
+    [repairable.details.instanceId, repairable.details.deviceId, repairable.details.probeSerial],
+    [first.id, first.id, "1234"]
+);
+assert.strictEqual(repairable.details.driverKind, "repair");
+assert.strictEqual(repairable.details.interfaces[0].service, "jlink");
+const compositeId = "USB\\VID_1366&PID_1051\\000801012345";
+const composite = {
+    id: compositeId,
+    family: "jlink",
+    name: "J-Link",
+    serial: "801012345",
+    vid: "1366",
+    pid: "1051",
+    interfaces: [
+        { instanceId: compositeId, name: "USB Composite Device", service: "usbccgp" },
+        ...["00", "04"].map((number) => ({
+            instanceId: compositeId.replace("PID_1051", `PID_1051&MI_${number}`),
+            name: number === "00" ? "J-Link driver" : "BULK interface",
+            service: number === "00" ? "jlink" : "WinUSB",
+            driverProvider: "SEGGER",
+            driverInf: "oem12.inf"
+        }))
+    ]
+};
+const ambiguous = driverError({
+    deviceId: compositeId,
+    probeSerial: "801012345",
+    inventory: { available: true, devices: [composite] }
+});
+assert.strictEqual(ambiguous.details.driverKind, "unknown", "an ambiguous interface is blocked but not switchable");
+assert.strictEqual(ambiguous.details.driverReasonKey, "probe.driverReasonInterface");
+assert.strictEqual(ambiguous.details.interfaces.length, 3);
 
 async function monitorLifecycle() {
     const messages = [],
@@ -233,6 +319,8 @@ async function monitorLifecycle() {
     }
 }
 
+const firstTarget = { instanceId: first.id, deviceId: first.id, probeSerial: "1234", driverKind: "repair" };
+
 async function main() {
     await monitorLifecycle();
     const messages = [];
@@ -342,8 +430,8 @@ async function main() {
         let answerWarning;
         warningResponse = new Promise((resolve) => (answerWarning = resolve));
         const warningCount = warnings.length;
-        const notification = provider._showJlinkDriverWarning(first.id);
-        provider._showJlinkDriverWarning(first.id);
+        const notification = provider._showJlinkDriverWarning(firstTarget);
+        provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(warnings.length, warningCount + 1, "concurrent attempts share one notification");
         answerWarning(undefined);
         await notification;
@@ -351,34 +439,106 @@ async function main() {
 
         warningResponse = "probe.switchToWinUsb";
         currentInventory = { available: true, devices: [device("1234")] };
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "WinUSB");
         assert.strictEqual(errors.length, 0);
 
         currentInventory = { available: true, devices: [device("5678")] };
-        await provider._showJlinkDriverWarning(first.id);
-        assert.strictEqual(errors.at(-1), "probe.driverSelectionChanged");
-        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_CHANGED");
+        await provider._showJlinkDriverWarning(firstTarget);
+        assert.strictEqual(errors.at(-1), "probe.driverTargetMissing");
+        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_REQUIRED");
         assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink", "never switch another probe");
+        await provider._showJlinkDriverWarning({ instanceId: first.id });
+        assert.strictEqual(
+            errors.at(-1),
+            "probe.driverSelectionChanged",
+            "an unpinned target still checks its interface"
+        );
+        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_CHANGED");
+        assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink");
+
+        // Two J-Links and no saved selection: the sidebar cannot choose, but the warning's device is switched.
+        const otherProbe = device("5678");
+        currentInventory = { available: true, devices: [device("1234"), otherProbe] };
+        await assert.rejects(provider._changeJlinkDriver("winusb"), {
+            code: "PROBE_DRIVER_SELECTION_REQUIRED",
+            i18nKey: "probe.driverSelectionMultiple"
+        });
+        const ensureFirst = provider._probeDriverService.ensure;
+        const switched = [];
+        provider._probeDriverService.ensure = async (connection) => {
+            switched.push(connection.deviceId);
+            currentInventory = { available: true, devices: [device("1234"), device("5678", "WinUSB")] };
+            return { ...connection, inventory: currentInventory };
+        };
+        const messagesBeforeTarget = messages.length;
+        await provider._showJlinkDriverWarning({
+            instanceId: otherProbe.id,
+            deviceId: otherProbe.id,
+            probeSerial: "5678",
+            driverKind: "repair"
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.deepStrictEqual(switched, [otherProbe.id], "the second J-Link from the warning is switched");
+        assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink", "the first J-Link is untouched");
+        assert(
+            !messages
+                .slice(messagesBeforeTarget)
+                .some((message) => message.type === "probeDriverChoice" && message.driver === "winusb"),
+            "a targeted switch does not claim the sidebar's unresolved selection changed"
+        );
+        provider._probeDriverService.ensure = ensureFirst;
+        state.set("mcu.successfulProbeConnection", { version: 2, probe: "jlink.cfg", probeSerial: "9999" });
+        currentInventory = { available: true, devices: [device("1234")] };
+        await assert.rejects(provider._changeJlinkDriver("winusb"), {
+            i18nKey: "probe.driverSelectionRememberedMissing"
+        });
+        state.delete("mcu.successfulProbeConnection");
+
+        // A blocked J-Link whose interface cannot be verified gets no switch button, only the reason and details.
+        const output = [];
+        provider._chipOutput = { appendLine: (line) => output.push(line) };
+        warningResponse = undefined;
+        const beforeUnverified = warnings.length;
+        await provider._showJlinkDriverWarning({
+            instanceId: first.id,
+            deviceId: first.id,
+            probeSerial: "1234",
+            driverKind: "unknown",
+            driverReason: "Debug interface cannot be identified uniquely",
+            driverReasonKey: "probe.driverReasonInterface",
+            interfaces: [
+                { instanceId: first.id, name: "J-Link", service: "jlink", driverProvider: "SEGGER", driverInf: "" }
+            ]
+        });
+        assert.deepStrictEqual(warnings.slice(beforeUnverified), [
+            ["probe.driverNotSwitchableWarning", "probe.ignoreDriverWarning"]
+        ]);
+        assert(
+            output.some((line) => line.includes("service=jlink")),
+            "interface details reach the output panel"
+        );
+        provider._chipOutput = undefined;
+        warningResponse = "probe.switchToWinUsb";
 
         currentInventory = { available: true, devices: [device("1234")] };
         provider._probeCoordinator = { anyActive: () => true, isActive: () => false };
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_BUSY", "notification preserves probe ownership");
         provider._probeCoordinator = null;
 
         provider._probeDriverService.ensure = async () => {
             throw new Error("UAC cancelled");
         };
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(errors.at(-1), "UAC cancelled");
         assert.strictEqual(provider._probeDriverSwitching, false, "a failed switch releases the switching guard");
 
         warningResponse = "probe.ignoreDriverWarning";
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(state.get("mcu.jlinkDriverWarningIgnored"), true);
         const ignoredCount = warnings.length;
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         provider._lastJlinkDriverWarning = "";
         await provider._refreshJlinkDriverChoice(true);
         assert.strictEqual(warnings.length, ignoredCount, "ignored warnings stay suppressed on selection and attempts");
@@ -391,14 +551,14 @@ async function main() {
         const reopened = Object.create(Provider.prototype);
         reopened._context = provider._context;
         reopened._t = provider._t;
-        await reopened._showJlinkDriverWarning(first.id);
+        await reopened._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(warnings.length, ignoredCount, "ignore survives reopening the workspace");
         reopened._context = { workspaceState: { get: () => undefined } };
         warningResponse = undefined;
-        await reopened._showJlinkDriverWarning(first.id);
+        await reopened._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(warnings.length, ignoredCount + 1, "other workspaces are unaffected");
     } else {
-        await provider._showJlinkDriverWarning(first.id);
+        await provider._showJlinkDriverWarning(firstTarget);
         assert.strictEqual(warnings.length, 0, "other platforms do not receive Windows driver notifications");
     }
     console.log("J-Link USB driver choice tests passed");

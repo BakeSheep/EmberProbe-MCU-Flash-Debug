@@ -38,7 +38,8 @@ function runHelper(executable, action, instanceId) {
                         7: "The selected interface no longer uses the verified SEGGER driver",
                         8: "The selected J-Link no longer uses WinUSB",
                         9: "Windows could not restore the original J-Link driver",
-                        11: "A debugger process may be using the J-Link; close it before changing the USB driver",
+                        // The helper checks running processes, not which probe they hold; another J-Link counts.
+                        11: "A debugger process (openocd.exe, JLink*.exe, Ozone or J-Flash) is running and may be using this or another probe; close it before changing the USB driver",
                         20: "Windows could not start the administrator authorization request",
                         21: "The original SEGGER driver could not be backed up safely",
                         22: "The bundled libwdi library is missing or failed integrity verification",

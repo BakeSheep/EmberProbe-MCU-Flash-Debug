@@ -129,8 +129,13 @@ class ProbeConnectionService {
                     });
                     if (selected) {
                         const serial = selected.value;
-                        if (serial) values = { probeSerial: normalizeProbeSerial(serial) };
-                        else if (selected.deviceId) values = { selectedDeviceId: selected.deviceId, probeSerial: "" };
+                        if (serial) {
+                            values = { probeSerial: normalizeProbeSerial(serial) };
+                            // Remember the user's pick as the workspace probe even if this operation then fails
+                            // (for example on an unsupported USB driver), so the driver switch and later
+                            // operations resolve the same device instead of asking again or picking another.
+                            await this.rememberSelection({ probe: request.probe, probeSerial: values.probeSerial });
+                        } else if (selected.deviceId) values = { selectedDeviceId: selected.deviceId, probeSerial: "" };
                     }
                 } else throw error;
                 if (!values)
@@ -181,6 +186,16 @@ class ProbeConnectionService {
             })
             .catch(() => {
                 this.recorded.delete(connection);
+            });
+        await this.recordQueue;
+    }
+
+    async rememberSelection({ probe, probeSerial }) {
+        if (!probe || !probeSerial) return;
+        this.recordQueue = this.recordQueue
+            .then(() => this.saveSuccessfulConnection({ version: 2, probe, probeSerial }))
+            .catch(() => {
+                // A failed workspace-state write only loses the convenience; the operation keeps its pick.
             });
         await this.recordQueue;
     }

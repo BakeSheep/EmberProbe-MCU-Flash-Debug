@@ -122,6 +122,16 @@ async function main() {
     assert.strictEqual(repicked.probeSerial, "5678");
     assert.strictEqual(repicked.selection.probe, "explicit");
     assert.strictEqual(config.probeSerial, "", "re-picking does not rewrite settings");
+    assert.deepStrictEqual(
+        saved,
+        { version: 2, probe: "jlink.cfg", probeSerial: "5678" },
+        "a re-picked probe replaces the stale workspace record before the operation finishes"
+    );
+    const afterRepick = await service.prepare(options);
+    assert.strictEqual(afterRepick.probeSerial, "5678");
+    assert.strictEqual(afterRepick.selection.probe, "remembered", "later operations reuse the pick without asking");
+    assert.strictEqual(prompts, 1);
+    saved = { version: 2, probe: "jlink.cfg", probeSerial: "1234" };
     selected = undefined;
     await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
     selected = { value: "5678" };
@@ -142,8 +152,9 @@ async function main() {
     const session = { options: explicit };
     config = { ...config, transport: "swd" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
+    const writesBeforeStale = writes;
     await service.recordSuccess(explicit);
-    assert.strictEqual(writes, 1, "recordSuccess does not write if settings changed");
+    assert.strictEqual(writes, writesBeforeStale, "recordSuccess does not write if settings changed");
     config = { ...config, transport: "jtag" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
     const externalDap = {};
@@ -158,7 +169,44 @@ async function main() {
     assert.strictEqual(prompts, 1);
     assert.strictEqual(chosen.probeSerial, "5678");
     assert.strictEqual(config.probeSerial, "");
-    assert.strictEqual(saved, null);
+    assert.deepStrictEqual(
+        saved,
+        { version: 2, probe: "jlink.cfg", probeSerial: "5678" },
+        "a probe picked among several is remembered even before the operation succeeds"
+    );
+    assert.strictEqual((await service.prepare(options)).probeSerial, "5678", "Agent calls resolve the same probe");
+    saved = null;
+    let failedWrite = false;
+    const unsaved = new ProbeConnectionService({
+        getConfig: () => config,
+        getSuccessfulConnection: () => null,
+        saveSuccessfulConnection: async () => {
+            failedWrite = true;
+            throw new Error("workspace state unavailable");
+        },
+        window: { showQuickPick: async () => ({ value: "1234" }) },
+        prepareConnection: async (request) => ({
+            ...resolveProbeConnection(request, { available: true, devices }),
+            adapterFamily: "jlink"
+        })
+    });
+    assert.strictEqual((await unsaved.prepare(options, true)).probeSerial, "1234", "a failed save keeps the pick");
+    assert(failedWrite);
+    const anonymous = new ProbeConnectionService({
+        getConfig: () => config,
+        getSuccessfulConnection: () => ({ version: 2, probe: "jlink.cfg", probeSerial: "1234" }),
+        saveSuccessfulConnection: async () => assert.fail("serial-less picks are not remembered"),
+        window: { showQuickPick: async (choices) => choices[0] },
+        prepareConnection: async (request) => ({
+            ...resolveProbeConnection(request, {
+                available: true,
+                devices: [{ family: "jlink", serial: "", id: "usb-anonymous" }]
+            }),
+            adapterFamily: "jlink"
+        })
+    });
+    const anonymousPick = await anonymous.prepare(options, true);
+    assert.strictEqual(anonymousPick.deviceId, "usb-anonymous", "a serial-less pick binds only this operation");
     selected = undefined;
     await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
     devices = [];

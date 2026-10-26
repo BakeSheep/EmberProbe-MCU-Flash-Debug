@@ -129,7 +129,25 @@ module.exports = Object.freeze({
     "rtos.diagnostics": "诊断",
     "probe.configure": "探针高级设置",
     "probe.usbDriver": "J-Link USB 驱动",
-    "probe.winusbRequired": "当前 J-Link 使用 SEGGER 驱动；EmberProbe 需要 WinUSB。请在“选择调试器”右侧选择 WinUSB。",
+    "probe.winusbRequired": "{probe} 使用 SEGGER 驱动；EmberProbe 需要 WinUSB。点击“切换到 WinUSB”完成切换。",
+    "probe.driverNotSwitchableWarning":
+        "{probe} 使用 SEGGER 驱动，EmberProbe 需要 WinUSB，但无法自动切换：{reason}。请用 Zadig 等工具手动改为 WinUSB；接口详情已写入“EmberProbe 芯片信息”输出面板。",
+    "probe.driverNotSwitchable":
+        "该 J-Link 的 USB 接口未通过校验，EmberProbe 不会自动切换其驱动；请用 Zadig 等工具手动改为 WinUSB。",
+    "probe.driverReasonArch": "仅支持 Windows x64",
+    "probe.driverReasonIdentity": "无法唯一确定这台 J-Link",
+    "probe.driverReasonProduct": "该 USB 产品不在已验证的 J-Link 型号列表中",
+    "probe.driverReasonInterface": "无法唯一识别其调试接口",
+    "probe.driverReasonProvider": "无法验证当前驱动的提供者或原始 INF",
+    "probe.driverSelectionMultiple":
+        "检测到多台 J-Link，无法确定要切换哪一台。请先执行一次读取或下载并在列表中选择设备，或设置 emberprobe.probeSerial。",
+    "probe.driverSelectionRememberedMissing":
+        "上次使用的 J-Link（{serial}）未连接。请先执行一次读取或下载并选择当前设备，或设置 emberprobe.probeSerial。",
+    "probe.driverSelectionConfiguredMissing": "设置 emberprobe.probeSerial 指定的 J-Link（{serial}）未连接。",
+    "probe.driverSelectionNone": "未检测到 J-Link。",
+    "probe.driverSelectionInventory": "无法读取 USB 设备清单，暂时不能切换 J-Link 驱动。",
+    "probe.driverSelectionRequired": "无法确定要切换驱动的 J-Link。",
+    "probe.driverTargetMissing": "提示中的 J-Link 已断开，未切换任何驱动。",
     "probe.driverUnsupported": "当前 J-Link 使用 SEGGER USB 驱动，EmberProbe 不支持该驱动。请更换为 WinUSB 后重试。",
     "probe.switchToWinUsb": "切换到 WinUSB",
     "probe.ignoreDriverWarning": "忽略（当前工作区不再提醒）",

@@ -28,18 +28,33 @@ const JLINK_PIDS = new Set([
 
 function classifyJlinkDriver(connection, platform = process.platform, arch = process.arch) {
     if (connection.adapterFamily !== "jlink" || platform !== "win32") return { kind: "not-applicable" };
-    if (arch !== "x64") return { kind: "unsupported", reason: "Windows architecture is not supported" };
+    if (arch !== "x64")
+        return {
+            kind: "unsupported",
+            reason: "Windows architecture is not supported",
+            reasonKey: "probe.driverReasonArch"
+        };
     const inventory = connection.inventory;
     if (!inventory?.available || !connection.deviceId)
-        return { kind: "unknown", reason: "Probe identity is unavailable" };
+        return { kind: "unknown", reason: "Probe identity is unavailable", reasonKey: "probe.driverReasonIdentity" };
     const device = inventory.devices.filter((item) => item.id === connection.deviceId && item.family === "jlink");
-    if (device.length !== 1) return { kind: "unknown", reason: "Probe identity is ambiguous" };
+    if (device.length !== 1)
+        return { kind: "unknown", reason: "Probe identity is ambiguous", reasonKey: "probe.driverReasonIdentity" };
     const selected = device[0];
     if (selected.vid?.toLowerCase() !== "1366" || !JLINK_PIDS.has(selected.pid?.toLowerCase()))
-        return { kind: "unsupported", reason: "J-Link USB product is not on the verified allowlist" };
+        return {
+            kind: "unsupported",
+            reason: "J-Link USB product is not on the verified allowlist",
+            reasonKey: "probe.driverReasonProduct"
+        };
     if (!/^USB\\VID_1366&PID_[0-9A-F]{4}\\[^\\]+$/i.test(selected.id))
-        return { kind: "unknown", reason: "Physical USB parent cannot be verified" };
-    if (/flasher|j[- ]?trace/i.test(selected.name)) return { kind: "unsupported", reason: "Device is not a J-Link" };
+        return {
+            kind: "unknown",
+            reason: "Physical USB parent cannot be verified",
+            reasonKey: "probe.driverReasonInterface"
+        };
+    if (/flasher|j[- ]?trace/i.test(selected.name))
+        return { kind: "unsupported", reason: "Device is not a J-Link", reasonKey: "probe.driverReasonProduct" };
     const interfaces = selected.interfaces || [];
     const root = interfaces.filter((item) => item.instanceId.toUpperCase() === selected.id.toUpperCase());
     const children = interfaces.filter((item) => /&MI_[0-9A-F]{2}/i.test(item.instanceId));
@@ -49,13 +64,25 @@ function classifyJlinkDriver(connection, platform = process.platform, arch = pro
             (item) => !new RegExp(`^USB\\\\VID_1366&PID_${selected.pid}&MI_[0-9A-F]{2}\\\\`, "i").test(item.instanceId)
         )
     )
-        return { kind: "unknown", reason: "Composite interface does not match the selected parent" };
+        return {
+            kind: "unknown",
+            reason: "Composite interface does not match the selected parent",
+            reasonKey: "probe.driverReasonInterface"
+        };
     if (composite && (root.length !== 1 || !/^usbccgp$/i.test(root[0].service || "")))
-        return { kind: "unknown", reason: "Composite USB parent is not recognized" };
+        return {
+            kind: "unknown",
+            reason: "Composite USB parent is not recognized",
+            reasonKey: "probe.driverReasonInterface"
+        };
     const candidates = composite ? children : root;
     const debug = candidates.filter((item) => /^(?:winusb|jlink)$/i.test(item.service || ""));
     if (debug.length !== 1 || /flasher|j[- ]?trace|vcom|serial/i.test(debug[0].name))
-        return { kind: "unknown", reason: "Debug interface cannot be identified uniquely" };
+        return {
+            kind: "unknown",
+            reason: "Debug interface cannot be identified uniquely",
+            reasonKey: "probe.driverReasonInterface"
+        };
     const target = debug[0];
     if (/^winusb$/i.test(target.service)) return { kind: "ready", instanceId: target.instanceId };
     if (
@@ -64,7 +91,11 @@ function classifyJlinkDriver(connection, platform = process.platform, arch = pro
         /^oem\d+\.inf$/i.test(target.driverInf || "")
     )
         return { kind: "repair", instanceId: target.instanceId, driverInf: target.driverInf };
-    return { kind: "unknown", reason: "Driver provider or original INF cannot be verified" };
+    return {
+        kind: "unknown",
+        reason: "Driver provider or original INF cannot be verified",
+        reasonKey: "probe.driverReasonProvider"
+    };
 }
 
 function requireJlinkWinUsb(connection, platform = process.platform, arch = process.arch) {
@@ -84,6 +115,18 @@ function requireJlinkWinUsb(connection, platform = process.platform, arch = proc
                 "The selected J-Link uses the SEGGER USB driver. EmberProbe requires WinUSB; change the driver before starting.",
                 {
                     instanceId: state.instanceId || connection.deviceId,
+                    // The driver switch targets this exact device instead of re-resolving it from settings.
+                    deviceId: connection.deviceId,
+                    probeSerial: connection.probeSerial || "",
+                    driverKind: state.kind,
+                    ...(state.reasonKey ? { driverReason: state.reason, driverReasonKey: state.reasonKey } : {}),
+                    interfaces: (selected?.[0]?.interfaces || []).map((item) => ({
+                        instanceId: item.instanceId,
+                        name: item.name || "",
+                        service: item.service || "",
+                        driverProvider: item.driverProvider || "",
+                        driverInf: item.driverInf || ""
+                    })),
                     currentDriver: "SEGGER",
                     requiredDriver: "WinUSB"
                 }
