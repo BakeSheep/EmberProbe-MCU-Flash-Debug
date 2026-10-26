@@ -5607,6 +5607,10 @@ class MainViewProvider {
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
         const token = config?.__emberprobeManagedToken;
         if (token && token === this._managedDebugToken && this._managedDebugServer) return;
+        // A session that ended with an unconfirmed OpenOCD exit leaves its server reachable; retry
+        // the stop here so that one slow exit does not block every later debug start.
+        if (this._managedDebugServer?.state === "stop-failed" && !this._managedDebugGroup)
+            await this._stopManagedDebugServer();
         if (this._managedDebugServer) {
             throw Object.assign(new Error("The debug probe is owned by an EmberProbe managed debug session"), {
                 code: "PROBE_BUSY"

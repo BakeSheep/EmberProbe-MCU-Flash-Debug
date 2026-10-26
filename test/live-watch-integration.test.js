@@ -479,6 +479,34 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(shutdownFrame, "shutdown\x1a");
     assert.strictEqual(child.killed, false, "a clean OpenOCD exit must not be followed by a kill signal");
 
+    // Windows J-Link runs: OpenOCD exits but stdio stays open past the stop budget, so "close" never
+    // arrives. The process exit alone must confirm the stop, or the next debug start reports the probe busy.
+    const lingering = new EventEmitter();
+    lingering.exitCode = null;
+    lingering.signalCode = null;
+    lingering.kill = () => {
+        lingering.killed = true;
+        return true;
+    };
+    const exitOnly = new LiveWatchSession(null, {}, {});
+    exitOnly.child = lingering;
+    exitOnly.socket = {
+        destroyed: false,
+        write(data, callback) {
+            setImmediate(() => {
+                callback();
+                lingering.exitCode = 0;
+                lingering.emit("exit", 0, null);
+            });
+        },
+        destroy() {
+            this.destroyed = true;
+        }
+    };
+    assert.strictEqual(await exitOnly.stop(100), true, "an exited OpenOCD confirms the stop without stdio close");
+    assert.strictEqual(lingering.killed, undefined, "an exited OpenOCD must not be signalled");
+    assert.strictEqual(exitOnly.child, null);
+
     // Recovery needs a quiet interval and consecutive reads, not a single read.
     let recoveryNow = 0;
     const recoveryStatuses = [];

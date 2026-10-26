@@ -62,6 +62,27 @@ function findFreePort() {
     });
 }
 
+// Resolves true on the first "exit" or "close": once the process has exited its USB handle is
+// released, while "close" also waits for stdio, which Windows can hold open past the stop budget.
+function waitForChildExit(child, timeoutMs) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (exited) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            child.removeListener("exit", onExit);
+            child.removeListener("close", onExit);
+            resolve(exited);
+        };
+        const onExit = () => finish(true);
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        child.once("exit", onExit);
+        child.once("close", onExit);
+        if (child.exitCode !== null || child.signalCode != null) finish(true);
+    });
+}
+
 // 解析 read_memory / ocd_read_memory 的返回值：支持十进制、0x 前缀，并剥离可能的地址标签
 function parseMemoryValues(text) {
     if (!text) return [];
@@ -1107,22 +1128,11 @@ class ManagedOpenOcdSession {
         });
     }
 
+    // "exit" already proves the process released the probe; "close" can lag while stdio drains.
     waitForExit(timeoutMs = 1200) {
         const child = this.child;
-        if (!child || child.exitCode !== null) return Promise.resolve(true);
-        return new Promise((resolve) => {
-            let settled = false;
-            const finish = (closed) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                child.removeListener("close", onClose);
-                resolve(closed);
-            };
-            const onClose = () => finish(true);
-            const timer = setTimeout(() => finish(false), Math.max(100, Number(timeoutMs) || 1200));
-            child.once("close", onClose);
-        });
+        if (!child || child.exitCode !== null || child.signalCode != null) return Promise.resolve(true);
+        return waitForChildExit(child, Math.max(100, Number(timeoutMs) || 1200));
     }
 
     async _waitForTclListening(timeoutMs) {
@@ -2177,19 +2187,7 @@ class ManagedOpenOcdSession {
                 } catch (e) {
                     /* ignore */
                 }
-                closed = await new Promise((resolve) => {
-                    let settled = false;
-                    const finish = (value) => {
-                        if (settled) return;
-                        settled = true;
-                        clearTimeout(timer);
-                        child.removeListener("close", onClose);
-                        resolve(value);
-                    };
-                    const onClose = () => finish(true);
-                    const timer = setTimeout(() => finish(false), 400);
-                    child.once("close", onClose);
-                });
+                closed = await waitForChildExit(child, 400);
             }
             if (!closed && childRunning()) {
                 const forcedExit = this.waitForExit(400);

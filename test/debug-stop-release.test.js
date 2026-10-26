@@ -141,6 +141,46 @@ function track(promise) {
         assert.strictEqual(service.controlInFlight, null);
     });
 
+    await scenario(
+        "the next debug start retries an unconfirmed OpenOCD stop instead of reporting the probe busy",
+        async () => {
+            const { p, coordinator, server, service, vscodeDebug, finishStop } = setup();
+            p._assertProbeDriverIdle = () => {};
+            p.stopAgentReadIfRunning = () => null;
+            const stopping = service.control({ action: "stop" });
+            await ticks();
+            const terminating = vscodeDebug.terminating;
+            server.state = "stop-failed";
+            finishStop().reject(Object.assign(new Error("unconfirmed"), { code: "DEBUG_SERVER_STOP_FAILED" }));
+            await assert.rejects(stopping);
+            await assert.rejects(terminating);
+
+            // A retry that still cannot confirm the exit keeps the probe owned and reports why.
+            const failedRetry = p.prepareForCortexDebug({ uri: {} });
+            await ticks();
+            finishStop().reject(Object.assign(new Error("unconfirmed"), { code: "DEBUG_SERVER_STOP_FAILED" }));
+            await assert.rejects(failedRetry, (error) => error.code === "DEBUG_SERVER_STOP_FAILED");
+            assert.strictEqual(p._managedDebugServer, server);
+            assert.strictEqual(coordinator.isActive("debugServer"), true);
+
+            const retry = p.prepareForCortexDebug({ uri: {} });
+            await ticks();
+            assert.strictEqual(server.stops, 3);
+            finishStop().resolve(true);
+            await retry;
+            assert.strictEqual(p._managedDebugServer, null);
+            assert.strictEqual(coordinator.isActive("debugServer"), false, "the retried stop releases the probe lease");
+        }
+    );
+
+    await scenario("a running managed debug server still blocks a foreign debug start", async () => {
+        const { p, server } = setup();
+        p._assertProbeDriverIdle = () => {};
+        server.state = "ready";
+        await assert.rejects(p.prepareForCortexDebug({ uri: {} }), (error) => error.code === "PROBE_BUSY");
+        assert.strictEqual(server.stops, 0);
+    });
+
     await scenario("debug.stop of a session without managed OpenOCD resolves once it is gone", async () => {
         const { p, coordinator, server, service } = setup();
         p._managedDebugSessionId = "";
