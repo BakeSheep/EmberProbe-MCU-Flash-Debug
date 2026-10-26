@@ -1,7 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { describeProbeSelection } = require("../skills/_emberprobe/probe-choice");
-const { ProbeInventoryService } = require("../src/services/probeInventoryService");
+const { ProbeInventoryService, POLL_DELAYS, STABLE_SCANS } = require("../src/services/probeInventoryService");
 
 function jlink(serial, service = "jlink", pid = "0101") {
     const id = `USB\\VID_1366&PID_${pid}\\${serial.padStart(12, "0")}`;
@@ -82,6 +82,8 @@ async function main() {
 
     // Custom scripts, an empty bus and an unreadable inventory are reported as such.
     assert.strictEqual(describe({ probe: "my-board.cfg" }, inventory).state, "script");
+    const unconfigured = describe({ probe: "" }, inventory);
+    assert.deepStrictEqual([unconfigured.state, unconfigured.devices.length], ["unconfigured", 4]);
     assert.strictEqual(describe({ probe: "jlink.cfg" }, { available: true, devices: [] }).state, "none");
     const unavailable = describe({ probe: "jlink.cfg" }, { available: false, devices: [] });
     assert.deepStrictEqual([unavailable.state, unavailable.devices], ["unavailable", []]);
@@ -130,6 +132,25 @@ async function main() {
     assert.strictEqual(service.latest.scannedAt, 42);
     assert.strictEqual(service.describe({ probe: "jlink.cfg" }).deviceId, second.id);
     assert.strictEqual(service.describe({ probe: "jlink.cfg" }, { available: true, devices: [] }).state, "none");
+
+    // Polling slows down after several unchanged scans and speeds up on a change or a reset.
+    const steady = { available: true, devices: [first] };
+    const polled = new ProbeInventoryService({ listProbes: async () => steady, platform: "win32" });
+    await polled.scan();
+    assert.strictEqual(polled.pollDelay(), POLL_DELAYS.fast);
+    for (let index = 0; index < STABLE_SCANS; index++) await polled.scan();
+    assert.strictEqual(polled.pollDelay(), POLL_DELAYS.slow);
+    polled.resetBackoff();
+    assert.strictEqual(polled.pollDelay(), POLL_DELAYS.fast);
+    for (let index = 0; index < STABLE_SCANS; index++) await polled.scan();
+    steady.devices = [first, second];
+    await polled.scan();
+    assert.strictEqual(polled.pollDelay(), POLL_DELAYS.fast, "a changed inventory polls quickly again");
+    const mac = new ProbeInventoryService({ listProbes: async () => steady, platform: "darwin" });
+    await mac.scan();
+    assert.strictEqual(mac.pollDelay(), POLL_DELAYS.macFast, "system_profiler scans are polled less often");
+    for (let index = 0; index < STABLE_SCANS; index++) await mac.scan();
+    assert.strictEqual(mac.pollDelay(), POLL_DELAYS.macSlow);
 
     console.log("Probe selection view and inventory service tests passed");
 }

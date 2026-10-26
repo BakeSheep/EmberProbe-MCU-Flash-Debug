@@ -155,6 +155,12 @@ async function run() {
         provider._chipInfoService.onPost = originalPost;
     }
     console.log("✓ missing chip configuration returns an error and releases ownership without hardware");
+    // The connected-probe row lists whatever the read-only USB inventory finds, including nothing.
+    assert.ok(provider.getModernWebviewContent().includes('id="connectedProbe"'));
+    const probes = await provider._refreshConnectedProbes(false);
+    assert.ok(probes && typeof probes.state === "string" && Array.isArray(probes.devices));
+    assert.strictEqual(probes.debugger, "");
+    console.log(`✓ connected-probe list scanned read-only (${probes.state}, ${probes.devices.length} device(s))`);
     assert.ok(
         !fs.existsSync(path.join(workspace, ".emberprobe")),
         "opening the EmberProbe view without workspace Skills must not create .emberprobe"

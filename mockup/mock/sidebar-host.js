@@ -29,6 +29,9 @@
         var stopEpoch = 1;
         var targetLine = 103;
         var lastMemory = data.memoryAnalysis();
+        // The connected probe the mock workspace uses and the J-Link USB drivers switched in this page.
+        var selectedProbe = data.PROBES[0].id;
+        var probeDrivers = {};
 
         function send(message) {
             if (stopped || !iframe.contentWindow) return;
@@ -67,6 +70,7 @@
 
         function sendInitialState() {
             send({ type: "openocdStatus", state: "ready", key: "oc.readyVer", params: { version: "0.12.0" } });
+            send(data.connectedProbes(selectedProbe, probeDrivers));
             send({
                 type: "skillStatus",
                 state: "installed",
@@ -437,13 +441,22 @@
                     send({ type: "commandSuccess", cmd: "openocdAction" });
                     break;
                 case "selectProbeDriver":
-                    send({ type: "probeDriverChoice", driver: message.driver });
                     send({ type: "probeDriverSwitch", busy: true });
                     setTimeout(function () {
+                        probeDrivers[message.deviceId] = message.driver === "winusb" ? "ready" : "repair";
                         send({ type: "probeDriverSwitch", busy: false });
-                        send({ type: "probeDriverStatus", state: "ready" });
+                        send(data.connectedProbes(selectedProbe, probeDrivers));
+                        send({ type: "probeDriverStatus", state: message.driver === "winusb" ? "ready" : "restored" });
                         send({ type: "commandSuccess", cmd: "selectProbeDriver" });
                     }, 900);
+                    break;
+                case "selectConnectedProbe":
+                    selectedProbe = message.deviceId || data.PROBES[0].id;
+                    send(data.connectedProbes(selectedProbe, probeDrivers));
+                    send({ type: "commandSuccess", cmd: "selectConnectedProbe" });
+                    break;
+                case "refreshConnectedProbes":
+                    send(data.connectedProbes(selectedProbe, probeDrivers));
                     break;
                 case "cancelSvdDownload":
                     send({ type: "svdStatus", state: "configured", key: "svd.configured", path: data.SVD_PATH });

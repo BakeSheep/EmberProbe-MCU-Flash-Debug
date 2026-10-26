@@ -93,14 +93,4 @@ function resolveJlinkDriverTarget(
     return classified(inventory, selected, platform, arch);
 }
 
-function jlinkDriverChoice(
-    inventory,
-    probeSerial,
-    successfulConnection,
-    platform = process.platform,
-    arch = process.arch
-) {
-    return resolveJlinkDriverTarget(inventory, probeSerial, successfulConnection, null, platform, arch).choice || null;
-}
-
-module.exports = { jlinkDriverChoice, resolveJlinkDriverTarget };
+module.exports = { resolveJlinkDriverTarget };

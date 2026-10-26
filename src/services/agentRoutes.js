@@ -8,9 +8,25 @@ function createAgentRoutes(host, probes = listProbes) {
     let inspection;
     return {
         "config.get": () => host._configurationSnapshot(),
-        "probe.list": (params = {}) => {
+        "probe.list": async (params = {}) => {
             const query = normalizeInventoryQuery(params);
-            return listProbes(query.vidPid.length ? query : { family: query.family });
+            const [inventory, selectedId] = await Promise.all([
+                listProbes(query.vidPid.length ? query : { family: query.family }),
+                // Resolved against every connected probe, so a filtered list cannot make a device look unique.
+                // The marker is informational; failing to resolve it never fails the listing.
+                Promise.resolve()
+                    .then(() => host._selectedProbeDeviceId?.())
+                    .catch(() => "")
+            ]);
+            if (typeof selectedId !== "string" || !selectedId || !Array.isArray(inventory?.devices)) return inventory;
+            return {
+                ...inventory,
+                devices: inventory.devices.map((device) =>
+                    String(device?.id || "").toUpperCase() === selectedId.toUpperCase()
+                        ? { ...device, selected: true }
+                        : device
+                )
+            };
         },
         "config.set": (params) => host._setAgentConfiguration(params.values || {}),
         "cubemx.detect": () => host._cubemxConfiguration.detect(),

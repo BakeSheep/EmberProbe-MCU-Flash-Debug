@@ -1,9 +1,27 @@
 "use strict";
 
 const assert = require("assert");
-const { jlinkDriverChoice, resolveJlinkDriverTarget } = require("../src/services/jlinkDriverChoice");
+const { resolveJlinkDriverTarget } = require("../src/services/jlinkDriverChoice");
+const jlinkDriverChoice = (inventory, probeSerial, selection, platform, arch) =>
+    resolveJlinkDriverTarget(inventory, probeSerial, selection, null, platform, arch).choice || null;
 const { requireJlinkWinUsb } = require("../skills/_emberprobe/jlink-driver");
 const { loadProvider } = require("./helpers/load-provider");
+const { ProbeInventoryService } = require("../src/services/probeInventoryService");
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+const probeLists = (messages) => messages.filter((message) => message.type === "connectedProbes");
+const lastProbes = (messages) => probeLists(messages).at(-1);
+// USB driver state of the probe the sidebar shows as selected ("" when none is selected).
+const selectedDriver = (messages) => lastProbes(messages)?.devices.find((item) => item.selected)?.driver?.kind || "";
+// Driver states and notifications are computed as on Windows x64 whatever platform runs the tests.
+function windowsInventory(provider, listProbes) {
+    provider._probeInventory = new ProbeInventoryService({
+        listProbes,
+        reconcile: (value) => provider._probeDriverService.reconcileInventory(value),
+        platform: "win32",
+        arch: "x64"
+    });
+}
 
 function device(serial, service = "jlink") {
     const id = `USB\\VID_1366&PID_0101\\${serial}`;
@@ -154,24 +172,25 @@ async function monitorLifecycle() {
         },
         {
             "../skills/_emberprobe/probe-inventory": {
-                listProbes: async () => {
-                    scans++;
-                    if (scanError) {
-                        const error = scanError;
-                        scanError = null;
-                        throw error;
-                    }
-                    if (delayedInventory) {
-                        const result = delayedInventory;
-                        delayedInventory = null;
-                        return result;
-                    }
-                    return currentInventory;
-                }
+                listProbes: async () => assert.fail("the Windows inventory service is injected")
             }
         }
     );
     const provider = Object.create(Provider.prototype);
+    windowsInventory(provider, async () => {
+        scans++;
+        if (scanError) {
+            const error = scanError;
+            scanError = null;
+            throw error;
+        }
+        if (delayedInventory) {
+            const result = delayedInventory;
+            delayedInventory = null;
+            return result;
+        }
+        return currentInventory;
+    });
     const view = {
         visible: true,
         webview: {
@@ -210,7 +229,7 @@ async function monitorLifecycle() {
     const realSetTimeout = global.setTimeout,
         realClearTimeout = global.clearTimeout,
         realConsoleError = console.error;
-    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    const windows = process.platform === "win32";
     const tick = async () => {
         assert.strictEqual(timers.size, 1, "there is exactly one scheduled monitor check");
         const timer = timers.values().next().value;
@@ -220,7 +239,7 @@ async function monitorLifecycle() {
     };
     try {
         global.setTimeout = (callback, delay) => {
-            assert.strictEqual(delay, 3000, "inventory checks wait three seconds after completing");
+            assert([3000, 10000].includes(delay), "inventory checks wait after completing, slower once stable");
             const timer = { callback, unref() {} };
             timers.add(timer);
             return timer;
@@ -230,25 +249,31 @@ async function monitorLifecycle() {
         provider.resolveWebviewView(view);
         await dispatch({ type: "initCheck" });
         await flush();
-        if (process.platform !== "win32" || process.arch !== "x64") {
-            assert.strictEqual(scans, 0, "other platforms do not start Windows USB polling");
-            assert.strictEqual(timers.size, 0);
-            return;
-        }
-        assert.strictEqual(messages.at(-1).driver, "", "configuration before attachment hides the selector");
+        assert.deepStrictEqual(
+            [lastProbes(messages).state, lastProbes(messages).devices],
+            ["none", []],
+            "the sidebar lists probes before any is attached"
+        );
+        assert.strictEqual(selectedDriver(messages), "", "configuration before attachment hides the selector");
         assert.strictEqual(warnings.length, 0);
         const initialScans = scans;
         await dispatch({ type: "initCheck" });
         assert.strictEqual(scans, initialScans, "repeated initialization does not duplicate the monitor");
         currentInventory = { available: true, devices: [device("1234")] };
         await tick();
-        assert.strictEqual(messages.at(-1).driver, "segger", "late USB attachment reveals the selector");
-        assert.strictEqual(warnings.length, 1);
+        assert.strictEqual(selectedDriver(messages), "repair", "late USB attachment reveals the selector");
+        assert.strictEqual(warnings.length, windows ? 1 : 0);
+        const listsBeforeUnchanged = probeLists(messages).length;
         await tick();
-        assert.strictEqual(warnings.length, 1, "unchanged driver state does not repeat warnings");
+        assert.strictEqual(warnings.length, windows ? 1 : 0, "unchanged driver state does not repeat warnings");
+        assert.strictEqual(
+            probeLists(messages).length,
+            listsBeforeUnchanged,
+            "an unchanged list is not posted again, so an open dropdown stays open"
+        );
         currentInventory = { available: true, devices: [] };
         await tick();
-        assert.strictEqual(messages.at(-1).driver, "", "removing a probe hides its selector");
+        assert.strictEqual(selectedDriver(messages), "", "removing a probe hides its selector");
         currentInventory = { available: true, devices: [device("1234", "WinUSB")] };
         view.visible = false;
         onVisibility();
@@ -256,7 +281,7 @@ async function monitorLifecycle() {
         view.visible = true;
         onVisibility();
         await flush();
-        assert.strictEqual(messages.at(-1).driver, "winusb", "a retained view rechecks immediately when shown");
+        assert.strictEqual(selectedDriver(messages), "ready", "a retained view rechecks immediately when shown");
 
         const beforeSwitchScans = scans;
         provider._probeDriverSwitching = true;
@@ -267,11 +292,15 @@ async function monitorLifecycle() {
         await tick();
         assert.strictEqual(scanErrors.length, 1);
         await tick();
-        assert.strictEqual(messages.at(-1).driver, "winusb", "a failed scan does not stop future checks");
+        assert.strictEqual(selectedDriver(messages), "ready", "a failed scan does not stop future checks");
         state.set("mcu.debugger", "stlink.cfg");
         const otherProbeScans = scans;
         await tick();
-        assert.strictEqual(scans, otherProbeScans, "other configured adapters do not trigger J-Link inventory");
+        assert.strictEqual(scans, otherProbeScans + 1, "every probe is listed whatever adapter is configured");
+        assert.deepStrictEqual(
+            lastProbes(messages).devices.map((item) => [item.family, item.matchesDebugger, item.selected]),
+            [["jlink", false, false]]
+        );
         state.set("mcu.debugger", "jlink.cfg");
 
         let finishHiddenScan;
@@ -287,7 +316,7 @@ async function monitorLifecycle() {
         finishHiddenScan({ available: true, devices: [device("1234")] });
         await slowCheck;
         assert.strictEqual(messages.length, visibleMessageCount, "a hidden view's old scan cannot overwrite recheck");
-        assert.strictEqual(warnings.length, 1, "a stale scan cannot show an obsolete warning");
+        assert.strictEqual(warnings.length, windows ? 1 : 0, "a stale scan cannot show an obsolete warning");
 
         let finishDisposedScan;
         delayedInventory = new Promise((resolve) => (finishDisposedScan = resolve));
@@ -309,10 +338,10 @@ async function monitorLifecycle() {
         provider._elfService = { invalidate() {} };
         await provider.shutdown();
         assert.strictEqual(timers.size, 0, "shutdown releases the polling timer");
-        provider._startJlinkDriverMonitor();
+        provider._startProbeInventoryMonitor();
         assert.strictEqual(timers.size, 0, "shutdown cannot restart monitoring");
     } finally {
-        provider._stopJlinkDriverMonitor();
+        provider._stopProbeInventoryMonitor();
         global.setTimeout = realSetTimeout;
         global.clearTimeout = realClearTimeout;
         console.error = realConsoleError;
@@ -380,34 +409,37 @@ async function main() {
     if (process.platform === "win32") {
         let finishOlderScan;
         delayedInventory = new Promise((resolve) => (finishOlderScan = resolve));
-        const olderRefresh = provider._refreshJlinkDriverChoice(false);
-        await provider._refreshJlinkDriverChoice(false);
+        const olderRefresh = provider._refreshConnectedProbes(false);
+        await provider._refreshConnectedProbes(false);
         const latestMessageCount = messages.length;
         finishOlderScan({ available: true, devices: [] });
         await olderRefresh;
         assert.strictEqual(messages.length, latestMessageCount, "an older empty scan cannot hide a newer selection");
 
-        await provider._refreshJlinkDriverChoice(true);
+        await provider._refreshConnectedProbes(true);
         await provider._jlinkDriverWarningPending;
-        await provider._refreshJlinkDriverChoice(true);
+        await provider._refreshConnectedProbes(true);
         assert.strictEqual(warnings.length, 1, "the SEGGER warning appears once per detected driver state");
         assert.deepStrictEqual(warnings[0], [
             "probe.winusbRequired",
             "probe.switchToWinUsb",
             "probe.ignoreDriverWarning"
         ]);
-        assert.strictEqual(messages.at(-1).driver, "segger");
+        assert.strictEqual(selectedDriver(messages), "repair");
         await provider._changeJlinkDriver("winusb");
         assert.deepStrictEqual(messages.at(-1), { type: "probeDriverSwitch", busy: false });
-        assert.deepStrictEqual(messages.at(-2), { type: "probeDriverChoice", driver: "winusb" });
+        await flush();
+        assert.strictEqual(selectedDriver(messages), "ready", "the list is rescanned after switching");
         await provider._changeJlinkDriver("segger");
         await provider._jlinkDriverWarningPending;
-        assert.deepStrictEqual(messages.at(-2), { type: "probeDriverChoice", driver: "segger" });
+        await flush();
+        assert.strictEqual(selectedDriver(messages), "repair");
         assert.strictEqual(warnings.length, 2, "restoring SEGGER warns again that WinUSB is required");
         let releaseOldScan;
         delayedInventory = new Promise((resolve) => (releaseOldScan = resolve));
-        const staleRefresh = provider._refreshJlinkDriverChoice(false);
+        const staleRefresh = provider._refreshConnectedProbes(false);
         await provider._changeJlinkDriver("winusb");
+        await flush();
         const messageCount = messages.length;
         releaseOldScan({ available: true, devices: [device("1234")] });
         await staleRefresh;
@@ -478,14 +510,14 @@ async function main() {
             probeSerial: "5678",
             driverKind: "repair"
         });
-        await new Promise((resolve) => setImmediate(resolve));
+        await flush();
         assert.deepStrictEqual(switched, [otherProbe.id], "the second J-Link from the warning is switched");
         assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink", "the first J-Link is untouched");
-        assert(
-            !messages
-                .slice(messagesBeforeTarget)
-                .some((message) => message.type === "probeDriverChoice" && message.driver === "winusb"),
-            "a targeted switch does not claim the sidebar's unresolved selection changed"
+        const afterTarget = lastProbes(messages.slice(messagesBeforeTarget));
+        assert.deepStrictEqual(
+            [afterTarget.state, afterTarget.devices.map((item) => item.driver.kind)],
+            ["ambiguous", ["repair", "ready"]],
+            "the list shows the switched J-Link without claiming either is selected"
         );
         provider._probeDriverService.ensure = ensureFirst;
         state.set("mcu.successfulProbeConnection", { version: 2, probe: "jlink.cfg", probeSerial: "9999" });
@@ -540,11 +572,11 @@ async function main() {
         const ignoredCount = warnings.length;
         await provider._showJlinkDriverWarning(firstTarget);
         provider._lastJlinkDriverWarning = "";
-        await provider._refreshJlinkDriverChoice(true);
+        await provider._refreshConnectedProbes(true);
         assert.strictEqual(warnings.length, ignoredCount, "ignored warnings stay suppressed on selection and attempts");
         assert.strictEqual(
-            messages.at(-1).driver,
-            "segger",
+            selectedDriver(messages),
+            "repair",
             "the sidebar still receives the incompatible driver state"
         );
 

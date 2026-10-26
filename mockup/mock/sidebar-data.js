@@ -981,7 +981,75 @@
         return { tick: tick, scalarSamples: scalarSamples, compositeSample: compositeSample, write: write };
     }
 
+    /* ------------------------------------------------------------------ probes */
+
+    // Two J-Links (one still on the SEGGER USB driver) and a CMSIS-DAP without a USB serial.
+    var PROBES = [
+        {
+            id: "USB\\VID_1366&PID_0101\\000801012345",
+            family: "jlink",
+            name: "J-Link",
+            serial: "801012345",
+            defaultConfig: "jlink.cfg",
+            driver: "ready"
+        },
+        {
+            id: "USB\\VID_1366&PID_0101\\000801067890",
+            family: "jlink",
+            name: "J-Link",
+            serial: "801067890",
+            defaultConfig: "jlink.cfg",
+            driver: "repair"
+        },
+        {
+            id: "USB\\VID_C251&PID_F001\\6&2A41C0F&0&2",
+            family: "cmsis-dap",
+            name: "CMSIS-DAP",
+            serial: "",
+            defaultConfig: "cmsis-dap.cfg",
+            driver: ""
+        }
+    ];
+
+    // The extension's connectedProbes message for the selected device and any driver switched in the mock.
+    function connectedProbes(selectedId, drivers) {
+        var selected =
+            PROBES.find(function (probe) {
+                return probe.id === selectedId;
+            }) || PROBES[0];
+        return {
+            type: "connectedProbes",
+            debugger: selected.defaultConfig,
+            override: false,
+            family: selected.family,
+            state: "selected",
+            source: selected.serial ? "remembered" : "unique-device",
+            probeSerial: selected.serial,
+            deviceId: selected.id,
+            error: null,
+            devices: PROBES.map(function (probe) {
+                var kind = (drivers && drivers[probe.id]) || probe.driver;
+                return Object.assign(
+                    {
+                        id: probe.id,
+                        family: probe.family,
+                        name: probe.name,
+                        serial: probe.serial,
+                        trustedSerial: probe.serial,
+                        defaultConfig: probe.defaultConfig,
+                        matchesDebugger: probe.family === selected.family,
+                        selected: probe.id === selected.id,
+                        selectable: true
+                    },
+                    kind ? { driver: { kind: kind, instanceId: probe.id } } : {}
+                );
+            })
+        };
+    }
+
     return {
+        PROBES: PROBES,
+        connectedProbes: connectedProbes,
         VERSION: VERSION,
         SVD_PATH: SVD_PATH,
         SYMBOLS: SYMBOLS,

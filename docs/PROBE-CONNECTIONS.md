@@ -26,6 +26,10 @@ If multiple matching devices are present, selection must be enforceable by OpenO
 
 多台匹配设备并存时，OpenOCD 必须能够执行选择。具有可用序列号（含不带 `_` 的 Windows 别名）的条目使用现有 QuickPick；无序列号设备或含 `_` 的 Windows 别名不能安全区分多台探针，应断开其他设备或显式填写真实 USB 序列号。成功记录中的旧设备缺席时不自动替换。旧版记录仍可读取，新成功记录写入第二版；匿名设备只记接口偏好，下次重新解析物理设备。
 
+The sidebar's **Connected probe** row lists every attached probe, shows which one this order selects and lets the user choose another; a device of another type also switches the interface script to that type's default. See [J-Link compatibility](JLINK-COMPATIBILITY.md) for its behavior and the per-device J-Link driver switch.
+
+侧栏“已连接调试器”一行列出所有已连接的探针，标出按上述顺序选中的设备，并可改选其他设备；选择不同类型的设备时，接口脚本会同时改为该类型的默认脚本。具体行为及按设备切换 J-Link 驱动见 [J-Link 兼容性](JLINK-COMPATIBILITY.md)。
+
 ## TCP interfaces / TCP 接口
 
 采样连接使用预检解析的后端种类：`tcp`（CMSIS-DAP TCP / ST-Link TCP）的 Tcl RPC 超时为 5000 ms，其他后端仍为 2000 ms，超时报错仍是 `OPENOCD_RPC_TIMEOUT`。独立 TCP 采样在 `init` 后用 `info commands poll_interval` 守卫把目标后台轮询设为 500 ms（`poll_period` 只控制服务器主循环，不改变目标轮询）；当前随包 OpenOCD 尚无 `poll_interval`，保持默认 100 ms，较新的自定义 OpenOCD 才生效。调试模式不改轮询。持续轮询失败仍须至少 3 次且跨越 3000 ms 才锁定，500 ms 轮询下约 3 秒触发。

@@ -193,7 +193,7 @@ async function networkAndIdentity() {
             }
         },
         _debugBridge: { activeSession: { id: "debug" } },
-        _refreshJlinkDriverChoice: async () => {},
+        _refreshConnectedProbes: async () => {},
         _postConsumerStatuses: () => {},
         stopLiveWatch: (options) => {
             assert(options.preserveIntent);

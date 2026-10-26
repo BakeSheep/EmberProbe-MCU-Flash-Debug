@@ -138,7 +138,8 @@ const TOOLS = [
         name: "probe_list",
         toolset: "core",
         title: "List debug probes",
-        description: "List attached USB debug probes with serials and driver state.",
+        description:
+            "List attached USB debug probes with serials and driver state; the workspace's probe has selected: true.",
         methods: ["probe.list"],
         inputSchema: object({
             family: str("Probe family filter, e.g. stlink, jlink, cmsis-dap; default all"),

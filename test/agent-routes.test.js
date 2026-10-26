@@ -69,6 +69,23 @@ const { AgentService } = require("../src/services/agentService");
         if (method !== "config.set") await routes[method](null);
     }
     assert.deepStrictEqual(await bridge.call("probe.list"), { devices: ["probe"] });
+    // The probe the workspace would use is marked; a failed lookup still returns the listing.
+    const inventory = { available: true, devices: [{ id: String.raw`USB\A` }, { id: String.raw`USB\B` }] };
+    const marked = createAgentRoutes({ _selectedProbeDeviceId: async () => String.raw`usb\b` }, async () => inventory);
+    assert.deepStrictEqual(await marked["probe.list"]({}), {
+        available: true,
+        devices: [{ id: String.raw`USB\A` }, { id: String.raw`USB\B`, selected: true }]
+    });
+    assert.strictEqual(inventory.devices[1].selected, undefined, "the inventory itself is not modified");
+    const unmarked = createAgentRoutes(
+        {
+            _selectedProbeDeviceId: async () => {
+                throw new Error("scan failed");
+            }
+        },
+        async () => inventory
+    );
+    assert.strictEqual(await unmarked["probe.list"]({}), inventory);
     await routes["chip.read"]();
     assert.deepStrictEqual(calls.at(-1).args, [true]);
     await bridge.call("cubemx.check");

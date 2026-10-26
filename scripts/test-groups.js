@@ -26,6 +26,7 @@ const TEST_GROUPS = Object.freeze({
         "ci-test-topology.test.js",
         "composite-decode.test.js",
         "configuration-store.test.js",
+        "connected-probe-selection.test.js",
         "contracts.test.js",
         "cortex-toolchain.test.js",
         "cpp-class-layout.test.js",

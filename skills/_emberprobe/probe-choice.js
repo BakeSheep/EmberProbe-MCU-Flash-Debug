@@ -37,6 +37,8 @@ function describeProbeSelection(config, inventory, platform = process.platform, 
         devices: []
     };
     if (!available) result.state = "unavailable";
+    // No interface script yet: picking a device chooses the script for its family.
+    else if (!config.probe && !config.debugger) result.state = "unconfigured";
     else if (!family) result.state = "script";
     else {
         try {

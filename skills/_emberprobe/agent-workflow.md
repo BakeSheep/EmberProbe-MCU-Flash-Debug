@@ -39,7 +39,8 @@ in the trusted interface script and do not require a local USB probe.
 An empty serial resolves in this order: the `emberprobe.probeSerial` setting, a serial in the
 interface script, the workspace's
 selected probe (`config.get` → `selectedProbe`: the probe the user picked or last used
-successfully), then a unique connected probe. A selected probe that is not connected is
+successfully), then a unique connected probe. `probe.list` marks that device with `selected: true`;
+only the user changes the selection, in the sidebar. A selected probe that is not connected is
 reported as not found; it is never replaced by another device, so ask the user instead.
 The Bridge validates the ID and current plan; it does not independently attest that a chat
 answer came from a human. A returned ID alone is never permission for the Agent to execute.
