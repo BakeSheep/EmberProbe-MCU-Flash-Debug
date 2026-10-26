@@ -60,9 +60,10 @@ async function testProbeBinding(root, elf) {
         _svdManager: { peekBound: async () => null },
         _context: {
             workspaceState: {
+                // A workspace from an older release has only the legacy success record.
                 get: (key) => {
-                    assert.strictEqual(key, "mcu.successfulProbeConnection");
-                    return config.successfulConnection;
+                    assert(["mcu.selectedProbe", "mcu.successfulProbeConnection"].includes(key));
+                    return key === "mcu.successfulProbeConnection" ? config.successfulConnection : undefined;
                 }
             }
         }

@@ -8,6 +8,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
+- 工作区探针选择改为单一记录：用户在列表中选择的探针和最近一次成功连接的探针都写入同一份按本机保存的工作区记录（`mcu.selectedProbe`），同时记录设备类型、USB 设备 ID 和来源，不写入可能被提交的 `.vscode/settings.json`。解析顺序统一为 `emberprobe.probeSerial` 设置 → 接口脚本中的序列号 → 工作区所选探针 → 唯一已连接探针，预检、J-Link 驱动切换与 Agent 使用同一结果；`config.get` 新增 `selectedProbe`。旧记录自动沿用，并保留旧格式副本供旧版本和已安装的 skill 读取。J-Link 驱动状态检查改为扫描全部类型的已连接探针，为后续“已连接调试器”选择栏做准备。
+- The workspace probe selection is now one record: the probe a user picks from the list and the last successfully connected probe are both stored in the same per-machine workspace record (`mcu.selectedProbe`) with the probe type, USB device ID and source, never in `.vscode/settings.json`, which may be committed. Resolution is uniformly the `emberprobe.probeSerial` setting, then a serial in the interface script, then the workspace's selected probe, then a unique connected probe, and preflight, J-Link driver switching and the Agent share the result; `config.get` adds `selectedProbe`. Existing records are reused, and a legacy-format copy is kept for older releases and installed skills. The J-Link driver check now scans connected probes of every type, in preparation for a Connected Debugger selector.
+
 - Windows/Linux x64 默认使用内置 scatter 补丁版 OpenOCD，合并固定地址采样读取以减少 DAP flush；保留外部 OpenOCD 路径与不支持 scatter 时的普通读取回退。双平台资源、补丁、依赖和对应源码统一校验，完整源码作为 Release 附件提供。
 - Windows/Linux x64 now default to bundled OpenOCD with the scatter patch, combining fixed-address sampling reads to reduce DAP flushes. Explicit external paths and ordinary-read fallback remain available. Both runtimes, patches, dependencies and corresponding sources are verified together; complete sources accompany the VSIX as a Release asset.
 

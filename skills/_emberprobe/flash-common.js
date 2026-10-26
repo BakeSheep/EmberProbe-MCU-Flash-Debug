@@ -444,7 +444,8 @@ async function preflight(options, deps = {}) {
                     transport,
                     probeSerial,
                     adapterSpeedKhz,
-                    successfulConnection: config?.successfulConnection
+                    // Bridge snapshots carry the v3 workspace selection; older ones only the v1/v2 record.
+                    successfulConnection: config?.selectedProbe || config?.successfulConnection
                 },
                 {
                     listProbes: async (inventoryOptions) => {

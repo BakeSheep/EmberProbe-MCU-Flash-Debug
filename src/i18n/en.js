@@ -143,6 +143,8 @@ module.exports = Object.freeze({
     "probe.driverReasonProduct": "this USB product is not on the verified J-Link list",
     "probe.driverReasonInterface": "its debug interface cannot be identified uniquely",
     "probe.driverReasonProvider": "the current driver's provider or original INF cannot be verified",
+    "probe.noTrustedSerial":
+        "Several probes of this type are connected and this one has no reliable USB serial, so OpenOCD cannot tell them apart",
     "probe.driverSelectionMultiple":
         "Several J-Links are connected, so the one to switch is unknown. Run a read or download once and pick the device, or set emberprobe.probeSerial.",
     "probe.driverSelectionRememberedMissing":

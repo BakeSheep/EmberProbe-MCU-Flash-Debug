@@ -8,7 +8,8 @@ const {
     normalizeAdapterSpeed,
     connectionIdentity,
     connectionError,
-    trustedSerial
+    trustedSerial,
+    probeFamily
 } = require("../../skills/_emberprobe/probe-connection");
 
 // UI prompts live here; automated callers receive the same structured configuration errors.
@@ -117,7 +118,8 @@ class ProbeConnectionService {
                             label: device.serial || this.t("probe.noSerial"),
                             description: [device.name, device.id].filter(Boolean).join(" · "),
                             value: trustedSerial(device, device.family),
-                            deviceId: device.id
+                            deviceId: device.id,
+                            family: device.family
                         }));
                     if (!choices.length) throw error;
                     const selected = await this.window.showQuickPick(choices, {
@@ -134,7 +136,12 @@ class ProbeConnectionService {
                             // Remember the user's pick as the workspace probe even if this operation then fails
                             // (for example on an unsupported USB driver), so the driver switch and later
                             // operations resolve the same device instead of asking again or picking another.
-                            await this.rememberSelection({ probe: request.probe, probeSerial: values.probeSerial });
+                            await this.rememberSelection({
+                                probe: request.probe,
+                                probeSerial: values.probeSerial,
+                                family: selected.family,
+                                deviceId: selected.deviceId
+                            });
                         } else if (selected.deviceId) values = { selectedDeviceId: selected.deviceId, probeSerial: "" };
                     }
                 } else throw error;
@@ -150,7 +157,7 @@ class ProbeConnectionService {
         const configured = this.getConfig();
         if (configured.debugger || configured.probe) return configured.debugger || configured.probe;
         const remembered = this.getSuccessfulConnection();
-        if ([1, 2].includes(remembered?.version) && remembered.probe) return remembered.probe;
+        if ([1, 2, 3].includes(remembered?.version) && remembered.probe) return remembered.probe;
         const detected = await this.detectProbe();
         if (!detected.probe)
             throw connectionError("PROBE_SELECTION_REQUIRED", "Cannot determine a unique probe type", {
@@ -178,10 +185,13 @@ class ProbeConnectionService {
             .then(async () => {
                 if (connection.settingsIdentity && this.settingsChanged({ options: connection })) return;
                 await this.saveSuccessfulConnection({
-                    version: connection.selectionIdentity ? 2 : 1,
+                    version: 3,
                     probe: connection.probe,
                     probeSerial: connection.selectionIdentity?.anonymous ? "" : connection.probeSerial,
-                    ...(connection.profile ? { profile: connection.profile.fingerprint } : {})
+                    family: probeFamily(connection),
+                    deviceId: connection.deviceId || "",
+                    ...(connection.profile ? { profile: connection.profile.fingerprint } : {}),
+                    source: "success"
                 });
             })
             .catch(() => {
@@ -190,10 +200,18 @@ class ProbeConnectionService {
         await this.recordQueue;
     }
 
-    async rememberSelection({ probe, probeSerial }) {
+    async rememberSelection({ probe, probeSerial, family = "", deviceId = "" }) {
         if (!probe || !probeSerial) return;
+        const selection = {
+            version: 3,
+            probe,
+            probeSerial,
+            family: family || probeFamily({ probe }),
+            deviceId,
+            source: "user"
+        };
         this.recordQueue = this.recordQueue
-            .then(() => this.saveSuccessfulConnection({ version: 2, probe, probeSerial }))
+            .then(() => this.saveSuccessfulConnection(selection))
             .catch(() => {
                 // A failed workspace-state write only loses the convenience; the operation keeps its pick.
             });

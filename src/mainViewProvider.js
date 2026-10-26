@@ -59,6 +59,8 @@ const { ChipInfoService } = require("./services/chipInfoService");
 const { ProbeConnectionService } = require("./services/probeConnectionService");
 const { ProbeDriverService } = require("./services/probeDriverService");
 const { jlinkDriverChoice, resolveJlinkDriverTarget } = require("./services/jlinkDriverChoice");
+const { ProbeSelectionStore } = require("./services/probeSelectionStore");
+const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity } = require("../skills/_emberprobe/probe-connection");
@@ -386,9 +388,9 @@ class MainViewProvider {
         });
         this._probeConnectionService = new ProbeConnectionService({
             getConfig: () => this._configurationStore.snapshot(),
-            getSuccessfulConnection: () => this._context.workspaceState.get("mcu.successfulProbeConnection"),
+            getSuccessfulConnection: () => this._probeSelectionStore().get(),
             saveSuccessfulConnection: (value) =>
-                this._context.workspaceState.update("mcu.successfulProbeConnection", value),
+                value === undefined ? this._probeSelectionStore().clear() : this._probeSelectionStore().set(value),
             onResolved: (connection) => {
                 this._resolvedProbeConnection = connection;
                 this.updateView();
@@ -1115,9 +1117,27 @@ class MainViewProvider {
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
         snapshot.svd = (await this._svdManager.peekBound())?.path || "";
-        const successfulConnection = this._context?.workspaceState.get("mcu.successfulProbeConnection");
-        if ([1, 2].includes(successfulConnection?.version)) snapshot.successfulConnection = successfulConnection;
+        const selectedProbe = this._context ? this._probeSelectionStore().get() : null;
+        if (selectedProbe) {
+            snapshot.selectedProbe = selectedProbe;
+            // Previously installed skills read only the v1/v2 record.
+            snapshot.successfulConnection = this._probeSelectionStore().legacy();
+        }
         return snapshot;
+    }
+    _probeInventoryService() {
+        // Created on first use; recently switched J-Link drivers are reconciled into every scan.
+        if (!this._probeInventory)
+            this._probeInventory = new ProbeInventoryService({
+                listProbes,
+                reconcile: (inventory) => this._probeDriverService.reconcileInventory(inventory)
+            });
+        return this._probeInventory;
+    }
+    _probeSelectionStore() {
+        if (this._selectionStore?.state !== this._context.workspaceState)
+            this._selectionStore = new ProbeSelectionStore(this._context.workspaceState);
+        return this._selectionStore;
     }
     _assertConnectionEditable(values) {
         const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
@@ -6540,13 +6560,13 @@ class MainViewProvider {
             this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: "" });
             return null;
         }
-        const inventory = await this._probeDriverService.reconcileInventory(await listProbes());
+        const { inventory } = await this._probeInventoryService().scan();
         if (this._probeDriverSwitching || revision !== (this._jlinkDriverChoiceRevision || 0)) return null;
         if (this._context.workspaceState.get(CACHE_KEYS.debugger) !== "jlink.cfg") return null;
         const choice = jlinkDriverChoice(
             inventory,
             vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
-            this._context.workspaceState.get("mcu.successfulProbeConnection")
+            this._probeSelectionStore().get()
         );
         this._webviewView?.webview.postMessage({ type: "probeDriverChoice", driver: choice?.driver || "" });
         if (choice?.driver !== "segger") this._lastJlinkDriverWarning = "";
@@ -6639,14 +6659,14 @@ class MainViewProvider {
             const resolved = resolveJlinkDriverTarget(
                 inventory,
                 vscode.workspace.getConfiguration("emberprobe").get("probeSerial", ""),
-                this._context.workspaceState.get("mcu.successfulProbeConnection"),
+                this._probeSelectionStore().get(),
                 target?.deviceId ? target : null
             );
             if (resolved.error) throw resolved.error;
             return resolved.choice;
         };
         try {
-            const choice = resolveTarget(await this._probeDriverService.reconcileInventory(await listProbes()));
+            const choice = resolveTarget((await this._probeInventoryService().scan()).inventory);
             if (target?.instanceId && choice.instanceId !== target.instanceId)
                 throw Object.assign(new Error("The selected J-Link changed; select its USB driver in the sidebar"), {
                     code: "PROBE_DRIVER_SELECTION_CHANGED",

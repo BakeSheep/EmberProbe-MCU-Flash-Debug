@@ -36,6 +36,11 @@ Do not turn a Windows instance-ID tail into `--probe-serial`: it may differ from
 descriptor (for example, `ATK_20190528` versus `ATK 20190528`). Use the explicitly supplied
 USB serial or leave it empty for a uniquely matched probe. Network backends are configured
 in the trusted interface script and do not require a local USB probe.
+An empty serial resolves in this order: the `emberprobe.probeSerial` setting, a serial in the
+interface script, the workspace's
+selected probe (`config.get` → `selectedProbe`: the probe the user picked or last used
+successfully), then a unique connected probe. A selected probe that is not connected is
+reported as not found; it is never replaced by another device, so ask the user instead.
 The Bridge validates the ID and current plan; it does not independently attest that a chat
 answer came from a human. A returned ID alone is never permission for the Agent to execute.
 Denial ends the operation; do not substitute a direct CLI call or retry automatically.

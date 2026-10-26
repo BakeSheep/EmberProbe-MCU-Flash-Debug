@@ -11,7 +11,7 @@ async function main() {
         writes = 0,
         prompts = 0,
         title = "",
-        selected = { value: "5678" };
+        selected = { value: "5678", deviceId: "usb-2", family: "jlink" };
     const service = new ProbeConnectionService({
         getConfig: () => config,
         getSuccessfulConnection: () => saved,
@@ -54,9 +54,12 @@ async function main() {
     await service.recordSuccess(result);
     assert.strictEqual(writes, 1);
     assert.deepStrictEqual(saved, {
-        version: 2,
+        version: 3,
         probe: "jlink.cfg",
-        probeSerial: "1234"
+        probeSerial: "1234",
+        family: "jlink",
+        deviceId: "usb-1",
+        source: "success"
     });
 
     // Test reading legacy record containing deviceId, target, transport, fingerprint
@@ -82,9 +85,12 @@ async function main() {
     await service.recordSuccess(freshResult);
     assert.strictEqual(writes, 1);
     assert.deepStrictEqual(saved, {
-        version: 2,
+        version: 3,
         probe: "jlink.cfg",
-        probeSerial: "1234"
+        probeSerial: "1234",
+        family: "jlink",
+        deviceId: "usb-1",
+        source: "success"
     });
 
     devices = [{ family: "jlink", serial: "5678", id: "usb-2" }];
@@ -124,7 +130,7 @@ async function main() {
     assert.strictEqual(config.probeSerial, "", "re-picking does not rewrite settings");
     assert.deepStrictEqual(
         saved,
-        { version: 2, probe: "jlink.cfg", probeSerial: "5678" },
+        { version: 3, probe: "jlink.cfg", probeSerial: "5678", family: "jlink", deviceId: "usb-2", source: "user" },
         "a re-picked probe replaces the stale workspace record before the operation finishes"
     );
     const afterRepick = await service.prepare(options);
@@ -134,7 +140,7 @@ async function main() {
     saved = { version: 2, probe: "jlink.cfg", probeSerial: "1234" };
     selected = undefined;
     await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
-    selected = { value: "5678" };
+    selected = { value: "5678", deviceId: "usb-2", family: "jlink" };
     // An explicitly configured serial stays strict even for interactive callers.
     config = { ...config, probeSerial: "9999" };
     await assert.rejects(service.prepare(options, true), {
@@ -171,7 +177,7 @@ async function main() {
     assert.strictEqual(config.probeSerial, "");
     assert.deepStrictEqual(
         saved,
-        { version: 2, probe: "jlink.cfg", probeSerial: "5678" },
+        { version: 3, probe: "jlink.cfg", probeSerial: "5678", family: "jlink", deviceId: "usb-2", source: "user" },
         "a probe picked among several is remembered even before the operation succeeds"
     );
     assert.strictEqual((await service.prepare(options)).probeSerial, "5678", "Agent calls resolve the same probe");

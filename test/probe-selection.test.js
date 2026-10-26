@@ -207,7 +207,14 @@ async function main() {
         })
     });
     await service.recordSuccess(await service.prepare({}));
-    assert.deepStrictEqual(saved, { version: 2, probe: "stlink.cfg", probeSerial: "" });
+    assert.deepStrictEqual(saved, {
+        version: 3,
+        probe: "stlink.cfg",
+        probeSerial: "",
+        family: "stlink",
+        deviceId: String.raw`USB\VID_0483&PID_3748\5&26B53364&0&3`,
+        source: "success"
+    });
     saved = { version: 1, probe: "stlink.cfg", probeSerial: "old-probe" };
     await assert.rejects(service.prepare({}), { code: "PROBE_SELECTED_NOT_FOUND" });
     assert.strictEqual((await service.prepare({}, true)).adapterSerial, "");
@@ -322,8 +329,10 @@ async function main() {
             tcpSaved = value;
         }
     }).recordSuccess(remote);
-    assert.strictEqual(tcpSaved.version, 2);
+    assert.strictEqual(tcpSaved.version, 3);
     assert.strictEqual(tcpSaved.profile, tcp.fingerprint);
+    assert.strictEqual(tcpSaved.family, "cmsis-dap");
+    assert.strictEqual(tcpSaved.deviceId, "", "a network probe has no USB device identity");
     for (const [driver, events] of [
         ["st-link", [["st-link backend", "tcp", "7185"]]],
         [

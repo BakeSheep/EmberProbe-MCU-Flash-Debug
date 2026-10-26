@@ -139,6 +139,7 @@ module.exports = Object.freeze({
     "probe.driverReasonProduct": "该 USB 产品不在已验证的 J-Link 型号列表中",
     "probe.driverReasonInterface": "无法唯一识别其调试接口",
     "probe.driverReasonProvider": "无法验证当前驱动的提供者或原始 INF",
+    "probe.noTrustedSerial": "同类探针有多台，但这台没有可靠的 USB 序列号，OpenOCD 无法区分",
     "probe.driverSelectionMultiple":
         "检测到多台 J-Link，无法确定要切换哪一台。请先执行一次读取或下载并在列表中选择设备，或设置 emberprobe.probeSerial。",
     "probe.driverSelectionRememberedMissing":

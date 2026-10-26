@@ -153,7 +153,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
     const enforceable = profile?.supportsSerial !== false;
     // A changed interface profile makes the remembered device a stale hint, not a selection.
     const remembered =
-        [1, 2].includes(config.successfulConnection?.version) &&
+        [1, 2, 3].includes(config.successfulConnection?.version) &&
         (!config.successfulConnection.profile ||
             !profile ||
             config.successfulConnection.profile === profile.fingerprint)
@@ -162,7 +162,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
     // The previously used probe would have been selected had the interface configuration not changed.
     const profileChanged =
         !remembered &&
-        [1, 2].includes(config.successfulConnection?.version) &&
+        [1, 2, 3].includes(config.successfulConnection?.version) &&
         !!config.successfulConnection.probeSerial &&
         config.successfulConnection.probe === result.probe;
     result.selection = { probe: "explicit", transport: result.selection.transport };
