@@ -1,5 +1,10 @@
 "use strict";
-const { isSupportedDebugSession, resolveRtos, normalizeDebugServerOptions } = require("./services/debugConfiguration");
+const {
+    isSupportedDebugSession,
+    resolveRtos,
+    normalizeDebugServerOptions,
+    startupTrace
+} = require("./services/debugConfiguration");
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
 const { SharedDebugGroup } = require("./services/sharedDebugGroup");
 const { resolvePrettyPrinting, configuredPrettyPrintingMode } = require("./services/prettyPrinting");
@@ -796,6 +801,7 @@ class MainViewProvider {
                 this._debugStartupErrorReported = false;
                 this._debugStartupFailureCleanedUp = false;
                 console.log("主进程执行启动调试命令");
+                const startup = configuration?.performanceTrace ? startupTrace() : null;
                 const serverOptions = normalizeDebugServerOptions(configuration || {});
                 let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg =
@@ -828,6 +834,7 @@ class MainViewProvider {
                     configuration || {}
                 );
                 if (!cortexTools) return false;
+                startup?.phase("tools");
                 // Overlaps a cold GDB start with probe preflight and OpenOCD start-up.
                 void this._gdbWarmup?.warm(cortexTools.gdbPath);
                 const ownDebug = vscode.workspace.getConfiguration("emberprobe", workspaceFolder.uri);
@@ -854,6 +861,7 @@ class MainViewProvider {
                     this._resolveOpenOcdPath(configuredOpenOcdPath)
                 ]);
                 if (!openocdPath) return false;
+                startup?.phase("openocd");
                 const svdPath = cleanWindowsPath(resolvedSvdPath);
                 openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
                 if (serverOptions.serverGroup) {
@@ -884,6 +892,7 @@ class MainViewProvider {
                     return addPeripheralViewerSvd(grouped, svdPath);
                 }
                 await this.prepareForCortexDebug(workspaceFolder);
+                startup?.phase("prepare");
                 probePrepared = true;
                 this._debugStartLease = this._probeCoordinator.acquire("debugStart");
                 const managed = await this._startManagedDebugServer(
@@ -896,7 +905,8 @@ class MainViewProvider {
                     {
                         ...serverOptions,
                         request: configuration?.request || (startOptions?.attach ? "attach" : "launch")
-                    }
+                    },
+                    startup?.phase
                 );
                 this._debugServerLease = this._debugStartLease.transition("debugServer");
                 this._managedDebugToken = crypto.randomUUID();
@@ -922,6 +932,7 @@ class MainViewProvider {
                 Object.assign(debugConfig, cortexTools);
                 Object.assign(debugConfig, pretty);
                 Object.assign(debugConfig, images);
+                if (startup) debugConfig.__emberprobeStartupTrace = startup.finish();
                 const startupGate = this._armDebugStartupWatchdog();
                 if (configuration) {
                     startAccepted = true;
@@ -1799,9 +1810,19 @@ class MainViewProvider {
         this._applySamplingPlan(server, plan.allowed);
         return plan.allowed;
     }
-    async _startManagedDebugServer(executable, probe, target, cfg, interactive = true, rtos = "", serverOptions = {}) {
+    async _startManagedDebugServer(
+        executable,
+        probe,
+        target,
+        cfg,
+        interactive = true,
+        rtos = "",
+        serverOptions = {},
+        phase = undefined
+    ) {
         const selection = normalizeDebugServerOptions(serverOptions);
         const connection = await this._probeConnectionService.prepare({ executable, probe, target }, interactive);
+        phase?.("preflight");
         // Launch downloads firmware through GDB; attach can still inspect an unverified USB attachment.
         if (serverOptions.request !== "attach") assertWriteIdentity(connection);
         let lastError = null;
@@ -1900,6 +1921,7 @@ class MainViewProvider {
             this._managedDebugServer = server;
             try {
                 const info = await server.start();
+                phase?.("server");
                 return info;
             } catch (error) {
                 lastError = error;

@@ -7,6 +7,7 @@
 // - 所有检测与安装状态通过回调交给侧边栏展示，不发送通知弹窗。
 
 const { resolveExecutablePath } = require("./openocdScripts");
+const fs = require("fs");
 const { spawn } = require("child_process");
 const installer = require("./openocdInstaller");
 const i18n = require("./i18n");
@@ -21,6 +22,19 @@ const {
 
 // 内存级探测结果缓存
 let _cachedResult = null;
+// Verified bundled runtimes by executable path. Flash, debug and live starts each resolve the bundled default,
+// and a cold Windows start of `openocd --version` can take hundreds of milliseconds, so a runtime whose
+// executable keeps its size and mtime is not probed again.
+const bundledVerified = new Map();
+
+function executableStamp(file) {
+    try {
+        const stat = fs.statSync(file);
+        return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+        return "";
+    }
+}
 
 function withCompatibility(result) {
     if (!result || !result.found) return result;
@@ -148,6 +162,7 @@ function setCache(result) {
 }
 function resetCache() {
     _cachedResult = null;
+    bundledVerified.clear();
 }
 function reportStatus(report, status) {
     if (typeof report === "function") report(status);
@@ -178,7 +193,9 @@ async function probeDefaultOpenOcd(executable, context, report) {
             context,
             (progress) => reportStatus(report, { state: "installing", ...progress }),
             async (candidate) => {
-                probed = await probeOpenOcd(candidate);
+                const stamp = executableStamp(candidate);
+                const known = stamp ? bundledVerified.get(candidate) : undefined;
+                probed = known?.stamp === stamp ? known.result : await probeOpenOcd(candidate);
                 return {
                     ok: isCompatibleResult(probed),
                     version: probed.version,
@@ -188,6 +205,9 @@ async function probeDefaultOpenOcd(executable, context, report) {
             { reuse: true }
         );
         if (!result.ok) throw new Error(result.error);
+        // A fresh extraction is verified in staging; renaming keeps the stamp, so the published path reuses it.
+        const stamp = executableStamp(result.path);
+        if (stamp) bundledVerified.set(result.path, { stamp, result: probed });
         return { ...probed, path: result.path, requested: String(executable || "").trim(), bundled: true };
     } catch (error) {
         return {

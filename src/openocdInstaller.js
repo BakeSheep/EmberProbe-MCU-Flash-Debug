@@ -83,6 +83,20 @@ function globFirst(root, predicate) {
     return out;
 }
 
+// The archive only changes with an extension update, so its digest is reused while its stat matches.
+const archiveDigests = new Map();
+function archiveDigest(archive) {
+    const stat = fs.statSync(archive);
+    const key = `${archive}:${stat.mtimeMs}:${stat.size}`;
+    let digest = archiveDigests.get(key);
+    if (!digest) {
+        digest = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
+        if (archiveDigests.size >= 8) archiveDigests.clear();
+        archiveDigests.set(key, digest);
+    }
+    return digest;
+}
+
 // 解包路径断言：拒绝解析后落在 staging 目录之外的条目（Zip Slip 纵深防御；
 // node-tar 默认已剥离绝对路径与 ".."，此处显式校验以防未来版本行为变化）
 function assertSafeEntryPath(staging, entryPath) {
@@ -106,10 +120,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
     // Automatic defaults use an archive-specific sibling directory, leaving manual installations
     // and runtimes from other extension versions intact, including those used by another window.
     const dest = reuse
-        ? path.join(
-              path.dirname(installDir(context)),
-              `openocd-${platformKey()}-${createHash("sha256").update(fs.readFileSync(archive)).digest("hex")}`
-          )
+        ? path.join(path.dirname(installDir(context)), `openocd-${platformKey()}-${archiveDigest(archive)}`)
         : installDir(context);
     if (reuse && fs.existsSync(dest)) {
         const binary = locateOpenOcdBinary(dest);
@@ -245,6 +256,7 @@ module.exports = {
     installDir,
     locateOpenOcdBinary,
     installBundledOpenOcd,
+    archiveDigest,
     assertSafeEntryPath,
     BUNDLED_DIR,
     OPENOCD_BIN

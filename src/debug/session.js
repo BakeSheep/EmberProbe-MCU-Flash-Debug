@@ -20,7 +20,7 @@ const { SymbolDirectory } = require("./symbolDirectory");
 const { FreeRtosSnapshot } = require("../services/freeRtosSnapshot");
 const { safePath } = require("./stl");
 const { normalizeDebugImages, DebugImages } = require("../services/debugImages");
-const { normalizeDebugServerOptions } = require("../services/debugConfiguration");
+const { normalizeDebugServerOptions, normalizeStartupTrace } = require("../services/debugConfiguration");
 const { initializePrettyPrinting } = require("../services/prettyPrinting");
 const { normalizeExternalTarget } = require("../services/externalDebugService");
 
@@ -322,12 +322,15 @@ class EmberDebugSession extends DebugSession {
             if (this.config.performanceTrace && this.launchStartedAt !== undefined) {
                 const timing = {
                     event: "entryStop",
-                    sinceLaunchMs: Math.round(performance.now() - this.launchStartedAt)
+                    sinceLaunchMs: Math.round(performance.now() - this.launchStartedAt),
+                    // Wall clock, because the extension stamped the start in another process.
+                    ...(this.launchStartup ? { sinceStartMs: Date.now() - this.launchStartup.startedAt } : {})
                 };
                 this.sendEvent(new OutputEvent(`[EmberProbe performance] ${JSON.stringify(timing)}\n`, "console"));
             }
             // Restarts re-arm the entry breakpoint; only the first stop measures launch.
             this.launchStartedAt = undefined;
+            this.launchStartup = undefined;
         }
         if (reason.startsWith("exited")) {
             this.end();
@@ -752,7 +755,9 @@ class EmberDebugSession extends DebugSession {
         let mark = startedAt;
         const phases = {};
         const details = {};
+        const startup = normalizeStartupTrace(this.config.__emberprobeStartupTrace);
         this.launchStartedAt = startedAt;
+        this.launchStartup = startup || undefined;
         return {
             phase: (name, detail) => {
                 const now = performance.now();
@@ -765,7 +770,14 @@ class EmberDebugSession extends DebugSession {
                     command: this.config.attach ? "attach" : "launch",
                     totalMs: Math.round(performance.now() - startedAt),
                     phases,
-                    ...details
+                    ...details,
+                    // Probe preflight and OpenOCD start-up ran in the extension before this adapter started.
+                    ...(startup
+                        ? {
+                              startupMs: Object.values(startup.phases).reduce((sum, value) => sum + value, 0),
+                              startup: startup.phases
+                          }
+                        : {})
                 };
                 this.sendEvent(new OutputEvent(`[EmberProbe performance] ${JSON.stringify(timing)}\n`, "console"));
             }
