@@ -438,6 +438,29 @@
         row.append(note, button);
         container.appendChild(row);
     }
+    // Static array rows start at 16 elements; each click reveals the next page.
+    const ARRAY_PAGE = 64;
+    function arrayShownCount(total, shown) {
+        return Math.min(Number(total) || 0, Math.max(16, Number(shown) || 0));
+    }
+    function renderArrayMore(container, remaining, t, more) {
+        const document = container.ownerDocument;
+        const row = document.createElement("div");
+        row.className = "member-visibility array-more";
+        const note = document.createElement("span");
+        note.textContent = t("lw.arrayMore", { n: remaining });
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "raw-members-toggle";
+        button.textContent = t("lw.arrayShowMore", { n: Math.min(remaining, ARRAY_PAGE) });
+        button.onclick = (event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            more(ARRAY_PAGE);
+        };
+        row.append(note, button);
+        container.appendChild(row);
+    }
     // Display-only collection. Bulk chart collection keeps pointers and raw internals out.
     function displayLayoutLeaves(symbol, layout, name, baseAddr, options = {}) {
         const out = [];
@@ -1339,6 +1362,8 @@
         summaryRow,
         hiddenMemberCount,
         renderMemberVisibility,
+        arrayShownCount,
+        renderArrayMore,
         displayLayoutLeaves,
         displayRuntimeSelection,
         displayTreeShape,

@@ -62,6 +62,8 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     sbLastPointers = (uiState.sbLastPointersVersion && uiState.sbLastPointers) || Object.create(null),
     sbLastPointersVersion = (uiState.sbLastPointers && uiState.sbLastPointersVersion) || "",
     sbRawMembers = uiState.sbRawMembers || Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    sbArrayShown = uiState.sbArrayShown || Object.create(null),
     compCells = Object.create(null),
     avExpanded = Object.create(null),
     writeCells = Object.create(null),
@@ -422,9 +424,10 @@ function sbRemove(name, isComp) {
     if (isComp) {
         sideWatch = sideWatch.filter((w) => w.name !== name && sbBaseNameOf(w.name) !== name);
         delete sbRawMembers[name];
-        Object.keys(sbExpanded).forEach((key) => {
-            if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete sbExpanded[key];
-        });
+        for (const state of [sbExpanded, sbArrayShown])
+            Object.keys(state).forEach((key) => {
+                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete state[key];
+            });
     } else {
         const removed = sideWatch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
         sideWatch = sideWatch.filter((w) => w.name !== name && !removed.includes(w));
@@ -1708,6 +1711,7 @@ function applyFolds() {
 function saveSbUi() {
     uiState.sbExpanded = sbExpanded;
     uiState.sbRawMembers = sbRawMembers;
+    uiState.sbArrayShown = sbArrayShown;
     uiState.sbLastPointers = sbLastPointers;
     uiState.sbLastPointersVersion = sbLastPointersVersion;
     if (api && api.setState) api.setState(uiState);
@@ -1821,7 +1825,7 @@ function sbRenderLayout(container, layout, path, displayPath = path) {
             sbNote(container, t("lw.compositeNoLayout"));
             return;
         }
-        const shown = Math.min(total, 16);
+        const shown = EmberProbeRuntime.arrayShownCount(total, sbArrayShown[path]);
         for (let i = 0; i < shown; i++) {
             const p = path + "[" + i + "]";
             const element = EmberProbeRuntime.layoutBranch(sbLayoutSymbol(path), et, p);
@@ -1840,7 +1844,12 @@ function sbRenderLayout(container, layout, path, displayPath = path) {
                     ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {})
                 });
         }
-        if (total > shown) sbNote(container, t("lw.arrayMore", { n: total - shown }));
+        if (total > shown)
+            EmberProbeRuntime.renderArrayMore(container, total - shown, t, (page) => {
+                sbArrayShown[path] = shown + page;
+                saveSbUi();
+                renderValues();
+            });
     }
 }
 function sbRenderSummary(container, summary, label, typeName) {

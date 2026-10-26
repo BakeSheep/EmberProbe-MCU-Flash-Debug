@@ -398,6 +398,47 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
     }
 }
 
+// Array elements past the first 16 stay reachable: "show more" reveals the next page in both views.
+{
+    const elementType = { kind: "base", typeName: "uint8_t", byteSize: 1, watchType: "u8" };
+    const array = (count) => ({
+        kind: "array",
+        typeName: "uint8_t[" + count + "]",
+        byteSize: count,
+        elementType,
+        totalElements: count,
+        dimensions: [count]
+    });
+    const sidebar = render(getModernWebviewContent({}, "zh"));
+    const graph = render(getLiveWatchContent({ panelId: 1 }, "zh"));
+    try {
+        const rows = (view, selector) => view.document.querySelectorAll(selector).length;
+        const more = (view) => view.document.querySelector(".array-more button");
+        sidebar.send({ type: "sidebarWatchList", items: [symbol(array(25), "sbus_buf")] });
+        assert.strictEqual(rows(sidebar, ".sb-mrow"), 16);
+        assert.ok(sidebar.document.querySelector(".array-more").textContent.includes("其余 9 个元素未显示"));
+        more(sidebar).click();
+        assert.strictEqual(rows(sidebar, ".sb-mrow"), 25);
+        assert.strictEqual(more(sidebar), null);
+        sidebar.send({ type: "sidebarWatchList", items: [symbol(array(100), "big")] });
+        assert.strictEqual(rows(sidebar, ".sb-mrow"), 16);
+        more(sidebar).click();
+        assert.strictEqual(rows(sidebar, ".sb-mrow"), 80);
+        more(sidebar).click();
+        assert.strictEqual(rows(sidebar, ".sb-mrow"), 100);
+        graph.send({ type: "watchList", items: [symbol(array(25), "sbus_buf")] });
+        assert.strictEqual(rows(graph, ".member-row"), 16);
+        more(graph).click();
+        assert.strictEqual(rows(graph, ".member-row"), 25);
+        assert.strictEqual(more(graph), null);
+        sidebar.assertHealthy();
+        graph.assertHealthy();
+    } finally {
+        sidebar.close();
+        graph.close();
+    }
+}
+
 (async () => {
     const { createRuntimeLayoutResolver } = require("../src/dwarf/runtimeTypes");
     const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");

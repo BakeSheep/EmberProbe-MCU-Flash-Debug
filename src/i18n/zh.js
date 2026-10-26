@@ -554,6 +554,7 @@ module.exports = Object.freeze({
     "lw.arrayIndex": "索引",
     "lw.arrayApply": "确定",
     "lw.arrayMore": "… 其余 {n} 个元素未显示",
+    "lw.arrayShowMore": "再显示 {n} 个",
     "lw.showRawMembers": "显示原始成员",
     "lw.hideRawMembers": "隐藏原始成员",
     "lw.hiddenMembers": "已隐藏 {n} 个内部成员",

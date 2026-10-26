@@ -576,6 +576,7 @@ module.exports = Object.freeze({
     "lw.arrayIndex": "Index",
     "lw.arrayApply": "Apply",
     "lw.arrayMore": "… {n} more element(s) not shown",
+    "lw.arrayShowMore": "Show {n} more",
     "lw.showRawMembers": "Show raw members",
     "lw.hideRawMembers": "Hide raw members",
     "lw.hiddenMembers": "{n} internal members hidden",

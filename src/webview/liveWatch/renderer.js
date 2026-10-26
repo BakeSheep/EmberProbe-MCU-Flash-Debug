@@ -508,6 +508,8 @@ var watch = [],
     rawMembers = Object.create(null),
     compCells = Object.create(null),
     dispSpec = Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    arrayShown = Object.create(null),
     running = false,
     starting = false,
     frozen = false,
@@ -566,6 +568,7 @@ if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterB
 if (saved && saved.expanded) expanded = saved.expanded;
 if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
 if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
+if (saved && saved.arrayShown) arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
 var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
 if (saved && saved.lastPointers && saved.lastPointersVersion) {
@@ -741,6 +744,7 @@ function saveUi() {
             expanded: expanded,
             rawMembers: rawMembers,
             dispSpec: dispSpec,
+            arrayShown: arrayShown,
             lastPointers: lastPointers,
             lastPointersVersion: lastPointersVersion,
             pointerCurveDefaults: true,
@@ -982,8 +986,10 @@ function removeVar(name) {
         delete latestPointer[w.name];
         delete hidden[w.name];
     });
-    Object.keys(expanded).forEach(function (path) {
-        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete expanded[path];
+    [expanded, arrayShown].forEach(function (state) {
+        Object.keys(state).forEach(function (path) {
+            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete state[path];
+        });
     });
     delete dispSpec[name];
     delete rawMembers[name];
@@ -1578,7 +1584,7 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
             total = Number(layout.totalElements) || 0,
             es = Number(et.byteSize) || 0;
         var start = 0,
-            end = Math.min(total, MAX_ARR_SHOWN);
+            end = EmberProbeRuntime.arrayShownCount(total, arrayShown[path]);
         if (disp) {
             start = Math.max(0, Number(disp.start) || 0);
             end = Math.min(total, isNaN(Number(disp.end)) ? total : Number(disp.end));
@@ -1620,7 +1626,14 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
                     { ...element, ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {}) }
                 );
         }
-        if (total > end) appendNote(container, t("lw.arrayMore", { n: total - end }));
+        // A chosen range stays as chosen; the default first page can grow.
+        if (total > end && disp) appendNote(container, t("lw.arrayMore", { n: total - end }));
+        else if (total > end)
+            EmberProbeRuntime.renderArrayMore(container, total - end, t, function (page) {
+                arrayShown[path] = end + page;
+                saveUi();
+                renderVars();
+            });
     }
 }
 function renderSummaryInto(container, summary, baseAddr, label, typeName) {
