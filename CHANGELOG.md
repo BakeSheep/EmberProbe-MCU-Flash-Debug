@@ -21,8 +21,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 采样 Tcl 连接先自测无回显响应，通过后独立与托管调试均省去逐字符回显，调试模式同时省去响应临时文件；不兼容或日志验证不足时安全回退。固定地址读取合并同一可写 ELF 节内不超过 32 字节的间隙，保持变量内容与调试预算不变。
 - Sampling Tcl connections self-test no-echo replies before acquisition; compatible standalone and managed debug sessions avoid per-character echo, and debug sessions also avoid response files, with legacy fallback when compatibility or log verification is insufficient. Fixed reads merge gaps up to 32 bytes within one writable allocated ELF section while preserving variable data and debug budgets.
-- 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
-- Standalone adaptive scheduling uses mean cycle duration at 85% duty (70% with CPU-load sampling configured); debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
+- 独立采样自适应调度改用平均周期耗时 / 85% 占用率，调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
+- Standalone adaptive scheduling uses mean cycle duration at 85% duty; debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
 
 - 波形图新增“高频绘图优化”（默认开启，可在 EN 按钮左侧的齿轮下拉中关闭）：变量高频抖动时，连续折返的像素列画成半透明 min/max 包络带，曲线改沿平滑走势绘制，实线、虚线、点线都不再被锯齿切碎；孤立尖峰、单调陡沿与平稳段仍按原包络精确绘制。
 - Waveform charts add "High-frequency rendering" (on by default, toggled from the gear menu left of the EN button): runs of rapidly reversing pixel columns become a translucent min/max band and the curve follows a smoothed trend, so solid, dashed and dotted lines no longer shatter on jitter. Isolated spikes, monotonic steep edges and calm sections keep the exact envelope.
@@ -55,6 +55,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Fix child folders whose names start with `..` (such as `..build`) being treated as outside the workspace by path checks, including Bridge discovery, Agent breakpoints, variable CSV output, OpenOCD config scripts and ELF target detection.
 - 移除没有调用方的 `writeOnce` 未校验写入路径；运行时写入统一经过带读回校验的 `writeAndVerify`。
 - Remove the unused, unverified `writeOnce` write path; all runtime writes go through `writeAndVerify`, which reads back to verify.
+
+### 移除 / Removed
+
+- 移除实验性 CPU 负载估计（烧录调试卡片“其他”中的 CPU 负载行）：主机采样估算的结果不够准确，且采样期间独占探针，与烧录、调试和变量采样互斥。内存占用显示不受影响；独立采样的自适应调度统一按平均周期耗时 / 85% 占用率。
+- Remove the experimental CPU load estimate (the CPU load row under Other in the flash/debug card): its host-sampled estimate was not accurate enough, and it held the probe exclusively, blocking flashing, debugging and variable sampling while it ran. Memory usage is unaffected; standalone adaptive sampling now always uses mean cycle duration at 85% duty.
 
 ## [0.8.9-beta.1] - 2026-10-22
 

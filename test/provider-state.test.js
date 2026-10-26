@@ -191,7 +191,7 @@ function deferred() {
         assert.strictEqual(p._probeCoordinator.firstActive(), "liveWatch");
         exit.resolve(false);
         await assert.rejects(p._liveStopPromise, { code: "PROBE_EXIT_UNCONFIRMED" });
-        assert.strictEqual(statuses.at(-1).key, "cpu.exitUnconfirmed");
+        assert.strictEqual(statuses.at(-1).key, "live.exitUnconfirmed");
         assert.strictEqual(p._liveSession, live);
         live.stop = async () => true;
         await p.stopLiveWatch();

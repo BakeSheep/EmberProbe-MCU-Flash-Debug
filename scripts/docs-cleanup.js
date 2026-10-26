@@ -5,7 +5,6 @@ const path = require("path");
 // Durable docs. Images and other assets are always kept; no link parser is needed.
 const MAIN_DOCS = new Set([
     "AGENT-TRUST-BOUNDARIES.md",
-    "CPU-LOAD-MONITORING.md",
     "CUBEMX-GENERATION.md",
     "ENUM-VARIABLES.md",
     "EXTERNAL-GDB-SERVER.md",

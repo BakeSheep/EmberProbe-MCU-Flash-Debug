@@ -393,7 +393,6 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     };
     provider._debugBridge = { hasAnySession: false };
     provider._liveSession = { active: true };
-    provider._assertCpuIdle = () => {};
     provider._assertProbeDriverIdle = () => {};
     provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
     provider._refreshElfBindings = async () => refreshed++;

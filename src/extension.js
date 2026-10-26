@@ -56,7 +56,6 @@ function activate(context) {
             }
         }),
         vscode.workspace.onDidChangeWorkspaceFolders(async () => {
-            await provider._cpuLoadService.stop("workspace-changed").catch(() => {});
             await provider.stopAgentBridge().catch(() => {});
             provider.refreshSkillStatus(true).catch(console.error);
             provider.mcpConfigurationChanged();

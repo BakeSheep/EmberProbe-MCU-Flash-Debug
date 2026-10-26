@@ -9,7 +9,7 @@ const { cleanDocs } = require("../scripts/docs-cleanup");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-docs-"));
 try {
     assert.deepStrictEqual(cleanDocs(root), []);
-    const kept = ["RELEASING.md", "CPU-LOAD-MONITORING.md", "images/chart.png"];
+    const kept = ["RELEASING.md", "RTOS-AWARENESS.md", "images/chart.png"];
     const removed = ["WAVEFORM-AUDIT.md", "evidence.json", "plans/design.md"];
     for (const file of [...kept, ...removed]) {
         const target = path.join(root, "docs", file);

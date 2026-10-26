@@ -142,7 +142,7 @@ function startupFixture(mode, branch) {
             checked = command;
             return "EP_OK:42";
         };
-        const command = fixture.session._executeCheckedCommand("expr 42");
+        const command = fixture.session._sendCheckedCommand("expr 42");
         await fixture.session._sampleTick();
         assert.strictEqual(checked, undefined, "checked commands also wait for detection");
         fixture.release();
@@ -162,16 +162,16 @@ function startupFixture(mode, branch) {
                 return "EP_OK:42";
             };
             assert.strictEqual(
-                await session._executeCheckedCommand("expr 42"),
+                await session._sendCheckedCommand("expr 42"),
                 mode === "debug" && !noEcho ? "file" : "42"
             );
             if (wrapped) {
                 assert.ok(wrapped.includes("catch {expr 42} _ep_msg"));
                 assert.strictEqual(wrapped.endsWith("return -code exit $_ep_out"), noEcho);
                 session._sendCommand = async () => "EP_ERR:bad command";
-                await assert.rejects(session._executeCheckedCommand("bad"), { code: "OPENOCD_TCL_ERROR" });
+                await assert.rejects(session._sendCheckedCommand("bad"), { code: "OPENOCD_TCL_ERROR" });
                 session._sendCommand = async () => "bad protocol";
-                await assert.rejects(session._executeCheckedCommand("bad"), { code: "OPENOCD_TCL_PROTOCOL_ERROR" });
+                await assert.rejects(session._sendCheckedCommand("bad"), { code: "OPENOCD_TCL_PROTOCOL_ERROR" });
             }
         }
     }
@@ -303,10 +303,6 @@ function startupFixture(mode, branch) {
     standalone._recentDurations = [7, 7, 7, 7];
     standalone._setClockInterval(10, true);
     assert.strictEqual(standalone.effectiveIntervalMs, 10);
-    standalone.cpuLoad.plan = {};
-    standalone._setClockInterval(5, true);
-    assert.strictEqual(standalone.effectiveIntervalMs, 10, "CPU sampler retains 70% duty");
-    standalone.cpuLoad.plan = null;
     standalone._setClockInterval(5, true);
     assert.strictEqual(standalone.effectiveIntervalMs, 9);
     standalone.effectiveIntervalMs = 100;

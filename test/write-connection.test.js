@@ -283,7 +283,6 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     assert.deepStrictEqual(postedStatuses, [], "a paused UI write never gates the write controls mid-drag");
     delete runtimeProvider._postConsumerStatuses;
     const blockedProvider = Object.create(Provider.prototype);
-    blockedProvider._assertCpuIdle = () => {};
     blockedProvider._debugBridge = { canWrite: false };
     blockedProvider._t = (key) => key;
     const blockedWriteCount = writeCalls.length;

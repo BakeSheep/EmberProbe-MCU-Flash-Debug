@@ -182,10 +182,7 @@ async function chipPreflight() {
         onPost: (message) => f.messages.push(message)
     });
     try {
-        for (const blocked of [false, true]) {
-            f.provider._assertCpuIdle = () => {
-                if (blocked) throw failure;
-            };
+        for (let attempt = 0; attempt < 2; attempt++) {
             const read = sidebar.document.getElementById("chipRead");
             read.click();
             assert.strictEqual(read.disabled, true);
@@ -204,7 +201,6 @@ async function chipPreflight() {
         await f.dispatch({ type: "chipControl", action: "pause" });
         assert.strictEqual(f.messages.at(-1).state, "error", "control failures also finish their spinner");
         assert.strictEqual(f.messages.at(-1).diagnostic.code, failure.code);
-        f.provider._assertCpuIdle = () => {};
         f.provider._chipInfoService.read = async () => f.messages.push({ type: "chipInfoStatus", state: "ready" });
         f.provider._svdManager.syncStatus = async () => {
             throw new Error("SVD unavailable");
@@ -241,7 +237,6 @@ async function incompleteActions() {
                         return "cmsis-dap.cfg";
                     }
                 },
-                _assertCpuIdle() {},
                 _liveDebugSession: () => null,
                 _postProbeOperationStatus() {},
                 _resetChartHistoryWarnings() {},

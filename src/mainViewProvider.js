@@ -430,14 +430,6 @@ class MainViewProvider {
             cleanPath: cleanWindowsPath,
             t: (key, params) => this._t(key, params)
         });
-        this._cpuLoadService = new (require("./services/cpuLoadService").CpuLoadService)({
-            elf: this._elfService,
-            coordinator: this._probeCoordinator,
-            assertAvailable: () => this._assertCpuAvailable(),
-            blocked: () => this._cpuLoadBlocked(),
-            create: (accept, disconnect, current) => this._createCpuRuntime(accept, disconnect, current),
-            post: (message) => this._webviewView?.webview.postMessage(message)
-        });
         this._openOcdStatusService = new OpenOcdStatusService({
             vscode,
             context,
@@ -603,10 +595,6 @@ class MainViewProvider {
         return { folder, cwd: folder?.uri.fsPath };
     }
     _postPeripheralDebugStatus(post = (message) => this._webviewView?.webview.postMessage(message)) {
-        if (this._cpuLoadService) {
-            post(this._cpuLoadService.status());
-            void this._cpuLoadService.refreshSupport();
-        }
         this._postProbeOperationStatus();
         if (!this._debugBridge) return;
         this._rtosViewService ||= new RtosViewService(this._debugBridge);
@@ -779,7 +767,6 @@ class MainViewProvider {
             interactive = true,
             startOptions
         ) => {
-            this._assertCpuIdle();
             let probePrepared = false;
             let startAccepted = false;
             let ownsPending = false;
@@ -996,7 +983,6 @@ class MainViewProvider {
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers["mcu-vscode.download"] = async (resource) => {
-            this._assertCpuIdle();
             if (this._downloadRunning) {
                 vscode.window.showWarningMessage(this._t("msg.downloadBusy"));
                 return false;
@@ -1025,7 +1011,6 @@ class MainViewProvider {
             const resumeSampling = !!this._samplingIntent && !!(this._liveWatchRunning || this._liveSession);
             const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
             if (liveStopped) await liveStopped;
-            this._assertCpuIdle();
             const downloadLease = this._probeCoordinator.acquire("download");
             this._downloadLease = downloadLease;
             let downloaded = false;
@@ -1124,7 +1109,6 @@ class MainViewProvider {
     _assertConnectionEditable(values) {
         const keys = ["debugger", "mcu", "openocdPath", "transport", "probeSerial", "adapterSpeedKhz"];
         if (keys.some((key) => Object.hasOwn(values, key))) {
-            this._assertCpuIdle();
             this._assertProbeDriverIdle();
         }
         if (
@@ -1143,7 +1127,6 @@ class MainViewProvider {
             });
     }
     connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
-        if (this._cpuLoadService?.run) void this._cpuLoadService.stop("configuration-changed").catch(() => {});
         this._probeConnectionService.markConfigurationChanged(
             samplingSpeedOnly
                 ? [this._liveSession, this._agentReadSession].filter(Boolean)
@@ -1165,7 +1148,6 @@ class MainViewProvider {
         }
     }
     _assertWriteSessionCurrent(session) {
-        this._assertCpuIdle();
         if (session === this._debugBridge && this._debugBridge.replBusy)
             throw Object.assign(new Error("Wait for the GDB console command before writing"), {
                 code: "DEBUG_CONTROL_BUSY"
@@ -1194,7 +1176,6 @@ class MainViewProvider {
         return writeConnectionIdentity(session.options);
     }
     async _prepareWriteConnection() {
-        this._assertCpuIdle();
         this._assertGroupedReadElf();
         if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
         if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
@@ -2350,7 +2331,6 @@ class MainViewProvider {
         }, 150);
     }
     async _withAgentProbe(handler, options = {}) {
-        this._assertCpuIdle();
         if (this._debugBridge.replBusy)
             throw Object.assign(new Error("Wait for the GDB console command before inspecting memory"), {
                 code: "DEBUG_CONTROL_BUSY"
@@ -2845,7 +2825,6 @@ class MainViewProvider {
     // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
     // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
     async _writeAgentVariables(params) {
-        this._assertCpuIdle();
         // "false" or 0 must never be read as a request to remember write permission.
         if (params.remember !== undefined && typeof params.remember !== "boolean")
             throw Object.assign(new Error("remember must be a boolean"), { code: "INVALID_PARAMS" });
@@ -2935,7 +2914,6 @@ class MainViewProvider {
         throw declined();
     }
     async _writeUiVariable(name, value, options = {}) {
-        this._assertCpuIdle();
         if (this._liveConnectionClosing || this._liveExitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
@@ -2973,7 +2951,6 @@ class MainViewProvider {
         );
     }
     async _agentWritePermission(params) {
-        this._assertCpuIdle();
         const action = String(params?.action || "status");
         if (action === "status") {
             try {
@@ -2995,7 +2972,6 @@ class MainViewProvider {
     }
     // 读取并解码 Cortex-M 故障寄存器；与 chip.read 共用 _chipInfoRunning 互斥（一次性 OpenOCD 进程同一时刻只能有一个）
     async _readAgentFault() {
-        this._assertCpuIdle();
         const busy = (key, code) => {
             throw Object.assign(new Error(this._t(key)), { i18nKey: key, code });
         };
@@ -3677,7 +3653,6 @@ class MainViewProvider {
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     _invalidateElfState() {
-        void this._cpuLoadService?.stop("image-changed").catch(() => {});
         this._elfService.invalidate();
         this._watchLists.invalidate();
         this._runtimeRamCache = null;
@@ -3695,7 +3670,6 @@ class MainViewProvider {
             }
         } finally {
             await this._refreshSamplingPlan();
-            await this._cpuLoadService?.refreshSupport();
         }
         await memoryRefresh;
         this._syncSidebarTarget((message) => this._webviewView?.webview.postMessage(message));
@@ -3914,7 +3888,6 @@ class MainViewProvider {
             sidebarPost({ type: "availableVariableTypes", version, symbols });
             for (const post of graphPosts) post({ type: "variableTypes", version, symbols });
         } else if (phase === "dwarfReady") {
-            void this._cpuLoadService?.refreshSupport();
             sidebarPost({ type: "availableTypesDone", version, warnings: displayWarnings(result) });
             for (const post of graphPosts)
                 post({ type: "variableTypesDone", version, warnings: displayWarnings(result) });
@@ -5188,37 +5161,7 @@ class MainViewProvider {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    _assertCpuIdle() {
-        if (this._cpuLoadService?.run || this._probeCoordinator?.isActive("cpuLoad"))
-            throw Object.assign(new Error(this._t("cpu.busy")), {
-                code: "PROBE_BUSY",
-                activeOperation: "cpuLoad",
-                i18nKey: "cpu.busy",
-                retryable: true
-            });
-    }
-    _cpuLoadBlocked() {
-        let operation = this._probeCoordinator?.firstActive();
-        if (this._shutdownPromise) operation = "shutdown";
-        else if (
-            this._foreignDebugPending ||
-            this._debugCommandPending ||
-            this._debugBridge?.hasAnySession ||
-            isSupportedDebugSession(this._liveDebugSession())
-        )
-            operation = "debug";
-        else if (this._probeDriverSwitching) operation = "driver";
-        else if (this._externalDebug?.held) operation = "externalDebug";
-        else if (this._samplingIntent || this._liveStartPromise || this._liveStopPromise) operation ||= "liveWatch";
-        else if (this._liveSession || this._agentReadSession || this._managedDebugServer) operation ||= "probe";
-        return operation ? { code: "PROBE_BUSY", activeOperation: operation, i18nKey: "cpu.probeBusy" } : null;
-    }
-    _assertCpuAvailable() {
-        const blocked = this._cpuLoadBlocked();
-        if (blocked) throw Object.assign(new Error(this._t(blocked.i18nKey)), blocked);
-    }
     beginForeignDebug() {
-        this._assertCpuIdle();
         if (this._foreignDebugPending)
             throw Object.assign(new Error("Debug startup is pending"), { code: "PROBE_BUSY" });
         this._foreignDebugPending = true;
@@ -5243,50 +5186,8 @@ class MainViewProvider {
             operations: this._probeCoordinator?.snapshot(),
             debugPending: !!(this._debugCommandPending || this._foreignDebugPending)
         });
-        this._cpuLoadService?.publish?.();
-    }
-    async _createCpuRuntime(accept, disconnect, current) {
-        const debuggerCfg =
-            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-            (await this._probeConnectionService.resolveProbe());
-        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore) throw new Error(this._t("live.needConfig"));
-        const cfg = vscode.workspace.getConfiguration("emberprobe");
-        const executable = await this._resolveOpenOcdPath(cfg.get("openocdPath", "openocd"));
-        if (!current()) return null;
-        if (!executable) throw new Error(this._t("live.notReady"));
-        const connection = await this._probeConnectionService.prepare(
-            { executable, probe: debuggerCfg, target: mcuCore, sampling: true },
-            true
-        );
-        if (!current()) return null;
-        const port = await this._resolveTclPort(cfg);
-        if (!current()) return null;
-        const { cwd } = this._commandContext();
-        const session = new liveWatch.LiveWatchSession(
-            vscode,
-            {
-                executable,
-                isolated: true,
-                transport: cfg.get("transport", "auto"),
-                probe: debuggerCfg,
-                target: mcuCore,
-                ...connection,
-                cwd,
-                port
-            },
-            {
-                onCpuLoad: accept,
-                onDisconnect: disconnect,
-                onConnectionConfirmed: () => {
-                    if (current()) void this._probeConnectionService.recordSuccess(session.options);
-                }
-            }
-        );
-        return session;
     }
     startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
-        this._assertCpuIdle();
         if (this._liveStopPromise || this._liveStartPromise)
             return Promise.reject(Object.assign(new Error(this._t("live.starting")), { code: "PROBE_BUSY" }));
         this._resetChartHistoryWarnings();
@@ -5301,7 +5202,6 @@ class MainViewProvider {
         return this._liveStartPromise;
     }
     async _startLiveWatch(items, intervalMs, consumer, interactive, generation) {
-        this._assertCpuIdle();
         if (this._externalDebug?.active && this._debugBridge.hasSession) {
             this._samplingIntent = true;
             this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
@@ -5423,7 +5323,6 @@ class MainViewProvider {
         const cfg = vscode.workspace.getConfiguration("emberprobe");
         const configuredExecutable = cfg.get("openocdPath", "openocd");
         if (generation !== this._liveStartGeneration) return;
-        this._assertCpuIdle();
         const startingLease = this._probeCoordinator.acquire("liveStart");
         this._liveStartLease = startingLease;
         let session = null;
@@ -5584,7 +5483,7 @@ class MainViewProvider {
             if (session && (await session.stop()) === false)
                 throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
                     code: "PROBE_EXIT_UNCONFIRMED",
-                    i18nKey: "cpu.exitUnconfirmed"
+                    i18nKey: "live.exitUnconfirmed"
                 });
             await historyFlushed;
             if (this._liveSession === session) this._liveSession = null;
@@ -5604,7 +5503,7 @@ class MainViewProvider {
         })()
             .catch((error) => {
                 this._liveExitUnconfirmed = true;
-                this._postConsumerStatuses({ key: "cpu.exitUnconfirmed", diagnostic: serializeError(error) }, true);
+                this._postConsumerStatuses({ key: "live.exitUnconfirmed", diagnostic: serializeError(error) }, true);
                 throw error;
             })
             .finally(() => {
@@ -5623,7 +5522,6 @@ class MainViewProvider {
         await this._externalDebug.releaseIfDisabled();
     }
     async prepareExternalDebug(folder, config) {
-        this._assertCpuIdle();
         if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
         const connection = resolveExternalSettings(vscode.workspace.getConfiguration("emberprobe", folder.uri));
         if (
@@ -5705,7 +5603,6 @@ class MainViewProvider {
         }
     }
     async prepareForCortexDebug(folder, config) {
-        this._assertCpuIdle();
         this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
         const token = config?.__emberprobeManagedToken;
@@ -5945,7 +5842,6 @@ class MainViewProvider {
             const agentStopped = this.stopAgentReadIfRunning();
             // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
             if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
-            await this._cpuLoadService?.stop();
             this._clearDebugStartupWatchdog();
             if (this._managedDebugGroup) {
                 for (const token of [...this._managedDebugGroup.members.keys()])
@@ -6005,7 +5901,6 @@ class MainViewProvider {
     }
     // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
     async readChipInfoAction(forAgent = false) {
-        this._assertCpuIdle();
         return this._chipInfoService.read(forAgent);
     }
     // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
@@ -6170,18 +6065,6 @@ class MainViewProvider {
                 case "peripheralReadRequest":
                 case "peripheralWriteRequest": {
                     await this._handlePeripheralViewRequest(webviewView.webview, message);
-                    break;
-                }
-                case "cpuLoadStart":
-                case "cpuLoadStop":
-                case "cpuLoadIdle": {
-                    try {
-                        if (message.type === "cpuLoadStart") await this._cpuLoadService.start();
-                        else if (message.type === "cpuLoadStop") await this._cpuLoadService.stop();
-                        else await this._cpuLoadService.selectIdle(message.key);
-                    } catch (error) {
-                        webviewView.webview.postMessage({ ...this._cpuLoadService.status(), error: error.message });
-                    }
                     break;
                 }
                 case "rtosRefresh": {
@@ -6605,7 +6488,6 @@ class MainViewProvider {
     async _changeJlinkDriver(driver, expectedInstanceId) {
         if (driver !== "winusb" && driver !== "segger")
             throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
-        this._assertCpuIdle();
         this._assertProbeDriverIdle();
         this._assertConnectionEditable({ probeSerial: true });
         if (this._probeCoordinator?.anyActive())

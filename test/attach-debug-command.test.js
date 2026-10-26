@@ -35,7 +35,6 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     Object.assign(host, {
         _context: { workspaceState: { get: (key) => values.get(key), update: async () => {} } },
         _t: (key) => key,
-        _assertCpuIdle() {},
         _commandContext: () => ({ folder }),
         _postProbeOperationStatus() {},
         _svdManager: { currentPath: async () => "" },

@@ -38,11 +38,7 @@ class SamplingSession {
                 if (message.event === "onDisconnect" || message.event === "onDegraded") this.samplingEnabled = false;
                 if (["onDisconnect", "onDegraded", "onError"].includes(message.event) && message.args[0]?.message)
                     message.args[0] = deserializeError(message.args[0]);
-                try {
-                    this.handlers[message.event]?.(...message.args);
-                } finally {
-                    if (message.event === "onCpuLoad") this.worker.postMessage({ cpuAck: true });
-                }
+                this.handlers[message.event]?.(...message.args);
             } else {
                 const request = this.pending.get(message.id);
                 if (!request) return;
@@ -158,15 +154,6 @@ class SamplingSession {
     }
     async readOnce(...args) {
         return (await this.request("readOnce", args)).result;
-    }
-    async setCpuLoadPlan(...args) {
-        return (await this.request("setCpuLoadPlan", args)).result;
-    }
-    async setCpuLoadPaused(...args) {
-        return (await this.request("setCpuLoadPaused", args)).result;
-    }
-    async selectCpuIdleTask(...args) {
-        return (await this.request("selectCpuIdleTask", args)).result;
     }
     async writeAndVerify(...args) {
         if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length)

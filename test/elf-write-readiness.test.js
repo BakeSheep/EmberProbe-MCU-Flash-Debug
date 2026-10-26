@@ -120,7 +120,6 @@ const elfSymbols = require("../src/elfSymbols");
     // Write targets: exact names, no pointer storage, no overlapping items, bounded batches,
     // and the RAM range check covers every encoded byte.
     const hardened = Object.create(Provider.prototype);
-    hardened._assertCpuIdle = () => {};
     hardened.readElfSymbols = () => ({
         elf: { path: "hardened.elf", sha256: "hardened" },
         memory: { sections: [{ name: ".data", flags: 3, addr: 0x20000000, size: 0x40 }] },

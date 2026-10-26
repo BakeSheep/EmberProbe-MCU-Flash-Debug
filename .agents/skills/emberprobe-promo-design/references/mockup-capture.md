@@ -10,15 +10,12 @@
 
 fixture 必须通过正常宿主消息驱动真实渲染器，保持当前产品交互。使用模拟值可以演示行为，但不能据此声称硬件测量结果、性能或兼容性。
 
-## CPU 与枚举的已验证演示契约
+## 枚举的已验证演示契约
 
 以下是 0.8.2 的消息参考，后续先检查当前源码和测试，再决定是否复用。
 
-- CPU：`src/webview/sidebar/cpuLoad.js`、`test/cpu-load-view.test.js`。先发 `cpuLoad` 的停止状态，包含 `canStart: true`；在浏览器点击采样按钮，再发运行状态。
-- 运行状态字段包括 `state: "running"`、`intentEnabled: true`、`ownsProbe: true`、`canStart: false`、`canStop: true`、`workloadPercent`、`coveragePercent`。同步 `hardwareAvailability.operations.cpuLoad`，使其他硬件按钮呈现真实的独占关系。
 - 枚举：`src/webview/sidebar/renderer.js`、`test/enum-variables.test.js`。模拟 `sidebarWatchList` / 变量元数据，以及带 `enumText` 的 `liveSample.samples`；由真实 UI 显示 `.Active(3)`、`ClosedLoop(2)` 等名称与数值，不直接改页面标签。
 - 模拟器若只返回已知标量，新增枚举要补入输出样本，不能只添加变量元数据。开始采样后核对每个演示枚举都得到值。
-- 分别截取 CPU 与变量演示时，先停止 CPU 再开启变量采样，避免画面暗示独占 CPU 采样与其他硬件操作同时执行。
 
 ## 高清捕获与裁切
 

@@ -8,7 +8,6 @@ const { SamplingSession } = require("../src/samplingSession");
 const { scheduleSamplingTick } = require("../src/samplingClock");
 const { run } = require("../src/samplingWorker");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
-const { samplerFixture } = require("./helpers/cpu-load-fixture");
 
 const graph = { name: "graph", address: 0x20000000, size: 4 };
 const sidebar = { name: "sidebar", address: 0x20000010, size: 4 };
@@ -348,61 +347,6 @@ async function testArbiterFailures() {
     assert.strictEqual(lost._exclusiveWaiters.length, 0);
     lost._releaseExclusive();
     await lost.stop();
-}
-
-function cpuFixture() {
-    const f = samplerFixture();
-    f.owner._exclusiveWaiters = [];
-    for (const method of ["_tryAcquireExclusive", "_acquireExclusive", "_releaseExclusive"])
-        f.owner[method] = ManagedOpenOcdSession.prototype[method];
-    f.owner.unlimitedActive = true;
-    f.owner.samplingEnabled = true;
-    f.owner.watch = [graph];
-    f.owner.ratePlan = { delay: () => 0 };
-    f.owner.effectiveIntervalMs = 0;
-    f.owner._recentTclCosts = [{ time: f.time, duration: 1000 }];
-    return f;
-}
-async function testCpuSlots() {
-    const f = cpuFixture();
-    try {
-        f.sampler.period = 50;
-        assert(f.owner._tryAcquireExclusive());
-        const pending = f.sampler.tick();
-        assert.strictEqual(f.owner._exclusiveWaiters.length, 1, "CPU queues behind the saturated variable loop");
-        setImmediate(() => f.owner._releaseExclusive());
-        await pending;
-        assert.strictEqual(f.sampler.window.slots.at(-1).kind, "idle");
-        assert.strictEqual(f.owner.busy, false);
-        f.sampler.costs = [{ time: f.time, duration: 200 }];
-        f.setTime(f.sampler.nextSlot);
-        const before = f.commands.length;
-        await f.sampler.tick();
-        assert.strictEqual(f.sampler.window.slots.at(-1).reason, "cpu-budget");
-        assert.strictEqual(f.commands.length, before);
-        f.sampler.costs = [];
-        f.state.latency = 2.5;
-        const until = f.time + 4000;
-        while (f.time < until) {
-            f.setTime(f.sampler.nextSlot);
-            await f.sampler.tick();
-            assert(f.sampler.costs.reduce((total, cost) => total + cost.duration, 0) <= 200);
-        }
-    } finally {
-        f.sampler.stop();
-    }
-    const blocked = cpuFixture();
-    try {
-        assert(blocked.owner._tryAcquireExclusive());
-        await blocked.sampler.tick();
-        assert.strictEqual(blocked.sampler.window.slots.at(-1).reason, "transaction-or-variable");
-        assert.strictEqual(blocked.commands.length, 0);
-        assert(!blocked.events.some((event) => event.state === "unavailable"));
-        assert.strictEqual(blocked.owner._exclusiveWaiters.length, 0);
-        blocked.owner._releaseExclusive();
-    } finally {
-        blocked.sampler.stop();
-    }
 }
 
 async function testWorkerHold(byteLimit = false) {
@@ -761,11 +705,10 @@ async function testHostTransport() {
     await testSetWatchPreservesBacklog();
     await testSessionAndFairness();
     await testArbiterFailures();
-    await testCpuSlots();
     await testWorkerHold();
     await testWorkerHold(true);
     await testHostTransport();
-    console.log("Unlimited sampling, FIFO Tcl ownership, CPU slots and host flow control passed");
+    console.log("Unlimited sampling, FIFO Tcl ownership and host flow control passed");
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

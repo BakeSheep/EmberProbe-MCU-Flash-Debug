@@ -32,7 +32,6 @@ function loadRendererPrelude(area) {
                       loadWebviewAsset("sidebar", "chipView.js"),
                       loadWebviewAsset("sidebar", "memoryView.js"),
                       loadWebviewAsset("sidebar", "peripherals.js"),
-                      loadWebviewAsset("sidebar", "cpuLoad.js"),
                       loadWebviewAsset("sidebar", "rtos.js")
                   ]
                 : [

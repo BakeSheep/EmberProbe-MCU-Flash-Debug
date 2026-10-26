@@ -217,7 +217,6 @@ const chipRead = document.getElementById("chipRead"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
-const cpuLoadView = window.EmberProbeCpuLoadView?.create({ api, t });
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
 const memoryAnalysisSection = document.getElementById("memoryAnalysisSection");
@@ -245,20 +244,17 @@ for (const id of [
 let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
-    cpuProbeOwned = false,
     confirmedProbeDriver = "";
 function setProbeDriverBusy(busy) {
     probeDriverBusy = busy;
-    const hardwareBusy = busy || cpuProbeOwned;
-    cpuLoadView?.setDriverBusy(busy);
-    if (jlinkDriverChoice) jlinkDriverChoice.disabled = hardwareBusy;
+    if (jlinkDriverChoice) jlinkDriverChoice.disabled = busy;
     if (jlinkDriverBusy) jlinkDriverBusy.hidden = !busy;
-    if (chipRead) chipRead.disabled = hardwareBusy || lastChip.state === "reading";
+    if (chipRead) chipRead.disabled = busy || lastChip.state === "reading";
     chipBody?.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = hardwareBusy || lastChip.state === "reading";
+        button.disabled = busy || lastChip.state === "reading";
     });
-    liveToggle.disabled = hardwareBusy;
-    document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = hardwareBusy));
+    liveToggle.disabled = busy;
+    document.querySelectorAll(".primary-actions [data-command]").forEach((button) => (button.disabled = busy));
 }
 function configurationIncomplete() {
     if (!mcuConfigSection) return false;
@@ -348,7 +344,6 @@ function rerenderDynamic() {
     svdStatus(lastSvd);
     peripheralView?.render();
     rtosView?.render();
-    cpuLoadView?.render();
     memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     renderLog();
@@ -2306,13 +2301,13 @@ function chipStatus(m) {
     chipState.className =
         "chip-state " + (st === "error" ? "err" : st === "ready" ? "on" : st === "reading" ? "busy" : "");
     if (chipRead) {
-        chipRead.disabled = probeDriverBusy || cpuProbeOwned || st === "reading";
+        chipRead.disabled = probeDriverBusy || st === "reading";
         chipRead.textContent = st === "reading" ? t("sb.readingEllipsis") : chipHasData ? t("sb.reread") : t("sb.read");
     }
     chipLabel.textContent = m.key || m.message ? msgText(m) : chipStatusLabel(st);
     chipLabel.title = chipLabel.textContent;
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = probeDriverBusy || cpuProbeOwned || st === "reading";
+        button.disabled = probeDriverBusy || st === "reading";
     });
     // The header owns action errors; keep any previously read chip details without repeating the message.
     if (st === "error" && !chipHasData) chipBody.textContent = "";
@@ -2377,7 +2372,7 @@ function renderChip(info) {
             })
     );
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
-        button.disabled = probeDriverBusy || cpuProbeOwned || lastChip.state === "reading";
+        button.disabled = probeDriverBusy || lastChip.state === "reading";
         button.onclick = () => {
             if (!api) return setStat("error", "sb.extNotConnected");
             chipStatus({ state: "reading", key: "chip.controlling" });
@@ -2562,7 +2557,7 @@ window.EmberProbeMessages.connect(window, {
         confirmedProbeDriver = m.driver;
         jlinkDriverChoice.hidden = m.driver !== "winusb" && m.driver !== "segger";
         if (!jlinkDriverChoice.hidden) jlinkDriverChoice.value = m.driver;
-        jlinkDriverChoice.disabled = probeDriverBusy || cpuProbeOwned;
+        jlinkDriverChoice.disabled = probeDriverBusy;
     },
     probeDriverSwitch: function (m) {
         setProbeDriverBusy(!!m.busy);
@@ -2744,15 +2739,6 @@ window.EmberProbeMessages.connect(window, {
     },
     rtosDebugStatus: function (m) {
         rtosView?.onDebug(m);
-    },
-    cpuLoad: function (m) {
-        cpuProbeOwned = !!m.ownsProbe;
-        cpuLoadView?.onSummary(m);
-        setProbeDriverBusy(probeDriverBusy);
-    },
-    probeOperationStatus: function (m) {
-        cpuProbeOwned = !!m.operations?.cpuLoad;
-        setProbeDriverBusy(probeDriverBusy);
     },
     rtosSnapshot: function (m) {
         rtosView?.onSnapshot(m);
