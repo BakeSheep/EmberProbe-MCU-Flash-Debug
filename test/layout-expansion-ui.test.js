@@ -143,6 +143,48 @@ for (const language of ["en", "zh"]) {
         }
     }
 }
+// Expansion warnings share the readable root label, including source scope and cached DWARF labels.
+for (const language of ["en", "zh"]) {
+    for (const sidebar of [true, false]) {
+        for (const cached of [false, true]) {
+            const f = fixture();
+            const name = "probe.cpp::_ZN3lab11g_wrapped40E";
+            const displayName = "probe.cpp::lab::g_wrapped40";
+            Object.assign(f.symbol, { name, displayName });
+            const page = render(sidebar ? getModernWebviewContent({}, language) : getLiveWatchContent({}, language));
+            try {
+                const prefix = sidebar ? "availableVariables" : "variablesList";
+                const tree = sidebar ? "#liveValues" : "#vars";
+                page.send({ type: prefix + "Reset", version: "v1", generation: 7 });
+                page.send({
+                    type: prefix + "Chunk",
+                    version: "v1",
+                    symbols: [{ ...f.symbol, displayName: cached ? name : displayName }]
+                });
+                page.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [f.symbol] });
+                const labels = [...page.document.querySelectorAll(tree + " .layout-expansion-row .notice-title")];
+                assert.strictEqual(labels.length, 2);
+                assert(labels.every((label) => label.textContent.startsWith(displayName + "[")));
+                assert(labels.every((label) => !label.textContent.includes("_ZN")));
+                page.document.querySelector(tree + " .layout-expand").click();
+                const request = page.messages.findLast((message) => message.type === "expandLayout");
+                assert.strictEqual(request.name, name);
+                assert.strictEqual(request.path, name + "[0].a.b");
+                page.send({ ...request, type: "layoutExpansionResult", code: "DWARF_BUDGET_EXCEEDED" });
+                const otherLanguage = language === "en" ? "zh" : "en";
+                page.send({ type: "setLang", lang: otherLanguage });
+                assert(
+                    [...page.document.querySelectorAll(tree + " .layout-expansion-row .notice-title")].every((label) =>
+                        label.textContent.startsWith(displayName + "[")
+                    )
+                );
+                page.assertHealthy();
+            } finally {
+                page.close();
+            }
+        }
+    }
+}
 for (const sidebar of [true, false]) {
     const f = fixture();
     f.branch.name = "";

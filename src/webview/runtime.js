@@ -413,52 +413,116 @@
         walk(node);
         return count;
     }
+    let variableNoticeSequence = 0;
+    // A render root owns its footer even while detached. Nested member rows route to that root;
+    // inline pointee bodies can own independent scopes so a sample only replaces their own state.
+    function createVariableNotices(root, t, footer, onCopy) {
+        let inherited;
+        for (
+            let current = root.parentElement || root.variableNoticeParent;
+            current;
+            current = current.parentElement || current.variableNoticeParent
+        ) {
+            if (current.variableNotices) {
+                inherited = current.variableNotices;
+                break;
+            }
+        }
+        if (!footer && inherited) {
+            root.variableNotices = {
+                root,
+                footer: inherited.footer,
+                area: inherited.area,
+                prefix: inherited.prefix + ++variableNoticeSequence + "-",
+                ownsFooter: false
+            };
+            return inherited.footer;
+        }
+        footer ||= root.ownerDocument.createElement("div");
+        footer.classList.add("variable-notices");
+        const area = notice.createNoticeArea(footer, {
+            t,
+            onAction: (action) => action.run?.(),
+            onCopy
+        });
+        const scope = { root, footer, area, prefix: "variable-" + ++variableNoticeSequence + "-", ownsFooter: true };
+        root.variableNotices = scope;
+        return footer;
+    }
+    function variableNoticeScope(container, t) {
+        for (let current = container; current; current = current.parentElement || current.variableNoticeParent)
+            if (current.variableNotices) return current.variableNotices;
+        createVariableNotices(container, t);
+        container.append(container.variableNotices.footer);
+        return container.variableNotices;
+    }
+    function resetVariableNotices(root, t, onCopy) {
+        if (!root.variableNotices) createVariableNotices(root, t, undefined, onCopy);
+        const scope = root.variableNotices;
+        if (scope.ownsFooter) scope.area.clearAll();
+        else for (const id of scope.area.ids()) if (id.startsWith(scope.prefix)) scope.area.clear(id);
+    }
+    function finishVariableNotices(root) {
+        const footer = root.variableNotices?.footer;
+        // External card footers stay outside the collapsible body; inline scopes append locally.
+        if (root.variableNotices?.ownsFooter && footer && (!footer.parentElement || footer.parentElement === root))
+            root.append(footer);
+    }
+    function renderVariableNotice(container, message, t, id) {
+        const scope = variableNoticeScope(container, t);
+        const payload = typeof message === "string" ? { text: message } : message;
+        const key = id || JSON.stringify([payload.title, payload.text]);
+        const node = scope.area.set(scope.prefix + key, {
+            level: "info",
+            compact: true,
+            dismissible: false,
+            ...payload
+        });
+        // All presentation comes from notice.css; callers may retain semantic query hooks.
+        finishVariableNotices(scope.root);
+        return node;
+    }
     function renderMemberVisibility(container, node, name, showRaw, t, toggle) {
         const hidden = showRaw ? 0 : hiddenMemberCount(node);
         if (!showRaw && !hidden) return;
-        const document = container.ownerDocument;
-        const row = document.createElement("div");
-        row.className = "member-visibility";
-        row.dataset.variableName = name;
-        const note = document.createElement("span");
-        note.className = "hidden-members";
-        note.textContent = showRaw ? "" : t("lw.hiddenMembers", { n: hidden });
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "raw-members-toggle";
+        const row = renderVariableNotice(
+            container,
+            {
+                text: { key: showRaw ? "lw.rawMembersVisible" : "lw.hiddenMembers", params: { n: hidden } },
+                actions: [{ label: { key: showRaw ? "lw.hideRawMembers" : "lw.showRawMembers" }, run: toggle }]
+            },
+            t,
+            "members:" + name
+        );
+        row.classList.add("member-visibility");
+        row.querySelector(".notice-text").classList.add("hidden-members");
+        const button = row.querySelector(".notice-action");
+        button.classList.add("raw-members-toggle");
         button.dataset.variableName = name;
-        button.textContent = t(showRaw ? "lw.hideRawMembers" : "lw.showRawMembers");
         button.setAttribute("aria-pressed", String(!!showRaw));
-        button.onclick = (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-            toggle();
-        };
-        row.append(note, button);
-        container.appendChild(row);
     }
     // Static array rows start at 16 elements; each click reveals the next page.
     const ARRAY_PAGE = 64;
     function arrayShownCount(total, shown) {
         return Math.min(Number(total) || 0, Math.max(16, Number(shown) || 0));
     }
-    function renderArrayMore(container, remaining, t, more) {
-        const document = container.ownerDocument;
-        const row = document.createElement("div");
-        row.className = "member-visibility array-more";
-        const note = document.createElement("span");
-        note.textContent = t("lw.arrayMore", { n: remaining });
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "raw-members-toggle";
-        button.textContent = t("lw.arrayShowMore", { n: Math.min(remaining, ARRAY_PAGE) });
-        button.onclick = (event) => {
-            event.stopPropagation();
-            event.preventDefault();
-            more(ARRAY_PAGE);
-        };
-        row.append(note, button);
-        container.appendChild(row);
+    function renderArrayMore(container, remaining, t, more, path = "", displayPath = path) {
+        const row = renderVariableNotice(
+            container,
+            {
+                title: displayPath,
+                text: { key: "lw.arrayMore", params: { n: remaining } },
+                actions: [
+                    {
+                        label: { key: "lw.arrayShowMore", params: { n: Math.min(remaining, ARRAY_PAGE) } },
+                        run: () => more(ARRAY_PAGE)
+                    }
+                ]
+            },
+            t,
+            "array:" + path
+        );
+        row.classList.add("array-more");
     }
     // Display-only collection. Bulk chart collection keeps pointers and raw internals out.
     function displayLayoutLeaves(symbol, layout, name, baseAddr, options = {}) {
@@ -708,7 +772,7 @@
                   : "lw.layoutExpansionFailed"
         );
     }
-    function createLayoutExpansionUi({ post, version, generation, symbol, changed }) {
+    function createLayoutExpansionUi({ post, version, generation, symbol, displayName, changed }) {
         const requests = new Map();
         const key = (name, path) => JSON.stringify([name, path]);
         return {
@@ -716,47 +780,68 @@
                 requests.clear();
             },
             render(container, entry, name, t) {
-                const row = container.ownerDocument.createElement("div");
-                row.className = "layout-expansion-row";
-                const label = container.ownerDocument.createElement("span");
-                label.textContent = entry.path + ": " + unobservableReason(entry.unobservable, t);
-                row.appendChild(label);
-                if (entry.expansionHandle && ["depth-limit", "expansion-budget"].includes(entry.unobservable)) {
-                    const state = requests.get(key(name, entry.path));
-                    const stale =
-                        generation?.() != null && symbol(name)?.compositeLayout?.expansionGeneration !== generation();
-                    const button = container.ownerDocument.createElement("button");
-                    button.className = "layout-expand";
+                const pathLabel = displayName
+                    ? displayName(entry.path)
+                    : variableDisplayName({ name: entry.path }, [symbol(name)].filter(Boolean));
+                const expandable =
+                    entry.expansionHandle && ["depth-limit", "expansion-budget"].includes(entry.unobservable);
+                const state = expandable && requests.get(key(name, entry.path));
+                const stale =
+                    expandable &&
+                    generation?.() != null &&
+                    symbol(name)?.compositeLayout?.expansionGeneration !== generation();
+                const code = stale ? "STALE_LAYOUT_HANDLE" : state?.error;
+                const limited = [
+                    "STALE_LAYOUT_HANDLE",
+                    "ELF_CHANGED",
+                    "DWARF_BUDGET_EXCEEDED",
+                    "LAYOUT_EXPANSION_LIMIT",
+                    "INVALID_COMPOSITE_LAYOUT"
+                ].includes(code);
+                const message = {
+                    title: pathLabel,
+                    text: code ? layoutExpansionError(code, t) : unobservableReason(entry.unobservable, t),
+                    level: state?.loading
+                        ? "info"
+                        : code
+                          ? limited
+                              ? "warning"
+                              : "error"
+                          : unobservableLevel(entry.unobservable),
+                    busy: !!state?.loading,
+                    actions: expandable
+                        ? [
+                              {
+                                  label: { key: state?.loading ? "lw.layoutLoading" : "lw.layoutLoadMore" },
+                                  run: () => {
+                                      const id = key(name, entry.path);
+                                      if (requests.get(id)?.loading || stale) return;
+                                      const current = symbol(name);
+                                      const request = {
+                                          type: "expandLayout",
+                                          name,
+                                          path: entry.path,
+                                          handle: entry.expansionHandle,
+                                          generation: current?.compositeLayout?.expansionGeneration,
+                                          version: version()
+                                      };
+                                      requests.set(id, { ...request, loading: true });
+                                      post(request);
+                                      changed();
+                                  }
+                              }
+                          ]
+                        : []
+                };
+                const row = renderVariableNotice(container, message, t, "layout:" + entry.path);
+                row.classList.add("layout-expansion-row");
+                if (code) row.querySelector(".notice-content > .notice-text").classList.add("layout-expansion-error");
+                if (expandable) {
+                    const button = row.querySelector(".notice-action");
+                    button.classList.add("layout-expand");
                     button.dataset.path = entry.path;
-                    button.textContent = t(state?.loading ? "lw.layoutLoading" : "lw.layoutLoadMore");
-                    button.disabled = !!state?.loading || stale;
-                    button.onclick = (event) => {
-                        event.stopPropagation();
-                        const id = key(name, entry.path);
-                        if (requests.get(id)?.loading) return;
-                        const current = symbol(name);
-                        const request = {
-                            type: "expandLayout",
-                            name,
-                            path: entry.path,
-                            handle: entry.expansionHandle,
-                            generation: current?.compositeLayout?.expansionGeneration,
-                            version: version()
-                        };
-                        requests.set(id, { ...request, loading: true });
-                        post(request);
-                        changed();
-                    };
-                    row.appendChild(button);
-                    if (state?.error || stale) {
-                        const error = container.ownerDocument.createElement("span");
-                        error.className = "layout-expansion-error";
-                        error.setAttribute("role", "status");
-                        error.textContent = layoutExpansionError(stale ? "STALE_LAYOUT_HANDLE" : state.error, t);
-                        row.appendChild(error);
-                    }
+                    button.disabled = !!state?.loading || !!stale;
                 }
-                container.appendChild(row);
             },
             receive(message) {
                 if (message.version !== version() || (generation?.() != null && message.generation !== generation()))
@@ -789,6 +874,25 @@
                 "member-location": "lw.layoutLocationUnavailable"
             }[code] || "lw.compositeNoLayout";
         return t(key);
+    }
+    function unobservableLevel(code) {
+        return code === "type-cycle" ? "error" : "warning";
+    }
+    function unavailableNotice(node, t) {
+        const reason = node.unavailable;
+        const keys = {
+            "opaque-pointee": ["warning", "lw.pointeeOpaque"],
+            "not-ram": ["warning", "lw.pointeeNotRam"],
+            "memory-unavailable": ["error", "lw.pointeeMemoryUnavailable"],
+            cycle: ["error", "lw.pointeeCycle"],
+            "expansion-budget": ["warning", "lw.layoutExpansionBudget"],
+            "depth-limit": ["warning", "lw.layoutDepthLimit"]
+        };
+        if (node.unavailableCode === "LIVE_NULL_POINTER") return { level: "info", text: t("lw.pointeeNull") };
+        const entry = keys[reason];
+        return entry
+            ? { level: entry[0], text: t(entry[1]) }
+            : { level: "error", text: t("lw.pointeeUnavailable"), detail: String(reason || "") };
     }
     function translate(tables, language, key, params) {
         const table = tables[language] || tables.zh || {};
@@ -989,13 +1093,13 @@
         return isPointeeEntry(item) && text.startsWith(name) && /^[.[]/.test(text.slice(name.length));
     }
     // Disclosure toggle placed first in a pointer row; the pointee body follows the row.
-    function renderPointerToggle(row, path, open, t, onToggle) {
+    function renderPointerToggle(row, path, open, t, onToggle, displayPath = path) {
         const button = row.ownerDocument.createElement("button");
         button.type = "button";
         button.className = "pointer-toggle" + (open ? " open" : "");
         button.textContent = "\u25b6";
         button.title = t("lw.pointerTarget");
-        button.setAttribute("aria-label", t("lw.pointerTarget") + ": " + path);
+        button.setAttribute("aria-label", t("lw.pointerTarget") + ": " + displayPath);
         button.setAttribute("aria-expanded", String(!!open));
         button.dataset.path = path;
         button.onclick = (event) => {
@@ -1244,7 +1348,9 @@
                       node.address,
                       Object.prototype.hasOwnProperty.call(node, "value"),
                       node.unavailable,
+                      node.unavailableCode,
                       node.unobservable,
+                      node.truncated,
                       node.members?.map(shape),
                       node.elements?.map(shape)
                   ]
@@ -1350,6 +1456,11 @@
         pointerNodeValue,
         summaryRow,
         hiddenMemberCount,
+        createVariableNotices,
+        resetVariableNotices,
+        finishVariableNotices,
+        renderVariableNotice,
+        unavailableNotice,
         renderMemberVisibility,
         arrayShownCount,
         renderArrayMore,

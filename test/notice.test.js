@@ -164,6 +164,59 @@ for (const html of [getModernWebviewContent({}, "en"), getLiveWatchContent({ max
     }
 }
 
+// Write notices use readable labels while write requests keep canonical symbol identities.
+for (const initialLang of ["en", "zh"]) {
+    const view = render(getModernWebviewContent({}, initialLang));
+    try {
+        view.send({ type: "liveStatus", running: true, canRead: true, canWrite: true });
+        for (const [name, displayName, symbol, cachedName] of [
+            ["_ZN4demo7counterE", "demo::counter", { name: "_ZN4demo7counterE", displayName: "demo::counter" }],
+            [
+                "main.cpp::_ZN4demo7counterE",
+                "main.cpp::demo::counter",
+                { name: "main.cpp::_ZN4demo7counterE" },
+                "main.cpp::demo::counter"
+            ],
+            [
+                "main.cpp::_ZN4demo6configE.gain",
+                "main.cpp::demo::config.gain",
+                { name: "main.cpp::_ZN4demo6configE", displayName: "main.cpp::demo::config" }
+            ],
+            ["unknown", "unknown"]
+        ]) {
+            view.send({ type: "availableVariables", symbols: symbol ? [symbol] : [] });
+            view.send({
+                type: "sidebarWriteList",
+                items: [{ name, displayName: cachedName, type: "u32", address: 0x20000000, value: 1, min: 0, max: 100 }]
+            });
+            view.document.querySelectorAll(".step-btn")[1].click();
+            const request = view.messages.findLast((message) => message.type === "writeVariable");
+            assert.strictEqual(request.name, name, "the displayed name must not change the write target");
+            view.send({
+                ...request,
+                type: "writeResult",
+                ok: false,
+                message: "Writing pointer storage is not supported: " + name,
+                diagnostic: { code: "WRITE_NOT_ALLOWED", message: "Raw symbol: " + name }
+            });
+            for (const language of [initialLang, initialLang === "en" ? "zh" : "en"]) {
+                view.send({ type: "setLang", lang: language });
+                assert.strictEqual(
+                    view.document.querySelector("#noticeWrite .notice-title").textContent,
+                    i18n.t(language, "sb.writeFailTitle", { name: displayName })
+                );
+                assert.strictEqual(
+                    view.document.querySelector("#noticeWrite .notice-content > .notice-text").textContent,
+                    i18n.t(language, "err.WRITE_NOT_ALLOWED")
+                );
+            }
+        }
+        view.assertHealthy();
+    } finally {
+        view.close();
+    }
+}
+
 // Extension side: one exit, a notification only when the sidebar cannot show the notice.
 {
     const posted = [],

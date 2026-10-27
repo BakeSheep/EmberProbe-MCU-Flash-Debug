@@ -147,6 +147,8 @@ const view = render(getModernWebviewContent({}, "en"));
             input.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: "Enter" }));
             assert.strictEqual(saved().value, value, "wide integers must remain exact decimal strings");
             assert.ok(view.document.querySelector(".step-btn").hidden);
+            assert.strictEqual(view.document.querySelector(".write-bottom"), null);
+            assert.strictEqual(view.document.querySelector(".write-slider"), null);
             const count = view.messages.length;
             wheel(input, 1);
             assert.strictEqual(view.messages.length, count, "wide integers have no numeric wheel handler");

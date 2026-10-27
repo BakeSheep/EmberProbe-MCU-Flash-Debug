@@ -151,6 +151,24 @@ function pausedBridge(ram, onRead = () => {}) {
 
         // Explicit Agent reads and writes still require the whole request to fit.
         assert.throws(() => host._runtimeRamPlan([big, word], true), { code: "LIVE_READ_BUDGET_EXCEEDED" });
+
+        const namedBig = { ...big, name: "_ZN3lab5largeE" };
+        const denied = { name: "_ZN3lab6deviceE.value", address: BASE - 4, size: 4 };
+        const readElfSymbols = host.readElfSymbols;
+        host.readElfSymbols = () => ({
+            ...readElfSymbols(),
+            symbols: [
+                { name: namedBig.name, displayName: "lab::large" },
+                { name: "_ZN3lab6deviceE", displayName: "lab::device" }
+            ]
+        });
+        plan = [namedBig, denied, word];
+        host._configureManagedRuntimeWatch();
+        assert.deepStrictEqual(posts.slice(-2), [
+            { type: "liveError", key: "live.runtimeAddressRejectedNames", params: { names: "lab::device.value" } },
+            { type: "liveError", key: "live.runtimeBudgetExceededNames", params: { names: "lab::large" } }
+        ]);
+        assert.strictEqual(raw.at(-1).name, namedBig.name, "sample identities remain unchanged");
     }
 
     console.log("Large object read budget tests passed");

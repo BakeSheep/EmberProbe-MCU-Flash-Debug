@@ -137,6 +137,24 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
         "a failed read-back must not be reported as firmware modifying the value"
     );
 
+    const namedItem = { ...verifyItem, name: "_ZN3lab5valueE", requestedName: "_ZN3lab5valueE" };
+    const namedPlan = {
+        ...verifyPlan,
+        elfResult: { ...verifyPlan.elfResult, symbols: [{ name: namedItem.name, displayName: "lab::value" }] },
+        items: [namedItem]
+    };
+    const namedUnreadable = {
+        writeAndVerify: async () => ({
+            before: [],
+            after: [{ name: namedItem.name, bytes: null, diagnostic: { message: "incomplete data" } }]
+        })
+    };
+    await assert.rejects(verifyProvider._executeWritePlan(namedUnreadable, "test", namedPlan), (error) => {
+        assert.strictEqual(error.i18nParams.msg, "lab::value: incomplete data");
+        assert.strictEqual(error.details.results[0].resolvedName, namedItem.name);
+        return error.code === "WRITE_READBACK_FAILED";
+    });
+
     const runtimeProvider = Object.create(Provider.prototype);
     const writeCalls = [];
     const runtime = {

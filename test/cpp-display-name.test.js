@@ -108,6 +108,25 @@ function minimalElf() {
             { name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", watchType: "i32", isComposite: false }
         ]);
         assert.strictEqual(updates[0].symbols[0].displayName, "ns::nsVar", "渐进加载向侧边栏发送 C++ 显示名");
+
+        provider._context = {
+            workspaceState: { get: () => [{ name: "_ZN2ns5nsVarE.member" }] }
+        };
+        provider._elfService.layout = async () => {
+            throw new Error("DWARF root layout cannot fit its expansion budget");
+        };
+        const selected = { symbols: [{ ...symbols[0], isComposite: true }], warnings: [] };
+        await provider._hydrateSelectedLayouts(selected);
+        assert.deepStrictEqual(selected.warnings, ["ns::nsVar: DWARF root layout cannot fit its expansion budget"]);
+        provider.readElfSymbols = () => ({ symbols });
+        assert.strictEqual(provider._variableDisplayName({ name: "_ZN2ns5nsVarE.member" }), "ns::nsVar.member");
+        provider.readElfSymbols = () => {
+            throw new Error("ELF unavailable");
+        };
+        assert.strictEqual(
+            provider._variableDisplayName({ name: "_ZN2ns5nsVarE.member", displayName: "ns::nsVar.member" }),
+            "ns::nsVar.member"
+        );
     } finally {
         fs.rmSync(tmp, { force: true });
     }

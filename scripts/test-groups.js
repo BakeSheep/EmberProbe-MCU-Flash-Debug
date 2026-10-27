@@ -196,6 +196,7 @@ const TEST_GROUPS = Object.freeze({
         "mockup.test.js",
         "new-skills.test.js",
         "notice.test.js",
+        "variable-card-notices.test.js",
         "openocd-checker.test.js",
         "openocd-entrypoints.test.js",
         "openocd-exec.test.js",

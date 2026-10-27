@@ -554,6 +554,17 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                             ?.parentElement.nextElementSibling?.matches(".pointer-pointee.open"),
                         "the chained pointee sits below its pointer row before sampling"
                     );
+                    const toggles = [...view.document.querySelectorAll(".pointer-toggle")];
+                    assert(toggles.length > 0);
+                    assert.strictEqual(
+                        view.document.querySelectorAll(".pointer-pointee .notice").length,
+                        0,
+                        "pointee notices stay in the owning variable card footer"
+                    );
+                    for (const toggle of toggles) {
+                        assert(!toggle.getAttribute("aria-label").includes("_ZN"));
+                        assert(toggle.dataset.path.startsWith("_ZN"), "pointer identity keeps its linkage name");
+                    }
                     if (!sidebar)
                         assert.ok(view.document.querySelector(".var-card .swatch.off"), "pointer curves start hidden");
                     view.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });

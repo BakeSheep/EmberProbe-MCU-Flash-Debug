@@ -87,7 +87,10 @@
                     "notice-button notice-action" + (action.primary ? " primary" : ""),
                     resolve(action.label)
                 );
-                node.addEventListener("click", () => options.onAction?.(action, id, notice));
+                node.addEventListener("click", (event) => {
+                    event.stopPropagation();
+                    options.onAction?.(action, id, notice);
+                });
                 return node;
             });
             const actionRow = actions.length > 1 ? element("div", "notice-actions") : null;
@@ -175,6 +178,7 @@
                 }, timeout);
             entries.set(id, entry);
             sync();
+            return node;
         }
         function clear(id) {
             const entry = entries.get(id);

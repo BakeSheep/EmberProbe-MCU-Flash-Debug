@@ -387,7 +387,9 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
                 assert.ok(sidebar.document.getElementById("availableVars").textContent.includes(table[key]));
                 assert.ok(sidebar.document.getElementById("liveValues").textContent.includes(table[key]));
                 assert.ok(graph.document.getElementById("impList").textContent.includes(table[key]));
-                assert.ok(graph.document.querySelector(".comp-body").textContent.includes(table[key]));
+                assert.ok(
+                    graph.document.querySelector(".comp-content > .variable-notices").textContent.includes(table[key])
+                );
             }
             sidebar.assertHealthy();
             graph.assertHealthy();

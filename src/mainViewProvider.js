@@ -35,7 +35,7 @@ const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
 const faultInfo = require("./faultInfo");
 const validation = require("./validation");
-const { variableDisplayName, writeUnavailableKey } = require("./webview/runtime");
+const { variableDisplayName, variableScope, writeUnavailableKey } = require("./webview/runtime");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
 const { AgentBridge } = require("./agentBridge");
@@ -1844,7 +1844,7 @@ class MainViewProvider {
             this._postLive({
                 type: "liveError",
                 key: "live.runtimeAddressRejectedNames",
-                params: { names: plan.denied.map((item) => item.name).join(", ") }
+                params: { names: plan.denied.map((item) => this._variableDisplayName(item)).join(", ") }
             });
         } else if (!deniedKey) this._runtimeDeniedKey = "";
         // Re-mark rejected items on every configuration: a paused snapshot may have filled them meanwhile.
@@ -1867,7 +1867,7 @@ class MainViewProvider {
             this._postLive({
                 type: "liveError",
                 key: "live.runtimeBudgetExceededNames",
-                params: { names: plan.overBudget.map((item) => item.name).join(", ") }
+                params: { names: plan.overBudget.map((item) => this._variableDisplayName(item)).join(", ") }
             });
         } else if (!overBudgetKey) this._runtimeOverBudgetKey = "";
         if (!plan.allowed.length && plan.overBudget.length)
@@ -2883,7 +2883,12 @@ class MainViewProvider {
             });
         const unreadable = results.filter((r) => r.readBackError);
         if (unreadable.length) {
-            const msg = unreadable.map((r) => `${r.name}: ${r.readBackError}`).join("; ");
+            const msg = unreadable
+                .map(
+                    (r) =>
+                        `${this._variableDisplayName({ name: r.resolvedName || r.name }, elfResult.symbols)}: ${r.readBackError}`
+                )
+                .join("; ");
             throw Object.assign(new Error(`The value was written, but reading it back failed: ${msg}`), {
                 code: "WRITE_READBACK_FAILED",
                 retryable: false,
@@ -4060,7 +4065,7 @@ class MainViewProvider {
             try {
                 await this._elfService.layout(name);
             } catch (error) {
-                result.warnings.push(`${name}: ${error.message}`);
+                result.warnings.push(`${symbol.displayName || name}: ${error.message}`);
             }
         }
     }
@@ -4162,6 +4167,15 @@ class MainViewProvider {
         }
         return this._watchLists.read(key);
     }
+    _variableDisplayName(item, symbols = null) {
+        let byName;
+        try {
+            byName = this._symbolNameIndex(symbols || this.readElfSymbols().symbols);
+        } catch {
+            // Saved labels remain usable while ELF metadata is unavailable.
+        }
+        return variableDisplayName(item, byName);
+    }
     _displayNamesForSeries(watchKey, names) {
         const watched = new Map((this._scalarWatchList(watchKey) || []).map((item) => [item.name, item]));
         let symbols = new Map();
@@ -4211,6 +4225,7 @@ class MainViewProvider {
         const expanded = keys.flatMap((key) =>
             (this._context.workspaceState.get(key) || []).filter((item) => item.layoutExpanded)
         );
+        const expandedByName = new Map(expanded.map((item) => [item.name, item]));
         const changes = { renamed: new Map(), ambiguous: new Map() };
         this._watchNameChanges = changes;
         let rebound;
@@ -4236,14 +4251,30 @@ class MainViewProvider {
             )
         ].filter((name) => !changes.ambiguous.has(name));
         if (invalid.length)
-            this._postLive({ type: "liveError", key: "lw.layoutWatchInvalid", params: { names: invalid.join(", ") } });
+            this._postLive({
+                type: "liveError",
+                key: "lw.layoutWatchInvalid",
+                params: {
+                    names: invalid
+                        .map((name) => this._variableDisplayName(expandedByName.get(name) || { name }, symbols))
+                        .join(", ")
+                }
+            });
         // A saved name that now matches same-named variables of several CUs is removed, never bound to one of them.
         if (changes.ambiguous.size)
             this._postLive({
                 type: "liveError",
                 key: "lw.watchAmbiguous",
                 params: {
-                    names: [...changes.ambiguous.keys()].join(", "),
+                    names: [...changes.ambiguous]
+                        .map(([name, candidates]) => {
+                            const displayName = symbols.find((symbol) => symbol.name === candidates[0])?.displayName;
+                            return this._variableDisplayName(
+                                { name, displayName: displayName && (variableScope(displayName)?.name || displayName) },
+                                symbols
+                            );
+                        })
+                        .join(", "),
                     candidates: [...new Set([...changes.ambiguous.values()].flat())]
                         .slice(0, 8)
                         .map((name) => symbols.find((symbol) => symbol.name === name)?.displayName || name)
@@ -6368,9 +6399,7 @@ class MainViewProvider {
                                     ok: false,
                                     name,
                                     seq,
-                                    key: error.i18nKey,
-                                    params: error.i18nParams,
-                                    message: error.message || String(error)
+                                    ...toUiError(error)
                                 });
                             } finally {
                                 if (this._uiWriteLatest.get(name) === ticket) this._uiWriteLatest.delete(name);

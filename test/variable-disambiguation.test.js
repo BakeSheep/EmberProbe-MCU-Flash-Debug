@@ -207,6 +207,26 @@ for (const lang of ["en", "zh"]) {
     };
     await provider._resolveLiveVariable({ name: composite.name, version: "elf1", requestId: 5 }, post);
     assert.strictEqual(messages.length, 0, "ELF invalidation during layout resolution cannot add an old variable");
+
+    provider.readElfSymbols = () => ({ symbols });
+    provider._livePanels = new Map();
+    provider._context = { workspaceState: { get: () => [] } };
+    provider._latestSidebarSamples = new Map();
+    provider._watchLists = {
+        rebind: async () => {
+            provider._watchNameChanges.ambiguous.set(
+                raw,
+                symbols.map((symbol) => symbol.name)
+            );
+            return new Map();
+        }
+    };
+    provider._postLive = post;
+    await provider._rebindWatchLists(symbols);
+    const warning = messages.at(-1);
+    assert.strictEqual(warning.key, "lw.watchAmbiguous");
+    assert.strictEqual(warning.params.names, "g_sameNameCounter");
+    assert(!warning.params.candidates.includes("_ZN"));
     console.log(
         "Source-qualified variable lists, inline choices, readable diagnostics and stale request guards passed"
     );

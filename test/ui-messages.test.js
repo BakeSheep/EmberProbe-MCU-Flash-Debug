@@ -449,6 +449,17 @@ async function queuedWrites() {
         [1, 3, 4]
     );
     assert.strictEqual(f.provider._uiWriteLatest.size, 0, "completed writes release their coalescing slot");
+    f.provider._writeUiVariable = async () => {
+        throw Object.assign(new Error("Writing pointer storage is not supported: _ZN3lab7pointerE"), {
+            code: "WRITE_NOT_ALLOWED"
+        });
+    };
+    await f.dispatch({ type: "writeVariable", name: "_ZN3lab7pointerE", value: 1, seq: 5 });
+    const failure = f.messages.at(-1);
+    assert.strictEqual(failure.type, "writeResult");
+    assert.strictEqual(failure.name, "_ZN3lab7pointerE");
+    assert.strictEqual(failure.diagnostic.code, "WRITE_NOT_ALLOWED", "the UI can show the localized cause");
+    assert(failure.diagnostic.message.includes("_ZN3lab7pointerE"), "raw symbols remain in diagnostic details");
 }
 
 (async () => {

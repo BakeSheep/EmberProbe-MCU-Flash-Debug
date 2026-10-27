@@ -296,8 +296,10 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
             normalizeWatchList(persisted, [f.symbol]).filter((item) => item.name === gain),
             []
         );
+        f.symbol.displayName = "lab::axes";
         await provider._rebindWatchLists([f.symbol]);
         assert.strictEqual(notices.at(-1).key, "lw.layoutWatchInvalid");
+        assert(notices.at(-1).params.names.startsWith("lab::axes[0].a.b.gain"), notices.at(-1).params.names);
         assert.match(notices.at(-1).params.names, /axes\[0\]\.a\.b\.gain/);
         const fresh = {
             ...f.symbol,

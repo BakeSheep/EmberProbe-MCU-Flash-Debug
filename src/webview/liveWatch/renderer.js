@@ -652,6 +652,7 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     version: () => impVersion,
     generation: () => impGeneration,
     symbol: layoutSymbol,
+    displayName: (path) => displayNameFor({ name: path }),
     changed: () => {
         for (const item of watch) {
             const symbol = impSymbolByName.get(item.name);
@@ -1296,9 +1297,13 @@ function renderScalarCard(item) {
         toggleCurve(item.name);
     });
     card.append(toggle, val, rm);
+    const footer = EmberProbeRuntime.createVariableNotices(card, t, document.createElement("div"), (text) =>
+        api?.postMessage({ type: "copyText", text })
+    );
     // The pointee is part of the variable's card, on a grid row below its value.
     const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
     if (host) card.appendChild(host);
+    card.appendChild(footer);
     setDisplayedValue(val, scalarDisplay(item));
     return [card];
 }
@@ -1429,14 +1434,22 @@ function updateCompositeValues(name) {
 // locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
 function pointerPointee(row, path, label, node, renderInline) {
     const host = document.createElement("div");
+    host.variableNoticeParent = row;
     if (renderInline) {
-        const toggle = EmberProbeRuntime.renderPointerToggle(row, path, !!expanded[path], t, function () {
-            expanded[path] = !expanded[path];
-            host.classList.toggle("open", expanded[path]);
-            toggle.classList.toggle("open", expanded[path]);
-            toggle.setAttribute("aria-expanded", String(expanded[path]));
-            saveUi();
-        });
+        const toggle = EmberProbeRuntime.renderPointerToggle(
+            row,
+            path,
+            !!expanded[path],
+            t,
+            function () {
+                expanded[path] = !expanded[path];
+                host.classList.toggle("open", expanded[path]);
+                toggle.classList.toggle("open", expanded[path]);
+                toggle.setAttribute("aria-expanded", String(expanded[path]));
+                saveUi();
+            },
+            displayNameFor({ name: path })
+        );
         host.className = "pointer-pointee" + (expanded[path] ? " open" : "");
         renderInline(host);
         return host;
@@ -1445,9 +1458,16 @@ function pointerPointee(row, path, label, node, renderInline) {
     const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, pointerSymbol(path));
     if (!entry) return null;
     const item = watch.find((w) => w.name === entry.name);
-    EmberProbeRuntime.renderPointerToggle(row, path, !!item, t, function () {
-        togglePointee(entry);
-    });
+    EmberProbeRuntime.renderPointerToggle(
+        row,
+        path,
+        !!item,
+        t,
+        function () {
+            togglePointee(entry);
+        },
+        displayNameFor({ name: path })
+    );
     if (!item) return null;
     host.className = "pointer-pointee open";
     renderPointee(host, item, label);
@@ -1658,7 +1678,7 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
                     ...(displayPath !== path ? { displayPath: EmberProbeRuntime.layoutMemberPath(displayPath, m) } : {})
                 });
         });
-        if (!ms.length) appendNote(container, t("lw.compositeNoLayout"));
+        if (!ms.length) appendNote(container, t("lw.compositeNoLayout"), "warning");
     } else if (layout.kind === "array") {
         var et = layout.elementType || {},
             total = Number(layout.totalElements) || 0,
@@ -1671,7 +1691,7 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
             end = Math.min(end, start + 256);
         }
         if (!et.watchType && !et.compositeLayout && !et.unobservable) {
-            appendNote(container, t("lw.compositeNoLayout"));
+            appendNote(container, t("lw.compositeNoLayout"), "warning");
             return;
         }
         for (var i = start; i < end; i++) {
@@ -1709,11 +1729,18 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
         // A chosen range stays as chosen; the default first page can grow.
         if (total > end && disp) appendNote(container, t("lw.arrayMore", { n: total - end }));
         else if (total > end)
-            EmberProbeRuntime.renderArrayMore(container, total - end, t, function (page) {
-                arrayShown[path] = end + page;
-                saveUi();
-                renderVars();
-            });
+            EmberProbeRuntime.renderArrayMore(
+                container,
+                total - end,
+                t,
+                function (page) {
+                    arrayShown[path] = end + page;
+                    saveUi();
+                    renderVars();
+                },
+                path,
+                displayNameFor({ name: displayPath })
+            );
     }
 }
 function renderSummaryInto(container, summary, baseAddr, label, typeName) {
@@ -1780,9 +1807,11 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
             if (!EmberProbeRuntime.memberVisible(member, showRawFor(path))) return;
             var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
             if (member.unobservable)
-                appendNote(
+                layoutExpansionUi.render(
                     target,
-                    (member.name || "?") + ": " + EmberProbeRuntime.unobservableReason(member.unobservable, t)
+                    { ...member, path: childPath },
+                    EmberProbeRuntime.variableBaseName(path),
+                    t
                 );
             else
                 renderRuntimeTreeInto(
@@ -1833,9 +1862,13 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
             );
         });
     if (tree.elements && tree.collapsed) appendNote(container, t("lw.runtimeCollapsed"));
-    if (tree.unobservable) appendNote(container, EmberProbeRuntime.unobservableReason(tree.unobservable, t));
+    if (tree.unobservable)
+        layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
     else if (tree.unavailable)
-        appendNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
+        appendNote(container, {
+            ...EmberProbeRuntime.unavailableNotice(tree, t),
+            title: displayNameFor({ name: path })
+        });
 }
 function renderRuntimeBody(body, sampled, name) {
     // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
@@ -1852,9 +1885,10 @@ function renderRuntimeBody(body, sampled, name) {
     Object.keys(compCells).forEach(function (path) {
         if (body.contains(compCells[path])) delete compCells[path];
     });
+    EmberProbeRuntime.resetVariableNotices(body, t, (text) => api?.postMessage({ type: "copyText", text }));
     body.textContent = "";
     body.dataset.runtimeShape = shape;
-    if (tree?.truncated) appendNote(body, t("lw.layoutPartial"));
+    if (tree?.truncated) appendNote(body, t("lw.layoutPartial"), "warning");
     renderRawMembersUi(body, sampled || layoutSymbol(name)?.compositeLayout, name);
     renderRuntimeTreeInto(body, tree, name);
     const symbol = layoutSymbol(name);
@@ -1867,13 +1901,17 @@ function renderRuntimeBody(body, sampled, name) {
     ))
         layoutExpansionUi.render(body, entry, name, t);
     if (!sampled) appendNote(body, t("lw.waitSamples"));
+    EmberProbeRuntime.finishVariableNotices(body);
 }
-function appendNote(container, text) {
-    var n = document.createElement("div");
-    n.className = "comp-note";
-    n.textContent = text;
-    container.appendChild(n);
+function appendNote(container, text, level = "info") {
+    const node = EmberProbeRuntime.renderVariableNotice(
+        container,
+        typeof text === "string" ? { text, level } : text,
+        t
+    );
+    node.querySelector(".notice-text")?.classList.add("comp-note");
 }
+
 function renderCompositeCard(item, idx, box) {
     var card = document.createElement("div");
     card.className = "var-card composite" + (expanded[item.name] ? " open" : "");
@@ -1912,16 +1950,19 @@ function renderCompositeCard(item, idx, box) {
         saveUi();
         dirty = true;
     };
+    const footer = EmberProbeRuntime.createVariableNotices(body, t, document.createElement("div"), (text) =>
+        api?.postMessage({ type: "copyText", text })
+    );
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
         renderRuntimeBody(body, latest[item.name], item.name);
     } else {
         renderRawMembersUi(body, lay, item.name);
-        if (lay.truncated) appendNote(body, t("lw.layoutPartial"));
+        if (lay.truncated) appendNote(body, t("lw.layoutPartial"), "warning");
         renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
     }
     if (controls) controls.decorate(card, item.name);
-    content.append(head, body);
+    content.append(head, body, footer);
     card.append(rm, content);
     box.appendChild(card);
     updateCompositeValues(item.name);
@@ -2265,9 +2306,10 @@ function renderImport() {
             var populate = function () {
                 leafRows -= ownLeafRows;
                 ownLeafRows = 0;
+                EmberProbeRuntime.resetVariableNotices(kids, t);
                 kids.textContent = "";
                 if (!s.compositeLayout && !s.runtimeLayout) {
-                    kids.textContent = s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout");
+                    appendNote(kids, s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout"), "warning");
                     return;
                 }
                 renderRawMembersUi(kids, latest[s.name] || s.compositeLayout, s.name);
@@ -2286,7 +2328,8 @@ function renderImport() {
                     );
                 if (runtime && leaves.some((leaf) => leaf.layoutExpanded))
                     appendNote(kids, t("lw.layoutStaticStorage"));
-                if (s.compositeLayout?.truncated || s.runtimeLayout?.truncated) appendNote(kids, t("lw.layoutPartial"));
+                if (s.compositeLayout?.truncated || s.runtimeLayout?.truncated)
+                    appendNote(kids, t("lw.layoutPartial"), "warning");
                 EmberProbeRuntime.displayUnavailableRows(s.compositeLayout, s.name, 64, s, showRawFor(s.name)).forEach(
                     function (entry) {
                         layoutExpansionUi.render(kids, entry, s.name, t);
@@ -2323,10 +2366,9 @@ function renderImport() {
                 ownLeafRows = shownLeaves;
                 leafRows += shownLeaves;
                 if (leaves.length > shownLeaves) {
-                    var note = document.createElement("div");
-                    note.textContent = t("lw.arrayMore", { n: leaves.length - shownLeaves });
-                    kids.appendChild(note);
+                    appendNote(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
                 }
+                EmberProbeRuntime.finishVariableNotices(kids);
             };
             if (open) {
                 populate();
@@ -2351,6 +2393,7 @@ function renderImport() {
                 } else {
                     leafRows -= ownLeafRows;
                     ownLeafRows = 0;
+                    EmberProbeRuntime.resetVariableNotices(kids, t);
                     kids.textContent = "";
                 }
             };

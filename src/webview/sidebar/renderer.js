@@ -147,6 +147,7 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     version: () => availableVersion,
     generation: () => availableGeneration,
     symbol: sbLayoutSymbol,
+    displayName: (path) => sbDisplayName({ name: path }),
     changed: () => {
         for (const item of sideWatch) {
             const symbol = availableByName.get(item.name);
@@ -858,9 +859,13 @@ function sbRenderScalarRow(item) {
         if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
     });
     row.append(nameWrap, val, rm);
+    const footer = EmberProbeRuntime.createVariableNotices(row, t, document.createElement("div"), (text) =>
+        api?.postMessage({ type: "copyText", text })
+    );
     // The pointee is part of the variable's card, on a second grid row below its value.
     const host = info.isPointer && sbPointerPointee(row, item.name, sbDisplayName(item), info);
     if (host) row.appendChild(host);
+    row.appendChild(footer);
     setDisplayedValue(val, sbScalarDisplay(item));
     return [row];
 }
@@ -868,14 +873,22 @@ function sbRenderScalarRow(item) {
 // locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
 function sbPointerPointee(row, path, label, node, renderInline) {
     const host = document.createElement("div");
+    host.variableNoticeParent = row;
     if (renderInline) {
-        const toggle = EmberProbeRuntime.renderPointerToggle(row, path, !!sbExpanded[path], t, () => {
-            sbExpanded[path] = !sbExpanded[path];
-            host.classList.toggle("open", sbExpanded[path]);
-            toggle.classList.toggle("open", sbExpanded[path]);
-            toggle.setAttribute("aria-expanded", String(sbExpanded[path]));
-            saveSbUi();
-        });
+        const toggle = EmberProbeRuntime.renderPointerToggle(
+            row,
+            path,
+            !!sbExpanded[path],
+            t,
+            () => {
+                sbExpanded[path] = !sbExpanded[path];
+                host.classList.toggle("open", sbExpanded[path]);
+                toggle.classList.toggle("open", sbExpanded[path]);
+                toggle.setAttribute("aria-expanded", String(sbExpanded[path]));
+                saveSbUi();
+            },
+            sbDisplayName({ name: path })
+        );
         host.className = "pointer-pointee" + (sbExpanded[path] ? " open" : "");
         renderInline(host);
         return host;
@@ -884,7 +897,14 @@ function sbPointerPointee(row, path, label, node, renderInline) {
     const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, sbPointerSymbol(path));
     if (!entry) return null;
     const item = sideWatch.find((w) => w.name === entry.name);
-    EmberProbeRuntime.renderPointerToggle(row, path, !!item, t, () => sbTogglePointee(entry));
+    EmberProbeRuntime.renderPointerToggle(
+        row,
+        path,
+        !!item,
+        t,
+        () => sbTogglePointee(entry),
+        sbDisplayName({ name: path })
+    );
     if (!item) return null;
     host.className = "pointer-pointee open";
     sbRenderPointee(host, item, label);
@@ -1117,12 +1137,10 @@ function renderAvailableContents(content) {
             const populate = () => {
                 leafRows -= ownLeafRows;
                 ownLeafRows = 0;
+                EmberProbeRuntime.resetVariableNotices(kids, t);
                 kids.textContent = "";
                 if (!sym.compositeLayout && !sym.runtimeLayout) {
-                    const note = document.createElement("div");
-                    note.className = "sb-note";
-                    note.textContent = sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout");
-                    kids.appendChild(note);
+                    sbNote(kids, sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"), "warning");
                     return;
                 }
                 sbRenderRawMembersUi(kids, latest[sym.name] || sym.compositeLayout, sym.name);
@@ -1140,7 +1158,8 @@ function renderAvailableContents(content) {
                         )
                     );
                 if (runtime && leaves.some((leaf) => leaf.layoutExpanded)) sbNote(kids, t("lw.layoutStaticStorage"));
-                if (sym.compositeLayout?.truncated || sym.runtimeLayout?.truncated) sbNote(kids, t("lw.layoutPartial"));
+                if (sym.compositeLayout?.truncated || sym.runtimeLayout?.truncated)
+                    sbNote(kids, t("lw.layoutPartial"), "warning");
                 for (const entry of EmberProbeRuntime.displayUnavailableRows(
                     sym.compositeLayout,
                     sym.name,
@@ -1201,11 +1220,9 @@ function renderAvailableContents(content) {
                 ownLeafRows = shownLeaves;
                 leafRows += shownLeaves;
                 if (leaves.length > shownLeaves) {
-                    const note = document.createElement("div");
-                    note.className = "sb-note";
-                    note.textContent = t("lw.arrayMore", { n: leaves.length - shownLeaves });
-                    kids.appendChild(note);
+                    sbNote(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
                 }
+                EmberProbeRuntime.finishVariableNotices(kids);
             };
             if (open) populate();
             content.appendChild(kids);
@@ -1230,6 +1247,7 @@ function renderAvailableContents(content) {
                 } else {
                     leafRows -= ownLeafRows;
                     ownLeafRows = 0;
+                    EmberProbeRuntime.resetVariableNotices(kids, t);
                     kids.textContent = "";
                 }
             };
@@ -1763,7 +1781,7 @@ function buildWriteCard(item, label) {
     if (wide) {
         minus.hidden = true;
         plus.hidden = true;
-        bottom.hidden = true;
+        bottom.remove();
         const commitWide = () => {
             const value = normalizeWideInteger(input.value, item.type);
             if (value === null) {
@@ -1969,7 +1987,7 @@ function onWriteResult(m) {
         setWriteFeedback(
             window.EmberProbeNotice.hostNotice({
                 error: m.key || m.message ? m : { key: "sb.commandFailed" },
-                title: { key: "sb.writeFailTitle", params: { name: m.name } }
+                title: { key: "sb.writeFailTitle", params: { name: sbDisplayName({ name: m.name }) } }
             })
         );
 }
@@ -2026,12 +2044,15 @@ function sbUpdateComposite(name) {
         );
     });
 }
-function sbNote(container, txt) {
-    const n = document.createElement("div");
-    n.className = "sb-note";
-    n.textContent = txt;
-    container.appendChild(n);
+function sbNote(container, text, level = "info") {
+    const node = EmberProbeRuntime.renderVariableNotice(
+        container,
+        typeof text === "string" ? { text, level } : text,
+        t
+    );
+    node.querySelector(".notice-text")?.classList.add("sb-note");
 }
+
 function sbRenderLeaf(container, label, typeName, path, watchType, node, renderInline) {
     const row = document.createElement("div");
     row.className = "sb-mrow";
@@ -2102,12 +2123,12 @@ function sbRenderLayout(container, layout, path, displayPath = path) {
                     ...(displayPath !== path ? { displayPath: EmberProbeRuntime.layoutMemberPath(displayPath, m) } : {})
                 });
         });
-        if (!ms.length) sbNote(container, t("lw.compositeNoLayout"));
+        if (!ms.length) sbNote(container, t("lw.compositeNoLayout"), "warning");
     } else if (layout.kind === "array") {
         const et = layout.elementType || {},
             total = Number(layout.totalElements) || 0;
         if (!et.watchType && !et.compositeLayout && !et.unobservable) {
-            sbNote(container, t("lw.compositeNoLayout"));
+            sbNote(container, t("lw.compositeNoLayout"), "warning");
             return;
         }
         const shown = EmberProbeRuntime.arrayShownCount(total, sbArrayShown[path]);
@@ -2130,11 +2151,18 @@ function sbRenderLayout(container, layout, path, displayPath = path) {
                 });
         }
         if (total > shown)
-            EmberProbeRuntime.renderArrayMore(container, total - shown, t, (page) => {
-                sbArrayShown[path] = shown + page;
-                saveSbUi();
-                renderValues();
-            });
+            EmberProbeRuntime.renderArrayMore(
+                container,
+                total - shown,
+                t,
+                (page) => {
+                    sbArrayShown[path] = shown + page;
+                    saveSbUi();
+                    renderValues();
+                },
+                path,
+                sbDisplayName({ name: displayPath })
+            );
     }
 }
 function sbRenderSummary(container, summary, label, typeName) {
@@ -2198,9 +2226,11 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
             if (!EmberProbeRuntime.memberVisible(member, sbShowRawFor(path))) return;
             const childPath = EmberProbeRuntime.layoutMemberPath(path, member);
             if (member.unobservable)
-                sbNote(
+                layoutExpansionUi.render(
                     target,
-                    (member.name || "?") + ": " + EmberProbeRuntime.unobservableReason(member.unobservable, t)
+                    { ...member, path: childPath },
+                    EmberProbeRuntime.variableBaseName(path),
+                    t
                 );
             else
                 sbRenderRuntimeTree(
@@ -2246,9 +2276,10 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
                 true
             );
         });
-    if (tree.unobservable) sbNote(container, EmberProbeRuntime.unobservableReason(tree.unobservable, t));
+    if (tree.unobservable)
+        layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
     else if (tree.unavailable)
-        sbNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
+        sbNote(container, { ...EmberProbeRuntime.unavailableNotice(tree, t), title: sbDisplayName({ name: path }) });
 }
 function sbRenderRuntimeBody(body, sampled, name) {
     // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
@@ -2263,9 +2294,10 @@ function sbRenderRuntimeBody(body, sampled, name) {
     for (const path of Object.keys(compCells)) {
         if (body.contains(compCells[path])) delete compCells[path];
     }
+    EmberProbeRuntime.resetVariableNotices(body, t, (text) => api?.postMessage({ type: "copyText", text }));
     body.textContent = "";
     body.dataset.runtimeShape = shape;
-    if (tree?.truncated) sbNote(body, t("lw.layoutPartial"));
+    if (tree?.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
     sbRenderRawMembersUi(body, sampled || sbLayoutSymbol(name)?.compositeLayout, name);
     sbRenderRuntimeTree(body, tree, name);
     const symbol = sbLayoutSymbol(name);
@@ -2278,6 +2310,7 @@ function sbRenderRuntimeBody(body, sampled, name) {
     ))
         layoutExpansionUi.render(body, entry, name, t);
     if (!sampled) sbNote(body, t("lw.waitSamples"));
+    EmberProbeRuntime.finishVariableNotices(body);
 }
 function sbRenderNest(container, layout, fieldName, path, displayPath = path) {
     sbRenderLayout(sbNestShell(container, fieldName, layout.typeName, path, displayPath), layout, path, displayPath);
@@ -2350,15 +2383,18 @@ function sbRenderComposite(item) {
         arrow.classList.toggle("open", sbExpanded[item.name]);
         saveSbUi();
     };
+    const footer = EmberProbeRuntime.createVariableNotices(body, t, document.createElement("div"), (text) =>
+        api?.postMessage({ type: "copyText", text })
+    );
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
         sbRenderRuntimeBody(body, latest[item.name], item.name);
     } else {
         sbRenderRawMembersUi(body, lay, item.name);
-        if (lay.truncated) sbNote(body, t("lw.layoutPartial"));
+        if (lay.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
         sbRenderLayout(body, lay, item.name);
     }
-    row.append(head, body);
+    row.append(head, body, footer);
     liveBox.appendChild(row);
     sbUpdateComposite(item.name);
 }
