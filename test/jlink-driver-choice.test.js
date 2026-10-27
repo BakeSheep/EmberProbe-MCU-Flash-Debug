@@ -12,6 +12,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const probeLists = (messages) => messages.filter((message) => message.type === "connectedProbes");
 const lastProbes = (messages) => probeLists(messages).at(-1);
 // USB driver state of the probe the sidebar shows as selected ("" when none is selected).
+const lastNotice = (messages) => messages.filter((message) => message.type === "notice").at(-1)?.notice;
 const selectedDriver = (messages) => lastProbes(messages)?.devices.find((item) => item.selected)?.driver?.kind || "";
 // Driver states and notifications are computed as on Windows x64 whatever platform runs the tests.
 function windowsInventory(provider, listProbes) {
@@ -468,16 +469,17 @@ async function main() {
 
         currentInventory = { available: true, devices: [device("5678")] };
         await provider._showJlinkDriverWarning(firstTarget);
-        assert.strictEqual(errors.at(-1), "probe.driverTargetMissing");
-        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_REQUIRED");
+        assert.strictEqual(lastNotice(messages).error.key, "probe.driverTargetMissing");
+        assert.strictEqual(lastNotice(messages).error.diagnostic.code, "PROBE_DRIVER_SELECTION_REQUIRED");
+        assert.strictEqual(errors.length, 0, "a visible sidebar shows the failure without a notification");
         assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink", "never switch another probe");
         await provider._showJlinkDriverWarning({ instanceId: first.id });
         assert.strictEqual(
-            errors.at(-1),
+            lastNotice(messages).error.key,
             "probe.driverSelectionChanged",
             "an unpinned target still checks its interface"
         );
-        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_DRIVER_SELECTION_CHANGED");
+        assert.strictEqual(lastNotice(messages).error.diagnostic.code, "PROBE_DRIVER_SELECTION_CHANGED");
         assert.strictEqual(currentInventory.devices[0].interfaces[0].service, "jlink");
 
         // Two J-Links and no saved selection: the sidebar cannot choose, but the warning's device is switched.
@@ -555,14 +557,18 @@ async function main() {
         currentInventory = { available: true, devices: [device("1234")] };
         provider._probeCoordinator = { anyActive: () => true, isActive: () => false };
         await provider._showJlinkDriverWarning(firstTarget);
-        assert.strictEqual(messages.at(-1).diagnostic.code, "PROBE_BUSY", "notification preserves probe ownership");
+        assert.strictEqual(
+            lastNotice(messages).error.diagnostic.code,
+            "PROBE_BUSY",
+            "notification preserves probe ownership"
+        );
         provider._probeCoordinator = null;
 
         provider._probeDriverService.ensure = async () => {
             throw new Error("UAC cancelled");
         };
         await provider._showJlinkDriverWarning(firstTarget);
-        assert.strictEqual(errors.at(-1), "UAC cancelled");
+        assert.strictEqual(lastNotice(messages).error.message, "UAC cancelled");
         assert.strictEqual(provider._probeDriverSwitching, false, "a failed switch releases the switching guard");
 
         warningResponse = "probe.ignoreDriverWarning";

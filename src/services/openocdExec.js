@@ -3,6 +3,7 @@ const { buildOpenOcdConfigArgs } = require("../openocdScripts");
 
 const { diagnoseOpenOcdFailure, connectionDetails } = require("../../skills/_emberprobe/openocd-diagnostics");
 const { spawn } = require("child_process");
+const { createLineDecoder } = require("../../skills/_emberprobe/tool-output");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
 const { withTargetCheck, targetCheckMonitor } = require("../chip/targetIdentity");
 
@@ -69,7 +70,10 @@ function runOpenOcdOnce(options) {
 
         const openocdTail = [];
         const diagnosticLines = [];
-        const pending = { stdout: "", stderr: "" };
+        const pending = {
+            stdout: createLineDecoder((line) => handleLine(line)),
+            stderr: createLineDecoder((line) => handleLine(line))
+        };
         let settled = false;
         let terminalError = null;
         let outputBytes = 0;
@@ -129,10 +133,7 @@ function runOpenOcdOnce(options) {
                 if (!options.waitForCloseOnTimeout) finish(terminalError);
                 return;
             }
-            pending[stream] += chunk.toString();
-            const lines = pending[stream].split(/\r?\n/);
-            pending[stream] = lines.pop() || "";
-            for (const line of lines) handleLine(line);
+            pending[stream].write(chunk);
         };
         const timer = setTimeout(() => {
             const timeoutError =
@@ -164,10 +165,7 @@ function runOpenOcdOnce(options) {
             finish(normalizeSpawnError(error, launch.executable));
         });
         child.on("close", (code, signal) => {
-            for (const stream of ["stdout", "stderr"]) {
-                if (pending[stream]) handleLine(pending[stream]);
-                pending[stream] = "";
-            }
+            for (const stream of ["stdout", "stderr"]) pending[stream].end();
             finish(terminalError, code, signal);
         });
     });

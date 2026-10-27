@@ -73,9 +73,9 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         assert.strictEqual(archivedBatches, 4);
         assert.strictEqual(store.status("p").limited, true);
         assert.strictEqual(store.status("p").bounds, null);
-        assert.strictEqual(warnings.length, 1);
-        assert.strictEqual(warnings[0], t("en", "lw.memoryHistoryLimited"));
-        assert.notStrictEqual(t("zh", "lw.memoryHistoryLimited"), warnings[0]);
+        // The waveform panel says it once in its own notice; there is no VS Code notification.
+        assert.strictEqual(warnings.length, 0);
+        assert.strictEqual(messages.filter((message) => message.type === "chartHistoryLimited").length, 1);
         // Realistic large composite batches can fill the shared host/IPC queue in a few ticks.
         const decoded = leaves.map(({ name }, i) => ({ name, value: i & 255, valueText: String(i & 255), t: 1100 }));
         const size = estimateHistoryBytes(["p", decoded, 1100]);
@@ -88,7 +88,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         await p._flushPendingChartHistorySamples();
         assert.strictEqual(archivedBatches, 5, "host queue pressure still appends the complete disk batch");
         assert.strictEqual(entry._historyBatch, null);
-        assert.strictEqual(warnings.length, 1);
+        assert.strictEqual(warnings.length, 0);
         const source = await archive.historySource("p");
         const records = decodeRecords(await fs.readFile(source.dataPath)).rows;
         assert.strictEqual(records.length, 5);
@@ -242,7 +242,9 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
     });
     const resetProvider = Object.create(ResetProvider.prototype);
     let clears = 0;
+    const limited = [];
     Object.assign(resetProvider, {
+        _postLive: (message) => message.type === "chartHistoryLimited" && limited.push(message),
         _livePanels: new Map(),
         _seriesStyleStore: {},
         _samplingArchive: {
@@ -260,16 +262,17 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
     resetProvider.openLiveWatchPanel();
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();
-    assert.strictEqual(resetWarnings.length, 1);
+    assert.strictEqual(limited.length, 1);
+    assert.strictEqual(resetWarnings.length, 0, "the limit is a waveform notice, not a notification");
     await resetProvider.startLiveWatch([], 10);
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();
-    assert.strictEqual(resetWarnings.length, 2, "starting another run resets the warning");
+    assert.strictEqual(limited.length, 2, "starting another run resets the warning");
     await receive({ type: "clearSamplingHistory", historyRevision: 1 });
     assert.strictEqual(clears, 1);
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();
-    assert.strictEqual(resetWarnings.length, 3, "clearing history resets the warning");
+    assert.strictEqual(limited.length, 3, "clearing history resets the warning");
 
     // A newly plotted evicted curve goes through the real host viewport/restore dispatch.
     const restoreDir = await fs.mkdtemp(path.join(os.tmpdir(), "chart-plot-restore-"));
@@ -340,7 +343,10 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         });
         assert.strictEqual(page.window.remoteHistory.status.limited, true);
         assert.strictEqual(page.window.retainedTimeBounds().min, 2000);
-        assert.strictEqual(page.document.getElementById("status").textContent, t("en", "lw.memoryHistoryLimited"));
+        assert.strictEqual(
+            page.document.querySelector('#lwNotice [data-notice-id="history-limited"] .notice-text').textContent,
+            t("en", "lw.memoryHistoryLimited")
+        );
         page.window.remoteHistory.view = { series: [{ name: "stale" }] };
         page.window.remoteHistory.overview = { series: [{ name: "stale" }] };
         page.send({

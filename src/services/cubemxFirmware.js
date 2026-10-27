@@ -133,6 +133,15 @@ class CubeMxFirmware {
         this.context = options.context;
         this.t = options.t;
         this.changed = options.changed;
+        // Messages go to the host's notice box; without one they fall back to VS Code notifications.
+        this.notify =
+            options.notify ||
+            ((notice) =>
+                notice.level === "warning"
+                    ? this.vscode.window.showWarningMessage(
+                          this.t(notice.key) + (notice.message ? ": " + notice.message : "")
+                      )
+                    : this.vscode.window.showInformationMessage(this.t(notice.key)));
         this.result = null;
         this.error = "";
         this.revision = 0;
@@ -171,7 +180,7 @@ class CubeMxFirmware {
             const result = this.result;
             if (!result || result.installed) {
                 if (this.error)
-                    await this.vscode.window.showWarningMessage(this.t("cubemx.firmwareUnknown") + ": " + this.error);
+                    await this.notify({ level: "warning", key: "cubemx.firmwareUnknown", message: this.error });
                 return result?.installed ? true : false;
             }
             let version = result.requiredVersion;
@@ -194,7 +203,7 @@ class CubeMxFirmware {
             if (!version || original !== JSON.stringify(this.config())) return null;
             const tool = await this.installation(this.config().cubemxPath);
             await this.launch(tool, result.family, version, { closed: () => this.changed() });
-            await this.vscode.window.showInformationMessage(this.t("cubemx.firmwareOpened"));
+            await this.notify({ level: "info", key: "cubemx.firmwareOpened", dismissible: true });
             return true;
         } finally {
             this.opening = false;

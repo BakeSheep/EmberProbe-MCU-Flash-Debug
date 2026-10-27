@@ -2,6 +2,7 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
 const { execFile } = require("child_process");
+const { decodeOutput } = require("./tool-output");
 const { resolveOpenOcdLaunch } = require("./openocd-launch");
 const { listProbes } = require("./probe-inventory");
 const { resolveProbeConnection, connectionError, probeFamily } = require("./probe-connection");
@@ -44,8 +45,14 @@ function query(executable, args, cwd = undefined) {
         execFile(
             executable,
             args,
-            { timeout: 5000, maxBuffer: 256 * 1024, windowsHide: true, cwd },
-            (error, stdout, stderr) => (error ? reject(error) : resolve(`${stdout}\n${stderr}`))
+            { timeout: 5000, maxBuffer: 256 * 1024, windowsHide: true, cwd, encoding: "buffer" },
+            (error, stdout, stderr) => {
+                if (!error) return resolve(`${decodeOutput(stdout)}\n${decodeOutput(stderr)}`);
+                // Node quotes stderr in the message as UTF-8; quote the decoded text instead.
+                const detail = decodeOutput(stderr).trim();
+                error.message = [error.message.split("\n")[0], detail].filter(Boolean).join("\n");
+                reject(error);
+            }
         )
     );
 }

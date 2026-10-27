@@ -13,11 +13,7 @@
         if (!section || !body || !filter || !sort || !refresh) return null;
         const status = document.createElement("div");
         status.id = "rtosStatus";
-        status.className = "rtos-status";
-        status.setAttribute("role", "status");
-        const runtime = globalThis.EmberProbeRuntime || require("../runtime");
-        status.innerHTML = runtime.warningIconSvg("rtos-status-icon") + '<span class="rtos-status-text"></span>';
-        const statusText = status.querySelector(".rtos-status-text");
+        const noticeModule = globalThis.EmberProbeNotice || require("../notice");
         const table = body.closest("table");
         if (table) table.before(status);
         else section.append(status);
@@ -28,6 +24,13 @@
             pending: false,
             error: ""
         };
+        const notices = noticeModule.createNoticeArea(status, {
+            t,
+            onDismiss: () => {
+                state.error = "";
+                render();
+            }
+        });
         uiState.rtosTaskDetails ||= {};
         section.open = !!uiState.rtosExpanded;
         const key = (message) => `${message.sessionId}:${message.stopEpoch}:${message.inspectionEpoch || 0}`;
@@ -90,14 +93,24 @@
                           : state.snapshot
                             ? "rtos.ready"
                             : "rtos.pause";
-            statusText.textContent = [
-                state.error,
-                state.error && !state.snapshot ? "" : t(statusKey),
-                ...(state.snapshot?.diagnostics || [])
-            ]
-                .filter(Boolean)
-                .join("\n");
-            status.classList.toggle("error", !!state.error);
+            // An error leads; otherwise the state is a hint (info), a warning when the table may mislead, or
+            // nothing once a complete snapshot is on screen. Kernel diagnostics fold into the details panel.
+            const diagnostics = (state.snapshot?.diagnostics || []).join("\n");
+            if (state.error)
+                notices.set("status", {
+                    level: "error",
+                    text: state.error,
+                    detail: [state.snapshot ? t(statusKey) : "", diagnostics].filter(Boolean).join("\n")
+                });
+            else if (statusKey === "rtos.ready" && !diagnostics) notices.clear("status");
+            else
+                notices.set("status", {
+                    level: statusKey === "rtos.stale" || statusKey === "rtos.partial" ? "warning" : "info",
+                    busy: statusKey === "rtos.reading",
+                    text: { key: statusKey },
+                    detail: diagnostics,
+                    dismissible: false
+                });
             section.classList.toggle("rtos-stale", !!stale);
             const query = filter.value.toLowerCase();
             const tasks = (state.snapshot?.tasks || []).filter((task) =>

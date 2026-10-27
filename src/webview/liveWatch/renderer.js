@@ -324,7 +324,7 @@ function applyArchiveBudget(budget) {
     var level = remaining <= 60 ? 2 : remaining <= 600 ? 1 : 0;
     if (level > archiveWarned) {
         archiveWarned = level;
-        setStatusKey("lw.archiveLow", { time: formatElapsed(remaining * 1000) }, "warning");
+        setStatusKey("lw.archiveLow", { time: formatElapsed(remaining * 1000) }, "warning", "archive");
     } else if (remaining > 900) archiveWarned = 0;
 }
 function renderUnlimited(syncInput) {
@@ -835,19 +835,53 @@ function hidePointerCurve(item) {
 function ensureBuf(n) {
     if (!Object.prototype.hasOwnProperty.call(data, n)) data[n] = [];
 }
+// Notice boxes: the panel's above the chart, the export dialog's own, and the variable-source hint.
+var noticeAreas = {};
+function noticeArea(id) {
+    if (!noticeAreas[id] && $(id))
+        noticeAreas[id] = window.EmberProbeNotice.createNoticeArea($(id), {
+            t: t,
+            onCopy: function (text) {
+                post({ type: "copyText", text: text });
+            },
+            onAction: function (action) {
+                if (action.message) post(action.message);
+            }
+        });
+    return noticeAreas[id];
+}
+function panelNotice(id, notice) {
+    var area = noticeArea("lwNotice");
+    if (area) notice ? area.set(id, notice) : area.clear(id);
+}
+function exportNotice(key) {
+    var area = noticeArea("exportWarn");
+    if (area)
+        key ? area.set("export", { level: "warning", text: { key: key }, dismissible: false }) : area.clear("export");
+}
+// The status bar is the sampling state only; errors and warnings become panel notices, by source id.
 function renderStatus() {
     var txt = statusMsg.key ? t(statusMsg.key, statusMsg.params) : statusMsg.message != null ? statusMsg.message : "";
     $("status").textContent = txt;
-    $("dot").className = "status-dot " + (statusMsg.kind === "error" ? "err" : running ? "on" : "");
+    $("dot").className = "status-dot " + (running ? "on" : "");
     $("dot").title = txt;
     $("dot").setAttribute("aria-label", txt);
 }
-function setStatusKey(key, params, kind) {
-    statusMsg = { key: key, params: params, kind: kind || "" };
+function setStatusKey(key, params, kind, id) {
+    if (kind === "error" || kind === "warning")
+        return panelNotice(id || "status", { level: kind, text: { key: key, params: params } });
+    statusMsg = { key: key, params: params, kind: "" };
     renderStatus();
 }
-function setStatusMsg(m, kind) {
-    statusMsg = { key: m && m.key, params: m && m.params, message: m && m.message, kind: kind || "" };
+function setStatusMsg(m, kind, id) {
+    if (kind === "error" || kind === "warning")
+        return panelNotice(
+            id || "status",
+            kind === "error"
+                ? window.EmberProbeNotice.hostNotice({ error: m })
+                : { level: kind, text: m.key ? { key: m.key, params: m.params } : m.message }
+        );
+    statusMsg = { key: m && m.key, params: m && m.params, message: m && m.message, kind: "" };
     renderStatus();
 }
 function applyI18n() {
@@ -870,8 +904,19 @@ function updateLangToggle() {
         b.setAttribute("aria-label", t("common.langTitle"));
     }
 }
+// Several ELF variables match the typed name; an info notice asks which one to add.
+function choiceHint(show) {
+    var area = noticeArea("acChoiceHint");
+    if (area)
+        show
+            ? area.set("choice", { level: "info", compact: true, text: { key: "lw.chooseVariableSource" } })
+            : area.clear("choice");
+}
 function rerenderLive() {
     applyI18n();
+    Object.keys(noticeAreas).forEach(function (id) {
+        noticeAreas[id].relocalize();
+    });
     renderElfDiagnostics();
     renderVars();
     if (!$("overlay").classList.contains("hidden")) renderImport();
@@ -933,7 +978,7 @@ function addSymbol(sym, resolved = false) {
     }
     if (sym.isComposite) {
         if (!sym.compositeLayout && !sym.runtimeLayout) {
-            setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error");
+            setStatusMsg({ message: sym.unsupportedReason || t("lw.compositeNoLayout") }, "error", "layout");
             return;
         }
         var lay = sym.compositeLayout;
@@ -2055,7 +2100,7 @@ function showArraySelectDialog(sym, cb) {
 function start() {
     if (running || starting) return;
     if (!watch.length) {
-        setStatusKey("lw.needVar", null, "error");
+        setStatusKey("lw.needVar", null, "warning", "start");
         return;
     }
     var frequencyHz = selectedFrequencyHz();
@@ -2384,7 +2429,7 @@ function hideAutocomplete() {
     autocompleteIndex = -1;
     ambiguityChoices = null;
     pendingVariableRequest = null;
-    $("acChoiceHint").hidden = true;
+    choiceHint(false);
 }
 function selectAutocomplete(index) {
     autocompleteIndex = index;
@@ -2432,7 +2477,7 @@ function renderAutocomplete(candidates) {
     }
     autocompleteMatches = matches;
     ambiguityChoices = Array.isArray(candidates) ? matches : null;
-    $("acChoiceHint").hidden = !ambiguityChoices;
+    choiceHint(!!ambiguityChoices);
     matches.forEach(function (s, index) {
         var it = document.createElement("div");
         it.className = "ac-item";
@@ -2730,7 +2775,7 @@ function moveExportSeriesDrag(event) {
 function hideExport() {
     endExportSeriesDrag();
     $("exportOverlay").classList.add("hidden");
-    $("exportWarn").textContent = "";
+    exportNotice(null);
 }
 var archiveExportInfo = null;
 function showExport() {
@@ -2760,9 +2805,8 @@ function showArchiveExport(info) {
     if (!names.length || !Number.isFinite(first) || !Number.isFinite(last)) {
         exportCandidates = [];
         $("exportSeries").textContent = "";
-        $("exportWarn").textContent = t("lw.noDataToExport");
+        exportNotice("lw.noDataToExport");
         $("exportOverlay").classList.remove("hidden");
-        setStatusKey("lw.noDataToExport", null, "error");
         return;
     }
     exportCandidates = names.map(function (name) {
@@ -2825,22 +2869,18 @@ function showArchiveExport(info) {
         nameCell.appendChild(label);
     });
     setupExportTimeline(exportCandidates);
-    $("exportWarn").textContent = info.limitReached
-        ? t("lw.archiveTruncated")
-        : info.limited
-          ? t("lw.memoryHistoryLimited")
-          : "";
+    exportNotice(info.limitReached ? "lw.archiveTruncated" : info.limited ? "lw.memoryHistoryLimited" : null);
     $("exportOverlay").classList.remove("hidden");
 }
 function applyExport() {
     var selected = selectedExportCandidates();
     if (!selected.length) {
-        $("exportWarn").textContent = t("lw.exportNoSeries");
+        exportNotice("lw.exportNoSeries");
         return;
     }
     var opts = exportOptions(selected);
     if (!opts) {
-        $("exportWarn").textContent = t("lw.exportInvalidRange");
+        exportNotice("lw.exportInvalidRange");
         return;
     }
     post({
@@ -3932,16 +3972,24 @@ window.EmberProbeMessages.connect(window, {
         }
         starting = false;
         updateRun();
-        m.key || m.message != null
-            ? setStatusMsg({ key: m.key, params: m.params, message: m.message }, m.error ? "error" : "")
-            : setStatusKey(running ? "sb.sampling" : "sb.stopped", null, m.error ? "error" : "");
+        if (m.error && (m.key || m.message != null)) setStatusMsg(m, "error", "live");
+        else if (running) panelNotice("live", null);
+        !m.error && (m.key || m.message != null)
+            ? setStatusMsg({ key: m.key, params: m.params, message: m.message })
+            : setStatusKey(running ? "sb.sampling" : "sb.stopped");
     },
     liveError: function (m) {
         if (m.requestId !== undefined) {
             if (!currentVariableReply(m)) return;
             pendingVariableRequest = null;
         }
-        setStatusMsg({ key: m.key, params: m.params, message: m.message || t("lw.error") }, "error");
+        if (!m.key && !m.message) return setStatusMsg({ key: "lw.error" }, "error", "live");
+        // A raw OpenOCD line cannot be translated, so a localized title says what it is.
+        var raw = !m.key && !(m.diagnostic && m.diagnostic.code);
+        panelNotice("live", window.EmberProbeNotice.hostNotice({ error: m, titleKey: raw ? "lw.samplingError" : "" }));
+    },
+    chartHistoryLimited: function () {
+        setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
     },
     setLang: function (m) {
         setLang(m.lang, false);
@@ -4198,7 +4246,8 @@ window.EmberProbeMessages.connect(window, {
     },
     chartHistoryStatus: function (m) {
         if (!CFG.backendHistory || historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
-        if (m.limited && !remoteHistory.liveStatus?.limited) setStatusKey("lw.memoryHistoryLimited", null, "warning");
+        if (m.limited && !remoteHistory.liveStatus?.limited)
+            setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
         remoteHistory.liveStatus = m;
         if (!m.bounds && m.limited && !frozen) {
             resetChartHistoryViews();
@@ -4229,7 +4278,7 @@ window.EmberProbeMessages.connect(window, {
             (m.snapshotId || null) === remoteHistory.snapshotId
         ) {
             if (m.error) {
-                setStatusMsg({ message: m.error }, "error");
+                setStatusMsg({ message: m.error }, "error", "history");
                 remoteHistory.failed = {
                     key: request.key,
                     configKey: request.configKey,
@@ -4270,7 +4319,7 @@ window.EmberProbeMessages.connect(window, {
         if (m.historyRevision !== historyRevision || m.requestId !== remoteHistory.operation) return;
         remoteHistory.operation = null;
         if (m.error) {
-            setStatusMsg({ message: m.error }, "error");
+            setStatusMsg({ message: m.error }, "error", "history");
             return;
         }
         remoteHistory.snapshotId = m.snapshotId;
@@ -4292,10 +4341,22 @@ window.EmberProbeMessages.connect(window, {
     },
     exportCsvResult: function (m) {
         $("export").disabled = false;
-        if (m.ok) {
-            setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
-        } else if (m.aborted) setStatusKey("lw.exportCancelled");
-        else if (!m.cancelled && m.message) setStatusKey("lw.exportFailed", { msg: m.message }, "error");
+        setStatusKey(running ? "sb.sampling" : "sb.stopped");
+        if (m.ok)
+            panelNotice("export", {
+                level: "success",
+                title: { key: "lw.exportSuccess", params: { series: m.seriesCount, rows: m.rowCount } },
+                text: m.file || "",
+                timeoutMs: 8000,
+                actions: [{ label: { key: "msg.revealInFolder" }, message: { type: "revealCsvExport" } }]
+            });
+        else if (m.aborted)
+            panelNotice("export", { level: "info", text: { key: "lw.exportCancelled" }, timeoutMs: 4000 });
+        else if (!m.cancelled && m.message)
+            panelNotice("export", {
+                level: "error",
+                text: { key: "lw.exportFailed", params: { msg: m.message } }
+            });
     },
     pointerSampling: function (m) {
         $("pointerExpandedOnly").checked = m.expandedOnly === true;

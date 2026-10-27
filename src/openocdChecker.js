@@ -9,6 +9,7 @@
 const { resolveExecutablePath } = require("./openocdScripts");
 const fs = require("fs");
 const { spawn } = require("child_process");
+const { decodeLine } = require("../skills/_emberprobe/tool-output");
 const installer = require("./openocdInstaller");
 const i18n = require("./i18n");
 
@@ -75,8 +76,8 @@ function probeOpenOcd(executable) {
                 });
                 return;
             }
-            let stdout = "";
-            let stderr = "";
+            const stdout = [];
+            const stderr = [];
             let settled = false;
             const done = (result) => {
                 if (settled) return;
@@ -99,12 +100,8 @@ function probeOpenOcd(executable) {
                     errorKey: "oc.errTimeout"
                 });
             }, 5000);
-            child.stdout.on("data", (d) => {
-                stdout += d.toString();
-            });
-            child.stderr.on("data", (d) => {
-                stderr += d.toString();
-            });
+            child.stdout.on("data", (d) => stdout.push(Buffer.from(d)));
+            child.stderr.on("data", (d) => stderr.push(Buffer.from(d)));
             child.on("error", (error) => {
                 const isEnoent = error.code === "ENOENT";
                 const permissionDenied = ["EACCES", "EPERM"].includes(error.code);
@@ -121,7 +118,7 @@ function probeOpenOcd(executable) {
                 });
             });
             child.on("close", (code) => {
-                const out = `${stdout}\n${stderr}`;
+                const out = `${decodeLine(Buffer.concat(stdout))}\n${decodeLine(Buffer.concat(stderr))}`;
                 const version = parseVersion(out);
                 // 多数版本 --version 退出码为 0；个别老版本/特殊构建退出码非 0 但仍会打印标识，
                 // 只要输出含 "open on-chip debugger" 即视为可运行，避免误判。

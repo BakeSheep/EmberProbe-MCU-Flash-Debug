@@ -25,6 +25,14 @@ const parseLog = (stdout, stderr = "") => {
     const success = "project generate\r\nGenerated code: 中文/Core/Src/main.c\r\nOK\r\nexit\r\n";
     assert(parseLog(success).confirmed);
     assert.deepStrictEqual(parseLog(success).generatedFiles, ["中文/Core/Src/main.c"]);
+    // Java prints in the system code page on Windows; a GBK path reads the same once decoded.
+    if (process.platform === "win32" && /^zh/i.test(Intl.DateTimeFormat().resolvedOptions().locale)) {
+        const monitor = createLogMonitor();
+        monitor.stdout(Buffer.from("project generate\r\nGenerated code: ", "latin1"));
+        monitor.stdout(Buffer.from("d6d0cec4", "hex"));
+        monitor.stdout(Buffer.from("/Core/Src/main.c\r\nOK\r\n", "latin1"));
+        assert.deepStrictEqual(monitor.finish().generatedFiles, ["中文/Core/Src/main.c"]);
+    }
     const earlyError = parseLog("[ERROR] failure at start\n" + noise + success);
     assert(earlyError.failureLine.includes("failure at start"));
     assert(earlyError.diagnostic.length <= 16384);

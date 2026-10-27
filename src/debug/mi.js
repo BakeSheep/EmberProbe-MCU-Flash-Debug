@@ -4,7 +4,7 @@
 // Copyright 2017-2023 Marcel Ball. MIT; see THIRD_PARTY_NOTICES.md.
 const { EventEmitter } = require("events");
 const { spawn } = require("child_process");
-const { StringDecoder } = require("string_decoder");
+const { decodeLine, createLineDecoder } = require("../../skills/_emberprobe/tool-output");
 
 function quote(value) {
     return JSON.stringify(String(value));
@@ -21,7 +21,7 @@ function parseRecord(line) {
         const bytes = [];
         while (offset < input.length) {
             let char = input[offset++];
-            if (char === '"') return Buffer.concat(bytes).toString("utf8");
+            if (char === '"') return decodeLine(Buffer.concat(bytes));
             if (char === "\\") {
                 char = input[offset++];
                 const octal = /^[0-7]{1,3}/.exec(input.slice(offset - 1));
@@ -95,7 +95,6 @@ class MiClient extends EventEmitter {
         this.pending = new Map();
         this.token = 0;
         this.buffer = "";
-        this.decoder = new StringDecoder("utf8");
         this.closed = false;
         this.process = null;
         this.exited = false;
@@ -108,8 +107,17 @@ class MiClient extends EventEmitter {
             shell: false,
             stdio: ["pipe", "pipe", "pipe"]
         });
-        this.process.stdout.on("data", (chunk) => this.feed(this.decoder.write(chunk)));
-        this.process.stderr.on("data", (chunk) => this.emit("output", String(chunk)));
+        // Whole lines, so a multi-byte character is never split, decoded from the system code page where GDB
+        // quotes a Windows message; feed() still enforces the output limit.
+        const stdout = createLineDecoder((line) => this.feed(line + "\n"), { maxPending: Infinity });
+        const stderr = createLineDecoder((line) => this.emit("output", line + "\n"));
+        this.process.stdout.on("data", (chunk) => {
+            stdout.write(chunk);
+            if (stdout.length > 8 * 1024 * 1024) this.fail(new Error("GDB output limit exceeded"));
+        });
+        this.process.stdout.on("end", () => stdout.end());
+        this.process.stderr.on("data", (chunk) => stderr.write(chunk));
+        this.process.stderr.on("end", () => stderr.end());
         this.process.stdin.on("error", (error) => this.fail(error));
         this.process.on("error", (error) => this.fail(error));
         this.process.on("exit", () => {

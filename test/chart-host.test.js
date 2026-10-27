@@ -391,12 +391,13 @@ async function testShutdownFence(Provider) {
     });
     progress.cancel = false;
     p._samplingArchive.exportCsv = archiveExport;
-    // "Show in Folder" on the success notification reveals the exported file.
-    infoChoice = "msg.revealInFolder";
+    // The panel's success notice offers "Show in Folder" for the file it just wrote.
     await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
     await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(panels[0].messages.at(-1).type, "exportCsvResult");
+    assert.strictEqual(panels[0].messages.at(-1).ok, true);
+    await panels[0].receive({ type: "revealCsvExport" });
     assert.deepStrictEqual(commands.at(-1), ["revealFileInOS", { fsPath: "snapshot.csv" }]);
-    infoChoice = undefined;
     const saveDialog = vscode.window.showSaveDialog,
         exportsBefore = exported.length;
     let finishSave;

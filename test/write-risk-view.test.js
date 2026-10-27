@@ -43,10 +43,14 @@ try {
     assert.match(tip("packed_gain"), /0x20000006/);
     assert.match(tip("position"), /64-bit/);
     assert.strictEqual(icon("position").getAttribute("aria-label"), tip("position"));
-    // Same triangle as the RTOS status, no native title (unbounded width, help cursor) on the icon or around it.
-    const rtosIcon = view.document.querySelector("#rtosStatus svg.rtos-status-icon");
-    assert(rtosIcon, "the RTOS status renders the shared triangle");
-    assert.strictEqual(icon("mode").querySelector("svg.write-risk-icon").innerHTML, rtosIcon.innerHTML);
+    // Same triangle as warning notices, no native title (unbounded width, help cursor) on the icon or around it.
+    const shared = view.document.createElement("div");
+    shared.innerHTML = view.window.EmberProbeNotice.noticeIconSvg("warning", "notice-icon");
+    assert.strictEqual(
+        icon("mode").querySelector("svg.write-risk-icon").innerHTML,
+        shared.firstChild.innerHTML,
+        "write risk uses the warning notice triangle"
+    );
     assert(!icon("mode").hasAttribute("title"));
     assert(!icon("mode").closest("[title]"), "the name's title never wraps the icon");
     assert.notStrictEqual(view.window.getComputedStyle(icon("mode")).cursor, "help");

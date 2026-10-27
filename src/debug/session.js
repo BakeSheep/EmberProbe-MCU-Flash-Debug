@@ -16,6 +16,7 @@ const {
 } = require("@vscode/debugadapter");
 const { MiClient, quote } = require("./mi");
 const { DebugVariables } = require("./variables");
+const { debugError, adapterLanguage, localizeError } = require("./errors");
 const { SymbolDirectory } = require("./symbolDirectory");
 const { FreeRtosSnapshot } = require("../services/freeRtosSnapshot");
 const { safePath } = require("./stl");
@@ -51,6 +52,8 @@ class EmberDebugSession extends DebugSession {
         this.ready = false;
         this.ended = false;
         this.config = {};
+        // Launch sets the sidebar's language; emberprobe.setLanguage follows a later switch.
+        this.lang = adapterLanguage();
         this.silentVariableOutput = 0;
         this.consoleLogs = null;
         this.thread = 1;
@@ -139,7 +142,11 @@ class EmberDebugSession extends DebugSession {
             }
             await this.mi.stop();
             const confirmed = await this.mi.waitForExit();
-            if (!confirmed) throw new Error("Local GDB exit could not be confirmed; external probe hold retained");
+            if (!confirmed)
+                throw debugError(
+                    "localGdbExitUnconfirmed",
+                    "Local GDB exit could not be confirmed; external probe hold retained"
+                );
             this.sendEvent(new Event("emberprobe.externalGdbProcess", { exited: true }));
         })().catch((error) => {
             this.externalClosing = null;
@@ -192,7 +199,11 @@ class EmberDebugSession extends DebugSession {
                         this.sendEvent(new InitializedEvent());
                 } catch (error) {
                     const stale = task.cancelled || (read && epoch !== this.executionEpoch);
-                    this.sendErrorResponse(response, { id: 1, format: error.message, showUser: !stale });
+                    this.sendErrorResponse(response, {
+                        id: 1,
+                        format: localizeError(error, this.lang),
+                        showUser: !stale
+                    });
                     if (!this.disconnecting && ["launch", "attach", "configurationDone"].includes(request.command))
                         await this.close();
                 } finally {
@@ -233,7 +244,7 @@ class EmberDebugSession extends DebugSession {
         }
     }
     checkRequest() {
-        if (this.disconnecting || this.ended) throw new Error("Debug session ended");
+        if (this.disconnecting || this.ended) throw debugError("sessionEnded", "Debug session ended");
         if ((this.requestContext.getStore() || this.activeRequest)?.cancelled)
             throw new Error("Debug read cancelled by execution control; refresh after stopping");
     }
@@ -517,12 +528,13 @@ class EmberDebugSession extends DebugSession {
     }
     paused() {
         this.checkRequest();
-        if (this.running || !this.ready) throw new Error("Target must be paused");
+        if (this.running || !this.ready) throw debugError("targetMustBePaused", "Target must be paused");
     }
     reference(id, kind) {
         this.paused();
         const value = this.handles.get(id);
-        if (!value || (kind && value.kind !== kind)) throw new Error("Stale or invalid debug reference");
+        if (!value || (kind && value.kind !== kind))
+            throw debugError("staleReference", "Stale or invalid debug reference");
         return value;
     }
     async interrupt() {
@@ -532,7 +544,7 @@ class EmberDebugSession extends DebugSession {
         const stopped = new Promise((resolve, reject) => {
             waiter = { resolve, reject };
             this.stopWaiters.add(waiter);
-            timer = setTimeout(() => reject(new Error("Timed out waiting for target to stop")), 5000);
+            timer = setTimeout(() => reject(debugError("stopTimeout", "Timed out waiting for target to stop")), 5000);
         });
         try {
             await Promise.all([stopped, this.mi.command("-exec-interrupt --all")]);
@@ -641,22 +653,30 @@ class EmberDebugSession extends DebugSession {
         } else this.sendEvent(new StoppedEvent("entry", this.stopThreadId()));
     }
     async launch(args, attach) {
-        if (this.ready || this.ended) throw new Error("Debug session has already started or ended");
+        if (args.__emberprobeLanguage) this.lang = adapterLanguage(args.__emberprobeLanguage);
+        if (this.ready || this.ended) throw debugError("alreadyStarted", "Debug session has already started or ended");
         if (args.servertype === "external") this.config = { servertype: "external" };
-        if (!args.executable || !fs.statSync(args.executable).isFile())
-            throw new Error("A valid ELF executable is required");
+        if (!args.executable || !fs.statSync(args.executable, { throwIfNoEntry: false })?.isFile())
+            throw debugError("elfRequired", "A valid ELF executable is required");
         const external = args.servertype === "external";
         if (external) {
             normalizeExternalTarget(args.gdbTarget);
             if (!attach || !["remote", "extended-remote"].includes(args.__emberprobeExternalMode))
-                throw new Error("Invalid external GDB attach connection");
+                throw debugError("invalidExternalAttach", "Invalid external GDB attach connection");
         }
         if (!args.gdbPath || (!external && !/^127\.0\.0\.1:\d+$/.test(args.gdbTarget || "")))
-            throw new Error("Missing managed GDB connection");
+            throw debugError("missingGdbConnection", "Missing managed GDB connection");
+        let images;
+        try {
+            images = normalizeDebugImages(args, args.cwd || path.dirname(args.executable));
+        } catch (error) {
+            // The detail names the launch.json field, so it stays as written.
+            throw debugError("invalidImages", error.message, { detail: error.message });
+        }
         this.config = {
             ...args,
             ...normalizeDebugServerOptions({ ...args, request: attach ? "attach" : "launch" }, true),
-            ...normalizeDebugImages(args, args.cwd || path.dirname(args.executable)),
+            ...images,
             runToEntryPoint: args.runToEntryPoint ?? "main",
             attach
         };
@@ -711,13 +731,13 @@ class EmberDebugSession extends DebugSession {
         if (external) {
             const threads = threadList(await this.mi.command("-thread-info"));
             if (!threads.length || threads.some((thread) => !["stopped", "running"].includes(thread.state)))
-                throw new Error("External GDB did not confirm the target's thread state");
+                throw debugError("externalThreadState", "External GDB did not confirm the target's thread state");
             this.running = threads.some((thread) => thread.state === "running");
             if (this.running) {
                 await this.interrupt();
                 const stopped = threadList(await this.mi.command("-thread-info"));
                 if (!stopped.length || stopped.some((thread) => thread.state !== "stopped"))
-                    throw new Error("External GDB target did not stop");
+                    throw debugError("externalNotStopped", "External GDB target did not stop");
             }
         }
         await this.debugImages.verifyRtosPrimary();
@@ -784,9 +804,9 @@ class EmberDebugSession extends DebugSession {
         };
     }
     async setBreakpoints(args, functions) {
-        if (!this.ready) throw new Error("Debugger is not initialized");
+        if (!this.ready) throw debugError("notInitialized", "Debugger is not initialized");
         const source = args.source?.path;
-        if (!functions && !source) throw new Error("A source path is required");
+        if (!functions && !source) throw debugError("sourceRequired", "A source path is required");
         const key = functions ? "functions" : source;
         const old = this.breakpoints.get(key) || new Map();
         const updated = new Map();
@@ -836,11 +856,11 @@ class EmberDebugSession extends DebugSession {
                 }
                 try {
                     if (bp.hitCondition || bp.logMessage)
-                        throw new Error("Hit conditions and logpoints are not supported");
+                        throw debugError("hitConditionUnsupported", "Hit conditions and logpoints are not supported");
                     if (!functions && (!Number.isInteger(bp.line) || bp.line < 1))
-                        throw new Error("Invalid breakpoint line");
+                        throw debugError("invalidBreakpointLine", "Invalid breakpoint line");
                     const location = functions ? bp.name : `${this.remoteSource(source)}:${bp.line}`;
-                    if (!location) throw new Error("A function name is required");
+                    if (!location) throw debugError("functionRequired", "A function name is required");
                     const result = await this.mi.command(
                         `-break-insert ${bp.condition ? `-c ${quote(bp.condition)} ` : ""}${quote(location)}`
                     );
@@ -960,7 +980,7 @@ class EmberDebugSession extends DebugSession {
         if (args.context === "repl") return this.evaluateConsole(args);
         this.paused();
         if (typeof args.expression !== "string" || !args.expression.trim() || args.expression.length > 16384)
-            throw new Error("Provide a nonempty expression of at most 16384 characters");
+            throw debugError("expressionRequired", "Provide a nonempty expression of at most 16384 characters");
         if (args.context === "hover") safePath(args.expression);
         else this.hoverEvaluations.clear();
         const frame = args.frameId ? await this.selectFrame(args.frameId) : this.selectedFrame;
@@ -1009,7 +1029,7 @@ class EmberDebugSession extends DebugSession {
     }
     async evaluateConsole(args) {
         this.checkRequest();
-        if (!this.ready) throw new Error("Debugger is not initialized");
+        if (!this.ready) throw debugError("notInitialized", "Debugger is not initialized");
         const command = args.expression;
         if (
             typeof command !== "string" ||
@@ -1017,7 +1037,10 @@ class EmberDebugSession extends DebugSession {
             command.length > 16384 ||
             /[\r\n\0\u2028\u2029]/.test(command)
         )
-            throw new Error("Provide a nonempty single-line GDB command of at most 16384 characters");
+            throw debugError(
+                "commandRequired",
+                "Provide a nonempty single-line GDB command of at most 16384 characters"
+            );
         // Resolve the supplied handle while it is valid, then discard all cached context before CLI execution.
         if (args.frameId !== undefined) await this.selectFrame(args.frameId);
         this.executionEpoch++;
@@ -1070,17 +1093,20 @@ class EmberDebugSession extends DebugSession {
         }
     }
     async setExpression(args) {
-        if (typeof args.value !== "string" || !args.value.trim()) throw new Error("Provide an expression value");
+        if (typeof args.value !== "string" || !args.value.trim())
+            throw debugError("valueRequired", "Provide an expression value");
         await this.evaluate(args);
         // Find the root by its expression: STL preparation may have materialized additional nodes.
         const root = [...this.variableStore.nodes.values()]
             .reverse()
             .find((entry) => entry.expression === args.expression && entry.root === entry);
-        if (!root?.item.name || root.readOnly) throw new Error("Expression is read only or unavailable");
+        if (!root?.item.name || root.readOnly)
+            throw debugError("expressionReadOnly", "Expression is read only or unavailable");
         const generation = this.variableStore.snapshot(root.frame);
         const attributes = await this.mi.command(`-var-show-attributes ${quote(root.item.name)}`);
         this.variableStore.check(generation);
-        if ((attributes.attr ?? attributes.status) !== "editable") throw new Error("GDB expression is not editable");
+        if ((attributes.attr ?? attributes.status) !== "editable")
+            throw debugError("expressionNotEditable", "GDB expression is not editable");
         await this.mi.command(`-var-assign ${quote(root.item.name)} ${quote(args.value)}`);
         this.variableStore.check(generation);
         const frame = root.frame;
@@ -1220,6 +1246,9 @@ class EmberDebugSession extends DebugSession {
                 return this.evaluate(args);
             case "emberprobe.rtosSnapshot":
                 return new FreeRtosSnapshot(this).snapshot(args);
+            case "emberprobe.setLanguage":
+                this.lang = adapterLanguage(args.lang);
+                return {};
             case "setExpression":
                 return this.setExpression(args);
             case "setVariable": {
@@ -1257,9 +1286,13 @@ class EmberDebugSession extends DebugSession {
                 return command === "continue" ? { allThreadsContinued: true } : {};
             }
             case "restart":
-                if (this.config.servertype === "external") throw new Error("External GDB restart is unsupported");
+                if (this.config.servertype === "external")
+                    throw debugError("externalRestartUnsupported", "External GDB restart is unsupported");
                 if (this.config.serverGroup)
-                    throw new Error("Shared serverGroup restart is unsupported; stop all cores before resetting");
+                    throw debugError(
+                        "groupRestartUnsupported",
+                        "Shared serverGroup restart is unsupported; stop all cores before resetting"
+                    );
                 await this.interrupt();
                 this.controlPending = true;
                 try {
@@ -1290,15 +1323,18 @@ class EmberDebugSession extends DebugSession {
     }
     async memory(command, args) {
         this.paused();
-        if (!/^(?:0x[\da-f]+|\d+)$/i.test(args.memoryReference || "")) throw new Error("Invalid memory address");
-        if (!Number.isSafeInteger(args.offset || 0)) throw new Error("Invalid memory offset");
+        if (!/^(?:0x[\da-f]+|\d+)$/i.test(args.memoryReference || ""))
+            throw debugError("invalidMemoryAddress", "Invalid memory address");
+        if (!Number.isSafeInteger(args.offset || 0)) throw debugError("invalidMemoryOffset", "Invalid memory offset");
         const address = BigInt(args.memoryReference) + BigInt(args.offset || 0);
-        if (address < 0n || address > 0xffffffffn) throw new Error("Memory address outside Cortex-M range");
+        if (address < 0n || address > 0xffffffffn)
+            throw debugError("memoryOutOfRange", "Memory address outside Cortex-M range");
         const location = `0x${address.toString(16)}`;
         if (command === "readMemory") {
             if (!Number.isInteger(args.count) || args.count < 0 || args.count > 65536)
-                throw new Error("Memory read limit is 65536 bytes");
-            if (address + BigInt(args.count) > 0x100000000n) throw new Error("Memory range overflow");
+                throw debugError("memoryReadLimit", "Memory read limit is 65536 bytes");
+            if (address + BigInt(args.count) > 0x100000000n)
+                throw debugError("memoryRangeOverflow", "Memory range overflow");
             if (!args.count) return { address: location, data: "" };
             const generation = this.variableStore.snapshot();
             const result = await this.mi.command(`-data-read-memory-bytes ${location} ${args.count}`);
@@ -1317,10 +1353,10 @@ class EmberDebugSession extends DebugSession {
             typeof args.data !== "string" ||
             !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(args.data)
         )
-            throw new Error("Invalid base64 memory data");
+            throw debugError("invalidMemoryData", "Invalid base64 memory data");
         const bytes = Buffer.from(args.data, "base64");
         if (bytes.length > 65536 || address + BigInt(bytes.length) > 0x100000000n)
-            throw new Error("Memory write limit exceeded");
+            throw debugError("memoryWriteLimit", "Memory write limit exceeded");
         if (bytes.length) {
             await this.mi.command(`-data-write-memory-bytes ${location} ${bytes.toString("hex")}`);
             // Invalidating "stacks" makes VS Code refetch the call stack and redraw the current-line

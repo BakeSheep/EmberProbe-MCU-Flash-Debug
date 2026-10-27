@@ -83,7 +83,14 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                 if (queuedBytes > MAX_BACKLOG_BYTES || queued.length > 4096) {
                     session.setSamplingEnabled(false);
                     event("onError", [
-                        "Sampling paused: extension host is not consuming samples; restart sampling after the busy operation."
+                        serializeError(
+                            Object.assign(
+                                new Error(
+                                    "Sampling paused: extension host is not consuming samples; restart sampling after the busy operation."
+                                ),
+                                { code: "SAMPLING_HOST_BACKLOG" }
+                            )
+                        )
                     ]);
                 }
                 updateHostHold();

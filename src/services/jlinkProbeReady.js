@@ -7,18 +7,19 @@ const {
     resolveConfigFile
 } = require("../../skills/_emberprobe/openocd-launch");
 const { normalizeProbeSerial } = require("../../skills/_emberprobe/probe-connection");
+const { decodeOutput } = require("../../skills/_emberprobe/tool-output");
 
 function run(executable, args, cwd) {
     return new Promise((resolve, reject) =>
         execFile(
             executable,
             args,
-            { cwd, windowsHide: true, timeout: 2500, maxBuffer: 64 * 1024 },
+            { cwd, windowsHide: true, timeout: 2500, maxBuffer: 64 * 1024, encoding: "buffer" },
             (error, stdout, stderr) =>
                 error
                     ? reject(
                           new Error(
-                              String(stderr || stdout || error.message)
+                              String(decodeOutput(stderr) || decodeOutput(stdout) || error.message)
                                   .trim()
                                   .slice(-500)
                           )

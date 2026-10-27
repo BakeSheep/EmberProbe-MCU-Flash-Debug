@@ -315,14 +315,10 @@ input[type="number"] {
     color: var(--vscode-symbolIcon-variableForeground, #4fc1ff);
     font: 10px var(--vscode-editor-font-family);
 }
-.imp-meta,
-.warn {
+.imp-meta {
     margin: 3px 0;
     color: var(--vscode-descriptionForeground);
     font-size: 11px;
-}
-.warn {
-    color: var(--vscode-editorWarning-foreground, #cca700);
 }
 .right {
     display: flex;
@@ -1059,10 +1055,8 @@ input[type="number"]::-webkit-outer-spin-button {
     text-align: center;
     font-family: var(--vscode-editor-font-family);
 }
-.export-panel .warn {
-    min-height: 18px;
-    margin-top: 7px;
-    color: var(--vscode-errorForeground);
+.export-panel .notice-area {
+    margin: 7px 0 0;
 }
 .var-card.composite {
     display: grid;
@@ -1188,33 +1182,18 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
-.elf-diagnostics {
+/* Panel notices sit between the toolbar and the chart and never take the chart's height. */
+.lw-notices {
     flex-shrink: 0;
-    padding: 0;
-    font-size: 11px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700);
-    background: var(--vscode-textBlockQuote-background);
-}
-.elf-diagnostics > details > summary {
-    padding: 6px 12px;
-    cursor: pointer;
-}
-.elf-diagnostics-body {
-    max-height: 100px;
+    max-height: 40vh;
+    padding: 0 12px;
     overflow-y: auto;
-    padding: 0 12px 8px;
 }
-.elf-diagnostics > details > summary:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: -1px;
+.lw-notices > .notice-area {
+    margin: 6px 0 0;
 }
-.elf-diagnostics[hidden] {
-    display: none;
-}
-.elf-error {
-    color: var(--vscode-errorForeground, #f48771);
+.lw-notices > .notice-area + .notice-area {
+    margin-top: 6px;
 }
 .array-panel {
     min-width: 280px;
@@ -2978,13 +2957,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .ac-choice-hint {
-    padding: 6px 9px;
-    color: var(--vscode-descriptionForeground);
-    font-size: 11px;
-    border-bottom: 1px solid var(--vscode-panel-border);
-}
-.ac-choice-hint[hidden] {
-    display: none;
+    margin: 6px 9px;
 }
 
 /* Drag handles for reordering variable cards; the strip is reserved so the grip never covers card content. */

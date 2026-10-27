@@ -99,19 +99,22 @@ try {
 
     const card = document.getElementById("elfDiagnostics");
     runtime.renderElfDiagnostics(card, ["<script>bad()</script>", "warning", "warning", null], "", "ELF diagnostics");
+    const toggle = () => card.querySelector(".notice-toggle");
     assert(!card.hidden);
-    assert.strictEqual(card.querySelector("details").open, false);
-    assert.strictEqual(card.querySelector("summary").textContent, "ELF diagnostics");
-    assert.strictEqual(card.querySelectorAll(".elf-warning").length, 2);
+    assert.strictEqual(toggle().getAttribute("aria-expanded"), "false");
+    assert.strictEqual(card.querySelector(".notice-title").textContent, "ELF diagnostics");
+    assert.strictEqual(card.querySelector(".notice-text").textContent, "<script>bad()</script>");
+    assert.strictEqual(card.querySelector(".notice-diagnostic pre").textContent, "warning");
     assert.strictEqual(card.querySelector("script"), null);
-    card.querySelector("details").open = true;
-    runtime.renderElfDiagnostics(card, [], "failure", "ELF 解析诊断");
-    assert(card.querySelector("details").open, "keep manual expansion when diagnostics or language update");
-    assert.strictEqual(card.querySelector(".elf-error").textContent, "failure");
+    toggle().click();
+    runtime.renderElfDiagnostics(card, ["second"], "failure", "ELF 解析诊断");
+    assert.strictEqual(toggle().getAttribute("aria-expanded"), "true", "keep manual expansion on updates");
+    assert(card.querySelector(".notice").classList.contains("notice--error"));
+    assert.strictEqual(card.querySelector(".notice-text").textContent, "failure");
     runtime.renderElfDiagnostics(card, [], "", "ELF diagnostics");
     assert(card.hidden);
-    runtime.renderElfDiagnostics(card, ["new ELF"], "", "ELF diagnostics");
-    assert.strictEqual(card.querySelector("details").open, false, "new diagnostic cards start collapsed");
+    runtime.renderElfDiagnostics(card, ["new ELF", "more"], "", "ELF diagnostics");
+    assert.strictEqual(toggle().getAttribute("aria-expanded"), "false", "new diagnostic notices start collapsed");
     view.assertHealthy();
 } finally {
     view.close();

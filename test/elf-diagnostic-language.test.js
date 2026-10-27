@@ -113,6 +113,15 @@ provider._sendElfSnapshot((message) => sent.push(message), "availableVariables")
 const hostWarning = sent.find((message) => message.type === "availableTypesDone").warnings[0];
 assert.strictEqual(hostWarning.i18nKey, "diag.cppSymbolAmbiguous");
 
+// A diagnostics notice shows the first message; the rest fold into its details panel.
+function noticeLines(box) {
+    const notice = box.querySelector(".notice");
+    if (!notice) return [];
+    const text = notice.querySelector(".notice-content > .notice-text, .notice-head > .notice-text");
+    const detail = notice.querySelector(".notice-diagnostic pre")?.textContent || "";
+    return [text?.textContent || "", ...detail.split("\n")].filter(Boolean);
+}
+const expanded = (box) => box.querySelector(".notice-toggle")?.getAttribute("aria-expanded") === "true";
 for (const lang of ["zh", "en"]) {
     const sidebar = render(getModernWebviewContent({}, lang));
     const graph = render(getLiveWatchContent({}, lang));
@@ -124,19 +133,16 @@ for (const lang of ["zh", "en"]) {
             view.send({ type: type + "Reset", version: "v1", warnings: [depth, depth, hostWarning] });
             const box = view.document.getElementById(id);
             assert.strictEqual(box.hidden, false);
-            assert.strictEqual(
-                box.querySelectorAll(".elf-warning").length,
-                2,
-                "translated diagnostics stay deduplicated"
-            );
-            box.querySelector("details").open = true;
+            assert.strictEqual(noticeLines(box).length, 2, "translated diagnostics stay deduplicated");
+            assert(box.querySelector(".notice").classList.contains("notice--warning"));
+            box.querySelector(".notice-toggle").click();
             const initial = box.textContent;
             const next = lang === "zh" ? "en" : "zh";
             view.send({ type: "setLang", lang: next });
             assert.notStrictEqual(box.textContent, initial, "cached diagnostic contents follow the language toggle");
             assert(box.textContent.includes(formatDiagnostic(depth, translate(next))));
             assert(box.textContent.includes(formatDiagnostic(hostWarning, translate(next))));
-            assert(box.querySelector("details").open, "language changes preserve the expanded state");
+            assert(expanded(box), "language changes preserve the expanded state");
             view.send({
                 type: type + "Done",
                 version: "v1",
@@ -153,8 +159,9 @@ for (const lang of ["zh", "en"]) {
             graph.document.getElementById("elfDiagnostics").textContent
         );
         graph.send({ type: "variablesListDone", version: "v1", warnings: [depth], error: depth });
-        assert.strictEqual(graph.document.querySelectorAll("#elfDiagnostics .elf-error").length, 1);
-        assert.strictEqual(graph.document.querySelectorAll("#elfDiagnostics .elf-warning").length, 0);
+        const failed = graph.document.getElementById("elfDiagnostics");
+        assert(failed.querySelector(".notice").classList.contains("notice--error"));
+        assert.strictEqual(noticeLines(failed).length, 1, "the error is not repeated as a warning");
         viewHealth(sidebar, graph);
     } finally {
         sidebar.close();

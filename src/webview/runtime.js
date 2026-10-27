@@ -1,24 +1,22 @@
 "use strict";
 (function (root, factory) {
+    const commonJs = typeof module === "object" && module.exports;
     const runtime = factory(
-        typeof module === "object" && module.exports ? require("./elfDiagnostics") : root.EmberProbeElfDiagnostics
+        commonJs ? require("./elfDiagnostics") : root.EmberProbeElfDiagnostics,
+        commonJs ? require("./notice") : root.EmberProbeNotice
     );
-    if (typeof module === "object" && module.exports) module.exports = runtime;
+    if (commonJs) module.exports = runtime;
     else root.EmberProbeRuntime = runtime;
-})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics) {
+})(typeof globalThis === "object" ? globalThis : this, function (elfDiagnostics, notice) {
     const MAX_COMPOSITE_DEPTH = 32;
     const MAX_TYPE_ALIASES = 256;
     const MAX_LAYOUT_PATH_DEPTH = 256;
     const MAX_LAYOUT_VISITS = 65536;
     const SUPPORTED_TYPES = ["u8", "i8", "u16", "i16", "u32", "i32", "f32", "u64", "i64", "f64"];
     const WIDTHS = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
-    // Shared warning triangle (RTOS status and write-risk markers); styled through the given class.
+    // Shared warning triangle (notices and write-risk markers); styled through the given class.
     function warningIconSvg(className) {
-        return (
-            '<svg class="' +
-            className +
-            '" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6.85 2.67a1.33 1.33 0 0 1 2.3 0l5.34 9.33a1.33 1.33 0 0 1-1.16 2H2.67a1.33 1.33 0 0 1-1.16-2Z"/><path d="M8 5v4.5"/><circle cx="8" cy="11.5" r=".6"/></svg>'
-        );
+        return notice.noticeIconSvg("warning", className);
     }
     function typeByteLength(type) {
         return WIDTHS[type] || 4;
@@ -1263,29 +1261,19 @@
                   )
               ].slice(0, 64)
             : [];
-        const wasOpen = element.querySelector("details")?.open === true && !element.hidden;
-        element.replaceChildren();
-        element.hidden = !error && !entries.length;
-        if (element.hidden) return;
-        const details = element.ownerDocument.createElement("details");
-        details.open = wasOpen;
-        const summary = element.ownerDocument.createElement("summary");
-        const heading = element.ownerDocument.createElement("strong");
-        heading.textContent = label;
-        summary.append(heading);
-        const body = element.ownerDocument.createElement("div");
-        body.className = "elf-diagnostics-body";
-        details.append(summary, body);
-        element.append(details);
-        for (const [message, kind] of [
-            ...(error ? [[error, "error"]] : []),
-            ...entries.filter((message) => message !== error).map((message) => [message, "warning"])
-        ]) {
-            const line = element.ownerDocument.createElement("div");
-            line.className = "elf-" + kind;
-            line.textContent = String(message).slice(0, 2000);
-            body.append(line);
-        }
+        // A notice box: the first message is the text, the rest fold into its details panel.
+        element.noticeArea ||= notice.createNoticeArea(element, { t });
+        const lines = [...(error ? [error] : []), ...entries.filter((message) => message !== error)].map((message) =>
+            String(message).slice(0, 2000)
+        );
+        if (!lines.length) return element.noticeArea.clear("elf");
+        element.noticeArea.set("elf", {
+            level: error ? "error" : "warning",
+            title: label,
+            text: lines[0],
+            detail: lines.slice(1).join("\n"),
+            dismissible: false
+        });
     }
     // Only one aligned 32-bit word can be written while the core keeps running; anything else is written
     // as a short halt + read-modify-write transaction. Returns "" for non-halting writes.

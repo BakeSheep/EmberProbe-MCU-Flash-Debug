@@ -99,6 +99,7 @@ async function commands() {
         saved.resolve();
         await pending;
         assert.strictEqual(f.messages.at(-1).type, "commandSuccess");
+        assert.deepStrictEqual(f.notices, [], `${command} shows its result in the sidebar row, not a notification`);
 
         f.vscode.window.showQuickPick = async () => undefined;
         await f.dispatch({ type: "executeCommand", cmd });
@@ -109,7 +110,12 @@ async function commands() {
         };
         await f.dispatch({ type: "executeCommand", cmd });
         assert.strictEqual(f.messages.at(-1).type, "commandError");
-        assert.match(f.messages.at(-1).error, /save failed/);
+        const reported = f.messages.filter((message) => message.type === "notice" && message.id === cmd);
+        assert.strictEqual(reported.length, 1, `${command} reports its failure once`);
+        assert.strictEqual(reported[0].area, "config");
+        assert.strictEqual(reported[0].notice.level, "error");
+        assert.match(reported[0].notice.error.message, /save failed/);
+        assert.deepStrictEqual(f.notices, [], "a visible sidebar needs no notification");
     }
     const f = fixture(),
         statuses = [];
@@ -192,7 +198,11 @@ async function chipPreflight() {
             assert.strictEqual(status?.state, "error", "early read failures acknowledge the sidebar request");
             sidebar.send(status);
             assert.strictEqual(read.disabled, false, "failed chip read can be retried");
-            assert.match(sidebar.document.getElementById("chipLabel").textContent, /Probe selection/);
+            // The header keeps a short state; the reason is in the chip notice, once.
+            assert.strictEqual(sidebar.document.getElementById("chipLabel").textContent, "Read failed");
+            const notices = sidebar.document.querySelectorAll("#noticeChip .notice--error");
+            assert.strictEqual(notices.length, 1);
+            assert.match(notices[0].textContent, /Probe selection/);
         }
         f.provider._chipInfoService.control = async () => {
             throw failure;
@@ -263,14 +273,20 @@ async function incompleteActions() {
                 assert(!f.provider._liveStartPromise, `${action} cannot leave a pending sampling startup`);
                 const reply = f.messages.findLast((message) => ["liveStatus", "commandError"].includes(message.type));
                 assert(reply, `${action} must acknowledge missing configuration`);
+                for (const message of f.messages) if (message.type === "notice") sidebar.send(message);
                 sidebar.send(reply);
+                assert.deepStrictEqual(f.notices, [], `${action} reports in the visible sidebar, not a notification`);
+                const expected = ambiguous ? /No unique probe/ : /debugger.*MCU/;
                 if (action === "liveToggle") {
                     assert.strictEqual(sidebar.document.getElementById("liveToggle").disabled, false);
-                    assert.match(
-                        sidebar.document.getElementById("liveLabel").textContent,
-                        ambiguous ? /No unique probe/ : /debugger.*MCU/
-                    );
-                } else assert(!sidebar.document.getElementById("statusText").textContent.includes("Executing"));
+                    assert.doesNotMatch(sidebar.document.getElementById("liveLabel").textContent, expected);
+                    assert.match(sidebar.document.querySelector("#noticeLive .notice").textContent, expected);
+                } else {
+                    assert(!sidebar.document.getElementById("statusText").textContent.includes("Executing"));
+                    const boxes = sidebar.document.querySelectorAll("#noticeFlash .notice");
+                    assert.strictEqual(boxes.length, 1, `${action} reports once, without a generic failure`);
+                    assert.match(boxes[0].textContent, expected);
+                }
                 sidebar.assertHealthy();
             } finally {
                 sidebar.close();
@@ -283,11 +299,12 @@ function views(errorMessage) {
     const sidebar = render(getModernWebviewContent({}, "en"));
     const graph = render(getLiveWatchContent({}, "en"));
     try {
+        // The footer only shows state; command outcomes are notices in their cards.
         sidebar.send({ type: "commandCancelled" });
-        assert.strictEqual(sidebar.document.getElementById("statusText").textContent, "Operation cancelled");
-        assert(!sidebar.document.getElementById("statusDot").classList.contains("ready"));
+        assert.strictEqual(sidebar.document.getElementById("statusText").textContent, i18n.t("en", "sb.ready"));
         sidebar.send(errorMessage);
-        assert.match(sidebar.document.getElementById("liveLabel").textContent, /64.*firmware\.elf/);
+        assert.doesNotMatch(sidebar.document.getElementById("liveLabel").textContent, /firmware/);
+        assert.match(sidebar.document.querySelector("#noticeLive .notice--error").textContent, /64.*firmware\.elf/);
         for (const [view, prefix, id, typesDone] of [
             [sidebar, "availableVariables", "availableDiagnostics", "availableTypesDone"],
             [graph, "variablesList", "elfDiagnostics", "variableTypesDone"]
@@ -297,7 +314,12 @@ function views(errorMessage) {
             assert.match(view.document.getElementById(id).textContent, /<script>bad\(\)<\/script>/);
             view.send({ type: prefix + "Done", version: "v1", warnings: ["missing DWARF", "missing DWARF"] });
             assert.strictEqual(view.document.getElementById(id).hidden, false);
-            assert.strictEqual(view.document.querySelectorAll("#" + id + " .elf-warning").length, 1);
+            assert.strictEqual(view.document.querySelectorAll("#" + id + " .notice").length, 1);
+            assert.strictEqual(
+                view.document.querySelector("#" + id + " .notice-toggle"),
+                null,
+                "a repeated warning is shown once, with nothing to fold"
+            );
             view.send({ type: typesDone, version: "v1", warnings: ["DWARF time budget exceeded"] });
             assert.match(view.document.getElementById(id).textContent, /time budget/);
             view.send({ type: prefix + "Done", version: "old", warnings: ["stale warning"] });
@@ -367,7 +389,7 @@ async function diagnostics() {
             { requested: "audit-openocd", found: false, error: "spawn EACCES" },
             (status) => view.send({ type: "openocdStatus", ...status })
         );
-        assert.match(view.document.getElementById("openocdMessage").textContent, /EACCES/);
+        assert.match(view.document.querySelector('#noticeGlobal [data-notice-id="openocd"]').textContent, /EACCES/);
     } finally {
         view.close();
         resetCache();

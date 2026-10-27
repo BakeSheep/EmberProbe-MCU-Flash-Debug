@@ -1,6 +1,6 @@
 "use strict";
 const fs = require("fs");
-const { StringDecoder } = require("string_decoder");
+const { createLineDecoder } = require("../../skills/_emberprobe/tool-output");
 
 // CubeMX also runs its online updater and home-page advertisement panel in script mode. Their
 // network failures are logged at ERROR level but are unrelated to code generation, so records
@@ -102,7 +102,10 @@ function createLogMonitor(options = {}) {
     };
 
     const stream = (stdout) => {
-        const decoder = new StringDecoder("utf8");
+        // CubeMX is a Java program: on Windows it prints in the system code page (GBK on Chinese Windows).
+        // Whole lines are decoded, keeping their line breaks, and logged as UTF-8; a last line without newline
+        // arrives at the end.
+        const decoder = createLineDecoder((text) => append(text), { maxPending: 65537, keepEnds: true });
         let buffer = "";
         const append = (text) => {
             log = (log + text).slice(-1024 * 1024);
@@ -127,10 +130,14 @@ function createLogMonitor(options = {}) {
             }
         };
         streams.push(() => {
-            append(decoder.end());
+            decoder.end();
             line(buffer, stdout);
         });
-        return (chunk) => append(decoder.write(chunk));
+        return (chunk) => {
+            decoder.write(chunk);
+            // A line still waiting for its newline counts toward the same per-line limit.
+            if (decoder.length > 65536) failureLine ||= "CubeMX diagnostic line exceeds 64 KiB";
+        };
     };
 
     return {

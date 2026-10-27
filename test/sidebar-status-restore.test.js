@@ -6,12 +6,13 @@ const { render } = require("./helpers/render-webview");
 const { loadProvider } = require("./helpers/load-provider");
 
 const html = getModernWebviewContent({}, "en");
+// OpenOCD problems are a notice in the global slot; a ready OpenOCD shows nothing.
+const openocdShown = (document) => !!document.querySelector('#noticeGlobal [data-notice-id="openocd"]');
 const first = render(html);
 let saved;
 try {
-    const card = first.document.getElementById("openocdCard");
     const toggle = first.document.getElementById("skillStatus");
-    assert.strictEqual(card.hidden, true, "unknown OpenOCD status does not flash a checking card");
+    assert.strictEqual(openocdShown(first.document), false, "unknown OpenOCD status does not flash a checking notice");
     assert.strictEqual(toggle.classList.contains("status-ready"), false);
     first.send({ type: "openocdStatus", state: "ready", key: "oc.ready", result: { lines: ["verbose log"] } });
     first.send({
@@ -19,7 +20,7 @@ try {
         state: "installed",
         scopes: { workspace: { state: "installed", root: "/workspace", installed: 9, total: 9 } }
     });
-    assert.strictEqual(card.hidden, true);
+    assert.strictEqual(openocdShown(first.document), false);
     assert.strictEqual(toggle.getAttribute("aria-checked"), "true");
     assert.strictEqual(toggle.disabled, false);
     assert.strictEqual(toggle.classList.contains("animate"), false, "initial status does not slide the switch");
@@ -34,21 +35,28 @@ try {
 const restored = render(html, saved);
 let missing;
 try {
-    const card = restored.document.getElementById("openocdCard");
     const toggle = restored.document.getElementById("skillStatus");
-    assert.strictEqual(card.hidden, true, "ready status survives document recreation before host replies");
+    assert.strictEqual(
+        openocdShown(restored.document),
+        false,
+        "ready status survives document recreation before host replies"
+    );
     assert.strictEqual(toggle.getAttribute("aria-checked"), "true");
     assert.strictEqual(toggle.disabled, false);
     assert.strictEqual(toggle.classList.contains("animate"), false);
     restored.send({ type: "setLang", lang: "zh" });
-    assert.strictEqual(card.hidden, true, "language refresh preserves the cached ready status");
+    assert.strictEqual(openocdShown(restored.document), false, "language refresh preserves the cached ready status");
     toggle.click();
     assert.strictEqual(toggle.classList.contains("animate"), true, "user changes keep the switch animation");
     assert.strictEqual(restored.messages.at(-1).cmd, "mcu-vscode.manageAgentSkills");
     restored.send({ type: "skillStatus", state: "notInstalled", scopes: { workspace: { state: "notInstalled" } } });
     assert.strictEqual(toggle.getAttribute("aria-checked"), "false");
     restored.send({ type: "openocdStatus", state: "missing", key: "oc.notFound", canInstall: true });
-    assert.strictEqual(card.hidden, false, "a new missing result remains visible");
+    assert.strictEqual(openocdShown(restored.document), true, "a new missing result remains visible");
+    const notice = restored.document.querySelector('[data-notice-id="openocd"]');
+    assert.ok(notice.classList.contains("notice--warning"));
+    notice.querySelector(".notice-action.primary").click();
+    assert.deepStrictEqual(restored.messages.at(-1), { type: "openocdAction", action: "install" });
     missing = restored.getState();
 } finally {
     restored.close();
@@ -56,12 +64,11 @@ try {
 
 const failed = render(html, missing);
 try {
-    assert.strictEqual(failed.document.getElementById("openocdCard").hidden, false);
+    assert.strictEqual(openocdShown(failed.document), true);
     assert.strictEqual(failed.document.getElementById("skillStatus").getAttribute("aria-checked"), "false");
     failed.send({ type: "openocdStatus", state: "checking", key: "oc.checking" });
-    assert.strictEqual(
-        failed.document.getElementById("openocdCard").hidden,
-        false,
+    assert.ok(
+        failed.document.querySelector('[data-notice-id="openocd"]').classList.contains("notice--busy"),
         "explicit rechecks still show progress"
     );
     failed.assertHealthy();

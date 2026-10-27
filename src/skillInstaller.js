@@ -324,9 +324,8 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
     } finally {
         await fs.rm(stage, { recursive: true, force: true });
     }
-    const status = await inspectSkills(vscode, context);
-    vscode.window.showInformationMessage(i18n.t(lang, "msg.skillsInstalled"));
-    return status;
+    // The sidebar's Skills switch shows the result; no separate notification.
+    return inspectSkills(vscode, context);
 }
 
 // 按范围卸载:只删除 manifest 清单内的 skill 与共享运行时,不触碰用户自建的其它 skill
@@ -336,15 +335,13 @@ async function uninstallSkill(vscode, context, lang, scope) {
     // §1：卸载同样不得穿透工作区/主目录中的符号链接。
     const rootBase = scope === "global" ? os.homedir() : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     await sanitizeSkillTree(targetRoot, rootBase, manifest);
-    let removed = 0;
     if (targetRoot && (await exists(targetRoot))) {
         for (const entry of manifest.skills) {
             const target = path.join(targetRoot, entry.name);
             if (!(await exists(target))) continue;
             await fs.rm(target, { recursive: true, force: true });
-            removed++;
         }
-        removed += (await removeUnmodifiedLegacySkills(manifest, targetRoot)).length;
+        await removeUnmodifiedLegacySkills(manifest, targetRoot);
         let emberprobeSkillRemains = false;
         for (const entry of [...manifest.skills, ...(manifest.legacySkills || [])]) {
             if (await exists(path.join(targetRoot, entry.name))) {
@@ -372,12 +369,8 @@ async function uninstallSkill(vscode, context, lang, scope) {
             await fs.rmdir(bridgeDir).catch(() => {});
         }
     }
-    const status = await inspectSkills(vscode, context);
-    if (removed)
-        vscode.window.showInformationMessage(
-            i18n.t(lang, scope === "global" ? "msg.skillsUninstalledGlobal" : "msg.skillsUninstalled")
-        );
-    return status;
+    // The sidebar's Skills switch and legacy card show the result; no separate notification.
+    return inspectSkills(vscode, context);
 }
 
 module.exports = {

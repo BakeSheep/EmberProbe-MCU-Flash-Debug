@@ -23,6 +23,7 @@ function loadWebviewAsset(area, name) {
 function loadRendererPrelude(area) {
     return (
         [
+            loadWebviewAsset("", "notice.js"),
             loadWebviewAsset("", "elfDiagnostics.js"),
             loadWebviewAsset("", "runtime.js"),
             loadWebviewAsset("", "messages.js"),

@@ -148,17 +148,28 @@
             api?.postMessage({ type: "memoryRefresh" });
         };
         select.onclick = () => api?.postMessage({ type: "memorySelectSource" });
+        // Loading, the "choose an ELF" hint and failures are one notice box; the report replaces it.
+        const noticeSlot = document.createElement("div");
+        const notices = (globalThis.EmberProbeNotice || require("../notice")).createNoticeArea(noticeSlot, { t });
+        function noticeFor() {
+            if (last.state === "loading") return { level: "info", busy: true, text: { key: "memory.loading" } };
+            const reason = { key: last.key || "memory.selectElf" };
+            if (last.state !== "error" || last.code === "ELF_NOT_CONFIGURED") return { level: "info", text: reason };
+            return {
+                level: "error",
+                title: last.message ? reason : "",
+                text: last.message || reason,
+                dismissible: false
+            };
+        }
         function repaint(preserve = false) {
             refresh.disabled = last.state === "loading";
             select.disabled = last.state === "loading";
             body.setAttribute("aria-busy", String(last.state === "loading"));
             const result = last.state === "ready" ? last.result : last.state === "loading" ? completedResult : null;
             if (!result) {
-                body.textContent =
-                    t(last.state === "loading" ? "memory.loading" : last.key || "memory.selectElf") +
-                    (last.state === "error" && last.code !== "ELF_NOT_CONFIGURED" && last.message
-                        ? `: ${last.message}`
-                        : "");
+                notices.set("memory", noticeFor());
+                body.replaceChildren(noticeSlot);
                 return;
             }
             if (!preserve || !body.querySelector(".memory-summary")) {
@@ -174,15 +185,13 @@
                     });
                 }
             }
-            body.querySelector(".memory-refresh-status")?.remove();
+            noticeSlot.remove();
             if (last.state === "loading") {
-                const status = document.createElement("p");
-                status.className = "memory-note memory-refresh-status";
-                status.setAttribute("role", "status");
-                status.textContent = t("memory.loading");
-                body.append(status);
+                notices.set("memory", noticeFor());
+                body.append(noticeSlot);
             }
         }
+        repaint();
         return {
             render: repaint,
             receive(message) {

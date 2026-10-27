@@ -148,7 +148,7 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         const card = dom.document.getElementById("flashDebugSection");
         assert.deepStrictEqual(
             [...card.children].map((child) => child.className),
-            ["primary-actions", "foot", "memory-inline"]
+            ["primary-actions", "notice-area", "foot", "memory-inline"]
         );
         assert.strictEqual(card.querySelector(".foot #statusText")?.id, "statusText");
         const refresh = dom.document.getElementById("memoryRefresh");
@@ -184,7 +184,7 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         assert.ok(body.textContent.includes("Section details"), "retained results follow language changes");
         assert.ok(body.querySelector('[role="status"]').textContent.includes("Loading"));
         dom.send({ type: "memoryAnalysis", state: "ready", requestId: 5, result: sidebar });
-        assert.strictEqual(body.querySelector(".memory-refresh-status"), null);
+        assert.strictEqual(body.querySelector(".notice"), null, "the loading notice leaves with the refresh");
         assert.strictEqual(body.getAttribute("aria-busy"), "false");
         assert.strictEqual(body.querySelector("details").open, true);
         assert.strictEqual(dom.document.getElementById("memoryRefresh").disabled, false);

@@ -298,6 +298,40 @@ async function main() {
     assert.strictEqual(await provider._readConnectedProbeTargets(), true);
     assert.deepStrictEqual(requests, [["jlink.cfg", "5678", "stm32f4x.cfg", "openocd", "/work"]]);
     settings.probeSerial = "";
+
+    // After a restart automatic mode has its recorded chip but no reading of which probe holds it: the list reads
+    // the chips itself, once, instead of asking the user to pick a probe the next operation would find.
+    const settled = async () => {
+        for (let tick = 0; tick < 50 && provider._probeTargetsReading; tick++)
+            await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+    };
+    await provider._selectConnectedProbe("");
+    // Without a record the list reads too, for the one probe with the configured model; this one finds none.
+    await settled();
+    assert.strictEqual(shown().state, "ambiguous");
+    await provider._probeConnectionService.saveTarget("jlink.cfg", "stm32f4x.cfg", f407);
+    provider._probeConnectionService.targetReadings.clear();
+    provider._probeTargetsReadFor = "";
+    chips[5678] = f407;
+    requests.length = 0;
+    await provider._refreshConnectedProbes();
+    assert.deepStrictEqual([shown().state, shown().error], ["identifying", null]);
+    await settled();
+    assert.deepStrictEqual([shown().state, shown().source, selectedId()], ["selected", "target-chip", second.id]);
+    assert.strictEqual(requests.length, 3);
+    // A probe that cannot be read leaves the choice to the user, without reading again on every poll.
+    provider._probeConnectionService.targetReadings.clear();
+    provider._probeTargetsReadFor = "";
+    delete chips[5678];
+    await provider._refreshConnectedProbes();
+    await settled();
+    assert.strictEqual(shown().state, "ambiguous");
+    requests.length = 0;
+    await provider._refreshConnectedProbes();
+    await settled();
+    assert.deepStrictEqual([shown().state, requests], ["ambiguous", []]);
+    await provider._selectConnectedProbe("");
     delete provider._probeConnectionService.identifyTarget;
     assert.strictEqual(await provider._readConnectedProbeTargets(), false, "only the extension host reads chips");
     inventory = earlierInventory;

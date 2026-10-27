@@ -191,7 +191,6 @@ function createProvider() {
         assert.strictEqual(doc.getElementById("frequency").value, "30");
 
         // A nearly full archive shows its remaining time and warns at 10 min and again at 1 min.
-        const status = doc.getElementById("status");
         graph.send({ type: "liveStatus", running: true, actualHz: 900, bytesPerSecond: 64000 });
         const values = (remainingSeconds) =>
             graph.send({
@@ -205,18 +204,20 @@ function createProvider() {
         assert.strictEqual(rate.textContent, "64.0kb/s | 900.0Hz", "a distant limit stays out of the toolbar");
         values(1800);
         assert.strictEqual(rate.textContent, "64.0kb/s | 900.0Hz | archive 30:00 left");
-        assert.ok(!/fills in about/.test(status.textContent));
+        const archive = () => doc.querySelector('#lwNotice [data-notice-id="archive"]');
+        assert.strictEqual(archive(), null);
         values(590);
-        assert.ok(status.textContent.includes("fills in about 09:50"), status.textContent);
-        assert.ok(status.textContent.includes("samplingArchiveMaxMiB"));
-        status.textContent = "";
+        assert.ok(archive().classList.contains("notice--warning"));
+        assert.ok(archive().textContent.includes("fills in about 09:50"), archive().textContent);
+        assert.ok(archive().textContent.includes("samplingArchiveMaxMiB"));
+        const first = archive();
         values(500);
-        assert.strictEqual(status.textContent, "", "each threshold warns once");
+        assert.strictEqual(archive(), first, "each threshold warns once");
         values(45);
-        assert.ok(status.textContent.includes("fills in about 00:45"));
+        assert.ok(archive().textContent.includes("fills in about 00:45"));
         values(5000);
         values(400);
-        assert.ok(status.textContent.includes("fills in about 06:40"), "raising the limit re-arms the warnings");
+        assert.ok(archive().textContent.includes("fills in about 06:40"), "raising the limit re-arms the warnings");
         graph.send({ type: "liveStatus", running: false, actualHz: 0, bytesPerSecond: 0 });
         assert.strictEqual(rate.textContent, "0.0kb/s | 0.0Hz", "stopped sampling shows no archive estimate");
         graph.assertHealthy();

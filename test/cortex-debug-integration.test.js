@@ -351,9 +351,11 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             assert.strictEqual(gateOutcome.kind, "failed");
 
             // Verify error reported to webview
-            const errors = webviewMessages.filter((message) => message.type === "commandError");
+            const errors = webviewMessages.filter(
+                (message) => message.type === "notice" && message.notice.level === "error"
+            );
             assert.strictEqual(errors.length, 1);
-            assert.strictEqual(errors[0].error, "Target voltage too low");
+            assert.strictEqual(errors[0].notice.message, "Target voltage too low");
             assert.strictEqual(prov._debugLifecycle.session, null);
 
             // The command observes the cleared lifecycle, so cleanup must recover the original session from the bridge.

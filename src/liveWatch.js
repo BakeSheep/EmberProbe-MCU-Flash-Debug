@@ -8,6 +8,7 @@ const os = require("os");
 const path = require("path");
 const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
+const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
 const { randomBytes } = require("crypto");
 const { performance } = require("perf_hooks");
 const { normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
@@ -995,6 +996,8 @@ class ManagedOpenOcdSession {
                     this._handlePollingFailure(clean);
                     continue;
                 }
+                // A GDB/telnet/Tcl client closing its socket (WSA 10054, connection reset) is not a target fault.
+                if (/^Error on socket '/i.test(clean)) continue;
                 // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (
@@ -1005,19 +1008,11 @@ class ManagedOpenOcdSession {
                 }
             }
         };
-        const pendingLogs = { stdout: "", stderr: "" };
-        const collectLog = (stream, chunk) => {
-            pendingLogs[stream] += chunk.toString();
-            const lines = pendingLogs[stream].split(/\r?\n/);
-            pendingLogs[stream] = (lines.pop() || "").slice(-65536);
-            if (lines.length) onLog(lines.join("\n"));
-        };
-        this.child.stdout.on("data", (chunk) => collectLog("stdout", chunk));
-        this.child.stderr.on("data", (chunk) => collectLog("stderr", chunk));
+        const pendingLogs = { stdout: createLineDecoder(onLog), stderr: createLineDecoder(onLog) };
+        this.child.stdout.on("data", (chunk) => pendingLogs.stdout.write(chunk));
+        this.child.stderr.on("data", (chunk) => pendingLogs.stderr.write(chunk));
         this.child.on("close", (code) => {
-            for (const stream of ["stdout", "stderr"]) {
-                if (pendingLogs[stream]) onLog(pendingLogs[stream]);
-            }
+            for (const stream of ["stdout", "stderr"]) pendingLogs[stream].end();
             const expected = this.stopped;
             this.child = null;
             this._clearSamplingTimer();

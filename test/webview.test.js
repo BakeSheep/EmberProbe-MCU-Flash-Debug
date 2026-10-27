@@ -18,7 +18,12 @@ try {
     for (const id of [
         "liveValues",
         "liveToggle",
-        "openocdCard",
+        "noticeGlobal",
+        "noticeFlash",
+        "noticeConfig",
+        "noticeChip",
+        "noticeLive",
+        "noticeWrite",
         "skillStatus",
         "availableVars",
         "chipRead",
@@ -44,13 +49,35 @@ try {
         message: "<script>evil()</script>",
         details: { openocdTail: ["Failed to open device"] }
     };
-    sidebar.send({ type: "commandError", error: "Failed", diagnostic });
-    assert.strictEqual(sidebar.document.getElementById("probeDiagnostic").hidden, false);
-    assert(sidebar.document.getElementById("probeDiagnosticText").textContent.includes("PROBE_OPEN_FAILED"));
-    assert.strictEqual(sidebar.document.getElementById("probeDiagnosticText").querySelector("script"), null);
-    click("probeDiagnosticCopy");
+    // A failed command's diagnostic lives in its notice: folded, text only, copied whole.
+    sidebar.send({
+        type: "notice",
+        area: "flash",
+        id: "mcu-vscode.download",
+        notice: { level: "error", titleKey: "notice.downloadFailed", error: { message: "Failed", diagnostic } }
+    });
+    const failure = sidebar.document.querySelector('#noticeFlash [data-notice-id="mcu-vscode.download"]');
+    assert(failure.classList.contains("notice--error"));
+    assert.strictEqual(failure.getAttribute("role"), "alert");
+    failure.querySelector(".notice-toggle").click();
+    const panel = failure.querySelector(".notice-diagnostic");
+    assert.strictEqual(panel.hidden, false);
+    assert(panel.textContent.includes("PROBE_OPEN_FAILED"));
+    assert.strictEqual(panel.querySelector("script"), null);
+    failure.querySelector(".notice-copy").click();
     assert.deepStrictEqual(JSON.parse(sidebar.messages.at(-1).text), diagnostic);
-    click("openocdSelect");
+    failure.querySelector(".notice-close").click();
+    assert.deepStrictEqual(sidebar.messages.at(-1), {
+        type: "noticeDismiss",
+        area: "flash",
+        id: "mcu-vscode.download"
+    });
+    assert.strictEqual(sidebar.document.getElementById("noticeFlash").hidden, true);
+    sidebar.send({ type: "openocdStatus", state: "incompatible", message: "unsupported" });
+    const openocd = sidebar.document.querySelector('#noticeGlobal [data-notice-id="openocd"]');
+    assert(openocd.classList.contains("notice--error"));
+    assert.strictEqual(openocd.querySelector(".notice-close"), null, "OpenOCD state cannot be dismissed");
+    openocd.querySelectorAll(".notice-action")[1].click();
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });
     click("chipRead");
     assert.strictEqual(sidebar.messages.at(-1).type, "readChipInfo");
@@ -58,8 +85,8 @@ try {
     assert.ok(sidebar.document.getElementById("chipBody").textContent.includes("Cortex-M4"));
     sidebar.document.querySelector(".chip-copy").click();
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "copyText", text: "1234" });
-    sidebar.send({ type: "openocdStatus", state: "incompatible", message: "unsupported" });
-    assert.ok(sidebar.document.getElementById("openocdCard").classList.contains("error"));
+    sidebar.send({ type: "openocdStatus", state: "ready" });
+    assert.strictEqual(sidebar.document.querySelector('[data-notice-id="openocd"]'), null);
     const card = sidebar.document.getElementById("liveValues").closest(".live-box");
     for (const status of [
         { source: "dap", snapshotReady: false, mode: "debug-running-waiting", canRead: false },
@@ -117,8 +144,12 @@ for (const lang of ["en", "zh"]) {
             ]) {
                 const previousDetails = hasData ? body.textContent : "";
                 chipSidebar.send({ type: "chipInfoStatus", state: "error", ...error });
+                // The header shows the failed state; the reason is the chip notice, once.
                 assert(label.textContent, "every chip error remains visible in the header");
-                assert.strictEqual(label.title, label.textContent, "the tooltip retains the full error");
+                assert.strictEqual(label.title, label.textContent);
+                const notices = chipSidebar.document.querySelectorAll("#noticeChip .notice--error");
+                assert.strictEqual(notices.length, error.key || error.message ? 1 : 0);
+                assert.strictEqual(chipSidebar.document.querySelector("#noticeChip script"), null);
                 assert.strictEqual(
                     body.textContent,
                     previousDetails,
@@ -126,7 +157,8 @@ for (const lang of ["en", "zh"]) {
                 );
                 assert(chipSidebar.document.getElementById("chipState").classList.contains("err"));
                 assert.strictEqual(chipSidebar.document.getElementById("chipRead").disabled, false);
-                if (error.message) assert.strictEqual(label.textContent, error.message);
+                if (error.message)
+                    assert.strictEqual(notices[0].querySelector(".notice-text").textContent, error.message);
                 chipSidebar.send({ type: "setLang", lang: lang === "en" ? "zh" : "en" });
                 assert.strictEqual(
                     body.querySelector(".chip-err"),
@@ -155,6 +187,7 @@ try {
     const auto = doc.getElementById("connectedProbeAuto");
     const refresh = doc.getElementById("connectedProbeRefresh");
     assert(driver && probes && section && auto && refresh);
+    assert.strictEqual(auto.hidden, true, "the automatic-mode entry is hidden before inventory arrives");
     const cards = () => [...probes.children];
     const cardTexts = () =>
         cards().map((card) =>
@@ -262,7 +295,7 @@ try {
     jlinkSidebar.send(list({}));
     assert.strictEqual(debuggerValue.textContent, "jlink.cfg", "the probe list carries the interface script too");
     assert.strictEqual(debuggerValue.hasAttribute("data-i18n"), false);
-    assert.strictEqual(auto.hidden, false);
+    assert.strictEqual(auto.hidden, true, "inventory updates must not reveal the automatic-mode entry");
     assert.strictEqual(auto.getAttribute("aria-pressed"), "false", "a saved device is not automatic");
     assert.strictEqual(auto.title, "恢复自动连接并忘记原设备");
     assert.strictEqual(auto.textContent, "自动");
@@ -506,8 +539,8 @@ try {
     assert.strictEqual(driver.hidden, true);
     assert.deepStrictEqual(
         [auto.hidden, auto.getAttribute("aria-pressed"), auto.disabled],
-        [false, "true", true],
-        "with no device to keep, Auto stays pressed until a device is picked"
+        [true, "true", true],
+        "with no device to keep, the automatic-mode entry stays hidden and disabled"
     );
     jlinkSidebar.send(
         list({ source: "unique-device", devices: [{ ...dap, selectable: true, selected: true }], deviceId: dap.id })

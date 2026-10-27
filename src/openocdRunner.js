@@ -1,6 +1,7 @@
 "use strict";
 const { buildOpenOcdConfigArgs } = require("./openocdScripts");
 const { spawn } = require("child_process");
+const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
 const { isSafeCfgPath, resolveOpenOcdLaunch } = require("./openocdScripts");
 const {
     buildFlashProgramCommand,
@@ -266,7 +267,10 @@ function runOpenOcd(vscode, options, onProgress) {
             reject(error);
             return;
         }
-        const pending = { stdout: "", stderr: "" };
+        const pending = {
+            stdout: createLineDecoder((line) => flushLine(line)),
+            stderr: createLineDecoder((line) => flushLine(line))
+        };
         let lastError = "";
         let spawnFailed = false;
         let timedOut = false;
@@ -381,10 +385,7 @@ function runOpenOcd(vscode, options, onProgress) {
                 }
                 return;
             }
-            pending[stream] += chunk.toString();
-            const lines = pending[stream].split(/\r?\n/);
-            pending[stream] = lines.pop() || "";
-            for (const line of lines) flushLine(line);
+            pending[stream].write(chunk);
         };
         child.stdout.on("data", (chunk) => consume("stdout", chunk));
         child.stderr.on("data", (chunk) => consume("stderr", chunk));
@@ -408,10 +409,7 @@ function runOpenOcd(vscode, options, onProgress) {
         child.on("close", (code) => {
             clearTimeout(timeout);
             if (sharedChild === child) sharedChild = null;
-            for (const stream of ["stdout", "stderr"]) {
-                if (pending[stream]) flushLine(pending[stream]);
-                pending[stream] = "";
-            }
+            for (const stream of ["stdout", "stderr"]) pending[stream].end();
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
             if (terminalError) {
                 reject(terminalError);

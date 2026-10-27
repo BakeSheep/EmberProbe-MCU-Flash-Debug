@@ -1,6 +1,7 @@
 "use strict";
 
 const { quote } = require("./mi");
+const { debugError } = require("./errors");
 const { StlDisplay, constValue, indirectType, isInternalError, safePath, gdbVariablePath } = require("./stl");
 
 const PAGE_SIZE = 100;
@@ -93,7 +94,7 @@ class DebugVariables {
             snapshot.executionEpoch !== this.session.executionEpoch ||
             snapshot.threadGeneration !== (this.threadGenerations.get(snapshot.thread) || 0)
         )
-            throw new Error("Stale debug variable operation; refresh after stopping");
+            throw debugError("staleVariable", "Stale debug variable operation; refresh after stopping");
     }
     register(item, root = null, parent = null, readOnly = false) {
         let node = this.nodes.get(item.name);
@@ -267,7 +268,10 @@ class DebugVariables {
                 let item;
                 try {
                     if (local.expression === null)
-                        throw new Error("Symbol image/source identity is ambiguous; no safe expression is available");
+                        throw debugError(
+                            "symbolAmbiguous",
+                            "Symbol image/source identity is ambiguous; no safe expression is available"
+                        );
                     item = {
                         ...(await this.session.createVariable(local.expression || local.name, frame)),
                         exp: local.name
@@ -293,7 +297,10 @@ class DebugVariables {
     }
     async children(node, from, size, generation, context = this.stl.context(node.frame)) {
         await this.stl.prepare(node, context);
-        if (node.unavailable) throw new Error(`Variable unavailable: ${node.unavailable}`);
+        if (node.unavailable)
+            throw debugError("variableUnavailableNamed", `Variable unavailable: ${node.unavailable}`, {
+                reason: node.unavailable
+            });
         if (node.stl) {
             try {
                 return await this.stl.expand(node, from, size, context);
@@ -387,7 +394,7 @@ class DebugVariables {
                 : parent.kind === "variable"
                   ? await this.children(parent, range.from, range.size, generation, context)
                   : null;
-        if (!result) throw new Error("Invalid variable reference");
+        if (!result) throw debugError("invalidVariableReference", "Invalid variable reference");
         this.check(generation);
         const variables = [];
         if (result.map) {
@@ -439,9 +446,10 @@ class DebugVariables {
         if (parent.kind === "scope" && parent.scopeKind === "registers") return this.setRegister(parent, args);
         const node = this.session.variablesByName.get(args.variablesReference)?.get(args.name);
         const generation = this.snapshot(node?.frame);
-        if (node?.readOnly || node?.stl || visibilityGroup(node?.item || {})) throw new Error("Variable is read only");
+        if (node?.readOnly || node?.stl || visibilityGroup(node?.item || {}))
+            throw debugError("variableReadOnly", "Variable is read only");
         if (!node?.item.name || this.nodes.get(node.item.name) !== node)
-            throw new Error("Variable is unavailable, ambiguous, or has not been expanded");
+            throw debugError("variableUnavailable", "Variable is unavailable, ambiguous, or has not been expanded");
         if (node.frame && (this.session.threadAware ?? this.session.rtosAware))
             await this.session.ensureThread(node.frame.thread);
         this.check(generation);
@@ -453,11 +461,13 @@ class DebugVariables {
         ) {
             const context = this.stl.context(node.frame);
             await this.stl.bindFrame(node, context);
-            if (constValue(await this.stl.canonical(node.item, context))) throw new Error("Variable is read only");
+            if (constValue(await this.stl.canonical(node.item, context)))
+                throw debugError("variableReadOnly", "Variable is read only");
         }
         const attributes = await this.session.mi.command(`-var-show-attributes ${quote(node.item.name)}`);
         this.check(generation);
-        if ((attributes.attr ?? attributes.status) !== "editable") throw new Error("GDB variable is not editable");
+        if ((attributes.attr ?? attributes.status) !== "editable")
+            throw debugError("variableNotEditable", "GDB variable is not editable");
         const result = await this.session.mi.command(`-var-assign ${quote(node.item.name)} ${quote(args.value)}`);
         this.check(generation);
         node.item.value = result.value;
@@ -547,15 +557,17 @@ class DebugVariables {
     }
     async setRegister(handle, args) {
         const number = handle.registers?.get(args.name);
-        if (!Number.isInteger(number)) throw new Error("Register is unavailable or has not been expanded");
-        if (typeof args.value !== "string" || !args.value.trim()) throw new Error("Provide a register value");
+        if (!Number.isInteger(number))
+            throw debugError("registerUnavailable", "Register is unavailable or has not been expanded");
+        if (typeof args.value !== "string" || !args.value.trim())
+            throw debugError("registerValueRequired", "Provide a register value");
         const generation = this.snapshot(handle.frame);
         await this.session.selectFrame(handle.frameId);
         this.check(generation);
         const evaluated = await this.session.mi.command(`-data-evaluate-expression ${quote(args.value)}`);
         this.check(generation);
         const match = String(evaluated.value).match(/^\s*(-?(?:0x[\da-f]+|\d+))(?=\s|$)/i);
-        if (!match) throw new Error("Register value must evaluate to an integer");
+        if (!match) throw debugError("registerValueInteger", "Register value must evaluate to an integer");
         await this.session.mi.command(`-data-write-register-values x ${number} ${match[1]}`);
         this.check(generation);
         const result = await this.session.mi.command(`-data-list-register-values x ${number}`);

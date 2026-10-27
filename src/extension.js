@@ -85,10 +85,16 @@ function activate(context) {
         vscode.debug.registerDebugConfigurationProvider("emberprobe", {
             async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
                 if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
-                if (provider._matchesManagedDebugSession({ configuration: config })) return config;
-                const validated = validateDebugConfiguration(config, folder);
-                if (validated.servertype === "external") return provider.prepareExternalDebug(folder, validated);
-                return await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated) || undefined;
+                let resolved = config;
+                if (!provider._matchesManagedDebugSession({ configuration: config })) {
+                    const validated = validateDebugConfiguration(config, folder);
+                    resolved = validated.servertype === "external"
+                        ? await provider.prepareExternalDebug(folder, validated)
+                        : await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated);
+                }
+                // The adapter reports its errors in the language chosen in the sidebar.
+                if (resolved && typeof resolved === "object") resolved.__emberprobeLanguage = provider._lang;
+                return resolved || undefined;
             }
         }),
         ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {

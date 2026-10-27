@@ -63,7 +63,8 @@ const view = render(getModernWebviewContent({}, "en"));
                 `${type} must not write ${JSON.stringify(text)}`
             );
             assert.strictEqual(input.value, "1", "the previous value is shown again");
-            if (text.trim()) assert.match(view.document.getElementById("writeFeedback").textContent, /^Not written/);
+            if (text.trim())
+                assert.match(view.document.querySelector("#noticeWrite .notice-text").textContent, /^Not written/);
             input.blur();
         }
         {

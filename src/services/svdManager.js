@@ -63,6 +63,15 @@ class SvdManager {
         this.t = options.t;
         this.getChipInfo = options.getChipInfo || (() => null);
         this.onStatus = options.onStatus || (() => {});
+        // Messages go to the host's notice box; without one they fall back to VS Code notifications.
+        this.notify =
+            options.notify ||
+            ((notice) => {
+                const text = this.t(notice.key, notice.params);
+                if (notice.level === "error") this.vscode.window.showErrorMessage(text);
+                else if (notice.level === "warning") this.vscode.window.showWarningMessage(text);
+                else this.vscode.window.showInformationMessage(text);
+            });
         this.identity = new DeviceIdentityService();
         this.library = new SvdLibraryService({ context: options.context, workerPath: options.workerPath });
         this.official = options.official || new OfficialSvdService();
@@ -177,7 +186,7 @@ class SvdManager {
                 await this.context.workspaceState.update(this.cacheKeys.svdPath, undefined);
                 if (!this.legacyWarned) {
                     this.legacyWarned = true;
-                    this.vscode.window.showWarningMessage(this.t("svd.legacyMissing"));
+                    this.notify({ level: "warning", key: "svd.legacyMissing" });
                 }
             }
         }
@@ -331,9 +340,11 @@ class SvdManager {
                     const candidate = await this.chooseCandidate(candidates, identity);
                     if (!candidate) {
                         if (!candidates.length)
-                            this.vscode.window.showWarningMessage(
-                                this.t("svd.noOfficial", { device: identity.device || identity.family || "?" })
-                            );
+                            this.notify({
+                                level: "warning",
+                                key: "svd.noOfficial",
+                                params: { device: identity.device || identity.family || "?" }
+                            });
                         this.onStatus({ state: "idle", key: "svd.notConfigured" });
                         return candidates.length ? null : false;
                     }
@@ -371,9 +382,11 @@ class SvdManager {
                             packageVersion: candidate.packageVersion,
                             license: candidate.license.items.map((item) => item.spdx || item.title).join(", ")
                         });
-                        this.vscode.window.showInformationMessage(
-                            this.t("svd.configuredNextDebug", { device: imported.svd.device })
-                        );
+                        this.notify({
+                            level: "success",
+                            key: "svd.configuredNextDebug",
+                            params: { device: imported.svd.device }
+                        });
                         return imported;
                     } finally {
                         await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -389,7 +402,7 @@ class SvdManager {
                 canRetry: !cancelled
             });
             if (!cancelled) {
-                this.vscode.window.showErrorMessage(this.t("svd.failedWith", { error: error.message }));
+                this.notify({ level: "error", key: "svd.failedWith", params: { error: error.message }, error });
                 throw error;
             }
             return null;

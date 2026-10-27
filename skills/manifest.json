@@ -20,7 +20,8 @@
     "windows-probe-inventory.js",
     "probe-preflight.js",
     "probe-profile.js",
-    "elf-file.js"
+    "elf-file.js",
+    "tool-output.js"
   ],
   "legacySkills": [
     {

@@ -6,6 +6,7 @@ const { inspectElf } = require("./elf-file");
 
 const fs = require("fs");
 const { canonicalFileSync } = require("./file-identity");
+const { createLineDecoder } = require("./tool-output");
 const { detectProbe, probeFromText } = require("./probe-detection");
 const { isSafeCfgPath, resolveExecutablePath, resolveOpenOcdLaunch, normalizeTransport } = require("./openocd-launch");
 const path = require("path");
@@ -288,29 +289,22 @@ function runOpenOcd(executable, args, options = {}) {
         }, timeoutMs);
         let outputBytes = 0;
         const collect = (stream) => {
-            let buffer = "";
+            // Whole lines, decoded from the system code page where OpenOCD quotes Windows messages.
+            const decoder = createLineDecoder((line) => {
+                lines.push(line);
+                process.stdout.write(line + "\n");
+            });
             stream.on("data", (chunk) => {
                 if (settled) return;
                 outputBytes += chunk.length;
-                if (outputBytes > 4 * 1024 * 1024 || buffer.length + chunk.length > 65536) {
+                if (outputBytes > 4 * 1024 * 1024 || decoder.length + chunk.length > 65536) {
                     child.kill("SIGKILL");
                     finish(Object.assign(new Error("OpenOCD output limit exceeded"), { code: "OPENOCD_OUTPUT_LIMIT" }));
                     return;
                 }
-                buffer += chunk.toString();
-                const parts = buffer.split(/\r?\n/);
-                buffer = parts.pop();
-                for (const line of parts) {
-                    lines.push(line);
-                    process.stdout.write(line + "\n");
-                }
+                decoder.write(chunk);
             });
-            stream.on("end", () => {
-                if (buffer) {
-                    lines.push(buffer);
-                    process.stdout.write(buffer + "\n");
-                }
-            });
+            stream.on("end", () => decoder.end());
         };
         collect(child.stdout);
         collect(child.stderr);

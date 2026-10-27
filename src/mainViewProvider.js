@@ -72,7 +72,8 @@ const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity, probeFamily } = require("../skills/_emberprobe/probe-connection");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
-const { describeTargetIdentity, describeTargetCore, sameTarget } = require("./chip/targetIdentity");
+const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
+const { NoticeService, commandArea, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
 const {
     LiveWatchService,
     buildActiveReadPlan,
@@ -202,6 +203,11 @@ class MainViewProvider {
         // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
+        // Created by the `_notices` getter.
+        this._noticeService = null;
+        // The connected probe list's automatic chip read (_identifyConnectedTargets).
+        this._probeTargetsReading = false;
+        this._probeTargetsReadFor = "";
         /** @type {readonly number[]} */
         this._chartHistoryRecoveryDelaysMs = CHART_HISTORY_RECOVERY_DELAYS_MS;
         this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
@@ -215,7 +221,6 @@ class MainViewProvider {
             settings: (folder) => vscode.workspace.getConfiguration("emberprobe", vscode.Uri.file(folder))
         });
         void this._externalDebug.releaseIfDisabled().catch(console.error);
-        this._recentProgress = [];
         this._liveSession = null;
         this._managedDebugServer = null;
         this._managedDebugGroup = null;
@@ -387,10 +392,16 @@ class MainViewProvider {
             verifyReady: async (connection) => {
                 const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
                 const executable = await this._resolveOpenOcdPath(configured);
-                if (!executable) throw new Error("OpenOCD is required to verify that J-Link is ready");
+                if (!executable)
+                    throw Object.assign(new Error("OpenOCD is required to verify that J-Link is ready"), {
+                        i18nKey: "notice.openocdRequired"
+                    });
                 await waitForJlinkReady(executable, connection.probeSerial);
             },
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status }),
+            onStatus: (status) => {
+                this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status });
+                this._notifyProbeDriverStatus(status);
+            },
             log: (message) => {
                 console.log(message);
                 if (this._chipOutput) this._chipOutput.appendLine(message);
@@ -419,7 +430,13 @@ class MainViewProvider {
             vscode,
             context,
             changed: () => this.updateView(),
-            t: (key) => this._t(key)
+            t: (key) => this._t(key),
+            notify: (notice) =>
+                this._notices.notify(
+                    "config",
+                    "mcu-vscode.installCubeMxFirmware",
+                    notice.message ? { ...notice, key: undefined, titleKey: notice.key, text: notice.message } : notice
+                )
         });
         this._cubemxConfiguration = new CubeMxConfiguration({
             vscode,
@@ -463,6 +480,7 @@ class MainViewProvider {
             installer: skillInstaller,
             getLang: () => this._lang,
             t: (key, params) => this._t(key, params),
+            notify: (notice) => this._notices.notify("global", "mcu-vscode.manageAgentSkills", notice),
             onStatus: (status) => this._webviewView?.webview.postMessage({ type: "skillStatus", ...status })
         });
         this._chipInfoService = new ChipInfoService({
@@ -488,6 +506,12 @@ class MainViewProvider {
             cacheKeys: CACHE_KEYS,
             t: (key, params) => this._t(key, params),
             getChipInfo: () => this._chipInfoService.info,
+            notify: (notice) =>
+                this._notices.notify(
+                    "config",
+                    "svd",
+                    notice.error ? { level: "error", titleKey: "notice.svdFailed", error: notice.error } : notice
+                ),
             onStatus: (status) => {
                 // A changed SVD binding renames peripheral pointer targets on the next plan refresh.
                 this._pointerPeripheralsRequested = false;
@@ -586,12 +610,20 @@ class MainViewProvider {
     _t(key, params) {
         return i18n.t(this._lang, key, params);
     }
+    // Created on first use, so providers assembled without the constructor still report notices.
+    get _notices() {
+        this._noticeService ||= new NoticeService({
+            vscode,
+            t: (key, params) => this._t(key, params),
+            view: () => this._webviewView
+        });
+        return this._noticeService;
+    }
     async _copyToClipboard(text) {
         const value = text ? String(text) : "";
         if (!value) return;
         try {
             await vscode.env.clipboard.writeText(value);
-            vscode.window.showInformationMessage(this._t("common.copied"));
         } catch (error) {
             vscode.window.showErrorMessage(this._t("common.copyFailed", { message: error.message }));
         }
@@ -601,6 +633,12 @@ class MainViewProvider {
         this._context.globalState.update("emberprobe.lang", this._lang);
         for (const entry of this._livePanels.values())
             entry.panel.title = this._t("lw.panelTitle", { n: entry.panelId });
+        // Running built-in debug sessions switch the language of their error messages too.
+        for (const session of this._debugBridge?.allSessions.values() || [])
+            if (session.type === "emberprobe")
+                Promise.resolve(session.customRequest?.("emberprobe.setLanguage", { lang: this._lang })).catch(() => {
+                    // A session that is ending keeps its language.
+                });
         return this._lang;
     }
     _commandContext(resource) {
@@ -690,6 +728,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
+            const cmd = "mcu-vscode.selectElf";
             try {
                 console.log("主进程执行选择 ELF 文件命令");
                 const elfFiles = await vscode.workspace.findFiles(
@@ -698,7 +737,7 @@ class MainViewProvider {
                     100
                 );
                 if (elfFiles.length === 0) {
-                    vscode.window.showWarningMessage(this._t("msg.noElfFound"));
+                    this._notices.notify("config", cmd, { level: "warning", key: "msg.noElfFound" });
                     return false;
                 }
                 const items = elfFiles.map((file) => {
@@ -718,13 +757,15 @@ class MainViewProvider {
                 this.scheduleGdbWarmup(0);
                 await this._refreshElfBindings();
                 await this.updateView();
-                vscode.window.showInformationMessage(this._t("msg.elfSelected", { name: path.basename(finalPath) }));
                 return true;
             } catch (err) {
-                const errorMsg = err.message;
-                console.error("选择 ELF 文件失败：", errorMsg);
-                vscode.window.showErrorMessage(this._t("msg.selectElfFailed", { error: errorMsg }));
-                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
+                console.error("选择 ELF 文件失败：", err.message);
+                this._notices.notify("config", cmd, {
+                    level: "error",
+                    titleKey: COMMAND_FAILURE_TITLES[cmd],
+                    error: err
+                });
+                throw err; // Reported above; callers outside the sidebar still see the failure.
             }
         };
         // 2. 选择调试器
@@ -749,7 +790,6 @@ class MainViewProvider {
             await this._context.workspaceState.update(CACHE_KEYS.debugger, debuggerCfg);
             await this._showDebuggerConfig();
             await this._refreshConnectedProbes();
-            vscode.window.showInformationMessage(this._t("msg.debuggerSelected", { name: debuggerCfg }));
             return true;
         };
         // 3. 选择 MCU 核心（无修改）
@@ -773,7 +813,6 @@ class MainViewProvider {
             this._assertConnectionEditable({ mcu: mcuCore });
             await this._context.workspaceState.update(CACHE_KEYS.mcuCore, mcuCore);
             await this.updateView();
-            vscode.window.showInformationMessage(this._t("msg.mcuSelected", { name: mcuCore }));
             return true;
         };
         this.commandHandlers["mcu-vscode.attachDebug"] = (resource) =>
@@ -792,21 +831,21 @@ class MainViewProvider {
             let probePrepared = false;
             let startAccepted = false;
             let ownsPending = false;
+            const cmd = startOptions?.attach ? "mcu-vscode.attachDebug" : "mcu-vscode.debug";
+            const warn = (key) => {
+                this._notices.notify("flash", cmd, { level: "warning", key });
+                return false;
+            };
             try {
                 if (configuration?.servertype === "external")
                     throw new Error("Use an explicit F5 external attach configuration");
                 this._externalDebug?.assertPhysicalAvailable();
-                if (this._agentReadRunning) {
-                    vscode.window.showWarningMessage(this._t("msg.agentReadBusy"));
-                    return false;
-                }
-                if (this._debugCommandPending || this._debugStarting) {
-                    vscode.window.showWarningMessage(this._t("msg.debugBusy"));
-                    return false;
-                }
+                if (this._agentReadRunning) return warn("msg.agentReadBusy");
+                if (this._debugCommandPending || this._debugStarting) return warn("msg.debugBusy");
                 this._debugCommandPending = true;
                 this._postProbeOperationStatus();
                 ownsPending = true;
+                this._debugStartupCmd = cmd;
                 this._debugStartupErrorReported = false;
                 this._debugStartupFailureCleanedUp = false;
                 console.log("主进程执行启动调试命令");
@@ -817,10 +856,7 @@ class MainViewProvider {
                     this._context.workspaceState.get(CACHE_KEYS.debugger) ||
                     (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-                if (!elfPath || !debuggerCfg || !mcuCore) {
-                    vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
-                    return false;
-                }
+                if (!elfPath || !debuggerCfg || !mcuCore) return warn("msg.configIncomplete");
                 // 在取得探针租约之前解析，非法取值直接失败，不需要任何启动清理。
                 // 解析只做一次，OpenOCD 参数与适配器 launch config 必须看到同一个值。
                 const rtos = resolveRtos(
@@ -830,10 +866,7 @@ class MainViewProvider {
                 // 修复类型错误：处理 undefined 情况，用空字符串兜底
                 elfPath = cleanWindowsPath(elfPath);
                 const { folder: workspaceFolder } = this._commandContext(resource);
-                if (!workspaceFolder) {
-                    vscode.window.showErrorMessage(this._t("msg.openWorkspaceForDebug"));
-                    return false;
-                }
+                if (!workspaceFolder) return warn("msg.openWorkspaceForDebug");
                 let cortexTools = await ensureDebugTools(
                     vscode,
                     workspaceFolder,
@@ -842,7 +875,8 @@ class MainViewProvider {
                     undefined,
                     configuration || {}
                 );
-                if (!cortexTools) return false;
+                // The user dismissed the toolchain prompt: a cancellation, not a failure.
+                if (!cortexTools) return null;
                 startup?.phase("tools");
                 // Overlaps a cold GDB start with probe preflight and OpenOCD start-up.
                 void this._gdbWarmup?.warm(cortexTools.gdbPath);
@@ -986,14 +1020,17 @@ class MainViewProvider {
                 return true;
             } catch (err) {
                 this._clearDebugStartupWatchdog();
-                const errorMsg = err.i18nKey ? this._t(err.i18nKey, err.i18nParams) : err.message;
-                console.error("调试启动失败：", err.stack || errorMsg);
-                vscode.window.showErrorMessage(this._t("msg.debugFailed", { error: errorMsg }));
+                console.error("调试启动失败：", err.stack || err.message);
+                this._notices.notify("flash", cmd, {
+                    level: "error",
+                    titleKey: COMMAND_FAILURE_TITLES[cmd],
+                    error: err
+                });
                 if (probePrepared) {
                     await this._stopManagedDebugServer();
                     await this.restoreSamplingAfterDebug();
                 }
-                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
+                throw err; // Reported above; callers outside the sidebar still see the failure.
             } finally {
                 if (ownsPending) {
                     if (this._debugStarting && !this._managedDebugServer) this._debugStartLease?.release();
@@ -1005,30 +1042,28 @@ class MainViewProvider {
         };
         // 6. 下载程序（核心修改5：生成命令时清洗路径）
         this.commandHandlers["mcu-vscode.download"] = async (resource) => {
+            const cmd = "mcu-vscode.download";
+            const notify = (notice) => this._notices.notify("flash", cmd, notice);
+            const warn = (key, params) => {
+                notify({ level: "warning", key, params });
+                return false;
+            };
+            // A second click while flashing must not replace the running download's progress.
             if (this._downloadRunning) {
-                vscode.window.showWarningMessage(this._t("msg.downloadBusy"));
+                this._notices.notify("flash", "download-busy", { level: "warning", key: "msg.downloadBusy" });
                 return false;
             }
             if (
                 this._debugStarting ||
                 this._debugBridge.hasAnySession ||
                 isSupportedDebugSession(this._liveDebugSession())
-            ) {
-                vscode.window.showWarningMessage(this._t("msg.debugBusyForDownload"));
-                return false;
-            }
-            if (this._agentReadRunning) {
-                vscode.window.showWarningMessage(this._t("msg.agentReadBusy"));
-                return false;
-            }
-            if (this._chipInfoRunning) {
-                vscode.window.showWarningMessage(this._t("msg.chipBusyForDownload"));
-                return false;
-            }
-            if (this._liveStarting) {
-                vscode.window.showWarningMessage(this._t("msg.liveBusyForDownload"));
-                return false;
-            }
+            )
+                return warn("msg.debugBusyForDownload");
+            if (this._agentReadRunning) return warn("msg.agentReadBusy");
+            if (this._chipInfoRunning) return warn("msg.chipBusyForDownload");
+            if (this._liveStarting) return warn("msg.liveBusyForDownload");
+            this._notices.clear("flash", "download-busy");
+            this._notices.clear("flash", "download-refresh");
             // Keep the live lease until process exit, then synchronously reserve download.
             const resumeSampling = !!this._samplingIntent && !!(this._liveWatchRunning || this._liveSession);
             const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
@@ -1036,23 +1071,21 @@ class MainViewProvider {
             const downloadLease = this._probeCoordinator.acquire("download");
             this._downloadLease = downloadLease;
             let downloaded = false;
-            this._recentProgress = [];
+            // OpenOCD progress lines, kept for the failure's diagnostic panel.
+            const progressLog = [];
             try {
                 const configuredExecutable = vscode.workspace
                     .getConfiguration("emberprobe")
                     .get("openocdPath", "openocd");
                 const executable = await this._resolveOpenOcdPath(configuredExecutable);
-                if (!executable) return false;
+                if (!executable) return warn("notice.openocdRequired");
                 console.log("主进程执行下载程序命令");
                 let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg =
                     this._context.workspaceState.get(CACHE_KEYS.debugger) ||
                     (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-                if (!elfPath || !debuggerCfg || !mcuCore) {
-                    vscode.window.showErrorMessage(this._t("msg.configIncomplete"));
-                    return false;
-                }
+                if (!elfPath || !debuggerCfg || !mcuCore) return warn("msg.configIncomplete");
                 const cleanElfPath = cleanWindowsPath(elfPath);
                 const { cwd } = this._commandContext(resource);
                 let connection;
@@ -1079,23 +1112,28 @@ class MainViewProvider {
                         cwd
                     },
                     (event) => {
-                        // 缓冲最近几条进度，视图未打开或刷新时可回放，避免进度静默丢失
-                        const message = { type: "openocdProgress", cmd: "mcu-vscode.download", ...event };
-                        this._recentProgress.push(message);
-                        if (this._recentProgress.length > 6) this._recentProgress.shift();
-                        this._webviewView?.webview.postMessage(message);
+                        const text = event.key ? this._t(event.key, event.params) : event.message || "";
+                        if (text) progressLog.push(text);
+                        if (progressLog.length > 12) progressLog.shift();
+                        // Errors along the way end in the failure notice; the box shows the current step.
+                        if (event.level !== "error" && text)
+                            notify({ level: "info", busy: true, key: event.key, params: event.params, message: text });
                     }
                 );
                 if (connection && !this._downloadLease?.released)
                     await this._probeConnectionService.recordSuccess(connection);
                 downloaded = true;
-                vscode.window.showInformationMessage(this._t("msg.downloadSuccess"));
+                notify({ level: "success", key: "msg.downloadSuccess" });
                 return true;
             } catch (err) {
-                const errorMsg = err.i18nKey ? this._t(err.i18nKey, err.i18nParams) : err.message;
-                console.error("固件下载失败：", errorMsg);
-                vscode.window.showErrorMessage(this._t("msg.downloadFailed", { error: errorMsg }));
-                throw err; // 上抛给消息分发器，向 Webview 反馈 commandError 而非 commandSuccess
+                console.error("固件下载失败：", err.message);
+                notify({
+                    level: "error",
+                    titleKey: COMMAND_FAILURE_TITLES[cmd],
+                    error: err,
+                    detail: progressLog.join("\n")
+                });
+                throw err; // Reported above; callers outside the sidebar still see the failure.
             } finally {
                 let refreshed = false;
                 try {
@@ -1105,7 +1143,11 @@ class MainViewProvider {
                     }
                 } catch (error) {
                     this._postLive({ type: "liveError", ...toUiError(error) });
-                    vscode.window.showWarningMessage(this._t("msg.downloadRefreshFailed", { error: error.message }));
+                    this._notices.notify("flash", "download-refresh", {
+                        level: "warning",
+                        key: "msg.downloadRefreshFailed",
+                        params: { error: error.message }
+                    });
                 } finally {
                     downloadLease.release();
                 }
@@ -1113,9 +1155,11 @@ class MainViewProvider {
                     try {
                         await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
                     } catch (error) {
-                        vscode.window.showWarningMessage(
-                            this._t("msg.downloadSamplingFailed", { error: error.message })
-                        );
+                        this._notices.notify("flash", "download-refresh", {
+                            level: "warning",
+                            key: "msg.downloadSamplingFailed",
+                            params: { error: error.message }
+                        });
                     }
                 }
             }
@@ -2197,6 +2241,7 @@ class MainViewProvider {
     }
     async _handleDebugStartupFailure(session, message) {
         if (this._externalDebug?.active) {
+            this._reportDebugStartupFailure(message);
             const externalSession = this._findManagedDebugSession(session);
             if (externalSession) {
                 await Promise.race([
@@ -2241,10 +2286,11 @@ class MainViewProvider {
     _reportDebugStartupFailure(message) {
         if (this._debugStartupErrorReported) return;
         this._debugStartupErrorReported = true;
-        this._webviewView?.webview.postMessage({
-            type: "commandError",
-            cmd: "mcu-vscode.debug",
-            error: message || this._t("msg.debugStartFailed")
+        const cmd = this._debugStartupCmd || "mcu-vscode.debug";
+        this._notices.notify("flash", cmd, {
+            level: "error",
+            titleKey: COMMAND_FAILURE_TITLES[cmd],
+            message: message || this._t("msg.debugStartFailed")
         });
         this._clearDebugStartupWatchdog({ kind: "failed" });
     }
@@ -2267,7 +2313,6 @@ class MainViewProvider {
             : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
         const key = debugStartupPolicy(process.platform, version).messageKey;
         const timeoutMessage = this._t(key, { seconds: timeoutMs / 1000, version });
-        vscode.window?.showErrorMessage?.(timeoutMessage);
         await this._handleDebugStartupFailure(session, timeoutMessage);
     }
     _assertGroupedReadElf() {
@@ -3609,6 +3654,10 @@ class MainViewProvider {
                             });
                         break;
                     }
+                    case "revealCsvExport":
+                        if (entry._lastCsvExport)
+                            vscode.commands.executeCommand("revealFileInOS", entry._lastCsvExport);
+                        break;
                     case "exportCsv": {
                         const archiveScope = this._debugSamplingScope(watchKey);
                         const historyRevision = entry.historyRevision || 0;
@@ -3690,28 +3739,19 @@ class MainViewProvider {
                                     fromMs: message.fromMs,
                                     toMs: message.toMs
                                 });
-                            const reveal = this._t("msg.revealInFolder");
-                            Promise.resolve(
-                                vscode.window.showInformationMessage(
-                                    this._t("msg.csvExported", { file: path.basename(target.fsPath) }),
-                                    reveal
-                                )
-                            ).then((choice) => {
-                                if (choice === reveal) vscode.commands.executeCommand("revealFileInOS", target);
-                            });
+                            // The panel's notice offers "reveal in folder" for the file it just wrote.
+                            entry._lastCsvExport = target;
                             post({
                                 type: "exportCsvResult",
                                 ok: true,
+                                file: path.basename(target.fsPath),
                                 seriesCount: result.seriesCount,
                                 rowCount: result.rows
                             });
                         } catch (error) {
                             if (error.code === "CSV_EXPORT_CANCELLED")
                                 post({ type: "exportCsvResult", ok: false, cancelled: true, aborted: true });
-                            else {
-                                vscode.window.showErrorMessage(this._t("msg.csvExportFailed", { msg: error.message }));
-                                post({ type: "exportCsvResult", ok: false, message: error.message });
-                            }
+                            else post({ type: "exportCsvResult", ok: false, message: error.message });
                         }
                         break;
                     }
@@ -4391,7 +4431,8 @@ class MainViewProvider {
     _warnChartHistoryLimited() {
         if (this._chartHistoryLimitedWarned) return;
         this._chartHistoryLimitedWarned = true;
-        vscode.window.showWarningMessage(this._t("lw.memoryHistoryLimited"));
+        // Shown once as a Live Watch notice where the chart is, not as a popup.
+        this._postLive({ type: "chartHistoryLimited" });
     }
     _limitChartHistory(entry, scope, tick) {
         this._discardChartHistoryAppend(entry);
@@ -5485,7 +5526,7 @@ class MainViewProvider {
                             this._postConsumerStatuses(msg);
                     },
                     onError: (msg) => {
-                        if (this._liveSession === session) this._postLive({ type: "liveError", message: msg });
+                        if (this._liveSession === session) this._postLive({ type: "liveError", ...toUiError(msg) });
                     },
                     onDisconnect: (err) => {
                         if (this._liveSession !== session) return;
@@ -6083,55 +6124,51 @@ class MainViewProvider {
             switch (message.type) {
                 case "executeCommand": {
                     const cmd = message.cmd;
+                    const area = commandArea(cmd);
+                    // A new run replaces what this command last reported, but not the progress of a run
+                    // still in flight (a second click is refused by the handler instead).
+                    if (!this._notices.get(area, cmd)?.busy) this._notices.clear(area, cmd);
+                    const revision = this._notices.revision;
+                    let result;
                     try {
                         console.log("主进程接收命令：", cmd);
                         if (
                             Object.hasOwn(this.commandHandlers, cmd) &&
                             typeof this.commandHandlers[cmd] === "function"
                         ) {
-                            const result = await this.commandHandlers[cmd]();
-                            if (result === null) {
-                                webviewView.webview.postMessage({ type: "commandCancelled", cmd });
-                                break;
-                            }
-                            if (result === false) {
-                                if (
-                                    !["mcu-vscode.debug", "mcu-vscode.attachDebug"].includes(cmd) ||
-                                    !this._debugStartupErrorReported
-                                )
-                                    webviewView.webview.postMessage({
-                                        type: "commandError",
-                                        cmd,
-                                        error: this._t("sb.commandFailed")
-                                    });
-                                break;
-                            }
-                            // 向Webview发送成功消息
-                            webviewView.webview.postMessage({
-                                type: "commandSuccess",
-                                cmd: cmd
-                            });
+                            result = await this.commandHandlers[cmd]();
                         } else {
                             throw Object.assign(new Error(this._t("msg.commandNotRegistered", { cmd })), {
                                 i18nKey: "msg.commandNotRegistered",
                                 i18nParams: { cmd }
                             });
                         }
+                        // A handler that reported its own failure leaves a notice; otherwise say it failed.
+                        if (result === false && this._notices.revision === revision)
+                            this._notices.notify(area, cmd, { level: "error", key: "sb.commandFailed" });
                     } catch (error) {
-                        const errorMsg = error.message || this._t("msg.unknownError");
-                        console.error("命令执行失败：", errorMsg);
-                        // 向Webview发送失败消息
-                        webviewView.webview.postMessage({
-                            type: "commandError",
-                            cmd: cmd,
-                            key: error.i18nKey,
-                            params: error.i18nParams,
-                            diagnostic: serializeError(error),
-                            error: errorMsg
-                        });
+                        result = false;
+                        console.error("命令执行失败：", error.message);
+                        if (!error.reported)
+                            this._notices.notify(area, cmd, {
+                                level: "error",
+                                titleKey: COMMAND_FAILURE_TITLES[cmd],
+                                error
+                            });
                     }
+                    // The footer only tracks that the command finished; messages live in the notices.
+                    webviewView.webview.postMessage({
+                        type:
+                            result === null ? "commandCancelled" : result === false ? "commandError" : "commandSuccess",
+                        cmd
+                    });
+                    // Progress that ended without a result notice (e.g. a debug session that started) goes away.
+                    if (result !== false && this._notices.get(area, cmd)?.busy) this._notices.clear(area, cmd);
                     break;
                 }
+                case "noticeDismiss":
+                    this._notices.dismiss(message.area, message.id);
+                    break;
                 case "memoryRefresh":
                     await this._getMemoryAnalysisController().refresh();
                     break;
@@ -6155,12 +6192,10 @@ class MainViewProvider {
                     webviewView.webview.postMessage({ type: "initSuccess" });
                     if (this._probeDriverSwitching)
                         webviewView.webview.postMessage({ type: "probeDriverSwitch", busy: true });
-                    // A new document has no probe list yet, even when the last posted one is unchanged.
                     this._lastConnectedProbesMessage = "";
                     this._startProbeInventoryMonitor();
-                    // 回放最近的下载进度，避免视图重建后日志丢失
-                    for (const progressMessage of this._recentProgress)
-                        webviewView.webview.postMessage(progressMessage);
+                    // A rebuilt sidebar gets back the notices that are still current.
+                    this._notices.replay((notice) => webviewView.webview.postMessage(notice));
                     this._syncSidebarTarget((message) => webviewView.webview.postMessage(message));
                     this._syncChipInfo((message) => webviewView.webview.postMessage(message));
                     this._svdManager.syncStatus().catch((error) => console.error("SVD 状态检查失败：", error.message));
@@ -6226,13 +6261,24 @@ class MainViewProvider {
                             if (await this._readConnectedProbeTargets()) await this._refreshConnectedProbes();
                         }
                     } catch (error) {
-                        webviewView.webview.postMessage({
-                            type: "commandError",
-                            diagnostic: serializeError(error),
-                            error: error.i18nKey
-                                ? this._t(error.i18nKey, error.i18nParams)
-                                : error.message || String(error)
-                        });
+                        if (message.type === "selectProbeDriver") {
+                            // The driver service already reports its own failures through the same notice.
+                            if (this._notices.get("config", "probe-driver")?.level !== "error")
+                                this._notices.notify("config", "probe-driver", {
+                                    level: "error",
+                                    titleKey: "notice.driverSwitchFailed",
+                                    error
+                                });
+                        } else {
+                            this._notices.notify("config", "probe-selection", { level: "error", error });
+                            webviewView.webview.postMessage({
+                                type: "commandError",
+                                diagnostic: serializeError(error),
+                                error: error.i18nKey
+                                    ? this._t(error.i18nKey, error.i18nParams)
+                                    : error.message || String(error)
+                            });
+                        }
                         this._refreshConnectedProbes().catch((refreshError) =>
                             console.error("Probe inventory check failed:", refreshError.message)
                         );
@@ -6432,12 +6478,10 @@ class MainViewProvider {
                 () =>
                     this.runAutoDetect(false).catch((error) => {
                         console.error("自动检测失败：", error.message);
-                        this._webviewView?.webview.postMessage({
-                            type: "commandError",
-                            cmd: "mcu-vscode.autoDetect",
-                            key: error.i18nKey,
-                            params: error.i18nParams,
-                            error: error.message
+                        this._notices.notify("config", "mcu-vscode.autoDetect", {
+                            level: "error",
+                            titleKey: COMMAND_FAILURE_TITLES["mcu-vscode.autoDetect"],
+                            error
                         });
                     }),
                 0
@@ -6493,16 +6537,22 @@ class MainViewProvider {
             result.debugger && this._t("msg.foundDebugger", { name: result.debugger })
         ].filter(Boolean);
         if (force) {
-            const message = found.length
-                ? this._t("msg.autoDoneWith", { found: found.join(", ") })
-                : this._t("msg.autoNone");
-            found.length ? vscode.window.showInformationMessage(message) : vscode.window.showWarningMessage(message);
-            if (result.mcuUnavailable)
-                vscode.window.showWarningMessage(this._t("msg.autoMcuUnavailable", { name: result.mcuUnavailable }));
-            if (!result.elf && result.elfRejected?.length)
-                vscode.window.showWarningMessage(
-                    this._t("msg.autoElfArchMismatch", { count: result.elfRejected.length })
-                );
+            // One box for the whole result: what was found, plus anything the user still has to sort out.
+            const problems = [
+                result.mcuUnavailable && { key: "msg.autoMcuUnavailable", params: { name: result.mcuUnavailable } },
+                !result.elf &&
+                    result.elfRejected?.length && {
+                        key: "msg.autoElfArchMismatch",
+                        params: { count: result.elfRejected.length }
+                    }
+            ].filter(Boolean);
+            this._notices.notify("config", "mcu-vscode.autoDetect", {
+                level: !found.length || problems.length ? "warning" : "success",
+                ...(found.length
+                    ? { key: "msg.autoDoneWith", params: { found: found.join(", ") } }
+                    : { key: "msg.autoNone" }),
+                items: problems
+            });
         }
         return result;
     }
@@ -6585,11 +6635,27 @@ class MainViewProvider {
                   }
                 : device
         );
-        // Several probes of one family: show the one automatic mode last found the recorded chip on.
-        if (automatic && expected && view.state === "ambiguous") {
-            const matches = view.devices.filter(
-                (device) => device.matchesDebugger && device.selectable && sameTarget(readings.get(device.id), expected)
-            );
+        // Several probes of one family: show the one the next operation would pick, as pickByTarget does: the probe
+        // automatic mode last found the recorded chip on, or without a record the only one with the configured model.
+        if (automatic && view.state === "ambiguous") {
+            const candidates = view.devices.filter((device) => device.matchesDebugger && device.selectable);
+            const matches = candidates.filter((device) => {
+                const reading = readings.get(device.id);
+                if (!reading) return false;
+                return expected ? sameTarget(reading, expected) : targetMatchesModel(reading, mcuCore) === true;
+            });
+            // Chip readings live only in memory: after a restart the list reads them itself (see
+            // _identifyConnectedTargets) rather than asking the user to pick a probe automatic mode can find.
+            const readKey = this._probeTargetReadKey(view, mcuCore);
+            if (
+                matches.length !== 1 &&
+                service.identifyTarget &&
+                mcuCore &&
+                candidates.length > 1 &&
+                candidates.some((device) => !readings.get(device.id)) &&
+                this._probeTargetsReadFor !== readKey
+            )
+                Object.assign(view, { state: "identifying", error: null });
             if (matches.length === 1)
                 Object.assign(view, {
                     state: "selected",
@@ -6608,6 +6674,24 @@ class MainViewProvider {
                     : device
             );
         return view;
+    }
+    _probeTargetReadKey(view, target) {
+        return JSON.stringify([view.debugger, target, ...view.devices.map((device) => device.id)]);
+    }
+    // Reads the chips once for this set of probes, so automatic mode's choice shows without a manual refresh. A
+    // probe that cannot be read leaves the list asking the user to pick, as before.
+    _identifyConnectedTargets(view) {
+        if (this._probeTargetsReading) return;
+        const key = this._probeTargetReadKey(view, this._context.workspaceState.get(CACHE_KEYS.mcuCore) || "");
+        this._probeTargetsReading = true;
+        void this._readConnectedProbeTargets()
+            .catch((error) => console.error("Probe chip read failed:", error.message))
+            .finally(() => {
+                this._probeTargetsReading = false;
+                this._probeTargetsReadFor = key;
+                return this._refreshConnectedProbes();
+            })
+            .catch((error) => console.error("Probe list refresh failed:", error.message));
     }
     // Refresh reads the chip on each listed probe the extension can open on its own. Nothing is read while a probe
     // operation runs; a probe another program holds cannot be opened and keeps no reading, so neither shows a chip.
@@ -6663,6 +6747,7 @@ class MainViewProvider {
             this._lastConnectedProbesMessage = message;
             this._webviewView?.webview.postMessage(JSON.parse(message));
         }
+        if (view.state === "identifying") this._identifyConnectedTargets(view);
         return view;
     }
     // Opens the sidebar's connected probe list where the user picks the probe an operation could not choose.
@@ -6783,18 +6868,36 @@ class MainViewProvider {
                 }
             })
             .catch((error) => {
-                const message = error.i18nKey ? this._t(error.i18nKey, error.i18nParams) : error.message;
-                this._webviewView?.webview.postMessage({
-                    type: "commandError",
-                    diagnostic: serializeError(error),
-                    error: message
-                });
-                vscode.window.showErrorMessage(message);
+                if (this._notices.get("config", "probe-driver")?.level !== "error")
+                    this._notices.notify("config", "probe-driver", {
+                        level: "error",
+                        titleKey: "notice.driverSwitchFailed",
+                        error
+                    });
             })
             .finally(() => {
                 this._jlinkDriverWarningPending = null;
             });
         return this._jlinkDriverWarningPending;
+    }
+    // Driver install/restore progress shows next to the J-Link driver choice instead of the footer.
+    _notifyProbeDriverStatus(status) {
+        const busy = status.state === "installing" || status.state === "restoring";
+        const done = status.state === "ready" || status.state === "restored";
+        if (!busy && !done && status.state !== "error") return;
+        const keys = {
+            installing: "probe.driverInstalling",
+            ready: "probe.driverReady",
+            restoring: "probe.driverRestoring",
+            restored: "probe.driverRestored"
+        };
+        this._notices.notify(
+            "config",
+            "probe-driver",
+            status.state === "error"
+                ? { level: "error", titleKey: "notice.driverSwitchFailed", message: status.message || "" }
+                : { level: done ? "success" : "info", busy, key: keys[status.state] }
+        );
     }
     // `target.deviceId` pins the J-Link: the sidebar passes the device its driver control belongs to and a
     // notification the device its blocked operation resolved, so a newly attached probe is never switched instead.
@@ -6802,6 +6905,8 @@ class MainViewProvider {
     async _changeJlinkDriver(driver, target = null) {
         if (driver !== "winusb" && driver !== "segger")
             throw Object.assign(new Error("Invalid J-Link USB driver choice"), { code: "PROBE_DRIVER_INVALID_CHOICE" });
+        // Each attempt reports its own outcome in the driver notice.
+        this._notices.clear("config", "probe-driver");
         this._assertProbeDriverIdle();
         this._assertConnectionEditable({ probeSerial: true });
         if (this._probeCoordinator?.anyActive())

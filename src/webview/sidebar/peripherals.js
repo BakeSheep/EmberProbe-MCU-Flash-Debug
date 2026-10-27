@@ -94,9 +94,15 @@
         function request(type, payload = {}) {
             api?.postMessage({ type, ...payload });
         }
-        function note(text, error = false) {
-            status.textContent = text;
-            status.classList.toggle("error", error);
+        // The card's one notice: an error until dismissed or cleared, otherwise a hint about what to do next.
+        const notices = window.EmberProbeNotice.createNoticeArea(status, {
+            t,
+            onDismiss: () => {
+                state.error = "";
+            }
+        });
+        function note(text, level = "info", busy = false) {
+            notices.set("status", { level, text, busy, dismissible: level === "error" });
         }
         function requestCatalog() {
             if (!state.svdPath || !api) return;
@@ -181,7 +187,7 @@
                     state.error = result.error;
                     draft.dirty = true;
                     validation();
-                    note(state.error, true);
+                    note(state.error, "error");
                     return;
                 }
                 draft.value = raw.trim();
@@ -327,8 +333,8 @@
                     note(t("peripheral.enableHint"));
                     return;
                 }
-                if (state.error) note(state.error, true);
-                else if (!state.catalog) note(t("peripheral.loading"));
+                if (state.error) note(state.error, "error");
+                else if (!state.catalog) note(t("peripheral.loading"), "info", true);
                 else if (state.debug.state === "running") note(t("peripheral.running"));
                 else if (state.debug.state === "paused") note(t("peripheral.paused"));
                 else note(t("peripheral.noSession"));

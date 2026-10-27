@@ -1,10 +1,6 @@
 const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     dot = document.getElementById("statusDot"),
     text = document.getElementById("statusText"),
-    log = document.getElementById("openocdLog"),
-    openocdCard = document.getElementById("openocdCard"),
-    openocdMessage = document.getElementById("openocdMessage"),
-    openocdInstall = document.getElementById("openocdInstall"),
     liveBox = document.getElementById("liveValues"),
     liveCard = liveBox && liveBox.closest(".live-box"),
     writeBox = document.getElementById("writeValues"),
@@ -13,17 +9,38 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
-function showProbeDiagnostic(message) {
-    const diagnostic = message.diagnostic;
-    if (!diagnostic) return;
-    const panel = document.getElementById("probeDiagnostic");
-    const output = document.getElementById("probeDiagnosticText");
-    output.textContent = JSON.stringify(diagnostic, null, 2);
-    panel.hidden = false;
+// Notice boxes by area; the extension addresses them as { area, id } and the cards below own their slots.
+const NOTICE_SLOTS = {
+    global: "noticeGlobal",
+    flash: "noticeFlash",
+    config: "noticeConfig",
+    chip: "noticeChip",
+    live: "noticeLive",
+    write: "noticeWrite"
+};
+const notices = Object.create(null);
+function noticeArea(area) {
+    if (notices[area]) return notices[area];
+    const slot = document.getElementById(NOTICE_SLOTS[area] || NOTICE_SLOTS.global);
+    if (!slot) return null;
+    notices[area] = window.EmberProbeNotice.createNoticeArea(slot, {
+        t: (key, params) => t(key, params),
+        onCopy: (report) => api?.postMessage({ type: "copyText", text: report }),
+        onAction: (action) => {
+            if (!api) return;
+            if (action.command) api.postMessage({ type: "executeCommand", cmd: action.command });
+            else if (action.message) api.postMessage(action.message);
+        },
+        onDismiss: (id) => api?.postMessage({ type: "noticeDismiss", area, id })
+    });
+    return notices[area];
 }
-document.getElementById("probeDiagnosticCopy").addEventListener("click", () => {
-    api?.postMessage({ type: "copyText", text: document.getElementById("probeDiagnosticText").textContent });
-});
+function setNotice(area, id, notice) {
+    noticeArea(area)?.set(id, notice);
+}
+function clearNotice(area, id) {
+    notices[area]?.clear(id);
+}
 let sideWatch = [],
     writeList = [],
     available = [],
@@ -73,7 +90,6 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     // Last value known to be on the target per write card; a failed write rolls back to it.
     writeConfirmed = Object.create(null),
     writeSeq = 0,
-    writeFbTimer = null,
     runtimeBodies = Object.create(null),
     // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
     sbPlacedPointees = new Set(),
@@ -205,7 +221,6 @@ var lastOpenocd = { state: "checking" },
     lastChip = { state: "idle" },
     lastSvd = { state: "idle", key: "svd.notConfigured" },
     lastChipInfo = null,
-    logEvents = [],
     lastStatus = null;
 const chipRead = document.getElementById("chipRead"),
     chipState = document.getElementById("chipState"),
@@ -425,11 +440,13 @@ function renderConnectedProbes(m) {
             : t(
                   m.state === "unavailable"
                       ? "probe.inventoryUnavailable"
-                      : m.state === "script"
-                        ? "probe.scriptDecides"
-                        : devices.length
-                          ? "probe.selectPrompt"
-                          : "probe.noneConnected"
+                      : m.state === "identifying"
+                        ? "probe.identifyingTargets"
+                        : m.state === "script"
+                          ? "probe.scriptDecides"
+                          : devices.length
+                            ? "probe.selectPrompt"
+                            : "probe.noneConnected"
               );
     const notes = [...new Set([m.state === "absent" ? "" : error, locked ? source : "", status])].filter(Boolean);
     cards.unshift(...notes.map((note) => probeCard({ title: note, info: true })));
@@ -466,7 +483,8 @@ function renderConnectedProbes(m) {
             ? selected.id
             : "";
     if (connectedProbeAuto) {
-        connectedProbeAuto.hidden = locked;
+        // Keep the entry hidden until automatic probe selection is revised.
+        connectedProbeAuto.hidden = true;
         connectedProbeAuto.setAttribute("aria-pressed", connectedProbeAutomatic ? "true" : "false");
         connectedProbeAuto.title = t(
             !connectedProbeAutomatic
@@ -596,15 +614,6 @@ function applyI18n() {
     els = document.querySelectorAll("[data-i18n-ph]");
     for (i = 0; i < els.length; i++) els[i].placeholder = t(els[i].getAttribute("data-i18n-ph"));
 }
-function renderLog() {
-    log.textContent = "";
-    logEvents.forEach(function (ev) {
-        var line = document.createElement("div");
-        line.className = ev.level || "";
-        line.textContent = "• " + msgText(ev);
-        log.appendChild(line);
-    });
-}
 function updateLangToggle() {
     if (langToggle) {
         langToggle.textContent = LANG === "zh" ? "EN" : "中";
@@ -630,7 +639,7 @@ function rerenderDynamic() {
     rtosView?.render();
     memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
-    renderLog();
+    for (const area of Object.values(notices)) area.relocalize();
     applyStatus();
 }
 function setLang(l, notify) {
@@ -1000,7 +1009,7 @@ function renderAvailableContents(content) {
     EmberProbeRuntime.renderElfDiagnostics(
         document.getElementById("availableDiagnostics"),
         variableWarnings,
-        "",
+        variableError,
         t("common.diagnostics"),
         t
     );
@@ -1008,13 +1017,8 @@ function renderAvailableContents(content) {
     const allCount = document.getElementById("allCount");
     allCount.textContent = userVarsOnly ? pool.length + "/" + available.length : String(available.length);
     allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: available.length }) : "";
-    if (variableError) {
-        const e = document.createElement("div");
-        e.className = "empty";
-        e.textContent = variableError;
-        content.appendChild(e);
-        return;
-    }
+    // The error is in the diagnostics notice above the list.
+    if (variableError) return;
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     scheduleAvailableMemberSearch(query);
     const selected = new Set(sideWatch.map((w) => w.name));
@@ -1588,7 +1592,7 @@ function postWrite(item) {
     if (!api || !inWriteList(item.name)) return;
     const gate = writeGateKey(item);
     if (gate) {
-        setWriteFeedback(t(gate), true);
+        setWriteFeedback({ key: gate });
         return;
     }
     const seq = ++writeSeq;
@@ -1764,7 +1768,7 @@ function buildWriteCard(item, label) {
             const value = normalizeWideInteger(input.value, item.type);
             if (value === null) {
                 input.value = String(item.value ?? "0");
-                setWriteFeedback(t("sb.invalidWriteValue"), true);
+                setWriteFeedback({ key: "sb.invalidWriteValue" });
                 return;
             }
             if (value !== String(item.value)) {
@@ -1821,7 +1825,7 @@ function buildWriteCard(item, label) {
             const invalid = typedWriteValueError(item, raw);
             if (invalid) {
                 input.value = fmt(item.value);
-                setWriteFeedback(invalid, true);
+                setWriteFeedback({ text: invalid });
                 return;
             }
             const v = raw;
@@ -1921,19 +1925,10 @@ function applyWriteGate(cells) {
 function updateWriteAvailability() {
     Object.values(writeCells).forEach(applyWriteGate);
 }
-function setWriteFeedback(text, isErr) {
-    const fb = document.getElementById("writeFeedback");
-    if (!fb) return;
-    fb.textContent = text;
-    fb.classList.toggle("err", !!isErr);
-    if (writeFbTimer) clearTimeout(writeFbTimer);
-    writeFbTimer = setTimeout(
-        () => {
-            fb.textContent = "";
-            fb.classList.remove("err");
-        },
-        isErr ? 5000 : 3000
-    );
+// Input checks fade on their own; a failed write stays until dismissed or the next write succeeds.
+function setWriteFeedback(notice) {
+    if (!notice) return clearNotice("write", "write");
+    setNotice("write", "write", notice.level === "error" ? notice : { level: "warning", timeoutMs: 5000, ...notice });
 }
 // 写入结果反馈：变量名前的小圆点渐亮后消失（成功绿点/失败红点）；失败另在标题区显示错误原因
 function knownWriteValue(item) {
@@ -1968,7 +1963,15 @@ function onWriteResult(m) {
             }
         }
     }
-    if (!m.ok) setWriteFeedback(t("sb.writeFail", { msg: msgText(m) || t("sb.commandFailed") }), true);
+    if (m.ok) {
+        if (notices.write?.get("write")?.level === "error") setWriteFeedback(null);
+    } else
+        setWriteFeedback(
+            window.EmberProbeNotice.hostNotice({
+                error: m.key || m.message ? m : { key: "sb.commandFailed" },
+                title: { key: "sb.writeFailTitle", params: { name: m.name } }
+            })
+        );
 }
 const EYE_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
@@ -2488,7 +2491,8 @@ function liveStatus(m) {
     liveState.className =
         "live-state " +
         (m.error ? "err" : debugRunning || debugReading ? "busy" : liveCanRead ? "on" : liveRunning ? "busy" : "");
-    liveLabel.textContent = msgText(m) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
+    // Errors go into the live notice box; the label keeps the sampling state.
+    liveLabel.textContent = (!m.error && msgText(m)) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
     if (
         wasWrite !== liveCanWrite ||
@@ -2506,12 +2510,27 @@ function openocdStatus(m) {
     api?.setState?.(uiState);
     const k = m.state || "checking",
         busy = k === "checking" || k === "installing";
-    openocdCard.className = "openocd-card " + (k === "incompatible" ? "error" : k);
-    openocdCard.style.display = k === "ready" ? "none" : "";
-    openocdCard.hidden = k === "ready";
-    openocdMessage.textContent = msgText(m) || t("oc.checking");
-    openocdInstall.style.display = m.canInstall === false ? "none" : "";
-    openocdCard.querySelectorAll("button").forEach((b) => (b.disabled = busy));
+    if (k === "ready") return clearNotice("global", "openocd");
+    const action = (key, name, primary) => ({
+        label: { key },
+        primary,
+        message: { type: "openocdAction", action: name }
+    });
+    const install = m.canInstall !== false;
+    setNotice("global", "openocd", {
+        level: busy ? "info" : k === "missing" ? "warning" : "error",
+        busy,
+        title: { key: "sb.openocdEnv" },
+        text: m.key ? { key: m.key, params: m.params } : m.message || { key: "oc.checking" },
+        actions: busy
+            ? []
+            : [
+                  ...(install ? [action("sb.install", "install", true)] : []),
+                  action("sb.selectPath", "select", !install),
+                  action("sb.recheck", "check")
+              ],
+        dismissible: false
+    });
 }
 function renderSkillStatus(m) {
     lastSkill = m || lastSkill;
@@ -2532,35 +2551,30 @@ function renderSkillStatus(m) {
 // Agent 访问开关与遗留全局 skills 提示；状态只来自扩展推送的 agentAccess 消息。
 function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
-    const card = document.getElementById("agentAccess");
-    const legacy = document.getElementById("agentLegacy");
-    if (!card || !legacy) return;
     const state = lastAgentAccess?.card || "";
-    card.hidden = !state;
-    if (state) {
-        document.getElementById("agentAccessText").textContent = t(
-            state === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled"
-        );
-        const action = document.getElementById("agentAccessAction");
-        action.textContent = t(state === "enabled" ? "agent.disable" : "agent.enable");
-        action.dataset.agentCommand =
-            state === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess";
-        action.classList.toggle("primary", state !== "enabled");
-    }
-    const old = lastAgentAccess?.legacyGlobal;
-    legacy.hidden = !old;
-    if (old)
-        document.getElementById("agentLegacyText").textContent = t("agent.legacyGlobal", {
-            version: old.version || "?"
+    if (!state) clearNotice("global", "agent-access");
+    else
+        setNotice("global", "agent-access", {
+            level: "info",
+            text: { key: state === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
+            actions: [
+                {
+                    label: { key: state === "enabled" ? "agent.disable" : "agent.enable" },
+                    primary: state !== "enabled",
+                    command: state === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
+                }
+            ],
+            dismissible: false
         });
-}
-for (const id of ["agentAccessAction", "agentLegacyCleanup"]) {
-    const button = document.getElementById(id);
-    if (button)
-        button.onclick = () => {
-            if (!api || !button.dataset.agentCommand) return;
-            api.postMessage({ type: "executeCommand", cmd: button.dataset.agentCommand });
-        };
+    const old = lastAgentAccess?.legacyGlobal;
+    if (!old) clearNotice("global", "agent-legacy");
+    else
+        setNotice("global", "agent-legacy", {
+            level: "warning",
+            text: { key: "agent.legacyGlobal", params: { version: old.version || "?" } },
+            actions: [{ label: { key: "agent.cleanup" }, command: "mcu-vscode.cleanupGlobalSkills" }],
+            dismissible: false
+        });
 }
 const skillToggle = document.getElementById("skillStatus");
 if (skillToggle)
@@ -2570,21 +2584,6 @@ if (skillToggle)
         skillToggle.disabled = true;
         api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.manageAgentSkills" });
     };
-function progress(m) {
-    if (m?.cmd === "mcu-vscode.download" || m?.stage) {
-        setStat(m.level === "error" ? "error" : m.level === "success" ? "ready" : "", m.key || "", m.params, m.message);
-        return;
-    }
-    setStat(m.level === "error" ? "error" : m.level === "success" ? "ready" : "", m.key || "", m.params, m.message);
-    logEvents.push({ level: m.level, key: m.key, params: m.params, message: m.message });
-    while (logEvents.length > 6) logEvents.shift();
-    const line = document.createElement("div");
-    line.className = m.level || "";
-    line.textContent = "• " + msgText(m);
-    log.appendChild(line);
-    while (log.children.length > 6) log.firstChild.remove();
-}
-
 function chipStatus(m) {
     m = m || {};
     lastChip = m;
@@ -2595,8 +2594,12 @@ function chipStatus(m) {
         chipRead.disabled = probeDriverBusy || st === "reading";
         chipRead.textContent = st === "reading" ? t("sb.readingEllipsis") : chipHasData ? t("sb.reread") : t("sb.read");
     }
-    chipLabel.textContent = m.key || m.message ? msgText(m) : chipStatusLabel(st);
+    // The header shows the state; an error's reason goes into the chip notice box.
+    chipLabel.textContent = (st !== "error" && msgText(m)) || chipStatusLabel(st);
     chipLabel.title = chipLabel.textContent;
+    if (st === "error" && (m.key || m.message))
+        setNotice("chip", "chip", window.EmberProbeNotice.hostNotice({ error: m }));
+    else if (st !== "error") clearNotice("chip", "chip");
     chipBody.querySelectorAll(".chip-control").forEach((button) => {
         button.disabled = probeDriverBusy || st === "reading";
     });
@@ -2621,8 +2624,12 @@ function svdStatus(m) {
                     : busy
                       ? "busy"
                       : "");
-        svdStatusEl.textContent = msgText(m) || (st === "configured" ? t("svd.configured") : t("svd.notConfigured"));
-        svdStatusEl.title = m.path || svdStatusEl.textContent;
+        // A failure's reason is in the config notice; the row keeps a short state.
+        svdStatusEl.textContent =
+            st === "error"
+                ? t("svd.statusFailed")
+                : msgText(m) || (st === "configured" ? t("svd.configured") : t("svd.notConfigured"));
+        svdStatusEl.title = m.path || (st === "error" ? msgText(m) : svdStatusEl.textContent);
     }
     if (svdSelect) svdSelect.disabled = busy;
     if (svdDownload) {
@@ -2738,10 +2745,6 @@ document.querySelectorAll("[data-command]").forEach(
         (b.onclick = () => {
             if (!api) return setStat("error", "sb.extNotConnected");
             revealIncompleteConfiguration();
-            if (b.dataset.command === "mcu-vscode.download") {
-                log.textContent = "";
-                logEvents = [];
-            }
             setStat("", "sb.executing");
             api.postMessage({ type: "executeCommand", cmd: b.dataset.command });
         })
@@ -2757,12 +2760,6 @@ liveToggle.onclick = () => {
 for (const id of ["peripheralRefresh", "peripheralFormat", "rtosRefresh"]) {
     document.getElementById(id)?.addEventListener("click", revealIncompleteConfiguration);
 }
-document.getElementById("openocdInstall").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "install" });
-document.getElementById("openocdSelect").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "select" });
-document.getElementById("openocdCheck").onclick = () =>
-    api && api.postMessage({ type: "openocdAction", action: "check" });
 document.getElementById("varSearch").oninput = () => {
     availableBox.scrollTop = 0;
     renderAvailable();
@@ -2857,24 +2854,15 @@ window.EmberProbeMessages.connect(window, {
     openocdStatus: function (m) {
         openocdStatus(m);
     },
-    openocdProgress: function (m) {
-        showProbeDiagnostic(m);
-        progress(m);
+    notice: function (m) {
+        setNotice(m.area, m.id, window.EmberProbeNotice.hostNotice(m.notice));
     },
+    noticeClear: function (m) {
+        clearNotice(m.area, m.id);
+    },
+    // The driver's progress and result arrive as config notices; this only locks the probe controls.
     probeDriverStatus: function (m) {
         if (m.state === "installing" || m.state === "restoring") setProbeDriverBusy(true);
-        const keys = {
-            installing: "probe.driverInstalling",
-            ready: "probe.driverReady",
-            restoring: "probe.driverRestoring",
-            restored: "probe.driverRestored"
-        };
-        setStat(
-            m.state === "error" ? "error" : m.state === "ready" || m.state === "restored" ? "ready" : "checking",
-            keys[m.state] || "",
-            null,
-            m.message || ""
-        );
     },
     connectedProbes: function (m) {
         renderConnectedProbes(m);
@@ -2889,15 +2877,15 @@ window.EmberProbeMessages.connect(window, {
         if (!m.busy) driverSwitchDeviceId = "";
         setProbeDriverBusy(!!m.busy);
     },
-    commandSuccess: function (m) {
-        setStat("ready", "sb.commandDone");
+    // A command's outcome is a notice in its card; the footer only goes back to ready.
+    commandSuccess: function () {
+        setStat("ready", "sb.ready");
     },
     commandCancelled: function () {
-        setStat("", "sb.commandCancelled");
+        setStat("ready", "sb.ready");
     },
-    commandError: function (m) {
-        showProbeDiagnostic(m);
-        setStat("error", m.key || "", m.params, m.error || t("sb.commandFailed"));
+    commandError: function () {
+        setStat("ready", "sb.ready");
     },
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
@@ -3048,14 +3036,15 @@ window.EmberProbeMessages.connect(window, {
         sbOnComposite(m.samples || []);
     },
     liveStatus: function (m) {
-        showProbeDiagnostic(m);
+        if (m.error && (m.key || m.message))
+            setNotice("live", "live", window.EmberProbeNotice.hostNotice({ error: m }));
+        else if (m.running) clearNotice("live", "live");
         liveStatus(m);
     },
     chipInfo: function (m) {
         renderChip(m.info);
     },
     chipInfoStatus: function (m) {
-        showProbeDiagnostic(m);
         chipStatus(m);
     },
     svdStatus: function (m) {
@@ -3093,14 +3082,12 @@ window.EmberProbeMessages.connect(window, {
         peripheralView?.onError(m);
     },
     liveError: function (m) {
-        showProbeDiagnostic(m);
-        liveStatus({
-            running: liveRunning,
-            error: true,
-            key: m.key,
-            params: m.params,
-            message: m.message || t("sb.commandFailed")
-        });
+        setNotice(
+            "live",
+            "live",
+            window.EmberProbeNotice.hostNotice({ error: m.key || m.message ? m : { key: "sb.commandFailed" } })
+        );
+        liveStatus({ running: liveRunning, error: true });
     },
     setLang: function (m) {
         setLang(m.lang, false);

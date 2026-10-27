@@ -152,7 +152,16 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
         const followup = fixture(options);
         assert.strictEqual(await followup.provider.commandHandlers["mcu-vscode.download"](), true);
         assert.strictEqual(followup.provider._downloadRunning, false);
-        assert.strictEqual(followup.warnings.length, 1, "post-flash failure preserves the successful flash result");
+        const notices = followup.messages.filter((message) => message.type === "notice");
+        assert.deepStrictEqual(
+            notices.map(({ id, notice }) => [id, notice.level]).filter(([, level]) => level !== "info"),
+            [
+                ["mcu-vscode.download", "success"],
+                ["download-refresh", "warning"]
+            ],
+            "post-flash failure preserves the successful flash result"
+        );
+        assert.strictEqual(followup.warnings.length, 0, "a visible sidebar shows the warning without a notification");
         if (options.failRefresh) assert.ok(!followup.events.includes("resume"));
     }
 

@@ -22,6 +22,8 @@ class SkillStatusService {
         this.getLang = options.getLang;
         this.t = options.t;
         this.onStatus = options.onStatus;
+        // Messages go to the host's notice box; without one they fall back to VS Code notifications.
+        this.notify = options.notify || ((notice) => this.vscode.window.showInformationMessage(this.t(notice.key)));
         this.lastStatus = null;
         this.bridgeWarned = false;
         this.upgradePrompted = false;
@@ -76,7 +78,7 @@ class SkillStatusService {
         this.bridgeWarned = true;
         const manage = this.t("msg.skillsManage");
         this.vscode.window.showWarningMessage(this.t("msg.skillsModifiedBridgeWarn"), manage).then((choice) => {
-            if (choice === manage) this.vscode.window.showInformationMessage(this.t("msg.skillsDiffers"));
+            if (choice === manage) this.vscode.commands.executeCommand("mcu-vscode.manageAgentSkills");
         });
     }
     // meta 来自 Bridge 请求头：skill 通道按实际发起调用的副本检查；MCP 服务器代码随扩展安装，
@@ -193,7 +195,7 @@ class SkillStatusService {
             const status = await this.installer.inspectSkills(this.vscode, this.context);
             if (!status.scopes?.workspace) {
                 this.post(status);
-                this.vscode.window.showInformationMessage(this.t("msg.openWorkspaceFirst"));
+                this.notify({ level: "warning", key: "msg.openWorkspaceFirst" });
                 return false;
             }
             this.post({ ...status, busy: true });
