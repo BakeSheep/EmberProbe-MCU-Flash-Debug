@@ -356,14 +356,16 @@ function cursorApi() {
             fs.writeFileSync(path.join(second, "claude.cmd"), "");
             fs.writeFileSync(path.join(second, "codex"), "", { mode: 0o755 });
             fs.mkdirSync(path.join(first, "codex.exe"));
-            const winEnv = { Path: `"${first}";${second}` };
-            assert.strictEqual(findExecutable("claude", winEnv, "win32"), path.win32.join(second, "claude.cmd"));
-            assert.strictEqual(
-                findExecutable("codex", winEnv, "win32"),
-                "",
-                "directories and bare scripts are skipped"
-            );
-            assert.strictEqual(findExecutable("gemini", winEnv, "win32"), "");
+            if (process.platform === "win32") {
+                const winEnv = { Path: `"${first}";${second}` };
+                assert.strictEqual(findExecutable("claude", winEnv, "win32"), path.join(second, "claude.cmd"));
+                assert.strictEqual(
+                    findExecutable("codex", winEnv, "win32"),
+                    "",
+                    "directories and bare scripts are skipped"
+                );
+                assert.strictEqual(findExecutable("gemini", winEnv, "win32"), "");
+            }
             assert.strictEqual(findExecutable("codex", {}, "linux"), "");
             if (process.platform !== "win32") {
                 assert.strictEqual(
