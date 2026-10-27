@@ -57,7 +57,7 @@ function fixture() {
         _assertConnectionEditable() {},
         _resolveOpenOcdPath: async () => null,
         _refreshElfBindings: async () => {},
-        _refreshJlinkDriverChoice: async () => {},
+        _refreshConnectedProbes: async () => {},
         updateView: async () => {},
         _renderWebview: async () => {},
         getModernWebviewContent: () => "",

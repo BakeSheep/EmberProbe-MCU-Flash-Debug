@@ -146,36 +146,380 @@ for (const lang of ["en", "zh"]) {
         chipSidebar.close();
     }
 }
-const jlinkSidebar = render(getModernWebviewContent({ debugger: "jlink.cfg", showJlinkDriverChoice: true }, "zh"));
+const jlinkSidebar = render(getModernWebviewContent({ debugger: "jlink.cfg" }, "zh"));
 try {
-    const driver = jlinkSidebar.document.getElementById("jlinkDriverChoice");
-    assert(driver);
+    const doc = jlinkSidebar.document;
+    const driver = doc.getElementById("jlinkDriverChoice");
+    const probes = doc.getElementById("connectedProbeList");
+    const section = doc.getElementById("probeConfig");
+    const auto = doc.getElementById("connectedProbeAuto");
+    const refresh = doc.getElementById("connectedProbeRefresh");
+    assert(driver && probes && section && auto && refresh);
+    const cards = () => [...probes.children];
+    const cardTexts = () =>
+        cards().map((card) =>
+            [...card.querySelectorAll(".row-copy > *, .tag")].map((el) => el.textContent).join(" | ")
+        );
+    const pressed = () => cards().filter((card) => card.classList.contains("selected"));
+    const cardFor = (device) =>
+        cards().find((card) => card.querySelector("button.probe-card-main")?.dataset.deviceId === device.id);
+    const pick = (device) => cardFor(device).querySelector("button.probe-card-main");
     assert.strictEqual(driver.hidden, true);
-    assert.strictEqual(jlinkSidebar.document.getElementById("probeActiveConnection"), null);
+    assert.deepStrictEqual(cardTexts(), ["正在检测…"], "the list shows a card until the first scan arrives");
     assert.strictEqual(
-        jlinkSidebar.document.querySelector('[data-command="mcu-vscode.configureProbeConnection"]'),
-        null
+        doc.querySelector(".debugger-config-row #jlinkDriverChoice"),
+        null,
+        "the driver control is no longer part of Select debugger"
     );
-    assert.strictEqual(jlinkSidebar.document.querySelector(".cubemx-status")?.textContent.includes("成功记录"), false);
-    jlinkSidebar.send({ type: "probeDriverChoice", driver: "segger" });
+    assert.strictEqual(section.tagName, "DETAILS");
+    assert(section.classList.contains("config-more"), "the probe list folds like Other configuration");
+    assert.strictEqual(section.nextElementSibling?.id, "otherConfig", "the probe list sits above Other configuration");
+    assert.strictEqual(section.open, false);
+    const summary = section.querySelector("summary");
+    assert.deepStrictEqual(
+        [...summary.querySelectorAll(".probe-more-button")],
+        [auto, refresh],
+        "Auto sits left of rescan in the summary"
+    );
+    assert.strictEqual(summary.textContent, "已连接调试器自动", "the summary carries no other text");
+    // An operation that cannot choose a probe opens the list, and the configuration section holding it.
+    const configSection = doc.getElementById("mcuConfigSection");
+    configSection.open = false;
+    jlinkSidebar.send({ type: "revealConnectedProbes" });
+    assert.deepStrictEqual([configSection.open, section.open], [true, true]);
+    section.open = false;
+    assert.strictEqual(doc.getElementById("probeActiveConnection"), null);
+    assert.strictEqual(doc.querySelector('[data-command="mcu-vscode.configureProbeConnection"]'), null);
+    assert.strictEqual(doc.querySelector(".cubemx-status")?.textContent.includes("成功记录"), false);
+    const segger = {
+        id: "USB\\VID_1366&PID_0101\\000000001234",
+        family: "jlink",
+        name: "J-Link",
+        serial: "1234",
+        trustedSerial: "1234",
+        defaultConfig: "jlink.cfg",
+        matchesDebugger: true,
+        selected: true,
+        selectable: true,
+        driver: { kind: "repair", instanceId: "USB\\VID_1366&PID_0101\\000000001234" }
+    };
+    const winusb = {
+        ...segger,
+        id: "USB\\VID_1366&PID_0101\\000000005678",
+        serial: "5678",
+        trustedSerial: "5678",
+        selected: false,
+        driver: { kind: "ready", instanceId: "USB\\VID_1366&PID_0101\\000000005678" }
+    };
+    const dap = {
+        id: "USB\\VID_C251&PID_F001\\1&A",
+        family: "cmsis-dap",
+        name: "CMSIS-DAP",
+        serial: "",
+        trustedSerial: "",
+        defaultConfig: "cmsis-dap.cfg",
+        matchesDebugger: false,
+        selected: false,
+        selectable: false,
+        reasonKey: "probe.noTrustedSerial"
+    };
+    const list = (fields) => ({
+        type: "connectedProbes",
+        debugger: "jlink.cfg",
+        override: false,
+        family: "jlink",
+        state: "selected",
+        source: "remembered",
+        probeSerial: "1234",
+        deviceId: segger.id,
+        error: null,
+        devices: [segger, winusb, dap],
+        ...fields
+    });
+    jlinkSidebar.send(list({}));
+    assert.deepStrictEqual(cardTexts(), [
+        "J-Link | 1234",
+        "J-Link | 5678",
+        "CMSIS-DAP | 无序列号 · 同类探针有多台，但这台没有可靠的 USB 序列号，OpenOCD 无法区分"
+    ]);
+    assert.deepStrictEqual(pressed(), [cardFor(segger)]);
+    const checks = () => cards().filter((card) => card.querySelector(":scope > svg.probe-current"));
+    assert.deepStrictEqual(checks(), [cardFor(segger)], "a check, not a text tag, marks the device in use");
+    assert.strictEqual(cardFor(segger).querySelector(".tag"), null);
+    assert(cardFor(segger).title.includes("使用中 · 已选择的设备"));
+    assert.strictEqual(cardFor(segger).contains(driver), true, "the selected J-Link's card holds its driver control");
+    assert.strictEqual(pick(winusb).disabled, false);
+    assert.strictEqual(pick(dap).disabled, true, "an indistinguishable probe is listed but not selectable");
+    assert(cardFor(dap).title.includes("选择后将切换为 cmsis-dap.cfg"), "only the tooltip names the script");
+    // Choosing a probe of another family changes Select debugger in place instead of reloading the page.
+    const debuggerValue = doc.querySelector(".debugger-config-row .row-copy > small");
+    assert.strictEqual(debuggerValue.textContent, "jlink.cfg");
+    jlinkSidebar.send({ type: "debuggerConfig", debugger: "cmsis-dap.cfg" });
+    assert.deepStrictEqual([debuggerValue.textContent, debuggerValue.title], ["cmsis-dap.cfg", "cmsis-dap.cfg"]);
+    assert.strictEqual(doc.getElementById("connectedProbeList"), probes, "the page is not rebuilt");
+    jlinkSidebar.send({ type: "debuggerConfig", debugger: "" });
+    assert.strictEqual(debuggerValue.getAttribute("data-i18n"), "common.notSelected");
+    jlinkSidebar.send(list({}));
+    assert.strictEqual(debuggerValue.textContent, "jlink.cfg", "the probe list carries the interface script too");
+    assert.strictEqual(debuggerValue.hasAttribute("data-i18n"), false);
+    assert.strictEqual(auto.hidden, false);
+    assert.strictEqual(auto.getAttribute("aria-pressed"), "false", "a saved device is not automatic");
+    assert.strictEqual(auto.title, "恢复自动连接并忘记原设备");
+    assert.strictEqual(auto.textContent, "自动");
     assert.strictEqual(driver.hidden, false);
     assert.strictEqual(driver.value, "segger");
+    const driverOf = (device) => cardFor(device).querySelector("select.jlink-driver-choice");
+    assert(driverOf(winusb) && driverOf(winusb) !== driver, "every switchable J-Link carries its own driver control");
+    assert.strictEqual(driverOf(winusb).id, "", "only the page's own control has an id");
+    assert.deepStrictEqual([driverOf(winusb).hidden, driverOf(winusb).value], [false, "winusb"]);
+    assert.strictEqual(driverOf(dap), null, "a probe without a switchable driver has no control");
+
+    pick(winusb).click();
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "selectConnectedProbe", deviceId: winusb.id });
+    assert.deepStrictEqual(
+        pressed(),
+        [cardFor(segger)],
+        "show the confirmed probe until the extension posts the change"
+    );
+    const posted = jlinkSidebar.messages.length;
+    pick(segger).click();
+    pick(dap).click();
+    assert.strictEqual(jlinkSidebar.messages.length, posted, "the selected and unselectable cards post nothing");
+    auto.click();
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "selectConnectedProbe", deviceId: "" });
+    assert.strictEqual(section.open, false, "Auto in the summary does not unfold the list");
+
     driver.value = "winusb";
     driver.dispatchEvent(new jlinkSidebar.window.Event("change"));
-    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "selectProbeDriver", driver: "winusb" });
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), {
+        type: "selectProbeDriver",
+        driver: "winusb",
+        deviceId: segger.id
+    });
     assert.strictEqual(driver.disabled, true);
-    assert.strictEqual(jlinkSidebar.document.getElementById("jlinkDriverBusy").hidden, false);
-    assert.strictEqual(jlinkSidebar.document.getElementById("chipRead").disabled, true);
+    assert.strictEqual(pick(winusb).disabled, true, "the probe cannot change while its driver is switching");
+    assert.strictEqual(auto.disabled, true);
+    assert.strictEqual(doc.getElementById("jlinkDriverBusy").hidden, false);
+    assert.strictEqual(doc.getElementById("chipRead").disabled, true);
     assert.strictEqual(driver.value, "segger", "show the confirmed driver until switching succeeds");
-    jlinkSidebar.send({ type: "probeDriverChoice", driver: "winusb" });
+    jlinkSidebar.send(list({ devices: [{ ...segger, driver: { ...segger.driver, kind: "ready" } }, winusb, dap] }));
     assert.strictEqual(driver.disabled, true);
+    assert.strictEqual(pick(winusb).disabled, true, "a rescan while switching keeps the list locked");
+    assert.strictEqual(doc.getElementById("jlinkDriverBusy").hidden, false, "the rescan keeps the busy indicator");
     assert.strictEqual(driver.value, "winusb");
     jlinkSidebar.send({ type: "probeDriverSwitch", busy: false });
     assert.strictEqual(driver.disabled, false);
-    assert.strictEqual(jlinkSidebar.document.getElementById("jlinkDriverBusy").hidden, true);
-    assert.strictEqual(jlinkSidebar.document.getElementById("chipRead").disabled, false);
-    jlinkSidebar.send({ type: "probeDriverChoice", driver: "" });
+    assert.strictEqual(pick(winusb).disabled, false);
+    assert.strictEqual(doc.getElementById("jlinkDriverBusy").hidden, true);
+    assert.strictEqual(doc.getElementById("chipRead").disabled, false);
+
+    // Another J-Link's driver is switched from its own card, without picking (and so keeping) that J-Link.
+    const other = driverOf(winusb);
+    other.value = "segger";
+    other.dispatchEvent(new jlinkSidebar.window.Event("change"));
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), {
+        type: "selectProbeDriver",
+        driver: "segger",
+        deviceId: winusb.id
+    });
+    assert.deepStrictEqual(pressed(), [cardFor(segger)], "switching a driver does not change the selection");
+    assert.strictEqual(other.value, "winusb", "show the confirmed driver until switching succeeds");
+    assert.deepStrictEqual([other.disabled, driver.disabled], [true, true], "every driver control waits");
+    const busy = doc.getElementById("jlinkDriverBusy");
+    assert.strictEqual(cardFor(winusb).contains(busy), true, "the busy indicator follows the switching J-Link");
+    jlinkSidebar.send(list({ devices: [{ ...segger, driver: { ...segger.driver, kind: "ready" } }, winusb, dap] }));
+    assert.strictEqual(cardFor(winusb).contains(busy), true, "a rescan while switching keeps it there");
+    jlinkSidebar.send({ type: "probeDriverSwitch", busy: false });
+    assert.strictEqual(driverOf(winusb).disabled, false);
+    jlinkSidebar.send(list({}));
+
+    // Automatic mode that could not choose among several J-Links still offers each one's driver.
+    jlinkSidebar.send(
+        list({
+            state: "ambiguous",
+            source: "",
+            deviceId: "",
+            probeSerial: "",
+            devices: [
+                { ...segger, selected: false },
+                { ...winusb, selected: false }
+            ]
+        })
+    );
+    assert.deepStrictEqual(pressed(), []);
+    assert.deepStrictEqual(
+        [driverOf(segger)?.value, driverOf(winusb)?.value, driver.hidden],
+        ["segger", "winusb", true],
+        "unselected J-Links switch their drivers from their own cards"
+    );
+    assert.strictEqual(doc.getElementById("probeDriverHome").contains(driver), true);
+    jlinkSidebar.send(list({}));
+
+    // The driver control belongs to the selected device: another J-Link's state is shown once it is chosen.
+    jlinkSidebar.send(
+        list({
+            source: "unique-device",
+            deviceId: winusb.id,
+            devices: [
+                { ...segger, selected: false },
+                { ...winusb, selected: true }
+            ]
+        })
+    );
+    assert.deepStrictEqual(pressed(), [cardFor(winusb)]);
+    assert.strictEqual(cardFor(winusb).contains(driver), true);
+    assert.strictEqual(auto.getAttribute("aria-pressed"), "true", "an automatic choice keeps Auto pressed");
+    assert.strictEqual(auto.disabled, false);
+    assert(auto.title.includes("再次点击"));
+    auto.click();
+    assert.deepStrictEqual(
+        jlinkSidebar.messages.at(-1),
+        { type: "selectConnectedProbe", deviceId: winusb.id },
+        "releasing Auto keeps the automatically chosen device"
+    );
+    assert.strictEqual(auto.getAttribute("aria-pressed"), "true", "Auto stays pressed until the extension confirms");
+
+    // Automatic mode shows the chip it checks before each operation and the chip found behind each probe.
+    const f4 = "STM32F4x · Cortex-M4 · UID …53534C32";
+    const h7 = "STM32H7x · Cortex-M7 · UID …32363235";
+    const byChip = {
+        source: "target-chip",
+        deviceId: winusb.id,
+        autoTarget: f4,
+        devices: [
+            { ...segger, selected: false, targetLabel: h7, targetCore: "Cortex-M7" },
+            { ...winusb, selected: true, targetLabel: f4, targetCore: "Cortex-M4" }
+        ]
+    };
+    jlinkSidebar.send(list(byChip));
+    assert.deepStrictEqual(cardTexts(), [
+        "J-Link | 1234 · Cortex-M7",
+        "J-Link | 5678 · Cortex-M4",
+        `校验目标芯片 | ${f4}`
+    ]);
+    assert(cardFor(winusb).title.includes("按目标芯片选择"));
+    assert(cardFor(segger).title.includes(`目标芯片：${h7}`), "the full chip is in the tooltip");
+    assert.deepStrictEqual(checks(), [cardFor(winusb)]);
+    assert.strictEqual(auto.getAttribute("aria-pressed"), "true");
+    // A check that found another chip stopped the operation; the user can accept the chip found.
+    jlinkSidebar.send(list({ ...byChip, targetMismatch: { expected: f4, actual: h7 } }));
+    const changed = doc.querySelector("#connectedProbeList .probe-card.warn");
+    assert.strictEqual(changed.querySelector("small").textContent, `记录 ${f4} → 当前 ${h7}`);
+    assert(!cardTexts().some((text) => text.startsWith("校验目标芯片")), "the changed chip replaces the checked one");
+    const accept = changed.querySelector("button.probe-target-accept");
+    assert.strictEqual(accept.textContent, "改用当前芯片");
+    accept.click();
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "acceptTargetChip" });
+    jlinkSidebar.send({ type: "probeDriverSwitch", busy: true });
+    assert.strictEqual(accept.disabled, true, "no chip is accepted while the probe is busy");
+    jlinkSidebar.send({ type: "probeDriverSwitch", busy: false });
+    jlinkSidebar.send(list({ ...byChip, source: "remembered", targetMismatch: { expected: f4, actual: h7 } }));
+    assert.strictEqual(doc.querySelector("button.probe-target-accept"), null, "a kept probe is not checked");
+    jlinkSidebar.send(
+        list({
+            source: "unique-device",
+            deviceId: winusb.id,
+            devices: [
+                { ...segger, selected: false },
+                { ...winusb, selected: true }
+            ]
+        })
+    );
+    driver.value = "segger";
+    driver.dispatchEvent(new jlinkSidebar.window.Event("change"));
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), {
+        type: "selectProbeDriver",
+        driver: "segger",
+        deviceId: winusb.id
+    });
+    jlinkSidebar.send({ type: "probeDriverSwitch", busy: false });
+
+    // A J-Link the helper cannot switch shows why instead of a driver control.
+    jlinkSidebar.send(
+        list({
+            devices: [{ ...segger, driver: { kind: "unsupported", reasonKey: "probe.driverReasonProduct" } }]
+        })
+    );
+    const manual = doc.getElementById("jlinkDriverState");
+    assert.strictEqual(cards().length, 1, "the connected saved probe is listed once");
+    assert.strictEqual(cardFor(segger).contains(manual), true);
     assert.strictEqual(driver.hidden, true);
+    assert.strictEqual(manual.hidden, false);
+    assert(manual.title.includes("型号列表"));
+    // An unselected J-Link shows the same badge on its own card.
+    jlinkSidebar.send(
+        list({
+            devices: [segger, { ...winusb, driver: { kind: "unsupported", reasonKey: "probe.driverReasonProduct" } }]
+        })
+    );
+    const badge = cardFor(winusb).querySelector(".jlink-driver-state");
+    assert(badge && badge !== manual, "every J-Link shows its driver state");
+    assert.deepStrictEqual([badge.id, badge.hidden, badge.textContent], ["", false, manual.textContent]);
+    assert(badge.title.includes("型号列表"));
+    assert.strictEqual(manual.hidden, true, "the selected J-Link can switch, so the page's own badge is hidden");
+    assert.strictEqual(driverOf(winusb), null);
+    // Refresh reading each probe's chip shows it on the button and keeps it from starting another read.
+    jlinkSidebar.send({ type: "probeOperationStatus", operations: { targetScan: true } });
+    assert.deepStrictEqual([refresh.disabled, refresh.classList.contains("scanning")], [true, true]);
+    jlinkSidebar.send({ type: "probeOperationStatus", operations: { targetScan: false } });
+    assert.deepStrictEqual([refresh.disabled, refresh.classList.contains("scanning")], [false, false]);
+
+    // A missing saved probe stays selected as a card, and an override or custom script locks the list.
+    jlinkSidebar.send(
+        list({
+            state: "absent",
+            deviceId: "",
+            probeSerial: "9999",
+            error: { code: "PROBE_SELECTED_NOT_FOUND", i18nKey: "probe.rememberedNotFound", i18nParams: {} },
+            devices: [{ ...segger, selected: false }]
+        })
+    );
+    assert.deepStrictEqual(cardTexts(), ["J-Link | 9999 | 未连接", "J-Link | 1234"]);
+    assert.strictEqual(driverOf(segger).value, "segger", "a connected J-Link keeps its driver control");
+    assert.strictEqual(pressed()[0], cards()[0]);
+    assert(cards()[0].title.includes("未连接"), "the reason the saved probe is not used is on its card");
+    assert.strictEqual(probes.querySelector(".probe-info-card"), null, "the missing probe needs no separate note");
+    assert.strictEqual(doc.getElementById("probeDriverHome").contains(driver), true);
+    assert.strictEqual(driver.hidden, true);
+    assert.strictEqual(manual.hidden, true);
+    jlinkSidebar.send(list({ override: true, source: "setting" }));
+    assert.deepStrictEqual(cardTexts(), [
+        "由设置 emberprobe.probeSerial 指定；清空该设置后才能在此选择",
+        "J-Link | 1234"
+    ]);
+    assert.strictEqual(pick(segger).disabled, true);
+    assert.strictEqual(auto.hidden, true);
+    assert.strictEqual(driver.hidden, false, "an overridden J-Link can still switch its driver");
+    jlinkSidebar.send(
+        list({
+            debugger: "board.cfg",
+            family: "",
+            state: "script",
+            source: "",
+            deviceId: "",
+            devices: [{ ...segger, selected: false }]
+        })
+    );
+    assert.deepStrictEqual(cardTexts(), ["接口脚本自行选择设备，不能在此选择"]);
+    jlinkSidebar.send(list({ state: "none", source: "", deviceId: "", devices: [] }));
+    assert.deepStrictEqual(cardTexts(), ["未检测到调试器"]);
+    assert.strictEqual(driver.hidden, true);
+    assert.deepStrictEqual(
+        [auto.hidden, auto.getAttribute("aria-pressed"), auto.disabled],
+        [false, "true", true],
+        "with no device to keep, Auto stays pressed until a device is picked"
+    );
+    jlinkSidebar.send(
+        list({ source: "unique-device", devices: [{ ...dap, selectable: true, selected: true }], deviceId: dap.id })
+    );
+    assert.strictEqual(auto.disabled, true, "a device without a serial cannot be saved, so it stays automatic");
+    jlinkSidebar.send(list({ state: "none", source: "", deviceId: "", devices: [] }));
+    jlinkSidebar.send({ type: "setLang", lang: "en" });
+    assert.deepStrictEqual(cardTexts(), ["No probe detected"], "the list follows language changes");
+    assert.strictEqual(auto.textContent, "Auto");
+    refresh.click();
+    assert.deepStrictEqual(jlinkSidebar.messages.at(-1), { type: "refreshConnectedProbes" });
+    assert.strictEqual(section.open, false, "rescanning from the summary does not unfold the list");
     jlinkSidebar.assertHealthy();
 } finally {
     jlinkSidebar.close();

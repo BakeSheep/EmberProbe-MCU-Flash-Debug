@@ -15,6 +15,7 @@
     "probe-detection.js",
     "target-detection.js",
     "probe-connection.js",
+    "probe-choice.js",
     "probe-inventory.js",
     "windows-probe-inventory.js",
     "probe-preflight.js",

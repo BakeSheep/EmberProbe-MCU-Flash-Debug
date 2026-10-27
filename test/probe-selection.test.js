@@ -22,6 +22,7 @@ const {
 } = require("../skills/_emberprobe/probe-inventory");
 const { buildOpenOcdConfigArgs } = require("../skills/_emberprobe/openocd-launch");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
+const { reportTargetIdentity } = require("../src/chip/targetIdentity");
 const { FlashAuthorization } = require("../src/flashAuthorization");
 const { WriteAuthorization } = require("../src/writeAuthorization");
 const { detectProbe } = require("../skills/_emberprobe/probe-detection");
@@ -110,6 +111,19 @@ async function main() {
     const unmatched = resolveProbeConnection({ probe: "cmsis-dap.cfg", probeSerial: "OTHER" }, inventory(twoAtk));
     assert.strictEqual(unmatched.deviceId, "");
     assert.strictEqual(unmatched.selection.inventory, "unconfirmed");
+    // The hub's exact descriptor lets a remembered "_" alias be passed to OpenOCD among several probes.
+    const readAtk = twoAtk.map((device, index) => (index ? device : { ...device, descriptorSerial: "ATK 20190528" }));
+    const rememberedAtk = resolveProbeConnection(
+        {
+            probe: "cmsis-dap.cfg",
+            successfulConnection: { version: 1, probe: "cmsis-dap.cfg", probeSerial: "ATK 20190528" }
+        },
+        inventory(readAtk)
+    );
+    assert.deepStrictEqual(
+        [rememberedAtk.deviceId, rememberedAtk.adapterSerial, rememberedAtk.selectionIdentity.anonymous],
+        [atk[0].id, "ATK 20190528", false]
+    );
     // Windows aliases without "_" are exact serials, so remembered probes keep working with several devices.
     const daplinks = ["0240000034544E45", "0240000034544E46"].map((serial) => ({
         id: "USB\VID_0D28&PID_0204\\" + serial,
@@ -187,31 +201,42 @@ async function main() {
     );
 
     let saved;
-    let picks = 0;
+    let reveals = 0;
     const service = new ProbeConnectionService({
         getConfig: () => ({ probe: "stlink.cfg" }),
         getSuccessfulConnection: () => saved,
         saveSuccessfulConnection: async (value) => {
             saved = value;
         },
-        window: {
-            showQuickPick: async (choices) => {
-                picks++;
-                return choices[0];
-            }
-        },
+        onSelectionRequired: () => reveals++,
         prepareConnection: async (request) => ({
             ...resolveProbeConnection(request, inventory(clone)),
             inventory: inventory(clone),
             adapterFamily: "st-link"
         })
     });
+    // Automatic mode records the verified target chip, never the anonymous device.
     await service.recordSuccess(await service.prepare({}));
-    assert.deepStrictEqual(saved, { version: 2, probe: "stlink.cfg", probeSerial: "" });
-    saved = { version: 1, probe: "stlink.cfg", probeSerial: "old-probe" };
+    assert.strictEqual(saved, undefined);
+    const anonymousOperation = await service.prepare({ target: "stm32f1x.cfg" });
+    reportTargetIdentity(anonymousOperation.targetCheck.checkId, { cpuid: "412FC231", idcode: "20036410" });
+    await service.recordSuccess(anonymousOperation);
+    assert.deepStrictEqual(saved, {
+        version: 3,
+        probe: "stlink.cfg",
+        probeSerial: "",
+        family: "stlink",
+        deviceId: "",
+        source: "auto",
+        target: "stm32f1x.cfg",
+        chip: { cpuid: "412FC231", idcode: "20036410", uid: "" }
+    });
+    // A picked probe that is unplugged is not replaced by the anonymous device, even interactively.
+    saved = { version: 3, probe: "stlink.cfg", probeSerial: "old-probe", family: "stlink", source: "user" };
     await assert.rejects(service.prepare({}), { code: "PROBE_SELECTED_NOT_FOUND" });
-    assert.strictEqual((await service.prepare({}, true)).adapterSerial, "");
-    assert.strictEqual(picks, 1);
+    await assert.rejects(service.prepare({}, true), { code: "PROBE_SELECTED_NOT_FOUND" });
+    assert.strictEqual(reveals, 1, "the interactive operation opens the sidebar list");
+    assert.strictEqual(saved.probeSerial, "old-probe");
 
     for (const [driver, family, events] of [
         ["xds110", "xds110", []],
@@ -322,8 +347,10 @@ async function main() {
             tcpSaved = value;
         }
     }).recordSuccess(remote);
-    assert.strictEqual(tcpSaved.version, 2);
+    assert.strictEqual(tcpSaved.version, 3);
     assert.strictEqual(tcpSaved.profile, tcp.fingerprint);
+    assert.strictEqual(tcpSaved.family, "cmsis-dap");
+    assert.strictEqual(tcpSaved.deviceId, "", "a network probe has no USB device identity");
     for (const [driver, events] of [
         ["st-link", [["st-link backend", "tcp", "7185"]]],
         [

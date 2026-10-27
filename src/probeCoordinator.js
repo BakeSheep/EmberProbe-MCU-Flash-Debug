@@ -8,7 +8,8 @@ const PROBE_OPERATIONS = Object.freeze([
     "agentRead",
     "debugStart",
     "debugServer",
-    "externalDebug"
+    "externalDebug",
+    "targetScan"
 ]);
 
 class ProbeCoordinator {

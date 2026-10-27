@@ -659,6 +659,128 @@ async function main() {
         assert.strictEqual(nothing.partial, undefined);
     });
 
+    await scenario("Reuse interface profiles and transports only for unchanged self-contained scripts", async () => {
+        const { resolveInterfaceTransport } = require("../skills/_emberprobe/probe-preflight");
+        const launch = {
+            executable: "openocd",
+            probePath: "/scripts/interface/jlink.cfg",
+            targetPath: "/scripts/target/stm32f4x.cfg",
+            scriptsRoot: "/scripts"
+        };
+        let script = "# source [find other.cfg] is only a comment\nadapter driver jlink";
+        let mtimeMs = 1;
+        let starts = 0;
+        const cache = new Map();
+        const options = {
+            cache,
+            stat: async () => ({ mtimeMs, size: 2 }),
+            readFile: async () => script,
+            run: async (_exe, args) => {
+                if (!args.includes("-f")) return "EP_ADAPTERS_BEGIN\njlink { jtag swd }\nEP_ADAPTERS_END";
+                starts++;
+                return "EP_ADAPTER_NAME=jlink\nEP_PROFILE_BEGIN\nEP_PROFILE_END\n";
+            }
+        };
+        const first = await checkAdapterCapability(launch, options);
+        const again = await checkAdapterCapability(launch, options);
+        assert.strictEqual(starts, 1, "an unchanged script reuses its interface profile");
+        assert.strictEqual(again.profile.fingerprint, first.profile.fingerprint);
+        assert(first.cacheKey && again.cacheKey === first.cacheKey);
+        script += "\nadapter speed 4000";
+        await checkAdapterCapability(launch, options);
+        mtimeMs = 2;
+        await checkAdapterCapability(launch, options);
+        assert.strictEqual(starts, 3, "changed script text or OpenOCD build is profiled again");
+        script = "source [find interface/jlink.cfg]";
+        const sourced = await checkAdapterCapability(launch, options);
+        await checkAdapterCapability(launch, options);
+        assert.strictEqual(starts, 5, "a script that loads other files is profiled every time");
+        assert.strictEqual(sourced.cacheKey, "");
+        const unresolved = {
+            ...options,
+            run: async (_exe, args) => (args.includes("-f") ? "" : options.run(_exe, args))
+        };
+        script = "adapter driver jlink\n# unresolved";
+        await assert.rejects(
+            checkAdapterCapability(launch, unresolved),
+            (error) => error.code === "PROBE_CAPABILITY_UNKNOWN"
+        );
+        await checkAdapterCapability(launch, options);
+        assert.strictEqual(starts, 6, "an unresolved profile is not remembered");
+
+        let queries = 0;
+        const query = async () => {
+            queries++;
+            return "EP_TRANSPORT=swd\n";
+        };
+        assert.strictEqual(await resolveInterfaceTransport(launch, "auto", query, cache, first.cacheKey), "swd");
+        assert.strictEqual(await resolveInterfaceTransport(launch, "auto", query, cache, first.cacheKey), "swd");
+        assert.strictEqual(await resolveInterfaceTransport(launch, "swd", query, cache, first.cacheKey), "swd");
+        assert.strictEqual(queries, 2, "each requested transport is queried once per cached script");
+        await resolveInterfaceTransport(launch, "auto", query, cache, "");
+        assert.strictEqual(queries, 3, "an uncached script is queried every time");
+        await assert.rejects(
+            resolveInterfaceTransport(launch, "jtag", async () => "EP_TRANSPORT=swd\n", cache, first.cacheKey),
+            (error) => error.code === "PROBE_CAPABILITY_UNKNOWN"
+        );
+        assert(!("transport:jtag" in cache.get(first.cacheKey)), "a rejected transport is not remembered");
+
+        const passed = [];
+        await prepareProbeConnection(
+            { probe: "jlink.cfg", target: "stm32f4x.cfg", transport: "auto" },
+            {
+                resolveLaunch: () => launch,
+                checkCapability: async () => ({ adapterFamily: "jlink", cache, cacheKey: first.cacheKey }),
+                resolveTransport: async (...args) => {
+                    passed.push(args.slice(3));
+                    return "swd";
+                },
+                listProbes: async () => ({ available: false, devices: [], notes: [] }),
+                platform: "linux"
+            }
+        );
+        assert.deepStrictEqual(passed, [[cache, first.cacheKey]]);
+    });
+
+    await scenario("Open HID-only Windows CMSIS-DAP probes through the HID backend", async () => {
+        const { createProbeProfile } = require("../skills/_emberprobe/probe-profile");
+        const device = (services) => ({
+            id: "USB\\VID_C251&PID_F001\\LU_2022_8888",
+            family: "cmsis-dap",
+            serial: "LU_2022_8888",
+            descriptorSerial: "LU_2022_8888",
+            serialSource: "os-instance",
+            interfaces: services.map((service, index) => ({ instanceId: `i${index}`, service }))
+        });
+        const resolve = (services, events = []) =>
+            resolveProbeConnection(
+                {
+                    probe: "cmsis-dap.cfg",
+                    target: "stm32h7x.cfg",
+                    profile: createProbeProfile("cmsis-dap", events, "cmsis-dap.cfg")
+                },
+                { available: true, devices: [device(services)] }
+            );
+        const hid = resolve(["usbccgp", "HidUsb", "", "usbser"]);
+        assert.strictEqual(hid.adapterBackend, "hid");
+        assert.strictEqual(resolve(["usbccgp", "HidUsb", "WinUSB"]).adapterBackend, undefined);
+        assert.strictEqual(resolve(["usbccgp", "WinUSB"]).adapterBackend, undefined);
+        assert.strictEqual(resolve([]).adapterBackend, undefined, "a non-Windows inventory gives no hint");
+        assert.strictEqual(
+            resolve(["HidUsb"], [["cmsis-dap backend", "usb_bulk"]]).adapterBackend,
+            undefined,
+            "a backend chosen by the interface script is kept"
+        );
+        const launch = {
+            probePath: "/s/interface/cmsis-dap.cfg",
+            targetPath: "/s/target/stm32h7x.cfg",
+            scriptsRoot: "/s"
+        };
+        const args = buildOpenOcdConfigArgs(launch, "auto", hid);
+        assert.strictEqual(args[args.indexOf(launch.probePath) + 2], "cmsis-dap backend hid");
+        assert(!buildOpenOcdConfigArgs(launch, "auto", {}).includes("cmsis-dap backend hid"));
+    });
+
     console.log("Probe inventory, identity and preflight tests passed");
 }
 main().catch((error) => {

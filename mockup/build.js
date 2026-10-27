@@ -49,8 +49,7 @@ const combinedThemeCss =
 const SIDEBAR_STATE = {
     versionLabel: versionLabel(pkg.version, path.join(root, "..", "src")),
     elf: "EmberProbeDemo.elf",
-    debugger: "J-Link (SEGGER) · SWD",
-    showJlinkDriverChoice: false,
+    debugger: "jlink.cfg",
     mcu: "STM32F407ZGT6 · Cortex-M4",
     cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
     iocPath: "EmberProbeDemo.ioc",

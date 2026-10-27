@@ -9,6 +9,7 @@ const {
     flashSpeedKhz,
     isTentativeFlashPhase
 } = require("../skills/_emberprobe/openocd-flash");
+const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
 
 // 配置路径白名单校验：允许 geehy/apm32f4x.cfg 等 scripts 内安全相对路径。
 function isSafeCfg(name) {
@@ -234,11 +235,11 @@ function runOpenOcd(vscode, options, onProgress) {
             "gdb_port disabled",
             "-c",
             "telnet_port disabled",
-            "-c",
-            preserveWorkArea,
-            "-c",
-            programCmd
+            ...withTargetCheck([preserveWorkArea, programCmd], options.targetCheck, options.target).flatMap(
+                (command) => ["-c", command]
+            )
         ];
+        const targetCheck = targetCheckMonitor(options.targetCheck);
         // 终端不再镜像 OpenOCD 原始输出，只展示解析后的关键事件与最终结论
         const print = (text, color) => writeEmitter.fire((color || "") + text + "\x1b[0m\r\n");
         const printEvent = (event) => {
@@ -321,6 +322,7 @@ function runOpenOcd(vscode, options, onProgress) {
         // OpenOCD 默认把所有日志输出到 stderr，需逐行解析；未识别的行不展示，仅留作失败诊断
         const flushLine = (line) => {
             const text = line.replace(/\r/g, "");
+            targetCheck.line(text);
             if (text) {
                 phase = flashPhaseFromLine(text, phase);
                 rawTail.push(text);
@@ -413,6 +415,21 @@ function runOpenOcd(vscode, options, onProgress) {
             if (spawnFailed) return; // spawn 失败已由 error 事件处理
             if (terminalError) {
                 reject(terminalError);
+                return;
+            }
+            const mismatch = targetCheck.error();
+            if (mismatch) {
+                print("\r\n\x1b[1;31m✗ 目标芯片与自动模式记录的不同，未执行下载\x1b[0m");
+                print(`  记录 ${mismatch.i18nParams.expected}`);
+                print(`  当前 ${mismatch.i18nParams.actual}`, "\x1b[31m");
+                onProgress({
+                    stage: "error",
+                    level: "error",
+                    key: mismatch.i18nKey,
+                    params: mismatch.i18nParams,
+                    message: mismatch.message
+                });
+                reject(mismatch);
                 return;
             }
             if (code === 0) {

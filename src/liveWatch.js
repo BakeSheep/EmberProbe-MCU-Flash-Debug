@@ -20,6 +20,7 @@ const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
+const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
 
 const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
@@ -922,12 +923,16 @@ class ManagedOpenOcdSession {
             ...(this.mode === "debug"
                 ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
                 : []),
-            "-c",
-            "init", // 仅初始化，不 halt/不 reset，保持非侵入
+            // 仅初始化，不 halt/不 reset，保持非侵入；自动模式下随后校验目标芯片
+            ...withTargetCheck(["init"], this.options.targetCheck, this.options.target).flatMap((command) => [
+                "-c",
+                command
+            ]),
             ...(this.mode === "standalone" && this.options.backendKind === "tcp"
                 ? ["-c", "if {[llength [info commands poll_interval]]} { poll_interval 500 }"]
                 : [])
         ];
+        const targetCheck = targetCheckMonitor(this.options.targetCheck);
         this._status({ key: "lw.connecting" });
         try {
             this.child = spawn(launch.executable, args, { cwd: launch.cwd, windowsHide: true, shell: false });
@@ -958,6 +963,14 @@ class ManagedOpenOcdSession {
                 const clean = line.trim();
                 if (!clean) continue;
                 if (clean.startsWith("EP_OK:") || this._observeNoEchoLog(clean)) continue;
+                if (targetCheck.line(clean)) {
+                    // A Worker forwards the observation to the extension host, which records it after success.
+                    if (targetCheck.observed && !targetCheck.mismatched)
+                        this.handlers.onTargetIdentity?.(this.options.targetCheck.checkId, targetCheck.observed);
+                    continue;
+                }
+                // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
+                if (targetCheck.mismatched) continue;
                 this._openOcdRawTail = (this._openOcdRawTail + clean + "\n").slice(-2000);
                 if (!this._tclListening && readyPattern.test(this._openOcdRawTail)) this._tclListening = true;
                 this._openOcdLogTail.push(clean.slice(0, 500));
@@ -1024,10 +1037,12 @@ class ManagedOpenOcdSession {
                     exitCode: code,
                     port
                 });
-                const error = Object.assign(new Error(diagnostic.message), diagnostic, {
-                    i18nKey: "live.serviceExited",
-                    i18nParams: { code, port }
-                });
+                const error =
+                    targetCheck.error() ||
+                    Object.assign(new Error(diagnostic.message), diagnostic, {
+                        i18nKey: "live.serviceExited",
+                        i18nParams: { code, port }
+                    });
                 this.connectionFailed = true;
                 this.connectionError = error;
                 this._rejectQueue(error);

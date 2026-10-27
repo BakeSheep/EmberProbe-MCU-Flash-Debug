@@ -981,7 +981,89 @@
         return { tick: tick, scalarSamples: scalarSamples, compositeSample: compositeSample, write: write };
     }
 
+    /* ------------------------------------------------------------------ probes */
+
+    // Two J-Links (one still on the SEGGER USB driver) and a CMSIS-DAP without a USB serial.
+    var PROBES = [
+        {
+            id: "USB\\VID_1366&PID_0101\\000801012345",
+            family: "jlink",
+            name: "J-Link",
+            serial: "801012345",
+            defaultConfig: "jlink.cfg",
+            driver: "ready",
+            chip: "STM32F4x · Cortex-M4 · UID …53534C32"
+        },
+        {
+            id: "USB\\VID_1366&PID_0101\\000801067890",
+            family: "jlink",
+            name: "J-Link",
+            serial: "801067890",
+            defaultConfig: "jlink.cfg",
+            driver: "repair",
+            chip: "STM32H7x · Cortex-M7 · UID …32363235"
+        },
+        {
+            id: "USB\\VID_C251&PID_F001\\6&2A41C0F&0&2",
+            family: "cmsis-dap",
+            name: "CMSIS-DAP",
+            serial: "",
+            defaultConfig: "cmsis-dap.cfg",
+            driver: ""
+        }
+    ];
+
+    // The extension's connectedProbes message for the selected device and any driver switched in the mock.
+    // Automatic mode checks the chip it recorded and, among several J-Links, uses the one that chip is on.
+    function connectedProbes(selectedId, drivers, automatic) {
+        var selected =
+            PROBES.find(function (probe) {
+                return probe.id === selectedId;
+            }) || PROBES[0];
+        var sameFamily = PROBES.filter(function (probe) {
+            return probe.family === selected.family;
+        }).length;
+        return {
+            autoTarget: automatic ? selected.chip || "" : "",
+            targetMismatch: null,
+            type: "connectedProbes",
+            debugger: selected.defaultConfig,
+            override: false,
+            family: selected.family,
+            state: "selected",
+            source:
+                !automatic && selected.serial
+                    ? "remembered"
+                    : automatic && sameFamily > 1
+                      ? "target-chip"
+                      : "unique-device",
+            probeSerial: selected.serial,
+            deviceId: selected.id,
+            error: null,
+            devices: PROBES.map(function (probe) {
+                var kind = (drivers && drivers[probe.id]) || probe.driver;
+                return Object.assign(
+                    {
+                        id: probe.id,
+                        family: probe.family,
+                        name: probe.name,
+                        serial: probe.serial,
+                        trustedSerial: probe.serial,
+                        defaultConfig: probe.defaultConfig,
+                        matchesDebugger: probe.family === selected.family,
+                        selected: probe.id === selected.id,
+                        selectable: true
+                    },
+                    automatic && probe.chip ? { targetLabel: probe.chip } : {},
+                    kind ? { driver: { kind: kind, instanceId: probe.id } } : {}
+                );
+            })
+        };
+    }
+
     return {
+        PROBES: PROBES,
+        connectedProbes: connectedProbes,
         VERSION: VERSION,
         SVD_PATH: SVD_PATH,
         SYMBOLS: SYMBOLS,

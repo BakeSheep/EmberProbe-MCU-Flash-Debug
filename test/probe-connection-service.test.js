@@ -3,15 +3,14 @@ const assert = require("assert");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 const i18n = require("../src/i18n");
+const { reportTargetIdentity } = require("../src/chip/targetIdentity");
 
 async function main() {
     let config = { transport: "auto", probeSerial: "", adapterSpeedKhz: 0 };
     let devices = [{ family: "jlink", serial: "1234", id: "usb-1" }];
     let saved = null,
         writes = 0,
-        prompts = 0,
-        title = "",
-        selected = { value: "5678" };
+        reveals = 0;
     const service = new ProbeConnectionService({
         getConfig: () => config,
         getSuccessfulConnection: () => saved,
@@ -19,13 +18,7 @@ async function main() {
             writes++;
             saved = value;
         },
-        window: {
-            showQuickPick: async (choices, options) => {
-                prompts++;
-                title = options.title;
-                return selected;
-            }
-        },
+        onSelectionRequired: () => reveals++,
         prepareConnection: async (options) => ({
             ...resolveProbeConnection(options, { available: true, devices }),
             adapterFamily: "jlink"
@@ -33,7 +26,7 @@ async function main() {
     });
     const options = { probe: "jlink.cfg", target: "stm32f1x.cfg", executable: "openocd" };
     const result = await service.prepare(options, true);
-    assert.strictEqual(prompts, 0);
+    assert.strictEqual(reveals, 0);
     assert.strictEqual(result.probeSerial, "1234");
     assert.strictEqual(result.transport, "swd");
     assert.strictEqual(saved, null, "preflight must not record success");
@@ -49,44 +42,95 @@ async function main() {
     await service.prepare(options, launchOptions);
     service.prepareConnection = originalPrepare;
 
-    // recordSuccess only writes probe and probeSerial
+    // Automatic mode keeps no probe. An operation whose check read no target chip records nothing...
+    assert.strictEqual(result.targetCheck.expected, null);
+    assert.strictEqual(result.targetCheck.target, "stm32f1x.cfg");
     await service.recordSuccess(result);
-    await service.recordSuccess(result);
+    assert.strictEqual(writes, 0);
+    // ...and one that read it records the chip for its target configuration.
+    const chip = { cpuid: "412FC231", idcode: "20036410", uid: "0001020304050607080A0B0C" };
+    const verified = await service.prepare(options);
+    reportTargetIdentity(verified.targetCheck.checkId, chip);
+    await service.recordSuccess(verified);
+    await service.recordSuccess(verified);
     assert.strictEqual(writes, 1);
     assert.deepStrictEqual(saved, {
-        version: 2,
+        version: 3,
         probe: "jlink.cfg",
-        probeSerial: "1234"
-    });
-
-    // Test reading legacy record containing deviceId, target, transport, fingerprint
-    saved = {
-        version: 1,
-        probe: "jlink.cfg",
-        probeSerial: "1234",
-        deviceId: "usb-1",
+        probeSerial: "",
+        family: "jlink",
+        deviceId: "",
+        source: "auto",
         target: "stm32f1x.cfg",
-        transport: "jtag",
-        fingerprint: "legacy-v1"
-    };
+        chip
+    });
+    const checked = await service.prepare(options);
+    assert.deepStrictEqual(checked.targetCheck.expected, chip, "later operations check the recorded chip");
+    assert.strictEqual(checked.selection.probe, "unique-device", "the probe is still chosen automatically");
+    assert.strictEqual((await service.prepare({ ...options, target: "stm32f4x.cfg" })).targetCheck.expected, null);
+    // The recorded chip belongs to the target configuration, so a probe of another family still checks it.
+    assert.deepStrictEqual(service.expectedTarget("stm32f1x.cfg", { ...saved, probe: "cmsis-dap.cfg" }), chip);
+    reportTargetIdentity(checked.targetCheck.checkId, chip);
+    await service.recordSuccess(checked);
+    assert.strictEqual(writes, 1, "an unchanged chip is not written again");
+    writes = 0;
+
+    // A probe the user picked is used as named, without a target check.
+    const picked = (serial, deviceId) => ({
+        version: 3,
+        probe: "jlink.cfg",
+        probeSerial: serial,
+        family: "jlink",
+        deviceId,
+        source: "user"
+    });
+    saved = picked("1234", "usb-1");
     const remembered = await service.prepare(options);
     assert.strictEqual(remembered.selection.probe, "remembered");
     assert.strictEqual(remembered.probeSerial, "1234");
-    assert.strictEqual(remembered.transport, "swd", "known Cortex-M uses SWD; old recorded transport is not reused");
+    assert.strictEqual(remembered.targetCheck, undefined, "a picked probe is not checked");
+    assert.strictEqual(remembered.transport, "swd", "known Cortex-M uses SWD");
     assert.strictEqual(remembered.selection.transport, "cortex-m");
     assert.strictEqual((await service.prepare({ ...options, target: "other.cfg" })).transport, "auto");
 
-    // After connecting successfully with legacy record in workspace, recordSuccess migrates it
+    // A success on the picked probe keeps it the user's pick instead of turning it into a success record.
     writes = 0;
-    const freshResult = await service.prepare(options);
-    await service.recordSuccess(freshResult);
+    await service.recordSuccess(await service.prepare(options));
     assert.strictEqual(writes, 1);
+    assert.deepStrictEqual(saved, picked("1234", "usb-1"));
+    // A probeSerial setting naming another device of the same script leaves the pick for when it is cleared.
+    devices = [
+        { family: "jlink", serial: "1234", id: "usb-1" },
+        { family: "jlink", serial: "5678", id: "usb-2" }
+    ];
+    config = { ...config, probeSerial: "5678" };
+    await service.recordSuccess(await service.prepare(options));
+    assert.strictEqual(writes, 1, "a success through the setting does not replace the pick");
+    config = { ...config, probeSerial: "" };
+    // A pick made under another interface script is not used, so that script runs in automatic mode, and a
+    // success there remembers only the script.
+    assert.strictEqual(service.isAutomatic(options), false);
+    assert.strictEqual(service.isAutomatic({ probe: "cmsis-dap.cfg" }), true);
+    await service.recordSuccess({ probe: "cmsis-dap.cfg", probeSerial: "ABC", deviceId: "usb-9" });
     assert.deepStrictEqual(saved, {
-        version: 2,
-        probe: "jlink.cfg",
-        probeSerial: "1234"
+        version: 3,
+        probe: "cmsis-dap.cfg",
+        probeSerial: "",
+        family: "cmsis-dap",
+        deviceId: "",
+        source: "success"
     });
+    // A success outside automatic mode's checks keeps the chip it recorded for the same script.
+    const autoRecord = { ...saved, probe: "jlink.cfg", family: "jlink", source: "auto", target: "stm32f1x.cfg", chip };
+    saved = autoRecord;
+    writes = 0;
+    await service.recordSuccess({ probe: "jlink.cfg", probeSerial: "1234", deviceId: "usb-1" });
+    assert.strictEqual(writes, 0);
+    assert.strictEqual(saved, autoRecord);
 
+    // A picked probe that is missing is never replaced and nothing prompts; an interactive caller has the sidebar
+    // list revealed, which shows the probe as not connected.
+    saved = picked("1234", "usb-1");
     devices = [{ family: "jlink", serial: "5678", id: "usb-2" }];
     await assert.rejects(service.prepare(options), {
         code: "PROBE_SELECTED_NOT_FOUND",
@@ -94,47 +138,22 @@ async function main() {
         i18nKey: "probe.rememberedNotFound",
         i18nParams: { label: "J-Link", serial: "1234" }
     });
+    assert.strictEqual(reveals, 0, "Agent and background callers do not reveal the list");
+    await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTED_NOT_FOUND" });
+    assert.strictEqual(reveals, 1);
+    assert.deepStrictEqual(saved, picked("1234", "usb-1"), "the missing pick is kept");
     assert.strictEqual(
         i18n.t("zh", "probe.rememberedNotFound", { label: "J-Link", serial: "1234" }),
-        "上次使用的 J-Link（1234）未连接，不会自动改用其他设备"
+        "已选择的 J-Link（1234）未连接，不会自动改用其他设备。请重新连接它，或在“已连接调试器”中改选其他设备或点击“自动”"
     );
-    const localized = new ProbeConnectionService({
-        getConfig: () => config,
-        getSuccessfulConnection: () => saved,
-        window: {
-            showQuickPick: async (choices, pickOptions) => {
-                title = pickOptions.title;
-                return undefined;
-            }
-        },
-        t: (key, params) => i18n.t("zh", key, params),
-        prepareConnection: async (request) => ({
-            ...resolveProbeConnection(request, { available: true, devices }),
-            adapterFamily: "jlink"
-        })
-    });
-    await assert.rejects(localized.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
-    assert.strictEqual(title, "上次使用的探针 1234 未连接，请选择一个物理调试探针");
-    // A stale remembered probe is re-picked by the user, never replaced silently.
-    const repicked = await service.prepare(options, true);
-    assert.strictEqual(prompts, 1);
-    assert.strictEqual(title, "Previously used probe 1234 is not connected; select a physical debug probe");
-    assert.strictEqual(repicked.probeSerial, "5678");
-    assert.strictEqual(repicked.selection.probe, "explicit");
-    assert.strictEqual(config.probeSerial, "", "re-picking does not rewrite settings");
-    selected = undefined;
-    await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
-    selected = { value: "5678" };
-    // An explicitly configured serial stays strict even for interactive callers.
+    // An explicitly configured serial stays strict and is changed in settings, not in the list.
     config = { ...config, probeSerial: "9999" };
     await assert.rejects(service.prepare(options, true), {
         code: "PROBE_SELECTED_NOT_FOUND",
         details: { probeSerial: "9999", remembered: false, devices },
         i18nKey: "probe.selectedNotFound"
     });
-    assert.strictEqual(prompts, 2);
-    config = { ...config, probeSerial: "" };
-    prompts = 0;
+    assert.strictEqual(reveals, 1);
     config = { ...config, probeSerial: "5678", transport: "jtag" };
     const explicit = await service.prepare(options);
     assert.strictEqual(explicit.transport, "jtag");
@@ -142,31 +161,45 @@ async function main() {
     const session = { options: explicit };
     config = { ...config, transport: "swd" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
+    const writesBeforeStale = writes;
     await service.recordSuccess(explicit);
-    assert.strictEqual(writes, 1, "recordSuccess does not write if settings changed");
+    assert.strictEqual(writes, writesBeforeStale, "recordSuccess does not write if settings changed");
     config = { ...config, transport: "jtag" };
     assert.throws(() => service.assertCurrent(session), { code: "PROBE_SESSION_STALE" });
     const externalDap = {};
     service.markConfigurationChanged([externalDap]);
     assert.throws(() => service.assertCurrent(externalDap), { code: "PROBE_SESSION_STALE" });
+
+    // Several probes of one family that automatic mode cannot choose between are picked in the sidebar list.
     saved = null;
     config = { ...config, transport: "auto", probeSerial: "" };
     devices.push({ family: "jlink", serial: "1234", id: "usb-1" });
-    await assert.rejects(service.prepare(options), { code: "PROBE_SELECTION_REQUIRED" });
-    assert.strictEqual(prompts, 0);
-    const chosen = await service.prepare(options, true);
-    assert.strictEqual(prompts, 1);
-    assert.strictEqual(chosen.probeSerial, "5678");
+    await assert.rejects(service.prepare(options), {
+        code: "PROBE_SELECTION_REQUIRED",
+        i18nKey: "probe.chooseInSidebar"
+    });
+    assert.strictEqual(reveals, 1);
+    await assert.rejects(service.prepare(options, true), {
+        code: "PROBE_SELECTION_REQUIRED",
+        i18nKey: "probe.chooseInSidebar"
+    });
+    assert.strictEqual(reveals, 2);
+    assert.strictEqual(saved, null, "failing to choose remembers nothing");
     assert.strictEqual(config.probeSerial, "");
-    assert.strictEqual(saved, null);
-    selected = undefined;
-    await assert.rejects(service.prepare(options, true), { code: "PROBE_SELECTION_CANCELLED" });
+    // Probes the list cannot save by serial keep the guidance to disconnect or configure one.
+    devices = [
+        { family: "jlink", serial: "", id: "usb-a" },
+        { family: "jlink", serial: "", id: "usb-b" }
+    ];
+    await assert.rejects(service.prepare(options, true), {
+        code: "PROBE_SELECTION_REQUIRED",
+        i18nKey: "probe.selectionRequired"
+    });
+    assert.strictEqual(reveals, 2);
     devices = [];
     // An empty inventory keeps the interface default instead of prompting.
     assert.strictEqual((await service.prepare(options, true)).selection.probe, "script-default");
-    assert.strictEqual(prompts, 2);
-    await service.forgetSuccess();
-    assert.strictEqual(saved, undefined);
+    assert.strictEqual(reveals, 2);
     const automatic = new ProbeConnectionService({
         getConfig: () => ({ mcu: "stm32f4x.cfg" }),
         detectProbe: async () => ({ probe: "jlink.cfg", candidates: ["jlink.cfg"] }),

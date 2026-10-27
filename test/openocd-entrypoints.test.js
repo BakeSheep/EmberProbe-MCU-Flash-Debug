@@ -280,6 +280,69 @@ function load(file, overrides) {
         assert.strictEqual(coordinator.isActive("chipInfo"), false);
         coordinator.acquire("agentRead").release();
     }
+
+    // Automatic mode: every entrypoint checks the target chip right after init and stops on a different chip.
+    const checkedArgs = [];
+    const mismatchSpawn = (_executable, args) => {
+        checkedArgs.push(args);
+        const child = new EventEmitter();
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.kill = () => {};
+        process.nextTick(() => {
+            child.stderr.write("EP_TARGET_ID cpuid=411FC271 idcode=20036450 uid=0050002B3133510232363235\n");
+            child.stderr.write("EP_TARGET_MISMATCH uid\nError: shutdown error\n");
+            child.exitCode = 1;
+            child.emit("close", 1);
+        });
+        return child;
+    };
+    const checkedExec = load("src/services/openocdExec.js", {
+        child_process: { spawn: mismatchSpawn },
+        "../openocdScripts": scripts
+    });
+    const checkedChip = load("src/chipInfo.js", { "./services/openocdExec": checkedExec });
+    const checkedRunner = load("src/openocdRunner.js", {
+        child_process: { spawn: mismatchSpawn },
+        "./openocdScripts": scripts
+    });
+    const checkedLive = load("src/liveWatch.js", {
+        child_process: { spawn: mismatchSpawn },
+        "./openocdScripts": scripts
+    });
+    const targetCheck = {
+        checkId: "entrypoints",
+        target: "stm32f4x.cfg",
+        expected: { cpuid: "410FC241", idcode: "10076413", uid: "002900124131381253534C32" }
+    };
+    const mismatch = (error) => error.code === "PROBE_TARGET_MISMATCH" && error.details.field === "uid";
+    await assert.rejects(
+        checkedRunner.runOpenOcd(vscode, { ...options, targetCheck }, () => {}),
+        mismatch
+    );
+    await assert.rejects(checkedChip.readChipInfo(vscode, { ...options, targetCheck }), mismatch);
+    for (const mode of ["standalone", "debug"])
+        await assert.rejects(
+            new checkedLive.ManagedOpenOcdSession(null, { ...options, targetCheck, mode, gdbPort: 13337 }, {}).start(),
+            mismatch
+        );
+    const commandsOf = (args) => args.filter((_arg, index) => args[index - 1] === "-c");
+    for (const args of checkedArgs) {
+        const commands = commandsOf(args);
+        const init = commands.indexOf("init");
+        assert(init >= 0 && commands[init + 1].includes("EP_TARGET_ID"), "the check follows init");
+        assert(commands[init + 1].includes("{cpuid 410FC240 idcode 00000413 uid 002900124131381253534C32}"));
+    }
+    const flashCommands = commandsOf(checkedArgs[0]);
+    assert(
+        flashCommands.indexOf("init") < flashCommands.findIndex((command) => command.includes("_ep_flash_program")),
+        "the check runs before programming starts"
+    );
+    const debugCommands = commandsOf(checkedArgs[3]);
+    assert(
+        debugCommands.findIndex((command) => command.includes("-work-area-backup 1")) < debugCommands.indexOf("init"),
+        "a debug session's configuration stays before init"
+    );
     console.log("OpenOCD entrypoint transport and diagnostic tests passed");
 })().catch((error) => {
     console.error(error);

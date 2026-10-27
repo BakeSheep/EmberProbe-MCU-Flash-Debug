@@ -295,6 +295,11 @@ function parseWindowsInventory(text, family = "jlink", vidPid = []) {
             ? serialOrUnknown(serialId.split("\\").pop(), group.family)
             : "";
         if (serial) group.serial = serial;
+        // The exact iSerialNumber the native inventory read from the hub for an instance serial containing "_".
+        if (row.descriptorSerial && id.toUpperCase() === physicalId.toUpperCase()) {
+            const descriptorSerial = serialOrUnknown(row.descriptorSerial, "");
+            if (descriptorSerial) group.descriptorSerial = descriptorSerial;
+        }
         group.serialSource = "os-instance";
         if (id.toUpperCase() === physicalId.toUpperCase()) group.product = row.reportedName || row.name || "";
         if (row.attachmentId && id.toUpperCase() === physicalId.toUpperCase())

@@ -211,7 +211,7 @@
         "emberprobe.probeSerial": {
           "type": "string",
           "default": "",
-          "description": "探针 USB 序列号：适用于支持序列号选择的 J-Link、CMSIS-DAP、ST-Link、XDS110、Nu-Link、TI-ICDI、FTDI/FT232R 和 VSLLINK 后端。保留大小写、前导零及内部空格；J-Link 使用十进制整数。留空时按当前物理设备和成功记录选择；无可靠序列号仅允许唯一设备，Agent 写入每次确认。TCP 主机及端口在接口脚本中配置。"
+          "description": "探针 USB 序列号：适用于支持序列号选择的 J-Link、CMSIS-DAP、ST-Link、XDS110、Nu-Link、TI-ICDI、FTDI/FT232R 和 VSLLINK 后端。保留大小写、前导零及内部空格；J-Link 使用十进制整数。留空时使用侧栏“已连接调试器”中点选的设备，未点选时自动选择（同类型多台时按目标芯片区分）；无可靠序列号仅允许唯一设备，Agent 写入每次确认。TCP 主机及端口在接口脚本中配置。"
         },
         "emberprobe.adapterSpeedKhz": {
           "type": "integer",
@@ -237,7 +237,7 @@
             "hla_jtag"
           ],
           "default": "auto",
-          "description": "高级覆盖：OpenOCD 传输协议。J-Link auto 复用有效成功记录，已知 Cortex-M 默认 SWD，其他目标采用接口脚本默认协议；不自动切换重试。"
+          "description": "高级覆盖：OpenOCD 传输协议。J-Link 为 auto 时，已知 Cortex-M 目标使用 SWD，其他目标采用接口脚本默认协议；不自动切换重试。"
         },
         "emberprobe.rtos": {
           "type": "string",
