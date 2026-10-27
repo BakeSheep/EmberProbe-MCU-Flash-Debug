@@ -83,7 +83,7 @@ async function main({ scatter = false } = {}) {
         assert.ok(!stdout.includes(marker), "JIM_EXIT reply must not echo on stdout");
         assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42", "connection remains usable");
         session.noEchoResponses = true;
-        assert.strictEqual(await session._executeCheckedCommand("expr {6 * 7}"), "42");
+        assert.strictEqual(await session._sendCheckedCommand("expr {6 * 7}"), "42");
         if (scatter) {
             // Dummy JTAG only; creating an unexamined Cortex-M never opens a hardware probe.
             await session._sendCommand("jtag newtap ep cpu -irlen 4 -expected-id 0x4ba00477");
@@ -102,7 +102,7 @@ async function main({ scatter = false } = {}) {
             assert.ok(targetUnsupported.includes("EMBERPROBE_SCATTER_UNSUPPORTED"), targetUnsupported);
             assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42");
         }
-        await assert.rejects(session._executeCheckedCommand("error {expected Tcl rejection}"), {
+        await assert.rejects(session._sendCheckedCommand("error {expected Tcl rejection}"), {
             code: "OPENOCD_TCL_ERROR"
         });
         console.log(

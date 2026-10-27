@@ -31,7 +31,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 | [一、配置与连接](#一配置与连接) | 一键配置、Debug 构建预设、手动配置、J-Link 配置、ARM 工具链 |
 | [二、功能使用](#二功能使用) | 烧录、复位/不复位调试、芯片信息、实时读写、波形图、外设寄存器、RTOS 任务、内存占用 |
 | [三、高级功能](#三高级功能) | RTOS 栈使用配置、调用栈任务感知、launch.json、探针与采样设置、C++ 显示、Agent Skills |
-| [四、实验性功能](#四实验性功能) | 外部 GDB Server、不限速采样、CPU 负载估计、多核共享调试组 |
+| [四、实验性功能](#四实验性功能) | 外部 GDB Server、不限速采样、多核共享调试组 |
 | [常见问题](#常见问题) | 变量读不到、探针被占用、J-Link 打不开等 |
 
 ### 一、配置与连接
@@ -335,13 +335,7 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 仅独立采样生效，调试会话仍使用有限目标频率；实际速率取决于探针吞吐与宿主处理能力。高频会缩短可回看的内存历史，并加快磁盘归档消耗，见 [不限速采样](docs/UNLIMITED-SAMPLING.md)。
 
-#### 3. CPU 负载估计
-
-适用于 ELF 带内核调试信息的单核 FreeRTOS 工程，无需修改固件。在 **其他 → 实验性功能** 中开始采样，查看负载估计与覆盖率；覆盖率不足时不显示负载值。
-
-CPU 采样独占探针，与烧录、调试及变量采样互斥。支持范围与限制见 [CPU 负载估计](docs/CPU-LOAD-MONITORING.md)。
-
-#### 4. 多核共享调试组
+#### 3. 多核共享调试组
 
 双核芯片可在 `launch.json` 中通过 `serverGroup`、`numberOfProcessors`、`targetProcessor` 让多个调试会话共用一个 OpenOCD 与探针：先启动一个核，初始化成功后再 attach 其他核。配置示例见 [多核共享 OpenOCD](docs/SHARED-DEBUG-GROUPS.md)。
 
@@ -350,7 +344,7 @@ CPU 采样独占探针，与烧录、调试及变量采样互斥。支持范围�
 | 现象 | 处理 |
 | --- | --- |
 | 变量类型显示为推测、成员无法展开、`optimized out` | 使用 Debug 预设重新构建，确认选中的是 Debug 目录下的 ELF，然后点击 ELF 全部变量的 **↻** |
-| 提示探针被占用 / 无法同时进行 | 同一探针同一时刻只能被一个 OpenOCD 使用：先停止实时采样、CPU 采样或调试，或关闭 Ozone、CubeIDE 等其他占用探针的软件 |
+| 提示探针被占用 / 无法同时进行 | 同一探针同一时刻只能被一个 OpenOCD 使用：先停止实时采样或调试，或关闭 Ozone、CubeIDE 等其他占用探针的软件 |
 | J-Link `Failed to open device` | 按第一章第 4 节切换到 WinUSB 驱动，并确认没有其他软件占用 |
 | 读取芯片信息超时 / 目标电压异常 | 检查 SWD 接线、目标供电与 VTref；可在设置中降低 `emberprobe.adapterSpeedKhz` |
 | 外设寄存器无数值 | 需要配置 SVD，并在调试会话中暂停芯片 |
@@ -378,7 +372,6 @@ CPU 采样独占探针，与烧录、调试及变量采样互斥。支持范围�
 - [ELF 变量来源筛选](docs/VARIABLE-ORIGIN-FILTER.md)
 - [外部 GDB Server（实验性）](docs/EXTERNAL-GDB-SERVER.md)
 - [不限速采样（实验性）](docs/UNLIMITED-SAMPLING.md)
-- [CPU 负载估计（实验性）](docs/CPU-LOAD-MONITORING.md)
 - [多核共享调试组（实验性）](docs/SHARED-DEBUG-GROUPS.md)
 - [CubeMX 代码生成说明](docs/CUBEMX-GENERATION.md)
 - [Agent 信任边界](docs/AGENT-TRUST-BOUNDARIES.md)

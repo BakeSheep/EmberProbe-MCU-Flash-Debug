@@ -203,6 +203,13 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             validateDebugConfiguration({ request: "launch", symbolFiles: ["primary.elf"] }, folder).symbolFiles[0].file,
             primary
         );
+        assert(
+            !(
+                "__emberprobeStartupTrace" in
+                validateDebugConfiguration({ request: "launch", __emberprobeStartupTrace: { startedAt: 1 } }, folder)
+            ),
+            "launch.json cannot supply the extension's startup trace"
+        );
 
         for (const attach of [false, true]) {
             const { adapter, mi, events } = session({});
@@ -256,7 +263,12 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             };
             const { size, mtimeMs } = fs.statSync(primary);
             // Unchanged firmware: one reset, a CRC check, no transfer and no second reset.
-            const unchanged = await launch("unchanged");
+            const unchanged = await launch("unchanged", {
+                __emberprobeStartupTrace: {
+                    startedAt: Date.now() - 5000,
+                    phases: { tools: 1, openocd: 2, prepare: -1, preflight: 3.5, server: 4, extra: 9 }
+                }
+            });
             const check = unchanged.commands.indexOf(consoleCommand("compare-sections"));
             assert(check > unchanged.commands.indexOf(consoleCommand("monitor reset halt")));
             assert.strictEqual(unchanged.mi.commands[check].timeout, 60000);
@@ -272,6 +284,9 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             for (const phase of ["gdbStart", "gdbSetup", "symbols", "connect", "preHooks", "reset", "download"])
                 assert(Number.isInteger(trace.phases[phase]), phase);
             assert(!("postDownloadReset" in trace.phases));
+            // Extension-side phases arrive through the launch arguments; only known non-negative integers pass.
+            assert.deepStrictEqual(trace.startup, { tools: 1, openocd: 2, server: 4 });
+            assert.strictEqual(trace.startupMs, 7);
             assert(!unchanged.output.includes(primary), "the trace carries no paths");
             // The extension's firmware record follows the launch: a confirmed image carries the stamp of the
             // executable GDB read, so the record can tell it from a later rebuild.

@@ -545,16 +545,6 @@ class ElfService {
         }
     }
 
-    async cpuLoadPlan() {
-        const result = this.workerPath ? await this.ready() : this.read();
-        const generation = this.generation;
-        const layout = this.workerPath
-            ? await this.layout("pxCurrentTCB")
-            : { runtimeLayout: result.symbols.find((symbol) => symbol.name === "pxCurrentTCB")?.runtimeLayout };
-        if (generation !== this.generation) throw new Error("ELF changed during CPU metadata resolution");
-        return require("./cpuLoadModel").buildCpuLoadPlan(result, layout);
-    }
-
     read() {
         if (this.workerPath) {
             if (this.cache?.elf) {

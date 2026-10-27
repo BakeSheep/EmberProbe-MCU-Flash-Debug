@@ -508,6 +508,8 @@ var watch = [],
     rawMembers = Object.create(null),
     compCells = Object.create(null),
     dispSpec = Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    arrayShown = Object.create(null),
     running = false,
     starting = false,
     frozen = false,
@@ -566,6 +568,7 @@ if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterB
 if (saved && saved.expanded) expanded = saved.expanded;
 if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
 if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
+if (saved && saved.arrayShown) arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
 var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
 if (saved && saved.lastPointers && saved.lastPointersVersion) {
@@ -719,7 +722,40 @@ function post(m) {
     }
 }
 function saveWatch() {
+    syncRuntimeExpansions();
     post({ type: "saveWatch", items: watch });
+}
+// Opened paths of each runtime object (pointer target, STL container), relative to its watch
+// name. While "sample expanded pointer parts only" is on, the host reads just these parts.
+// Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
+var runtimeExpansionsLoaded = false,
+    sentRuntimeExpansions = null;
+function runtimeExpansions() {
+    var result = Object.create(null),
+        count = 0;
+    var open = Object.keys(expanded).filter(function (key) {
+        return expanded[key];
+    });
+    watch.forEach(function (item) {
+        if (!item.runtimeLayout || !isCompositeItem(item) || ++count > 256) return;
+        var paths = [];
+        if (expanded[item.name] || EmberProbeRuntime.isPointeeEntry(item) || placedPointees.has(item.name))
+            paths.push("");
+        open.forEach(function (key) {
+            if (key.length > item.name.length && key.startsWith(item.name) && /^[.[]/.test(key[item.name.length]))
+                paths.push(key.slice(item.name.length));
+        });
+        result[item.name] = paths.slice(0, 512);
+    });
+    return result;
+}
+function syncRuntimeExpansions() {
+    if (!runtimeExpansionsLoaded) return;
+    var value = runtimeExpansions(),
+        key = JSON.stringify(value);
+    if (key === sentRuntimeExpansions) return;
+    sentRuntimeExpansions = key;
+    post({ type: "saveRuntimeExpansions", expansions: value });
 }
 // The host keeps each chart's curve visibility so a panel reopened after a restart restores it.
 // Nothing is sent before the host's copy arrives, so a fresh view cannot overwrite it.
@@ -741,6 +777,7 @@ function saveUi() {
             expanded: expanded,
             rawMembers: rawMembers,
             dispSpec: dispSpec,
+            arrayShown: arrayShown,
             lastPointers: lastPointers,
             lastPointersVersion: lastPointersVersion,
             pointerCurveDefaults: true,
@@ -755,6 +792,7 @@ function saveUi() {
             norm: norm,
             jitterBands: jitterBands
         });
+    syncRuntimeExpansions();
 }
 var pointerSaveTimer = null;
 // Snapshots sampled from another ELF never name targets in the loaded one.
@@ -982,8 +1020,10 @@ function removeVar(name) {
         delete latestPointer[w.name];
         delete hidden[w.name];
     });
-    Object.keys(expanded).forEach(function (path) {
-        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete expanded[path];
+    [expanded, arrayShown].forEach(function (state) {
+        Object.keys(state).forEach(function (path) {
+            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete state[path];
+        });
     });
     delete dispSpec[name];
     delete rawMembers[name];
@@ -1078,6 +1118,7 @@ function renderVars() {
     variableCards = Array.from(box.children);
     arrangeVariableCards(true);
     if (varReorder) varReorder.refresh();
+    syncRuntimeExpansions();
 }
 var variableCards = [];
 function inColumns() {
@@ -1578,7 +1619,7 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
             total = Number(layout.totalElements) || 0,
             es = Number(et.byteSize) || 0;
         var start = 0,
-            end = Math.min(total, MAX_ARR_SHOWN);
+            end = EmberProbeRuntime.arrayShownCount(total, arrayShown[path]);
         if (disp) {
             start = Math.max(0, Number(disp.start) || 0);
             end = Math.min(total, isNaN(Number(disp.end)) ? total : Number(disp.end));
@@ -1620,7 +1661,14 @@ function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displ
                     { ...element, ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {}) }
                 );
         }
-        if (total > end) appendNote(container, t("lw.arrayMore", { n: total - end }));
+        // A chosen range stays as chosen; the default first page can grow.
+        if (total > end && disp) appendNote(container, t("lw.arrayMore", { n: total - end }));
+        else if (total > end)
+            EmberProbeRuntime.renderArrayMore(container, total - end, t, function (page) {
+                arrayShown[path] = end + page;
+                saveUi();
+                renderVars();
+            });
     }
 }
 function renderSummaryInto(container, summary, baseAddr, label, typeName) {
@@ -1683,7 +1731,7 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
         return;
     }
     const renderMembers = function (target) {
-        tree.members.forEach(function (member) {
+        (tree.members || []).forEach(function (member) {
             if (!EmberProbeRuntime.memberVisible(member, showRawFor(path))) return;
             var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
             if (member.unobservable)
@@ -1709,8 +1757,10 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
                         !(pointer && member.name === "value")
                 );
         });
+        if (tree.collapsed) appendNote(target, t("lw.runtimeCollapsed"));
     };
-    const inline = pointer && tree.members?.length ? renderMembers : null;
+    // A closed pointer keeps its disclosure: opening it asks the host to read the target.
+    const inline = pointer && (tree.members?.length || tree.collapsed) ? renderMembers : null;
     if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
         renderLeafInto(
             container,
@@ -1737,6 +1787,7 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
                 true
             );
         });
+    if (tree.elements && tree.collapsed) appendNote(container, t("lw.runtimeCollapsed"));
     if (tree.unobservable) appendNote(container, EmberProbeRuntime.unobservableReason(tree.unobservable, t));
     else if (tree.unavailable)
         appendNote(container, tree.unavailableCode === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : tree.unavailable);
@@ -3685,6 +3736,7 @@ window.EmberProbeMessages.connect(window, {
         watch.forEach(function (w) {
             ensureBuf(w.name);
         });
+        runtimeExpansionsLoaded = true;
         renderVars();
         dirty = true;
     },
@@ -4080,6 +4132,10 @@ $("jitterBands").onchange = function () {
     chartState.fastDirty = true;
     dirty = true;
 };
+// Workspace setting kept by the host; the switch follows the host's reply.
+$("pointerExpandedOnly").onchange = function () {
+    post({ type: "setPointerExpandedOnly", enabled: this.checked });
+};
 $("timeWindow").value = windowPreset;
 $("export").onclick = showExport;
 $("exportCancel").onclick = hideExport;
@@ -4240,6 +4296,9 @@ window.EmberProbeMessages.connect(window, {
             setStatusKey("lw.exportSuccess", { series: m.seriesCount, rows: m.rowCount });
         } else if (m.aborted) setStatusKey("lw.exportCancelled");
         else if (!m.cancelled && m.message) setStatusKey("lw.exportFailed", { msg: m.message }, "error");
+    },
+    pointerSampling: function (m) {
+        $("pointerExpandedOnly").checked = m.expandedOnly === true;
     },
     liveUnlimited: function (m) {
         if (unlimitedState.enabled !== (m.enabled === true)) sampleTimes = [];

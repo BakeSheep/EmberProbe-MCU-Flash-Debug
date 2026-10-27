@@ -30,7 +30,6 @@ function shutdownFixture() {
         _debugBridge: { activeSession: null },
         _elfService: { invalidate() {} },
         _cubemxService: { cancel() {} },
-        _cpuLoadService: { stop: async () => order.push("cpu-stopped") },
         _samplingArchive: { dispose: async () => {} },
         _chartHistory: null,
         finishForeignDebug() {},
@@ -57,10 +56,10 @@ function shutdownFixture() {
         await agentService.start();
         await p.shutdown();
         assert.ok(bridgeStopped());
-        assert.deepStrictEqual(order.slice(0, 3), ["bridge-stopped", "agent-read-stopped", "cpu-stopped"]);
+        assert.deepStrictEqual(order.slice(0, 2), ["bridge-stopped", "agent-read-stopped"]);
         assert.ok(order.indexOf("bridge-stopped") < order.indexOf("debug-server-stopped"));
         assert.ok(order.indexOf("bridge-stopped") < order.indexOf("live-stopped"));
-        assert.ok(!order.slice(3).includes("agent-read-stopped"), "the read is cancelled once, before cleanup");
+        assert.ok(!order.slice(2).includes("agent-read-stopped"), "the read is cancelled once, before cleanup");
         // An Agent call accepted just before shutdown cannot run, start the Bridge again or take a probe lease.
         await assert.rejects(agentService.call("variables.read"), { code: "EXTENSION_SHUTTING_DOWN" });
         await assert.rejects(agentService.start(), { code: "EXTENSION_SHUTTING_DOWN" });

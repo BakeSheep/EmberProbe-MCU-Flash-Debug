@@ -19,6 +19,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Windows/Linux x64 默认使用内置 scatter 补丁版 OpenOCD，合并固定地址采样读取以减少 DAP flush；保留外部 OpenOCD 路径与不支持 scatter 时的普通读取回退。双平台资源、补丁、依赖和对应源码统一校验，完整源码作为 Release 附件提供。
 - Windows/Linux x64 now default to bundled OpenOCD with the scatter patch, combining fixed-address sampling reads to reduce DAP flushes. Explicit external paths and ordinary-read fallback remain available. Both runtimes, patches, dependencies and corresponding sources are verified together; complete sources accompany the VSIX as a Release asset.
 
+- 内置 OpenOCD 的校验结果在可执行文件大小与修改时间不变时复用，烧录、调试与实时查看启动不再每次额外运行 `openocd --version` 并重新计算压缩包 SHA-256。launch 配置的 `performanceTrace` 新增适配器启动前的扩展侧耗时（`startup`：工具链、OpenOCD 解析、停止采样、探针预检、OpenOCD 启动）以及从调试命令开始到入口断点的 `entryStop.sinceStartMs`。见 `docs/FLASH-PERFORMANCE.md`。
+- The bundled OpenOCD verification is reused while the executable keeps its size and modification time, so flash, debug and live starts no longer run an extra `openocd --version` and rehash the archive each time. The launch configuration's `performanceTrace` now also reports the extension's phases before the adapter starts (`startup`: toolchain, OpenOCD resolution, sampling stop, probe preflight, OpenOCD start-up) and `entryStop.sinceStartMs` from the debug command to the entry breakpoint. See `docs/FLASH-PERFORMANCE.md`.
+
 - 采样时间改为每轮读取的中点，精确到亚毫秒（原为读取前的整毫秒），同一轮变量共享同一时间；历史、二进制归档、CSV 与图表保留亚毫秒信息。固定 RAM 读取可在同一可写 ELF 节内扩至对齐 32 位字并再次合并，保持变量字节与调试预算。
 - Each sampling cycle is stamped at the midpoint of its reads with sub-millisecond precision (previously whole milliseconds before reading); all variables of a cycle share that time, and history, binary archives, CSV and charts keep the sub-ms part. Fixed RAM reads can widen to aligned 32-bit words within one writable ELF section and merge again, preserving variable bytes and debug budgets.
 - 新增独立采样链路时钟 `samplingAdapterSpeedKhz`（0 沿用通用时钟），修改后重连且写入授权绑定实际时钟；调试及烧录仍用通用设置。TCP 采样 RPC 超时延长至 5000 ms，仅独立 TCP 采样在 OpenOCD 支持 `poll_interval` 时把目标轮询调为 500 ms（随包版本尚不支持，保持默认）。
@@ -26,11 +29,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 采样 Tcl 连接先自测无回显响应，通过后独立与托管调试均省去逐字符回显，调试模式同时省去响应临时文件；不兼容或日志验证不足时安全回退。固定地址读取合并同一可写 ELF 节内不超过 32 字节的间隙，保持变量内容与调试预算不变。
 - Sampling Tcl connections self-test no-echo replies before acquisition; compatible standalone and managed debug sessions avoid per-character echo, and debug sessions also avoid response files, with legacy fallback when compatibility or log verification is insufficient. Fixed reads merge gaps up to 32 bytes within one writable allocated ELF section while preserving variable data and debug budgets.
-- 独立采样自适应调度改用平均周期耗时 / 85% 占用率（配置 CPU 负载采样时仍为 70%），调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
-- Standalone adaptive scheduling uses mean cycle duration at 85% duty (70% with CPU-load sampling configured); debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
+- 独立采样自适应调度改用平均周期耗时 / 85% 占用率，调试模式保持 P95 / 40%；波形与侧栏截止时间保持相位，侧栏可提前搭乘波形读取，减少抖动链路降速与额外读取。见 `docs/UNLIMITED-SAMPLING.md`、`docs/LAYERED-SAMPLING.md`。
+- Standalone adaptive scheduling uses mean cycle duration at 85% duty; debug keeps P95 at 40%. Phase-locked graph/sidebar deadlines and early sidebar piggy-back reduce slowdown on jittery links and unnecessary read cycles. See `docs/UNLIMITED-SAMPLING.md` and `docs/LAYERED-SAMPLING.md`.
 
 - 波形图新增“高频绘图优化”（默认开启，可在 EN 按钮左侧的齿轮下拉中关闭）：变量高频抖动时，连续折返的像素列画成半透明 min/max 包络带，曲线改沿平滑走势绘制，实线、虚线、点线都不再被锯齿切碎；孤立尖峰、单调陡沿与平稳段仍按原包络精确绘制。
 - Waveform charts add "High-frequency rendering" (on by default, toggled from the gear menu left of the EN button): runs of rapidly reversing pixel columns become a translucent min/max band and the curve follows a smoothed trend, so solid, dashed and dotted lines no longer shatter on jitter. Isolated spikes, monotonic steep edges and calm sections keep the exact envelope.
+
+- 命令“复制 MCP 配置”改为“安装 MCP 服务器到客户端”：Claude Code / Codex 在显示命令并确认后调用各自的 `mcp add` CLI，Cursor 打开安装链接，其他客户端仍复制配置；找不到 CLI 或执行失败时把命令复制到剪贴板。EmberProbe 运行在 Cursor 中且已启用 Agent 访问时，通过 Cursor 扩展 API 自动注册 MCP 服务器。外部配置改用编辑器自带运行时的绝对路径（Windows 为 Electron 可执行文件，macOS/Linux 为包装脚本），不再要求 PATH 中有 Node.js；同时修正设置了工具集时 Claude Code 命令把服务器名当成环境变量的问题。见 `docs/MCP.md`。
+- The "Copy MCP Configuration" command becomes "Install MCP Server into Client": Claude Code and Codex run their own `mcp add` CLI after the command is shown and confirmed, Cursor opens its install link, and other clients still copy the configuration; when the CLI is missing or fails, the command is copied to the clipboard. When EmberProbe runs in Cursor with Agent access enabled, the MCP server is registered automatically through Cursor's extension API. External configurations now use absolute paths to the editor's bundled runtime (the Electron executable on Windows, a wrapper script on macOS/Linux), so Node.js on PATH is no longer required; the Claude Code command no longer treats the server name as an environment variable when toolsets are set. See `docs/MCP.md`.
 
 ### 修复 / Fixed
 
@@ -62,6 +68,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - Fix child folders whose names start with `..` (such as `..build`) being treated as outside the workspace by path checks, including Bridge discovery, Agent breakpoints, variable CSV output, OpenOCD config scripts and ELF target detection.
 - 移除没有调用方的 `writeOnce` 未校验写入路径；运行时写入统一经过带读回校验的 `writeAndVerify`。
 - Remove the unused, unverified `writeOnce` write path; all runtime writes go through `writeAndVerify`, which reads back to verify.
+
+### 移除 / Removed
+
+- 移除实验性 CPU 负载估计（烧录调试卡片“其他”中的 CPU 负载行）：主机采样估算的结果不够准确，且采样期间独占探针，与烧录、调试和变量采样互斥。内存占用显示不受影响；独立采样的自适应调度统一按平均周期耗时 / 85% 占用率。
+- Remove the experimental CPU load estimate (the CPU load row under Other in the flash/debug card): its host-sampled estimate was not accurate enough, and it held the probe exclusively, blocking flashing, debugging and variable sampling while it ran. Memory usage is unaffected; standalone adaptive sampling now always uses mean cycle duration at 85% duty.
 
 ## [0.8.9-beta.1] - 2026-10-22
 

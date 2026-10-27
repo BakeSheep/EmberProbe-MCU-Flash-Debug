@@ -92,6 +92,21 @@ const {
         assert.ok(progress.some((event) => event.key === "oc.preparing"));
         assert.ok(progress.some((event) => event.key === "oc.extracting"));
 
+        // A verified runtime is reused by its size and mtime without starting it again; a stamp change re-verifies.
+        const executable = fs.readFileSync(bundled.path);
+        const stampAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 60000);
+        fs.utimesSync(bundled.path, stampAt, stampAt);
+        assert.ok((await probeDefaultOpenOcd("openocd", mockContext)).found, "a new stamp is verified by running it");
+        fs.writeFileSync(bundled.path, Buffer.alloc(executable.length));
+        fs.utimesSync(bundled.path, stampAt, stampAt);
+        const cached = await probeDefaultOpenOcd("openocd", mockContext);
+        assert.ok(cached.found && cached.compatible, "an unchanged stamp must not start the executable");
+        assert.strictEqual(cached.path, bundled.path);
+        fs.utimesSync(bundled.path, stampAt, new Date(stampAt.getTime() + 1000));
+        assert.strictEqual((await probeDefaultOpenOcd("openocd", mockContext)).found, false);
+        fs.writeFileSync(bundled.path, executable);
+        assert.ok((await probeDefaultOpenOcd("openocd", mockContext)).found);
+
         // A damaged cached runtime must fail without falling back to the affected system build.
         fs.unlinkSync(bundled.path);
         const damaged = await probeDefaultOpenOcd("openocd", mockContext);

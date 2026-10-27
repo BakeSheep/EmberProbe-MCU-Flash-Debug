@@ -36,9 +36,6 @@ const TEST_GROUPS = Object.freeze({
         "cpp-pretty-printing.test.js",
         "cpp-stl-display.test.js",
         "cpp-symbol-identity.test.js",
-        "cpu-load-metadata.test.js",
-        "cpu-load-model.test.js",
-        "cpu-load-sampler.test.js",
         "cubemx-candidate.test.js",
         "cubemx-ioc-size-guard.test.js",
         "cubemx-workspace-isolation.test.js",
@@ -132,9 +129,6 @@ const TEST_GROUPS = Object.freeze({
         "write-connection.test.js"
     ]),
     integration: Object.freeze([
-        "cpu-load-integration.test.js",
-        "cpu-load-safety.test.js",
-        "cpu-load-view.test.js",
         "adaptive-sampling.test.js",
         "agent-debug-inspection.test.js",
         "agent-diagnostics.test.js",
@@ -238,6 +232,7 @@ const TEST_GROUPS = Object.freeze({
         "webview.test.js",
         "write-stepping.test.js",
         "pointer-deref.test.js",
+        "pointer-expansion-sampling.test.js",
         "pointer-display.test.js",
         "pointer-targets.test.js",
         "write-list-view.test.js",

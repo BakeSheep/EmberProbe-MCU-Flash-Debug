@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { performance } = require("perf_hooks");
 const { normalizeRtos, normalizeTargetSelection } = require("../../skills/_emberprobe/openocd-launch");
 const { resolvePrettyPrinting } = require("./prettyPrinting");
 const { normalizeDebugImages } = require("./debugImages");
@@ -56,6 +57,36 @@ function normalizeDebugServerOptions(config = {}, internal = false) {
     };
 }
 
+// Managed launch phases the extension completes before the adapter starts GDB, in order.
+const STARTUP_PHASES = ["tools", "openocd", "prepare", "preflight", "server"];
+
+// Durations only, like the adapter's launch trace: no paths or probe identities reach the Debug Console.
+function startupTrace(now = () => performance.now(), clock = Date.now) {
+    const startedAt = clock();
+    const phases = {};
+    let mark = now();
+    return {
+        phase: (name) => {
+            const at = now();
+            phases[name] = Math.round(at - mark);
+            mark = at;
+        },
+        finish: () => ({ startedAt, phases: { ...phases } })
+    };
+}
+
+// The adapter receives the trace through its launch arguments, so only known phases and integers pass.
+function normalizeStartupTrace(value) {
+    if (!value || typeof value !== "object" || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0)
+        return null;
+    const phases = {};
+    for (const name of STARTUP_PHASES) {
+        const duration = value.phases?.[name];
+        if (Number.isSafeInteger(duration) && duration >= 0) phases[name] = duration;
+    }
+    return { startedAt: value.startedAt, phases };
+}
+
 function validateDebugConfiguration(config, folder) {
     if (!folder) throw new Error("Open a workspace folder before debugging");
     if (!["launch", "attach"].includes(config.request)) throw new Error("Use launch or attach for EmberProbe");
@@ -93,7 +124,16 @@ function validateDebugConfiguration(config, folder) {
         throw new Error("sourceFileMap must map source prefixes to local paths");
     if (result.servertype !== "external") delete result.gdbTarget;
     delete result.__emberprobeManagedToken;
+    delete result.__emberprobeStartupTrace;
     return result;
 }
 
-module.exports = { isSupportedDebugSession, validateDebugConfiguration, resolveRtos, normalizeDebugServerOptions };
+module.exports = {
+    isSupportedDebugSession,
+    validateDebugConfiguration,
+    resolveRtos,
+    normalizeDebugServerOptions,
+    startupTrace,
+    normalizeStartupTrace,
+    STARTUP_PHASES
+};

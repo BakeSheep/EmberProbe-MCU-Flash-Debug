@@ -253,7 +253,6 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         _chartHistory: { request: async () => ({}) },
         _invalidateConsumerTypes() {},
         _renderWebview() {},
-        _assertCpuIdle() {},
         _postProbeOperationStatus() {},
         _startLiveWatch: async () => {},
         _t: (key) => t("en", key)

@@ -46,13 +46,9 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         waiting = false,
         queued = [],
         queuedBytes = 0;
-    let cpuWaiting = false,
-        cpuLatest = null,
-        cpuSentAt = 0;
     const state = () => ({
         generation,
         samplingEnabled: session.samplingEnabled,
-        cpuLoadEnabled: !!session.cpuLoad?.plan,
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
         childPid: session.child?.pid,
@@ -94,11 +90,6 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                 flush();
             },
             onStatus: (...args) => event("onStatus", args),
-            onCpuLoad: (result) => {
-                cpuLatest = result;
-                session.cpuDeliveryBlocked = cpuWaiting && Date.now() - cpuSentAt > 2000;
-                flushCpu();
-            },
             onConnectionConfirmed: () => event("onConnectionConfirmed", []),
             onTargetIdentity: (...args) => event("onTargetIdentity", args),
             onError: (...args) => event("onError", args),
@@ -119,20 +110,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
         queuedBytes = 0;
         updateHostHold();
     }
-    function flushCpu() {
-        if (cpuWaiting || !cpuLatest) return;
-        cpuWaiting = true;
-        cpuSentAt = Date.now();
-        event("onCpuLoad", [cpuLatest]);
-        cpuLatest = null;
-    }
     port.on("message", async (message) => {
-        if (message.cpuAck) {
-            cpuWaiting = false;
-            session.cpuDeliveryBlocked = false;
-            flushCpu();
-            return;
-        }
         if (message.ack) {
             waiting = false;
             flush();
@@ -154,10 +132,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                     "writeAndVerify",
                     "waitForIdle",
                     "waitForExit",
-                    "stats",
-                    "setCpuLoadPlan",
-                    "setCpuLoadPaused",
-                    "selectCpuIdleTask"
+                    "stats"
                 ].includes(method)
             )
                 throw new Error("Unknown sampling operation");
