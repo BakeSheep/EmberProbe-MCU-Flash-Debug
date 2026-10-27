@@ -258,20 +258,24 @@ function cursorApi() {
             const launcher = await registration.writeLauncher();
             const wrapper = registration.wrapperPath();
             assert.strictEqual(fs.readFileSync(wrapper, "utf8"), wrapperSource(process.execPath, launcher));
-            if (process.platform === "win32") return;
-            assert.ok(fs.statSync(wrapper).mode & 0o100, "wrapper is executable");
             const fake = path.join(base, "it's server.js");
             fs.writeFileSync(
                 fake,
-                "exports.main = async () => { process.stdout.write(process.env.ELECTRON_RUN_AS_NODE); };"
+                "exports.main = async () => { process.stdout.write(String(process.env.ELECTRON_RUN_AS_NODE)); };"
             );
+            const launch = path.join(base, "launch.js");
+            fs.writeFileSync(launch, launcherSource(fake));
+            const env = { ...process.env };
+            delete env.ELECTRON_RUN_AS_NODE;
+            assert.strictEqual(execFileSync(process.execPath, [launch], { encoding: "utf8", env }), "undefined");
+            if (process.platform === "win32") return;
+            assert.ok(fs.statSync(wrapper).mode & 0o100, "wrapper is executable");
             const script = path.join(base, "wrapper-check");
-            fs.writeFileSync(script, wrapperSource(process.execPath, path.join(base, "launch.js")), { mode: 0o755 });
-            fs.writeFileSync(path.join(base, "launch.js"), launcherSource(fake));
-            assert.strictEqual(execFileSync(script, { encoding: "utf8" }), "1");
+            fs.writeFileSync(script, wrapperSource(process.execPath, launch), { mode: 0o755 });
+            assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "1");
             // 运行时已不存在时回退到 PATH 中的 node
-            fs.writeFileSync(script, wrapperSource(path.join(base, "gone"), path.join(base, "launch.js")));
-            const env = { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH}` };
+            fs.writeFileSync(script, wrapperSource(path.join(base, "gone"), launch));
+            env.PATH = `${path.dirname(process.execPath)}:${process.env.PATH}`;
             assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "undefined");
         });
 
