@@ -760,16 +760,27 @@ module.exports = Object.freeze({
     "agent.disable": "Disable",
     "agent.legacyGlobal": "Legacy global EmberProbe skills found (version {version}); they are no longer maintained",
     "agent.cleanup": "Clean up",
-    "mcp.pickClient": "Choose the MCP client to configure",
-    "mcp.client.claude": "Claude Code (claude mcp add command)",
-    "mcp.client.codex": "Codex (config.toml)",
-    "mcp.client.json": "Cursor and other clients (mcpServers JSON)",
+    "mcp.pickClient": "Choose the client to install the EmberProbe MCP server into",
+    "mcp.client.claude": "Claude Code",
+    "mcp.client.codex": "Codex",
+    "mcp.client.cursor": "Cursor",
+    "mcp.client.json": "Other clients",
+    "mcp.method.cli": "Run {command} (user configuration)",
+    "mcp.method.cliMissing": "{command} not found on PATH; the install command will be copied",
+    "mcp.method.cursor": "Open the Cursor install link",
+    "mcp.method.json": "Copy mcpServers JSON to the clipboard",
+    "mcp.install": "Install",
+    "mcp.installConfirm":
+        "Run the following command to add the EmberProbe MCP server to the {client} user configuration?",
+    "mcp.installed": "EmberProbe MCP server added to {client}; reload MCP servers in the client to use it",
+    "mcp.installFailed":
+        "Installing into {client} failed: {error}. The install command was copied to the clipboard; run it in a terminal",
+    "mcp.cliMissing":
+        "{command} was not found on PATH. The install command was copied to the clipboard; run it in a terminal where {client} is installed",
+    "mcp.cursorOpened": "Cursor install link opened; confirm the installation in Cursor",
+    "mcp.cursorLinkCopied": "Could not open the Cursor install link; the link was copied to the clipboard",
     "mcp.configCopied":
-        "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client. The extension does not edit client configuration files",
-    "mcp.nodeMissing":
-        "Configuration copied, but Node.js was not found on PATH; external clients need Node.js {minimum} or newer to start the EmberProbe MCP server",
-    "mcp.nodeTooOld":
-        "Configuration copied, but Node.js {version} on PATH is too old; external clients need Node.js {minimum} or newer",
+        "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client's MCP configuration",
     "agent.cleanupConfirm":
         "Remove the EmberProbe skills from ~/.agents/skills? Only entries listed in the EmberProbe manifest are deleted.",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",

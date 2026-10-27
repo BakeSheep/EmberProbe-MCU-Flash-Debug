@@ -50,7 +50,7 @@
     "onCommand:mcu-vscode.openLiveWatch",
     "onWebviewPanel:emberprobe.liveWatch",
     "onCommand:mcu-vscode.manageAgentSkills",
-    "onCommand:mcu-vscode.copyMcpConfig",
+    "onCommand:mcu-vscode.installMcpServer",
     "onCommand:mcu-vscode.enableAgentAccess",
     "onCommand:mcu-vscode.disableAgentAccess",
     "onCommand:mcu-vscode.downloadOfficialSvd",
@@ -110,8 +110,8 @@
         "title": "EmberProbe: 管理 Agent Skills"
       },
       {
-        "command": "mcu-vscode.copyMcpConfig",
-        "title": "EmberProbe: 复制 MCP 配置"
+        "command": "mcu-vscode.installMcpServer",
+        "title": "EmberProbe: 安装 MCP 服务器到客户端"
       },
       {
         "command": "mcu-vscode.enableAgentAccess",

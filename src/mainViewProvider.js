@@ -532,6 +532,8 @@ class MainViewProvider {
             context,
             t: (key, params) => this._t(key, params),
             isAvailable: () => this._mcpAvailable(),
+            isEnabled: () =>
+                this._mcpAvailable() && this._agentAccessDecision(this._skillStatusService.lastStatus).enabled,
             instanceId: () => this._agentService.instanceId(),
             toolsets: () => this._mcpToolsets(),
             onResolve: () => this._requestMcpBridge(),
@@ -664,7 +666,7 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.enableAgentAccess"] = async () => this.setAgentAccess("enabled");
         this.commandHandlers["mcu-vscode.disableAgentAccess"] = async () => this.setAgentAccess("disabled");
         this.commandHandlers["mcu-vscode.cleanupGlobalSkills"] = async () => this.cleanupGlobalSkills();
-        this.commandHandlers["mcu-vscode.copyMcpConfig"] = async () => this._mcpRegistration.copyConfig();
+        this.commandHandlers["mcu-vscode.installMcpServer"] = async () => this._mcpRegistration.installClient();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
         // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
@@ -3066,6 +3068,7 @@ class MainViewProvider {
             return await this._agentService.start({ legacyPointer: hasWorkspaceSkills(status) });
         } finally {
             this._postAgentAccess(status, decision);
+            this._mcpRegistration?.syncCursor();
         }
     }
     _agentAccessView(status = this._skillStatusService.lastStatus, decision = this._agentAccessDecision(status)) {
@@ -3092,6 +3095,7 @@ class MainViewProvider {
         return true;
     }
     // VS Code MCP provider：受信任、打开了文件夹且未显式停用 Agent 访问的窗口才提供服务器定义。
+    // Cursor 注册另外要求 Agent 访问已启用（isEnabled），因为它没有信任提示。
     _mcpAvailable() {
         return (
             !!vscode.workspace.isTrusted &&

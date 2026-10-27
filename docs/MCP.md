@@ -21,13 +21,29 @@ Agent 访问按工作区开启，开关保存在 VS Code 的 workspace state 中
 
 扩展在支持 `vscode.lm.registerMcpServerDefinitionProvider` 的版本上注册 MCP server definition provider（id `emberprobe`），旧版本安静跳过（`engines.vscode` 仍为 `^1.85.0`）。服务器以 `process.execPath` + `ELECTRON_RUN_AS_NODE=1` 启动，并注入 `EMBERPROBE_BRIDGE_INSTANCE`，直接连接本窗口的 Bridge，不做路径匹配。显式停用 Agent 访问、工作区不受信任或未打开文件夹时，不提供服务器定义。
 
+### Cursor
+
+EmberProbe 运行在 Cursor 中时，通过 Cursor 的扩展 API `vscode.cursor.mcp.registerServer` 自动注册服务器（名称 `emberprobe`），优先于 VS Code provider，无需手动配置。Cursor 没有 VS Code 那样的 MCP 信任提示和解析回调，因此只有本工作区的 Agent 访问已启用（显式启用，或兼容旧版的工作区 skills）时才注册，停用后注销；注册本身不会启动 Bridge。注册是 Cursor 全局的，不绑定窗口实例：服务器按 MCP roots / 工作目录定位 Bridge（见下文），多个窗口注册的内容相同。远程窗口中不注册，因为 Cursor 在本地启动 MCP 服务器，而服务器路径属于远端。
+
 ### 外部客户端 / External clients
 
-运行命令 `EmberProbe: 复制 MCP 配置`，选择客户端，配置片段会复制到剪贴板，由你自己粘贴；扩展不会修改任何客户端的配置文件。片段指向稳定路径的启动器 `<globalStorage>/mcp/emberprobe-mcp.js`，它在每次激活时被重写为当前安装的扩展路径，因此扩展升级后无需修改客户端配置。外部客户端需要 PATH 中有 Node.js 18 或更高版本，命令会报告检测结果。
+运行命令 `EmberProbe: 安装 MCP 服务器到客户端`，选择客户端：
 
-- Claude Code：`claude mcp add --scope user emberprobe -- node "<launcher>"`
-- Codex：`config.toml` 中的 `[mcp_servers.emberprobe]`（`command = "node"`、`args = ["<launcher>"]`）
-- Cursor 及其他客户端：`{ "mcpServers": { "emberprobe": { "command": "node", "args": ["<launcher>"] } } }`
+| 客户端 | 方式 |
+|---|---|
+| Claude Code | 显示并确认后运行 `claude mcp add --scope user emberprobe -e … -- <command> <args>` |
+| Codex | 显示并确认后运行 `codex mcp add emberprobe --env … -- <command> <args>` |
+| Cursor | 打开安装链接 `cursor://anysphere.cursor-deeplink/mcp/install?name=emberprobe&config=<base64>`，由 Cursor 弹出确认（EmberProbe 本身运行在 Cursor 中或处于远程窗口时不提供此项） |
+| 其他客户端 | 把 `{ "mcpServers": { "emberprobe": { … } } }` 复制到剪贴板 |
+
+配置由客户端自己的 CLI 或安装链接写入，扩展不直接修改任何客户端的配置文件。CLI 从 PATH 中查找（Windows 接受 `.exe`、`.cmd`、`.bat`；npm 安装的 `.cmd` 包装经 `cmd.exe` 调用，参数逐个加引号，含 `"`、`%`、`!` 的参数不执行）。添加失败时（例如已存在同名配置）先移除 `emberprobe` 再添加一次；找不到 CLI 或仍然失败时，安装命令复制到剪贴板，可在终端中手动运行。
+
+启动命令全部是绝对路径，不依赖 PATH 中的 `node`：
+
+- Windows：`command` 为编辑器自带的 Electron（安装根目录的 `Code.exe` / `Cursor.exe`，升级后路径不变），`env` 带 `ELECTRON_RUN_AS_NODE=1`，`args` 为稳定路径的启动器 `<globalStorage>/mcp/emberprobe-mcp.js`；
+- macOS / Linux / 远程：`command` 为包装脚本 `<globalStorage>/mcp/emberprobe-mcp`，它以 `ELECTRON_RUN_AS_NODE=1` 用编辑器运行时执行启动器；运行时已不存在时（例如远程服务端升级后尚未重新打开窗口）才回退到 PATH 中的 `node`。
+
+启动器和包装脚本在每次激活时重写为当前安装的扩展与运行时路径，因此扩展或编辑器升级后无需修改客户端配置。远程窗口（Remote-SSH、WSL）中路径属于远端，只适用于同样运行在远端的客户端。
 
 Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalStorage 中，所以只提供 stdio，不提供 HTTP 传输：stdio 服务器在每次调用时重新定位当前的 Bridge，客户端配置中没有 token。
 
@@ -94,13 +110,14 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | 客户端 | 连接 | 工具列表与注解 | elicitation | roots | 实测记录 |
 |---|---|---|---|---|---|
 | VS Code Copilot | provider | — | — | — | 待实测 |
-| Claude Code | 外部启动器 | — | — | — | 待实测 |
-| Codex | 外部启动器 | — | — | — | 待实测 |
-| Cursor | 外部启动器 | — | — | — | 待实测 |
+| Claude Code | `claude mcp add` | — | — | — | 待实测 |
+| Codex | `codex mcp add` | — | — | — | 待实测 |
+| Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
 
 ## 排错 / Troubleshooting
 
 - `BRIDGE_UNAVAILABLE` 且 `details.bridgeDisabledFor` 非空：该工作区未启用 Agent 访问，在侧边栏或命令面板中启用。
 - `BRIDGE_UNAVAILABLE` 且 `registryEntries` 为 0：没有运行中的 EmberProbe 窗口，或客户端的工作目录 / roots 不在任何打开的文件夹内；设置 `EMBERPROBE_WORKSPACE`。
 - `BRIDGE_AMBIGUOUS`：关闭多余窗口，或设置 `EMBERPROBE_BRIDGE_INSTANCE`。
-- 外部客户端无法启动服务器：确认 PATH 中的 Node.js ≥ 18，并重新运行 `EmberProbe: 复制 MCP 配置` 以重写启动器。
+- 外部客户端无法启动服务器：打开一次 EmberProbe 窗口以重写启动器与包装脚本；编辑器安装位置变化后重新运行 `EmberProbe: 安装 MCP 服务器到客户端`。
+- Cursor 中看不到 EmberProbe 服务器：确认工作区受信任且已启用 Agent 访问。

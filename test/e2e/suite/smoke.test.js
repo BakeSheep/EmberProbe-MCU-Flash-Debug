@@ -31,7 +31,7 @@ async function run() {
         "mcu-vscode.folderDownload",
         "mcu-vscode.openLiveWatch",
         "mcu-vscode.checkOpenOcd",
-        "mcu-vscode.copyMcpConfig",
+        "mcu-vscode.installMcpServer",
         "mcu-vscode.enableAgentAccess",
         "mcu-vscode.disableAgentAccess"
     ]) {

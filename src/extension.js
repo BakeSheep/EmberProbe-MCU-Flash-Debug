@@ -31,7 +31,7 @@ function activate(context) {
             deserializeWebviewPanel: async (panel, state) => provider.restoreLiveWatchPanel(panel, state)
         }),
         vscode.commands.registerCommand("mcu-vscode.manageAgentSkills", () => provider.commandHandlers["mcu-vscode.manageAgentSkills"]()),
-        vscode.commands.registerCommand("mcu-vscode.copyMcpConfig", () => provider.commandHandlers["mcu-vscode.copyMcpConfig"]()),
+        vscode.commands.registerCommand("mcu-vscode.installMcpServer", () => provider.commandHandlers["mcu-vscode.installMcpServer"]()),
         vscode.commands.registerCommand("mcu-vscode.enableAgentAccess", () => provider.commandHandlers["mcu-vscode.enableAgentAccess"]()),
         vscode.commands.registerCommand("mcu-vscode.disableAgentAccess", () => provider.commandHandlers["mcu-vscode.disableAgentAccess"]()),
         vscode.commands.registerCommand("mcu-vscode.downloadOfficialSvd", () => provider.commandHandlers["mcu-vscode.downloadOfficialSvd"]()),
