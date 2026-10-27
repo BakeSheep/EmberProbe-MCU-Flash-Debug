@@ -22,7 +22,8 @@ function workspaceState(initial = {}) {
 }
 
 async function main() {
-    // Legacy v1/v2 success records are read as v3 selections; unrelated or malformed values are ignored.
+    // Legacy v1/v2 records and v3 success records named the probe that last connected; automatic mode keeps no
+    // probe, so they are read without their serial and device. Unrelated or malformed values are ignored.
     assert.deepStrictEqual(
         normalizeSelection({
             version: 1,
@@ -32,7 +33,17 @@ async function main() {
             target: "stm32f1x.cfg",
             transport: "jtag"
         }),
-        { version: 3, probe: "jlink.cfg", probeSerial: "1234", family: "jlink", deviceId: "", source: "success" }
+        { version: 3, probe: "jlink.cfg", probeSerial: "", family: "jlink", deviceId: "", source: "success" }
+    );
+    assert.deepStrictEqual(
+        normalizeSelection({
+            version: 3,
+            probe: "jlink.cfg",
+            probeSerial: "1234",
+            deviceId: "usb-1",
+            source: "success"
+        }),
+        { version: 3, probe: "jlink.cfg", probeSerial: "", family: "jlink", deviceId: "", source: "success" }
     );
     assert.deepStrictEqual(normalizeSelection({ version: 2, probe: "custom.cfg", profile: "fp" }), {
         version: 3,
@@ -53,8 +64,9 @@ async function main() {
 
     const state = workspaceState({ [LEGACY_SUCCESS_KEY]: { version: 2, probe: "stlink.cfg", probeSerial: "ST01" } });
     const store = new ProbeSelectionStore(state);
-    assert.strictEqual(store.get().probeSerial, "ST01", "an existing workspace keeps its remembered probe");
-    assert.deepStrictEqual(store.legacy(), { version: 2, probe: "stlink.cfg", probeSerial: "ST01" });
+    assert.strictEqual(store.get().probeSerial, "", "an existing workspace's last connected probe is not kept");
+    assert.strictEqual(store.get().probe, "stlink.cfg", "its interface script is");
+    assert.deepStrictEqual(store.legacy(), { version: 2, probe: "stlink.cfg", probeSerial: "" });
 
     const written = await store.set({
         probe: "jlink.cfg",
@@ -82,11 +94,13 @@ async function main() {
     const resolved = resolveProbeConnection({ probe: "jlink.cfg", successfulConnection: store.get() }, inventory);
     assert.deepStrictEqual([resolved.deviceId, resolved.selection.probe], ["b", "remembered"]);
 
-    // An older release that recorded another probe afterwards wins over the stale v3 selection.
+    // An older release that recorded another probe afterwards wins over the stale v3 selection, as automatic mode.
     await state.update(LEGACY_SUCCESS_KEY, { version: 2, probe: "jlink.cfg", probeSerial: "1234" });
-    assert.deepStrictEqual(
-        [store.get().probeSerial, store.get().source, store.get().deviceId],
-        ["1234", "success", ""]
+    assert.deepStrictEqual([store.get().probeSerial, store.get().source, store.get().deviceId], ["", "success", ""]);
+    assert.throws(
+        () => resolveProbeConnection({ probe: "jlink.cfg", successfulConnection: store.get() }, inventory),
+        { code: "PROBE_SELECTION_REQUIRED" },
+        "a record without a probe does not choose between two connected J-Links"
     );
     await store.set({ probe: "jlink.cfg", probeSerial: "1234", source: "success" });
     assert.strictEqual(store.get().family, "jlink", "a missing family is derived from the interface script");
@@ -106,7 +120,9 @@ async function main() {
     provider._svdManager = { peekBound: async () => null };
     let snapshot = await provider._configurationSnapshot();
     assert(!("selectedProbe" in snapshot) && !("successfulConnection" in snapshot));
-    await provider._probeSelectionStore().set({ probe: "jlink.cfg", probeSerial: "5678", deviceId: "b" });
+    await provider
+        ._probeSelectionStore()
+        .set({ probe: "jlink.cfg", probeSerial: "5678", deviceId: "b", source: "user" });
     snapshot = await provider._configurationSnapshot();
     assert.strictEqual(snapshot.selectedProbe.deviceId, "b");
     assert.deepStrictEqual(snapshot.successfulConnection, { version: 2, probe: "jlink.cfg", probeSerial: "5678" });

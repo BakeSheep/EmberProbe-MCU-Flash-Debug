@@ -126,6 +126,8 @@ function buildOpenOcdConfigArgs(launch, transport = "auto", connection = {}) {
         launch.scriptsRoot,
         "-f",
         launch.probePath,
+        // Set by the probe preflight only for a CMSIS-DAP that the interface script leaves on its automatic backend.
+        ...(connection.adapterBackend === "hid" ? ["-c", "cmsis-dap backend hid"] : []),
         ...(serial ? ["-c", `adapter serial ${serial.includes(" ") ? JSON.stringify(serial) : serial}`] : []),
         ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
         "-f",

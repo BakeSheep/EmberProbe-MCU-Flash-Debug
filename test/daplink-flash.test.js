@@ -83,15 +83,24 @@ async function identities() {
             resolveProbeConnection({ ...config, probeSerial: serial }, { available: false, devices: [] }).probeSerial,
             serial
         );
-        let saved;
+        // The user picked this probe; a success on it keeps the pick and its exact serial.
+        let saved = {
+            version: 3,
+            probe: prepared.probe,
+            probeSerial: serial,
+            family: "cmsis-dap",
+            deviceId: prepared.deviceId,
+            source: "user"
+        };
         const service = new ProbeConnectionService({
             getConfig: () => config,
+            getSuccessfulConnection: () => saved,
             saveSuccessfulConnection: async (value) => {
                 saved = value;
             }
         });
         await service.recordSuccess(prepared);
-        assert.strictEqual(saved.probeSerial, serial);
+        assert.deepStrictEqual([saved.probeSerial, saved.source], [serial, "user"]);
         const remembered = { ...config, successfulConnection: saved };
         assert.throws(() => resolveProbeConnection(remembered, { available: true, devices: [] }), {
             code: "PROBE_SELECTED_NOT_FOUND"

@@ -162,6 +162,8 @@ class AgentFlashService {
                 transport: connection.transport,
                 probeSerial: connection.probeSerial,
                 adapterSerial: connection.adapterSerial,
+                adapterBackend: connection.adapterBackend,
+                targetCheck: connection.targetCheck,
                 selectionIdentity: connection.selectionIdentity,
                 profile: connection.profile,
                 adapterSpeedKhz: connection.adapterSpeedKhz,

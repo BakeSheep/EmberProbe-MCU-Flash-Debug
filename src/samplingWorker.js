@@ -100,6 +100,7 @@ function run(port, options, makeSession = (config, handlers) => new ManagedOpenO
                 flushCpu();
             },
             onConnectionConfirmed: () => event("onConnectionConfirmed", []),
+            onTargetIdentity: (...args) => event("onTargetIdentity", args),
             onError: (...args) => event("onError", args),
             onDegraded: (...args) => event("onDegraded", args),
             onDisconnect: (...args) => event("onDisconnect", args)

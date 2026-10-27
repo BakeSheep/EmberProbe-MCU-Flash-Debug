@@ -43,8 +43,19 @@ async function testProbeBinding(root, elf) {
         debugger: "cmsis-dap.cfg",
         mcu: "geehy/apm32f4x.cfg",
         openocdPath: "fixture-openocd",
-        probeSerial: "",
-        successfulConnection: { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" }
+        probeSerial: ""
+    };
+    // The user picked probe A in the sidebar; the legacy record mirrors it for installed skills.
+    let records = {
+        "mcu.selectedProbe": {
+            version: 3,
+            probe: "cmsis-dap.cfg",
+            probeSerial: "probe-A",
+            family: "cmsis-dap",
+            deviceId: "probe-A",
+            source: "user"
+        },
+        "mcu.successfulProbeConnection": { version: 2, probe: "cmsis-dap.cfg", probeSerial: "probe-A" }
     };
     const inventory = { available: true, devices, notes: [] };
     const requests = [];
@@ -52,18 +63,14 @@ async function testProbeBinding(root, elf) {
     const host = Object.create(Provider.prototype);
     Object.assign(host, {
         _configurationStore: {
-            snapshot: () => {
-                const { successfulConnection, ...settings } = config;
-                return settings;
-            }
+            snapshot: () => ({ ...config })
         },
         _svdManager: { peekBound: async () => null },
         _context: {
             workspaceState: {
-                // A workspace from an older release has only the legacy success record.
                 get: (key) => {
                     assert(["mcu.selectedProbe", "mcu.successfulProbeConnection"].includes(key));
-                    return key === "mcu.successfulProbeConnection" ? config.successfulConnection : undefined;
+                    return records[key];
                 }
             }
         }
@@ -74,7 +81,12 @@ async function testProbeBinding(root, elf) {
         if (method === "probe.list") return inventory;
         requests.push({ method, params: JSON.parse(JSON.stringify(params)) });
         const connection = resolveProbeConnection(
-            { ...config, ...params, probeSerial: params.probeSerial ?? config.probeSerial },
+            {
+                ...config,
+                successfulConnection: records["mcu.selectedProbe"],
+                ...params,
+                probeSerial: params.probeSerial ?? config.probeSerial
+            },
             inventory
         );
         if (method === "flash.authorize") return { confirmationRequired: true, confirmationId: "fixture-plan" };
@@ -142,6 +154,14 @@ async function testProbeBinding(root, elf) {
     assert.strictEqual(requests.length, 0, "failed preflight cannot request flash authorization or execution");
 
     inventory.devices = devices;
+    // A workspace from an older release has only the legacy record of the probe that last connected. It names no
+    // pick, so automatic mode applies and two connected probes need the user to pick one.
+    const picked = records;
+    records = { "mcu.successfulProbeConnection": { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" } };
+    const legacyOnly = await common.preflight({ workspace: root });
+    assert.strictEqual(legacyOnly.ready, false);
+    assert(legacyOnly.diagnostics.some((diagnostic) => diagnostic.error.code === "PROBE_SELECTION_REQUIRED"));
+    records = picked;
     for (const source of ["inventory", "config", "explicit"]) {
         config.probeSerial = source === "config" ? "probe-B" : "";
         const result = await common.preflight({
@@ -215,12 +235,13 @@ async function testProbeBinding(root, elf) {
     }
 
     config.probeSerial = "";
-    config.successfulConnection = undefined;
+    records = {};
     inventory.devices = [devices[1]];
     const detected = await common.preflight({ workspace: root });
     assert.strictEqual(detected.ready, true);
     assert.strictEqual(detected.probeSerial, "probe-B");
-    config.successfulConnection = { version: 1, probe: "cmsis-dap.cfg", probeSerial: "probe-A" };
+    // The user picks probe A, which is not connected, before the plan is authorized.
+    records = picked;
     await assert.rejects(common.authorizeFlash(detected), { code: "PROBE_SELECTED_NOT_FOUND" });
     for (const script of ["verify", "program"]) {
         await assert.rejects(execute(script, detected), { code: "PROBE_SELECTED_NOT_FOUND" });

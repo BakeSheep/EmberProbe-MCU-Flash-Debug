@@ -11,7 +11,6 @@ function connectionError(code, message, details = {}) {
         PROBE_DRIVER_MISSING: "probe.driverMissing",
         PROBE_CONFIGURATION_CHANGED: "probe.configurationChanged",
         PROBE_SESSION_STALE: "probe.staleConnection",
-        PROBE_SELECTION_CANCELLED: "probe.selectionCancelled",
         PROBE_SERIAL_INVALID: "probe.serialInvalid"
     }[code];
     return Object.assign(new Error(message), {
@@ -103,10 +102,12 @@ function connectionIdentity(config = {}) {
     };
 }
 
-// Windows instance IDs turn spaces in USB serials into "_"; other accepted serial characters are kept.
+// Windows instance IDs turn spaces in USB serials into "_"; other accepted serial characters are kept. The
+// Windows inventory reads the exact descriptor from the hub for such serials when it can.
 function trustedSerial(device, family = "") {
     const serial = device?.serial || "";
-    return family === "jlink" || device?.serialSource !== "os-instance" || !serial.includes("_") ? serial : "";
+    if (family === "jlink" || device?.serialSource !== "os-instance" || !serial.includes("_")) return serial;
+    return device.descriptorSerial || "";
 }
 
 function serialMatches(device, serial) {
@@ -119,7 +120,7 @@ function serialMatches(device, serial) {
 
 function resolveProbeConnection(config, inventory = { devices: [], available: false }) {
     const profile = config.profile;
-    /** @type {ReturnType<typeof connectionIdentity> & {deviceId: string, selection: any, adapterSerial?: string, selectionIdentity?: any}} */
+    /** @type {ReturnType<typeof connectionIdentity> & {deviceId: string, selection: any, adapterSerial?: string, adapterBackend?: string, selectionIdentity?: any}} */
     const result = {
         ...connectionIdentity(config),
         deviceId: "",
@@ -159,7 +160,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             config.successfulConnection.profile === profile.fingerprint)
             ? config.successfulConnection
             : null;
-    // The previously used probe would have been selected had the interface configuration not changed.
+    // The picked probe would have been selected had the interface configuration not changed.
     const profileChanged =
         !remembered &&
         [1, 2, 3].includes(config.successfulConnection?.version) &&
@@ -171,13 +172,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
         result.probeSerial = normalizeProbeSerial(profile.scriptSerial, family);
         result.selection.probe = "script";
     }
-    if (
-        enforceable &&
-        !result.probeSerial &&
-        !config.selectedDeviceId &&
-        remembered?.probe === result.probe &&
-        remembered.probeSerial
-    ) {
+    if (enforceable && !result.probeSerial && remembered?.probe === result.probe && remembered.probeSerial) {
         result.probeSerial = normalizeProbeSerial(remembered.probeSerial, family);
         result.selection.probe = "remembered";
     }
@@ -194,7 +189,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             connectionError(
                 "PROBE_SELECTION_REQUIRED",
                 profileChanged
-                    ? `The ${label} interface configuration changed since the last connection; select the probe again`
+                    ? `The ${label} interface configuration changed since the probe was picked; pick it again`
                     : `Cannot select a unique ${label} from current USB inventory`,
                 {
                     devices,
@@ -206,10 +201,6 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             profileChanged ? { i18nKey: "probe.rememberedProfileChanged" } : {}
         );
     if (!result.probeSerial && devices.length === 1) {
-        if (config.selectedDeviceId && config.selectedDeviceId !== devices[0].id)
-            throw connectionError("PROBE_IDENTITY_AMBIGUOUS", "The selected physical probe changed during selection", {
-                devices
-            });
         result.probeSerial = devices[0].serial || "";
         result.selection.probe = "unique-device";
     }
@@ -240,7 +231,7 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             connectionError(
                 "PROBE_SELECTED_NOT_FOUND",
                 remembering
-                    ? `The previously used ${label} (${result.probeSerial}) is not present; no other device will be selected automatically`
+                    ? `The picked ${label} (${result.probeSerial}) is not present; no other device will be selected automatically`
                     : `The selected ${label} is not present; no other device will be selected`,
                 { probeSerial: result.probeSerial, remembered: remembering, devices }
             ),
@@ -274,6 +265,10 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
         );
     const anonymous = !exactSerial;
     result.deviceId = selected?.id || "";
+    // OpenOCD's automatic CMSIS-DAP backend scans for a libusb bulk interface before it falls back to HID.
+    // A Windows device with an HID interface and no WinUSB/libusb one can only be opened through HID.
+    if (family === "cmsis-dap" && profile?.backend === "auto" && windowsHidOnly(selected))
+        result.adapterBackend = "hid";
     // Without a serial filter OpenOCD may open a probe the partial inventory skipped, so the visible
     // attachment cannot authorize writes.
     result.selectionIdentity = {
@@ -286,6 +281,13 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
         profile: profile?.fingerprint || ""
     };
     return result;
+}
+
+function windowsHidOnly(device) {
+    const services = (device?.interfaces || []).map((item) => String(item.service || "").toLowerCase());
+    return (
+        services.includes("hidusb") && !services.some((service) => ["winusb", "libusbk", "libusb0"].includes(service))
+    );
 }
 
 // Only targets already recognized by autoDetect; do not infer architecture from a probe's name.

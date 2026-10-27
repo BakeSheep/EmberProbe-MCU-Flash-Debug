@@ -1,4 +1,5 @@
 "use strict";
+const crypto = require("crypto");
 const fs = require("fs/promises");
 const { execFile } = require("child_process");
 const { resolveOpenOcdLaunch } = require("./openocd-launch");
@@ -8,6 +9,36 @@ const { requireJlinkWinUsb } = require("./jlink-driver");
 const { createProbeProfile, captureProfileScript, PRINT_PROFILE, parseProfileEvents } = require("./probe-profile");
 
 const capabilitiesCache = new Map();
+// Interface profiles and transports, by OpenOCD build and exact interface-script text. Every operation resolves
+// them before connecting, and each costs an OpenOCD start, so only self-contained scripts are cached: a script
+// that loads other files or reads the environment can change without its own text changing.
+const scriptCache = new Map();
+const maxScriptCache = 16;
+const LOADS_OTHER_INPUT = /\b(?:source|find|script|add_script_search_dir|exec|open|glob|file|env)\b/;
+
+function scriptCacheKey(executableKey, launch, script) {
+    const code = String(script)
+        .split(/\r?\n/)
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+    if (LOADS_OTHER_INPUT.test(code)) return "";
+    const digest = crypto.createHash("sha256").update(String(script)).digest("hex");
+    return JSON.stringify([executableKey, launch.scriptsRoot, launch.probePath, digest]);
+}
+
+function cached(cache, key, field, compute) {
+    const entry = cache && key ? cache.get(key) : undefined;
+    if (entry && field in entry) return Promise.resolve(entry[field]);
+    return compute().then((value) => {
+        // An unresolved result is reported, not remembered.
+        if (cache && key && value != null) {
+            if (!cache.has(key) && cache.size >= maxScriptCache) cache.clear();
+            cache.set(key, { ...cache.get(key), [field]: value });
+        }
+        return value;
+    });
+}
+
 function query(executable, args, cwd = undefined) {
     return new Promise((resolve, reject) =>
         execFile(
@@ -82,31 +113,43 @@ async function checkAdapterCapability(launch, options = {}) {
             `This OpenOCD build does not include the ${adapterFamily} adapter`,
             { adapterFamily, drivers }
         );
+    // Injected runners are not cached unless the caller supplies its own cache.
+    const cache = options.cache !== undefined ? options.cache : options.run ? null : scriptCache;
+    const cacheKey = cache ? scriptCacheKey(key, launch, script) : "";
     let profile;
     try {
-        // Custom trusted interface scripts can source another script. Do not load a target or call init.
-        const output = await run(
-            launch.executable,
-            [
-                "-s",
-                launch.scriptsRoot,
-                "-c",
-                "noinit",
-                "-c",
-                captureProfileScript(),
-                "-f",
-                launch.probePath,
-                "-c",
-                "echo EP_ADAPTER_NAME=[adapter name]",
-                "-c",
-                PRINT_PROFILE,
-                "-c",
-                "shutdown"
-            ],
-            launch.scriptsRoot
-        );
-        adapterFamily = String(output).match(/^EP_ADAPTER_NAME=([\w-]+)\s*$/m)?.[1];
-        if (adapterFamily) profile = createProbeProfile(adapterFamily, parseProfileEvents(output), launch.probePath);
+        const resolved = await cached(cache, cacheKey, "profile", async () => {
+            // Custom trusted interface scripts can source another script. Do not load a target or call init.
+            const output = await run(
+                launch.executable,
+                [
+                    "-s",
+                    launch.scriptsRoot,
+                    "-c",
+                    "noinit",
+                    "-c",
+                    captureProfileScript(),
+                    "-f",
+                    launch.probePath,
+                    "-c",
+                    "echo EP_ADAPTER_NAME=[adapter name]",
+                    "-c",
+                    PRINT_PROFILE,
+                    "-c",
+                    "shutdown"
+                ],
+                launch.scriptsRoot
+            );
+            const name = String(output).match(/^EP_ADAPTER_NAME=([\w-]+)\s*$/m)?.[1];
+            return name ? { adapterFamily: name, events: parseProfileEvents(output) } : null;
+        });
+        adapterFamily = resolved?.adapterFamily;
+        if (resolved)
+            profile = createProbeProfile(
+                resolved.adapterFamily,
+                resolved.events.map((event) => [...event]),
+                launch.probePath
+            );
     } catch (cause) {
         if (typeof cause.code === "string" && cause.code.startsWith("PROBE_")) throw cause;
         throw connectionError(
@@ -123,7 +166,7 @@ async function checkAdapterCapability(launch, options = {}) {
             `This OpenOCD build does not include the ${adapterFamily} adapter`,
             { adapterFamily, drivers }
         );
-    return { adapterFamily, drivers, profile };
+    return { adapterFamily, drivers, profile, cache, cacheKey };
 }
 
 async function prepareProbeConnection(options, dependencies = {}) {
@@ -156,7 +199,10 @@ async function prepareProbeConnection(options, dependencies = {}) {
     if (capability.adapterFamily === "jlink")
         connection.transport = await (dependencies.resolveTransport || resolveInterfaceTransport)(
             launch,
-            connection.transport
+            connection.transport,
+            undefined,
+            capability.cache,
+            capability.cacheKey
         );
     return {
         ...connection,
@@ -168,42 +214,45 @@ async function prepareProbeConnection(options, dependencies = {}) {
     };
 }
 
-async function resolveInterfaceTransport(launch, transport, run = query) {
+// The capability check supplies the cache and key; a script it would not cache is queried every time.
+async function resolveInterfaceTransport(launch, transport, run = query, cache = null, cacheKey = "") {
     if (!["auto", "swd", "jtag"].includes(transport))
         throw connectionError("OPENOCD_TRANSPORT_INVALID", "J-Link requires an SWD or JTAG transport");
-    let output;
-    try {
-        output = await run(
-            launch.executable,
-            [
-                "-s",
-                launch.scriptsRoot,
-                "-c",
-                "noinit",
-                "-f",
-                launch.probePath,
-                ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
-                "-c",
-                "echo EP_TRANSPORT=[transport select]",
-                "-c",
-                "shutdown"
-            ],
-            launch.scriptsRoot
-        );
-    } catch (cause) {
-        throw connectionError(
-            "OPENOCD_TRANSPORT_INVALID",
-            "The interface script cannot select the requested transport",
-            { transport, cause: cause.message }
-        );
-    }
-    const selected = String(output).match(/^EP_TRANSPORT=(swd|jtag)\s*$/m)?.[1];
-    if (!selected || (transport !== "auto" && selected !== transport))
-        throw connectionError(
-            "PROBE_CAPABILITY_UNKNOWN",
-            "Cannot confirm the interface transport without initialization"
-        );
-    return selected;
+    return cached(cache, cacheKey, `transport:${transport}`, async () => {
+        let output;
+        try {
+            output = await run(
+                launch.executable,
+                [
+                    "-s",
+                    launch.scriptsRoot,
+                    "-c",
+                    "noinit",
+                    "-f",
+                    launch.probePath,
+                    ...(transport === "auto" ? [] : ["-c", `transport select ${transport}`]),
+                    "-c",
+                    "echo EP_TRANSPORT=[transport select]",
+                    "-c",
+                    "shutdown"
+                ],
+                launch.scriptsRoot
+            );
+        } catch (cause) {
+            throw connectionError(
+                "OPENOCD_TRANSPORT_INVALID",
+                "The interface script cannot select the requested transport",
+                { transport, cause: cause.message }
+            );
+        }
+        const selected = String(output).match(/^EP_TRANSPORT=(swd|jtag)\s*$/m)?.[1];
+        if (!selected || (transport !== "auto" && selected !== transport))
+            throw connectionError(
+                "PROBE_CAPABILITY_UNKNOWN",
+                "Cannot confirm the interface transport without initialization"
+            );
+        return selected;
+    });
 }
 
 module.exports = { prepareProbeConnection, checkAdapterCapability, parseAdapterList, resolveInterfaceTransport };

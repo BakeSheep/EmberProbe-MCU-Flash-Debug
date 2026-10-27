@@ -131,7 +131,6 @@ module.exports = Object.freeze({
     "rtos.stackRemaining": "Stack remaining",
     "rtos.snapshot": "Snapshot",
     "rtos.diagnostics": "Diagnostics",
-    "probe.configure": "Advanced probe settings",
     "probe.usbDriver": "J-Link USB driver",
     "probe.winusbRequired": "{probe} is using the SEGGER driver. EmberProbe needs WinUSB; choose Switch to WinUSB.",
     "probe.driverNotSwitchableWarning":
@@ -146,11 +145,27 @@ module.exports = Object.freeze({
     "probe.noTrustedSerial":
         "Several probes of this type are connected and this one has no reliable USB serial, so OpenOCD cannot tell them apart",
     "probe.connected": "Connected probe",
+    "probe.inUse": "In use",
+    "probe.absentTag": "Not connected",
     "probe.scanning": "Detecting…",
     "probe.noneConnected": "No probe detected",
     "probe.selectPrompt": "Select a probe",
-    "probe.autoSelect": "Automatic (forget the selected device)",
-    "probe.absentOption": "(not connected) {probe}",
+    "probe.autoSelect": "Auto",
+    "probe.autoKeepHint":
+        "Choosing the probe automatically and checking the target chip before each operation; click again to keep using the current device",
+    "probe.autoPickHint":
+        "Choosing the probe automatically and checking the target chip before each operation; pick a device to keep using it",
+    "probe.autoTarget": "Verifying target chip",
+    "probe.autoTargetHint": "Automatic mode checks this chip before every operation and stops if it differs",
+    "probe.targetFound": "Target chip: {chip}",
+    "probe.targetChanged": "Target chip changed",
+    "probe.targetChangedDetail": "Recorded {expected} → found {actual}",
+    "probe.targetChangedHint":
+        "Automatic mode only operates on the recorded chip; confirm the current chip to continue",
+    "probe.useCurrentTarget": "Use this chip",
+    "probe.targetMismatch":
+        "The target chip differs from the one automatic mode recorded; the operation did not run (recorded: {expected}; found: {actual}). If you changed boards, click “Use this chip” under Connected probes",
+    "probe.source.target-chip": "Chosen by target chip",
     "probe.inventoryUnavailable": "USB device list unavailable",
     "probe.scriptDecides": "The interface script selects its own device",
     "probe.lockedBySetting": "Set by emberprobe.probeSerial; clear that setting to choose here",
@@ -159,7 +174,6 @@ module.exports = Object.freeze({
     "probe.selectionGone": "The selected probe has been disconnected.",
     "probe.noDefaultConfig":
         "This kind of probe has no default interface script; choose its cfg under Select debugger first.",
-    "probe.debuggerFollowed": "Select debugger is now {name} to match the selected device.",
     "probe.noSerialShort": "no serial",
     "probe.otherFamily": "selecting it switches to {name}",
     "probe.driverManual": "Driver: manual",
@@ -181,29 +195,20 @@ module.exports = Object.freeze({
     "probe.ignoreDriverWarning": "Ignore for this workspace",
     "probe.driverSelectionChanged":
         "The selected J-Link has changed. Select it again under Connected probe before changing its USB driver.",
-    "probe.restoreDriver": "Restore the original J-Link USB driver",
     "probe.driverInstalling": "Configuring WinUSB for J-Link; complete the Windows authorization…",
     "probe.driverReady": "J-Link USB driver is configured",
     "probe.driverRestoring": "Restoring the original J-Link USB driver…",
     "probe.driverRestored": "The original J-Link USB driver is restored",
-    "probe.automatic": "Automatic",
     "probe.resetAutomatic": "Restore automatic connection and forget previous device",
     "probe.source.explicit": "Override",
     "probe.source.remembered": "Selected device",
     "probe.source.unique-device": "Only device",
-    "probe.source.cortex-m": "Cortex-M default",
     "probe.source.script-default": "Script default",
     "probe.source.script": "Interface script",
-    "probe.serial": "J-Link serial number",
-    "probe.transport": "SWD / JTAG transport",
-    "probe.speed": "Adapter speed (kHz)",
-    "probe.speedDefault": "0 uses the interface/target script default",
-    "probe.manualSerial": "Enter serial number",
-    "probe.serialRequired": "Select J-Link serial",
-    "probe.pickTitle": "Select physical debug probe",
-    "probe.noSerial": "Probe without a readable serial",
     "probe.selectionRequired":
         "Cannot select a unique probe. Keep one matching probe connected or configure its exact USB serial number.",
+    "probe.chooseInSidebar":
+        "Several probes of this type are connected and the one to use cannot be chosen automatically. Pick one under Connected probes and try again.",
     "probe.selectionUnsupported":
         "This adapter cannot enforce the requested device selection. Use a verified interface and selector, or keep only one matching probe connected.",
     "probe.identityAmbiguous":
@@ -219,18 +224,14 @@ module.exports = Object.freeze({
     "probe.endpointInvalid": "Configure a valid CMSIS-DAP TCP host and port in the interface script.",
     "probe.configurationChanged": "Connection settings changed during preparation. Retry with the current settings.",
     "probe.rememberedProfileChanged":
-        "The previously used interface configuration changed. Select the physical probe again.",
-    "probe.selectionCancelled": "Probe selection was cancelled.",
+        "The interface configuration changed since the probe was picked. Pick it again under Connected probes.",
     "probe.serialInvalid":
         "Use 1–128 ASCII letters, digits, spaces or _.:- for a USB serial number. J-Link requires a decimal integer from 1 to 4294967295.",
-    "probe.pickStaleTitle": "Previously used probe {serial} is not connected; select a physical debug probe",
     "probe.selectedNotFound": "The selected {label} is not present; no other device will be selected",
     "probe.rememberedNotFound":
-        "The previously used {label} ({serial}) is not present; no other device will be selected automatically",
+        "The picked {label} ({serial}) is not present; no other device will be selected automatically. Reconnect it, or pick another device or Auto under Connected probes",
     "probe.diagnostic": "Connection diagnostic",
-    "probe.activeConnection": "Active connection",
     "probe.staleConnection": "Settings changed — restart before writing",
-    "msg.selectDetectedProbe": "Multiple probe types detected. Select the probe to use.",
     "msg.selectDetectedMcu": "Project files name several MCU targets. Select the one to use.",
     "msg.autoMcuUnavailable":
         "Detected MCU target {name} is not provided by the current OpenOCD; select a target manually",

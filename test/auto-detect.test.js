@@ -357,6 +357,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     // runAutoDetect: busy sessions skip connection fields without a partial write or error;
     // forced detection prompts for ambiguous targets and applies the user's .ioc.
     let detectOptions;
+    let detectedProbe = { debugger: "stlink.cfg", probeCandidates: ["stlink.cfg"] };
     const picks = [];
     const Provider = loadProvider(
         {
@@ -378,8 +379,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
                         elf: "/w/app.elf",
                         mcu: "",
                         mcuCandidates: ["stm32f0x.cfg", "stm32f4x.cfg"],
-                        debugger: "stlink.cfg",
-                        probeCandidates: ["stlink.cfg"]
+                        ...detectedProbe
                     };
                 }
             }
@@ -412,6 +412,23 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     assert.deepStrictEqual(picks.at(-1), ["stm32f0x.cfg", "stm32f4x.cfg"]);
     assert.strictEqual(workspace.get("mcu.mcuCore"), "stm32f4x.cfg");
     assert.strictEqual(workspace.get("mcu.debugger"), "stlink.cfg");
+
+    // Several probe types: nothing prompts for one; a forced detection opens the connected probe list, where
+    // picking a device also sets its interface script.
+    let reveals = 0;
+    provider._revealConnectedProbes = () => reveals++;
+    detectedProbe = { debugger: "", probeCandidates: ["stlink.cfg", "jlink.cfg"] };
+    workspace.delete("mcu.debugger");
+    const picksBefore = picks.length;
+    await provider.runAutoDetect(false);
+    assert.strictEqual(reveals, 0, "background detection does not open the list");
+    await provider.runAutoDetect(true);
+    assert.strictEqual(reveals, 1);
+    assert(
+        picks.slice(picksBefore).every((items) => !items.includes("jlink.cfg")),
+        "probe types are not offered in a VS Code picker"
+    );
+    assert(!workspace.has("mcu.debugger"), "no interface script is guessed");
 
     console.log("Auto-detect tests passed");
 })().catch((error) => {

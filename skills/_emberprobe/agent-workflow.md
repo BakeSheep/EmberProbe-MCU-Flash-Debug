@@ -38,10 +38,16 @@ USB serial or leave it empty for a uniquely matched probe. Network backends are 
 in the trusted interface script and do not require a local USB probe.
 An empty serial resolves in this order: the `emberprobe.probeSerial` setting, a serial in the
 interface script, the workspace's
-selected probe (`config.get` → `selectedProbe`: the probe the user picked or last used
-successfully), then a unique connected probe. `probe.list` marks that device with `selected: true`;
+selected probe (`config.get` → `selectedProbe` with `source: "user"`: the probe the user picked in
+the sidebar), then a unique connected probe. `probe.list` marks that device with `selected: true`;
 only the user changes the selection, in the sidebar. A selected probe that is not connected is
 reported as not found; it is never replaced by another device, so ask the user instead.
+Without a pick the workspace is in automatic mode (`selectedProbe` absent, or `source` `"auto"` /
+`"success"` without a serial): several probes of one type are told apart by their target chip, and
+`PROBE_SELECTION_REQUIRED` means the user must pick one under **Connected probes** in the sidebar.
+`PROBE_TARGET_MISMATCH` means the chip on the probe differs from the one automatic mode recorded;
+the operation did not run. Do not retry or work around it; ask the user to check the board and, if
+it is the intended one, click **Use this chip** in the sidebar.
 The Bridge validates the ID and current plan; it does not independently attest that a chat
 answer came from a human. A returned ID alone is never permission for the Agent to execute.
 Denial ends the operation; do not substitute a direct CLI call or retry automatically.

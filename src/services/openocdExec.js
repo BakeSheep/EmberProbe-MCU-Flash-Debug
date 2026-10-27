@@ -4,6 +4,7 @@ const { buildOpenOcdConfigArgs } = require("../openocdScripts");
 const { diagnoseOpenOcdFailure, connectionDetails } = require("../../skills/_emberprobe/openocd-diagnostics");
 const { spawn } = require("child_process");
 const { resolveOpenOcdLaunch } = require("../openocdScripts");
+const { withTargetCheck, targetCheckMonitor } = require("../chip/targetIdentity");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -24,7 +25,8 @@ function normalizeSpawnError(error, executable) {
 // 统一 ANSI 清理、超时、ENOENT 语义与日志尾部留存。
 // resolve { exitCode, openocdTail, commands }；OpenOCD 非零退出码由业务层结合解析结果判定。
 function runOpenOcdOnce(options) {
-    const commands = options.buildCommands();
+    const commands = withTargetCheck(options.buildCommands(), options.targetCheck, options.target);
+    const targetCheck = targetCheckMonitor(options.targetCheck);
     let launch;
     try {
         launch = (options.resolveLaunch || resolveOpenOcdLaunch)(
@@ -76,6 +78,8 @@ function runOpenOcdOnce(options) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            // A failed target check ends OpenOCD before the operation; report it instead of the exit status.
+            if (!error) error = targetCheck.error();
             if (error) {
                 if (["OPENOCD_TIMEOUT", "OPENOCD_OUTPUT_LIMIT"].includes(error.code)) {
                     const diagnostic = diagnoseOpenOcdFailure(diagnosticLines, connectionDetails(options));
@@ -103,6 +107,7 @@ function runOpenOcdOnce(options) {
         const handleLine = (raw) => {
             const clean = String(raw).replace(ANSI_RE, "").replace(/\r/g, "").trim();
             if (!clean) return;
+            targetCheck.line(clean);
             diagnosticLines.push(clean);
             openocdTail.push(clean.slice(0, 500));
             if (openocdTail.length > tailLimit) openocdTail.shift();

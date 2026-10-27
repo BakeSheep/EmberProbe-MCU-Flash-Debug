@@ -162,6 +162,8 @@ async function readFaultInfo(options) {
         transport: options.transport,
         probeSerial: options.probeSerial,
         adapterSerial: options.adapterSerial,
+        adapterBackend: options.adapterBackend,
+        targetCheck: options.targetCheck,
         adapterSpeedKhz: options.adapterSpeedKhz,
         inventory: options.inventory,
         cwd: options.cwd,

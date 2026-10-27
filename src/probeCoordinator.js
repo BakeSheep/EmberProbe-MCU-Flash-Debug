@@ -9,7 +9,8 @@ const PROBE_OPERATIONS = Object.freeze([
     "debugStart",
     "debugServer",
     "externalDebug",
-    "cpuLoad"
+    "cpuLoad",
+    "targetScan"
 ]);
 
 class ProbeCoordinator {

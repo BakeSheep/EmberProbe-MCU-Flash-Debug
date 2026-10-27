@@ -66,6 +66,23 @@ async function main() {
     );
     assert.strictEqual(byId(unique)[anonymousA.id].selectable, true, "a lone serial-less probe is selectable");
 
+    // A Windows serial containing "_" is told apart once the hub has returned its exact descriptor.
+    const aliased = (serial, descriptorSerial) => ({
+        ...dap(`USB\\VID_C251&PID_F001\\${serial}`, serial),
+        serialSource: "os-instance",
+        ...(descriptorSerial ? { descriptorSerial } : {})
+    });
+    const read = aliased("LU_2022_8888", "LU 2022 8888");
+    const unread = aliased("LU_2022_9999");
+    const plain = aliased("0001A0000000");
+    devices = byId(describe({ probe: "cmsis-dap.cfg" }, { available: true, devices: [read, unread, plain] }));
+    assert.deepStrictEqual([devices[read.id].selectable, devices[read.id].trustedSerial], [true, "LU 2022 8888"]);
+    assert.deepStrictEqual(
+        [devices[unread.id].selectable, devices[unread.id].reasonKey],
+        [false, "probe.noTrustedSerial"]
+    );
+    assert.deepStrictEqual([devices[plain.id].selectable, devices[plain.id].trustedSerial], [true, "0001A0000000"]);
+
     // A remembered or configured probe that is gone stays the selection; another device is never chosen.
     const gone = describe(
         { probe: "jlink.cfg", successfulConnection: { version: 2, probe: "jlink.cfg", probeSerial: "9999" } },

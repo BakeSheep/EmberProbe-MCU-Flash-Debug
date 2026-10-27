@@ -121,6 +121,7 @@ const TEST_GROUPS = Object.freeze({
         "stl-containers.test.js",
         "svd-peripheral.test.js",
         "symbol-images.test.js",
+        "target-identity.test.js",
         "validate-release.test.js",
         "validation.test.js",
         "var-write.test.js",

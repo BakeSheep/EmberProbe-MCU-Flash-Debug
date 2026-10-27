@@ -215,8 +215,11 @@ const chipRead = document.getElementById("chipRead"),
     jlinkDriverChoice = document.getElementById("jlinkDriverChoice"),
     jlinkDriverBusy = document.getElementById("jlinkDriverBusy"),
     jlinkDriverState = document.getElementById("jlinkDriverState"),
-    connectedProbe = document.getElementById("connectedProbe"),
+    probeConfig = document.getElementById("probeConfig"),
+    connectedProbeList = document.getElementById("connectedProbeList"),
+    connectedProbeAuto = document.getElementById("connectedProbeAuto"),
     connectedProbeRefresh = document.getElementById("connectedProbeRefresh"),
+    probeDriverHome = document.getElementById("probeDriverHome"),
     otherConfig = document.getElementById("otherConfig");
 const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState });
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
@@ -249,20 +252,36 @@ let chipHasData = false,
     chipMoreOpen = !!(uiState && uiState.chipMoreOpen),
     probeDriverBusy = false,
     cpuProbeOwned = false,
-    confirmedProbeDriver = "",
-    // The connected-probe list last posted by the extension, the option it selects, and the J-Link the driver
-    // control belongs to. The dropdowns show confirmed state until the extension posts a new list.
+    // Refresh is reading the chip on each listed probe.
+    probeTargetScan = false,
+    // The connected-probe list last posted by the extension and the J-Link whose driver is switching. The list
+    // and driver controls show confirmed state until the extension posts a new list.
     lastConnectedProbes = null,
-    confirmedConnectedProbe = "__none__",
     connectedProbeLocked = true,
-    driverDeviceId = "";
+    // Auto is pressed while no device is saved; pressing it again saves this automatically chosen device.
+    connectedProbeAutomatic = false,
+    connectedProbeKeepId = "",
+    driverSwitchDeviceId = "";
 function setProbeDriverBusy(busy) {
     probeDriverBusy = busy;
     const hardwareBusy = busy || cpuProbeOwned;
     cpuLoadView?.setDriverBusy(busy);
     if (jlinkDriverChoice) jlinkDriverChoice.disabled = hardwareBusy;
-    if (connectedProbe) connectedProbe.disabled = hardwareBusy || connectedProbeLocked;
-    if (connectedProbeRefresh) connectedProbeRefresh.disabled = busy;
+    connectedProbeList?.querySelectorAll("select.jlink-driver-choice").forEach((control) => {
+        control.disabled = hardwareBusy;
+    });
+    connectedProbeList?.querySelectorAll("button.probe-card-main").forEach((button) => {
+        button.disabled = hardwareBusy || connectedProbeLocked || !button.dataset.selectable;
+    });
+    connectedProbeList?.querySelectorAll("button.probe-target-accept").forEach((button) => {
+        button.disabled = hardwareBusy;
+    });
+    if (connectedProbeAuto)
+        connectedProbeAuto.disabled = hardwareBusy || (connectedProbeAutomatic && !connectedProbeKeepId);
+    if (connectedProbeRefresh) {
+        connectedProbeRefresh.disabled = busy || probeTargetScan;
+        connectedProbeRefresh.classList.toggle("scanning", probeTargetScan);
+    }
     if (jlinkDriverBusy) jlinkDriverBusy.hidden = !busy;
     if (chipRead) chipRead.disabled = hardwareBusy || lastChip.state === "reading";
     chipBody?.querySelectorAll(".chip-control").forEach((button) => {
@@ -278,64 +297,77 @@ const PROBE_FAMILY_LABELS = {
     xds110: "XDS110",
     nulink: "Nu-Link"
 };
-function probeLabel(family, serial) {
-    return (PROBE_FAMILY_LABELS[family] || family || "USB") + " · " + (serial || t("probe.noSerialShort"));
+const PROBE_CARD_ICONS = {
+    usb: '<path d="M12 3v13"/><circle cx="12" cy="19" r="2.5"/><path d="m9 6 3-3 3 3M12 13l-5-3V8M12 11l5-3V6"/><rect x="5.5" y="6" width="3" height="2"/><circle cx="17" cy="5" r="1.2"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    current: '<path d="m5 12.5 4.5 4.5L19 7.5"/>'
+};
+// Every entry of the list is the same card: a device the user can pick, the saved device that is not connected,
+// or a line explaining why the list cannot pick one. Only a device card holds a button.
+function probeCard({ deviceId, title, detail, tooltip, tag, tagClass, selected, current, selectable, info, warn }) {
+    const card = document.createElement("div");
+    card.className =
+        "tree-row probe-card" +
+        (info ? " probe-info-card" : "") +
+        (warn ? " warn" : "") +
+        (selected ? " selected" : "");
+    const main = document.createElement(info ? "span" : "button");
+    main.className = "probe-card-main";
+    if (!info) {
+        main.type = "button";
+        main.dataset.deviceId = deviceId || "";
+        main.dataset.selectable = selectable ? "1" : "";
+        main.setAttribute("aria-pressed", selected ? "true" : "false");
+    }
+    main.insertAdjacentHTML(
+        "afterbegin",
+        '<svg viewBox="0 0 24 24" aria-hidden="true">' + PROBE_CARD_ICONS[info ? "info" : "usb"] + "</svg>"
+    );
+    const copy = document.createElement("span");
+    copy.className = "row-copy";
+    const name = document.createElement("span");
+    name.textContent = title;
+    copy.append(name);
+    if (detail) {
+        const small = document.createElement("small");
+        small.textContent = detail;
+        copy.append(small);
+    }
+    main.append(copy);
+    card.append(main);
+    // The device in use is marked by a check; its button is pressed and its tooltip says why it is used.
+    if (current)
+        card.insertAdjacentHTML(
+            "beforeend",
+            '<svg class="probe-current" viewBox="0 0 24 24" aria-hidden="true">' + PROBE_CARD_ICONS.current + "</svg>"
+        );
+    if (tag) {
+        const label = document.createElement("span");
+        label.className = "tag " + (tagClass || "");
+        label.textContent = tag;
+        card.append(label);
+    }
+    card.title = tooltip || "";
+    return card;
 }
-function probeOption(value, text, disabled) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = text;
-    option.disabled = !!disabled;
-    return option;
+// The driver a J-Link's control shows, or "" when the helper cannot switch it.
+function switchableDriver(device) {
+    const kind = device?.driver?.kind;
+    return kind === "repair" ? "segger" : kind === "ready" ? "winusb" : "";
 }
-// Lists every connected probe whatever interface script is selected. The dropdown shows the device the next
-// operation will use; a device of another family notes the interface script choosing it switches to.
+// Lists every connected probe whatever interface script is selected, with the chip refresh last read on it;
+// each J-Link card carries its driver control. A device of another family names in its tooltip the interface
+// script choosing it switches to.
 function renderConnectedProbes(m) {
     lastConnectedProbes = m;
-    if (!connectedProbe) return;
+    if (!connectedProbeList) return;
+    // Park the page's driver controls before the cards holding them are replaced.
+    probeDriverHome?.append(...[jlinkDriverChoice, jlinkDriverState, jlinkDriverBusy].filter(Boolean));
+    if (m.debugger !== undefined) showDebuggerConfig(m.debugger);
     const devices = m.devices || [];
     const selected = devices.find((device) => device.selected);
     // A settings override or a custom interface script selects the device; the list only shows it.
     const locked = !!m.override || m.state === "script";
-    const options = [];
-    let value;
-    if (selected) value = selected.id;
-    else if (m.state === "absent") {
-        value = "__absent__";
-        options.push(probeOption(value, t("probe.absentOption", { probe: probeLabel(m.family, m.probeSerial) }), true));
-    } else {
-        value = "__none__";
-        const key =
-            m.state === "unavailable"
-                ? "probe.inventoryUnavailable"
-                : m.state === "script"
-                  ? "probe.scriptDecides"
-                  : devices.length
-                    ? "probe.selectPrompt"
-                    : "probe.noneConnected";
-        options.push(probeOption(value, t(key), true));
-    }
-    if (!locked && m.source === "remembered") options.push(probeOption("__auto__", t("probe.autoSelect")));
-    for (const device of locked ? (selected ? [selected] : []) : devices) {
-        let text = probeLabel(device.family, device.trustedSerial || device.serial);
-        if (device.driver?.kind === "repair") text += " · SEGGER";
-        else if (device.driver?.kind === "ready") text += " · WinUSB";
-        const switchesScript = m.state !== "unconfigured" && !device.matchesDebugger && device.defaultConfig;
-        if (switchesScript) text += " → " + device.defaultConfig;
-        const option = probeOption(device.id, text, !device.selectable);
-        option.title = [
-            device.name,
-            device.id,
-            device.reasonKey ? t(device.reasonKey) : "",
-            switchesScript ? t("probe.otherFamily", { name: device.defaultConfig }) : ""
-        ]
-            .filter(Boolean)
-            .join("\n");
-        options.push(option);
-    }
-    connectedProbe.replaceChildren(...options);
-    connectedProbe.value = value;
-    confirmedConnectedProbe = value;
     connectedProbeLocked = locked;
     const source = m.override
         ? t("probe.lockedBySetting")
@@ -345,25 +377,141 @@ function renderConnectedProbes(m) {
             ? t("probe.source." + m.source)
             : "";
     const error = m.error ? (m.error.i18nKey ? t(m.error.i18nKey, m.error.i18nParams) : m.error.message) : "";
-    connectedProbe.title = [selected ? selected.name + " · " + selected.id : "", source, error]
-        .filter(Boolean)
-        .join("\n");
-    const driver = selected?.driver;
-    const switchable = driver?.kind === "repair" || driver?.kind === "ready";
-    driverDeviceId = switchable ? selected.id : "";
-    confirmedProbeDriver = switchable ? (driver.kind === "repair" ? "segger" : "winusb") : "";
-    if (jlinkDriverChoice) {
-        jlinkDriverChoice.hidden = !switchable;
-        if (switchable) jlinkDriverChoice.value = confirmedProbeDriver;
+    const cards = [];
+    const cardsById = new Map();
+    let selectedCard = null;
+    if (m.state === "absent")
+        cards.push(
+            probeCard({
+                title: PROBE_FAMILY_LABELS[m.family] || m.family || "USB",
+                detail: m.probeSerial || t("probe.noSerialShort"),
+                tooltip: error,
+                tag: t("probe.absentTag"),
+                tagClass: "warn",
+                selected: true
+            })
+        );
+    for (const device of locked ? (selected ? [selected] : []) : devices) {
+        const switchesScript = m.state !== "unconfigured" && !device.matchesDebugger && device.defaultConfig;
+        const card = probeCard({
+            deviceId: device.id,
+            title: PROBE_FAMILY_LABELS[device.family] || device.family || "USB",
+            detail: [
+                device.trustedSerial || device.serial || t("probe.noSerialShort"),
+                device.targetCore || "",
+                !device.selectable && device.reasonKey ? t(device.reasonKey) : ""
+            ]
+                .filter(Boolean)
+                .join(" · "),
+            tooltip: [
+                device.name,
+                device.id,
+                device.targetLabel ? t("probe.targetFound", { chip: device.targetLabel }) : "",
+                device.selected ? [t("probe.inUse"), source].filter(Boolean).join(" · ") : "",
+                device.reasonKey ? t(device.reasonKey) : "",
+                switchesScript ? t("probe.otherFamily", { name: device.defaultConfig }) : ""
+            ]
+                .filter(Boolean)
+                .join("\n"),
+            selected: device.selected,
+            current: device.selected,
+            selectable: device.selectable
+        });
+        if (device.selected) selectedCard = card;
+        cardsById.set(device.id, card);
+        cards.push(card);
     }
-    const manual = !!driver && !switchable && driver.kind !== "not-applicable";
-    if (jlinkDriverState) {
-        jlinkDriverState.hidden = !manual;
-        jlinkDriverState.textContent = manual ? t("probe.driverManual") : "";
-        jlinkDriverState.title = manual
-            ? t("probe.driverManualHint", { reason: t(driver.reasonKey || "probe.driverReasonInterface") })
+    // Explain why nothing is selected, why the list cannot change the selection, or what went wrong.
+    const status =
+        selected || m.state === "absent"
+            ? ""
+            : t(
+                  m.state === "unavailable"
+                      ? "probe.inventoryUnavailable"
+                      : m.state === "script"
+                        ? "probe.scriptDecides"
+                        : devices.length
+                          ? "probe.selectPrompt"
+                          : "probe.noneConnected"
+              );
+    const notes = [...new Set([m.state === "absent" ? "" : error, locked ? source : "", status])].filter(Boolean);
+    cards.unshift(...notes.map((note) => probeCard({ title: note, info: true })));
+    connectedProbeAutomatic = !locked && m.source !== "remembered";
+    // Automatic mode checks every operation's target chip against the one it recorded.
+    if (connectedProbeAutomatic && m.targetMismatch) {
+        const card = probeCard({
+            title: t("probe.targetChanged"),
+            detail: t("probe.targetChangedDetail", m.targetMismatch),
+            tooltip: t("probe.targetChangedHint"),
+            info: true,
+            warn: true
+        });
+        const accept = document.createElement("button");
+        accept.type = "button";
+        accept.className = "probe-more-button probe-target-accept";
+        accept.textContent = t("probe.useCurrentTarget");
+        accept.disabled = probeDriverBusy || cpuProbeOwned;
+        card.append(accept);
+        cards.push(card);
+    } else if (connectedProbeAutomatic && m.autoTarget)
+        cards.push(
+            probeCard({
+                title: t("probe.autoTarget"),
+                detail: m.autoTarget,
+                tooltip: t("probe.autoTargetHint"),
+                info: true
+            })
+        );
+    connectedProbeList.replaceChildren(...cards);
+    // Only a device the extension can save by its serial can be kept.
+    connectedProbeKeepId =
+        connectedProbeAutomatic && selected?.selectable && selected.trustedSerial && selected.defaultConfig
+            ? selected.id
             : "";
+    if (connectedProbeAuto) {
+        connectedProbeAuto.hidden = locked;
+        connectedProbeAuto.setAttribute("aria-pressed", connectedProbeAutomatic ? "true" : "false");
+        connectedProbeAuto.title = t(
+            !connectedProbeAutomatic
+                ? "probe.resetAutomatic"
+                : connectedProbeKeepId
+                  ? "probe.autoKeepHint"
+                  : "probe.autoPickHint"
+        );
     }
+    // Every J-Link carries its driver: a control when the helper can switch it, so a driver is changed without
+    // first picking (and keeping) that J-Link, else a badge saying why. The selected one uses the page's own.
+    if (jlinkDriverChoice) jlinkDriverChoice.hidden = !switchableDriver(selected);
+    if (jlinkDriverState) jlinkDriverState.hidden = true;
+    for (const [deviceId, card] of cardsById) {
+        const device = devices.find((item) => item.id === deviceId);
+        const shown = switchableDriver(device);
+        const manual = !shown && !!device.driver && device.driver.kind !== "not-applicable";
+        const own = shown ? jlinkDriverChoice : manual ? jlinkDriverState : null;
+        if (!own) continue;
+        const control = device.selected ? own : own.cloneNode(true);
+        if (control !== own) {
+            control.removeAttribute("id");
+            control.hidden = false;
+        }
+        if (shown) {
+            if (control !== own) control.onchange = () => changeProbeDriver(control);
+            control.dataset.deviceId = device.id;
+            control.dataset.confirmed = shown;
+            control.value = shown;
+        } else {
+            control.hidden = false;
+            control.textContent = t("probe.driverManual");
+            control.title = t("probe.driverManualHint", {
+                reason: t(device.driver.reasonKey || "probe.driverReasonInterface")
+            });
+        }
+        card.querySelector(".probe-card-main").after(control);
+    }
+    // The busy indicator follows the J-Link whose driver is switching, else the selected one's control.
+    const busyCard = cardsById.get(driverSwitchDeviceId) || selectedCard;
+    const busyAnchor = busyCard?.querySelector("select.jlink-driver-choice, .jlink-driver-state:not([hidden])");
+    if (busyAnchor && jlinkDriverBusy) busyAnchor.after(jlinkDriverBusy);
     setProbeDriverBusy(probeDriverBusy);
 }
 function configurationIncomplete() {
@@ -380,6 +528,34 @@ function revealIncompleteConfiguration() {
     uiState.sections ||= {};
     uiState.sections.mcuConfigSection = true;
     api?.setState?.(uiState);
+}
+// An operation that cannot choose a probe opens the list where the user picks one.
+// The configuration row's interface script, changed in place by choosing a probe of another family.
+function showDebuggerConfig(name) {
+    const value = document.querySelector(".debugger-config-row .row-copy > small");
+    if (!value) return;
+    value.textContent = name || t("common.notSelected");
+    value.title = name;
+    if (name) value.removeAttribute("data-i18n");
+    else value.setAttribute("data-i18n", "common.notSelected");
+}
+function revealConnectedProbes() {
+    if (!probeConfig) return;
+    if (mcuConfigSection && !mcuConfigSection.open) {
+        mcuConfigSection.open = true;
+        uiState.sections ||= {};
+        uiState.sections.mcuConfigSection = true;
+        api?.setState?.(uiState);
+    }
+    probeConfig.open = true;
+    probeConfig.scrollIntoView?.({ block: "nearest" });
+}
+if (probeConfig) {
+    probeConfig.open = !!(uiState && uiState.probeConfigOpen);
+    probeConfig.addEventListener("toggle", () => {
+        uiState.probeConfigOpen = probeConfig.open;
+        if (api && api.setState) api.setState(uiState);
+    });
 }
 if (otherConfig) {
     otherConfig.open = !!(uiState && uiState.otherConfigOpen);
@@ -2502,25 +2678,47 @@ if (chipRead)
     };
 if (svdSelect)
     svdSelect.onclick = () => api && api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.selectExistingSvd" });
-if (jlinkDriverChoice)
-    jlinkDriverChoice.onchange = () => {
-        if (!api) return setStat("error", "sb.extNotConnected");
-        const requested = jlinkDriverChoice.value;
-        if (confirmedProbeDriver) jlinkDriverChoice.value = confirmedProbeDriver;
-        setProbeDriverBusy(true);
-        api.postMessage({ type: "selectProbeDriver", driver: requested, deviceId: driverDeviceId });
+// A J-Link card's driver control asks for that J-Link's driver; it shows the confirmed one until the new list.
+function changeProbeDriver(control) {
+    if (!api) return setStat("error", "sb.extNotConnected");
+    const requested = control.value;
+    if (control.dataset.confirmed) control.value = control.dataset.confirmed;
+    driverSwitchDeviceId = control.dataset.deviceId || "";
+    if (jlinkDriverBusy) control.after(jlinkDriverBusy);
+    setProbeDriverBusy(true);
+    api.postMessage({ type: "selectProbeDriver", driver: requested, deviceId: driverSwitchDeviceId });
+}
+if (jlinkDriverChoice) jlinkDriverChoice.onchange = () => changeProbeDriver(jlinkDriverChoice);
+// The pressed row changes only when the extension posts the new selection.
+function selectConnectedProbe(deviceId) {
+    if (!api) return setStat("error", "sb.extNotConnected");
+    setStat("", "sb.executing");
+    api.postMessage({ type: "selectConnectedProbe", deviceId });
+}
+if (connectedProbeList)
+    connectedProbeList.onclick = (e) => {
+        const accept = e.target.closest("button.probe-target-accept");
+        if (accept) {
+            if (accept.disabled) return;
+            if (!api) return setStat("error", "sb.extNotConnected");
+            setStat("", "sb.executing");
+            return api.postMessage({ type: "acceptTargetChip" });
+        }
+        const card = e.target.closest("button.probe-card-main");
+        if (card && !card.disabled && card.getAttribute("aria-pressed") !== "true")
+            selectConnectedProbe(card.dataset.deviceId);
     };
-if (connectedProbe)
-    connectedProbe.onchange = () => {
-        const requested = connectedProbe.value;
-        connectedProbe.value = confirmedConnectedProbe;
-        if (!api) return setStat("error", "sb.extNotConnected");
-        if (requested === confirmedConnectedProbe || (requested.startsWith("__") && requested !== "__auto__")) return;
-        setStat("", "sb.executing");
-        api.postMessage({ type: "selectConnectedProbe", deviceId: requested === "__auto__" ? "" : requested });
+// Both buttons sit in the summary; using them must not fold the section.
+if (connectedProbeAuto)
+    connectedProbeAuto.onclick = (e) => {
+        e.preventDefault();
+        selectConnectedProbe(connectedProbeAutomatic ? connectedProbeKeepId : "");
     };
 if (connectedProbeRefresh)
-    connectedProbeRefresh.onclick = () => api && api.postMessage({ type: "refreshConnectedProbes" });
+    connectedProbeRefresh.onclick = (e) => {
+        e.preventDefault();
+        if (api) api.postMessage({ type: "refreshConnectedProbes" });
+    };
 if (svdDownload)
     svdDownload.onclick = (e) => {
         e.preventDefault();
@@ -2678,7 +2876,14 @@ window.EmberProbeMessages.connect(window, {
     connectedProbes: function (m) {
         renderConnectedProbes(m);
     },
+    revealConnectedProbes: function () {
+        revealConnectedProbes();
+    },
+    debuggerConfig: function (m) {
+        showDebuggerConfig(m.debugger || "");
+    },
     probeDriverSwitch: function (m) {
+        if (!m.busy) driverSwitchDeviceId = "";
         setProbeDriverBusy(!!m.busy);
     },
     commandSuccess: function (m) {
@@ -2866,6 +3071,7 @@ window.EmberProbeMessages.connect(window, {
     },
     probeOperationStatus: function (m) {
         cpuProbeOwned = !!m.operations?.cpuLoad;
+        probeTargetScan = !!m.operations?.targetScan;
         setProbeDriverBusy(probeDriverBusy);
     },
     rtosSnapshot: function (m) {
