@@ -153,6 +153,10 @@ module.exports = Object.freeze({
     "lw.chartSettings": "绘图设置",
     "lw.jitterBands": "高频绘图优化",
     "lw.jitterBandsHint": "高频抖动段画成半透明包络带，曲线只描走势",
+    "lw.pointerExpandedOnly": "指针仅展开部分采样",
+    "lw.pointerExpandedOnlyHint":
+        "指针目标与 STL 容器只按目标频率读取已展开的部分；关闭则读取解析出的全部。两种方式均记录到磁盘并可导出 CSV",
+    "lw.runtimeCollapsed": "展开后开始采样",
     "lw.removeWatch": "移除监视",
     "lw.closeInspection": "关闭",
     "lw.noReading": "无数据",

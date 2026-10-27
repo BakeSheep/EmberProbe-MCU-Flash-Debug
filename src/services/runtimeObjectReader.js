@@ -3,6 +3,7 @@
 const elf = require("../elfSymbols");
 const { MAX_COMPOSITE_DEPTH, MAX_TYPE_ALIASES } = require("../dwarf/layoutLimits");
 const { formatPointer } = require("../webview/runtime");
+const { elementPath, flatMember, memberPath, summaryShown } = require("./runtimeExpansion");
 
 function failure(code, message) {
     return Object.assign(new Error(message), { code });
@@ -41,6 +42,11 @@ class RuntimeObjectReader {
         this.verificationBudget = { bytes: 0, commands: 0 };
         this.pointerExpansionStopped = false;
         this.nodes = 0;
+        // Paths the waveform view opened (see runtimeExpansion.js); absent reads the whole object.
+        this.expanded = Array.isArray(item.runtimeExpanded) ? new Set(item.runtimeExpanded) : null;
+    }
+    opened(path) {
+        return !this.expanded || this.expanded.has(path);
     }
     type(id) {
         for (let depth = 0; depth < MAX_TYPE_ALIASES; depth++) {
@@ -571,7 +577,9 @@ class RuntimeObjectReader {
         depth = 0,
         ancestors = new Set(),
         followPointers = !this.item.runtimeStaticPointers,
-        maxNodes = 256
+        maxNodes = 256,
+        path = "",
+        open = true
     ) {
         const key = object.type + ":" + object.address;
         if (ancestors.has(key)) throw failure("LIVE_POINTER_CYCLE", "Runtime pointer graph contains a cycle");
@@ -620,12 +628,16 @@ class RuntimeObjectReader {
                         (target.kind === "scalar" && !target.watchType)
                     )
                         return leaf("opaque-pointee");
+                    // A closed pointer keeps its address; its target is read once the view opens it.
+                    if (!this.opened(path)) return { ...leaf(), collapsed: true };
                     const value = await this.tree(
                         await this.dereference(object),
                         depth + 1,
                         next,
                         followPointers,
-                        maxNodes
+                        maxNodes,
+                        type.kind === "reference" ? path : path + ".value",
+                        true
                     );
                     if (value.kind === "unavailable") return leaf(value.unobservable || "opaque-pointee");
                     if (type.kind === "reference") return value;
@@ -641,6 +653,20 @@ class RuntimeObjectReader {
                     return leaf(pointerFailureReason(error.code));
                 }
             }
+            if (
+                !open &&
+                (type.stl || ["array", "class", "union"].includes(type.kind)) &&
+                !summaryShown(type.stdSummary, type.stl)
+            )
+                return type.kind === "array"
+                    ? {
+                          kind: "array",
+                          typeName: type.typeName,
+                          totalElements: type.count,
+                          elements: [],
+                          collapsed: true
+                      }
+                    : { kind: type.kind, typeName: type.typeName, members: [], collapsed: true };
             if (type.byteSize && type.byteSize <= 256) await this.memory(object.address, type.byteSize);
             const storage = await this.storage(object);
             if (storage) {
@@ -648,18 +674,23 @@ class RuntimeObjectReader {
                 if (this.nodes + count > maxNodes) return unavailable();
                 this.nodes += count;
                 const values = [];
-                for (let index = 0; index < count; index++)
+                for (let index = 0; index < count; index++) {
+                    const name = storage.labels?.[index] || "value";
+                    const child = storage.named || storage.labels ? memberPath(path, name) : elementPath(path, index);
                     values.push({
                         index,
-                        name: storage.labels?.[index] || "value",
+                        name,
                         ...(await this.tree(
                             await storage.at(index),
                             depth + 1,
                             next,
                             true,
-                            branchBudget(count - index)
+                            branchBudget(count - index),
+                            child,
+                            this.opened(child)
                         ))
                     });
+                }
                 const truncated = values.some((value) => value.unobservable || value.truncated);
                 return storage.named || storage.labels
                     ? {
@@ -692,7 +723,9 @@ class RuntimeObjectReader {
                             depth + 1,
                             next,
                             followPointers,
-                            branchBudget(count - index)
+                            branchBudget(count - index),
+                            elementPath(path, index),
+                            this.opened(elementPath(path, index))
                         ))
                     });
                 return {
@@ -733,6 +766,7 @@ class RuntimeObjectReader {
                         remaining--;
                         continue;
                     }
+                    const child = memberPath(path, field.name);
                     members.push({
                         name: field.name,
                         ...(field.memberRole ? { memberRole: field.memberRole } : {}),
@@ -741,7 +775,9 @@ class RuntimeObjectReader {
                             depth + 1,
                             next,
                             followPointers,
-                            branchBudget(remaining--)
+                            branchBudget(remaining--),
+                            child,
+                            flatMember(field.name, field.memberRole) || this.opened(child)
                         ))
                     });
                 }
@@ -805,14 +841,15 @@ class RuntimeObjectReader {
             stringPreview: true
         };
     }
+    root(object) {
+        return this.tree(object, 0, new Set(), !this.item.runtimeStaticPointers, 256, "", this.opened(""));
+    }
     async sample() {
         const object = await this.select(
             await this.dynamic({ address: this.item.address, type: this.graph.root }),
             this.item.runtimeSegments || []
         );
-        const tree = this.item.derefPath
-            ? (await this.stringPreview(object)) || (await this.tree(object))
-            : await this.tree(object);
+        const tree = (this.item.derefPath && (await this.stringPreview(object))) || (await this.root(object));
         for (const [address, original] of this.descriptors) {
             this.verificationBudget.bytes -= original.length;
             this.verificationBudget.commands--;

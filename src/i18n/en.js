@@ -167,6 +167,10 @@ module.exports = Object.freeze({
     "lw.chartSettings": "Chart settings",
     "lw.jitterBands": "High-frequency rendering",
     "lw.jitterBandsHint": "Draws rapid jitter as a translucent band and keeps the line on the trend",
+    "lw.pointerExpandedOnly": "Sample expanded pointer parts only",
+    "lw.pointerExpandedOnlyHint":
+        "Pointer targets and STL containers read only their expanded parts at the target rate; off reads everything parsed. Both are recorded to disk and exportable as CSV",
+    "lw.runtimeCollapsed": "Sampling starts when expanded",
     "lw.removeWatch": "Remove watch",
     "lw.closeInspection": "Close",
     "lw.noReading": "No data",

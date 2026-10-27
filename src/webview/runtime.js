@@ -354,6 +354,7 @@
                       node.isPointer,
                       node.memberRole,
                       node.stdSummary,
+                      node.collapsed,
                       node.members?.map((member) => flags(member, depth + 1)),
                       node.elements?.map((element) => flags(element, depth + 1))
                   ]

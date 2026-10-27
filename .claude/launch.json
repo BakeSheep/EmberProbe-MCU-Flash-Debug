@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mockup",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["mockup/serve.js", "8085"],
+      "port": 8085
+    },
+    {
+      "name": "mockup-jlink-driver-fix",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/worktrees/jlink-driver-fix/mockup/serve.js", "8086"],
+      "port": 8086
+    }
+  ]
+}

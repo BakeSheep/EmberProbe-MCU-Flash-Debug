@@ -72,12 +72,14 @@ const {
     LiveWatchService,
     buildActiveReadPlan,
     buildChartHistoryItems,
+    collectRuntimeHistoryLeaves,
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
     writableRamSectionRanges
 } = require("./services/liveWatchService");
+const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
@@ -112,6 +114,10 @@ const CACHE_KEYS = {
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
 // Waveform sampling without a rate cap (the slider's "Max rate" notch), remembered per workspace.
 const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
+// Waveform runtime objects read only the parts their view opened (default) or everything parsed.
+const POINTER_EXPANDED_ONLY_STATE_KEY = "liveWatch.pointerExpandedOnly";
+// Opened runtime paths per chart watch list, so a restarted chart samples the same parts.
+const RUNTIME_EXPANSIONS_STATE_KEY = "liveWatch.runtimeExpansions";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
 const MCP_CONFIGURED_STATE_KEY = "emberprobe.mcpConfigured";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
@@ -237,6 +243,7 @@ class MainViewProvider {
         this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
         this._liveIntervalMs = intervalMsFromHz(this._liveFrequencyHz);
         this._unlimitedSamplingRequested = context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true;
+        this._pointerExpandedOnly = context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false;
         /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
         this._archiveRateSamples = [];
         this._liveConsumers = new Set();
@@ -3244,6 +3251,38 @@ class MainViewProvider {
             [watchKey]: Object.fromEntries(entries)
         });
     }
+    _runtimeExpansions(watchKey) {
+        const stored = this._context.workspaceState.get(RUNTIME_EXPANSIONS_STATE_KEY);
+        const value = stored && typeof stored === "object" ? stored[watchKey] : null;
+        return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    }
+    async _saveRuntimeExpansions(watchKey, expansions) {
+        const normalized = normalizeRuntimeExpansions(expansions);
+        if (JSON.stringify(normalized) === JSON.stringify(this._runtimeExpansions(watchKey))) return;
+        const stored = this._context.workspaceState.get(RUNTIME_EXPANSIONS_STATE_KEY);
+        await this._context.workspaceState.update(RUNTIME_EXPANSIONS_STATE_KEY, {
+            ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
+            [watchKey]: normalized
+        });
+        if (this._pointerExpandedOnly) await this._refreshSamplingPlan();
+    }
+    _pointerSamplingState() {
+        return { type: "pointerSampling", expandedOnly: this._pointerExpandedOnly === true };
+    }
+    async _setPointerExpandedOnly(enabled) {
+        if (typeof enabled !== "boolean")
+            throw Object.assign(new Error("Pointer sampling mode must be a boolean"), { code: "INVALID_PARAMS" });
+        if (enabled === this._pointerExpandedOnly) return;
+        this._pointerExpandedOnly = enabled;
+        await this._context.workspaceState.update(POINTER_EXPANDED_ONLY_STATE_KEY, enabled);
+        const state = this._pointerSamplingState();
+        for (const entry of this._livePanels.values()) entry.post(state);
+        await this._refreshSamplingPlan();
+    }
+    // Opened runtime paths of a chart's watch list while only expanded parts are sampled, else null.
+    _panelRuntimeExpansions(watchKey) {
+        return this._pointerExpandedOnly === true ? this._runtimeExpansions(watchKey) : null;
+    }
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
     openLiveWatchPanel(restoredPanel = null, restoredId = null) {
         if (!this._seriesStyleStore) {
@@ -3331,6 +3370,7 @@ class MainViewProvider {
                         );
                         post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
                         post(this._unlimitedSamplingState());
+                        post(this._pointerSamplingState());
                         post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
                         post({ type: "curveVisibility", hidden: this._curveVisibility(watchKey) });
                         this._syncGraphTarget(entry);
@@ -3352,6 +3392,16 @@ class MainViewProvider {
                         break;
                     case "saveCurveVisibility":
                         await this._saveCurveVisibility(watchKey, message.hidden);
+                        break;
+                    case "saveRuntimeExpansions":
+                        await this._saveRuntimeExpansions(watchKey, message.expansions);
+                        break;
+                    case "setPointerExpandedOnly":
+                        try {
+                            await this._setPointerExpandedOnly(message.enabled);
+                        } finally {
+                            post(this._pointerSamplingState());
+                        }
                         break;
                     case "setSeriesStyle": {
                         const styles = await this._seriesStyleStore.update(message.name, message.style);
@@ -4203,7 +4253,12 @@ class MainViewProvider {
     // 复合变量（结构体/数组）展开为叶子成员读取项，按变量整体地址范围合并读取。
     _activeReadPlan() {
         const lists = [];
-        for (const entry of this._livePanels.values()) lists.push(this._scalarWatchList(entry.watchKey));
+        const expansions = [];
+        for (const entry of this._livePanels.values()) {
+            lists.push(this._scalarWatchList(entry.watchKey));
+            expansions.push(this._panelRuntimeExpansions(entry.watchKey));
+        }
+        // The sidebar and write cards read runtime objects whole.
         lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
         // 写入列表变量也纳入采样读取，使写入卡片能实时同步当前值；不回写存储，避免丢失 min/max 等 UI 字段
         try {
@@ -4212,7 +4267,7 @@ class MainViewProvider {
         } catch (e) {
             /* ELF 不可用时忽略写入列表 */
         }
-        const plan = buildActiveReadPlan(lists, elfSymbols);
+        const plan = buildActiveReadPlan(lists, elfSymbols, expansions);
         return this._runtimeReadRanges(plan);
     }
     _runtimeReadRanges(plan, result) {
@@ -4399,7 +4454,11 @@ class MainViewProvider {
     _configureChartHistory(entry, acquisitionTime = Date.now()) {
         if (!this._chartHistory) return;
         const scope = this._debugSamplingScope(entry.watchKey);
-        const items = buildChartHistoryItems(this._scalarWatchList(entry.watchKey), elfSymbols);
+        const watched = this._scalarWatchList(entry.watchKey);
+        const owners = new Set(watched.map((item) => item.name));
+        for (const [name, leaf] of entry.runtimeHistoryLeaves || [])
+            if (!owners.has(leaf.runtimeOwner)) entry.runtimeHistoryLeaves.delete(name);
+        const items = buildChartHistoryItems(watched, elfSymbols, [...(entry.runtimeHistoryLeaves?.values() || [])]);
         const identity = (item) => JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
         const previous = new Map(
             (entry.historyScope === scope ? entry.historyItems || [] : []).map((item) => [item.name, item])
@@ -4898,13 +4957,23 @@ class MainViewProvider {
             if (entry.ready && (decoded.scalarSamples.length || decoded.compositeSamples.length)) {
                 this._postWebviewBatch(entry, decoded.scalarSamples, decoded.compositeSamples, t);
             }
+            // Scalars of runtime trees become silent channels as they appear, like static composite members.
+            const runtimeLeaves = decoded.compositeSamples.length
+                ? collectRuntimeHistoryLeaves(
+                      decoded.compositeSamples,
+                      this._scalarWatchList(entry.watchKey),
+                      this._panelRuntimeExpansions(entry.watchKey),
+                      (entry.runtimeHistoryLeaves ||= new Map())
+                  )
+                : { samples: [], added: false };
+            if (runtimeLeaves.added) this._configureChartHistory(entry, t);
             // Keep every panel's decoding and type changes separate in exported history.
             const recorded = entry.historyItems
                 ? this._liveWatchService.decodeHistorySamples(
                       currentSamples,
                       t,
                       entry.historyItems,
-                      decoded.scalarSamples
+                      runtimeLeaves.samples.concat(decoded.scalarSamples)
                   )
                 : decoded.scalarSamples;
             const graphTypes = new Map(
@@ -5075,7 +5144,7 @@ class MainViewProvider {
         if (this._debugBridge.hasSession) {
             // Reordering watch cards keeps the same reads; only a changed set refreshes the snapshot.
             const planKey = active
-                .map((item) => `${item.name}:${item.address}:${item.size}`)
+                .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
                 .sort()
                 .join("|");
             this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);

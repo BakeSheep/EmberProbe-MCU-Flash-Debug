@@ -1,6 +1,7 @@
 "use strict";
 
-const { formatPointer, runtimeMemberRoute } = require("../webview/runtime");
+const { formatPointer, isPointeeEntry, runtimeMemberRoute } = require("../webview/runtime");
+const { MAX_RUNTIME_HISTORY_LEAVES, runtimeTreeLeaves } = require("./runtimeExpansion");
 
 // `char *` and `const char *` (plain, signed or unsigned char) name C strings.
 const CHAR_POINTER = /^(?:const\s+|volatile\s+)*(?:(?:un)?signed\s+)?char(?:\s+const|\s+volatile)*\s*\*$/;
@@ -74,15 +75,40 @@ function runtimeTreeLeaf(tree, route) {
     return node;
 }
 
+// Paths of `item` that one list opens: its view's expansions, the root of an expanded pointee,
+// and the route to every runtime member the list takes from this item's tree.
+function runtimeOpenPaths(item, list, expansions) {
+    const paths = new Set(Array.isArray(expansions[item.name]) ? expansions[item.name] : []);
+    if (isPointeeEntry(item)) paths.add("");
+    const parents = list.filter((entry) => entry?.runtimeLayout && entry.isComposite).map((entry) => entry.name);
+    for (const member of list) {
+        if (!member?.runtimeLayout || member.isComposite || runtimeTreeOwner(member.name, parents) !== item.name)
+            continue;
+        let path = "";
+        paths.add(path);
+        for (const name of runtimeMemberRoute(member.name, item.name)) paths.add((path += "." + name));
+    }
+    return paths;
+}
+
 // 将多个消费者的观察列表合并为单一原始字节读取计划。
 // 同名标量取最大宽度，复合变量按整体内存范围读取。
-function buildActiveReadPlan(watchLists, elfSymbols) {
+// `runtimeExpansions[i]` limits list i's runtime objects to the paths its view opened; a missing
+// entry reads them whole. A runtime object shared by several lists reads the union.
+function buildActiveReadPlan(watchLists, elfSymbols, runtimeExpansions = []) {
     const byName = new Map();
-    const add = (item) => {
+    const opened = new Map();
+    const add = (item, list, expansions) => {
         if (!item?.name) return;
         if (item.runtimeLayout) {
-            const { layoutExpansions, layoutExpansionGeneration, compositeLayout, ...runtime } = item;
+            const { layoutExpansions, layoutExpansionGeneration, compositeLayout, runtimeExpanded, ...runtime } = item;
             byName.set(item.name, runtime);
+            if (!expansions || opened.get(item.name) === null) opened.set(item.name, null);
+            else
+                opened.set(
+                    item.name,
+                    new Set([...(opened.get(item.name) || []), ...runtimeOpenPaths(item, list, expansions)])
+                );
             return;
         }
         if (item.isComposite && item.compositeLayout) {
@@ -118,14 +144,24 @@ function buildActiveReadPlan(watchLists, elfSymbols) {
             const parents = list.filter((item) => item?.runtimeLayout && item.isComposite).map((item) => item.name);
             if (!runtimeTreeOwner(name, parents)) derived.delete(name);
         }
-    for (const list of lists) for (const item of list) if (!derived.has(item?.name)) add(item);
-    return Array.from(byName.values());
+    lists.forEach((list, index) => {
+        const expansions = runtimeExpansions[index];
+        for (const item of list) if (!derived.has(item?.name)) add(item, list, expansions);
+    });
+    return Array.from(byName.values(), (item) =>
+        opened.get(item.name) ? { ...item, runtimeExpanded: [...opened.get(item.name)].sort() } : item
+    );
 }
 
 // A fixed composite is already read as a whole. Keep its scalar leaves in history
-// before they are selected for drawing, without adding hardware reads.
-function buildChartHistoryItems(items, elfSymbols) {
+// before they are selected for drawing, without adding hardware reads. `runtimeLeaves`
+// are scalars recorded from sampled runtime trees (see collectRuntimeHistoryLeaves).
+function buildChartHistoryItems(items, elfSymbols, runtimeLeaves = []) {
     const byName = new Map();
+    const runtimeOwners = new Set(
+        (items || []).filter((item) => item.isComposite && item.runtimeLayout).map((item) => item.name)
+    );
+    for (const leaf of runtimeLeaves) if (runtimeOwners.has(leaf.runtimeOwner)) byName.set(leaf.name, leaf);
     for (const item of items || []) {
         if (!item.isComposite || !item.compositeLayout || item.runtimeLayout) continue;
         for (const leaf of elfSymbols.expandCompositeLeaves(item, item.compositeLayout, null))
@@ -138,6 +174,40 @@ function buildChartHistoryItems(items, elfSymbols) {
         byName.set(item.name, same ? { ...leaf, ...item } : item);
     }
     return [...byName.values()];
+}
+
+// Scalar samples of one waveform view's runtime trees, recorded as silent history channels.
+// `known` maps leaf names to history items and grows (up to a limit) as new leaves appear;
+// `expansions` (null: everything sampled) limits recording to the parts this view opened,
+// even when another consumer reads more of the same object.
+function collectRuntimeHistoryLeaves(compositeSamples, items, expansions, known) {
+    const owners = new Map(
+        (items || []).filter((item) => item.isComposite && item.runtimeLayout).map((item) => [item.name, item])
+    );
+    const samples = [];
+    let added = false;
+    for (const sample of compositeSamples || []) {
+        const owner = owners.get(sample.name);
+        if (!owner || !sample.tree) continue;
+        const paths = expansions && runtimeOpenPaths(owner, items, expansions);
+        for (const { path, node } of runtimeTreeLeaves(sample.tree, paths && ((entry) => paths.has(entry)))) {
+            if (!path) continue;
+            const name = owner.name + path;
+            if (known.get(name)?.type !== node.type) {
+                if (!known.has(name) && known.size >= MAX_RUNTIME_HISTORY_LEAVES) continue;
+                known.set(name, { name, type: node.type, address: owner.address, runtimeOwner: owner.name });
+                added = true;
+            }
+            samples.push({
+                name,
+                value: node.value,
+                valueText: node.valueText ?? null,
+                ...(node.enumText ? { enumText: node.enumText } : {}),
+                t: sample.t
+            });
+        }
+    }
+    return { samples, added };
 }
 
 function writableRamSectionRanges(sections) {
@@ -454,6 +524,7 @@ module.exports = {
     LiveWatchService,
     buildActiveReadPlan,
     buildChartHistoryItems,
+    collectRuntimeHistoryLeaves,
     nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,

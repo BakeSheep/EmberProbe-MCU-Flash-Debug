@@ -228,6 +228,7 @@ const TEST_GROUPS = Object.freeze({
         "webview.test.js",
         "write-stepping.test.js",
         "pointer-deref.test.js",
+        "pointer-expansion-sampling.test.js",
         "pointer-display.test.js",
         "pointer-targets.test.js",
         "write-list-view.test.js",
