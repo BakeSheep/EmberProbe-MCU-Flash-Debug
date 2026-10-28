@@ -11,7 +11,9 @@ const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
+const YAML = require("yaml");
 const {
     ElicitRequestSchema,
     ListRootsRequestSchema,
@@ -24,6 +26,7 @@ const { REGISTRY_DIR } = require("../skills/_emberprobe/bridge-locator");
 const flashCommon = require("../skills/_emberprobe/flash-common");
 const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity");
 const { createServer } = require("../src/mcp/server");
+const { configSnippet, launcherSource } = require("../src/services/mcpRegistration");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
 const { PeripheralWriteAuthorization } = require("../src/peripheralWriteAuthorization");
 const { FlashAuthorization } = require("../src/flashAuthorization");
@@ -328,6 +331,49 @@ const inspection = new AgentDebugInspection(debugBridge);
             assert.strictEqual(missing.structuredContent.error.code, "BRIDGE_UNAVAILABLE");
             assert.strictEqual(missing.structuredContent.type, "diagnostic", "same shape as skill diagnostics");
             await fallback.client.close();
+        });
+
+        await scenario("Launch exported Antigravity and DSH configurations over stdio without roots", async () => {
+            const launcher = path.join(base, "external-client-launcher.js");
+            fs.writeFileSync(launcher, launcherSource(require.resolve("../src/mcp/server")));
+            const spec = {
+                command: process.execPath,
+                args: [launcher],
+                env: {
+                    ELECTRON_RUN_AS_NODE: "1",
+                    EMBERPROBE_MCP_TOOLSETS: "core",
+                    EMBERPROBE_BRIDGE_REGISTRY: process.env.EMBERPROBE_BRIDGE_REGISTRY
+                }
+            };
+            for (const name of ["antigravity", "dsh"]) {
+                const snippet = configSnippet(name, spec, process.platform, workspace);
+                const config =
+                    name === "antigravity"
+                        ? JSON.parse(snippet).mcpServers.emberprobe
+                        : YAML.parse(snippet)[0].insert[0].config;
+                const client = new Client({ name: `test-${name}`, version: "1.0.0" }, { capabilities: {} });
+                const transport = new StdioClientTransport({
+                    command: config.command,
+                    args: config.args,
+                    env: config.env,
+                    cwd: base
+                });
+                try {
+                    await client.connect(transport);
+                    const tools = await client.listTools();
+                    assert.ok(tools.tools.some((tool) => tool.name === "config_get"));
+                    assert.ok(
+                        !tools.tools.some((tool) => tool.name === "debug_start"),
+                        "toolset selection is preserved"
+                    );
+                    const result = await client.callTool({ name: "config_get", arguments: {} });
+                    assert.ok(!result.isError, JSON.stringify(result));
+                    assert.deepStrictEqual(result.structuredContent, { workspace });
+                } finally {
+                    await client.close();
+                    await transport.close();
+                }
+            }
         });
 
         await scenario("Execute a variable write only after the user approves its items", async () => {

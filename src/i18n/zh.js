@@ -778,10 +778,14 @@ module.exports = Object.freeze({
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
     "mcp.client.cursor": "Cursor",
+    "mcp.client.antigravity": "Antigravity",
+    "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "其他客户端",
     "mcp.method.cli": "运行 {command}（用户配置）",
     "mcp.method.cliMissing": "PATH 中未找到 {command}，将复制安装命令",
     "mcp.method.cursor": "打开 Cursor 安装链接",
+    "mcp.method.antigravity": "复制 Antigravity mcp_config.json 配置（当前工作区）",
+    "mcp.method.dsh": "复制 DSH YAML patch（当前工作区）",
     "mcp.method.json": "复制 mcpServers JSON 到剪贴板",
     "mcp.install": "安装",
     "mcp.installConfirm": "将运行以下命令，把 EmberProbe MCP 服务器添加到 {client} 的用户配置",
@@ -791,6 +795,10 @@ module.exports = Object.freeze({
     "mcp.cursorOpened": "已打开 Cursor 安装链接，请在 Cursor 中确认安装",
     "mcp.cursorLinkCopied": "无法打开 Cursor 安装链接，链接已复制到剪贴板",
     "mcp.configCopied": "{client} 的 EmberProbe MCP 配置已复制到剪贴板，请粘贴到客户端的 MCP 配置中",
+    "mcp.configCopied.antigravity":
+        "Antigravity 配置已复制：在 MCP Servers → Manage MCP Servers → View raw config 中合并 emberprobe 条目，再刷新服务器；请在 EmberProbe 中启用当前工作区的 Agent 访问",
+    "mcp.configCopied.dsh":
+        "DSH 配置已复制：保存为 emberprobe.cordis.yml，再运行 dsh web --patch <文件路径>；请在 EmberProbe 中启用当前工作区的 Agent 访问",
     "agent.cleanupConfirm":
         "将从用户主目录 ~/.agents/skills 移除 EmberProbe 安装的 skills，只删除 EmberProbe 清单内的条目。是否继续？",
     "live.elfFirst": "请先在侧栏选择 ELF 固件",

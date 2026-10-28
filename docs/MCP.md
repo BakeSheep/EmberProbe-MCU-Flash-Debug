@@ -34,6 +34,8 @@ EmberProbe 运行在 Cursor 中时，通过 Cursor 的扩展 API `vscode.cursor.
 | Claude Code | 显示并确认后运行 `claude mcp add --scope user emberprobe -e … -- <command> <args>` |
 | Codex | 显示并确认后运行 `codex mcp add emberprobe --env … -- <command> <args>` |
 | Cursor | 打开安装链接 `cursor://anysphere.cursor-deeplink/mcp/install?name=emberprobe&config=<base64>`，由 Cursor 弹出确认（EmberProbe 本身运行在 Cursor 中或处于远程窗口时不提供此项） |
+| Antigravity | 复制专用 `mcpServers` JSON，包含当前主工作区和长任务超时；在客户端 raw config 中合并 |
+| DeepSeek Harness (DSH) | 复制 `@deepseek-ai/dsh-mcp-client` 的 YAML `insert` patch，包含当前主工作区和长任务超时 |
 | 其他客户端 | 把 `{ "mcpServers": { "emberprobe": { … } } }` 复制到剪贴板 |
 
 配置由客户端自己的 CLI 或安装链接写入，扩展不直接修改任何客户端的配置文件。CLI 从 PATH 中查找（Windows 接受 `.exe`、`.cmd`、`.bat`；npm 安装的 `.cmd` 包装经 `cmd.exe` 调用，参数逐个加引号，含 `"`、`%`、`!` 的参数不执行）。添加失败时（例如已存在同名配置）先移除 `emberprobe` 再添加一次；找不到 CLI 或仍然失败时，安装命令复制到剪贴板，可在终端中手动运行。
@@ -46,6 +48,26 @@ EmberProbe 运行在 Cursor 中时，通过 Cursor 的扩展 API `vscode.cursor.
 启动器和包装脚本在每次激活时重写为当前安装的扩展与运行时路径，因此扩展或编辑器升级后无需修改客户端配置。远程窗口（Remote-SSH、WSL）中路径属于远端，只适用于同样运行在远端的客户端。
 
 Bridge 的端口和 token 每次启动都会变化，并且只保存在 globalStorage 中，所以只提供 stdio，不提供 HTTP 传输：stdio 服务器在每次调用时重新定位当前的 Bridge，客户端配置中没有 token。
+
+### Antigravity
+
+在 EmberProbe 命令中选择 **Antigravity**，把剪贴板 JSON 中的 `mcpServers.emberprobe` 合并到客户端已有配置，保留其他服务器。Antigravity IDE 中入口为 **MCP Servers → Manage MCP Servers → View raw config**；修改后刷新 MCP 服务器。当前官方配置位置为 `~/.gemini/config/mcp_config.json` 或工作区 `.agents/mcp_config.json`，不同版本以客户端打开的 raw config 为准。见 [Antigravity 官方 MCP 文档](https://antigravity.google/docs/mcp)。
+
+生成配置使用绝对路径启动器，并在有工作区时设置 `env.EMBERPROBE_WORKSPACE` 为当前主根目录，避免客户端未提供 roots 或从安装目录启动时连错工程。`timeoutSeconds: 1800` 为用户确认、烧录及 CubeMX 等长调用提供有限的等待预算。切换到其他工程时重新导出，或更新 `EMBERPROBE_WORKSPACE`；多根工作区的配置仍以主根为准。
+
+### DeepSeek Harness (DSH)
+
+在 EmberProbe 命令中选择 **DeepSeek Harness (DSH)**，将剪贴板内容保存为 `emberprobe.cordis.yml`。这是可通过 `--patch` 加载的 YAML patch，不是 `mcpServers` JSON，也不是要覆盖现有 profile 的完整配置：
+
+```sh
+dsh web --patch "/absolute/path/emberprobe.cordis.yml"
+```
+
+Windows 同样使用文件的绝对路径，例如 `dsh web --patch "C:\projects\board\emberprobe.cordis.yml"`。patch 通过 `insert` 添加一个 `id: mcp-emberprobe`、`name: "@deepseek-ai/dsh-mcp-client"` 的插件条目；其 `config` 使用 `serverName: emberprobe`、`transport: stdio`、绝对启动路径与环境变量，并设置 `toolCallTimeoutMs: 1800000`。重复配置时更新已有条目，不重复插入同名服务器。有工作区时显式设置 `env.EMBERPROBE_WORKSPACE`，因此不依赖 DSH 的工作目录或 roots。见 [DSH 官方 MCP 客户端说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md) 和 [官方 patch 示例](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/config/examples/mcp-memory/mcp-reference-memory.cordis.yml)。
+
+DSH 加载后工具名形如 `mcp__emberprobe__config_get`。当前 DSH 不消费 MCP prompt 模板，因此本页的五个工作流 prompt 不会在 DSH 中出现；直接使用对应工具。未声明 elicitation 能力的客户端沿用下文的聊天确认流程。
+
+两类配置都需要保持运行中的 EmberProbe 窗口，并在该工作区启用 Agent 访问。配置导出本身不会启动 Bridge 或授予硬件操作权限。远程窗口的配置仅供同一远端的客户端使用。30 分钟是客户端单次调用上限，不改变 Bridge 自身的操作预算；主动请求更长的采样时需自行调整客户端上限。
 
 ## 工作区定位 / Locating the Bridge
 
@@ -113,6 +135,8 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 | Claude Code | `claude mcp add` | — | — | — | 待实测 |
 | Codex | `codex mcp add` | — | — | — | 待实测 |
 | Cursor | 扩展 API / 安装链接 | — | — | — | 待实测 |
+| Antigravity | 专用 stdio JSON 导出 | — | 按客户端能力选择 | 显式工作区，不依赖 roots | 配置生成、解析及 stdio 回归由自动测试覆盖；客户端交互待实测 |
+| DeepSeek Harness (DSH) | 专用 stdio YAML patch 导出 | — | 未声明时使用聊天确认 | 显式工作区，不依赖 roots | 配置生成、解析及 stdio 回归由自动测试覆盖；客户端交互待实测，MCP prompts 不支持 |
 
 ## 排错 / Troubleshooting
 
@@ -121,3 +145,5 @@ MCP 服务器不会因为用户的初始请求就选择 `remember`，也不会�
 - `BRIDGE_AMBIGUOUS`：关闭多余窗口，或设置 `EMBERPROBE_BRIDGE_INSTANCE`。
 - 外部客户端无法启动服务器：打开一次 EmberProbe 窗口以重写启动器与包装脚本；编辑器安装位置变化后重新运行 `EmberProbe: 安装 MCP 服务器到客户端`。
 - Cursor 中看不到 EmberProbe 服务器：确认工作区受信任且已启用 Agent 访问。
+- Antigravity / DSH 能列出工具但返回 `BRIDGE_UNAVAILABLE`：确认 EmberProbe 窗口仍在运行、Agent 访问已启用，且生成配置中的 `EMBERPROBE_WORKSPACE` 与该窗口主工作区一致；自定义宿主数据目录未被扫描到时，可设置 `EMBERPROBE_BRIDGE_REGISTRY` 指向实际 globalStorage 下的 `agent-bridges` 目录。
+- DSH 没有出现 `mcp__emberprobe__*`：检查 patch 是否由目标 profile 加载、`@deepseek-ai/dsh-mcp-client` 是否可用，并查看启动日志；不要把 YAML patch 粘贴进 `mcpServers` JSON 配置。

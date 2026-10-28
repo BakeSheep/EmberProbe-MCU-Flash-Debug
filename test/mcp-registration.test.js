@@ -7,6 +7,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const YAML = require("yaml");
 const { execFileSync } = require("child_process");
 const {
     McpRegistration,
@@ -74,6 +75,7 @@ function setup(vscodeExtra = {}, state = {}) {
                 return state.openExternal !== false;
             }
         },
+        workspace: { workspaceFolders: state.workspace ? [{ uri: { fsPath: state.workspace } }] : [] },
         ...vscodeExtra
     };
     const events = { resolved: 0, configured: 0 };
@@ -347,6 +349,62 @@ function cursorApi() {
             assert.strictEqual(configSnippet("cursor", spec), cursorInstallLink(spec));
         });
 
+        await scenario("Export Antigravity JSON and a DSH patch with explicit workspace and long-call limits", () => {
+            const workspace = "C:\\工作区\\MCU #1: 'demo' & ${value}\\firmware";
+            const spec = {
+                command: RUNTIME,
+                args: ["C:\\Users\\me\\mcp.js"],
+                env: { ELECTRON_RUN_AS_NODE: "1", EMBERPROBE_MCP_TOOLSETS: "core,cubemx" }
+            };
+            const env = { ...spec.env, EMBERPROBE_WORKSPACE: workspace };
+            const antigravity = JSON.parse(configSnippet("antigravity", spec, "win32", workspace));
+            assert.deepStrictEqual(antigravity, {
+                mcpServers: {
+                    emberprobe: { command: RUNTIME, args: spec.args, env, timeoutSeconds: 1800 }
+                }
+            });
+            const patch = YAML.parse(configSnippet("dsh", spec, "win32", workspace));
+            assert.deepStrictEqual(patch, [
+                {
+                    insert: [
+                        {
+                            id: "mcp-emberprobe",
+                            name: "@deepseek-ai/dsh-mcp-client",
+                            config: {
+                                serverName: "emberprobe",
+                                transport: "stdio",
+                                command: RUNTIME,
+                                args: spec.args,
+                                env,
+                                toolCallTimeoutMs: 1800000
+                            }
+                        }
+                    ]
+                }
+            ]);
+            assert.ok(!Object.hasOwn(spec.env, "EMBERPROBE_WORKSPACE"), "export must not mutate the base spec");
+            assert.ok(!Object.hasOwn(env, "EMBERPROBE_BRIDGE_INSTANCE"), "exports survive Bridge restarts");
+        });
+
+        await scenario("Preserve POSIX paths and YAML-sensitive characters without requiring a workspace", () => {
+            const spec = {
+                command: "/home/o'neil/Ember Probe/mcp",
+                args: [],
+                env: { VALUE: 'true: # \\"quoted\\"\n!!js x\u0085y\u2028z\u2029end' }
+            };
+            for (const workspace of [undefined, "/tmp/MCU\u0085one\u2028two\u2029three"]) {
+                const antigravity = JSON.parse(configSnippet("antigravity", spec, "linux", workspace));
+                const dsh = YAML.parse(configSnippet("dsh", spec, "linux", workspace))[0].insert[0].config;
+                const env = workspace ? { ...spec.env, EMBERPROBE_WORKSPACE: workspace } : spec.env;
+                assert.deepStrictEqual(antigravity.mcpServers.emberprobe.env, env);
+                assert.deepStrictEqual(dsh.env, env);
+                assert.strictEqual(dsh.command, spec.command);
+                assert.deepStrictEqual(dsh.args, []);
+            }
+            const empty = YAML.parse(configSnippet("dsh", { command: "/s/mcp", args: [], env: {} }, "linux"));
+            assert.ok(!Object.hasOwn(empty[0].insert[0].config, "env"));
+        });
+
         await scenario("Find client CLIs on PATH", () => {
             const first = path.join(base, "bin one");
             const second = path.join(base, "bin-two");
@@ -434,7 +492,7 @@ function cursorApi() {
             const result = await registration.installClient();
             assert.deepStrictEqual(
                 state.picks.map((pick) => pick.client),
-                ["claude", "codex", "cursor", "json"]
+                ["claude", "codex", "cursor", "antigravity", "dsh", "json"]
             );
             assert.ok(state.picks[0].description.startsWith("mcp.method.cli"));
             assert.ok(state.picks[1].description.startsWith("mcp.method.cliMissing"));
@@ -551,6 +609,41 @@ function cursorApi() {
             assert.strictEqual(json.messages.at(-1)[0], "info");
             assert.strictEqual(json.events.configured, 1);
         });
+
+        await scenario(
+            "Copy named client configurations with setup guidance and no CLI or link side effects",
+            async () => {
+                for (const client of ["antigravity", "dsh"]) {
+                    const workspace = path.join(base, "MCU workspace");
+                    const { registration, clipboard, cli, opened, messages, events, state } = setup(
+                        {},
+                        {
+                            pick: client,
+                            workspace
+                        }
+                    );
+                    const result = await registration.installClient();
+                    assert.strictEqual(result.client, client);
+                    assert.strictEqual(result.method, "clipboard");
+                    assert.deepStrictEqual(clipboard, [result.snippet]);
+                    const spec =
+                        client === "antigravity"
+                            ? JSON.parse(result.snippet).mcpServers.emberprobe
+                            : YAML.parse(result.snippet)[0].insert[0].config;
+                    assert.strictEqual(spec.env.EMBERPROBE_WORKSPACE, workspace);
+                    assert.ok(fs.existsSync(spec.args[0]), "the exported launcher exists");
+                    assert.ok(
+                        state.picks
+                            .find((pick) => pick.client === client)
+                            .description.startsWith(`mcp.method.${client}`)
+                    );
+                    assert.strictEqual(messages.at(-1)[1], `mcp.configCopied.${client}`);
+                    assert.strictEqual(events.configured, 1);
+                    assert.deepStrictEqual(cli, []);
+                    assert.deepStrictEqual(opened, []);
+                }
+            }
+        );
 
         await scenario("Hide the Cursor link inside Cursor and in remote windows", async () => {
             const inCursor = setup({ cursor: cursorApi() }, { pick: "json" });

@@ -815,10 +815,14 @@ module.exports = Object.freeze({
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
     "mcp.client.cursor": "Cursor",
+    "mcp.client.antigravity": "Antigravity",
+    "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "Other clients",
     "mcp.method.cli": "Run {command} (user configuration)",
     "mcp.method.cliMissing": "{command} not found on PATH; the install command will be copied",
     "mcp.method.cursor": "Open the Cursor install link",
+    "mcp.method.antigravity": "Copy Antigravity mcp_config.json configuration (current workspace)",
+    "mcp.method.dsh": "Copy a DSH YAML patch (current workspace)",
     "mcp.method.json": "Copy mcpServers JSON to the clipboard",
     "mcp.install": "Install",
     "mcp.installConfirm":
@@ -832,6 +836,10 @@ module.exports = Object.freeze({
     "mcp.cursorLinkCopied": "Could not open the Cursor install link; the link was copied to the clipboard",
     "mcp.configCopied":
         "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client's MCP configuration",
+    "mcp.configCopied.antigravity":
+        "Antigravity configuration copied: merge the emberprobe entry in MCP Servers → Manage MCP Servers → View raw config, then refresh servers; enable Agent access for this workspace in EmberProbe",
+    "mcp.configCopied.dsh":
+        "DSH configuration copied: save as emberprobe.cordis.yml and run dsh web --patch <file-path>; enable Agent access for this workspace in EmberProbe",
     "agent.cleanupConfirm":
         "Remove the EmberProbe skills from ~/.agents/skills? Only entries listed in the EmberProbe manifest are deleted.",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",
