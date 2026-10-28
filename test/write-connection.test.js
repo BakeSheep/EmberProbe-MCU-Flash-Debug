@@ -296,7 +296,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     const postedStatuses = [];
     runtimeProvider._postConsumerStatuses = (status) => postedStatuses.push(status);
     const pausedWrite = await runtimeProvider._writeUiVariable("byte", 2);
-    assert.strictEqual(pausedWrite.source, "cortex-debug-dap");
+    assert.strictEqual(pausedWrite.source, "debug-dap");
     assert.strictEqual(pausedWrite.halted, true);
     assert.deepStrictEqual(postedStatuses, [], "a paused UI write never gates the write controls mid-drag");
     delete runtimeProvider._postConsumerStatuses;

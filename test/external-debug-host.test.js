@@ -31,7 +31,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
         window: { showErrorMessage: () => {} }
     };
     const Host = loadProvider(vscode, {
-        "./services/cortexDebugPreflight": {
+        "./services/debugToolPreflight": {
             ensureDebugTools: async () => {
                 duringTools();
                 return tools ? { gdbPath: "fake-gdb" } : null;

@@ -741,8 +741,6 @@ module.exports = Object.freeze({
     "msg.debugStartFailed": "Failed to start the debug session. Check the debugger and OpenOCD configuration.",
     "msg.debugStartTimeout":
         "The debugger did not finish starting within {seconds} seconds. The session was stopped and OpenOCD was released. Check that GDB starts normally from a terminal.",
-    "msg.debugStartTimeoutWin":
-        "Cortex-Debug did not finish starting within {seconds} seconds. The session was stopped and OpenOCD was released. Cortex-Debug {version} on Windows may be affected by its fixed five-second GDB startup timeout; use a faster-starting GDB such as 13.x, or upgrade to a stable release containing the fix. A pre-release is not required.",
     "msg.downloadBusy": "A download is already running; please wait for it to finish",
     "msg.agentReadBusy": "The Agent is reading variables; try again shortly",
     "msg.debugBusy": "A debug session is starting; try again shortly",

@@ -70,18 +70,6 @@ function activate(context) {
                 provider.shutdown().catch(() => {});
             }
         },
-        vscode.debug.registerDebugConfigurationProvider("cortex-debug", {
-            async resolveDebugConfiguration(folder, config) {
-                const generation = provider.beginForeignDebug();
-                try {
-                    await provider.prepareForCortexDebug(folder, config);
-                    return provider.isForeignDebugCurrent(generation) ? config : undefined;
-                } catch (error) {
-                    if (provider.isForeignDebugCurrent(generation)) provider.finishForeignDebug();
-                    throw error;
-                }
-            }
-        }),
         vscode.debug.registerDebugConfigurationProvider("emberprobe", {
             async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
                 if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
@@ -97,30 +85,28 @@ function activate(context) {
                 return resolved || undefined;
             }
         }),
-        ...["emberprobe", "cortex-debug"].map(type => vscode.debug.registerDebugAdapterTrackerFactory(type, {
+        vscode.debug.registerDebugAdapterTrackerFactory("emberprobe", {
             createDebugAdapterTracker(session) {
                 provider.handleDebugSessionStart(session);
-                // Only the built-in debugger returns focus to the Debug Console after console stepping.
-                const focus = type === "emberprobe" ? replFocus : null;
                 return {
                     onWillReceiveMessage: message => {
-                        focus?.handleRequest(session, message);
+                        replFocus.handleRequest(session, message);
                         provider.handleDebugAdapterRequest(session, message);
                     },
                     onDidSendMessage: message => {
-                        focus?.handleMessage(session, message);
+                        replFocus.handleMessage(session, message);
                         provider.handleDebugAdapterMessage(session, message);
                     },
                     onError: error => console.error("Debug adapter error:", error),
                     onExit: () => {
-                        focus?.sessionEnded(session);
+                        replFocus.sessionEnded(session);
                         return provider.handleDebugAdapterExit(session)?.catch(error => {
                             console.error("Unable to clean up after debug adapter exit:", error);
                         });
                     }
                 };
             }
-        })),
+        }),
         replFocus,
         vscode.window.onDidChangeActiveTextEditor(() => replFocus.editorActivity("reveal")),
         vscode.window.onDidChangeTextEditorSelection(event => {

@@ -1,7 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
-const { DebugLifecycle, debugStartupPolicy } = require("../src/services/debugLifecycle");
+const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("../src/services/debugLifecycle");
 const { DebugSessionBridge } = require("../src/services/debugSessionBridge");
 const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
@@ -117,7 +117,8 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
     assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
     delete server.options;
 
-    for (const debugType of ["cortex-debug", "emberprobe"]) {
+    // Scoped so these debug fixtures do not clash with the sampling fixtures above.
+    {
         const timers = [];
         const cancelled = [];
         const lifecycle = new DebugLifecycle({
@@ -127,13 +128,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             },
             cancel: (id) => cancelled.push(id)
         });
-        assert.strictEqual(debugStartupPolicy("win32", "1.12.1").timeoutMs, 15000);
-        for (const [platform, version] of [
-            ["linux", "1.12.1"],
-            ["darwin", "1.12.1"],
-            ["win32", "1.12.2"]
-        ])
-            assert.strictEqual(debugStartupPolicy(platform, version).timeoutMs, 60000);
+        assert.strictEqual(DEBUG_STARTUP_TIMEOUT_MS, 60000);
         let recovered = 0;
         const expired = lifecycle.arm(10, () => {
             recovered++;
@@ -240,7 +235,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._managedDebugServer = server;
         const session = {
             id: "current",
-            type: debugType,
+            type: "emberprobe",
             configuration: { __emberprobeManagedToken: "token" },
             workspaceFolder: { uri: { toString: () => "workspace" } }
         };
@@ -290,7 +285,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         q._postConsumerStatuses = () => {};
         q.stopAgentReadIfRunning = () => Promise.resolve().then(() => events.push("agent-stopped"));
         q.stopLiveWatch = () => Promise.resolve().then(() => events.push("live-stopped"));
-        await q.prepareForCortexDebug();
+        await q.prepareProbeForDebug();
         assert.deepStrictEqual(events, ["agent-stopped", "live-stopped"]);
 
         // Provider integration test: DAP initialized then launch failure triggers idempotent cleanup
@@ -324,7 +319,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 
             const sess = {
                 id: "sess-fail",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
@@ -391,7 +386,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._t = (key) => key;
             const unrelated = {
                 id: "other-session",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "other-token" }
             };
             prov._debugBridge.attach(unrelated);
@@ -442,7 +437,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 
             const sess = {
                 id: "sess-succ",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
@@ -534,7 +529,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 
             const sess = {
                 id: "sess-created-then-timeout",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
@@ -624,7 +619,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 
             const sess = {
                 id: "sess-gate-timeout",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "test-token-2" }
             };
 
@@ -680,7 +675,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 
             const sess = {
                 id: "sess-term",
-                type: debugType,
+                type: "emberprobe",
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
@@ -698,7 +693,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._debugBridge.dispose();
             lc.clear();
         }
-        console.log("Cortex-Debug lifecycle behavior tests passed");
+        console.log("Debug lifecycle behavior tests passed");
     }
 })().catch((error) => {
     console.error(error);

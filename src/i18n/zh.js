@@ -709,8 +709,6 @@ module.exports = Object.freeze({
     "msg.debugStartFailed": "调试会话启动失败，请检查调试器与 OpenOCD 配置。",
     "msg.debugStartTimeout":
         "调试器在 {seconds} 秒内未完成启动，已自动结束会话并释放 OpenOCD。请检查 GDB 是否能从终端正常启动。",
-    "msg.debugStartTimeoutWin":
-        "Cortex-Debug 在 {seconds} 秒内未完成启动，已自动结束会话并释放 OpenOCD。Windows 上的 Cortex-Debug {version} 可能受固定 5 秒 GDB 启动超时影响；可改用启动较快的 GDB（如 13.x），或升级到包含修复的稳定版，无需安装预览版。",
     "msg.downloadBusy": "下载正在进行中，请等待当前任务完成",
     "msg.agentReadBusy": "Agent 正在单次读取变量，请稍候",
     "msg.debugBusy": "调试会话正在启动，请稍候",

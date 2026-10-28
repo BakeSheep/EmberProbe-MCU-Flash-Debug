@@ -121,7 +121,7 @@ function session() {
     await mi.stop();
 
     assert(isSupportedDebugSession({ type: "emberprobe" }));
-    assert(isSupportedDebugSession({ type: "cortex-debug" }));
+    assert(!isSupportedDebugSession({ type: "cortex-debug" }));
     assert(!isSupportedDebugSession({ type: "node" }));
     const folder = { uri: { fsPath: __dirname } };
     assert.throws(() => validateDebugConfiguration({ request: "launch" }, null));

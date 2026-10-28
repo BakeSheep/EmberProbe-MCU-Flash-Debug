@@ -1531,7 +1531,7 @@ class ManagedOpenOcdSession {
         return this._silentResponseFile;
     }
 
-    // OpenOCD 会把 Tcl RPC 的非空返回值广播给 GDB，导致 Cortex-Debug 控制台持续刷出
+    // OpenOCD 会把 Tcl RPC 的非空返回值广播给 GDB，导致调试控制台持续刷出
     // EP_OK:<value>。调试模式把机器响应写入扩展创建的私有临时文件，让 Tcl RPC 本身返回空串。
     async _sendSilentDebugCommand(cmd) {
         const responseFile = await this._ensureSilentResponseFile();

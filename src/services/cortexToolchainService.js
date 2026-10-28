@@ -68,25 +68,10 @@ function resolveCortexToolchain(options = {}) {
     return null;
 }
 
-function resolveCortexToolchainForWorkspace(vscode, folder) {
-    const cfg = vscode.workspace.getConfiguration("cortex-debug", folder?.uri);
-    const own = vscode.workspace.getConfiguration("emberprobe", folder?.uri);
-    const platformKey = process.platform === "darwin" ? "osx" : process.platform;
-    return resolveCortexToolchain({
-        configuredObjdump: own.get("objdumpPath") || cfg.get(`objdumpPath.${platformKey}`) || cfg.get("objdumpPath"),
-        toolchainPath:
-            own.get("armToolchainPath") || cfg.get(`armToolchainPath.${platformKey}`) || cfg.get("armToolchainPath"),
-        prefix: own.get("armToolchainPrefix") || cfg.get("armToolchainPrefix", "arm-none-eabi"),
-        envPath: process.env.PATH,
-        platform: process.platform
-    });
-}
-
 module.exports = {
     executableName,
     findOnPath,
     siblingNm,
     validObjdumpPair,
-    resolveCortexToolchain,
-    resolveCortexToolchainForWorkspace
+    resolveCortexToolchain
 };

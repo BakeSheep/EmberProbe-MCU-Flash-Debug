@@ -133,7 +133,7 @@ const { diagnosticForError } = require("../skills/_emberprobe/agent-client");
     bridge.paused = false;
     await assert.rejects(inspection.inspect({ action: "threads" }), { code: "TARGET_NOT_PAUSED" });
     bridge.paused = true;
-    session.type = "cortex-debug";
+    session.type = "cppdbg";
     await assert.rejects(inspection.inspect({ action: "threads" }), { code: "DEBUG_INSPECTION_UNSUPPORTED" });
     session.type = "emberprobe";
     const replacement = { ...session, id: "core-1" };

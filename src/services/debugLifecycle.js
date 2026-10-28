@@ -1,14 +1,6 @@
 "use strict";
-// Cortex-Debug 1.12.1 on Windows may leave startDebugging unresolved.
-// Keep this bounded recovery until that adapter version is no longer supported;
-// remove only with a regression reproducing successful initialization/termination.
-function debugStartupPolicy(platform, version) {
-    const affected = platform === "win32" && version === "1.12.1";
-    return {
-        timeoutMs: affected ? 15000 : 60000,
-        messageKey: affected ? "msg.debugStartTimeoutWin" : "msg.debugStartTimeout"
-    };
-}
+// Upper bound for a debug start that never reports initialization or termination.
+const DEBUG_STARTUP_TIMEOUT_MS = 60000;
 
 class DebugLifecycle {
     constructor({ schedule = setTimeout, cancel = clearTimeout } = {}) {
@@ -82,4 +74,4 @@ class DebugLifecycle {
         this.clear({ kind: "ready" });
     }
 }
-module.exports = { DebugLifecycle, debugStartupPolicy };
+module.exports = { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS };

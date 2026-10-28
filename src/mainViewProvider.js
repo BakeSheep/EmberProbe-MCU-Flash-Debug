@@ -98,14 +98,14 @@ const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegrati
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
-const { ensureDebugTools, findDebugTools } = require("./services/cortexDebugPreflight");
+const { ensureDebugTools, findDebugTools } = require("./services/debugToolPreflight");
 const { GdbWarmup } = require("./services/gdbWarmup");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const i18n = require("./i18n");
-const { DebugLifecycle, debugStartupPolicy } = require("./services/debugLifecycle");
+const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("./services/debugLifecycle");
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const CACHE_KEYS = {
     elfPath: "mcu.elfPath",
@@ -934,7 +934,7 @@ class MainViewProvider {
                     startAccepted = true;
                     return addPeripheralViewerSvd(grouped, svdPath);
                 }
-                await this.prepareForCortexDebug(workspaceFolder);
+                await this.prepareProbeForDebug(workspaceFolder);
                 startup?.phase("prepare");
                 probePrepared = true;
                 this._debugStartLease = this._probeCoordinator.acquire("debugStart");
@@ -1266,7 +1266,7 @@ class MainViewProvider {
         if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
         if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
             return this._sessionWriteConnection(this._debugBridge);
-        // A managed Cortex-Debug server remains the connection that will execute an
+        // A managed debug server remains the connection that will execute an
         // Agent write even while the DAP bridge is between stop events and reports
         // canWrite=false. Bind the confirmation to that server instead of preparing
         // a second standalone OpenOCD identity, which would be rejected at execution.
@@ -2026,13 +2026,7 @@ class MainViewProvider {
         if (!group) lease?.release();
     }
     _armDebugStartupWatchdog() {
-        const version =
-            this._managedDebugToken || this._externalDebug?.active
-                ? ""
-                : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
-        return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
-            this._recoverDebugStartupTimeout()
-        );
+        return this._debugLifecycle.arm(DEBUG_STARTUP_TIMEOUT_MS, () => this._recoverDebugStartupTimeout());
     }
     _matchesManagedDebugSession(session) {
         if (this._externalDebug?.matches(session)) return true;
@@ -2058,7 +2052,7 @@ class MainViewProvider {
         let group = this._managedDebugGroup;
         const created = !group;
         if (!group) {
-            await this.prepareForCortexDebug(folder);
+            await this.prepareProbeForDebug(folder);
             this._debugStartLease = this._probeCoordinator.acquire("debugStart");
             try {
                 const connection = await this._startManagedDebugServer(
@@ -2295,9 +2289,8 @@ class MainViewProvider {
         this._clearDebugStartupWatchdog({ kind: "failed" });
     }
     async _recoverDebugStartupTimeout() {
-        const ownDebug = !!this._managedDebugToken || !!this._externalDebug?.active;
         const session = this._findManagedDebugSession();
-        const timeoutMs = this._debugLifecycle?.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
+        const timeoutMs = this._debugLifecycle?.timeoutMs || DEBUG_STARTUP_TIMEOUT_MS;
         this._postConsumerStatuses(
             {
                 mode: "debug-start-failed",
@@ -2308,11 +2301,7 @@ class MainViewProvider {
             },
             true
         );
-        const version = ownDebug
-            ? ""
-            : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
-        const key = debugStartupPolicy(process.platform, version).messageKey;
-        const timeoutMessage = this._t(key, { seconds: timeoutMs / 1000, version });
+        const timeoutMessage = this._t("msg.debugStartTimeout", { seconds: timeoutMs / 1000 });
         await this._handleDebugStartupFailure(session, timeoutMessage);
     }
     _assertGroupedReadElf() {
@@ -2939,7 +2928,7 @@ class MainViewProvider {
         // the write plan itself instead of falling back to a second standalone OpenOCD identity.
         if (this._debugBridge.agentStatus().state === "paused") {
             if (!this._debugBridge.canWritePaused) await this._debugBridge.prepareWriteSnapshot(plan.items);
-            const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
+            const result = await this._executeWritePlan(this._debugBridge, "debug-dap", plan);
             return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
         if (this._managedDebugServer && this._debugBridge.agentStatus().state === "running") {
@@ -3038,7 +3027,7 @@ class MainViewProvider {
         // posting a "writing" status here would disable the write controls mid-drag.
         return await this._executeWritePlan(
             session,
-            dapSession ? "cortex-debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
+            dapSession ? "debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
             plan
         );
     }
@@ -5339,30 +5328,11 @@ class MainViewProvider {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    beginForeignDebug() {
-        if (this._foreignDebugPending)
-            throw Object.assign(new Error("Debug startup is pending"), { code: "PROBE_BUSY" });
-        this._foreignDebugPending = true;
-        const generation = (this._foreignDebugGeneration = (this._foreignDebugGeneration || 0) + 1);
-        this._foreignDebugTimer = setTimeout(() => this.finishForeignDebug(), 30000);
-        this._foreignDebugTimer.unref?.();
-        this._postProbeOperationStatus();
-        return generation;
-    }
-    isForeignDebugCurrent(generation) {
-        return this._foreignDebugPending && this._foreignDebugGeneration === generation;
-    }
-    finishForeignDebug() {
-        clearTimeout(this._foreignDebugTimer);
-        this._foreignDebugTimer = null;
-        this._foreignDebugPending = false;
-        this._postProbeOperationStatus();
-    }
     _postProbeOperationStatus() {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
             operations: this._probeCoordinator?.snapshot(),
-            debugPending: !!(this._debugCommandPending || this._foreignDebugPending)
+            debugPending: !!this._debugCommandPending
         });
     }
     startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
@@ -5780,11 +5750,9 @@ class MainViewProvider {
             this._postProbeOperationStatus();
         }
     }
-    async prepareForCortexDebug(folder, config) {
+    async prepareProbeForDebug(folder) {
         this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
-        const token = config?.__emberprobeManagedToken;
-        if (token && token === this._managedDebugToken && this._managedDebugServer) return;
         // A session that ended with an unconfirmed OpenOCD exit leaves its server reachable; retry
         // the stop here so that one slow exit does not block every later debug start.
         if (this._managedDebugServer?.state === "stop-failed" && !this._managedDebugGroup)
@@ -5818,7 +5786,6 @@ class MainViewProvider {
     }
     handleDebugSessionStart(session) {
         if (!session || !isSupportedDebugSession(session)) return;
-        this.finishForeignDebug();
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._externalDebug?.bind(session);
         const grouped = this._managedDebugGroup?.bind(session);
@@ -6009,7 +5976,6 @@ class MainViewProvider {
         this._gdbWarmupTimer = null;
         this._gdbWarmup?.dispose();
         this._stopProbeInventoryMonitor();
-        this.finishForeignDebug();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();

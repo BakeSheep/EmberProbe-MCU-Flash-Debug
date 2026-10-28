@@ -778,7 +778,6 @@ class DebugSessionBridge {
     }
 
     // DAP has no capability bit for RTOS awareness, so read the resolved launch configuration.
-    // This also covers cortex-debug sessions, which use the same `rtos` key.
     isRtosSession(session = this.activeSession) {
         const rtos = session?.configuration?.rtos;
         if (typeof rtos !== "string") return false;

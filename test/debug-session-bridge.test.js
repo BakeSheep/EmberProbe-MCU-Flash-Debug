@@ -147,8 +147,8 @@ async function testBackgroundStatusBroadcasts(debugType) {
 }
 
 (async () => {
-    for (const debugType of ["cortex-debug", "emberprobe"]) {
-        await testBackgroundStatusBroadcasts(debugType);
+    {
+        await testBackgroundStatusBroadcasts("emberprobe");
         const groups = mergeReadPlan([
             { name: "b", address: 0x20000002, size: 2 },
             { name: "a", address: 0x20000000, size: 4 },
@@ -168,7 +168,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
         const memory = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]);
         const session = {
             id: "one",
-            type: debugType,
+            type: "emberprobe",
             workspaceFolder: { uri: { toString: () => "file:///workspace" } },
             async customRequest(command, args) {
                 requests.push({ command, args });
@@ -519,7 +519,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
             async customRequest(command, args) {
                 if (command !== "readMemory") throw new Error("unexpected request");
                 busyReads++;
-                if (busyReads < 3) throw new Error("Cortex-Debug is busy handling the stopped event");
+                if (busyReads < 3) throw new Error("Debug adapter is busy handling the stopped event");
                 return { address: args.memoryReference, data: memory.subarray(0, args.count).toString("base64") };
             }
         };
@@ -683,7 +683,7 @@ async function testBackgroundStatusBroadcasts(debugType) {
 
     await scenario("Refresh the paused snapshot after Variables view writes and invalidation", async () => {
         const bridge = new DebugSessionBridge({ schedule: clock.schedule, cancel: clock.cancel, now: clock.now });
-        const session = { id: "ui-write", type: "cortex-debug", customRequest: async () => ({}) };
+        const session = { id: "ui-write", type: "emberprobe", customRequest: async () => ({}) };
         try {
             bridge.attach(session);
             bridge.setIntent(true);

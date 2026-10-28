@@ -9,7 +9,7 @@ const { normalizeDebugImages } = require("./debugImages");
 const { normalizeExternalConfiguration } = require("./externalDebugService");
 
 function isSupportedDebugSession(session) {
-    return ["emberprobe", "cortex-debug"].includes(session?.type);
+    return session?.type === "emberprobe";
 }
 
 // launch.json wins whenever the key carries a value, including an explicit empty string that turns

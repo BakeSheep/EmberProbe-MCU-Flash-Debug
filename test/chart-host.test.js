@@ -196,7 +196,6 @@ async function testShutdownFence(Provider) {
         _debugBridge: { setIntent() {} },
         _elfService: { invalidate() {} },
         _cubemxService: { cancel() {} },
-        finishForeignDebug() {},
         _clearDebugStartupWatchdog() {},
         _postConsumerStatuses() {},
         disposeDebugBridge() {},

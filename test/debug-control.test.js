@@ -39,7 +39,7 @@ class FunctionBreakpoint {
         const requests = [];
         const session = {
             id: "debug-1",
-            type: "cortex-debug",
+            type: "emberprobe",
             name: "Test debug",
             workspaceFolder: { uri: { fsPath: root, toString: () => `file://${root}` } },
             configuration: { name: "Test debug" },

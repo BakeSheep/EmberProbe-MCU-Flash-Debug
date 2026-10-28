@@ -27,7 +27,7 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
         }
     };
     const Host = loadProvider(vscode, {
-        "./services/cortexDebugPreflight": { ensureDebugTools: async () => ({ gdbPath: "fake-gdb" }) },
+        "./services/debugToolPreflight": { ensureDebugTools: async () => ({ gdbPath: "fake-gdb" }) },
         "./openocdScripts": { ...require("../src/openocdScripts"), resolveOpenOcdLaunch: () => ({}) }
     });
     const host = Object.create(Host.prototype);
@@ -39,7 +39,7 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
         _postProbeOperationStatus() {},
         _svdManager: { currentPath: async () => "" },
         _resolveOpenOcdPath: async () => "openocd",
-        prepareForCortexDebug: async () => {},
+        prepareProbeForDebug: async () => {},
         _probeCoordinator: new ProbeCoordinator(),
         _startManagedDebugServer: async (_executable, _probe, _target, _cfg, _interactive, _rtos, options, phase) => {
             serverRequests.push(options.request);

@@ -73,6 +73,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 移除实验性 CPU 负载估计（烧录调试卡片“其他”中的 CPU 负载行）：主机采样估算的结果不够准确，且采样期间独占探针，与烧录、调试和变量采样互斥。内存占用显示不受影响；独立采样的自适应调度统一按平均周期耗时 / 85% 占用率。
 - Remove the experimental CPU load estimate (the CPU load row under Other in the flash/debug card): its host-sampled estimate was not accurate enough, and it held the probe exclusively, blocking flashing, debugging and variable sampling while it ran. Memory usage is unaffected; standalone adaptive sampling now always uses mean cycle duration at 85% duty.
+- 移除 Cortex-Debug 兼容：EmberProbe 不再在 `cortex-debug` 会话启动前接管探针、停止采样，也不再把它识别为调试会话，侧边栏实时读写、外设/RTOS 面板和 Agent 调试操作只跟随内置 `emberprobe` 会话；同时移除 Windows Cortex-Debug 1.12.1 专用的 15 秒启动超时与提示。GDB/objdump 不再回退读取 `cortex-debug.*` 设置或其记忆的工具链目录，请改用 `emberprobe.gdbPath` / `emberprobe.armToolchainPath` 等设置。Agent 暂停态写入结果的 `source` 由 `cortex-debug-dap` 改为 `debug-dap`。
+- Remove Cortex-Debug compatibility: EmberProbe no longer takes over the probe or stops sampling before a `cortex-debug` session starts, and no longer treats it as a debug session, so sidebar live reads and writes, the peripheral/RTOS panels and Agent debug operations follow only built-in `emberprobe` sessions. The Windows Cortex-Debug 1.12.1 15-second startup timeout and its message are removed. GDB/objdump lookup no longer falls back to `cortex-debug.*` settings or the toolchain directory remembered for it; use `emberprobe.gdbPath`, `emberprobe.armToolchainPath` and related settings instead. The `source` of paused Agent write results changes from `cortex-debug-dap` to `debug-dap`.
 
 ## [0.8.9-beta.1] - 2026-10-22
 
