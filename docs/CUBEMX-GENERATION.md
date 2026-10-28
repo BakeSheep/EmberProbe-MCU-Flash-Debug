@@ -28,4 +28,4 @@ then submits that ID. A 24-hour project permission requires an explicit chat cho
 `remember`; EmberProbe does not show a second operation approval dialog. Execution recomputes
 the project identity and rejects a changed plan.
 
-Cancellation and timeouts first terminate CubeMX, then escalate to SIGKILL. If exit still cannot be confirmed, `CUBEMX_EXIT_UNCONFIRMED` is returned while the project and staging files remain owned by that process. New generation/deep checks remain blocked. `cubemx.cancel` retries termination; ownership and deferred cleanup finish only after process exit.
+Cancellation before process startup creates no script if already cancelled, or waits for removal of the script created during cancellation before returning. Cancellation and timeouts after startup first terminate CubeMX, then escalate to SIGKILL. If exit still cannot be confirmed, `CUBEMX_EXIT_UNCONFIRMED` is returned while the project and staging files remain owned by that process. New generation/deep checks remain blocked. `cubemx.cancel` retries termination; ownership and deferred cleanup finish only after process exit.

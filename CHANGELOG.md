@@ -52,6 +52,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 修复 / Fixed
 
+- 修复 CubeMX 在启动进程前取消时遗留脚本文件，导致下一次调用报 `EEXIST`：已取消的调用不创建脚本，写入期间取消则等待清理后返回；增加确定性回归测试，修复 macOS CI 的偶发失败。
+- Fix CubeMX cancellation before process startup leaving a script that makes the next call fail with `EEXIST`: pre-cancelled calls create no script, and cancellation during writing awaits cleanup. Add deterministic regression coverage for the intermittent macOS CI failure.
+
 - 修复芯片暂停后仍无法查看超过 4096 字节的 C++ 结构体与类对象：此前只有普通固定布局变量会按块读取，带运行时布局的对象在暂停时仍受每周期 4096 字节 / 32 次读取的预算限制，成员较多的对象即使不到 4096 字节也会失败。现在暂停时每个运行时对象各自最多读取 64 KiB，展开的对象整体按 4096 字节分块预读后再取成员；运行中采样保持原预算，超出预算的对象在卡片上提示读取预算与暂停后可读取，不再误报“指针目标暂时无法读取”。
 - Fix C++ structs and class objects over 4096 bytes staying unreadable after the target is paused: only plain fixed-layout variables were read in blocks, while objects with a runtime layout kept the per-cycle 4096-byte / 32-read budget even when paused, so objects with many members failed even below 4096 bytes. While paused, each runtime object may now read up to 64 KiB, and an opened object is prefetched whole in 4096-byte blocks before its members are read. Running sampling keeps its budget; an object over it now shows a read-budget notice saying it can be read after pausing, instead of the misleading "The pointer target cannot be read right now."
 - 修复运行中展开成员较多的 C++ 对象时整卡报“超过读取预算”：对象本身远小于 4096 字节（如约 1 KiB、含十余个分组的结构体），但每个展开的分组各读一次，每个指针／容器描述字结束时再各复查一次，读取次数超过每周期 32 次。现在展开的成员覆盖对象大部分时整体只读一次，相邻（相距不超过 32 字节）的描述字合并为一次复查；预算与一致性检查不变，只展开少数分组时仍逐个读取。
