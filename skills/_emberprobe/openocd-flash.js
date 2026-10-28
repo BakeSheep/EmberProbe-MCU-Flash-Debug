@@ -59,6 +59,17 @@ function buildFlashProgramCommand(fileWord, speedKhz = 0) {
     );
 }
 
+// The same raise for a GDB download over `monitor`: the previous clock stays in a Tcl global for
+// DOWNLOAD_CLOCK_RESTORE and is printed, with BOOST_PROC's EP_FLASH_SPEED, for the adapter to read.
+function buildDownloadBoostCommand(speedKhz) {
+    const khz = normalizeAdapterSpeed(speedKhz);
+    return BOOST_PROC + `set ::_ep_download_base [_ep_flash_boost ${khz}]; echo EP_DOWNLOAD_BASE=$::_ep_download_base`;
+}
+
+const DOWNLOAD_CLOCK_RESTORE =
+    "if {[info exists ::_ep_download_base] && $::_ep_download_base} { adapter speed $::_ep_download_base }; " +
+    "set ::_ep_download_base 0";
+
 const FLASH_STAGE =
     /^\s*EP_FLASH_STAGE=(init|reset_init|reset_halt|reset_run|preverify|unchanged|program|program_boost|verify|verify_boost|speed_fallback)\s*$/;
 
@@ -93,6 +104,8 @@ module.exports = {
     FLASH_SPEED_KHZ,
     flashSpeedKhz,
     buildFlashProgramCommand,
+    buildDownloadBoostCommand,
+    DOWNLOAD_CLOCK_RESTORE,
     flashClockTracker,
     flashPhaseFromLine,
     isTentativeFlashPhase

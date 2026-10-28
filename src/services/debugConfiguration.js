@@ -125,6 +125,7 @@ function validateDebugConfiguration(config, folder) {
     if (result.servertype !== "external") delete result.gdbTarget;
     delete result.__emberprobeManagedToken;
     delete result.__emberprobeStartupTrace;
+    delete result.__emberprobeDownloadSpeedKhz;
     return result;
 }
 

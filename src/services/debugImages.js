@@ -5,6 +5,7 @@ const path = require("path");
 const { performance } = require("perf_hooks");
 const { quote } = require("../debug/mi");
 const { readElf32Header } = require("../elfFormat");
+const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../../skills/_emberprobe/openocd-flash");
 
 const HOOKS = [
     "preLaunchCommands",
@@ -239,7 +240,8 @@ class DebugImages {
     // checksum is not equivalent: a GDB download leaves the alignment gaps between sections at the erased
     // value, which never matches the zero fill in the ELF. Any mismatch, error or unrecognized output
     // means "changed", so the worst case is the normal download plus one CRC pass.
-    async firmwareUnchanged() {
+    // "matched", "mismatched", or "unknown" when the check failed or its output was not recognized.
+    async compareSections() {
         const { mi } = this.session;
         let output;
         try {
@@ -248,29 +250,75 @@ class DebugImages {
             );
         } catch (error) {
             if (mi.closed) throw error;
-            return false;
+            return "unknown";
         }
+        if (/MIS-MATCHED|does not match|do not match/.test(output)) return "mismatched";
         const lines = output.split(/\r?\n/).filter((line) => line.startsWith("Section "));
-        return (
-            lines.length > 0 &&
-            lines.every((line) => SECTION_MATCHED.test(line)) &&
-            !/MIS-MATCHED|does not match|do not match/.test(output)
-        );
+        return lines.length > 0 && lines.every((line) => SECTION_MATCHED.test(line)) ? "matched" : "unknown";
     }
-    /** @returns {Promise<{firmware: "none" | "unchanged" | "programmed", checkMs?: number}>} */
+    async firmwareUnchanged() {
+        return (await this.compareSections()) === "matched";
+    }
+    // Managed launches pass the sidebar's programming clock. It is raised through OpenOCD only for Cortex-M
+    // over SWD and only when CPUID reads back unchanged; anything else downloads at the script clock.
+    // Returns the effective kHz, or 0 when the clock was left alone.
+    async raiseDownloadClock() {
+        const { config, mi } = this.session;
+        const khz = Number(config.__emberprobeDownloadSpeedKhz);
+        if (!Number.isSafeInteger(khz) || khz <= 0) return 0;
+        let output;
+        try {
+            output = await this.session.captureConsole(() =>
+                mi.command(`-interpreter-exec console ${quote(`monitor ${buildDownloadBoostCommand(khz)}`)}`)
+            );
+        } catch (error) {
+            if (mi.closed) throw error;
+            return 0;
+        }
+        if (!(Number(output.match(/EP_DOWNLOAD_BASE=(\d+)/)?.[1]) > 0)) return 0;
+        return Number(output.match(/EP_FLASH_SPEED=(\d+)/)?.[1]) || khz;
+    }
+    async restoreDownloadClock() {
+        try {
+            await this.session.mi.command(`-interpreter-exec console ${quote(`monitor ${DOWNLOAD_CLOCK_RESTORE}`)}`);
+        } catch (error) {
+            if (this.session.mi.closed) throw error;
+        }
+    }
+    /** @returns {Promise<{firmware: "none" | "unchanged" | "programmed", checkMs?: number, downloadClockKhz?: number, speedFallback?: boolean}>} */
     async download() {
         const { config, mi } = this.session;
         if (config.attach) return { firmware: "none" };
         if (config.loadFiles === undefined) {
             const startedAt = performance.now();
-            const unchanged = await this.firmwareUnchanged();
+            const verdict = await this.compareSections();
             const checkMs = Math.round(performance.now() - startedAt);
-            if (unchanged) {
+            if (verdict === "matched") {
                 this.session.variableDiagnostic("Firmware matches the target; download skipped\n");
                 return { firmware: "unchanged", checkMs };
             }
-            await mi.command("-target-download", 60000);
-            return { firmware: "programmed", checkMs };
+            // Only a check whose output is recognized can verify a fast write afterwards.
+            const clockKhz = verdict === "mismatched" ? await this.raiseDownloadClock() : 0;
+            let speedFallback = false;
+            try {
+                await mi.command("-target-download", 60000);
+                // A write at the raised clock is checked once by CRC, as the sidebar's verify_image does.
+                if (clockKhz && (await this.compareSections()) !== "matched")
+                    throw new Error("Firmware written at the raised clock does not match the image");
+            } catch (error) {
+                if (!clockKhz || mi.closed) throw error;
+                speedFallback = true;
+                await this.restoreDownloadClock();
+                await mi.command(`-interpreter-exec console ${quote("monitor reset halt")}`);
+                await mi.command("-target-download", 60000);
+            } finally {
+                if (clockKhz && !mi.closed) await this.restoreDownloadClock();
+            }
+            return {
+                firmware: "programmed",
+                checkMs,
+                ...(clockKhz ? { downloadClockKhz: clockKhz, speedFallback } : {})
+            };
         }
         for (const image of config.loadFiles) {
             const binary = image.format === "bin";

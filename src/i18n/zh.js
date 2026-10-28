@@ -617,6 +617,9 @@ module.exports = Object.freeze({
     "lw.pointeeMemoryUnavailable": "无法读取指针目标内存。",
     "lw.pointeeCycle": "指针目标存在循环引用，已停止继续展开。",
     "lw.pointeeUnavailable": "指针目标暂时无法读取。",
+    "lw.objectReadBudget":
+        "对象或已展开的内容超过读取预算，未读取：运行中每个采样周期最多读取 4096 字节 / 32 次。可收起部分分组，或暂停目标后查看（单个对象最多 64 KiB）。",
+    "lw.objectChanging": "目标正在改写这部分内容，本次未能读到一致的数据，稍后自动重读。",
     "lw.pointerLastSampled": "上次采样",
     "lw.pointerInvalid": "无效地址",
     "lw.pointerRegion.flash": "Flash",

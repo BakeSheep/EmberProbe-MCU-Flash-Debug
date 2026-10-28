@@ -731,28 +731,9 @@ function saveWatch() {
 // Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
 var runtimeExpansionsLoaded = false,
     sentRuntimeExpansions = null;
-function runtimeExpansions() {
-    var result = Object.create(null),
-        count = 0;
-    var open = Object.keys(expanded).filter(function (key) {
-        return expanded[key];
-    });
-    watch.forEach(function (item) {
-        if (!item.runtimeLayout || !isCompositeItem(item) || ++count > 256) return;
-        var paths = [];
-        if (expanded[item.name] || EmberProbeRuntime.isPointeeEntry(item) || placedPointees.has(item.name))
-            paths.push("");
-        open.forEach(function (key) {
-            if (key.length > item.name.length && key.startsWith(item.name) && /^[.[]/.test(key[item.name.length]))
-                paths.push(key.slice(item.name.length));
-        });
-        result[item.name] = paths.slice(0, 512);
-    });
-    return result;
-}
 function syncRuntimeExpansions() {
     if (!runtimeExpansionsLoaded) return;
-    var value = runtimeExpansions(),
+    var value = EmberProbeRuntime.runtimeExpansionPaths(watch, expanded, placedPointees),
         key = JSON.stringify(value);
     if (key === sentRuntimeExpansions) return;
     sentRuntimeExpansions = key;
@@ -1404,18 +1385,24 @@ function defW(ty) {
             ? 8
             : 4;
 }
-function walkTreeLeaves(node, path, cb) {
+// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
+function walkTreeLeaves(node, path, cb, stale) {
     if (!node) return;
-    cb(path, node);
+    stale = !!stale || !!node.stale;
+    cb(path, node, stale);
     for (const member of node.members || [])
-        walkTreeLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb);
-    for (const element of node.elements || []) walkTreeLeaves(element, path + "[" + element.index + "]", cb);
+        walkTreeLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
+    for (const element of node.elements || []) walkTreeLeaves(element, path + "[" + element.index + "]", cb, stale);
 }
 function updateCompositeValues(name) {
     var tree = latest[name];
     if (!tree) return;
     const nodes = new Map();
-    walkTreeLeaves(tree, name, (path, node) => nodes.set(path, node));
+    const held = new Set();
+    walkTreeLeaves(tree, name, (path, node, stale) => {
+        nodes.set(path, node);
+        if (stale) held.add(path);
+    });
     nodes.forEach(function (node, path) {
         const cell = compCells[path];
         if (!cell) return;
@@ -1428,6 +1415,7 @@ function updateCompositeValues(name) {
                 ...(summary ? { functionEmpty: summary.empty } : {})
             })
         );
+        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
     });
 }
 // Pointer rows expand in place. A pointee already present in the sampled tree toggles
@@ -1866,8 +1854,8 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
         layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
     else if (tree.unavailable)
         appendNote(container, {
-            ...EmberProbeRuntime.unavailableNotice(tree, t),
-            title: displayNameFor({ name: path })
+            title: displayNameFor({ name: path }),
+            ...EmberProbeRuntime.unavailableNotice(tree, t)
         });
 }
 function renderRuntimeBody(body, sampled, name) {

@@ -645,6 +645,10 @@ module.exports = Object.freeze({
     "lw.pointeeMemoryUnavailable": "The pointer target memory could not be read.",
     "lw.pointeeCycle": "The pointer target contains a cycle; further expansion stopped.",
     "lw.pointeeUnavailable": "The pointer target cannot be read right now.",
+    "lw.objectReadBudget":
+        "The object or its expanded members exceed the read budget and were not read: running sampling reads at most 4096 bytes / 32 times per cycle. Collapse some groups, or pause the target to read up to 64 KiB per object.",
+    "lw.objectChanging":
+        "The target rewrote this part while it was read; no consistent value this time. It is read again automatically.",
     "lw.pointerLastSampled": "last sampled",
     "lw.pointerInvalid": "invalid address",
     "lw.pointerRegion.flash": "Flash",

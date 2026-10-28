@@ -71,6 +71,7 @@ const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity, probeFamily } = require("../skills/_emberprobe/probe-connection");
+const { flashSpeedKhz } = require("../skills/_emberprobe/openocd-flash");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
 const { NoticeService, commandArea, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
@@ -83,9 +84,11 @@ const {
     selectFocusedPanel,
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
+    runtimePointerRanges,
     writableRamSectionRanges
 } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
+const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
@@ -137,6 +140,11 @@ const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 const MAX_WRITE_VARIABLES = 64;
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
+// A pending webview batch keeps one sample per name (latest wins), so one message never carries an
+// older and a newer state of the same variable.
+function latestByName(pending, next) {
+    return [...new Map([...(pending || []), ...(next || [])].map((sample) => [sample.name, sample])).values()];
+}
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
@@ -230,6 +238,7 @@ class MainViewProvider {
         this._runtimeDeniedKey = "";
         this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
+        this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
         this._symbolNameIndexes = new WeakMap();
@@ -297,6 +306,7 @@ class MainViewProvider {
         this._uiWriteLatest = new Map();
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._activeReadPlan(),
+            getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
             getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => {
@@ -975,6 +985,9 @@ class MainViewProvider {
                 Object.assign(debugConfig, cortexTools);
                 Object.assign(debugConfig, pretty);
                 Object.assign(debugConfig, images);
+                // A changed image downloads at the sidebar's programming clock (see docs/FLASH-PERFORMANCE.md).
+                if (debugConfig.request === "launch" && this._managedDebugServer?.options)
+                    debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this._managedDebugServer.options);
                 if (startup) debugConfig.__emberprobeStartupTrace = startup.finish();
                 const startupGate = this._armDebugStartupWatchdog();
                 if (configuration) {
@@ -1799,14 +1812,8 @@ class MainViewProvider {
         return port;
     }
     _runtimeRamPlan(items, strict = false) {
-        const elfResult = this.readElfSymbols();
-        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
-            this._runtimeRamCache = {
-                sha256: elfResult.elf.sha256,
-                sections: Array.isArray(elfResult.memory?.sections) ? elfResult.memory.sections : []
-            };
-        }
-        const result = filterRuntimeRamPlan(items, this._runtimeRamCache.sections);
+        const cache = this._runtimeRamSections(this.readElfSymbols());
+        const result = filterRuntimeRamPlan(items, cache.sections, cache.regions);
         if (strict && result.denied.length) {
             throw Object.assign(new Error("Runtime reads are restricted to writable allocated ELF RAM sections"), {
                 code: "LIVE_ADDRESS_NOT_RAM",
@@ -2192,6 +2199,7 @@ class MainViewProvider {
         this._debugSampleGroup = group;
         this._debugSampleSessionId = sessionId;
         this._debugReadPlanKey = "";
+        this._runtimeSampleHold?.reset();
         this._latestSidebarSamples?.clear();
         if (this._sidebarBatchTimer) clearTimeout(this._sidebarBatchTimer);
         this._sidebarBatchTimer = null;
@@ -2265,6 +2273,7 @@ class MainViewProvider {
                 }
                 this._debugBridge?.detach(targetSession);
                 this._debugReadPlanKey = "";
+                this._runtimeSampleHold?.reset();
             }
             if (typeof this._stopManagedDebugServer === "function") await this._stopManagedDebugServer();
             if (typeof this.restoreSamplingAfterDebug === "function") await this.restoreSamplingAfterDebug();
@@ -3777,6 +3786,7 @@ class MainViewProvider {
         this._elfService.invalidate();
         this._watchLists.invalidate();
         this._runtimeRamCache = null;
+        this._runtimeSampleHold?.reset();
         this._latestSidebarSamples.clear();
         for (const entry of this._livePanels.values()) entry.latestSamples.clear();
     }
@@ -4351,8 +4361,9 @@ class MainViewProvider {
             lists.push(this._scalarWatchList(entry.watchKey));
             expansions.push(this._panelRuntimeExpansions(entry.watchKey));
         }
-        // The sidebar and write cards read runtime objects whole.
+        // Sidebar cards read the parts they opened, like chart cards; write cards read runtime objects whole.
         lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
+        expansions.push(this._panelRuntimeExpansions(CACHE_KEYS.sidebarWatchList));
         // 写入列表变量也纳入采样读取，使写入卡片能实时同步当前值；不回写存储，避免丢失 min/max 等 UI 字段
         try {
             const writeItems = this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
@@ -4365,23 +4376,20 @@ class MainViewProvider {
     }
     _runtimeReadRanges(plan, result) {
         if (!plan.some((item) => item.runtimeLayout)) return plan;
-        result ??= this.readElfSymbols();
-        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== result.elf.sha256) {
-            const sections = Array.isArray(result.memory?.sections) ? result.memory.sections : [];
-            this._runtimeRamCache = { sha256: result.elf.sha256, sections };
-        }
-        const ranges = this._runtimeRamCache.sections
-            .filter(
-                (section) =>
-                    section.flags & 2 &&
-                    Number.isSafeInteger(section.addr) &&
-                    Number.isSafeInteger(section.size) &&
-                    section.addr > 0 &&
-                    section.size > 0 &&
-                    section.addr + section.size <= 0x100000000
-            )
-            .map((section) => ({ start: section.addr, end: section.addr + section.size }));
+        const cache = this._runtimeRamSections(result ?? this.readElfSymbols());
+        const ranges = runtimePointerRanges(cache.sections, cache.regions);
         return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
+    }
+    _runtimeRamSections(elfResult) {
+        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
+            const memory = elfResult.memory || {};
+            this._runtimeRamCache = {
+                sha256: elfResult.elf.sha256,
+                sections: Array.isArray(memory.sections) ? memory.sections : [],
+                regions: Array.isArray(memory.runtimeRegions) ? memory.runtimeRegions : []
+            };
+        }
+        return this._runtimeRamCache;
     }
     _applySamplingPlan(session, active) {
         let ramSectionRanges = [];
@@ -4886,11 +4894,8 @@ class MainViewProvider {
     _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
         if (!entry.ready) return;
         if (this._chartHistory) {
-            const latest = (old, next) => [
-                ...new Map([...(old || []), ...next].map((sample) => [sample.name, sample])).values()
-            ];
-            entry._pendingScalars = latest(entry._pendingScalars, scalarSamples);
-            entry._pendingComposites = latest(entry._pendingComposites, compositeSamples);
+            entry._pendingScalars = latestByName(entry._pendingScalars, scalarSamples);
+            entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
             if (!entry._batchTimer)
                 entry._batchTimer = setTimeout(() => {
                     entry._batchTimer = null;
@@ -4928,7 +4933,7 @@ class MainViewProvider {
             return;
         }
         entry._pendingScalars = (entry._pendingScalars || []).concat(scalarSamples);
-        entry._pendingComposites = (entry._pendingComposites || []).concat(compositeSamples);
+        entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
         if (!entry._batchTimer) {
             entry._batchTimer = setTimeout(() => {
                 entry._batchTimer = null;
@@ -4967,7 +4972,7 @@ class MainViewProvider {
             return;
         }
         this._pendingSidebarScalars = (this._pendingSidebarScalars || []).concat(scalarSamples);
-        this._pendingSidebarComposites = (this._pendingSidebarComposites || []).concat(compositeSamples);
+        this._pendingSidebarComposites = latestByName(this._pendingSidebarComposites, compositeSamples);
         if (!this._sidebarBatchTimer) {
             this._sidebarBatchTimer = setTimeout(() => {
                 this._sidebarBatchTimer = null;
@@ -5031,6 +5036,9 @@ class MainViewProvider {
     }
 
     _handleRawSamples(samples, t, consumers) {
+        // Every source (managed sampling, worker, paused DAP reads) passes the same hold, so a runtime
+        // object keeps its last consistent tree through transient misses (see runtimeSampleHold.js).
+        samples = (this._runtimeSampleHold ||= new RuntimeSampleHold()).apply(samples, t);
         const types = this._getCachedConsumerTypes();
         const graphNames = consumers && new Set(consumers.graphNames);
         const sidebarNames = consumers && new Set(consumers.sidebarNames);
@@ -5234,6 +5242,16 @@ class MainViewProvider {
     async _refreshSamplingPlan() {
         this._refreshPointerPeripherals();
         const active = this._activeReadPlan();
+        // A changed plan (watch list, opened paths) gives runtime trees a new shape; keep no old ones.
+        const holdKey = active
+            .filter((item) => item.runtimeLayout)
+            .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
+            .sort()
+            .join("|");
+        if (holdKey !== this._runtimeHoldKey) {
+            this._runtimeHoldKey = holdKey;
+            this._runtimeSampleHold?.reset();
+        }
         for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
         if (this._debugBridge.hasSession) {
             // Reordering watch cards keeps the same reads; only a changed set refreshes the snapshot.
@@ -5908,6 +5926,7 @@ class MainViewProvider {
         this._debugBridge.detach(session);
         if (this._debugBridge.hasSession) return false;
         this._debugReadPlanKey = "";
+        this._runtimeSampleHold?.reset();
         if (managed) await this._stopManagedDebugServer();
         return true;
     }
@@ -6331,6 +6350,9 @@ class MainViewProvider {
                     await this._saveWatchList(CACHE_KEYS.sidebarWatchList, items, { syncSidebar: false });
                     break;
                 }
+                case "saveRuntimeExpansions":
+                    await this._saveRuntimeExpansions(CACHE_KEYS.sidebarWatchList, message.expansions);
+                    break;
                 case "saveSidebarWrite": {
                     const items = Array.isArray(message.items) ? message.items : [];
                     await this._saveWatchList(CACHE_KEYS.sidebarWriteList, items, { syncSidebar: false });

@@ -614,7 +614,51 @@ function parseElfSections(buffer) {
             });
         }
     }
-    return { sections, programHeaders };
+    const heapStack = linkerHeapStackRange(buf, entries, sections);
+    return { sections, programHeaders, ...(heapStack ? { runtimeRegions: [heapStack] } : {}) };
+}
+
+// 运行期堆栈区：newlib `_sbrk` 从链接脚本的 `_end` 一直分配到 `_estack - _Min_Stack_Size`，
+// 而 `._user_heap_stack` 节只占 `_Min_Heap_Size + _Min_Stack_Size`，超出部分的 STL 容器存储与 new
+// 出的对象不在任何节内。仅在 `_end` 落在（或紧接）某个可写已分配节、`_estack` 在其后 16 MiB 内、
+// 且区间不与其他已分配节重叠时返回 { name, start, end }。只用于运行时对象的指针目标读取，
+// 不扩大变量地址校验与写入范围。
+function linkerHeapStackRange(buf, entries, sections) {
+    const SHT_SYMTAB = 2;
+    const SHF_WRITE = 1;
+    const SHF_ALLOC = 2;
+    const symtab = entries.find((s) => s.type === SHT_SYMTAB);
+    const strtab = symtab && entries[symtab.link];
+    if (!symtab || !strtab || symtab.offset + symtab.size > buf.length || strtab.offset + strtab.size > buf.length)
+        return null;
+    const wanted = new Set(["_end", "end", "_estack"]);
+    const values = new Map();
+    const entsize = symtab.entsize || 16;
+    const count = entsize >= 16 ? Math.min(Math.floor(symtab.size / entsize), 200000) : 0;
+    for (let i = 0; i < count && values.size < wanted.size; i++) {
+        const off = symtab.offset + i * entsize;
+        const nameOffset = strtab.offset + buf.readUInt32LE(off);
+        if (nameOffset >= strtab.offset + strtab.size || buf[off + 14] + buf[off + 15] * 256 === 0) continue;
+        const nameEnd = buf.indexOf(0, nameOffset);
+        if (nameEnd < 0 || nameEnd - nameOffset > 8) continue;
+        const name = buf.toString("latin1", nameOffset, nameEnd);
+        if (wanted.has(name) && !values.has(name)) values.set(name, buf.readUInt32LE(off + 4) >>> 0);
+    }
+    const start = values.get("_end") ?? values.get("end");
+    const end = values.get("_estack");
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start || end - start > 0x1000000)
+        return null;
+    const allocated = sections.filter((s) => s.flags & SHF_ALLOC && s.size > 0);
+    const owner = allocated.find(
+        (s) =>
+            (s.flags & (SHF_WRITE | SHF_ALLOC)) === (SHF_WRITE | SHF_ALLOC) &&
+            start >= s.addr &&
+            start <= s.addr + s.size
+    );
+    // 堆栈区只能接在 RAM 节之后；区间内出现只读节（Flash、常量）说明符号不可信。区间内的可写节
+    // （如 `._user_heap_stack` 本身）仍是同一块 RAM；跨到另一块 RAM 的区间已被 16 MiB 上限排除。
+    if (!owner || allocated.some((s) => !(s.flags & SHF_WRITE) && s.addr < end && s.addr + s.size > start)) return null;
+    return { name: "heap-stack", start, end };
 }
 
 // 在按地址升序的函数符号中定位地址所属函数，返回 { name, offset } 或 null

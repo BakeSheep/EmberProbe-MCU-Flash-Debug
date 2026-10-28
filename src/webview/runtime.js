@@ -312,6 +312,13 @@
         const row = cell.parentElement;
         if (row?.classList.contains("pointer-row")) row.classList.toggle("pointer-null", !!label.isNull);
     }
+    // A value the host held from an earlier sample while the target changed it mid-read: dimmed like a
+    // last-sampled pointer, with the same tooltip. The next setValueCell clears it.
+    function markValueHeld(cell, t) {
+        cell.classList.add("pointer-stale");
+        const suffix = " · " + t("lw.pointerLastSampled");
+        if (!cell.title.endsWith(suffix)) cell.title += suffix;
+    }
     function copyValueText(cell) {
         return cell.dataset.copy || cell.textContent;
     }
@@ -886,13 +893,22 @@
             "memory-unavailable": ["error", "lw.pointeeMemoryUnavailable"],
             cycle: ["error", "lw.pointeeCycle"],
             "expansion-budget": ["warning", "lw.layoutExpansionBudget"],
-            "depth-limit": ["warning", "lw.layoutDepthLimit"]
+            "depth-limit": ["warning", "lw.layoutDepthLimit"],
+            changing: ["info", "lw.objectChanging"]
         };
+        const detail = node.unavailableDetail ? { detail: String(node.unavailableDetail) } : {};
         if (node.unavailableCode === "LIVE_NULL_POINTER") return { level: "info", text: t("lw.pointeeNull") };
+        // The cycle's budget is shared by the whole card, so every unread member shares one untitled notice.
+        if (node.unavailableCode === "LIVE_READ_BUDGET_EXCEEDED")
+            return { level: "warning", text: t("lw.objectReadBudget"), title: "", ...detail };
         const entry = keys[reason];
         return entry
-            ? { level: entry[0], text: t(entry[1]) }
-            : { level: "error", text: t("lw.pointeeUnavailable"), detail: String(reason || "") };
+            ? { level: entry[0], text: t(entry[1]), ...detail }
+            : {
+                  level: "error",
+                  text: t("lw.pointeeUnavailable"),
+                  detail: String(node.unavailableDetail || reason || "")
+              };
     }
     function translate(tables, language, key, params) {
         const table = tables[language] || tables.zh || {};
@@ -1084,6 +1100,23 @@
     function isPointeeEntry(item) {
         return !!item?.derefPath && /\.value$/.test(String(item.name || ""));
     }
+    // Opened paths of each runtime object (pointer target, STL container) in a view, relative to its
+    // watch name. While "sample expanded pointer parts only" is on, the host reads just these parts.
+    function runtimeExpansionPaths(items, expanded, placedPointees) {
+        const result = Object.create(null);
+        const open = Object.keys(expanded).filter((key) => expanded[key]);
+        let count = 0;
+        for (const item of items) {
+            if (!item?.runtimeLayout || !item.isComposite || ++count > 256) continue;
+            const paths = [];
+            if (expanded[item.name] || isPointeeEntry(item) || placedPointees.has(item.name)) paths.push("");
+            for (const key of open)
+                if (key.length > item.name.length && key.startsWith(item.name) && /^[.[]/.test(key[item.name.length]))
+                    paths.push(key.slice(item.name.length));
+            result[item.name] = paths.slice(0, 512);
+        }
+        return result;
+    }
     function pointeeParentPath(name) {
         return String(name).slice(0, -".value".length);
     }
@@ -1208,7 +1241,8 @@
         const build = (typeId, path, depth) => {
             const type = runtimeType(graph, typeId);
             if (!type) return { kind: "unavailable", unobservable: "member-location" };
-            if (depth > MAX_COMPOSITE_DEPTH || ++nodes > 256)
+            // Same display node limit as the host's sampled trees (MAX_DISPLAY_NODES in runtimeObjectReader.js).
+            if (depth > MAX_COMPOSITE_DEPTH || ++nodes > 1024)
                 return {
                     kind: "unavailable",
                     unobservable: depth > MAX_COMPOSITE_DEPTH ? "depth-limit" : "expansion-budget"
@@ -1452,6 +1486,8 @@
         pointerLabel,
         pointerDisplay,
         setValueCell,
+        markValueHeld,
+        runtimeExpansionPaths,
         copyValueText,
         pointerNodeValue,
         summaryRow,

@@ -3,20 +3,70 @@
 const elf = require("../elfSymbols");
 const { MAX_COMPOSITE_DEPTH, MAX_TYPE_ALIASES } = require("../dwarf/layoutLimits");
 const { formatPointer } = require("../webview/runtime");
-const { elementPath, flatMember, memberPath, summaryShown } = require("./runtimeExpansion");
+const {
+    elementPath,
+    flatMember,
+    memberPath,
+    nearestRuntimePath,
+    replaceRuntimeNodes,
+    summaryShown
+} = require("./runtimeExpansion");
+
+// Running sampling bounds every cycle; paused readers pass their own larger per-object limits.
+const RUNTIME_CYCLE_BYTES = 4096;
+const RUNTIME_CYCLE_READS = 32;
+// RAM bytes between two descriptors that one verification read may span (see verificationSpans).
+const DESCRIPTOR_GAP_BYTES = 32;
+// Display nodes in one sampled tree. A fully expanded object with followed pointers and STL
+// containers (such as probe-lab's g_superVariable) needs several hundred; reads stay bounded by the
+// cycle byte/read budget, not by this. The webview's placeholder tree uses the same limit.
+const MAX_DISPLAY_NODES = 1024;
+// Display nodes kept for each later sibling while one member expands (see branchBudget in tree()).
+const BRANCH_RESERVE_NODES = 8;
+// Failures confined to one member's storage; tree() marks that member instead of failing the object.
+const MEMBER_LOCAL_FAILURES = new Set([
+    "LIVE_ADDRESS_NOT_RAM",
+    "LIVE_MEMORY_UNAVAILABLE",
+    "LIVE_LAYOUT_UNSUPPORTED",
+    "LIVE_MEMBER_MISSING",
+    "LIVE_POINTER_CYCLE",
+    "LIVE_NULL_POINTER"
+]);
 
 function failure(code, message) {
     return Object.assign(new Error(message), { code });
 }
 
-function pointerFailureReason(code) {
+// The time limit, unlike the byte/read limits, depends on link latency rather than the plan.
+function deadlineFailure() {
+    return Object.assign(failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object time budget exceeded"), {
+        details: { reason: "deadline" }
+    });
+}
+
+// A member past the byte/read limits is left unread like one whose storage fails; the rest of the
+// object still shows. Running out of time ends the whole sample (see runtimeSampleHold.js).
+function memberLocalFailure(error) {
+    return (
+        MEMBER_LOCAL_FAILURES.has(error?.code) ||
+        (error?.code === "LIVE_READ_BUDGET_EXCEEDED" && error.details?.reason !== "deadline")
+    );
+}
+
+// Short reason a view shows for an unreadable node, from a LIVE_* code.
+function runtimeFailureReason(code) {
     return (
         {
             LIVE_ADDRESS_NOT_RAM: "not-ram",
             LIVE_MEMORY_UNAVAILABLE: "memory-unavailable",
             LIVE_POINTER_CYCLE: "cycle",
-            LIVE_READ_BUDGET_EXCEEDED: "expansion-budget"
-        }[code] || code.slice(5).toLowerCase().replace(/_/g, "-")
+            LIVE_READ_BUDGET_EXCEEDED: "expansion-budget",
+            LIVE_OBJECT_CHANGED: "changing"
+        }[code] ||
+        String(code || "")
+            .slice(5)
+            .toLowerCase()
+            .replace(/_/g, "-")
     );
 }
 
@@ -36,9 +86,24 @@ class RuntimeObjectReader {
         this.readRaw = read;
         this.guard = guard;
         this.budget = budget;
+        this.maxBytes = budget.maxBytes || RUNTIME_CYCLE_BYTES;
+        this.maxReads = budget.maxReads || RUNTIME_CYCLE_READS;
         this.frozen = !!options.frozen;
         this.cache = this.frozen && Array.isArray(options.cache) ? options.cache : [];
+        // Running samples may start from `prefetched` blocks read in one request at the addresses the
+        // previous cycle needed; they are charged to the budget up front and only an exact match serves
+        // a read. `readMany` re-reads all descriptors at the end in one request. `reads` is the plan the
+        // next cycle prefetches.
+        this.prefetched = this.frozen
+            ? []
+            : (options.prefetched || []).map((entry) => ({ address: entry.address, bytes: entry.bytes, used: false }));
+        this.readMany = !this.frozen && typeof options.readMany === "function" ? options.readMany : null;
+        this.reads = [];
+        this.prefetchMisses = 0;
         this.descriptors = new Map();
+        // Tree paths of the nodes each descriptor shaped; "" (the root or its selection) fails the object.
+        this.descriptorOwners = new Map();
+        this.ownerPath = undefined;
         this.verificationBudget = { bytes: 0, commands: 0 };
         this.pointerExpansionStopped = false;
         this.nodes = 0;
@@ -69,47 +134,76 @@ class RuntimeObjectReader {
             throw failure("LIVE_LAYOUT_UNSUPPORTED", "Runtime object size is unavailable or oversized");
         return size;
     }
+    inRange(address, size) {
+        return (
+            Number.isSafeInteger(address) &&
+            address > 0 &&
+            Number.isSafeInteger(size) &&
+            size > 0 &&
+            address + size <= 0x100000000 &&
+            !!this.item.runtimeRanges?.some((range) => address >= range.start && address + size <= range.end)
+        );
+    }
+    budgetFailure() {
+        return failure(
+            "LIVE_READ_BUDGET_EXCEEDED",
+            `Runtime object exceeds ${this.maxBytes} bytes / ${this.maxReads} reads per ${this.frozen ? "paused snapshot" : "cycle"}`
+        );
+    }
     async memory(address, size, fresh = false, descriptor = false) {
         if (this.frozen) descriptor = false;
         this.guard();
-        if (Date.now() > this.budget.deadline)
-            throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object time budget exceeded");
-        if (
-            !Number.isSafeInteger(address) ||
-            address <= 0 ||
-            !Number.isSafeInteger(size) ||
-            size <= 0 ||
-            address + size > 0x100000000 ||
-            !this.item.runtimeRanges?.some((range) => address >= range.start && address + size <= range.end)
-        )
+        if (Date.now() > this.budget.deadline) throw deadlineFailure();
+        if (!this.inRange(address, size))
             throw failure("LIVE_ADDRESS_NOT_RAM", "Runtime object points outside verified ELF memory ranges");
         const cached =
             !fresh &&
             this.cache.find(
                 (entry) => address >= entry.address && address + size <= entry.address + entry.bytes.length
             );
-        const previous = descriptor ? this.descriptors.get(address) : null;
+        const prefetched =
+            !fresh && !cached
+                ? this.prefetched.find((entry) => entry.address === address && entry.bytes.length === size)
+                : null;
+        // A read the previous cycle did not need means the object moved since the plan was made.
+        if (!fresh && !cached && !prefetched && this.prefetched.length) this.prefetchMisses++;
         // Every descriptor needs a fresh read at the end, even when its initial bytes were cached.
-        const verificationBytes = this.verificationBudget.bytes + (descriptor ? size - (previous?.length || 0) : 0);
-        const verificationCommands = this.verificationBudget.commands + (descriptor && !previous ? 1 : 0);
+        const verification = descriptor
+            ? this.verificationSpans(new Map(this.descriptors).set(address, Buffer.alloc(size)))
+            : null;
+        const verificationBytes = verification
+            ? verification.reduce((sum, span) => sum + span.size, 0)
+            : this.verificationBudget.bytes;
+        const verificationCommands = verification ? verification.length : this.verificationBudget.commands;
+        const free = cached || prefetched;
         if (
-            this.budget.bytes + (cached ? 0 : size) + verificationBytes > 4096 ||
-            this.budget.commands + (cached ? 0 : 1) + verificationCommands > 32
+            this.budget.bytes + (free ? 0 : size) + verificationBytes > this.maxBytes ||
+            this.budget.commands + (free ? 0 : 1) + verificationCommands > this.maxReads
         )
-            throw failure("LIVE_READ_BUDGET_EXCEEDED", "Runtime object exceeds 4096 bytes / 32 reads per cycle");
+            throw this.budgetFailure();
         let bytes;
         if (cached) bytes = cached.bytes.subarray(address - cached.address, address - cached.address + size);
-        else {
+        else if (prefetched) {
+            prefetched.used = true;
+            bytes = prefetched.bytes;
+            this.cache.push({ address, bytes });
+            this.reads.push({ address, size, descriptor });
+        } else {
             this.budget.bytes += size;
             this.budget.commands++;
             bytes = Buffer.from((await this.readRaw(address, size)) || []);
             this.guard();
             if (bytes.length !== size)
                 throw failure("LIVE_MEMORY_UNAVAILABLE", "Runtime object memory read was incomplete");
-            if (!fresh) this.cache.push({ address, bytes });
+            if (!fresh) {
+                this.cache.push({ address, bytes });
+                this.reads.push({ address, size, descriptor });
+            }
         }
         if (descriptor) {
             this.descriptors.set(address, bytes);
+            if (!this.descriptorOwners.has(address)) this.descriptorOwners.set(address, new Set());
+            this.descriptorOwners.get(address).add(this.ownerPath ?? "");
             this.verificationBudget.bytes = verificationBytes;
             this.verificationBudget.commands = verificationCommands;
         }
@@ -577,7 +671,7 @@ class RuntimeObjectReader {
         depth = 0,
         ancestors = new Set(),
         followPointers = !this.item.runtimeStaticPointers,
-        maxNodes = 256,
+        maxNodes = MAX_DISPLAY_NODES,
         path = "",
         open = true
     ) {
@@ -589,13 +683,22 @@ class RuntimeObjectReader {
                 unobservable: depth > MAX_COMPOSITE_DEPTH ? "depth-limit" : "expansion-budget"
             };
         this.nodes++;
+        // Descriptors read while building this node belong to it (see verify in sample()).
+        const owner = this.ownerPath;
+        this.ownerPath = path;
         try {
             const next = new Set(ancestors).add(key);
             let type = this.type(object.type);
             if (type.unobservable)
                 return { kind: "unavailable", typeName: type.typeName, unobservable: type.unobservable };
-            const branchBudget = (remaining) =>
-                this.nodes + Math.max(0, Math.floor((maxNodes - this.nodes) / remaining));
+            // A child may use what is left except a small reserve for each later sibling, so a deep group
+            // early in a struct is not cut short while shallow siblings leave nodes unused, and a large
+            // one still leaves every later sibling its share up to BRANCH_RESERVE_NODES.
+            const branchBudget = (remaining) => {
+                const rest = Math.max(0, maxNodes - this.nodes);
+                const share = Math.floor(rest / remaining);
+                return this.nodes + rest - (remaining - 1) * Math.min(BRANCH_RESERVE_NODES, share);
+            };
             const unavailable = () => ({
                 kind: "unavailable",
                 typeName: type.typeName,
@@ -610,16 +713,18 @@ class RuntimeObjectReader {
                     address: object.address,
                     valueText: formatPointer(pointerValue)
                 };
-                const leaf = (reason = undefined) => ({
+                const leaf = (reason = undefined, code = undefined) => ({
                     kind: "scalar",
                     type: "u32",
                     ...identity,
                     value: pointerValue,
-                    ...(reason ? { unavailable: reason } : {})
+                    ...(reason ? { unavailable: reason } : {}),
+                    // Read-budget leaves say so; views then suggest collapsing groups or pausing.
+                    ...(code === "LIVE_READ_BUDGET_EXCEEDED" ? { unavailableCode: code } : {})
                 });
                 if (!followPointers || !pointerValue) return leaf();
                 if (["void", "function", "incomplete"].includes(type.pointerTarget)) return leaf("opaque-pointee");
-                if (this.pointerExpansionStopped) return leaf("expansion-budget");
+                if (this.pointerExpansionStopped) return leaf("expansion-budget", "LIVE_READ_BUDGET_EXCEEDED");
                 try {
                     const target = this.type(type.target);
                     if (
@@ -640,6 +745,8 @@ class RuntimeObjectReader {
                         true
                     );
                     if (value.kind === "unavailable") return leaf(value.unobservable || "opaque-pointee");
+                    // An unreadable target keeps the pointer row with its address and reason.
+                    if (value.unavailableCode) return leaf(value.unavailable, value.unavailableCode);
                     if (type.kind === "reference") return value;
                     return {
                         kind: "class",
@@ -650,7 +757,7 @@ class RuntimeObjectReader {
                 } catch (error) {
                     if (!error.code?.startsWith("LIVE_")) throw error;
                     if (error.code === "LIVE_READ_BUDGET_EXCEEDED") this.pointerExpansionStopped = true;
-                    return leaf(pointerFailureReason(error.code));
+                    return leaf(runtimeFailureReason(error.code), error.code);
                 }
             }
             if (
@@ -667,29 +774,29 @@ class RuntimeObjectReader {
                           collapsed: true
                       }
                     : { kind: type.kind, typeName: type.typeName, members: [], collapsed: true };
-            if (type.byteSize && type.byteSize <= 256) await this.memory(object.address, type.byteSize);
+            await this.prefetch(object, type, path);
             const storage = await this.storage(object);
             if (storage) {
+                // Each element counts itself in tree(); the check only keeps one node for each.
                 const count = Math.min(storage.count, 100);
                 if (this.nodes + count > maxNodes) return unavailable();
-                this.nodes += count;
                 const values = [];
                 for (let index = 0; index < count; index++) {
                     const name = storage.labels?.[index] || "value";
                     const child = storage.named || storage.labels ? memberPath(path, name) : elementPath(path, index);
-                    values.push({
-                        index,
-                        name,
-                        ...(await this.tree(
-                            await storage.at(index),
-                            depth + 1,
-                            next,
-                            true,
-                            branchBudget(count - index),
-                            child,
-                            this.opened(child)
-                        ))
-                    });
+                    const value = await this.tree(
+                        await storage.at(index),
+                        depth + 1,
+                        next,
+                        true,
+                        branchBudget(count - index),
+                        child,
+                        this.opened(child)
+                    );
+                    // Unreadable storage from the first element on marks the container once, not every element.
+                    if (index === 0 && value.unavailableCode)
+                        throw failure(value.unavailableCode, "Runtime container storage is unavailable");
+                    values.push({ index, name, ...value });
                 }
                 const truncated = values.some((value) => value.unobservable || value.truncated);
                 return storage.named || storage.labels
@@ -713,21 +820,22 @@ class RuntimeObjectReader {
             if (type.kind === "array") {
                 const count = Math.min(type.count, 100);
                 if (this.nodes + count > maxNodes) return unavailable();
-                this.nodes += count;
                 const elements = [];
-                for (let index = 0; index < count; index++)
-                    elements.push({
-                        index,
-                        ...(await this.tree(
-                            { address: object.address + index * this.size(type.target), type: type.target },
-                            depth + 1,
-                            next,
-                            followPointers,
-                            branchBudget(count - index),
-                            elementPath(path, index),
-                            this.opened(elementPath(path, index))
-                        ))
-                    });
+                for (let index = 0; index < count; index++) {
+                    const element = await this.tree(
+                        { address: object.address + index * this.size(type.target), type: type.target },
+                        depth + 1,
+                        next,
+                        followPointers,
+                        branchBudget(count - index),
+                        elementPath(path, index),
+                        this.opened(elementPath(path, index))
+                    );
+                    // An array the budget cannot reach from its first element is marked once, not per element.
+                    if (index === 0 && element.unavailableCode === "LIVE_READ_BUDGET_EXCEEDED" && !element.isPointer)
+                        throw failure(element.unavailableCode, "Runtime array is past the read budget");
+                    elements.push({ index, ...element });
+                }
                 return {
                     kind: "array",
                     typeName: type.typeName,
@@ -742,7 +850,6 @@ class RuntimeObjectReader {
             if (["class", "union"].includes(type.kind)) {
                 const fields = (type.fields || []).filter((field) => !field.name.startsWith("_vptr"));
                 if (this.nodes + fields.length > maxNodes) return unavailable();
-                this.nodes += fields.length;
                 const objects = new Map();
                 // Reserve sibling pointer descriptors before an optional expansion can consume their read budget.
                 for (const field of fields) {
@@ -750,7 +857,11 @@ class RuntimeObjectReader {
                     if (field.unobservable || fieldType.unobservable) continue;
                     const member = await this.member(object, field);
                     objects.set(field, member);
-                    if (["pointer", "reference"].includes(fieldType.kind)) await this.pointer(member);
+                    if (["pointer", "reference"].includes(fieldType.kind)) {
+                        this.ownerPath = memberPath(path, field.name);
+                        await this.pointer(member);
+                        this.ownerPath = path;
+                    }
                 }
                 const members = [];
                 let remaining = fields.length;
@@ -810,7 +921,90 @@ class RuntimeObjectReader {
         } catch (error) {
             if (["depth-limit", "expansion-budget", "type-cycle"].includes(error.unobservable))
                 return { kind: "unavailable", unobservable: error.unobservable };
+            // A member whose own storage cannot be read (a container pointing outside verified memory,
+            // an unsupported layout, past the cycle's byte/read budget) is marked on its row; its
+            // siblings are still shown. Time, consistency and cancellation errors still end the whole sample.
+            if (depth > 0 && memberLocalFailure(error)) {
+                let type;
+                try {
+                    type = this.type(object.type);
+                } catch {
+                    // The type itself may be what failed.
+                }
+                const mark = { unavailable: runtimeFailureReason(error.code), unavailableCode: error.code };
+                // A scalar past the read budget keeps its row, without a value.
+                if (error.code === "LIVE_READ_BUDGET_EXCEEDED" && type?.kind === "scalar" && type.watchType)
+                    return {
+                        kind: "scalar",
+                        type: type.watchType,
+                        typeName: type.typeName,
+                        address: object.address,
+                        value: null,
+                        ...mark
+                    };
+                return { kind: "class", ...(type?.typeName ? { typeName: type.typeName } : {}), members: [], ...mark };
+            }
             throw error;
+        } finally {
+            this.ownerPath = owner;
+        }
+    }
+    // Small composites are read in one request. A halted target cannot change, so a larger opened
+    // one (an array up to its shown elements) is read whole too while it fits the remaining budget,
+    // and its members then come from the cache instead of one read each. While running, a larger one
+    // is read whole only when it replaces several reads that together cover most of it, so an opened
+    // root with every group open costs one read instead of one per group.
+    async prefetch(object, type, path = "") {
+        if (type.byteSize && type.byteSize <= 256) {
+            await this.memory(object.address, type.byteSize);
+            return;
+        }
+        let size = type.byteSize;
+        if (type.kind === "array")
+            try {
+                size = Math.min(type.count, 100) * this.size(type.target);
+            } catch (error) {
+                if (!error.code?.startsWith("LIVE_")) throw error;
+                return;
+            }
+        if (!this.frozen) {
+            const separate = this.separateReads(type, path);
+            if (!separate || separate.reads < 4 || separate.bytes * 2 < size) return;
+        }
+        if (
+            this.inRange(object.address, size) &&
+            this.budget.bytes + size + this.verificationBudget.bytes <= this.maxBytes &&
+            this.budget.commands + 1 + this.verificationBudget.commands <= this.maxReads
+        )
+            await this.memory(object.address, size);
+    }
+    // Estimated reads (and their bytes) an opened composite's direct members would need one by one:
+    // scalars and pointer words always, opened composites at their size. Null when unknown.
+    separateReads(type, path) {
+        try {
+            if (type.kind === "array") {
+                const target = this.type(type.target);
+                if (!["scalar", "pointer", "reference"].includes(target.kind)) return null;
+                const count = Math.min(type.count, 100);
+                return { reads: count, bytes: count * this.size(type.target) };
+            }
+            if (!["class", "union"].includes(type.kind) || type.stl) return null;
+            let reads = 0;
+            let bytes = 0;
+            for (const field of type.fields || []) {
+                if (field.name.startsWith("_vptr") || field.unobservable) continue;
+                const fieldType = this.type(field.type);
+                if (fieldType.unobservable) continue;
+                const direct = ["scalar", "pointer", "reference"].includes(fieldType.kind);
+                const child = memberPath(path, field.name);
+                if (!direct && !flatMember(field.name, field.memberRole) && !this.opened(child)) continue;
+                reads++;
+                bytes += this.size(field.type);
+            }
+            return { reads, bytes };
+        } catch (error) {
+            if (!error.code?.startsWith("LIVE_")) throw error;
+            return null;
         }
     }
     // A dereferenced char shows up to 32 bytes of the string it starts. The read stays
@@ -842,23 +1036,123 @@ class RuntimeObjectReader {
         };
     }
     root(object) {
-        return this.tree(object, 0, new Set(), !this.item.runtimeStaticPointers, 256, "", this.opened(""));
+        return this.tree(
+            object,
+            0,
+            new Set(),
+            !this.item.runtimeStaticPointers,
+            MAX_DISPLAY_NODES,
+            "",
+            this.opened("")
+        );
+    }
+    // True when the prefetched plan no longer matched the object, so its blocks were partly wasted.
+    prefetchStale() {
+        return this.prefetchMisses > 0;
+    }
+    // Descriptors to re-read at the end, ordered by address. Ones that overlap or lie up to
+    // DESCRIPTOR_GAP_BYTES apart inside one verified range share a read, so the pointer words of one
+    // struct cost one verification read rather than one each.
+    verificationSpans(descriptors = this.descriptors) {
+        const spans = [];
+        for (const [address, bytes] of [...descriptors].sort((a, b) => a[0] - b[0])) {
+            const last = spans.at(-1);
+            const end = Math.max(address + bytes.length, last ? last.address + last.size : 0);
+            if (
+                last &&
+                address - (last.address + last.size) <= DESCRIPTOR_GAP_BYTES &&
+                this.inRange(last.address, end - last.address)
+            ) {
+                last.size = end - last.address;
+                last.entries.push([address, bytes]);
+            } else spans.push({ address, size: bytes.length, entries: [[address, bytes]] });
+        }
+        return spans;
+    }
+    // Addresses of the span's descriptors whose fresh bytes differ from the ones the tree used.
+    changedInSpan(span, bytes) {
+        if (!bytes || bytes.length !== span.size)
+            throw failure("LIVE_MEMORY_UNAVAILABLE", "Runtime object memory read was incomplete");
+        return span.entries
+            .filter(([address, original]) => {
+                const offset = address - span.address;
+                return !Buffer.from(bytes)
+                    .subarray(offset, offset + original.length)
+                    .equals(original);
+            })
+            .map(([address]) => address);
+    }
+    // Changed descriptor addresses after one batched re-read, or null when no batch was possible.
+    async verifyDescriptorsAtOnce(spans) {
+        if (!this.readMany || !spans.length) return null;
+        this.guard();
+        if (Date.now() > this.budget.deadline) throw deadlineFailure();
+        const actual = await this.readMany(spans.map(({ address, size }) => ({ address, size })));
+        this.guard();
+        if (!actual) return null;
+        // The verification bytes and reads were reserved while the descriptors were read.
+        for (const span of spans) {
+            this.verificationBudget.bytes -= span.size;
+            this.verificationBudget.commands--;
+            this.budget.bytes += span.size;
+            this.budget.commands++;
+        }
+        return spans.flatMap((span, index) => this.changedInSpan(span, actual[index]));
+    }
+    // A descriptor that changed while the tree was read only withholds the nodes it shaped: each is
+    // marked "changing" (consumers may show its last consistent value). One the root or its member
+    // selection depends on still fails the whole object.
+    scopeChanges(tree, addresses) {
+        if (!addresses.length) return tree;
+        const owners = new Set(addresses.flatMap((address) => [...(this.descriptorOwners.get(address) || [""])]));
+        if (owners.has("")) throw failure("LIVE_OBJECT_CHANGED", "Runtime object storage changed during sampling");
+        const marked = new Set([...owners].map((path) => nearestRuntimePath(tree, path)));
+        if (marked.has("")) throw failure("LIVE_OBJECT_CHANGED", "Runtime object storage changed during sampling");
+        return replaceRuntimeNodes(tree, marked, (node) => ({
+            kind: "class",
+            ...(node.typeName ? { typeName: node.typeName } : {}),
+            ...(node.isPointer
+                ? { isPointer: true, pointerTarget: node.pointerTarget, address: node.address }
+                : node.address !== undefined
+                  ? { address: node.address }
+                  : {}),
+            members: [],
+            unavailable: runtimeFailureReason("LIVE_OBJECT_CHANGED"),
+            unavailableCode: "LIVE_OBJECT_CHANGED"
+        }));
     }
     async sample() {
+        for (const entry of this.prefetched) {
+            this.budget.bytes += entry.bytes.length;
+            this.budget.commands++;
+        }
         const object = await this.select(
             await this.dynamic({ address: this.item.address, type: this.graph.root }),
             this.item.runtimeSegments || []
         );
         const tree = (this.item.derefPath && (await this.stringPreview(object))) || (await this.root(object));
-        for (const [address, original] of this.descriptors) {
-            this.verificationBudget.bytes -= original.length;
-            this.verificationBudget.commands--;
-            const actual = await this.memory(address, original.length, true);
-            if (!actual.equals(original))
-                throw failure("LIVE_OBJECT_CHANGED", "Runtime object storage changed during sampling");
+        // With nothing read at all, the object fails as one budget error rather than a card of empty rows.
+        const children = tree.members || tree.elements;
+        if (children?.length && children.every((child) => child.unavailableCode === "LIVE_READ_BUDGET_EXCEEDED"))
+            throw this.budgetFailure();
+        const spans = this.verificationSpans();
+        let changed = await this.verifyDescriptorsAtOnce(spans);
+        if (!changed) {
+            changed = [];
+            for (const span of spans) {
+                this.verificationBudget.bytes -= span.size;
+                this.verificationBudget.commands--;
+                changed.push(...this.changedInSpan(span, await this.memory(span.address, span.size, true)));
+            }
         }
-        return tree;
+        return this.scopeChanges(tree, changed);
     }
 }
 
-module.exports = { RuntimeObjectReader };
+module.exports = {
+    RuntimeObjectReader,
+    RUNTIME_CYCLE_BYTES,
+    RUNTIME_CYCLE_READS,
+    MAX_DISPLAY_NODES,
+    runtimeFailureReason
+};

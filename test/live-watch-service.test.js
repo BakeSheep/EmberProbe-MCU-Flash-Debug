@@ -231,7 +231,9 @@ const { createFixture } = require("./helpers/service-fixture");
             new Map()
         );
         assert.deepStrictEqual(decoded.scalarSamples, []);
-        assert.strictEqual(decoded.compositeSamples[0].tree.unavailable, diagnostic.message);
+        // Views pick the notice from the reason code; the message stays as its detail.
+        assert.strictEqual(decoded.compositeSamples[0].tree.unavailable, "expansion-budget");
+        assert.strictEqual(decoded.compositeSamples[0].tree.unavailableDetail, diagnostic.message);
         assert.strictEqual(decoded.compositeSamples[0].tree.unavailableCode, diagnostic.code);
         // Bytes without a static layout are never decoded as one.
         const bytesOnly = new LiveWatchService({ decodeComposite: () => assert.fail("no layout to decode") });
