@@ -817,7 +817,7 @@ function hidePointerCurve(item) {
 function ensureBuf(n) {
     if (!Object.prototype.hasOwnProperty.call(data, n)) data[n] = [];
 }
-// Notice boxes: the panel's above the chart, the export dialog's own, and the variable-source hint.
+// Notices live in the import and export dialogs, plus the variable-source picker.
 var noticeAreas = {};
 function noticeArea(id) {
     if (!noticeAreas[id] && $(id))
@@ -841,7 +841,7 @@ function exportNotice(key) {
     if (area)
         key ? area.set("export", { level: "warning", text: { key: key }, dismissible: false }) : area.clear("export");
 }
-// The status bar is the sampling state only; errors and warnings become panel notices, by source id.
+// The status dot shows sampling state; errors and warnings stay in the import dialog, by source id.
 function renderStatus() {
     var txt = statusMsg.key ? t(statusMsg.key, statusMsg.params) : statusMsg.message != null ? statusMsg.message : "";
     $("status").textContent = txt;
@@ -878,14 +878,6 @@ function applyI18n() {
     for (i = 0; i < els.length; i++) els[i].setAttribute("aria-label", t(els[i].getAttribute("data-i18n-aria")));
     renderUnlimited();
 }
-function updateLangToggle() {
-    var b = $("langToggle");
-    if (b) {
-        b.textContent = LANG === "zh" ? "EN" : "中";
-        b.title = t("common.langTitle");
-        b.setAttribute("aria-label", t("common.langTitle"));
-    }
-}
 // Several ELF variables match the typed name; an info notice asks which one to add.
 function choiceHint(show) {
     var area = noticeArea("acChoiceHint");
@@ -907,14 +899,12 @@ function rerenderLive() {
     applySideLayout();
     $("freeze").textContent = frozen ? t("lw.resume") : t("lw.freeze");
     renderStatus();
-    updateLangToggle();
     dirty = true;
 }
-function setLang(l, notify) {
+function setLang(l) {
     LANG = l === "en" ? "en" : "zh";
     document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
     rerenderLive();
-    if (notify) post({ type: "setLang", lang: LANG });
 }
 function updateRun() {
     var b = $("run");
@@ -3738,8 +3728,7 @@ function loop(now) {
     requestAnimationFrame(loop);
 }
 function renderElfDiagnostics() {
-    for (const id of ["elfDiagnostics", "importDiagnostics"])
-        EmberProbeRuntime.renderElfDiagnostics($(id), impWarnings, impError, t("common.diagnostics"), t);
+    EmberProbeRuntime.renderElfDiagnostics($("importDiagnostics"), impWarnings, impError, t("common.diagnostics"), t);
 }
 window.EmberProbeMessages.connect(window, {
     sidebarImportResult: function (m) {
@@ -4023,7 +4012,7 @@ window.EmberProbeMessages.connect(window, {
         setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
     },
     setLang: function (m) {
-        setLang(m.lang, false);
+        setLang(m.lang);
     }
 });
 $("run").onclick = function () {
@@ -4713,13 +4702,7 @@ new MutationObserver(function () {
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
 updateRun();
-updateLangToggle();
 if (norm) $("norm").classList.remove("ghost");
-var _lt = $("langToggle");
-if (_lt)
-    _lt.onclick = function () {
-        setLang(LANG === "zh" ? "en" : "zh", true);
-    };
 post({ type: "samplingArchiveInfo", historyRevision: historyRevision });
 post({ type: "ready" });
 requestAnimationFrame(loop);

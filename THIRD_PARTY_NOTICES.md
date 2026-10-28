@@ -23,6 +23,10 @@ The Windows driver helper dynamically loads libwdi 1.5.1 (GNU LGPL v3 or later).
 
 The xPack archives additionally contain six EmberProbe compatibility wrappers under GPL-2.0-or-later. They source the original OpenOCD target scripts without adding flash drivers. Reviewable wrapper sources are in `resources/openocd-targets/target/`; `resources/openocd-targets-manifest.json` and the archived `distro-info/emberprobe-targets.json` record canonical script URLs, reviewed build/source identities and wrapper hashes. See `docs/OPENOCD-TARGETS.md` for the mappings and rebuild procedure.
 
+## Chart settings icon
+
+The chart settings gear is adapted from [Microsoft Codicons](https://github.com/microsoft/vscode-codicons), licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). The glyph from the bundled VS Code 1.136.1 Codicon font was converted to an inline SVG and scaled to a 16-unit viewBox.
+
 ## ISC License
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.

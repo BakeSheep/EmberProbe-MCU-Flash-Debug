@@ -67,7 +67,7 @@ for (const lang of ["en", "zh"]) {
             assert(!names[0].textContent.includes("_ZN"));
         }
         assert(sidebar.document.getElementById("availableDiagnostics").hidden);
-        assert(graph.document.getElementById("elfDiagnostics").hidden);
+        assert(graph.document.getElementById("importDiagnostics").hidden);
         graph.window.hideImport();
         const input = graph.document.getElementById("addName");
         const type = (value) => {
@@ -166,7 +166,7 @@ for (const lang of ["en", "zh"]) {
         assert.strictEqual(input.getAttribute("aria-expanded"), "false");
         // Real parser errors remain visible.
         graph.send({ type: "variablesListDone", version: "elf2", warnings: ["DWARF_BUDGET_EXCEEDED: test"] });
-        assert(!graph.document.getElementById("elfDiagnostics").hidden);
+        assert(!graph.document.getElementById("importDiagnostics").hidden);
         graph.assertHealthy();
         sidebar.assertHealthy();
     } finally {

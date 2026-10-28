@@ -97,7 +97,7 @@ try {
     document.getElementById("sideToggle").click();
     assert(!layout.classList.contains("side-collapsed"));
 
-    const card = document.getElementById("elfDiagnostics");
+    const card = document.getElementById("importDiagnostics");
     runtime.renderElfDiagnostics(card, ["<script>bad()</script>", "warning", "warning", null], "", "ELF diagnostics");
     const toggle = () => card.querySelector(".notice-toggle");
     assert(!card.hidden);

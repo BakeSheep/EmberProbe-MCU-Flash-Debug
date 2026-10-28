@@ -124,6 +124,33 @@ geometryScenario(({ state, series, calls, draw }) => {
     assert.strictEqual(dots.at(-1)[1], state.geometry.padL + state.geometry.pw);
 });
 
+// Sparse samples (slow probes): while smooth following, the marker rides the drawn line at the right edge instead of
+// sliding left from the last visible sample and snapping back when the next one crosses the trailing edge.
+geometryScenario(({ state, series, options, calls, draw }) => {
+    series[0].arr = Array.from({ length: 31 }, (_, i) => ({ t: i * 10, v: i % 2 ? 12 : 8 }));
+    const edge = () => state.geometry.padL + state.geometry.pw;
+    const dots = [];
+    state.smoothFollowing = true;
+    for (let max = 200; max <= 210; max += 2.5) {
+        state.x = { min: max - 100, max };
+        draw();
+        const dot = calls.find(([op]) => op === "arc");
+        assert.ok(Math.abs(dot[1] - edge()) < 1e-9, "the following marker stays on the right edge");
+        dots.push(dot[2]);
+    }
+    const y = (v) => state.geometry.padT + ((state.y.max - v) * state.geometry.ph) / 20;
+    assert.ok(Math.abs(dots[0] - y(8)) < 1e-9 && Math.abs(dots[2] - y(10)) < 1e-9 && Math.abs(dots[4] - y(12)) < 1e-9);
+    options.jitterBands = true;
+    state.x = { min: 105, max: 205 };
+    draw();
+    assert.ok(Math.abs(calls.find(([op]) => op === "arc")[1] - edge()) < 1e-9, "banded curves pin the marker too");
+    options.jitterBands = false;
+    state.smoothFollowing = false;
+    draw();
+    const dot = calls.find(([op]) => op === "arc");
+    assert.ok(dot[1] < edge() - 1, "static views keep the marker on the last visible sample");
+});
+
 geometryScenario(({ state, series, options, draw }) => {
     const base = 18446744073709551000n;
     series[0].arr = Array.from({ length: 301 }, (_, t) => ({
