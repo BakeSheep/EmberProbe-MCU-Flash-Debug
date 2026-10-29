@@ -39,35 +39,38 @@
         menu.setAttribute("role", "dialog");
         menu.setAttribute("aria-label", t("lw.seriesOptions"));
         doc.body.append(menu);
+        let menuAnchor;
         function close() {
             menu.classList.add("hidden");
         }
         doc.addEventListener("keydown", (e) => {
-            if (e.key === "Escape") close();
+            if (e.key === "Escape" && !menu.classList.contains("hidden")) {
+                close();
+                menuAnchor?.focus();
+            }
         });
         doc.addEventListener("pointerdown", (e) => {
             if (!menu.contains(e.target) && !e.target.closest(".series-options")) menu.classList.add("hidden");
         });
         function openMenu(name, anchor, point) {
+            menuAnchor = anchor;
             menu.textContent = "";
             const title = doc.createElement("strong");
             title.textContent = env.displayName ? env.displayName(name) : name;
             menu.append(title);
-            button(
-                "seriesOnly",
-                "lw.onlyThis",
-                () => {
-                    change("focus", name);
-                    menu.classList.add("hidden");
-                },
-                menu
-            );
+            function field(key, ...inputs) {
+                const row = doc.createElement("div");
+                row.className = "series-menu-row";
+                const label = doc.createElement("span");
+                label.textContent = t(key);
+                row.append(label, ...inputs);
+                menu.append(row);
+                return row;
+            }
             const state = get(),
                 style = state.style(name);
             const item = state.watch?.find((entry) => entry.name === name);
             if (item && !item.isComposite) {
-                const label = doc.createElement("label");
-                label.textContent = t("common.type");
                 const type = doc.createElement("select");
                 type.className = "series-type";
                 type.setAttribute("aria-label", t("common.type"));
@@ -78,8 +81,26 @@
                 });
                 type.value = item.type;
                 type.onchange = () => change("type", { name, type: type.value });
-                label.append(type);
-                menu.append(label);
+                field("common.type", type);
+                const bases = doc.createElement("div");
+                bases.className = "series-radix";
+                bases.setAttribute("role", "group");
+                bases.setAttribute("aria-label", t("lw.numberBase"));
+                [10, 16, 2].forEach((radix, index) => {
+                    const b = doc.createElement("button");
+                    b.type = "button";
+                    b.textContent = ["DEC", "HEX", "BIN"][index];
+                    b.dataset.radix = String(radix);
+                    b.setAttribute("aria-pressed", String((state.radix?.(name) || 10) === radix));
+                    b.onclick = () => {
+                        change("radix", { name, radix });
+                        bases
+                            .querySelectorAll("button")
+                            .forEach((option) => option.setAttribute("aria-pressed", String(option === b)));
+                    };
+                    bases.append(b);
+                });
+                field("lw.numberBase", bases);
             }
             const color = doc.createElement("input");
             color.type = "color";
@@ -96,11 +117,22 @@
             line.value = style.line;
             color.oninput = line.onchange = () =>
                 change("style", { name, style: { color: color.value, line: line.value } });
-            menu.append(color, line);
-            if (item?.isComposite) {
-                color.hidden = line.hidden = true;
-                $("seriesOnly").hidden = true;
-            }
+            const appearance = doc.createElement("div");
+            appearance.className = "series-appearance";
+            appearance.append(color, line);
+            field("lw.curveStyle", appearance).hidden = !!item?.isComposite;
+            const actions = doc.createElement("div");
+            actions.className = "series-menu-actions";
+            menu.append(actions);
+            button(
+                "seriesOnly",
+                "lw.onlyThis",
+                () => {
+                    change("focus", name);
+                    close();
+                },
+                actions
+            ).hidden = !!item?.isComposite;
             button(
                 "seriesRemove",
                 "lw.removeWatch",
@@ -108,27 +140,21 @@
                     change("remove", name);
                     menu.classList.add("hidden");
                 },
-                menu
-            );
-            button(
-                "seriesClose",
-                "lw.closeInspection",
-                () => {
-                    menu.classList.add("hidden");
-                    anchor.focus();
-                },
-                menu
+                actions
             );
             menu.classList.remove("hidden");
             const rect = anchor.getBoundingClientRect();
             menu.style.left =
-                Math.max(4, Math.min(doc.documentElement.clientWidth - 245, point?.clientX ?? rect.left)) + "px";
+                Math.max(
+                    4,
+                    Math.min(doc.documentElement.clientWidth - menu.offsetWidth - 4, point?.clientX ?? rect.left)
+                ) + "px";
             menu.style.top =
                 Math.max(
                     4,
                     Math.min(doc.documentElement.clientHeight - menu.offsetHeight - 4, point?.clientY ?? rect.bottom)
                 ) + "px";
-            menu.querySelector("button:not([hidden])").focus();
+            (menu.querySelector(".series-type") || $("seriesRemove")).focus();
         }
         function decorate(element, name, swatch) {
             element.dataset.seriesName = name;
@@ -167,7 +193,8 @@
                 swatch.style.borderStyle = state.style(name).line === "solid" ? "solid" : "dashed";
             }
         }
-        function value(point) {
+        function value(name, point) {
+            if (env.formatValue) return env.formatValue(name, point);
             return point ? (point.valueText ?? env.fmtNum(point.v)) : t("lw.noReading");
         }
         let tooltipKey = "";
@@ -189,7 +216,8 @@
             $("freeze").textContent = t(s.frozen ? "lw.resume" : "lw.freeze");
             const hits = c.hits || [];
             const labels = hits.map((hit) => (env.tooltipName ? env.tooltipName(hit.name) : hit.name));
-            const key = JSON.stringify([hits, labels, hits.map((h) => s.style(h.name)), s.lang]);
+            const values = hits.map((hit) => value(hit.name, hit.point));
+            const key = JSON.stringify([hits, labels, values, hits.map((h) => s.style(h.name)), s.lang]);
             tooltip.classList.toggle("hidden", !hits.length);
 
             if (key !== tooltipKey) {
@@ -199,8 +227,8 @@
                     const row = doc.createElement("div");
                     row.className = "curve-hit";
                     row.style.borderLeftColor = s.style(hit.name).color;
-                    row.textContent = labels[index] + ": " + value(hit.point);
-                    row.setAttribute("aria-label", labels[index] + ": " + value(hit.point));
+                    row.textContent = labels[index] + ": " + values[index];
+                    row.setAttribute("aria-label", labels[index] + ": " + values[index]);
                     row.dataset.rawName = hit.name;
                     tooltip.append(row);
                 });

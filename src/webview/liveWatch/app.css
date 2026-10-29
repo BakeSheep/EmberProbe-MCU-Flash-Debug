@@ -1323,10 +1323,16 @@ input[type="number"]::-webkit-outer-spin-button {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* Long C++ type names are clipped so the variable name keeps most of the row. */
 .ac-type {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: min(40%, 22ch);
+    overflow: hidden;
     color: var(--vscode-symbolIcon-variableForeground, #4fc1ff);
     font: 10px var(--vscode-editor-font-family);
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .chart-wrap {
     display: flex;
@@ -1558,23 +1564,71 @@ input[type="number"]::-webkit-outer-spin-button {
 .series-menu {
     position: fixed;
     z-index: 100;
-    width: 240px;
-    max-height: 90vh;
+    box-sizing: border-box;
+    width: 272px;
+    max-width: calc(100vw - 8px);
+    max-height: calc(100vh - 8px);
     overflow: auto;
     padding: 12px;
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
+    display: grid;
+    gap: 10px;
     background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
     border: 1px solid var(--vscode-widget-border, #888);
     box-shadow: 0 4px 18px #0004;
 }
 .series-menu strong {
-    width: 100%;
+    min-width: 0;
     overflow-wrap: anywhere;
+    padding-bottom: 2px;
+}
+.series-menu-row {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+}
+.series-menu-row > span {
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+}
+.series-menu select {
+    width: 100%;
+    min-width: 0;
+}
+.series-radix,
+.series-appearance,
+.series-menu-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.series-radix button,
+.series-menu-actions button {
+    flex: 1;
+    min-width: 0;
+}
+.series-radix button {
+    padding: 4px 2px;
+    color: var(--vscode-foreground);
+    background: transparent;
+    border-color: var(--vscode-widget-border, #8884);
+}
+.series-radix button:hover {
+    background: var(--vscode-toolbar-hoverBackground, #8882);
+}
+.series-radix button[aria-pressed="true"] {
+    color: var(--vscode-button-foreground, #fff);
+    background: var(--vscode-button-background, #0078d4);
+    border-color: var(--vscode-button-background, #0078d4);
+}
+.series-menu-actions {
+    padding-top: 10px;
+    border-top: 1px solid var(--vscode-widget-border, #8884);
 }
 .series-menu input[type="color"] {
-    width: 44px;
+    flex: 0 0 32px;
+    width: 32px;
     padding: 1px;
 }
 .series-menu button {
@@ -1902,15 +1956,6 @@ input[type="number"]::-webkit-outer-spin-button {
     max-width: 110px;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-.series-menu label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-}
-.series-type {
-    flex: 1;
 }
 .var-card:focus-visible,
 .member-row:focus-visible {

@@ -506,6 +506,7 @@ var watch = [],
     hidden = Object.create(null),
     expanded = Object.create(null),
     rawMembers = Object.create(null),
+    numberBases = Object.create(null),
     compCells = Object.create(null),
     dispSpec = Object.create(null),
     // Elements shown per static array path once "show more" was used.
@@ -532,6 +533,8 @@ var wantImportOpen = false,
     impError = "",
     impTypesReady = true,
     impExpanded = Object.create(null),
+    // Checkbox changes made since the import dialog opened; other rows mirror the current watch list.
+    impPicks = new Map(),
     impLayoutPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
     pointerLayoutWaiters = new Set(),
@@ -567,6 +570,10 @@ if (saved && typeof saved.norm === "boolean") norm = saved.norm;
 if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterBands;
 if (saved && saved.expanded) expanded = saved.expanded;
 if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
+if (saved && saved.numberBases)
+    Object.entries(saved.numberBases).forEach(function ([name, radix]) {
+        if ([2, 16].includes(radix)) numberBases[name] = radix;
+    });
 if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
 if (saved && saved.arrayShown) arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
@@ -629,7 +636,22 @@ function fmtNum(v) {
     var a = Math.abs(v);
     return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
 }
-function fmtExact(v, valueText, enumText) {
+function fmtExact(v, valueText, enumText, name) {
+    var radix = numberBases[name] || 10;
+    if (radix !== 10) {
+        // Keep exact 64-bit readings out of Number; fractional values use numerical base conversion.
+        var number =
+            valueText != null && /^-?\d{1,20}$/.test(String(valueText))
+                ? BigInt(valueText)
+                : v != null && Number.isFinite(v)
+                  ? v
+                  : null;
+        if (number !== null) {
+            var negative = number < 0,
+                digits = (negative ? -number : number).toString(radix).toUpperCase();
+            return (negative ? "-" : "") + (radix === 16 ? "0x" : "0b") + digits;
+        }
+    }
     if (enumText) return String(enumText);
     return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
 }
@@ -680,10 +702,10 @@ function renderRawMembersUi(container, node, name) {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     });
 }
-function fmtDisplayNode(node) {
+function fmtDisplayNode(node, name) {
     if (node?.functionEmpty) return t("lw.functionEmpty");
     if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
-    return node ? fmtExact(node.value, node.valueText, node.enumText) : "—";
+    return node ? fmtExact(node.value, node.valueText, node.enumText, name) : "—";
 }
 // Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
 var displayInfos = new WeakMap();
@@ -707,14 +729,17 @@ function scalarDisplay(item) {
     const info = watchDisplayInfo(item);
     // Before the first sample a pointer shows the target it had when last sampled.
     const last = info.isPointer && latest[item.name] === undefined && shownLastPointers()[item.name];
-    if (last) return fmtDisplayNode({ ...info, ...last, stale: true });
-    return fmtDisplayNode({
-        ...info,
-        ...latestPointer[item.name],
-        value: latest[item.name],
-        valueText: latestText[item.name],
-        enumText: latestEnum[item.name]
-    });
+    if (last) return fmtDisplayNode({ ...info, ...last, stale: true }, item.name);
+    return fmtDisplayNode(
+        {
+            ...info,
+            ...latestPointer[item.name],
+            value: latest[item.name],
+            valueText: latestText[item.name],
+            enumText: latestEnum[item.name]
+        },
+        item.name
+    );
 }
 function post(m) {
     if (api) {
@@ -759,6 +784,7 @@ function saveUi() {
             hidden: curves,
             expanded: expanded,
             rawMembers: rawMembers,
+            numberBases: numberBases,
             dispSpec: dispSpec,
             arrayShown: arrayShown,
             lastPointers: lastPointers,
@@ -1038,7 +1064,7 @@ function removeVar(name) {
         delete latestPointer[w.name];
         delete hidden[w.name];
     });
-    [expanded, arrayShown].forEach(function (state) {
+    [expanded, arrayShown, numberBases].forEach(function (state) {
         Object.keys(state).forEach(function (path) {
             if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete state[path];
         });
@@ -1404,11 +1430,14 @@ function updateCompositeValues(name) {
         const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
         setDisplayedValue(
             cell,
-            fmtDisplayNode({
-                ...cell.displayNode,
-                ...node,
-                ...(summary ? { functionEmpty: summary.empty } : {})
-            })
+            fmtDisplayNode(
+                {
+                    ...cell.displayNode,
+                    ...node,
+                    ...(summary ? { functionEmpty: summary.empty } : {})
+                },
+                path
+            )
         );
         if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
     });
@@ -1572,7 +1601,7 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     container.appendChild(row);
     const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
     if (host) container.appendChild(host);
-    setDisplayedValue(val, fmtDisplayNode(withLastPointer(node, path)));
+    setDisplayedValue(val, fmtDisplayNode(withLastPointer(node, path), path));
 }
 // A static layout row has no value until sampled; a pointer in it shows its last known target.
 function withLastPointer(node, path) {
@@ -2224,16 +2253,16 @@ function renderImport() {
     var f = ($("impFilter").value || "").trim().toLowerCase(),
         box = $("impList"),
         pool = visibleImportSymbols();
-    var checkedNames = new Set(
+    var watchedNames = new Set(
         watch.map(function (item) {
             return item.name;
         })
     );
-    Array.from(box.querySelectorAll("input:checked"), (cb) => cb.dataset.leafPath || cb.dataset.symbolName).forEach(
-        function (name) {
-            if (name) checkedNames.add(name);
+    var checkedNames = {
+        has: function (name) {
+            return impPicks.has(name) ? impPicks.get(name) : watchedNames.has(name);
         }
-    );
+    };
     box.textContent = "";
     scheduleImportMemberSearch(f);
     var memberMatches = new Map();
@@ -2438,6 +2467,7 @@ function showImport(symbols) {
     openImport();
 }
 function openImport() {
+    impPicks.clear();
     $("impFilter").value = "";
     renderImport();
     $("overlay").classList.remove("hidden");
@@ -2519,7 +2549,7 @@ function renderAutocomplete(candidates) {
         EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
         var ty = document.createElement("span");
         ty.className = "ac-type";
-        ty.textContent = s.typeName || s.watchType || (ambiguityChoices ? s.address : defType(s.size));
+        ty.textContent = ty.title = s.typeName || s.watchType || (ambiguityChoices ? s.address : defType(s.size));
         it.append(nm, ty);
         it.onmousedown = function (e) {
             e.preventDefault();
@@ -3120,6 +3150,16 @@ function chartAction(action, value) {
             saveWatch();
         }
     }
+    if (action === "radix") {
+        var selected = watch.find(function (entry) {
+            return entry.name === value.name;
+        });
+        if (!selected || isCompositeItem(selected) || ![2, 10, 16].includes(value.radix)) return;
+        if (value.radix === 10) delete numberBases[value.name];
+        else numberBases[value.name] = value.radix;
+        updateValues();
+        saveUi();
+    }
     if (action === "remove") removeVar(value);
     if (action === "autoY") chartState.autoY = !chartState.autoY;
     chartState.fastDirty = true;
@@ -3129,6 +3169,9 @@ controls = window.EmberProbeChartControls.create({
     document: document,
     t: t,
     fmtNum: fmtNum,
+    formatValue: function (name, point) {
+        return point ? fmtExact(point.v, point.valueText, null, name) : t("lw.noReading");
+    },
     displayName: curveDisplayName,
     tooltipName: function (name) {
         return EmberProbeRuntime.shortVariableName(curveDisplayName(name));
@@ -3146,6 +3189,9 @@ controls = window.EmberProbeChartControls.create({
             style: styleFor,
             watch: watch,
             types: TYPES,
+            radix: function (name) {
+                return numberBases[name] || 10;
+            },
             lang: LANG
         };
     }
@@ -4097,6 +4143,11 @@ $("addName").onkeydown = function (e) {
 };
 applyImportUserOnly();
 $("impFilter").oninput = renderImport;
+$("impList").addEventListener("change", function (e) {
+    var cb = e.target;
+    var name = cb && cb.type === "checkbox" && (cb.dataset.leafPath || cb.dataset.symbolName);
+    if (name) impPicks.set(name, cb.checked);
+});
 $("impFilterClear").onclick = function () {
     $("impFilter").value = "";
     renderImport();

@@ -183,6 +183,8 @@ module.exports = Object.freeze({
     "lw.onlyThis": "仅看此项",
     "lw.curveColor": "曲线颜色",
     "lw.curveLine": "曲线线型",
+    "lw.curveStyle": "样式",
+    "lw.numberBase": "进制",
     "lw.line.solid": "实线",
     "lw.line.dashed": "虚线",
     "lw.line.dotted": "点线",

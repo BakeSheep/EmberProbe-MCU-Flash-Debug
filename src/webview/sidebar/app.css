@@ -228,6 +228,8 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
 }
 #mcuConfigSection .config-title {
     flex: none;
+    line-height: 1;
+    transform: translateY(-1px);
 }
 .config-summary {
     min-width: 0;
@@ -248,7 +250,12 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     border-top: 1px solid var(--vscode-widget-border, transparent);
 }
 .agent-row {
-    margin-bottom: 4px;
+    min-height: 32px;
+    margin-bottom: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #454545));
+    border-radius: 4px;
+    font-size: 12px;
 }
 .agent-row:last-child {
     margin-bottom: 0;
@@ -263,7 +270,7 @@ details{border-bottom:1px solid var(--vscode-sideBarSectionHeader-border,transpa
     padding: 0 8px;
     border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #454545));
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 11px;
     line-height: 1;
 }
 .agent-install:focus-visible {

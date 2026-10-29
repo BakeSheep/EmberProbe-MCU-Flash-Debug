@@ -147,6 +147,7 @@ const TEST_GROUPS = Object.freeze({
         "mcp-registration.test.js",
         "mcp-server.test.js",
         "chart-controls.test.js",
+        "chart-number-base.test.js",
         "chart-experience.test.js",
         "chart-host.test.js",
         "chart-panel-identity.test.js",

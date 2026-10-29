@@ -317,6 +317,72 @@ try {
     graph.close();
 }
 
+// Live watch: reopening the import dialog reflects removals instead of the previous dialog's checkboxes.
+const reopened = render(getLiveWatchContent({}, "en"));
+try {
+    const doc = reopened.document;
+    const checkbox = (selector) => doc.querySelector("#impList " + selector);
+    const struct = {
+        name: "device",
+        address: 0x20000050,
+        size: 8,
+        isComposite: true,
+        origin: "user",
+        compositeLayout: {
+            kind: "struct",
+            members: [
+                { name: "gain", offset: 0, byteSize: 4, watchType: "f32", kind: "scalar" },
+                { name: "mode", offset: 4, byteSize: 4, watchType: "u32", kind: "scalar" }
+            ]
+        }
+    };
+    reopened.send({
+        type: "watchList",
+        items: [
+            {
+                name: "device",
+                address: 0x20000050,
+                size: 8,
+                type: "",
+                isComposite: true,
+                compositeLayout: struct.compositeLayout
+            }
+        ]
+    });
+    doc.getElementById("import").click();
+    reopened.send({ type: "variablesList", symbols: [struct] });
+    assert.strictEqual(checkbox('input[data-symbol-name="device"]').checked, true);
+    doc.getElementById("impCancel").click();
+    doc.querySelector('[aria-label="Remove device"]').click();
+    doc.getElementById("import").click();
+    reopened.send({ type: "variablesList", symbols: [struct] });
+    assert.strictEqual(
+        checkbox('input[data-symbol-name="device"]').checked,
+        false,
+        "a removed watch is no longer checked after reopening"
+    );
+    doc.getElementById("impFilter").value = "mode";
+    doc.getElementById("impFilter").dispatchEvent(new reopened.window.Event("input"));
+    const mode = checkbox('input[data-leaf-path="device.mode"]');
+    mode.checked = true;
+    mode.dispatchEvent(new reopened.window.Event("change", { bubbles: true }));
+    doc.getElementById("impFilter").value = "";
+    doc.getElementById("impFilter").dispatchEvent(new reopened.window.Event("input"));
+    doc.getElementById("impFilter").value = "mode";
+    doc.getElementById("impFilter").dispatchEvent(new reopened.window.Event("input"));
+    assert.strictEqual(checkbox('input[data-leaf-path="device.mode"]').checked, true, "picks survive filter redraws");
+    doc.getElementById("impAdd").click();
+    const saved = reopened.messages.filter((message) => message.type === "saveWatch").pop();
+    assert.deepStrictEqual(
+        saved.items.map((item) => item.name),
+        ["device.mode"],
+        "importing a member adds that member, not its removed parent"
+    );
+    reopened.assertHealthy();
+} finally {
+    reopened.close();
+}
+
 const restoredGraph = render(getLiveWatchContent({}, "zh"), { impUserVarsOnly: true });
 try {
     const toggle = restoredGraph.document.getElementById("impUserOnly");

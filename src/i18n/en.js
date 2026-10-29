@@ -204,6 +204,8 @@ module.exports = Object.freeze({
     "lw.onlyThis": "Show only this",
     "lw.curveColor": "Curve color",
     "lw.curveLine": "Line style",
+    "lw.curveStyle": "Style",
+    "lw.numberBase": "Base",
     "lw.line.solid": "Solid",
     "lw.line.dashed": "Dashed",
     "lw.line.dotted": "Dotted",

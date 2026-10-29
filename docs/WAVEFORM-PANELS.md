@@ -15,3 +15,9 @@ The renderer saves `panelId` and `watchKey` through `setState()` at startup and 
 - Closing a tab releases its display number. Late messages from the disposed Webview cannot modify a replacement tab.
 
 The regression cases are in `test/chart-panel-identity.test.js`. The Extension Host smoke test also uses a real hidden, unregistered Webview tab to verify allocation against VS Code's tab inventory.
+
+## Variable context menu
+
+Right-click a watched scalar or press Shift+F10 on its row to change its type, number base, color, or line style. DEC, HEX, and BIN apply only to that variable's displayed value and hover reading in the current panel. The selected bases are saved with the Webview state. Removing a variable clears its base preference.
+
+Fractional values use numerical conversion (for example, `1.5` becomes `0x1.8` or `0b1.1`), and exact 64-bit integer text is preserved. HEX/BIN show enum values numerically; DEC keeps the existing enum labels. Pointer summaries keep their target labels. Base selection does not change sampling, plotted coordinates, shared curve styles, or CSV exports. Composite rows have no base control. Press Escape or click outside to dismiss the menu.

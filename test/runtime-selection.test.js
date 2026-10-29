@@ -164,7 +164,7 @@ function openVariables(view, sidebar, symbols, version = "selection") {
                 const leafSelector = sidebar ? ".available-row.leaf" : "#impList input[data-leaf-path]";
                 const first = view.document.querySelector(leafSelector);
                 assert.ok(first);
-                if (!sidebar) first.checked = true;
+                if (!sidebar) first.click();
                 sample(2, 8);
                 assert.strictEqual(
                     view.document.querySelector(leafSelector),

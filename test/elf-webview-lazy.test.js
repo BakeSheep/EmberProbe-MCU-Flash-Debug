@@ -383,7 +383,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         assert.equal(doc.querySelector(".imp-leaf-name"), null, "ignore stale ELF layouts");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device0", layout });
         assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".settings.gain");
-        doc.querySelector("input[data-leaf-path]").checked = true;
+        doc.querySelector("input[data-leaf-path]").click();
         await new Promise((resolve) => setTimeout(resolve, 220));
         assert.equal(requests().length, 5, "continue searching when a slot becomes free");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device1", error: "Unavailable type" });
@@ -435,7 +435,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             p.readElfSymbols = () => ({ symbols: [scalar("old"), scalar("new")], warnings: [] });
             graph.document.getElementById("import").click();
             graph.send({ type: "variablesList", symbols: [scalar("old")] });
-            graph.document.querySelector("#impList input").checked = true;
+            graph.document.querySelector("#impList input").click();
             p._syncGraphTarget(entry);
             assert.deepStrictEqual(
                 Array.from(graph.window.allSymbols, (s) => s.name),
