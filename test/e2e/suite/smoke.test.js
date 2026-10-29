@@ -154,6 +154,91 @@ async function run() {
     );
     await vscode.commands.executeCommand("mcu-vscode.openLiveWatch");
     await waitFor(() => extension.exports.viewState().graph, "graph renderer");
+    const backgroundSetting = config.inspect("chartBackgroundIcon.enabled");
+    assert.equal(backgroundSetting.defaultValue, true);
+    assert.ok(commands.has("mcu-vscode.selectChartBackgroundIcon"));
+    assert.ok(commands.has("mcu-vscode.removeChartBackgroundIcon"));
+    const graph = Array.from(provider._livePanels.values())[0];
+    await waitFor(() => graph.ready, "waveform ready message");
+    const previousIcon = provider._chartBackgroundState().icon;
+    const icon = { version: 1, width: 2, height: 1, alphaBase64: "/4A=" };
+    const controller = provider.chartBackground();
+    const originalVscode = controller.vscode;
+    const directory = fs.mkdtempSync(path.join(require("os").tmpdir(), "emberprobe-background-"));
+    const png = path.join(directory, "background.png");
+    fs.writeFileSync(
+        png,
+        Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8AAQg0AD3oDfnfpf5cAAAAASUVORK5CYII=",
+            "base64"
+        )
+    );
+    // Substitute only the file picker; bytes, browser decoding, routing and persistence use the real host.
+    controller.vscode = {
+        workspace: vscode.workspace,
+        ProgressLocation: vscode.ProgressLocation,
+        window: {
+            showOpenDialog: async () => [vscode.Uri.file(png)],
+            withProgress: vscode.window.withProgress,
+            showErrorMessage: (message) => {
+                throw new Error(message);
+            }
+        }
+    };
+    try {
+        await vscode.commands.executeCommand("mcu-vscode.selectChartBackgroundIcon");
+        assert.deepStrictEqual(provider._chartBackgroundState().icon, icon);
+        await config.update("chartBackgroundIcon.enabled", false, vscode.ConfigurationTarget.Global);
+        assert.equal(provider._chartBackgroundState().icon, null);
+        assert.deepStrictEqual(controller.store.read(), icon, "disabling keeps the imported shape");
+        await config.update("chartBackgroundIcon.enabled", true, vscode.ConfigurationTarget.Global);
+        await vscode.commands.executeCommand("mcu-vscode.removeChartBackgroundIcon");
+        assert.equal(provider._chartBackgroundState().icon, null);
+    } finally {
+        controller.vscode = originalVscode;
+        await config.update(
+            "chartBackgroundIcon.enabled",
+            backgroundSetting.globalValue,
+            vscode.ConfigurationTarget.Global
+        );
+        await controller.store.update(previousIcon);
+        controller.broadcast();
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+    console.log("✓ persists and removes the waveform background through the real extension host");
+    // A serialized hidden editor exists in tabGroups before its WebviewPanel is registered with the provider.
+    const pendingTitle = provider._t("lw.panelTitle", { n: 2 });
+    const pending = vscode.window.createWebviewPanel("emberprobe.liveWatch", pendingTitle, vscode.ViewColumn.Active, {
+        enableScripts: true,
+        retainContextWhenHidden: true
+    });
+    pending.webview.html = "<!doctype html><html><body>Pending waveform restore</body></html>";
+    graph.panel.reveal();
+    let third;
+    try {
+        await waitFor(
+            () => vscode.window.tabGroups.all.some((group) => group.tabs.some((tab) => tab.label === pendingTitle)),
+            "hidden waveform tab inventory"
+        );
+        await vscode.commands.executeCommand("mcu-vscode.openLiveWatch");
+        third = provider._livePanels.get(3);
+        assert.ok(third, "a hidden #2 reserves its number before deserialization");
+        await waitFor(() => third.ready, "third waveform ready");
+        await provider.restoreLiveWatchPanel(pending, { panelId: 2, watchKey: graph.watchKey });
+        const restored = provider._livePanels.get(2);
+        pending.reveal();
+        await waitFor(() => restored.ready, "restored waveform ready");
+        assert.notStrictEqual(restored.watchKey, graph.watchKey, "duplicate saved identities get independent storage");
+        assert.notStrictEqual(restored.watchKey, third.watchKey);
+        assert.strictEqual(provider._context.workspaceState.get("liveWatch.panelBindings")[2], restored.watchKey);
+        const labels = [...provider._livePanels.values()].map((entry) => entry.panel.title);
+        assert.strictEqual(new Set(labels).size, labels.length);
+    } finally {
+        pending.dispose();
+        third?.panel.dispose();
+        graph.panel.reveal();
+    }
+    console.log("✓ hidden waveform tabs reserve numbers and restored copies keep independent identities");
     assert.ok(
         !fs.existsSync(path.join(workspace, ".emberprobe")),
         "ordinary EmberProbe commands without workspace Skills must not create .emberprobe"

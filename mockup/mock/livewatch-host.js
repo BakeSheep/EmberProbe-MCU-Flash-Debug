@@ -84,6 +84,25 @@
             send({ type: "variableTypesDone", version: data.VERSION });
         }
 
+        let backgroundRequest = 0,
+            backgroundPending = false;
+        const backgroundKey = "emberprobe.mock.chartBackgroundIcon.v1";
+        function backgroundState() {
+            try {
+                return iframe.contentWindow.EmberProbeBackgroundIcon.validate(
+                    JSON.parse(root.localStorage.getItem(backgroundKey))
+                );
+            } catch {
+                return null;
+            }
+        }
+        function sendBackground() {
+            send({ type: "chartBackgroundIcon", icon: backgroundState() });
+        }
+        function backgroundStorage(event) {
+            if (!event.key || event.key === backgroundKey) sendBackground();
+        }
+
         function displayName(name) {
             var runtime = iframe.contentWindow && iframe.contentWindow.EmberProbeRuntime;
             var item = watchItems.find(function (entry) {
@@ -238,6 +257,7 @@
         }
 
         function sendReady() {
+            sendBackground();
             configureHistory();
             if (history)
                 send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
@@ -305,6 +325,19 @@
                     initialized = true;
                     sendReady();
                     break;
+                case "chartBackgroundIconImported": {
+                    if (message.requestId !== backgroundRequest || !backgroundPending) break;
+                    backgroundPending = false;
+                    if (message.errorCode) break;
+                    try {
+                        const icon = iframe.contentWindow.EmberProbeBackgroundIcon.validate(message.icon);
+                        root.localStorage.setItem(backgroundKey, JSON.stringify(icon));
+                        root.dispatchEvent(new root.Event("emberprobe-background"));
+                    } catch {
+                        /* An invalid processed mask leaves the previous icon intact. */
+                    }
+                    break;
+                }
                 case "start":
                     startSampling(message.items, message.frequencyHz);
                     break;
@@ -457,8 +490,20 @@
         }
 
         root.addEventListener("message", onMessage);
+        root.addEventListener("storage", backgroundStorage);
+        root.addEventListener("emberprobe-background", sendBackground);
 
         return {
+            importBackgroundPng(pngBase64) {
+                backgroundPending = true;
+                send({ type: "importChartBackgroundIcon", requestId: ++backgroundRequest, pngBase64 });
+            },
+            removeBackground() {
+                ++backgroundRequest;
+                backgroundPending = false;
+                root.localStorage.removeItem(backgroundKey);
+                root.dispatchEvent(new root.Event("emberprobe-background"));
+            },
             send: send,
             sendReady: sendReady,
             stop: stopSampling,
@@ -472,6 +517,8 @@
                 stopped = true;
                 if (timer) clearTimeout(timer);
                 root.removeEventListener("message", onMessage);
+                root.removeEventListener("storage", backgroundStorage);
+                root.removeEventListener("emberprobe-background", sendBackground);
             }
         };
     }

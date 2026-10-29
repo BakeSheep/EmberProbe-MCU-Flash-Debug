@@ -1,8 +1,9 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory(require("./chartInspection"));
-    else root.EmberProbeChart = factory(root.EmberProbeChartInspection);
-})(globalThis, function (defaultInspection) {
+    if (typeof module === "object" && module.exports)
+        module.exports = factory(require("./chartInspection"), require("./backgroundIcon"));
+    else root.EmberProbeChart = factory(root.EmberProbeChartInspection, root.EmberProbeBackgroundIcon);
+})(globalThis, function (defaultInspection, BackgroundIcon) {
     function exactInteger(point) {
         if (point.valueText != null && /^-?\d+$/.test(point.valueText)) return BigInt(point.valueText);
         return Number.isSafeInteger(point.v) ? BigInt(point.v) : null;
@@ -52,6 +53,7 @@
         chartState,
         norm,
         jitterBands,
+        backgroundIcon,
         series,
         hasBounds,
         pixelRatio,
@@ -163,6 +165,18 @@
             }
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, w, h);
+            ctx.font = "10px " + (style.fontFamily || "sans-serif");
+            const iconPadL =
+                prepared.origin === null
+                    ? 64
+                    : Math.max(64, ctx.measureText(String(prepared.origin) + ".00000").width + 20);
+            if (backgroundIcon && w > iconPadL + 18 && h > 60)
+                BackgroundIcon.paint(ctx, backgroundIcon, {
+                    padL: iconPadL,
+                    padT: 18,
+                    pw: w - iconPadL - 18,
+                    ph: h - 60
+                });
             var empty = $("chartEmpty");
             if (!hasBounds || !series.length) {
                 chartState.hits = [];
