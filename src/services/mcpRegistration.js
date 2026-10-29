@@ -1,7 +1,7 @@
 "use strict";
 // MCP 注册：VS Code 的 MCP server definition provider 与 Cursor 的 MCP 扩展 API（特性检测）、
 // 供外部客户端使用的稳定启动器，以及按客户端安装：Claude Code / Codex 调用各自的 CLI，Cursor 打开安装链接，
-// 其余客户端复制配置。扩展从不直接写任何客户端的配置文件。
+// Antigravity / DSH 与其余客户端复制各自格式的配置。扩展从不直接写任何客户端的配置文件。
 const fs = require("fs");
 const fsp = require("fs/promises");
 const path = require("path");
@@ -9,10 +9,12 @@ const { execFile } = require("child_process");
 
 const PROVIDER_ID = "emberprobe";
 const SERVER_NAME = "emberprobe";
-const CLIENTS = Object.freeze(["claude", "codex", "cursor", "json"]);
+const CLIENTS = Object.freeze(["claude", "codex", "cursor", "antigravity", "dsh", "json"]);
 const CLI_CLIENTS = Object.freeze({ claude: "claude", codex: "codex" });
 const CLI_TIMEOUT_MS = 30000;
 const ERROR_TAIL = 300;
+// 覆盖用户确认（最长 15 分钟）和 CubeMX 执行（6 分钟），仍保留有限的客户端等待预算。
+const LONG_CALL_TIMEOUT_MS = 30 * 60 * 1000;
 
 // 启动器路径稳定（globalStorage/mcp），内容随每次激活重写为当前扩展安装路径。
 function launcherSource(serverPath) {
@@ -97,15 +99,50 @@ function cursorInstallLink(spec) {
 }
 
 /**
- * 生成客户端配置：CLI 客户端为可直接在终端运行的命令，Cursor 为安装链接，其余为 mcpServers JSON。
- * @param {"claude" | "codex" | "cursor" | "json"} client
+ * 生成客户端配置：CLI 命令、Cursor 安装链接、DSH YAML patch 或 mcpServers JSON。
+ * @param {"claude" | "codex" | "cursor" | "antigravity" | "dsh" | "json"} client
  * @param {{ command: string, args: string[], env: Record<string, string> }} spec
  * @param {string} [platform]
+ * @param {string} [workspace] 新客户端显式绑定主工作区，不依赖客户端 roots 或启动目录。
  */
-function configSnippet(client, spec, platform = process.platform) {
+function configSnippet(client, spec, platform = process.platform, workspace) {
     if (CLI_CLIENTS[client])
         return [CLI_CLIENTS[client], ...installArgs(client, spec)].map((arg) => displayArg(arg, platform)).join(" ");
     if (client === "cursor") return cursorInstallLink(spec);
+    if (client === "antigravity" || client === "dsh") {
+        const config = stdioConfig({
+            ...spec,
+            env: { ...spec.env, ...(workspace ? { EMBERPROBE_WORKSPACE: workspace } : {}) }
+        });
+        if (client === "antigravity")
+            return JSON.stringify(
+                { mcpServers: { [SERVER_NAME]: { ...config, timeoutSeconds: LONG_CALL_TIMEOUT_MS / 1000 } } },
+                null,
+                2
+            );
+        // JSON 流式值也是合法 YAML；转义 YAML 会归一化的额外换行字符，保留路径和环境变量原文。
+        // 输出 insert patch，可直接通过 dsh web --patch <file> 加载，无需运行时 YAML 依赖。
+        const values = {
+            serverName: SERVER_NAME,
+            transport: "stdio",
+            ...config,
+            toolCallTimeoutMs: LONG_CALL_TIMEOUT_MS
+        };
+        return [
+            "- insert:",
+            "    - id: mcp-emberprobe",
+            '      name: "@deepseek-ai/dsh-mcp-client"',
+            "      config:",
+            ...Object.entries(values).map(([key, value]) => {
+                const scalar = JSON.stringify(value).replace(
+                    /[\u0085\u2028\u2029]/g,
+                    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
+                );
+                return `        ${key}: ${scalar}`;
+            }),
+            ""
+        ].join("\n");
+    }
     return JSON.stringify({ mcpServers: { [SERVER_NAME]: stdioConfig(spec) } }, null, 2);
 }
 
@@ -340,7 +377,8 @@ class McpRegistration {
         if (!choice) return null;
         await this.writeLauncher();
         const spec = this.serverSpec();
-        const snippet = configSnippet(choice.client, spec, this.platform);
+        const workspace = this.vscode.workspace?.workspaceFolders?.[0]?.uri.fsPath;
+        const snippet = configSnippet(choice.client, spec, this.platform, workspace);
         const label = choice.label;
         if (choice.client === "cursor") {
             const opened = await this.vscode.env.openExternal(this.vscode.Uri.parse(snippet));
@@ -360,6 +398,8 @@ class McpRegistration {
                 window.showWarningMessage(
                     this.t("mcp.cliMissing", { client: label, command: CLI_CLIENTS[choice.client] })
                 );
+            else if (choice.client === "antigravity" || choice.client === "dsh")
+                window.showInformationMessage(this.t(`mcp.configCopied.${choice.client}`));
             else window.showInformationMessage(this.t("mcp.configCopied", { client: label }));
             return { client: choice.client, method: "clipboard", snippet };
         }

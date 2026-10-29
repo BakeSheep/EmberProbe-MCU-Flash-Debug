@@ -401,6 +401,16 @@
                 while (i >= 0 && s.raw[i].v === null) i--;
                 return i >= 0 && s.raw[i].t >= chartState.x.min ? i : null;
             }
+            // The smooth-follow edge trails committed data, so a marker on the last visible sample would slide left
+            // and snap back whenever a sparse sample crosses it. Pin it where the drawn line meets the edge instead.
+            function edgeHead(xs, ys, right, indices, gap) {
+                const k = inspection.lowerNumber(xs, right, indices, true);
+                if (k <= 0 || k >= (indices ? indices.length : xs.length)) return null;
+                const a = indices ? indices[k - 1] : k - 1,
+                    b = indices ? indices[k] : k;
+                if (gap(a) || gap(b)) return null;
+                return { x: right, y: ys[a] + ((ys[b] - ys[a]) * (right - xs[a])) / (xs[b] - xs[a]) };
+            }
             ctx.save();
             ctx.beginPath();
             ctx.rect(padL, padT, pw, ph);
@@ -447,9 +457,16 @@
                         ctx.stroke();
                     }
                     if (last !== null) {
+                        const head = (chartState.smoothFollowing &&
+                            (s.banded
+                                ? edgeHead(s.banded.xs, s.banded.ys, right, null, (i) => Number.isNaN(s.banded.ys[i]))
+                                : edgeHead(s.xs, s.ys, right, s.drawing, (i) => s.raw[i].v === null))) || {
+                            x: s.xs[last],
+                            y: s.ys[last]
+                        };
                         ctx.fillStyle = appearance.color;
                         ctx.beginPath();
-                        ctx.arc(s.xs[last] + s.dx, s.ys[last] + s.dy, 2.8, 0, Math.PI * 2);
+                        ctx.arc(head.x + s.dx, head.y + s.dy, 2.8, 0, Math.PI * 2);
                         ctx.fill();
                     }
                 });

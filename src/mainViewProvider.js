@@ -71,6 +71,7 @@ const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity, probeFamily } = require("../skills/_emberprobe/probe-connection");
+const { flashSpeedKhz } = require("../skills/_emberprobe/openocd-flash");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
 const { NoticeService, commandArea, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
@@ -83,9 +84,11 @@ const {
     selectFocusedPanel,
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
+    runtimePointerRanges,
     writableRamSectionRanges
 } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
+const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
@@ -98,14 +101,14 @@ const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegrati
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
-const { ensureDebugTools, findDebugTools } = require("./services/cortexDebugPreflight");
+const { ensureDebugTools, findDebugTools } = require("./services/debugToolPreflight");
 const { GdbWarmup } = require("./services/gdbWarmup");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const i18n = require("./i18n");
-const { DebugLifecycle, debugStartupPolicy } = require("./services/debugLifecycle");
+const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("./services/debugLifecycle");
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const CACHE_KEYS = {
     elfPath: "mcu.elfPath",
@@ -137,6 +140,11 @@ const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 const MAX_WRITE_VARIABLES = 64;
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
+// A pending webview batch keeps one sample per name (latest wins), so one message never carries an
+// older and a newer state of the same variable.
+function latestByName(pending, next) {
+    return [...new Map([...(pending || []), ...(next || [])].map((sample) => [sample.name, sample])).values()];
+}
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
@@ -230,6 +238,7 @@ class MainViewProvider {
         this._runtimeDeniedKey = "";
         this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
+        this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
         this._symbolNameIndexes = new WeakMap();
@@ -297,6 +306,7 @@ class MainViewProvider {
         this._uiWriteLatest = new Map();
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._activeReadPlan(),
+            getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
             getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
             onSamples: (samples, t) => this._handleRawSamples(samples, t),
             onStatus: (status) => {
@@ -934,7 +944,7 @@ class MainViewProvider {
                     startAccepted = true;
                     return addPeripheralViewerSvd(grouped, svdPath);
                 }
-                await this.prepareForCortexDebug(workspaceFolder);
+                await this.prepareProbeForDebug(workspaceFolder);
                 startup?.phase("prepare");
                 probePrepared = true;
                 this._debugStartLease = this._probeCoordinator.acquire("debugStart");
@@ -975,6 +985,9 @@ class MainViewProvider {
                 Object.assign(debugConfig, cortexTools);
                 Object.assign(debugConfig, pretty);
                 Object.assign(debugConfig, images);
+                // A changed image downloads at the sidebar's programming clock (see docs/FLASH-PERFORMANCE.md).
+                if (debugConfig.request === "launch" && this._managedDebugServer?.options)
+                    debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this._managedDebugServer.options);
                 if (startup) debugConfig.__emberprobeStartupTrace = startup.finish();
                 const startupGate = this._armDebugStartupWatchdog();
                 if (configuration) {
@@ -1266,7 +1279,7 @@ class MainViewProvider {
         if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
         if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
             return this._sessionWriteConnection(this._debugBridge);
-        // A managed Cortex-Debug server remains the connection that will execute an
+        // A managed debug server remains the connection that will execute an
         // Agent write even while the DAP bridge is between stop events and reports
         // canWrite=false. Bind the confirmation to that server instead of preparing
         // a second standalone OpenOCD identity, which would be rejected at execution.
@@ -1799,14 +1812,8 @@ class MainViewProvider {
         return port;
     }
     _runtimeRamPlan(items, strict = false) {
-        const elfResult = this.readElfSymbols();
-        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
-            this._runtimeRamCache = {
-                sha256: elfResult.elf.sha256,
-                sections: Array.isArray(elfResult.memory?.sections) ? elfResult.memory.sections : []
-            };
-        }
-        const result = filterRuntimeRamPlan(items, this._runtimeRamCache.sections);
+        const cache = this._runtimeRamSections(this.readElfSymbols());
+        const result = filterRuntimeRamPlan(items, cache.sections, cache.regions);
         if (strict && result.denied.length) {
             throw Object.assign(new Error("Runtime reads are restricted to writable allocated ELF RAM sections"), {
                 code: "LIVE_ADDRESS_NOT_RAM",
@@ -2026,13 +2033,7 @@ class MainViewProvider {
         if (!group) lease?.release();
     }
     _armDebugStartupWatchdog() {
-        const version =
-            this._managedDebugToken || this._externalDebug?.active
-                ? ""
-                : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
-        return this._debugLifecycle.arm(debugStartupPolicy(process.platform, version).timeoutMs, () =>
-            this._recoverDebugStartupTimeout()
-        );
+        return this._debugLifecycle.arm(DEBUG_STARTUP_TIMEOUT_MS, () => this._recoverDebugStartupTimeout());
     }
     _matchesManagedDebugSession(session) {
         if (this._externalDebug?.matches(session)) return true;
@@ -2058,7 +2059,7 @@ class MainViewProvider {
         let group = this._managedDebugGroup;
         const created = !group;
         if (!group) {
-            await this.prepareForCortexDebug(folder);
+            await this.prepareProbeForDebug(folder);
             this._debugStartLease = this._probeCoordinator.acquire("debugStart");
             try {
                 const connection = await this._startManagedDebugServer(
@@ -2198,6 +2199,7 @@ class MainViewProvider {
         this._debugSampleGroup = group;
         this._debugSampleSessionId = sessionId;
         this._debugReadPlanKey = "";
+        this._runtimeSampleHold?.reset();
         this._latestSidebarSamples?.clear();
         if (this._sidebarBatchTimer) clearTimeout(this._sidebarBatchTimer);
         this._sidebarBatchTimer = null;
@@ -2271,6 +2273,7 @@ class MainViewProvider {
                 }
                 this._debugBridge?.detach(targetSession);
                 this._debugReadPlanKey = "";
+                this._runtimeSampleHold?.reset();
             }
             if (typeof this._stopManagedDebugServer === "function") await this._stopManagedDebugServer();
             if (typeof this.restoreSamplingAfterDebug === "function") await this.restoreSamplingAfterDebug();
@@ -2295,9 +2298,8 @@ class MainViewProvider {
         this._clearDebugStartupWatchdog({ kind: "failed" });
     }
     async _recoverDebugStartupTimeout() {
-        const ownDebug = !!this._managedDebugToken || !!this._externalDebug?.active;
         const session = this._findManagedDebugSession();
-        const timeoutMs = this._debugLifecycle?.timeoutMs || debugStartupPolicy(process.platform, "").timeoutMs;
+        const timeoutMs = this._debugLifecycle?.timeoutMs || DEBUG_STARTUP_TIMEOUT_MS;
         this._postConsumerStatuses(
             {
                 mode: "debug-start-failed",
@@ -2308,11 +2310,7 @@ class MainViewProvider {
             },
             true
         );
-        const version = ownDebug
-            ? ""
-            : vscode.extensions?.getExtension?.("marus25.cortex-debug")?.packageJSON?.version || "";
-        const key = debugStartupPolicy(process.platform, version).messageKey;
-        const timeoutMessage = this._t(key, { seconds: timeoutMs / 1000, version });
+        const timeoutMessage = this._t("msg.debugStartTimeout", { seconds: timeoutMs / 1000 });
         await this._handleDebugStartupFailure(session, timeoutMessage);
     }
     _assertGroupedReadElf() {
@@ -2939,7 +2937,7 @@ class MainViewProvider {
         // the write plan itself instead of falling back to a second standalone OpenOCD identity.
         if (this._debugBridge.agentStatus().state === "paused") {
             if (!this._debugBridge.canWritePaused) await this._debugBridge.prepareWriteSnapshot(plan.items);
-            const result = await this._executeWritePlan(this._debugBridge, "cortex-debug-dap", plan);
+            const result = await this._executeWritePlan(this._debugBridge, "debug-dap", plan);
             return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
         if (this._managedDebugServer && this._debugBridge.agentStatus().state === "running") {
@@ -3038,7 +3036,7 @@ class MainViewProvider {
         // posting a "writing" status here would disable the write controls mid-drag.
         return await this._executeWritePlan(
             session,
-            dapSession ? "cortex-debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
+            dapSession ? "debug-dap" : runtimeSession ? "debug-running-openocd" : "active-sampling",
             plan
         );
     }
@@ -3788,6 +3786,7 @@ class MainViewProvider {
         this._elfService.invalidate();
         this._watchLists.invalidate();
         this._runtimeRamCache = null;
+        this._runtimeSampleHold?.reset();
         this._latestSidebarSamples.clear();
         for (const entry of this._livePanels.values()) entry.latestSamples.clear();
     }
@@ -4362,8 +4361,9 @@ class MainViewProvider {
             lists.push(this._scalarWatchList(entry.watchKey));
             expansions.push(this._panelRuntimeExpansions(entry.watchKey));
         }
-        // The sidebar and write cards read runtime objects whole.
+        // Sidebar cards read the parts they opened, like chart cards; write cards read runtime objects whole.
         lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
+        expansions.push(this._panelRuntimeExpansions(CACHE_KEYS.sidebarWatchList));
         // 写入列表变量也纳入采样读取，使写入卡片能实时同步当前值；不回写存储，避免丢失 min/max 等 UI 字段
         try {
             const writeItems = this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
@@ -4376,23 +4376,20 @@ class MainViewProvider {
     }
     _runtimeReadRanges(plan, result) {
         if (!plan.some((item) => item.runtimeLayout)) return plan;
-        result ??= this.readElfSymbols();
-        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== result.elf.sha256) {
-            const sections = Array.isArray(result.memory?.sections) ? result.memory.sections : [];
-            this._runtimeRamCache = { sha256: result.elf.sha256, sections };
-        }
-        const ranges = this._runtimeRamCache.sections
-            .filter(
-                (section) =>
-                    section.flags & 2 &&
-                    Number.isSafeInteger(section.addr) &&
-                    Number.isSafeInteger(section.size) &&
-                    section.addr > 0 &&
-                    section.size > 0 &&
-                    section.addr + section.size <= 0x100000000
-            )
-            .map((section) => ({ start: section.addr, end: section.addr + section.size }));
+        const cache = this._runtimeRamSections(result ?? this.readElfSymbols());
+        const ranges = runtimePointerRanges(cache.sections, cache.regions);
         return plan.map((item) => (item.runtimeLayout ? { ...item, runtimeRanges: ranges } : item));
+    }
+    _runtimeRamSections(elfResult) {
+        if (!this._runtimeRamCache || this._runtimeRamCache.sha256 !== elfResult.elf.sha256) {
+            const memory = elfResult.memory || {};
+            this._runtimeRamCache = {
+                sha256: elfResult.elf.sha256,
+                sections: Array.isArray(memory.sections) ? memory.sections : [],
+                regions: Array.isArray(memory.runtimeRegions) ? memory.runtimeRegions : []
+            };
+        }
+        return this._runtimeRamCache;
     }
     _applySamplingPlan(session, active) {
         let ramSectionRanges = [];
@@ -4897,11 +4894,8 @@ class MainViewProvider {
     _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
         if (!entry.ready) return;
         if (this._chartHistory) {
-            const latest = (old, next) => [
-                ...new Map([...(old || []), ...next].map((sample) => [sample.name, sample])).values()
-            ];
-            entry._pendingScalars = latest(entry._pendingScalars, scalarSamples);
-            entry._pendingComposites = latest(entry._pendingComposites, compositeSamples);
+            entry._pendingScalars = latestByName(entry._pendingScalars, scalarSamples);
+            entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
             if (!entry._batchTimer)
                 entry._batchTimer = setTimeout(() => {
                     entry._batchTimer = null;
@@ -4939,7 +4933,7 @@ class MainViewProvider {
             return;
         }
         entry._pendingScalars = (entry._pendingScalars || []).concat(scalarSamples);
-        entry._pendingComposites = (entry._pendingComposites || []).concat(compositeSamples);
+        entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
         if (!entry._batchTimer) {
             entry._batchTimer = setTimeout(() => {
                 entry._batchTimer = null;
@@ -4978,7 +4972,7 @@ class MainViewProvider {
             return;
         }
         this._pendingSidebarScalars = (this._pendingSidebarScalars || []).concat(scalarSamples);
-        this._pendingSidebarComposites = (this._pendingSidebarComposites || []).concat(compositeSamples);
+        this._pendingSidebarComposites = latestByName(this._pendingSidebarComposites, compositeSamples);
         if (!this._sidebarBatchTimer) {
             this._sidebarBatchTimer = setTimeout(() => {
                 this._sidebarBatchTimer = null;
@@ -5042,6 +5036,9 @@ class MainViewProvider {
     }
 
     _handleRawSamples(samples, t, consumers) {
+        // Every source (managed sampling, worker, paused DAP reads) passes the same hold, so a runtime
+        // object keeps its last consistent tree through transient misses (see runtimeSampleHold.js).
+        samples = (this._runtimeSampleHold ||= new RuntimeSampleHold()).apply(samples, t);
         const types = this._getCachedConsumerTypes();
         const graphNames = consumers && new Set(consumers.graphNames);
         const sidebarNames = consumers && new Set(consumers.sidebarNames);
@@ -5245,6 +5242,16 @@ class MainViewProvider {
     async _refreshSamplingPlan() {
         this._refreshPointerPeripherals();
         const active = this._activeReadPlan();
+        // A changed plan (watch list, opened paths) gives runtime trees a new shape; keep no old ones.
+        const holdKey = active
+            .filter((item) => item.runtimeLayout)
+            .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
+            .sort()
+            .join("|");
+        if (holdKey !== this._runtimeHoldKey) {
+            this._runtimeHoldKey = holdKey;
+            this._runtimeSampleHold?.reset();
+        }
         for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
         if (this._debugBridge.hasSession) {
             // Reordering watch cards keeps the same reads; only a changed set refreshes the snapshot.
@@ -5339,30 +5346,11 @@ class MainViewProvider {
         }
         for (const n of map.keys()) if (!names.has(n)) map.delete(n);
     }
-    beginForeignDebug() {
-        if (this._foreignDebugPending)
-            throw Object.assign(new Error("Debug startup is pending"), { code: "PROBE_BUSY" });
-        this._foreignDebugPending = true;
-        const generation = (this._foreignDebugGeneration = (this._foreignDebugGeneration || 0) + 1);
-        this._foreignDebugTimer = setTimeout(() => this.finishForeignDebug(), 30000);
-        this._foreignDebugTimer.unref?.();
-        this._postProbeOperationStatus();
-        return generation;
-    }
-    isForeignDebugCurrent(generation) {
-        return this._foreignDebugPending && this._foreignDebugGeneration === generation;
-    }
-    finishForeignDebug() {
-        clearTimeout(this._foreignDebugTimer);
-        this._foreignDebugTimer = null;
-        this._foreignDebugPending = false;
-        this._postProbeOperationStatus();
-    }
     _postProbeOperationStatus() {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
             operations: this._probeCoordinator?.snapshot(),
-            debugPending: !!(this._debugCommandPending || this._foreignDebugPending)
+            debugPending: !!this._debugCommandPending
         });
     }
     startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
@@ -5780,11 +5768,9 @@ class MainViewProvider {
             this._postProbeOperationStatus();
         }
     }
-    async prepareForCortexDebug(folder, config) {
+    async prepareProbeForDebug(folder) {
         this._assertProbeDriverIdle();
         this._debugBridge.setWorkspace(folder || this._commandContext().folder);
-        const token = config?.__emberprobeManagedToken;
-        if (token && token === this._managedDebugToken && this._managedDebugServer) return;
         // A session that ended with an unconfirmed OpenOCD exit leaves its server reachable; retry
         // the stop here so that one slow exit does not block every later debug start.
         if (this._managedDebugServer?.state === "stop-failed" && !this._managedDebugGroup)
@@ -5818,7 +5804,6 @@ class MainViewProvider {
     }
     handleDebugSessionStart(session) {
         if (!session || !isSupportedDebugSession(session)) return;
-        this.finishForeignDebug();
         if (this._terminatedDebugSessionIds.has(session.id)) return;
         this._externalDebug?.bind(session);
         const grouped = this._managedDebugGroup?.bind(session);
@@ -5941,6 +5926,7 @@ class MainViewProvider {
         this._debugBridge.detach(session);
         if (this._debugBridge.hasSession) return false;
         this._debugReadPlanKey = "";
+        this._runtimeSampleHold?.reset();
         if (managed) await this._stopManagedDebugServer();
         return true;
     }
@@ -6009,7 +5995,6 @@ class MainViewProvider {
         this._gdbWarmupTimer = null;
         this._gdbWarmup?.dispose();
         this._stopProbeInventoryMonitor();
-        this.finishForeignDebug();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
         this._elfService.invalidate();
@@ -6365,6 +6350,9 @@ class MainViewProvider {
                     await this._saveWatchList(CACHE_KEYS.sidebarWatchList, items, { syncSidebar: false });
                     break;
                 }
+                case "saveRuntimeExpansions":
+                    await this._saveRuntimeExpansions(CACHE_KEYS.sidebarWatchList, message.expansions);
+                    break;
                 case "saveSidebarWrite": {
                     const items = Array.isArray(message.items) ? message.items : [];
                     await this._saveWatchList(CACHE_KEYS.sidebarWriteList, items, { syncSidebar: false });

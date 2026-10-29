@@ -10,7 +10,7 @@ Use `scripts/debug.js` from this skill directory. It uses VS Code's debugger API
 For paused C/C++ threads, stacks, scopes and object expansion, use `scripts/inspect.js` and
 read [references/paused-inspection.md](references/paused-inspection.md). For RTOS task states,
 priorities and stack fill estimates, use `mcu-rtos`. Inspection requires the native EmberProbe
-adapter; existing execution controls continue to support integrated Cortex-Debug sessions.
+adapter.
 
 C++ breakpoints accept `.cpp` source lines or a quoted, fully qualified function signature
 (for example `--function "app::Worker::run(int)"`). Prefer source lines when overloads or

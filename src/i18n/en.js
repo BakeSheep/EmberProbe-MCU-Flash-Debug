@@ -647,6 +647,10 @@ module.exports = Object.freeze({
     "lw.pointeeMemoryUnavailable": "The pointer target memory could not be read.",
     "lw.pointeeCycle": "The pointer target contains a cycle; further expansion stopped.",
     "lw.pointeeUnavailable": "The pointer target cannot be read right now.",
+    "lw.objectReadBudget":
+        "The object or its expanded members exceed the read budget and were not read: running sampling reads at most 4096 bytes / 32 times per cycle. Collapse some groups, or pause the target to read up to 64 KiB per object.",
+    "lw.objectChanging":
+        "The target rewrote this part while it was read; no consistent value this time. It is read again automatically.",
     "lw.pointerLastSampled": "last sampled",
     "lw.pointerInvalid": "invalid address",
     "lw.pointerRegion.flash": "Flash",
@@ -743,8 +747,6 @@ module.exports = Object.freeze({
     "msg.debugStartFailed": "Failed to start the debug session. Check the debugger and OpenOCD configuration.",
     "msg.debugStartTimeout":
         "The debugger did not finish starting within {seconds} seconds. The session was stopped and OpenOCD was released. Check that GDB starts normally from a terminal.",
-    "msg.debugStartTimeoutWin":
-        "Cortex-Debug did not finish starting within {seconds} seconds. The session was stopped and OpenOCD was released. Cortex-Debug {version} on Windows may be affected by its fixed five-second GDB startup timeout; use a faster-starting GDB such as 13.x, or upgrade to a stable release containing the fix. A pre-release is not required.",
     "msg.downloadBusy": "A download is already running; please wait for it to finish",
     "msg.agentReadBusy": "The Agent is reading variables; try again shortly",
     "msg.debugBusy": "A debug session is starting; try again shortly",
@@ -819,10 +821,14 @@ module.exports = Object.freeze({
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
     "mcp.client.cursor": "Cursor",
+    "mcp.client.antigravity": "Antigravity",
+    "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "Other clients",
     "mcp.method.cli": "Run {command} (user configuration)",
     "mcp.method.cliMissing": "{command} not found on PATH; the install command will be copied",
     "mcp.method.cursor": "Open the Cursor install link",
+    "mcp.method.antigravity": "Copy Antigravity mcp_config.json configuration (current workspace)",
+    "mcp.method.dsh": "Copy a DSH YAML patch (current workspace)",
     "mcp.method.json": "Copy mcpServers JSON to the clipboard",
     "mcp.install": "Install",
     "mcp.installConfirm":
@@ -836,6 +842,10 @@ module.exports = Object.freeze({
     "mcp.cursorLinkCopied": "Could not open the Cursor install link; the link was copied to the clipboard",
     "mcp.configCopied":
         "EmberProbe MCP configuration for {client} copied to the clipboard; paste it into the client's MCP configuration",
+    "mcp.configCopied.antigravity":
+        "Antigravity configuration copied: merge the emberprobe entry in MCP Servers → Manage MCP Servers → View raw config, then refresh servers; enable Agent access for this workspace in EmberProbe",
+    "mcp.configCopied.dsh":
+        "DSH configuration copied: save as emberprobe.cordis.yml and run dsh web --patch <file-path>; enable Agent access for this workspace in EmberProbe",
     "agent.cleanupConfirm":
         "Remove the EmberProbe skills from ~/.agents/skills? Only entries listed in the EmberProbe manifest are deleted.",
     "live.elfFirst": "Select an ELF firmware in the sidebar first",

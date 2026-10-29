@@ -7,6 +7,7 @@ const { failure, cubeMxCommand } = require("./cubemxEnvironment");
 const { createLogMonitor } = require("./cubemxLog");
 
 async function runCubeMx(tool, directory, iocName, options = {}) {
+    if (options.signal?.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
     const quote = (value) => {
         if (/[\r\n"]/.test(value)) throw failure("CUBEMX_PATH_INVALID", "Invalid CLI path");
         return `"${value}"`;
@@ -23,7 +24,10 @@ async function runCubeMx(tool, directory, iocName, options = {}) {
         ].join("\n"),
         { flag: "wx", mode: 0o600 }
     );
-    if (options.signal?.aborted) throw failure("CUBEMX_CANCELLED", "Generation cancelled");
+    if (options.signal?.aborted) {
+        await fs.unlink(script);
+        throw failure("CUBEMX_CANCELLED", "Generation cancelled");
+    }
     const logPath = options.logPath || path.join(directory, ".emberprobe-cubemx-output.log");
     const stage = options.stage || "generating";
     return new Promise((resolve, reject) => {

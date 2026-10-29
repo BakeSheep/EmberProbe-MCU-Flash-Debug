@@ -74,6 +74,9 @@ let sideWatch = [],
     lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
+    // Opened runtime paths last posted to the host (see sbSyncRuntimeExpansions).
+    sbRuntimeExpansionsLoaded = false,
+    sbSentRuntimeExpansions = null,
     // Last sampled pointer targets by watch path; restored with the view so a reopened sidebar still names them.
     // They belong to the ELF version they were sampled from and are shown only while it is loaded.
     sbLastPointers = (uiState.sbLastPointersVersion && uiState.sbLastPointers) || Object.create(null),
@@ -669,6 +672,17 @@ function setDisplayedValue(cell, value) {
 }
 function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
+    sbSyncRuntimeExpansions();
+}
+// The sidebar's runtime cards read only their opened parts, like chart cards. Nothing is sent
+// before the host's watch list arrives, so a fresh view cannot clear them.
+function sbSyncRuntimeExpansions() {
+    if (!sbRuntimeExpansionsLoaded || !api) return;
+    const value = EmberProbeRuntime.runtimeExpansionPaths(sideWatch, sbExpanded, sbPlacedPointees);
+    const key = JSON.stringify(value);
+    if (key === sbSentRuntimeExpansions) return;
+    sbSentRuntimeExpansions = key;
+    api.postMessage({ type: "saveRuntimeExpansions", expansions: value });
 }
 function saveWriteList() {
     if (api) api.postMessage({ type: "saveSidebarWrite", items: writeList });
@@ -826,6 +840,7 @@ function renderValues() {
         sideWatch.filter((it) => !sbIsLeafChild(it.name) && !sbPlacedPointees.has(it.name)).length
     );
     sbWatchReorder?.refresh();
+    sbSyncRuntimeExpansions();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
@@ -2018,18 +2033,26 @@ function saveSbUi() {
     uiState.sbLastPointers = sbLastPointers;
     uiState.sbLastPointersVersion = sbLastPointersVersion;
     if (api && api.setState) api.setState(uiState);
+    sbSyncRuntimeExpansions();
 }
-function sbWalkLeaves(node, path, cb) {
+// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
+function sbWalkLeaves(node, path, cb, stale) {
     if (!node) return;
-    cb(path, node);
-    for (const member of node.members || []) sbWalkLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb);
-    for (const element of node.elements || []) sbWalkLeaves(element, path + "[" + element.index + "]", cb);
+    stale = !!stale || !!node.stale;
+    cb(path, node, stale);
+    for (const member of node.members || [])
+        sbWalkLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
+    for (const element of node.elements || []) sbWalkLeaves(element, path + "[" + element.index + "]", cb, stale);
 }
 function sbUpdateComposite(name) {
     const tree = latest[name];
     if (!tree) return;
     const nodes = new Map();
-    sbWalkLeaves(tree, name, (path, node) => nodes.set(path, node));
+    const held = new Set();
+    sbWalkLeaves(tree, name, (path, node, stale) => {
+        nodes.set(path, node);
+        if (stale) held.add(path);
+    });
     nodes.forEach((node, path) => {
         const cell = compCells[path];
         if (!cell) return;
@@ -2042,6 +2065,7 @@ function sbUpdateComposite(name) {
                 ...(summary ? { functionEmpty: summary.empty } : {})
             })
         );
+        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
     });
 }
 function sbNote(container, text, level = "info") {
@@ -2222,7 +2246,7 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
         return;
     }
     const renderMembers = (target) =>
-        tree.members.forEach((member) => {
+        (tree.members || []).forEach((member) => {
             if (!EmberProbeRuntime.memberVisible(member, sbShowRawFor(path))) return;
             const childPath = EmberProbeRuntime.layoutMemberPath(path, member);
             if (member.unobservable)
@@ -2250,7 +2274,14 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
                         !(pointer && member.name === "value")
                 );
         });
-    const inline = pointer && tree.members?.length ? renderMembers : null;
+    // A closed pointer keeps its disclosure: opening it asks the host to read the target.
+    const inline =
+        pointer && (tree.members?.length || tree.collapsed)
+            ? (target) => {
+                  renderMembers(target);
+                  if (tree.collapsed) sbNote(target, t("lw.runtimeCollapsed"));
+              }
+            : null;
     if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
         sbRenderLeaf(
             container,
@@ -2276,10 +2307,11 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
                 true
             );
         });
+    if (tree.collapsed && !inline) sbNote(container, t("lw.runtimeCollapsed"));
     if (tree.unobservable)
         layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
     else if (tree.unavailable)
-        sbNote(container, { ...EmberProbeRuntime.unavailableNotice(tree, t), title: sbDisplayName({ name: path }) });
+        sbNote(container, { title: sbDisplayName({ name: path }), ...EmberProbeRuntime.unavailableNotice(tree, t) });
 }
 function sbRenderRuntimeBody(body, sampled, name) {
     // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
@@ -2937,6 +2969,7 @@ window.EmberProbeMessages.connect(window, {
                 delete latestPointer[item.name];
             });
         }
+        sbRuntimeExpansionsLoaded = true;
         renderValues();
         updateAvailableSelections();
     },

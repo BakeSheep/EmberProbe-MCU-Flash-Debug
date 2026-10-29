@@ -19,7 +19,7 @@ const { scheduleSamplingTick } = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
-const { RuntimeObjectReader } = require("./services/runtimeObjectReader");
+const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
 const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
@@ -414,6 +414,8 @@ class ManagedOpenOcdSession {
         this._pauseReason = null;
         this._compiledBatches = [];
         this._readBatchCache = [];
+        // Per watch item: the reads its last successful runtime sample needed (see _sampleRuntimeItem).
+        this._runtimePlans = new WeakMap();
         this._batchUnsupported = false;
         this._recentCycleTimestamps = [];
         this._memoryReadBytes = 0;
@@ -580,6 +582,7 @@ class ManagedOpenOcdSession {
         this.watch = next;
         this.ramSectionRanges = normalizeRamSectionRanges(ramSectionRanges);
         this._readBatchCache = [];
+        this._runtimePlans = new WeakMap();
         this._compiledBatches = this._getReadBatches(
             this.watch.filter((entry) => !entry.runtimeLayout),
             this.watch.filter((entry) => entry.runtimeLayout).reduce((sum, item) => sum + item.size, 0)
@@ -670,6 +673,7 @@ class ManagedOpenOcdSession {
     // only execution, session or connection changes invalidate them.
     invalidateTarget() {
         this.targetEpoch++;
+        this._runtimePlans = new WeakMap();
         this._samplingThroughput.reset();
     }
 
@@ -1531,7 +1535,7 @@ class ManagedOpenOcdSession {
         return this._silentResponseFile;
     }
 
-    // OpenOCD 会把 Tcl RPC 的非空返回值广播给 GDB，导致 Cortex-Debug 控制台持续刷出
+    // OpenOCD 会把 Tcl RPC 的非空返回值广播给 GDB，导致调试控制台持续刷出
     // EP_OK:<value>。调试模式把机器响应写入扩展创建的私有临时文件，让 Tcl RPC 本身返回空串。
     async _sendSilentDebugCommand(cmd) {
         const responseFile = await this._ensureSilentResponseFile();
@@ -1735,6 +1739,83 @@ class ManagedOpenOcdSession {
         return results;
     }
 
+    _isConnectionError(error) {
+        return (
+            error.code?.startsWith("LIVE_") ||
+            this.connectionFailed ||
+            ["OPENOCD_RPC_TIMEOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "ENOTCONN", "ETIMEDOUT"].includes(
+                error.code
+            ) ||
+            /^(?:Socket is not connected|Tcl connection closed)/.test(error.message)
+        );
+    }
+
+    // Ordered `{ address, size }` ranges in scatter requests, or null when scatter is off or refused
+    // them (callers then read one range at a time). Connection failures still end the cycle.
+    async _scatterRanges(ranges, guard) {
+        if (!this.scatterReads || !ranges.length) return null;
+        const units = ranges.map(({ address, size }) => ({
+            start: address,
+            byteCount: size,
+            shape: transferShape(address, size)
+        }));
+        try {
+            const results = await this._readScatterBytes([units], guard);
+            this._scatterFailures = 0;
+            return units.map((unit) => Buffer.from(results.get(unit)));
+        } catch (error) {
+            if (this._isConnectionError(error)) throw error;
+            this._assertReadGuard(guard);
+            if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)
+                this.scatterReads = false;
+            return null;
+        }
+    }
+
+    // With scatter, a runtime object first fetches every block its previous sample read in one request
+    // and walks those; only reads the plan lacks (the object moved) go out one at a time, and the
+    // descriptor check at the end is one request too. The plan is charged to the budget up front. When a
+    // stale plan pushed the cycle over budget, the object is read once more without it. Any other
+    // failure keeps the plan, so one bad cycle does not slow the next one down to single reads (a
+    // longer read-to-verify window that makes changing descriptors miss again).
+    async _sampleRuntimeItem(item, guard, budget) {
+        const plan = this.scatterReads ? this._runtimePlans.get(item) : null;
+        const before = { bytes: budget.bytes, commands: budget.commands };
+        let prefetched = null;
+        if (plan) {
+            const bytes = plan.reduce((sum, read) => sum + read.size * (read.descriptor ? 2 : 1), 0);
+            const commands = plan.reduce((sum, read) => sum + (read.descriptor ? 2 : 1), 0);
+            if (
+                budget.bytes + bytes <= (budget.maxBytes || RUNTIME_CYCLE_BYTES) &&
+                budget.commands + commands <= (budget.maxReads || RUNTIME_CYCLE_READS)
+            ) {
+                const blocks = await this._scatterRanges(plan, guard);
+                if (blocks) prefetched = plan.map((read, index) => ({ address: read.address, bytes: blocks[index] }));
+            }
+        }
+        const reader = new RuntimeObjectReader(
+            item,
+            (address, size) => this._readMemoryBytes(address, size),
+            () => this._assertReadGuard(guard),
+            budget,
+            {
+                prefetched,
+                readMany: this.scatterReads ? (ranges) => this._scatterRanges(ranges, guard) : null
+            }
+        );
+        try {
+            const tree = await reader.sample();
+            if (this.scatterReads) this._runtimePlans.set(item, reader.reads);
+            return tree;
+        } catch (error) {
+            if (!prefetched || error.code !== "LIVE_READ_BUDGET_EXCEEDED" || !reader.prefetchStale()) throw error;
+            this._assertReadGuard(guard);
+            this._runtimePlans.delete(item);
+            Object.assign(budget, before);
+            return this._sampleRuntimeItem(item, guard, budget);
+        }
+    }
+
     async _readItems(items, t, guard = null) {
         const samples = [];
         let ok = 0;
@@ -1766,12 +1847,7 @@ class ManagedOpenOcdSession {
         for (const item of runtimeItems) {
             this._assertReadGuard(guard);
             try {
-                const runtimeTree = await new RuntimeObjectReader(
-                    item,
-                    (address, size) => this._readMemoryBytes(address, size),
-                    () => this._assertReadGuard(guard),
-                    runtimeBudget
-                ).sample();
+                const runtimeTree = await this._sampleRuntimeItem(item, guard, runtimeBudget);
                 samples.push({ name: item.name, runtimeTree, t });
                 ok++;
             } catch (error) {
@@ -1780,7 +1856,11 @@ class ManagedOpenOcdSession {
                 samples.push({
                     name: item.name,
                     bytes: null,
-                    diagnostic: { code: error.code || "LIVE_LAYOUT_UNSUPPORTED", message: error.message },
+                    diagnostic: {
+                        code: error.code || "LIVE_LAYOUT_UNSUPPORTED",
+                        message: error.message,
+                        ...(error.details?.reason ? { reason: error.details.reason } : {})
+                    },
                     t
                 });
                 this._lastReadError = error.message;
@@ -1795,15 +1875,7 @@ class ManagedOpenOcdSession {
                 scatterBytes = await this._readScatterBytes(batches, guard);
                 this._scatterFailures = 0;
             } catch (error) {
-                if (
-                    error.code?.startsWith("LIVE_") ||
-                    this.connectionFailed ||
-                    ["OPENOCD_RPC_TIMEOUT", "ECONNRESET", "ECONNABORTED", "EPIPE", "ENOTCONN", "ETIMEDOUT"].includes(
-                        error.code
-                    ) ||
-                    /^(?:Socket is not connected|Tcl connection closed)/.test(error.message)
-                )
-                    throw error;
+                if (this._isConnectionError(error)) throw error;
                 this._assertReadGuard(guard);
                 scatterFailed = true;
                 if (error.message.startsWith("EMBERPROBE_SCATTER_UNSUPPORTED") || ++this._scatterFailures >= 3)

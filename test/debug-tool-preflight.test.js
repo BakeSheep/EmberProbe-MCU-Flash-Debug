@@ -10,7 +10,7 @@ const {
     ensureDebugTools,
     readWindowsPath,
     readCurrentPath
-} = require("../src/services/cortexDebugPreflight");
+} = require("../src/services/debugToolPreflight");
 const { executableName } = require("../src/services/cortexToolchainService");
 
 (async () => {
@@ -42,8 +42,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
         fs.writeFileSync(tool("nm"), "fixture");
         fs.chmodSync(tool("nm"), 0o755);
 
-        const settings = { gdbPath: path.join(root, "missing") };
-        const ownSettings = {};
+        const ownSettings = { gdbPath: path.join(root, "missing") };
         const saved = new Map();
         const state = { get: (key) => saved.get(key), update: async (key, value) => saved.set(key, value) };
         const folder = { uri: { toString: () => "workspace-one" } };
@@ -53,12 +52,9 @@ const { executableName } = require("../src/services/cortexToolchainService");
         const vscode = {
             workspace: {
                 getConfiguration: (section, uri) => {
-                    assert.ok(["cortex-debug", "emberprobe"].includes(section));
+                    assert.strictEqual(section, "emberprobe", "Cortex-Debug settings are not consulted");
                     assert.strictEqual(uri, folder.uri);
-                    return {
-                        get: (key, fallback) =>
-                            section === "emberprobe" ? (ownSettings[key] ?? fallback) : (settings[key] ?? fallback)
-                    };
+                    return { get: (key, fallback) => ownSettings[key] ?? fallback };
                 }
             },
             window: {
@@ -88,16 +84,14 @@ const { executableName } = require("../src/services/cortexToolchainService");
         warning = "msg.selectDebugToolchain";
         selections = [undefined];
         assert.strictEqual(await run(), null, "cancelled picker cancels startup");
-        saved.set("cortexDebugToolchain:workspace-one", path.join(root, "removed"));
+        // A toolchain directory remembered for Cortex-Debug is no longer reused.
+        saved.set("cortexDebugToolchain:workspace-one", bin);
         selections = [[{ fsPath: path.join(root, "invalid") }], [{ fsPath: bin }]];
         assert.deepStrictEqual(await run(), expected);
         assert.strictEqual(errors, 1, "invalid directory can be corrected");
-        settings.gdbPath = tool("gdb");
+        ownSettings.gdbPath = tool("gdb");
         warning = undefined;
         assert.deepStrictEqual(await run(), expected, "valid explicit settings take priority");
-        settings.gdbPath = path.join(root, "missing");
-        ownSettings.gdbPath = tool("gdb");
-        assert.deepStrictEqual(await run(), expected, "EmberProbe settings override legacy configuration");
         ownSettings.gdbPath = path.join(root, "missing");
         assert.deepStrictEqual(
             await ensureDebugTools(
@@ -111,13 +105,10 @@ const { executableName } = require("../src/services/cortexToolchainService");
             expected,
             "launch settings override EmberProbe settings"
         );
-        delete ownSettings.gdbPath;
         saved.clear();
-        delete settings.gdbPath;
         const prompts = { ...vscode.window };
         vscode.window.showWarningMessage = async () => assert.fail("background lookup never prompts");
         // An explicit gdbPath confines resolution to settings, so the host PATH cannot satisfy it.
-        settings.gdbPath = path.join(root, "missing");
         assert.strictEqual(findDebugTools(vscode, folder, state), null, "background lookup never prompts");
         saved.set("emberprobeToolchain:workspace-one", bin);
         assert.deepStrictEqual(
@@ -126,7 +117,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
             "background lookup uses the saved choice"
         );
         saved.clear();
-        delete settings.gdbPath;
+        delete ownSettings.gdbPath;
         Object.assign(vscode.window, prompts);
         currentPath = bin;
         assert.deepStrictEqual(await run(), expected, "refreshed PATH works without restarting the host");
@@ -191,7 +182,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
             await readCurrentPath("win32", (_file, _args, _opts, callback) => callback(null, "C:\\tools")),
             "C:\\tools"
         );
-        console.log("Cortex-Debug preflight tests passed");
+        console.log("Debug tool preflight tests passed");
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

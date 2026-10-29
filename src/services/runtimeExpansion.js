@@ -58,13 +58,22 @@ function normalizeRuntimeExpansions(value) {
     return result;
 }
 
-// Scalar leaves of a decoded runtime tree, as `{ path, node }` with paths relative to the tree.
+// Scalar leaves of a decoded runtime tree, as `{ path, node }` with paths relative to the tree;
+// held (stale) branches carry no new values and are skipped.
 // `opened(path)` follows the reader's rules; null records everything the tree contains.
 function runtimeTreeLeaves(tree, opened = null, limit = MAX_RUNTIME_HISTORY_LEAVES) {
     const leaves = [];
     const isOpen = (path) => !opened || opened(path);
     const walk = (node, path, open, depth) => {
-        if (!node || leaves.length >= limit || depth > 32 || node.kind === "unavailable" || node.unobservable) return;
+        if (
+            !node ||
+            leaves.length >= limit ||
+            depth > 32 ||
+            node.kind === "unavailable" ||
+            node.unobservable ||
+            node.stale
+        )
+            return;
         if (node.isPointer) {
             const value = node.pointerValue ?? node.value;
             if (value != null) leaves.push({ path, node: { ...node, kind: "scalar", type: "u32", value } });
@@ -99,6 +108,71 @@ function runtimeTreeLeaves(tree, opened = null, limit = MAX_RUNTIME_HISTORY_LEAV
     return leaves;
 }
 
+// Runtime tree nodes are addressed by the same paths: members by `memberPath`, elements by
+// `elementPath` (a followed pointer's target is its `value` member).
+function childEntries(node, path) {
+    return [
+        ...(node.members || []).map((member) => [memberPath(path, member.name), member]),
+        ...(node.elements || []).map((element) => [elementPath(path, element.index), element])
+    ];
+}
+
+// The node at `path`, or undefined. Anonymous members share their parent's path.
+function runtimeNodeAt(tree, path, at = "", depth = 0) {
+    if (!tree || depth > 64) return undefined;
+    if (at === path) return tree;
+    for (const [child, node] of childEntries(tree, at)) {
+        if (!path.startsWith(child) || !/^(?:$|[.[])/.test(path.slice(child.length))) continue;
+        const found = runtimeNodeAt(node, path, child, depth + 1);
+        if (found) return found;
+    }
+    return undefined;
+}
+
+// Paths of the nodes `match` accepts, outermost first; their subtrees are not searched.
+function findRuntimePaths(tree, match, limit = 256) {
+    const paths = [];
+    const walk = (node, path, depth) => {
+        if (!node || depth > 64 || paths.length >= limit) return;
+        if (match(node)) {
+            paths.push(path);
+            return;
+        }
+        for (const [child, entry] of childEntries(node, path)) walk(entry, child, depth + 1);
+    };
+    walk(tree, "", 0);
+    return paths;
+}
+
+// `path`, or its closest ancestor the tree contains ("" at worst).
+function nearestRuntimePath(tree, path) {
+    let at = path;
+    while (at && runtimeNodeAt(tree, at) === undefined) at = at.replace(/(?:\.[^.[]*|\[\d+\])$/, "");
+    return at;
+}
+
+// A copy of `tree` with each node whose path is in `paths` replaced by `replace(node, path)`; the
+// replacement keeps the node's `name`, `index` and `memberRole`. Unchanged branches are shared.
+function replaceRuntimeNodes(tree, paths, replace, path = "", depth = 0) {
+    if (!tree || depth > 64) return tree;
+    if (paths.has(path)) {
+        const next = replace(tree, path);
+        for (const key of ["name", "index", "memberRole"])
+            if (tree[key] !== undefined && next[key] === undefined) next[key] = tree[key];
+        return next;
+    }
+    let changed = false;
+    const map = (list, childPath) =>
+        list?.map((child) => {
+            const next = replaceRuntimeNodes(child, paths, replace, childPath(child), depth + 1);
+            if (next !== child) changed = true;
+            return next;
+        });
+    const members = map(tree.members, (member) => memberPath(path, member.name));
+    const elements = map(tree.elements, (element) => elementPath(path, element.index));
+    return changed ? { ...tree, ...(members ? { members } : {}), ...(elements ? { elements } : {}) } : tree;
+}
+
 module.exports = {
     MAX_RUNTIME_EXPANSION_ITEMS,
     MAX_RUNTIME_EXPANSION_PATHS,
@@ -108,5 +182,9 @@ module.exports = {
     flatMember,
     summaryShown,
     normalizeRuntimeExpansions,
-    runtimeTreeLeaves
+    runtimeTreeLeaves,
+    runtimeNodeAt,
+    findRuntimePaths,
+    nearestRuntimePath,
+    replaceRuntimeNodes
 };

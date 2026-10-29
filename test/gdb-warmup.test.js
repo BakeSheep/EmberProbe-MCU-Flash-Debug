@@ -91,7 +91,7 @@ const keepAlive = setInterval(() => {}, 1000);
         const vscode = { workspace: { isTrusted: true } };
         const lookups = [];
         const Host = loadProvider(vscode, {
-            "./services/cortexDebugPreflight": {
+            "./services/debugToolPreflight": {
                 ensureDebugTools: async () => null,
                 findDebugTools: (_vscode, target) => {
                     lookups.push(target);

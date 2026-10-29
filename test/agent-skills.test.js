@@ -116,7 +116,7 @@ const execFileAsync = promisify(execFile);
     assert.strictEqual(listArray.symbols[0].name, "counter");
     assert.strictEqual(listArray.symbols[0].inferredType, ndjsonLines[0].inferredType);
     assert.strictEqual(listArray.symbols[0].elf, undefined);
-    // 调试会话文案对 EmberProbe 内置调试器与 Cortex-Debug 保持中立；只有会话确为 Cortex-Debug 时才建议升级它。
+    // 调试会话文案只指向 EmberProbe 内置调试器，不再提及已移除的 Cortex-Debug 兼容。
     for (const code of [
         "DEBUG_SESSION_NOT_ACTIVE",
         "DEBUG_SESSION_CONFLICT",
@@ -126,13 +126,13 @@ const execFileAsync = promisify(execFile);
         "DEBUG_MEMORY_WRITE_UNSUPPORTED"
     ]) {
         const sessionDiagnostic = diagnosticForError(Object.assign(new Error("x"), { code }));
-        assert.ok(!sessionDiagnostic.error.likelyCause.startsWith("Cortex-Debug"), code);
-        assert.ok(!sessionDiagnostic.error.suggestedActions.some((action) => /^升级 Cortex-Debug/.test(action)), code);
+        assert.ok(!sessionDiagnostic.error.likelyCause.includes("Cortex-Debug"), code);
+        assert.ok(!sessionDiagnostic.error.suggestedActions.some((action) => action.includes("Cortex-Debug")), code);
     }
     const noSessionDiagnostic = diagnosticForError(
         Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE" })
     );
-    assert.ok(noSessionDiagnostic.error.likelyCause.includes("EmberProbe 内置调试器"));
+    assert.ok(noSessionDiagnostic.error.likelyCause.includes("EmberProbe 调试会话"));
     const rtosNoSession = diagnosticForError(Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE" }), {
         operation: "rtos.snapshot"
     });

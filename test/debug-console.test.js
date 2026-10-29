@@ -276,7 +276,7 @@ function bridgeSetup(type = "emberprobe", options = {}) {
         assert(!bridge.paused);
         bridge.dispose();
     });
-    await scenario("background cores and Cortex-Debug retain isolated behavior", async () => {
+    await scenario("background cores and non-native sessions retain isolated behavior", async () => {
         const { bridge, session, request, response } = bridgeSetup();
         const other = { ...session, id: "other" };
         bridge.attach(other);
@@ -290,10 +290,10 @@ function bridgeSetup(type = "emberprobe", options = {}) {
         response(1, false, other);
         assert(!bridge.replBusy);
         bridge.dispose();
-        const cortex = bridgeSetup("cortex-debug");
-        cortex.request(1);
-        assert(!cortex.bridge.replBusy);
-        cortex.bridge.dispose();
+        const foreign = bridgeSetup("cppdbg");
+        foreign.request(1);
+        assert(!foreign.bridge.replBusy);
+        foreign.bridge.dispose();
     });
     await scenario("running breakpoint reconciliation waits for the next stop", async () => {
         const { adapter, mi } = setup();

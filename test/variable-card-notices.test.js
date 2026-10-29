@@ -105,6 +105,19 @@ for (const language of ["en", "zh"]) {
             sample({ kind: "class", members: [leaf] });
             assert(footer().hidden, "healthy snapshots clear the partial-layout warning");
             assert.strictEqual(footer().children.length, 0);
+            // An object over the read budget gets its own warning, not the generic pointer failure.
+            sample({
+                kind: "class",
+                members: [],
+                partial: true,
+                unavailable: "Runtime object exceeds 4096 bytes / 32 reads per cycle",
+                unavailableCode: "LIVE_READ_BUDGET_EXCEEDED"
+            });
+            assert(footer().querySelector(".notice--warning"));
+            assert(footer().querySelector(".notice-text").textContent.includes(translate("lw.objectReadBudget")));
+            assert(!footer().textContent.includes(translate("lw.pointeeUnavailable")));
+            sample({ kind: "class", members: [leaf] });
+            assert(footer().hidden);
 
             // Equal-sized nested arrays get independent pagination actions at the footer.
             const array = {

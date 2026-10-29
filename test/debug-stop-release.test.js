@@ -156,14 +156,14 @@ function track(promise) {
             await assert.rejects(terminating);
 
             // A retry that still cannot confirm the exit keeps the probe owned and reports why.
-            const failedRetry = p.prepareForCortexDebug({ uri: {} });
+            const failedRetry = p.prepareProbeForDebug({ uri: {} });
             await ticks();
             finishStop().reject(Object.assign(new Error("unconfirmed"), { code: "DEBUG_SERVER_STOP_FAILED" }));
             await assert.rejects(failedRetry, (error) => error.code === "DEBUG_SERVER_STOP_FAILED");
             assert.strictEqual(p._managedDebugServer, server);
             assert.strictEqual(coordinator.isActive("debugServer"), true);
 
-            const retry = p.prepareForCortexDebug({ uri: {} });
+            const retry = p.prepareProbeForDebug({ uri: {} });
             await ticks();
             assert.strictEqual(server.stops, 3);
             finishStop().resolve(true);
@@ -173,11 +173,11 @@ function track(promise) {
         }
     );
 
-    await scenario("a running managed debug server still blocks a foreign debug start", async () => {
+    await scenario("a running managed debug server still blocks another debug start", async () => {
         const { p, server } = setup();
         p._assertProbeDriverIdle = () => {};
         server.state = "ready";
-        await assert.rejects(p.prepareForCortexDebug({ uri: {} }), (error) => error.code === "PROBE_BUSY");
+        await assert.rejects(p.prepareProbeForDebug({ uri: {} }), (error) => error.code === "PROBE_BUSY");
         assert.strictEqual(server.stops, 0);
     });
 

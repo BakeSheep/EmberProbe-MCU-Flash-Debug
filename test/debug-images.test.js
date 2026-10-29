@@ -9,6 +9,7 @@ const { normalizeDebugImages, DebugImages, HOOKS, address } = require("../src/se
 const { validateDebugConfiguration } = require("../src/services/debugConfiguration");
 const { EmberDebugSession } = require("../src/debug/session");
 const { quote } = require("../src/debug/mi");
+const { buildDownloadBoostCommand, DOWNLOAD_CLOCK_RESTORE } = require("../skills/_emberprobe/openocd-flash");
 
 const SECTION_REPORTS = {
     unchanged: [
@@ -46,8 +47,13 @@ class ImageMi extends EventEmitter {
         this.commands.push({ command, timeout });
         if (this.fail && command.includes(this.fail)) throw new Error("fixture failure");
         // GDB streams each compare-sections result in two console records, as printf_filtered does.
-        if (command.includes("compare-sections"))
-            for (const [text, kind] of SECTION_REPORTS[this.imageVerdict] || []) this.emit("output", text, kind);
+        if (command.includes("compare-sections")) {
+            const verdict = this.imageVerdicts?.length ? this.imageVerdicts.shift() : this.imageVerdict;
+            for (const [text, kind] of SECTION_REPORTS[verdict] || []) this.emit("output", text, kind);
+        }
+        // OpenOCD forwards echo output of a monitor command to GDB's target stream.
+        if (command.includes("_ep_download_base [_ep_flash_boost"))
+            for (const line of this.boostReply || []) this.emit("output", line + "\n", "@");
         if (command === "-thread-info") return { threads: [{ id: "1" }], "current-thread-id": "1" };
         return {};
     }
@@ -210,6 +216,13 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             ),
             "launch.json cannot supply the extension's startup trace"
         );
+        assert(
+            !(
+                "__emberprobeDownloadSpeedKhz" in
+                validateDebugConfiguration({ request: "launch", __emberprobeDownloadSpeedKhz: 1 }, folder)
+            ),
+            "launch.json cannot supply the download clock"
+        );
 
         for (const attach of [false, true]) {
             const { adapter, mi, events } = session({});
@@ -344,6 +357,93 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             const silent = session({ ...defaults });
             await silent.adapter.handle("launch", { ...defaults });
             assert(!silent.events.some((event) => event.body?.output?.includes("[EmberProbe performance]")));
+            {
+                // A changed image downloads at the raised programming clock, is checked once by CRC and the
+                // script clock is restored before the second reset.
+                const boost = consoleCommand(`monitor ${buildDownloadBoostCommand(15000)}`);
+                const restore = consoleCommand(`monitor ${DOWNLOAD_CLOCK_RESTORE}`);
+                const fast = async (verdicts, reply, extra = {}) => {
+                    const { adapter, mi, events } = session({});
+                    mi.imageVerdicts = verdicts;
+                    mi.boostReply = reply;
+                    const command = mi.command.bind(mi);
+                    mi.command = async (text, timeout) => {
+                        if (text === "-target-download" && extra.failFirstDownload) {
+                            extra.failFirstDownload = false;
+                            await command(text, timeout);
+                            throw new Error("download failed at the raised clock");
+                        }
+                        return command(text, timeout);
+                    };
+                    await adapter.handle("launch", {
+                        ...defaults,
+                        performanceTrace: true,
+                        __emberprobeDownloadSpeedKhz: 15000,
+                        ...extra.args
+                    });
+                    const output = events.map((event) => event.body?.output || "").join("");
+                    const trace = JSON.parse(
+                        output.match(/\[EmberProbe performance\] (\{"command":"launch".*\})\n/)[1]
+                    );
+                    return { commands: mi.commands.map((item) => item.command), trace };
+                };
+                const accepted = ["EP_FLASH_SPEED=12000", "EP_DOWNLOAD_BASE=4000"];
+                const ok = await fast(["changed", "unchanged"], accepted);
+                const order = [
+                    consoleCommand("compare-sections"),
+                    boost,
+                    "-target-download",
+                    consoleCommand("compare-sections"),
+                    restore
+                ].map((command, index, all) =>
+                    ok.commands.indexOf(command, index ? ok.commands.indexOf(all[index - 1]) + 1 : 0)
+                );
+                assert(
+                    order.every((position, index) => position >= 0 && (!index || position > order[index - 1])),
+                    "boost order"
+                );
+                assert(ok.commands.lastIndexOf(consoleCommand("monitor reset halt")) > ok.commands.indexOf(restore));
+                assert.strictEqual(ok.commands.filter((command) => command === "-target-download").length, 1);
+                assert.strictEqual(ok.trace.downloadClockKhz, 12000);
+                assert.strictEqual(ok.trace.speedFallback, false);
+                assert.strictEqual(ok.trace.firmware, "programmed");
+
+                // A CRC mismatch after the fast write restores the clock, resets and downloads once more.
+                const retried = await fast(["changed", "changed"], accepted);
+                assert.strictEqual(retried.commands.filter((command) => command === "-target-download").length, 2);
+                const second = retried.commands.lastIndexOf("-target-download");
+                assert(retried.commands.indexOf(restore) < second);
+                assert(retried.commands.slice(0, second).includes(consoleCommand("monitor reset halt")));
+                assert.strictEqual(retried.trace.speedFallback, true);
+
+                // So does a download that fails at the raised clock.
+                const failed = await fast(["changed"], accepted, { failFirstDownload: true });
+                assert.strictEqual(failed.commands.filter((command) => command === "-target-download").length, 2);
+                assert.strictEqual(failed.trace.speedFallback, true);
+
+                // OpenOCD refusing the raise (JTAG, non Cortex-M, CPUID mismatch) downloads as before.
+                const refused = await fast(["changed"], ["EP_DOWNLOAD_BASE=0"]);
+                assert(refused.commands.includes(boost));
+                assert(!refused.commands.includes(restore));
+                assert.strictEqual(
+                    refused.commands.filter((command) => command.includes("compare-sections")).length,
+                    1
+                );
+                assert(!("downloadClockKhz" in refused.trace));
+                // A pre-check whose output is not recognized cannot verify a fast write, so no raise is tried.
+                for (const verdict of ["unknown", "localized"]) {
+                    const unverified = await fast([verdict], accepted);
+                    assert(!unverified.commands.includes(boost), verdict);
+                    assert(unverified.commands.includes("-target-download"));
+                }
+                const unset = await fast(["changed"], accepted, { args: { __emberprobeDownloadSpeedKhz: undefined } });
+                assert(!unset.commands.some((command) => command.includes("_ep_flash_boost")));
+                assert.throws(() => buildDownloadBoostCommand(-5), { code: "ADAPTER_SPEED_INVALID" });
+                // An out-of-range clock never fails the launch; it only skips the raise.
+                const huge = await fast(["changed"], accepted, { args: { __emberprobeDownloadSpeedKhz: 2 ** 40 } });
+                assert(!huge.commands.some((command) => command.includes("_ep_flash_boost")));
+                assert.strictEqual(huge.trace.firmware, "programmed");
+            }
         }
         const multi = session({
             ...defaults,

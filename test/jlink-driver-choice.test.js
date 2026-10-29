@@ -333,7 +333,6 @@ async function monitorLifecycle() {
         await flush();
         assert.strictEqual(timers.size, 1);
         provider._shutdownPromise = Promise.resolve();
-        provider.finishForeignDebug = () => {};
         provider._cubemxService = { cancel() {} };
         provider._elfService = { invalidate() {} };
         await provider.shutdown();

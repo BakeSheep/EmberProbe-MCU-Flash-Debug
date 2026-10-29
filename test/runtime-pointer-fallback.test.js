@@ -241,9 +241,10 @@ async function cyclesAndLimits() {
 }
 
 async function expansionBudgets() {
-    for (const [chunkBytes, count, expectedCommands, expectedBytes] of [
-        [256, 16, 18, 3860],
-        [16, 32, 32, 484]
+    // Out of bytes, a later pointer whose small target still fits is followed; out of reads, it is not.
+    for (const [chunkBytes, count, expectedCommands, expectedBytes, laterFollowed] of [
+        [256, 16, 18, 3864, true],
+        [16, 32, 32, 500, false]
     ]) {
         const h = harness(
             [
@@ -277,40 +278,53 @@ async function expansionBudgets() {
         const budget = { bytes: 0, commands: 0, deadline: Date.now() + 1000 };
         const reader = h.reader({}, undefined, budget);
         const tree = await reader.sample();
-        assert.deepStrictEqual(member(tree, "large"), {
-            name: "large",
-            ...leaf("Chunk *", "data", base, base + 128, "expansion-budget")
-        });
-        assert.deepStrictEqual(member(tree, "later"), {
-            name: "later",
-            ...leaf("int *", "data", base + 4, base + 8192, "expansion-budget")
-        });
+        // The target shows the chunks that fit; the rest are marked on their rows, not the whole object.
+        const chunks = member(member(tree, "large"), "value").elements;
+        assert.strictEqual(chunks.length, count);
+        const unread = chunks.filter((chunk) => chunk.unavailableCode === "LIVE_READ_BUDGET_EXCEEDED");
+        assert(unread.length > 0 && unread.length < count, `${unread.length} of ${count} chunks unread`);
+        for (const chunk of chunks) if (!chunk.unavailableCode) assert.strictEqual(member(chunk, "value").type, "i32");
+        if (laterFollowed) assert.strictEqual(member(member(tree, "later"), "value").value, 123);
+        else
+            assert.deepStrictEqual(member(tree, "later"), {
+                name: "later",
+                ...leaf("int *", "data", base + 4, base + 8192, "expansion-budget"),
+                unavailableCode: "LIVE_READ_BUDGET_EXCEEDED"
+            });
         assert.strictEqual(member(tree, "marker").value, 97);
-        assert(!h.reads.some((read) => read.address === base + 8192), "later pointers must stop expanding");
         assert.strictEqual(budget.bytes, expectedBytes);
         assert.strictEqual(budget.commands, expectedCommands);
         assert(budget.bytes <= 4096 && budget.commands <= 32);
+        // The two adjacent pointer words are verified in one fresh read.
         assert.deepStrictEqual(
-            h.reads.slice(-2),
-            [
-                { address: base, size: 4 },
-                { address: base + 4, size: 4 }
-            ],
+            h.reads.slice(-1),
+            [{ address: base, size: 8 }],
             "final descriptor verification must still read fresh memory"
         );
         assert.deepStrictEqual(reader.verificationBudget, { bytes: 0, commands: 0 });
 
-        // Descriptor changes must still invalidate even a sample with a locally exhausted expansion.
-        await assert.rejects(
-            h
-                .reader({}, async (address, size) => {
-                    const bytes = Buffer.from(await h.read(address, size));
-                    if (address === base && size === 4) bytes.writeUInt32LE(base + 256);
-                    return bytes;
-                })
-                .sample(),
-            { code: "LIVE_OBJECT_CHANGED" }
-        );
+        // A changed descriptor still withholds what it shaped, even with a locally exhausted expansion:
+        // only that pointer is marked, its sibling keeps its value.
+        const changed = await h
+            .reader({}, async (address, size) => {
+                const bytes = Buffer.from(await h.read(address, size));
+                // Only the final verification reads both pointer words at once.
+                if (address === base && size === 8) bytes.writeUInt32LE(base + 256);
+                return bytes;
+            })
+            .sample();
+        assert.deepStrictEqual(member(changed, "large"), {
+            name: "large",
+            kind: "class",
+            typeName: "Chunk *",
+            isPointer: true,
+            pointerTarget: "data",
+            address: base,
+            members: [],
+            unavailable: "changing",
+            unavailableCode: "LIVE_OBJECT_CHANGED"
+        });
+        assert.strictEqual(member(changed, "marker").value, 97);
     }
 
     const h = harness([pointer(1), scalar]);
@@ -325,7 +339,7 @@ async function localErrorsAndGuards() {
     for (const [code, reason] of [
         ["LIVE_MEMORY_UNAVAILABLE", "memory-unavailable"],
         ["LIVE_LAYOUT_UNSUPPORTED", "layout-unsupported"],
-        ["LIVE_OBJECT_CHANGED", "object-changed"],
+        ["LIVE_OBJECT_CHANGED", "changing"],
         ["LIVE_MEMBER_MISSING", "member-missing"],
         ["LIVE_READ_BUDGET_EXCEEDED", "expansion-budget"],
         ["LIVE_NULL_POINTER", "null-pointer"],
@@ -342,7 +356,11 @@ async function localErrorsAndGuards() {
                         return h.read(address, size);
                     })
                     .sample(),
-                leaf(typeName, "data", base, base + 128, reason)
+                {
+                    ...leaf(typeName, "data", base, base + 128, reason),
+                    // Read-budget leaves keep their code so views name the budget.
+                    ...(code === "LIVE_READ_BUDGET_EXCEEDED" ? { unavailableCode: code } : {})
+                }
             );
         }
     }

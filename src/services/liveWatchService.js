@@ -2,6 +2,7 @@
 
 const { formatPointer, isPointeeEntry, runtimeMemberRoute } = require("../webview/runtime");
 const { MAX_RUNTIME_HISTORY_LEAVES, runtimeTreeLeaves } = require("./runtimeExpansion");
+const { runtimeFailureReason } = require("./runtimeObjectReader");
 
 // `char *` and `const char *` (plain, signed or unsigned char) name C strings.
 const CHAR_POINTER = /^(?:const\s+|volatile\s+)*(?:(?:un)?signed\s+)?char(?:\s+const|\s+volatile)*\s*\*$/;
@@ -73,6 +74,18 @@ function runtimeTreeLeaf(tree, route) {
         if (!node) return null;
     }
     return node;
+}
+
+// True when the tree, or a node on `route`, is a held (stale) copy of an earlier sample.
+function runtimeRouteStale(tree, route) {
+    let node = tree;
+    if (node?.stale) return true;
+    for (const name of route) {
+        node = (node?.members || []).find((member) => member.name === name);
+        if (!node) return false;
+        if (node.stale) return true;
+    }
+    return false;
 }
 
 // Paths of `item` that one list opens: its view's expansions, the root of an expanded pointee,
@@ -234,9 +247,23 @@ function writableRamSectionRanges(sections) {
         );
 }
 
-function filterRuntimeRamPlan(items, sections) {
+// Memory a runtime object's pointers may lead to: every allocated ELF section plus the linker-script
+// heap/stack region (`memory.runtimeRegions`, see parseElfSections). Watched objects themselves must
+// still lie in writable sections.
+function runtimePointerRanges(sections, regions = []) {
     const SHF_ALLOC = 2;
+    const valid = (start, end) => Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 0 && end > start;
+    return [
+        ...(Array.isArray(sections) ? sections : [])
+            .filter((section) => section.flags & SHF_ALLOC && section.size > 0)
+            .map((section) => ({ start: section.addr, end: section.addr + section.size })),
+        ...(Array.isArray(regions) ? regions : []).map((region) => ({ start: region.start, end: region.end }))
+    ].filter((range) => valid(range.start, range.end) && range.end <= 0x100000000);
+}
+
+function filterRuntimeRamPlan(items, sections, regions = []) {
     const ranges = writableRamSectionRanges(sections);
+    const runtimeRanges = runtimePointerRanges(sections, regions);
     const allowed = [];
     const denied = [];
     for (const item of Array.isArray(items) ? items : []) {
@@ -251,24 +278,7 @@ function filterRuntimeRamPlan(items, sections) {
             Number.isSafeInteger(end) &&
             end <= 0x100000000 &&
             ranges.some((range) => address >= range.start && end <= range.end);
-        (valid ? allowed : denied).push(
-            item.runtimeLayout
-                ? {
-                      ...item,
-                      runtimeRanges: sections
-                          .filter(
-                              (section) =>
-                                  section.flags & SHF_ALLOC &&
-                                  Number.isSafeInteger(section.addr) &&
-                                  Number.isSafeInteger(section.size) &&
-                                  section.addr > 0 &&
-                                  section.size > 0 &&
-                                  section.addr + section.size <= 0x100000000
-                          )
-                          .map((section) => ({ start: section.addr, end: section.addr + section.size }))
-                  }
-                : item
-        );
+        (valid ? allowed : denied).push(item.runtimeLayout ? { ...item, runtimeRanges } : item);
     }
     return { allowed, denied, ranges };
 }
@@ -367,6 +377,8 @@ class LiveWatchService {
             if (!typeMap?.has(sample.name) && !compositeMap?.has(sample.name)) continue;
             const sampleTime = Number.isFinite(sample.t) ? sample.t : time;
             if (sample.diagnostic) {
+                // Views pick the notice from the code; the reader's message stays available as detail.
+                const code = sample.diagnostic.code;
                 const decoded = compositeMap?.has(sample.name)
                     ? {
                           name: sample.name,
@@ -374,8 +386,11 @@ class LiveWatchService {
                               kind: "class",
                               members: [],
                               partial: true,
-                              unavailable: sample.diagnostic.message,
-                              ...(sample.diagnostic.code ? { unavailableCode: sample.diagnostic.code } : {})
+                              unavailable: code?.startsWith("LIVE_")
+                                  ? runtimeFailureReason(code)
+                                  : sample.diagnostic.message,
+                              ...(code ? { unavailableCode: code } : {}),
+                              ...(sample.diagnostic.message ? { unavailableDetail: sample.diagnostic.message } : {})
                           },
                           diagnostic: sample.diagnostic,
                           t: sampleTime
@@ -399,6 +414,8 @@ class LiveWatchService {
             if (sample.runtimeTree) {
                 const tree = annotatePointerTree(sample.runtimeTree, this.pointerSymbolizer, typeSpec);
                 if (tree.kind === "scalar") {
+                    // A held scalar keeps the value it showed and adds no chart point.
+                    if (tree.stale) continue;
                     const decoded = {
                         name: sample.name,
                         value: tree.value,
@@ -482,7 +499,10 @@ class LiveWatchService {
             if (!ownerName) continue;
             const owner = owners.get(ownerName);
             const sampleTime = Number.isFinite(owner.t) ? owner.t : time;
-            const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, runtimeMemberRoute(name, ownerName));
+            const route = runtimeMemberRoute(name, ownerName);
+            // A held value is not new data: the member keeps what it showed and records no point.
+            if (owner.runtimeTree && runtimeRouteStale(owner.runtimeTree, route)) continue;
+            const node = owner.runtimeTree && runtimeTreeLeaf(owner.runtimeTree, route);
             const value = node ? (node.pointerValue ?? node.value) : undefined;
             let decoded;
             if (value === undefined || node.kind === "unavailable") {
@@ -529,5 +549,6 @@ module.exports = {
     selectFocusedPanel,
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
+    runtimePointerRanges,
     writableRamSectionRanges
 };

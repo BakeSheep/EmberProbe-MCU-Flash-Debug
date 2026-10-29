@@ -186,7 +186,7 @@ function bind(group, member) {
         _probeConnectionService: { assertCurrent() {} },
         _debugBridge: new DebugSessionBridge(),
         _terminatedDebugSessionIds: new Set(),
-        prepareForCortexDebug: async () => prepared++,
+        prepareProbeForDebug: async () => prepared++,
         restoreSamplingAfterDebug: async () => restored++
     });
     const zero = reserve(hostState.group, 0);

@@ -32,7 +32,6 @@ function shutdownFixture() {
         _cubemxService: { cancel() {} },
         _samplingArchive: { dispose: async () => {} },
         _chartHistory: null,
-        finishForeignDebug() {},
         _clearDebugStartupWatchdog() {},
         _stopJlinkDriverMonitor() {},
         _flushPendingChartHistorySamples: async () => {},

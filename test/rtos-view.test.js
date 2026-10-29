@@ -54,7 +54,7 @@ const { create } = require("../src/webview/sidebar/rtos");
     bridge.paused = false;
     await assert.rejects(service.refresh(), /Pause/);
     bridge.paused = true;
-    session.type = "cortex-debug";
+    session.type = "cppdbg";
     await assert.rejects(service.refresh(), /native/);
     assert.strictEqual(service.status().supported, false);
 

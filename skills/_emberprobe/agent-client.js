@@ -308,7 +308,7 @@ const DIAGNOSTICS = {
     TARGET_NOT_PAUSED: [
         "debug_state",
         "SVD 外设读写或当前调试操作需要芯片已暂停。",
-        ["使用 {{debugPause}} 暂停当前调试会话（EmberProbe 内置调试器或 Cortex-Debug）后重试。"],
+        ["使用 {{debugPause}} 暂停当前 EmberProbe 调试会话后重试。"],
         true
     ],
     INVALID_PERIPHERAL_WRITE_VALUE: [
@@ -343,22 +343,20 @@ const DIAGNOSTICS = {
     ],
     DEBUG_SESSION_NOT_ACTIVE: [
         "debug_state",
-        "当前工作区没有活动的调试会话（EmberProbe 内置调试器或 Cortex-Debug）。",
+        "当前工作区没有活动的 EmberProbe 调试会话。",
         ["使用 {{debugStart}} 启动调试后重试。"],
         true
     ],
     DEBUG_SESSION_CONFLICT: [
         "resource_conflict",
-        "当前工作区匹配到多个调试会话（EmberProbe 内置调试器或 Cortex-Debug）。",
+        "当前工作区匹配到多个 EmberProbe 调试会话。",
         ["在 VS Code 中停止不需要的调试会话，保留唯一目标后重试。"],
         true
     ],
     DEBUG_ACTION_UNSUPPORTED: [
         "debug_capability",
         "当前调试会话不支持请求的操作或未声明对应 DAP 能力。",
-        [
-            "查看 debug.status 的 capabilities；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug 或改用 {{debugStart}} 启动内置 emberprobe 会话。"
-        ],
+        ["查看 debug.status 的 capabilities，确认当前会话的 DAP 能力后再选择操作。"],
         false
     ],
     DEBUG_STATE_INVALID: [
@@ -376,13 +374,13 @@ const DIAGNOSTICS = {
     DEBUG_MEMORY_READ_UNSUPPORTED: [
         "debug_capability",
         "当前调试会话未声明 DAP readMemory 能力。",
-        ["确认当前调试后端支持内存读取；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug。"],
+        ["确认当前调试会话支持内存读取后重试。"],
         false
     ],
     DEBUG_MEMORY_WRITE_UNSUPPORTED: [
         "debug_capability",
         "当前调试会话未声明 DAP writeMemory 能力。",
-        ["确认当前调试后端支持内存写入；若会话是 Cortex-Debug，可考虑升级 Cortex-Debug。"],
+        ["确认当前调试会话支持内存写入后重试。"],
         false
     ],
     DEBUG_CONTROL_TIMEOUT: [

@@ -98,10 +98,8 @@ function readCurrentPath(platform = process.platform, run = execFile, env = proc
 }
 
 function debugToolOptions(vscode, folder, launch = {}) {
-    const cfg = vscode.workspace.getConfiguration("cortex-debug", folder.uri);
     const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
-    const platformKey = process.platform === "darwin" ? "osx" : process.platform;
-    const setting = (name) => launch[name] || own.get(name) || cfg.get(`${name}.${platformKey}`) || cfg.get(name);
+    const setting = (name) => launch[name] || own.get(name);
     return {
         gdbPath: setting("gdbPath"),
         configuredObjdump: setting("objdumpPath"),
@@ -115,9 +113,7 @@ function findDebugTools(vscode, folder, state, launch = {}) {
     const options = debugToolOptions(vscode, folder, launch);
     const configured = resolveDebugTools({ ...options, envPath: "" });
     if (configured) return configured;
-    const saved =
-        state.get(`emberprobeToolchain:${folder.uri.toString()}`) ||
-        state.get(`cortexDebugToolchain:${folder.uri.toString()}`);
+    const saved = state.get(`emberprobeToolchain:${folder.uri.toString()}`);
     if (saved) {
         const tools = resolveDebugTools({ prefix: options.prefix, envPath: "", toolchainPath: saved });
         if (tools) return tools;

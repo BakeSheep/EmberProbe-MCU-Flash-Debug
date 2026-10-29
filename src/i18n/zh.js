@@ -618,6 +618,9 @@ module.exports = Object.freeze({
     "lw.pointeeMemoryUnavailable": "无法读取指针目标内存。",
     "lw.pointeeCycle": "指针目标存在循环引用，已停止继续展开。",
     "lw.pointeeUnavailable": "指针目标暂时无法读取。",
+    "lw.objectReadBudget":
+        "对象或已展开的内容超过读取预算，未读取：运行中每个采样周期最多读取 4096 字节 / 32 次。可收起部分分组，或暂停目标后查看（单个对象最多 64 KiB）。",
+    "lw.objectChanging": "目标正在改写这部分内容，本次未能读到一致的数据，稍后自动重读。",
     "lw.pointerLastSampled": "上次采样",
     "lw.pointerInvalid": "无效地址",
     "lw.pointerRegion.flash": "Flash",
@@ -710,8 +713,6 @@ module.exports = Object.freeze({
     "msg.debugStartFailed": "调试会话启动失败，请检查调试器与 OpenOCD 配置。",
     "msg.debugStartTimeout":
         "调试器在 {seconds} 秒内未完成启动，已自动结束会话并释放 OpenOCD。请检查 GDB 是否能从终端正常启动。",
-    "msg.debugStartTimeoutWin":
-        "Cortex-Debug 在 {seconds} 秒内未完成启动，已自动结束会话并释放 OpenOCD。Windows 上的 Cortex-Debug {version} 可能受固定 5 秒 GDB 启动超时影响；可改用启动较快的 GDB（如 13.x），或升级到包含修复的稳定版，无需安装预览版。",
     "msg.downloadBusy": "下载正在进行中，请等待当前任务完成",
     "msg.agentReadBusy": "Agent 正在单次读取变量，请稍候",
     "msg.debugBusy": "调试会话正在启动，请稍候",
@@ -781,10 +782,14 @@ module.exports = Object.freeze({
     "mcp.client.claude": "Claude Code",
     "mcp.client.codex": "Codex",
     "mcp.client.cursor": "Cursor",
+    "mcp.client.antigravity": "Antigravity",
+    "mcp.client.dsh": "DeepSeek Harness (DSH)",
     "mcp.client.json": "其他客户端",
     "mcp.method.cli": "运行 {command}（用户配置）",
     "mcp.method.cliMissing": "PATH 中未找到 {command}，将复制安装命令",
     "mcp.method.cursor": "打开 Cursor 安装链接",
+    "mcp.method.antigravity": "复制 Antigravity mcp_config.json 配置（当前工作区）",
+    "mcp.method.dsh": "复制 DSH YAML patch（当前工作区）",
     "mcp.method.json": "复制 mcpServers JSON 到剪贴板",
     "mcp.install": "安装",
     "mcp.installConfirm": "将运行以下命令，把 EmberProbe MCP 服务器添加到 {client} 的用户配置",
@@ -794,6 +799,10 @@ module.exports = Object.freeze({
     "mcp.cursorOpened": "已打开 Cursor 安装链接，请在 Cursor 中确认安装",
     "mcp.cursorLinkCopied": "无法打开 Cursor 安装链接，链接已复制到剪贴板",
     "mcp.configCopied": "{client} 的 EmberProbe MCP 配置已复制到剪贴板，请粘贴到客户端的 MCP 配置中",
+    "mcp.configCopied.antigravity":
+        "Antigravity 配置已复制：在 MCP Servers → Manage MCP Servers → View raw config 中合并 emberprobe 条目，再刷新服务器；请在 EmberProbe 中启用当前工作区的 Agent 访问",
+    "mcp.configCopied.dsh":
+        "DSH 配置已复制：保存为 emberprobe.cordis.yml，再运行 dsh web --patch <文件路径>；请在 EmberProbe 中启用当前工作区的 Agent 访问",
     "agent.cleanupConfirm":
         "将从用户主目录 ~/.agents/skills 移除 EmberProbe 安装的 skills，只删除 EmberProbe 清单内的条目。是否继续？",
     "live.elfFirst": "请先在侧栏选择 ELF 固件",

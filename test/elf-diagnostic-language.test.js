@@ -128,7 +128,7 @@ for (const lang of ["zh", "en"]) {
     try {
         for (const [view, type, id] of [
             [sidebar, "availableVariables", "availableDiagnostics"],
-            [graph, "variablesList", "elfDiagnostics"]
+            [graph, "variablesList", "importDiagnostics"]
         ]) {
             view.send({ type: type + "Reset", version: "v1", warnings: [depth, depth, hostWarning] });
             const box = view.document.getElementById(id);
@@ -153,13 +153,11 @@ for (const lang of ["zh", "en"]) {
             assert.strictEqual(box.querySelector("img"), null, "diagnostic parameters are text only");
             assert(box.textContent.includes("<img src=x onerror=alert(1)>.dwo"));
         }
-        // Both waveform diagnostic surfaces use the same formatter.
-        assert.strictEqual(
-            graph.document.getElementById("importDiagnostics").textContent,
-            graph.document.getElementById("elfDiagnostics").textContent
-        );
+        // Waveform diagnostics are available only inside the variable import dialog.
+        assert.strictEqual(graph.document.getElementById("elfDiagnostics"), null);
+        assert(graph.document.getElementById("importDiagnostics").closest("#overlay"));
         graph.send({ type: "variablesListDone", version: "v1", warnings: [depth], error: depth });
-        const failed = graph.document.getElementById("elfDiagnostics");
+        const failed = graph.document.getElementById("importDiagnostics");
         assert(failed.querySelector(".notice").classList.contains("notice--error"));
         assert.strictEqual(noticeLines(failed).length, 1, "the error is not repeated as a warning");
         viewHealth(sidebar, graph);

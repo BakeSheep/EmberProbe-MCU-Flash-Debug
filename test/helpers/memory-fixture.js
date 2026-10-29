@@ -2,13 +2,16 @@
 
 const { parseElfSections } = require("../../src/elfSymbols");
 
-function buildMemoryElf(specs) {
+// `symbols`: optional absolute linker symbols [{ name, value }], such as `_end` and `_estack`.
+function buildMemoryElf(specs, symbols = []) {
     const names = Buffer.from("\0.shstrtab\0.strtab\0.symtab\0" + specs.map((s) => s.name + "\0").join(""));
+    const strings = Buffer.from("\0" + symbols.map((s) => s.name + "\0").join(""));
     const loads = specs.filter((s) => s.type !== 8 && s.size);
     const namesOffset = 52 + loads.length * 32;
     const strtabOffset = namesOffset + names.length;
-    const symtabOffset = (strtabOffset + 4) & ~3;
-    let offset = symtabOffset + 16;
+    const symtabOffset = (strtabOffset + strings.length + 3) & ~3;
+    const symtabSize = 16 * (symbols.length + 1);
+    let offset = symtabOffset + symtabSize;
     const entries = specs.map((s) => {
         const entry = { ...s, offset };
         if (s.type !== 8) offset += s.size;
@@ -30,13 +33,23 @@ function buildMemoryElf(specs) {
     buf.writeUInt16LE(specs.length + 4, 48);
     buf.writeUInt16LE(1, 50);
     names.copy(buf, namesOffset);
+    strings.copy(buf, strtabOffset);
+    let stringOffset = 1;
+    symbols.forEach((symbol, index) => {
+        const entry = symtabOffset + 16 * (index + 1);
+        buf.writeUInt32LE(stringOffset, entry);
+        buf.writeUInt32LE(symbol.value >>> 0, entry + 4);
+        buf[entry + 12] = 0x10; // STB_GLOBAL, STT_NOTYPE
+        buf.writeUInt16LE(0xfff1, entry + 14); // SHN_ABS
+        stringOffset += Buffer.byteLength(symbol.name) + 1;
+    });
     const sh = (index, name, type, flags, addr, fileOffset, size) => {
         [name, type, flags, addr, fileOffset, size].forEach((v, i) => buf.writeUInt32LE(v, shoff + index * 40 + i * 4));
         buf.writeUInt32LE(1, shoff + index * 40 + 32);
     };
     sh(1, 1, 3, 0, 0, namesOffset, names.length);
-    sh(2, 11, 3, 0, 0, strtabOffset, 1);
-    sh(3, 19, 2, 0, 0, symtabOffset, 16);
+    sh(2, 11, 3, 0, 0, strtabOffset, strings.length);
+    sh(3, 19, 2, 0, 0, symtabOffset, symtabSize);
     buf.writeUInt32LE(2, shoff + 3 * 40 + 24);
     buf.writeUInt32LE(16, shoff + 3 * 40 + 36);
     let name = 27,

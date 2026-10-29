@@ -307,7 +307,7 @@ function views(errorMessage) {
         assert.match(sidebar.document.querySelector("#noticeLive .notice--error").textContent, /64.*firmware\.elf/);
         for (const [view, prefix, id, typesDone] of [
             [sidebar, "availableVariables", "availableDiagnostics", "availableTypesDone"],
-            [graph, "variablesList", "elfDiagnostics", "variableTypesDone"]
+            [graph, "variablesList", "importDiagnostics", "variableTypesDone"]
         ]) {
             view.send({ type: prefix + "Reset", version: "v1", warnings: ["missing DWARF <script>bad()</script>"] });
             assert.strictEqual(view.document.getElementById(id).querySelector("script"), null);
@@ -333,9 +333,34 @@ function views(errorMessage) {
             error: "ELF parse failed",
             warnings: ["ELF parse failed"]
         });
-        assert.match(graph.document.getElementById("elfDiagnostics").textContent, /ELF parse failed/);
+        assert.match(graph.document.getElementById("importDiagnostics").textContent, /ELF parse failed/);
         graph.send({ type: "setLang", lang: "zh" });
-        assert.match(graph.document.getElementById("elfDiagnostics").textContent, /ELF 解析诊断/);
+        assert.match(graph.document.getElementById("importDiagnostics").textContent, /ELF 解析诊断/);
+        const overlay = graph.document.getElementById("overlay");
+        graph.send({ type: "liveError", message: "Sampling read failed" });
+        graph.send({ type: "chartHistoryLimited" });
+        assert(overlay.classList.contains("hidden"), "notices do not interrupt the waveform with a dialog");
+        assert.strictEqual(graph.document.querySelector(".lw-notices, #elfDiagnostics"), null);
+        for (const notice of graph.document.querySelectorAll(".notice-area")) {
+            assert(notice.closest(".overlay, .ac-dropdown"), "notices belong to a dialog or variable picker");
+        }
+        assert.match(overlay.querySelector('#lwNotice [data-notice-id="live"]').textContent, /Sampling read failed/);
+        const historyNotice = overlay.querySelector('#lwNotice [data-notice-id="history-limited"]');
+        assert.match(historyNotice.textContent, /历史/);
+        graph.document.getElementById("import").click();
+        graph.send({ type: "variablesListDone", version: "v2", error: "ELF parse failed" });
+        assert(!overlay.classList.contains("hidden"), "opening import reveals the saved notices");
+        assert.match(overlay.querySelector("#importDiagnostics").textContent, /ELF parse failed/);
+        graph.send({ type: "setLang", lang: "en" });
+        assert.match(
+            overlay.querySelector('#lwNotice [data-notice-id="history-limited"]').textContent,
+            /history/i,
+            "operation notices still follow the host language"
+        );
+        graph.document.getElementById("impCancel").click();
+        assert(overlay.classList.contains("hidden"));
+        graph.send({ type: "liveStatus", running: true });
+        assert.strictEqual(overlay.querySelector('#lwNotice [data-notice-id="live"]'), null);
         const status = {
             type: "rtosDebugStatus",
             state: "paused",

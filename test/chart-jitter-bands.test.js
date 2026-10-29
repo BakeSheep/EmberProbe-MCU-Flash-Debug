@@ -165,7 +165,7 @@ function columns(values) {
     assert.ok(calls.filter(([op]) => op === "lineTo").length > lineTos);
 }
 
-// Toolbar: the gear sits left of the language toggle, opens a popover and persists the option.
+// Toolbar: the gear ends the toolbar, opens a popover and persists the option.
 {
     const page = render(getLiveWatchContent({}, "zh"));
     try {
@@ -173,7 +173,7 @@ function columns(values) {
             toggle = doc.getElementById("chartSettingsToggle"),
             popup = doc.getElementById("chartSettingsPopup"),
             option = doc.getElementById("jitterBands");
-        assert.equal(doc.getElementById("chartSettings").nextElementSibling.id, "langToggle");
+        assert.equal(doc.getElementById("chartSettings").nextElementSibling, null);
         assert.equal(toggle.textContent.trim(), "", "icon-only button");
         assert.equal(toggle.getAttribute("aria-label"), "绘图设置");
         assert.ok(popup.hidden && option.checked, "optimisation defaults on");

@@ -25,6 +25,10 @@ The xPack archives additionally contain six EmberProbe compatibility wrappers un
 
 Both OpenOCD archives also contain three STM32C5 flash loaders (`openocd/scripts/flash_loaders/stm32c5/*.xldr`), Copyright STMicroelectronics, distributed unmodified under the BSD 3-Clause License from the `stm32c5xx-dfp` repository (tag 2.1.0, commit `a5f65bc64535cfa723e9d25f58d7ce23d0937aed`). Only the file names were changed to drop shell-glob brackets. The upstream license text accompanies them as `LICENSE.html`; reviewable copies and source URLs are in `resources/openocd-targets/flash_loaders/stm32c5/` and `resources/openocd-targets-manifest.json`.
 
+## Chart settings icon
+
+The chart settings gear is adapted from [Microsoft Codicons](https://github.com/microsoft/vscode-codicons), licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). The glyph from the bundled VS Code 1.136.1 Codicon font was converted to an inline SVG and scaled to a 16-unit viewBox.
+
 ## ISC License
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.

@@ -798,23 +798,6 @@ input[type="number"]::-webkit-outer-spin-button {
 .imp-row .size {
     color: var(--vscode-descriptionForeground);
 }
-.lang-toggle {
-    min-width: 26px;
-    height: 22px;
-    padding: 0 8px;
-    border: 1px solid var(--vscode-button-border, transparent);
-    border-radius: 11px;
-    color: var(--vscode-button-secondaryForeground);
-    background: var(--vscode-button-secondaryBackground);
-    font: 600 10px var(--vscode-font-family);
-    cursor: pointer;
-}
-.lang-toggle:hover {
-    background: var(--vscode-button-secondaryHoverBackground);
-}
-.bar .lang-toggle {
-    margin-left: auto;
-}
 .bar .hint {
     margin-left: 0;
 }
@@ -1177,17 +1160,16 @@ input[type="number"]::-webkit-outer-spin-button {
     display: none;
 }
 
-/* Panel notices sit between the toolbar and the chart and never take the chart's height. */
-.lw-notices {
+/* Keep diagnostics and operation notices inside the import dialog. */
+.import-notices {
     flex-shrink: 0;
-    max-height: 40vh;
-    padding: 0 12px;
+    max-height: 30vh;
     overflow-y: auto;
 }
-.lw-notices > .notice-area {
+.import-notices > .notice-area {
     margin: 6px 0 0;
 }
-.lw-notices > .notice-area + .notice-area {
+.import-notices > .notice-area + .notice-area {
     margin-top: 6px;
 }
 .array-panel {
@@ -2034,9 +2016,6 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Compact toolbar, content-sized values and readable in-track time labels. */
 .toolbar {
     padding-top: 12px;
-}
-.toolbar > .lang-toggle {
-    margin-left: auto;
 }
 .status-dot {
     flex: none;
@@ -2971,12 +2950,9 @@ input[type="number"]::-webkit-outer-spin-button {
     padding-left: 12px;
 }
 
-/* Chart settings sit left of the language toggle and open a small option popover. */
+/* Chart settings anchor the end of the toolbar and open a small option popover. */
 .toolbar > .chart-settings {
     margin-left: auto;
-}
-.toolbar > .chart-settings + .lang-toggle {
-    margin-left: 0;
 }
 .chart-settings {
     position: relative;
@@ -2988,25 +2964,27 @@ input[type="number"]::-webkit-outer-spin-button {
     width: 22px;
     height: 22px;
     padding: 0;
-    border-radius: 11px;
+    border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+    border-radius: 4px;
     color: var(--vscode-button-secondaryForeground);
     background: var(--vscode-button-secondaryBackground);
 }
 .chart-settings-toggle:hover,
 .chart-settings-toggle[aria-expanded="true"] {
-    background: var(--vscode-button-secondaryHoverBackground);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryHoverBackground));
+}
+.chart-settings-toggle:focus {
+    outline: none;
 }
 .chart-settings-toggle:focus-visible {
-    outline: 1px solid var(--vscode-focusBorder);
+    outline: 1px solid currentColor;
     outline-offset: 1px;
 }
 .chart-settings-toggle svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.2;
-    stroke-linejoin: round;
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+    stroke: none;
 }
 .chart-settings-popup {
     position: absolute;
@@ -3119,7 +3097,6 @@ input[type="number"]::-webkit-outer-spin-button {
 .sampling-tools > button,
 .history-tools > button,
 .toolbar .chart-settings-toggle,
-.toolbar > .lang-toggle,
 .toolbar #addName,
 .toolbar #timeWindow,
 .toolbar .frequency-field {
@@ -3139,10 +3116,6 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 .toolbar .chart-settings-toggle {
     width: var(--toolbar-control-height);
-}
-.toolbar > .lang-toggle {
-    min-width: var(--toolbar-control-height);
-    font-size: 11px;
 }
 .toolbar .frequency-field #frequency {
     height: 100%;

@@ -450,7 +450,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             assert.equal(graph.document.querySelectorAll("#impList input").length, 0);
             assert.equal(graph.document.getElementById("importDiagnostics").hidden, false);
             assert.ok(graph.document.getElementById("importDiagnostics").textContent.includes("ELF unavailable"));
-            assert.ok(graph.document.getElementById("elfDiagnostics").textContent.includes("ELF unavailable"));
+            assert.equal(graph.document.getElementById("elfDiagnostics"), null);
             graph.assertHealthy();
         } finally {
             graph.close();

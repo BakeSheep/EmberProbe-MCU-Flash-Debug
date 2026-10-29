@@ -127,7 +127,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.draw(100);
         assert.equal(doc.querySelector(".top .bar"), null, "the redundant chart title row is removed");
         assert.equal(doc.getElementById("sideToggle").previousElementSibling, doc.getElementById("dot"));
-        assert.ok(doc.querySelector(".toolbar #langToggle"), "language selection remains available");
+        assert.equal(doc.getElementById("langToggle"), null, "the chart has no language toggle");
         const sideToggle = doc.getElementById("sideToggle");
         assert.equal(sideToggle.getAttribute("aria-expanded"), "true");
         sideToggle.click();

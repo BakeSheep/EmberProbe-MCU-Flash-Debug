@@ -9,8 +9,10 @@ const MAX_READ_BYTES = 4096;
 const MAX_PAUSED_ITEM_BYTES = 65536;
 const SNAPSHOT_INITIAL_DELAY_MS = 180;
 const SNAPSHOT_RETRY_DELAYS_MS = Object.freeze([150, 300, 600, 1000]);
-// A paused snapshot is one-shot rather than a sampling cycle. Runtime objects keep their own
-// 4096-byte / 32-read budget; this limit only stops a stalled adapter, and resuming cancels the read anyway.
+// A paused snapshot is one-shot rather than a sampling cycle. Each runtime object may read up to the
+// paused object limit in at most this many reads (an opened composite is prefetched whole, so most
+// members cost none); the time limit only stops a stalled adapter, and resuming cancels the read anyway.
+const MAX_PAUSED_RUNTIME_READS = 256;
 const PAUSED_RUNTIME_READ_MS = 5000;
 const CONTROL_TIMEOUT_MS = 5000;
 
@@ -24,16 +26,29 @@ function unwrapResponse(value) {
         : value || {};
 }
 
-function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
+// While paused, reads in flight at once; each is still one DAP readMemory request.
+const MAX_PAUSED_PARALLEL_READS = 4;
+// Gaps up to this many bytes between two groups are read along when both lie in one writable RAM section.
+const MAX_PAUSED_GAP_BYTES = 32;
+
+function mergeReadPlan(items, maxBytes = MAX_READ_BYTES, ramRanges = []) {
     const sorted = (items || [])
         .filter((item) => Number.isFinite(Number(item.address)) && Number(item.size) > 0)
         .map((item) => ({ ...item, address: Number(item.address), size: Number(item.size) }))
         .sort((a, b) => a.address - b.address || a.size - b.size);
+    // RAM has no read side effects, and a section never spans unmapped or peripheral addresses.
+    const sameSection = (start, end) => ramRanges.some((range) => start >= range.start && end <= range.end);
     const groups = [];
     for (const item of sorted) {
         const last = groups[groups.length - 1];
         const end = item.address + item.size;
-        if (last && item.address <= last.address + last.size && end - last.address <= maxBytes) {
+        const lastEnd = last ? last.address + last.size : 0;
+        const joins =
+            last &&
+            end - last.address <= maxBytes &&
+            (item.address <= lastEnd ||
+                (item.address - lastEnd <= MAX_PAUSED_GAP_BYTES && sameSection(last.address, Math.max(end, lastEnd))));
+        if (joins) {
             last.size = Math.max(last.size, end - last.address);
             last.items.push(item);
         } else {
@@ -41,6 +56,27 @@ function mergeReadPlan(items, maxBytes = MAX_READ_BYTES) {
         }
     }
     return groups;
+}
+
+// Runs `task` over `values` with at most `limit` in flight and keeps the results in order; after a
+// failure no further task starts.
+async function mapLimited(values, limit, task) {
+    const results = new Array(values.length);
+    let next = 0;
+    let failed = false;
+    const worker = async () => {
+        while (!failed && next < values.length) {
+            const index = next++;
+            try {
+                results[index] = await task(values[index]);
+            } catch (error) {
+                failed = true;
+                throw error;
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(limit, values.length) }, worker));
+    return results;
 }
 
 class DebugSessionBridge {
@@ -55,6 +91,8 @@ class DebugSessionBridge {
         this.onError = options.onError || (() => {});
         this.onTargetState = options.onTargetState || (() => {});
         this.beforePausedRead = options.beforePausedRead || (async () => {});
+        // Writable RAM sections of the selected ELF, for merging small gaps between paused reads.
+        this.getRamSectionRanges = options.getRamSectionRanges || (() => []);
         this.allSessions = new Map();
         this.sessions = new Map();
         this.sessionContexts = options.trackSessions === false ? null : new Map();
@@ -690,6 +728,17 @@ class DebugSessionBridge {
         }
     }
 
+    // A range larger than one DAP block is read as consecutive blocks; callers only do so while paused.
+    async _readRange(session, address, size, guard) {
+        const data = new Uint8Array(size);
+        for (let offset = 0; offset < size; offset += MAX_READ_BYTES) {
+            guard();
+            const count = Math.min(MAX_READ_BYTES, size - offset);
+            data.set(await this._readBlock(session, address + offset, count), offset);
+            guard();
+        }
+        return data;
+    }
     async _readBlock(session, address, count) {
         if (
             !Number.isSafeInteger(address) ||
@@ -778,7 +827,6 @@ class DebugSessionBridge {
     }
 
     // DAP has no capability bit for RTOS awareness, so read the resolved launch configuration.
-    // This also covers cortex-debug sessions, which use the same `rtos` key.
     isRtosSession(session = this.activeSession) {
         const rtos = session?.configuration?.rtos;
         if (typeof rtos !== "string") return false;
@@ -943,23 +991,29 @@ class DebugSessionBridge {
                 }
             });
         // Groups merge only touching ranges, so a larger group adds no bytes, only fewer requests.
+        let ramRanges = [];
+        try {
+            ramRanges = this.getRamSectionRanges() || [];
+        } catch {
+            // Without ELF sections only touching ranges merge.
+        }
         const groups = mergeReadPlan(
             fixed.filter((entry) => Number(entry.size) <= MAX_PAUSED_ITEM_BYTES),
-            MAX_PAUSED_ITEM_BYTES
+            MAX_PAUSED_ITEM_BYTES,
+            ramRanges
         );
-        // Fixed reads have no per-snapshot budget, so runtime objects start with their full one.
-        const budget = { bytes: 0, commands: 0, deadline: Date.now() + PAUSED_RUNTIME_READ_MS };
+        // Like fixed objects, every runtime object gets its own paused limit; only the time limit is shared.
+        const deadline = Date.now() + PAUSED_RUNTIME_READ_MS;
         // Memory is frozen while paused: blocks read once (fixed groups first) serve every runtime
         // object, so a pointer word or an object shared by several watches costs one DAP request.
         const cache = [];
-        for (const group of groups) {
-            const data = new Uint8Array(group.size);
-            for (let offset = 0; offset < group.size; offset += MAX_READ_BYTES) {
-                guard();
-                const count = Math.min(MAX_READ_BYTES, group.size - offset);
-                data.set(await this._readBlock(session, group.address + offset, count), offset);
-                guard();
-            }
+        // Groups are independent while paused, so a few go out at once; results keep plan order.
+        const blocks = await mapLimited(groups, MAX_PAUSED_PARALLEL_READS, (group) =>
+            this._readRange(session, group.address, group.size, guard)
+        );
+        guard();
+        for (const [index, group] of groups.entries()) {
+            const data = blocks[index];
             for (const item of group.items) {
                 const offset = item.address - group.address;
                 const bytes = data.slice(offset, Math.min(data.length, offset + item.size));
@@ -974,9 +1028,15 @@ class DebugSessionBridge {
                 const { RuntimeObjectReader } = require("./runtimeObjectReader");
                 const reader = new RuntimeObjectReader(
                     item,
-                    (address, size) => this._readBlock(session, address, size),
+                    (address, size) => this._readRange(session, address, size, guard),
                     guard,
-                    budget,
+                    {
+                        bytes: 0,
+                        commands: 0,
+                        deadline,
+                        maxBytes: MAX_PAUSED_ITEM_BYTES,
+                        maxReads: MAX_PAUSED_RUNTIME_READS
+                    },
                     { frozen: true, cache }
                 );
                 samples.push({ name: item.name, runtimeTree: await reader.sample() });
@@ -985,7 +1045,11 @@ class DebugSessionBridge {
                 samples.push({
                     name: item.name,
                     bytes: null,
-                    diagnostic: { code: error.code, message: error.message }
+                    diagnostic: {
+                        code: error.code,
+                        message: error.message,
+                        ...(error.details?.reason ? { reason: error.details.reason } : {})
+                    }
                 });
             }
         }
@@ -1151,6 +1215,9 @@ module.exports = {
     SNAPSHOT_RETRY_DELAYS_MS,
     CONTROL_TIMEOUT_MS,
     mergeReadPlan,
+    MAX_PAUSED_GAP_BYTES,
     MAX_PAUSED_ITEM_BYTES,
+    MAX_PAUSED_PARALLEL_READS,
+    MAX_PAUSED_RUNTIME_READS,
     unwrapResponse
 };

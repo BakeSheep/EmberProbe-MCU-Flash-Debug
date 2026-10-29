@@ -731,28 +731,9 @@ function saveWatch() {
 // Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
 var runtimeExpansionsLoaded = false,
     sentRuntimeExpansions = null;
-function runtimeExpansions() {
-    var result = Object.create(null),
-        count = 0;
-    var open = Object.keys(expanded).filter(function (key) {
-        return expanded[key];
-    });
-    watch.forEach(function (item) {
-        if (!item.runtimeLayout || !isCompositeItem(item) || ++count > 256) return;
-        var paths = [];
-        if (expanded[item.name] || EmberProbeRuntime.isPointeeEntry(item) || placedPointees.has(item.name))
-            paths.push("");
-        open.forEach(function (key) {
-            if (key.length > item.name.length && key.startsWith(item.name) && /^[.[]/.test(key[item.name.length]))
-                paths.push(key.slice(item.name.length));
-        });
-        result[item.name] = paths.slice(0, 512);
-    });
-    return result;
-}
 function syncRuntimeExpansions() {
     if (!runtimeExpansionsLoaded) return;
-    var value = runtimeExpansions(),
+    var value = EmberProbeRuntime.runtimeExpansionPaths(watch, expanded, placedPointees),
         key = JSON.stringify(value);
     if (key === sentRuntimeExpansions) return;
     sentRuntimeExpansions = key;
@@ -836,7 +817,7 @@ function hidePointerCurve(item) {
 function ensureBuf(n) {
     if (!Object.prototype.hasOwnProperty.call(data, n)) data[n] = [];
 }
-// Notice boxes: the panel's above the chart, the export dialog's own, and the variable-source hint.
+// Notices live in the import and export dialogs, plus the variable-source picker.
 var noticeAreas = {};
 function noticeArea(id) {
     if (!noticeAreas[id] && $(id))
@@ -860,7 +841,7 @@ function exportNotice(key) {
     if (area)
         key ? area.set("export", { level: "warning", text: { key: key }, dismissible: false }) : area.clear("export");
 }
-// The status bar is the sampling state only; errors and warnings become panel notices, by source id.
+// The status dot shows sampling state; errors and warnings stay in the import dialog, by source id.
 function renderStatus() {
     var txt = statusMsg.key ? t(statusMsg.key, statusMsg.params) : statusMsg.message != null ? statusMsg.message : "";
     $("status").textContent = txt;
@@ -897,14 +878,6 @@ function applyI18n() {
     for (i = 0; i < els.length; i++) els[i].setAttribute("aria-label", t(els[i].getAttribute("data-i18n-aria")));
     renderUnlimited();
 }
-function updateLangToggle() {
-    var b = $("langToggle");
-    if (b) {
-        b.textContent = LANG === "zh" ? "EN" : "中";
-        b.title = t("common.langTitle");
-        b.setAttribute("aria-label", t("common.langTitle"));
-    }
-}
 // Several ELF variables match the typed name; an info notice asks which one to add.
 function choiceHint(show) {
     var area = noticeArea("acChoiceHint");
@@ -926,14 +899,12 @@ function rerenderLive() {
     applySideLayout();
     $("freeze").textContent = frozen ? t("lw.resume") : t("lw.freeze");
     renderStatus();
-    updateLangToggle();
     dirty = true;
 }
-function setLang(l, notify) {
+function setLang(l) {
     LANG = l === "en" ? "en" : "zh";
     document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
     rerenderLive();
-    if (notify) post({ type: "setLang", lang: LANG });
 }
 function updateRun() {
     var b = $("run");
@@ -1404,18 +1375,24 @@ function defW(ty) {
             ? 8
             : 4;
 }
-function walkTreeLeaves(node, path, cb) {
+// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
+function walkTreeLeaves(node, path, cb, stale) {
     if (!node) return;
-    cb(path, node);
+    stale = !!stale || !!node.stale;
+    cb(path, node, stale);
     for (const member of node.members || [])
-        walkTreeLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb);
-    for (const element of node.elements || []) walkTreeLeaves(element, path + "[" + element.index + "]", cb);
+        walkTreeLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
+    for (const element of node.elements || []) walkTreeLeaves(element, path + "[" + element.index + "]", cb, stale);
 }
 function updateCompositeValues(name) {
     var tree = latest[name];
     if (!tree) return;
     const nodes = new Map();
-    walkTreeLeaves(tree, name, (path, node) => nodes.set(path, node));
+    const held = new Set();
+    walkTreeLeaves(tree, name, (path, node, stale) => {
+        nodes.set(path, node);
+        if (stale) held.add(path);
+    });
     nodes.forEach(function (node, path) {
         const cell = compCells[path];
         if (!cell) return;
@@ -1428,6 +1405,7 @@ function updateCompositeValues(name) {
                 ...(summary ? { functionEmpty: summary.empty } : {})
             })
         );
+        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
     });
 }
 // Pointer rows expand in place. A pointee already present in the sampled tree toggles
@@ -1866,8 +1844,8 @@ function renderRuntimeTreeInto(container, tree, path, label = "value", promoted 
         layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
     else if (tree.unavailable)
         appendNote(container, {
-            ...EmberProbeRuntime.unavailableNotice(tree, t),
-            title: displayNameFor({ name: path })
+            title: displayNameFor({ name: path }),
+            ...EmberProbeRuntime.unavailableNotice(tree, t)
         });
 }
 function renderRuntimeBody(body, sampled, name) {
@@ -3750,8 +3728,7 @@ function loop(now) {
     requestAnimationFrame(loop);
 }
 function renderElfDiagnostics() {
-    for (const id of ["elfDiagnostics", "importDiagnostics"])
-        EmberProbeRuntime.renderElfDiagnostics($(id), impWarnings, impError, t("common.diagnostics"), t);
+    EmberProbeRuntime.renderElfDiagnostics($("importDiagnostics"), impWarnings, impError, t("common.diagnostics"), t);
 }
 window.EmberProbeMessages.connect(window, {
     sidebarImportResult: function (m) {
@@ -4035,7 +4012,7 @@ window.EmberProbeMessages.connect(window, {
         setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
     },
     setLang: function (m) {
-        setLang(m.lang, false);
+        setLang(m.lang);
     }
 });
 $("run").onclick = function () {
@@ -4725,13 +4702,7 @@ new MutationObserver(function () {
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
 updateRun();
-updateLangToggle();
 if (norm) $("norm").classList.remove("ghost");
-var _lt = $("langToggle");
-if (_lt)
-    _lt.onclick = function () {
-        setLang(LANG === "zh" ? "en" : "zh", true);
-    };
 post({ type: "samplingArchiveInfo", historyRevision: historyRevision });
 post({ type: "ready" });
 requestAnimationFrame(loop);

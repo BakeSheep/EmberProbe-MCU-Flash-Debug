@@ -467,6 +467,40 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
         await fs.rm(root, { recursive: true, force: true });
     }
 
+    await scenario("Clean up a CubeMX script when cancelled before process startup", async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-cubemx-cancel-"));
+        const script = path.join(root, ".emberprobe-cubemx-script.txt");
+        const controller = new AbortController();
+        const writeFile = fs.writeFile;
+        const options = {
+            signal: controller.signal,
+            spawn: () => assert.fail("cancelled generation must not start CubeMX")
+        };
+        const run = () => runCubeMx({ executable: "fake", platform: "linux" }, root, "project.ioc", options);
+        try {
+            // Abort while the asynchronous write is in flight, before runCubeMx can start the process.
+            fs.writeFile = async (...args) => {
+                const result = await writeFile(...args);
+                if (args[0] === script) controller.abort();
+                return result;
+            };
+            try {
+                await rejects(run, "CUBEMX_CANCELLED");
+            } finally {
+                fs.writeFile = writeFile;
+            }
+            await assert.rejects(fs.stat(script), { code: "ENOENT" }, "cancellation must await script cleanup");
+            // A pre-aborted call creates nothing and leaves a script owned by another operation alone.
+            await rejects(run, "CUBEMX_CANCELLED");
+            await assert.rejects(fs.stat(script), { code: "ENOENT" });
+            await fs.writeFile(script, "another operation");
+            await rejects(run, "CUBEMX_CANCELLED");
+            assert.strictEqual(await fs.readFile(script, "utf8"), "another operation");
+        } finally {
+            await fs.rm(root, { recursive: true, force: true });
+        }
+    });
+
     await scenario("Retain project ownership while CubeMX process exit is unconfirmed", async () => {
         const tick = () => new Promise((resolve) => setImmediate(resolve));
         const root = await fs.mkdtemp(path.join(os.tmpdir(), "emberprobe-cubemx-exit-"));

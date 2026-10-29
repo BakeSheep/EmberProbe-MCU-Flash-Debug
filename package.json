@@ -43,7 +43,6 @@
     "onStartupFinished",
     "workspaceContains:.agents/skills/mcu-variables/SKILL.md",
     "onView:mcu-vscode.mainView",
-    "onDebugResolve:cortex-debug",
     "onCommand:mcu-vscode.folderDebug",
     "onCommand:mcu-vscode.folderAttachDebug",
     "onCommand:mcu-vscode.folderDownload",
