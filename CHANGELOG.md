@@ -18,6 +18,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
+- 扩展宿主繁忙（如其他扩展执行 CMake 配置）时，采样 Worker 继续按时钟读取并在本地缓冲，宿主恢复后按分片补交，不再降速或要求重新开始采样；缓冲超过 16 MiB / 4096 批 / 30 秒时丢弃最早数据并在波形中断开。磁盘归档繁忙只暂停交付（4 MiB 暂停、1 MiB 恢复），不再丢弃已采样本；暂停后恢复不再回到 100 ms 预热。速率提示新增宿主阻塞、积压与丢弃统计。
+- While the extension host is busy (for example another extension running a CMake configure), the sampling Worker keeps reading on its clock, buffers locally and delivers bounded chunks once the host recovers, instead of slowing down or requiring a restart; beyond 16 MiB / 4096 batches / 30 s the oldest samples are dropped and the waveform shows a gap. A busy disk archive now only holds delivery (pause at 4 MiB, resume at 1 MiB) without discarding acquired samples, and resuming after a pause no longer restarts the 100 ms warm-up. The rate tooltip adds host stall, backlog and dropped statistics.
+
 - 调试工具链按用户配置、记住的目录、PATH、已有 ST 工具链的顺序查找，最后才提示选择目录；支持常见 ST bundles、CubeCLT 和 CubeIDE 安装布局，以及独立 GDB 工具包。见 `docs/DEBUG-TOOLCHAIN.md`。
 - Debug tool lookup now checks user configuration, the remembered directory, PATH, and installed ST toolchains before prompting for a directory. Discovery supports common ST bundle, CubeCLT and CubeIDE layouts, including separate GDB bundles. See `docs/DEBUG-TOOLCHAIN.md`.
 

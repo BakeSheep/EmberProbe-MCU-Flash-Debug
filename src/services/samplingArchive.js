@@ -8,7 +8,10 @@ const { createSampleTimeFormatter } = require("./sampleTime");
 
 const fsp = fs.promises;
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
-const BACKPRESSURE_BYTES = 1024 * 1024;
+// Backpressure engages at 4 MiB queued and releases only after draining below 1 MiB, so a slow disk does
+// not toggle sample delivery on every write.
+const BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+const RESUME_BYTES = 1024 * 1024;
 const DRAIN_BATCH_BYTES = 256 * 1024;
 const DRAIN_DELAY_MS = 150;
 const AGENT_CSV_MAX_BYTES = 64 * 1024 * 1024;
@@ -334,7 +337,7 @@ class SamplingArchive {
         }
         this.indexedBytes = recordOffset;
         this.onWritten(this.indexedBytes);
-        this._setBackpressure(this.queuedBytes >= BACKPRESSURE_BYTES);
+        this._setBackpressure(this.queuedBytes >= (this.backpressured ? RESUME_BYTES : BACKPRESSURE_BYTES));
     }
 
     async flush() {

@@ -92,6 +92,7 @@ const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
 const { LivePanelRegistry } = require("./services/livePanelRegistry");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
+const { HostLoopDelay } = require("./services/hostLoopDelay");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
@@ -1948,6 +1949,9 @@ class MainViewProvider {
                             void this._probeConnectionService.recordSuccess(server.options);
                     },
                     onSample: (samples, t, consumers) => this._handleRawSamples(samples, t, consumers),
+                    onSampleGap: () => {
+                        if (this._managedDebugServer === server) this._handleSampleGap();
+                    },
                     onStatus: (status) => {
                         if (this._managedDebugServer !== server) return;
                         if (status?.key === "live.debugRuntimeSampling") {
@@ -5176,11 +5180,22 @@ class MainViewProvider {
         }
     }
 
+    // The sampling Worker dropped its oldest backlog while the host was busy. Break each waveform there
+    // instead of bridging the missing interval; pending points are sent first so the break stays ordered.
+    _handleSampleGap() {
+        if (!this._chartHistory || this._chartHistory.failed) return;
+        for (const entry of this._livePanels.values()) {
+            if (!entry.historySignature || entry._historyRestoreTask) continue;
+            this._flushChartHistoryAppend(entry);
+            const scope = this._debugSamplingScope(entry.watchKey);
+            this._chartHistory.request("markGap", [scope]).catch((error) => this._chartHistory.fail(error));
+        }
+    }
+
     _setSamplingArchiveBackpressure(paused) {
         this._samplingCoordinator.setBackpressure(paused);
         const session = this._managedDebugServer || this._liveSession;
-        if (this._liveSession)
-            this._liveSession.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
+        this._samplingCoordinator.setDeliveryHold(this._liveSession);
         if (this._managedDebugServer)
             this._samplingCoordinator.setRuntimeEnabled(
                 this._managedDebugServer,
@@ -5189,7 +5204,9 @@ class MainViewProvider {
             );
         session?.setPauseReason?.(paused ? "archive_backpressure" : null);
         this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
-        if (!paused && this._liveWatchService && this._samplingArchive) {
+        // Only host-driven DAP sampling loses samples while paused; mark that hole with an empty row. Worker
+        // sessions deliver their held backlog afterwards, which an empty row stamped now would precede.
+        if (!paused && !session && this._liveWatchService && this._samplingArchive) {
             const active = this._activeReadPlan ? this._activeReadPlan() : [];
             if (active.length) {
                 const t = Date.now();
@@ -5285,6 +5302,16 @@ class MainViewProvider {
             (this._unlimitedSamplingEnabled() && this._debugBridge?.hasSession ? "debug" : null);
         status.limitedBy = stats?.limitedBy ?? null;
         status.hostHoldMs = stats?.hostHoldMs ?? 0;
+        status.backlogBatches = stats?.backlogBatches ?? 0;
+        status.backlogAgeMs = stats?.backlogAgeMs ?? 0;
+        status.droppedBatches = stats?.droppedBatches ?? 0;
+        // The event-loop monitor wakes the host periodically, so it runs only while sampling is requested.
+        if (status.running) status.hostLoopDelayMs = (this._hostLoopDelay ||= new HostLoopDelay()).maxMs();
+        else {
+            this._hostLoopDelay?.dispose();
+            this._hostLoopDelay = null;
+            status.hostLoopDelayMs = 0;
+        }
         status.pauseReason =
             stats?.pauseReason ?? (this._samplingCoordinator.backpressured ? "archive_backpressure" : null);
         return withWriteAccessStatus(status);
@@ -5601,6 +5628,10 @@ class MainViewProvider {
                         )
                             this._handleRawSamples(samples, t, consumers);
                     },
+                    onSampleGap: () => {
+                        if (this._liveSession === session && !this._liveConnectionClosing && !session.stopped)
+                            this._handleSampleGap();
+                    },
                     onStatus: (msg) => {
                         if (this._liveSession === session && !this._liveConnectionClosing && !this._liveExitUnconfirmed)
                             this._postConsumerStatuses(msg);
@@ -5637,7 +5668,8 @@ class MainViewProvider {
             await session.start();
             if (this._liveSession !== session || startingLease.released || generation !== this._liveStartGeneration)
                 return;
-            session.setSamplingEnabled(this._samplingCoordinator.allowed(this._samplingIntent));
+            this._samplingCoordinator.setDeliveryHold(session);
+            session.setSamplingEnabled(!!this._samplingIntent);
             this._liveWatchLease = startingLease.transition("liveWatch");
             this._setLiveInterval(intervalMs ?? this._liveIntervalMs);
             this._postConsumerStatuses({ key: this._samplingIntent ? "sb.sampling" : "sb.stopped" });
@@ -6098,6 +6130,7 @@ class MainViewProvider {
             await this._livePanelRegistry?.pending.catch(console.error);
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
+            this._hostLoopDelay?.dispose();
             this.disposeDebugBridge();
             await this._agentService.dispose().catch(() => {});
         })();

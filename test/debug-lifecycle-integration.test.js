@@ -226,10 +226,14 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
         const server = {
             samplingEnabled: true,
+            deliveryHold: false,
             writeAndVerify() {},
             setSamplingEnabled(value) {
                 this.samplingEnabled = value;
                 return value;
+            },
+            setDeliveryHold(held) {
+                this.deliveryHold = held;
             }
         };
         p._managedDebugServer = server;
@@ -255,7 +259,9 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             p._postConsumerStatuses = () => {};
             p._setSamplingArchiveBackpressure(true);
             await p._refreshSamplingPlan();
-            assert.strictEqual(server.samplingEnabled, false);
+            // Runtime sampling runs in the Worker: it keeps acquiring and only holds delivery.
+            assert.strictEqual(server.samplingEnabled, true);
+            assert.strictEqual(server.deliveryHold, true);
             assert.strictEqual(p._debugBridge.intentEnabled, false);
             let stopped = 0,
                 restored = 0;

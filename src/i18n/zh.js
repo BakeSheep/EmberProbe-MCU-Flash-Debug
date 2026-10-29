@@ -1011,7 +1011,7 @@ module.exports = Object.freeze({
     "err.PROBE_SELECTION_INVALID": "所选探针无效。",
     "err.PROBE_SESSION_MISSING": "没有活动的写入会话。",
     "err.RUNTIME_WRITE_DISABLED": "当前连接不允许此次运行时写入。",
-    "err.SAMPLING_HOST_BACKLOG": "扩展主机繁忙，采样已暂停；请在忙碌操作结束后重新开始采样。",
+    "err.SAMPLING_HOST_BACKLOG": "扩展主机繁忙时间过长，已丢弃最早缓冲的采样数据，波形中会显示断档；采样仍在继续。",
     "err.SKILLS_CHANGED_DURING_APPROVAL": "审批期间 Skills 已变化，请重新查看。",
     "err.STALE_LAYOUT_HANDLE": "ELF 已变化，请重新展开。",
     "err.STALE_PROBE_LEASE": "探针占用已失效，请重试。",

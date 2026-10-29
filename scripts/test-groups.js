@@ -218,6 +218,7 @@ const TEST_GROUPS = Object.freeze({
         "runtime-selection.test.js",
         "sampling-archive-format.test.js",
         "sampling-archive.test.js",
+        "sampling-host-backlog.test.js",
         "sampling-isolation.test.js",
         "sampling-read-efficiency.test.js",
         "sampling-scatter.test.js",

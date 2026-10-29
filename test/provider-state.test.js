@@ -32,6 +32,9 @@ function deferred() {
         setSamplingEnabled(value) {
             this.enabled = value;
         }
+        setDeliveryHold(held) {
+            this.deliveryHold = held;
+        }
     }
     const P = loadProvider(
         { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
@@ -70,7 +73,8 @@ function deferred() {
     p._samplingCoordinator.setBackpressure(true);
     await p.startLiveWatch();
     const first = sessions[0];
-    assert.strictEqual(first.enabled, false);
+    assert.strictEqual(first.enabled, true, "archive backpressure does not stop Worker sampling");
+    assert.strictEqual(first.deliveryHold, true, "it holds delivery until the archive drains");
     assert.strictEqual(p._probeCoordinator.firstActive(), "liveWatch");
     await p.stopLiveWatch();
     await p.startLiveWatch();

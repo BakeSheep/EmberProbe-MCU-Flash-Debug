@@ -1056,7 +1056,7 @@ module.exports = Object.freeze({
     "err.PROBE_SESSION_MISSING": "No write session is active.",
     "err.RUNTIME_WRITE_DISABLED": "This runtime write is not allowed on the current connection.",
     "err.SAMPLING_HOST_BACKLOG":
-        "Sampling paused because the extension host is busy; restart sampling after the busy operation.",
+        "The extension host was busy for too long; the oldest buffered samples were dropped and the waveform shows a gap. Sampling continues.",
     "err.SKILLS_CHANGED_DURING_APPROVAL": "The skills changed during approval; review them again.",
     "err.STALE_LAYOUT_HANDLE": "The ELF changed; expand it again.",
     "err.STALE_PROBE_LEASE": "The probe lease is no longer active; try again.",

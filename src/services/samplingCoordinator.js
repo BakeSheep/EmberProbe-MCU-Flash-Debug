@@ -14,10 +14,16 @@ class SamplingCoordinator {
     setDebugIntent(bridge, intent) {
         bridge.setIntent(this.allowed(intent));
     }
+    // Worker-backed sessions keep sampling under archive backpressure and only hold delivery, so a busy
+    // archive delays samples instead of dropping them. The DAP bridge reads on the host and still pauses.
+    setDeliveryHold(session) {
+        session?.setDeliveryHold?.(this.backpressured);
+    }
     setRuntimeEnabled(server, requested, bridge) {
+        this.setDeliveryHold(server);
         return server.setSamplingEnabled(
             server.capabilities?.runtimeRead !== false &&
-                this.allowed(requested) &&
+                !!requested &&
                 !bridge?.paused &&
                 !bridge?.transitionKind &&
                 !bridge?.replBusy &&

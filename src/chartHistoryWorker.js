@@ -181,6 +181,7 @@ function run(port, options = {}) {
                     "configure",
                     "append",
                     "markLimited",
+                    "markGap",
                     "status",
                     "viewport",
                     "touchViewport",

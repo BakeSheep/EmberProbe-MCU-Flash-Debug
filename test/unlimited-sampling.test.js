@@ -354,23 +354,29 @@ async function testWorkerHold(byteLimit = false) {
     const messages = [];
     port.postMessage = (message) => messages.push(message);
     let session,
-        acquired = 0;
+        acquired = 0,
+        clock = 0;
     const payload = [{ name: "graph", bytes: byteLimit ? Buffer.alloc(1024 * 1024) : [1, 2, 3, 4] }];
-    run(port, {}, (options, handlers) => {
-        session = new ManagedOpenOcdSession(null, options, handlers);
-        session.socket = {
-            destroyed: false,
-            write: (_data, callback) => callback?.(),
-            destroy() {
-                this.destroyed = true;
-            }
-        };
-        session._readItems = async () => {
-            acquired++;
-            return { samples: payload, ok: 1 };
-        };
-        return session;
-    });
+    run(
+        port,
+        {},
+        (options, handlers) => {
+            session = new ManagedOpenOcdSession(null, options, handlers);
+            session.socket = {
+                destroyed: false,
+                write: (_data, callback) => callback?.(),
+                destroy() {
+                    this.destroyed = true;
+                }
+            };
+            session._readItems = async () => {
+                acquired++;
+                return { samples: payload, ok: 1 };
+            };
+            return session;
+        },
+        () => clock
+    );
     const operation = async (id, method, args) => {
         port.emit("message", { id, method, args, generation: id });
         await waitFor(() => messages.some((message) => message.id === id), method + " worker reply");
@@ -381,7 +387,8 @@ async function testWorkerHold(byteLimit = false) {
     try {
         await operation(1, "setSamplingPlan", [plan()]);
         await waitFor(() => session._hostHold, "soft host hold engages");
-        assert.strictEqual(acquired, byteLimit ? 2 : 9, "one posted message plus a bounded queued backlog");
+        // The clock is frozen, so only the byte or batch-count soft limit engages the hold here.
+        assert.strictEqual(acquired, byteLimit ? 2 : 1025, "one posted message plus a bounded queued backlog");
         assert.strictEqual(session.samplingEnabled, true, "host hold does not disable the sampling plan");
         assert.strictEqual(session.timer, null);
         const epoch = session.sampleEpoch;
@@ -402,7 +409,7 @@ async function testWorkerHold(byteLimit = false) {
         port.emit("message", { ack: true });
         assert.strictEqual(session._hostHold, false);
         const drained = messages.filter((message) => message.event === "samples").at(-1);
-        assert.strictEqual(drained.batch.length, byteLimit ? 1 : 8);
+        assert.strictEqual(drained.batch.length, byteLimit ? 1 : 256, "the backlog drains in bounded chunks");
         for (const batch of drained.batch) {
             assert.strictEqual(batch.samples[0].bytes, payload[0].bytes, "flow control preserves each payload");
             assert.strictEqual(batch.samples[0].t, batch.t, "each batch keeps its own sample timestamp");

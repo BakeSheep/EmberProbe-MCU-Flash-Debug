@@ -90,11 +90,13 @@ async function testDraining(parentDir) {
     }
 
     const pauses = [],
-        errors = [];
+        errors = [],
+        pausesAtWrite = [];
     const bounded = new SamplingArchive({
         rootDir: path.join(parentDir, "backpressure"),
-        maxBytes: 2 * 1024 * 1024,
+        maxBytes: 8 * 1024 * 1024,
         onBackpressure: (active) => pauses.push(active),
+        onWritten: () => pausesAtWrite.push(pauses.length),
         onError: (error) => errors.push(error)
     });
     let release;
@@ -116,12 +118,14 @@ async function testDraining(parentDir) {
         };
         bounded.handle.datasync = async () => assert.fail("normal archive drains must not sync");
         assert.strictEqual(bounded.append([{ name: "big", valueText: "x".repeat(1024 * 1024) }], 1), true);
-        assert.deepStrictEqual(pauses, [true]);
-        assert.ok(bounded.drainPromise, "large queues drain immediately at the byte threshold");
+        assert.deepStrictEqual(pauses, [], "1 MiB queued stays below the 4 MiB backpressure threshold");
+        assert.ok(bounded.drainPromise, "large queues drain immediately at the batch threshold");
         await writing;
-        assert.ok(bounded.queuedBytes > 1024 * 1024);
+        assert.strictEqual(bounded.append([{ name: "big", valueText: "x".repeat(3 * 1024 * 1024) }], 2), true);
+        assert.deepStrictEqual(pauses, [true]);
+        assert.ok(bounded.queuedBytes > 4 * 1024 * 1024);
         assert.strictEqual(
-            bounded.append([{ name: "big", valueText: "x".repeat(1024 * 1024) }], 2),
+            bounded.append([{ name: "big", valueText: "x".repeat(4 * 1024 * 1024) }], 3),
             false,
             "the file limit includes the write in flight"
         );
@@ -130,6 +134,7 @@ async function testDraining(parentDir) {
         const size = await bounded.flush();
         assert.ok(size <= bounded.maxBytes);
         assert.deepStrictEqual(pauses, [true, false]);
+        assert.deepStrictEqual(pausesAtWrite, [1, 1], "3 MiB left after the first write keeps the archive paused");
     } finally {
         release?.();
         await bounded.dispose();

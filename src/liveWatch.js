@@ -536,6 +536,24 @@ class ManagedOpenOcdSession {
         this._lastAdaptiveEvalAt = nowMonoMs;
         this._lastBackoffOrErrorAt = nowMonoMs;
         this._recentCycleTimestamps = [];
+        this._measuredTargetEpoch = this.targetEpoch;
+    }
+
+    // A pause with an unchanged plan and target keeps the measured read cost and adapted interval, so
+    // resuming does not fall back to the 100 ms warm-up clock; only the rate windows restart.
+    _resumeMeasured() {
+        if (
+            this.unlimitedActive ||
+            this._warmingUp ||
+            this._recentDurations.length < 4 ||
+            this._measuredTargetEpoch !== this.targetEpoch
+        )
+            return false;
+        this._samplingThroughput.reset();
+        this._consecutiveSuccesses = 0;
+        this._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n);
+        this._recentCycleTimestamps = [];
+        return true;
     }
 
     _clearSamplingTimer() {
@@ -695,7 +713,7 @@ class ManagedOpenOcdSession {
         this._clearSamplingTimer();
         if (this.samplingEnabled) {
             this._pauseReason = null;
-            this._warmUp();
+            if (!this._resumeMeasured()) this._warmUp();
             if (this.ratePlan) {
                 this.ratePlan.nextGraph = this.ratePlan.nextSidebar = 0;
                 this.ratePlan.latest.clear();

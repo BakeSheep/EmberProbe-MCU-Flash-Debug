@@ -4006,6 +4006,16 @@ window.EmberProbeMessages.connect(window, {
                 (m.missedDeadlines || 0) +
                 (m.pauseReason ? " | Paused: " + m.pauseReason : "");
         }
+        if ($("rate").title && m.hostLoopDelayMs !== undefined)
+            $("rate").title +=
+                " | Host stall: " +
+                (m.hostLoopDelayMs || 0) +
+                "ms | Backlog: " +
+                (m.backlogBatches || 0) +
+                " (" +
+                (m.backlogAgeMs || 0) +
+                "ms) | Dropped: " +
+                (m.droppedBatches || 0);
         starting = false;
         updateRun();
         if (m.error && (m.key || m.message != null)) setStatusMsg(m, "error", "live");

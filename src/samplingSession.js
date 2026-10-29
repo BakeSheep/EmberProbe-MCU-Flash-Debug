@@ -28,9 +28,12 @@ class SamplingSession {
             }
             if (message.event === "samples") {
                 try {
-                    for (const batch of message.batch)
-                        if (batch.generation === this.generation && this.deliveryEnabled && !this.stopping)
-                            this.handlers.onSample?.(batch.samples, batch.t, batch.consumers);
+                    for (const batch of message.batch) {
+                        if (batch.generation !== this.generation || !this.deliveryEnabled || this.stopping) continue;
+                        // The Worker dropped its oldest backlog here; the marker precedes the later samples.
+                        if (batch.gap) this.handlers.onSampleGap?.(batch.gap);
+                        else this.handlers.onSample?.(batch.samples, batch.t, batch.consumers);
+                    }
                 } finally {
                     this.worker.postMessage({ ack: true });
                 }
@@ -146,6 +149,12 @@ class SamplingSession {
     }
     invalidateTarget() {
         this.notify("invalidateTarget", []);
+    }
+    // Holding delivery keeps the sampling clock and generation: queued samples arrive after release.
+    setDeliveryHold(held) {
+        if (this.deliveryHold === !!held) return;
+        this.deliveryHold = !!held;
+        this.notify("setDeliveryHold", [this.deliveryHold]);
     }
     setSamplingEnabled(enabled) {
         if (enabled && this.pollingFailed) return false;

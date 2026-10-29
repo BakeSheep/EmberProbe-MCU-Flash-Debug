@@ -128,8 +128,12 @@ function startupFixture(mode, branch) {
             assert.strictEqual(session._openOcdLogTail.length, 0);
             assert.strictEqual(session._pollFailureCount, 0);
             assert.strictEqual(fixture.errors.length, 0);
+            // A GDB client disconnecting on Windows is logged with OpenOCD's "Error: " prefix; it is not a fault.
+            const socketReset = "Error: Error on socket 'GDB': WSAGetLastError==10054, message: connection reset";
+            child.stderr.write(`${socketReset}\n`);
+            assert.strictEqual(fixture.errors.length, 0);
             child.stderr.write("EP_ERR:read failed\nError: real failure\n");
-            assert.deepStrictEqual(session._openOcdLogTail, ["EP_ERR:read failed", "Error: real failure"]);
+            assert.deepStrictEqual(session._openOcdLogTail, [socketReset, "EP_ERR:read failed", "Error: real failure"]);
             assert.ok(fixture.errors.length);
             await session.stop(100);
         }

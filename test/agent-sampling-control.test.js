@@ -268,9 +268,13 @@ function fixture() {
             bridge.capabilities.read = true;
             const server = {
                 samplingEnabled: true,
+                deliveryHold: false,
                 setSamplingEnabled(value) {
                     this.samplingEnabled = value;
                     return value;
+                },
+                setDeliveryHold(held) {
+                    this.deliveryHold = held;
                 }
             };
             const status = () => sampling.status({ intent: true, bridge, managedServer: server });
@@ -278,12 +282,16 @@ function fixture() {
             sampling.setBackpressure(true);
             sampling.setDebugIntent(bridge, true);
             sampling.setRuntimeEnabled(server, true, bridge);
-            assert.strictEqual(bridge.intentEnabled, false);
-            assert.strictEqual(server.samplingEnabled, false);
+            assert.strictEqual(bridge.intentEnabled, false, "host-driven DAP sampling still pauses");
+            assert.strictEqual(server.samplingEnabled, true, "Worker sampling keeps acquiring under backpressure");
+            assert.strictEqual(server.deliveryHold, true, "and holds delivery until the archive drains");
             sampling.setDebugIntent(bridge, true);
             assert.strictEqual(bridge.intentEnabled, false);
             assert.strictEqual(status().canRead, false);
             sampling.setBackpressure(false);
+            sampling.setDeliveryHold(server);
+            assert.strictEqual(server.deliveryHold, false);
+            sampling.setDeliveryHold(null);
             bridge.paused = true;
             assert.strictEqual(sampling.setRuntimeEnabled(server, true, bridge), false);
             bridge.paused = false;

@@ -89,6 +89,7 @@ class OpenOcdDebugController {
         this.starting = (async () => {
             try {
                 this.runtime = this.createRuntime(this.vscode, this.options, this.handlers);
+                if (this.deliveryHold) this.runtime.setDeliveryHold?.(true);
                 const result = await this.runtime.start();
                 if (this.state !== "starting") throw new Error("Debug controller stopped during startup");
                 this.connection = Object.freeze({ ...result });
@@ -142,6 +143,10 @@ class OpenOcdDebugController {
     }
     setPauseReason(reason) {
         this.runtime?.setPauseReason(reason);
+    }
+    setDeliveryHold(held) {
+        this.deliveryHold = !!held;
+        this.runtime?.setDeliveryHold?.(this.deliveryHold);
     }
     stats() {
         return this.runtime?.stats();

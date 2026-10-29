@@ -274,6 +274,14 @@ class ChartHistoryStore {
         state.revision++;
         return this.status(scope);
     }
+    // Samples were dropped before reaching the history (sampling backlog): the next point of every
+    // series starts a new part instead of joining the previous one. Unlike markLimited, nothing is lost here
+    // that the history could otherwise have shown, so the scope is not marked limited.
+    markGap(scope) {
+        const state = this._scope(scope);
+        for (const series of state.series.values()) series.discontinuous = true;
+        return this.status(scope);
+    }
     append(scope, samples, tick) {
         const state = this._scope(scope);
         state.tick = Math.max(state.tick ?? tick, tick);

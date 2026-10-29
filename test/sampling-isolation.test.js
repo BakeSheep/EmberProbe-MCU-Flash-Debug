@@ -62,17 +62,23 @@ function testRuntimeAccounting() {
     for (let i = 0; i < 15; i++) handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], i + 2);
     assert.deepStrictEqual(pauses, [], "runtime batches below 16 MiB remain enabled while waiting for an ack");
     handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], 17);
-    assert.deepStrictEqual(pauses, [false], "structural bytes still enforce sampling-worker backpressure");
+    assert.deepStrictEqual(pauses, [], "structural bytes drop the oldest backlog instead of pausing sampling");
     assert.strictEqual(events.at(-1).event, "onError");
+    assert.strictEqual(events.at(-1).args[0].code, "SAMPLING_HOST_BACKLOG");
+    handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], 18);
+    assert.strictEqual(events.filter((event) => event.event === "onError").length, 1, "one notice per busy episode");
     port.emit("message", { ack: true });
     const delivered = events.at(-1);
     assert.strictEqual(delivered.event, "samples");
-    assert.strictEqual(delivered.batch.length, 16);
+    assert.deepStrictEqual(delivered.batch[0].gap, { startT: 2, endT: 3, batches: 2 }, "dropped batches form one gap");
+    assert.strictEqual(delivered.batch.length, 2, "a large backlog drains in bounded chunks");
+    assert.strictEqual(delivered.batch[1].t, 4);
     assert.strictEqual(
-        delivered.batch[0].samples[0].runtimeTree,
+        delivered.batch[1].samples[0].runtimeTree,
         pendingTree,
         "accounting preserves the payload shape"
     );
+    assert.deepStrictEqual(Object.keys(delivered.batch[1]).sort(), ["consumers", "generation", "samples", "t"]);
     port.emit("close");
 }
 (async () => {
