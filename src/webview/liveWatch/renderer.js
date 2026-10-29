@@ -755,6 +755,7 @@ function saveUi() {
     if (api && api.setState)
         api.setState({
             panelId: CFG.panelId,
+            watchKey: CFG.watchKey,
             hidden: curves,
             expanded: expanded,
             rawMembers: rawMembers,
@@ -1268,8 +1269,12 @@ function renderScalarCard(item) {
         toggleCurve(item.name);
     });
     card.append(toggle, val, rm);
-    const footer = EmberProbeRuntime.createVariableNotices(card, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        card,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     // The pointee is part of the variable's card, on a grid row below its value.
     const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
@@ -1928,8 +1933,12 @@ function renderCompositeCard(item, idx, box) {
         saveUi();
         dirty = true;
     };
-    const footer = EmberProbeRuntime.createVariableNotices(body, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        body,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
@@ -3466,6 +3475,7 @@ function draw(now) {
         chartState,
         norm,
         jitterBands,
+        backgroundIcon: chartBackground.bitmap(getComputedStyle(document.body)),
         series,
         hasBounds,
         pixelRatio: window.devicePixelRatio,
@@ -3731,6 +3741,12 @@ function renderElfDiagnostics() {
     EmberProbeRuntime.renderElfDiagnostics($("importDiagnostics"), impWarnings, impError, t("common.diagnostics"), t);
 }
 window.EmberProbeMessages.connect(window, {
+    importChartBackgroundIcon: function (m) {
+        chartBackground.importPng(m);
+    },
+    chartBackgroundIcon: function (m) {
+        chartBackground.receive(m);
+    },
     sidebarImportResult: function (m) {
         setStatusKey(
             !m.sourceCount ? "lw.sidebarEmpty" : m.added ? "lw.sidebarImported" : "lw.sidebarAlreadyImported",
@@ -4177,6 +4193,14 @@ function setChartSettings(open) {
     $("chartSettingsPopup").hidden = !open;
     $("chartSettingsToggle").setAttribute("aria-expanded", String(open));
 }
+var chartBackground = window.EmberProbeBackgroundIconController.create({
+    document,
+    post,
+    changed: function () {
+        chartState.fastDirty = true;
+        dirty = true;
+    }
+});
 $("chartSettingsToggle").onclick = function () {
     setChartSettings($("chartSettingsPopup").hidden);
 };
@@ -4703,6 +4727,8 @@ new MutationObserver(function () {
 renderUnlimited(true);
 updateRun();
 if (norm) $("norm").classList.remove("ghost");
+// Persist identity before the ready handshake, including for a chart closed during initialization.
+saveUi();
 post({ type: "samplingArchiveInfo", historyRevision: historyRevision });
 post({ type: "ready" });
 requestAnimationFrame(loop);

@@ -244,6 +244,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
     let clears = 0;
     const limited = [];
     Object.assign(resetProvider, {
+        _context: { workspaceState: { get: () => undefined, update: async () => {} } },
         _postLive: (message) => message.type === "chartHistoryLimited" && limited.push(message),
         _livePanels: new Map(),
         _seriesStyleStore: {},

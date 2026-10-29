@@ -311,7 +311,9 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 #### 8. Agent Skills 与 CubeMX 代码生成
 
-通过侧边栏顶部 **安装 Agent Skills**，选择安装到当前项目、全局安装或卸载。安装后，兼容的 AI 编程助手可协助烧录、变量读写、调试与分析，能力列表见下方 [Agent Skills](#agent-skills)。
+在侧边栏烧录卡片的 **其他** 下拉栏中打开 **Agent Skills** 开关，选择安装到当前项目、全局安装或卸载。安装后，兼容的 AI 编程助手可协助烧录、变量读写、调试与分析，能力列表见下方 [Agent Skills](#agent-skills)。
+
+同一处的 **MCP 服务器 → 安装** 会运行“EmberProbe: 安装 MCP 服务器到客户端”，选择要接入的客户端（Claude Code、Codex、Cursor 等）。见 [MCP 说明](docs/MCP.md)。
 
 烧录、变量/外设写入、CubeMX 生成等操作由 Agent 先展示计划，在对话中确认后执行。烧录、变量写入与 CubeMX 生成在满足条件且明确选择后可记住许可，最长 24 小时；Flash 校验与外设写入逐次确认。见 [Agent 信任边界](docs/AGENT-TRUST-BOUNDARIES.md)。
 

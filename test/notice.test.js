@@ -147,6 +147,70 @@ area.relocalize();
 assert.strictEqual(box("busy").querySelector(".notice-text").textContent, "诊断详情");
 assert.strictEqual(box("flash").querySelector(".notice-close").title, "关闭");
 
+// Notices with one group key fold into a single box with a count once there are two; members keep
+// their own nodes, hooks and actions, and leave the group when their state changes.
+{
+    const { document: groupDoc } = new JSDOM("<!doctype html><body><div id=g></div></body>").window;
+    const host = groupDoc.getElementById("g");
+    const opened = new Set(["budget"]);
+    const toggles = [];
+    const ran = [];
+    const groups = notice.createNoticeArea(host, {
+        t: (key, params) => i18n.t(lang, key, params),
+        onAction: (action, id) => ran.push(id),
+        isGroupOpen: (key) => opened.has(key),
+        onGroupToggle: (key, open) => toggles.push([key, open])
+    });
+    const member = (id, extra = {}) => ({
+        level: "warning",
+        title: "path." + id,
+        text: "budget reached",
+        group: "budget",
+        dismissible: false,
+        actions: [{ label: "more" }],
+        decorate: (node) => node.classList.add("hooked"),
+        ...extra
+    });
+    groups.set("a", member("a"));
+    assert.strictEqual(host.querySelector(".notice-group"), null, "one notice stays on its own");
+    groups.set("other", { level: "info", text: "unrelated" });
+    groups.set("b", member("b"));
+    groups.set("c", member("c"));
+    const group = host.querySelector(".notice-group");
+    assert.deepStrictEqual(
+        [...host.children].map((node) => node.dataset.noticeGroup || node.dataset.noticeId),
+        ["budget", "other"],
+        "the group takes its first member's place"
+    );
+    assert(group.classList.contains("notice--warning"));
+    assert.strictEqual(group.querySelector(":scope > .notice-head > .notice-text").textContent, "budget reached");
+    assert.strictEqual(group.querySelector(".notice-count").textContent, "3");
+    assert.strictEqual(group.querySelectorAll(".notice--grouped.hooked").length, 3);
+    const list = group.querySelector(".notice-group-list");
+    const groupToggle = group.querySelector(".notice-group-toggle");
+    assert(!list.hidden, "a group the caller remembers as open starts open");
+    groupToggle.click();
+    assert(list.hidden && groupToggle.getAttribute("aria-expanded") === "false");
+    assert.deepStrictEqual(toggles, [["budget", false]]);
+    groupToggle.click();
+    list.querySelector('[data-notice-id="b"] .notice-action').click();
+    assert.deepStrictEqual(ran, ["b"], "member actions still work inside the group");
+    // A loading member leaves the group and stands beside it.
+    groups.set("b", member("b", { level: "info", busy: true, group: "" }));
+    assert.strictEqual(group.querySelector(".notice-count").textContent, "2");
+    assert.strictEqual(host.querySelector('[data-notice-id="b"]').parentElement, host);
+    assert(!host.querySelector('[data-notice-id="b"]').classList.contains("notice--grouped"));
+    lang = lang === "zh" ? "en" : "zh";
+    groups.relocalize();
+    assert.strictEqual(group.querySelector(".notice-count").textContent, "2");
+    assert.strictEqual(group.querySelectorAll(".notice--grouped.hooked").length, 2, "a rebuild keeps hooks");
+    lang = lang === "zh" ? "en" : "zh";
+    groups.clear("a");
+    assert.strictEqual(host.querySelector(".notice-group"), null, "a single member unfolds again");
+    assert(!host.querySelector('[data-notice-id="c"]').classList.contains("notice--grouped"));
+    assert.strictEqual(host.querySelector('[data-notice-id="c"]').parentElement, host);
+}
+
 // Messages are text, never markup.
 area.set("xss", { level: "warning", message: '<img src=x onerror="window.pwned=1">', items: ["<b>x</b>"] });
 assert.strictEqual(box("xss").querySelector("img, b"), null);

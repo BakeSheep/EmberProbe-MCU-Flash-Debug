@@ -163,6 +163,30 @@ function columns(values) {
     assert.ok(state.curveGeometry.value[0].drawing, "turning the option off rebuilds the plain envelope");
     assert.ok(!calls.some(([op, alpha]) => op === "fill" && alpha < 1));
     assert.ok(calls.filter(([op]) => op === "lineTo").length > lineTos);
+
+    // Scrolling epoch timestamps by fractional pixels, or growing the span as "All" does on every commit, must not
+    // regroup columns, or spikes flicker between band and line.
+    const epoch = 1.8e12;
+    const spiky = Array.from({ length: 400 }, (_, i) => ({
+        t: epoch + 1000 + i * 5.3,
+        v: i % 23 ? Math.sin(i * 1.9) * 0.3 + ((i * 7) % 11) / 20 : -3
+    }));
+    function bandedAt(shift, grow = 0) {
+        const min = epoch + shift,
+            shifted = { x: { min, max: min + 3999 + grow }, y: { min: -4, max: 2 }, autoY: false };
+        paint({
+            ...options,
+            chartState: shifted,
+            jitterBands: true,
+            series: [{ item: { name: "imu" }, idx: 0, arr: spiky }]
+        });
+        const { ys, bands } = shifted.curveGeometry.value[0].banded;
+        return JSON.stringify([bands.map((band) => [...band.top, ...band.bottom]), [...ys]]);
+    }
+    const anchored = bandedAt(0);
+    for (let k = 1; k < 20; k++) assert.equal(bandedAt(k * 0.37), anchored, "scroll offset " + k * 0.37);
+    // 3999-4799 ms over 518 px stays within one power-of-two bin size (8 ms).
+    for (let grow = 40; grow <= 800; grow += 40) assert.equal(bandedAt(0, grow), anchored, "span growth " + grow);
 }
 
 // Toolbar: the gear ends the toolbar, opens a popover and persists the option.

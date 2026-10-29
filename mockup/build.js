@@ -50,7 +50,7 @@ const SIDEBAR_STATE = {
     versionLabel: versionLabel(pkg.version, path.join(root, "..", "src")),
     elf: "EmberProbeDemo.elf",
     debugger: "jlink.cfg",
-    mcu: "STM32F407ZGT6 · Cortex-M4",
+    mcu: "stm32f4x.cfg",
     cubemxPath: "C:\\ST\\STM32CubeMX\\STM32CubeMX.exe",
     iocPath: "EmberProbeDemo.ioc",
     cubemxStatus: "已启用 CubeMX 集成 · 最近生成 2026-09-18 14:22",

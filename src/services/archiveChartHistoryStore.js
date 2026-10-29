@@ -2,6 +2,7 @@
 
 const { ChartHistoryStore } = require("./chartHistoryStore");
 const { ArchiveHistoryIndex, compare } = require("./archiveHistoryIndex");
+const { columnBin } = require("../webview/liveWatch/chartInspection");
 
 const cancelled = () =>
     Object.assign(new Error("History changed while reading archive"), {
@@ -59,6 +60,7 @@ function reduce(points, name, item, range, width) {
         visibleCount = 0;
         column = null;
     };
+    const bin = columnBin(Math.max(1, range.max - range.min), width);
     let firstIndex = points.findIndex((p) => p && p.t >= range.min);
     if (firstIndex < 0) firstIndex = points.length;
     let lastIndex = points.findIndex((p, i) => i >= firstIndex && p && p.t > range.max);
@@ -70,7 +72,7 @@ function reduce(points, name, item, range, width) {
             flush();
             continue;
         }
-        const next = Math.floor(((p.t - range.min) * width) / Math.max(1, range.max - range.min));
+        const next = Math.floor(p.t / bin);
         if (next !== column) {
             flushColumn();
             column = next;

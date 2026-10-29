@@ -228,7 +228,59 @@
     border-radius: 3px;
 }
 .notice--compact {
+    --notice-button-height: 18px;
+    --notice-button-padding-x: 6px;
     padding: 2px 6px;
+}
+/* A compact row is a single line: icon, text and the smaller buttons share its centre line, so the
+   full-size notice's top-aligned offsets do not apply. */
+.notice--compact > .notice-head--buttons {
+    align-items: center;
+}
+.notice--compact > .notice-head--buttons > .notice-icon {
+    margin-top: 0;
+}
+.notice--compact > .notice-head--buttons > .notice-title,
+.notice--compact > .notice-head--buttons > .notice-text {
+    padding-top: 0;
+}
+.notice--compact .notice-buttons {
+    margin: 0 -2px 0 auto;
+}
+/* A group shows its shared text once; each member below is just its path and its own buttons. */
+.notice-group .notice-count {
+    flex: none;
+    padding: 0 5px;
+    border-radius: 3px;
+    line-height: 16px;
+    color: var(--vscode-badge-foreground);
+    background: var(--vscode-badge-background);
+}
+.notice-group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 4px;
+    padding-left: 20px;
+}
+.notice-group-list[hidden] {
+    display: none;
+}
+.notice.notice--grouped {
+    padding: 1px 0;
+    border: 0;
+    background: transparent;
+}
+.notice--grouped > .notice-head > .notice-icon,
+.notice--grouped > .notice-content > .notice-text:first-child {
+    display: none;
+}
+.notice--grouped > .notice-head > .notice-title {
+    font-weight: normal;
+    color: var(--vscode-descriptionForeground);
+}
+.notice--grouped > .notice-content {
+    padding-left: 0;
 }
 /* Variable footers share the notice UI and remain outside collapsible member bodies. */
 .variable-notices {

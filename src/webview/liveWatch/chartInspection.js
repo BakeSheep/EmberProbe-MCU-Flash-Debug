@@ -31,6 +31,12 @@
             raw: series.raw[index]
         };
     }
+    // Every chart reduction bins samples into the power-of-two time columns nearest span / width, anchored to absolute
+    // time: a scrolling or growing ("All") viewport keeps its reduced samples, finer layers nest inside the chart's
+    // own columns, and t / bin stays exact for epoch timestamps. Bins change only when the span crosses a power of two.
+    function columnBin(span, width) {
+        return Math.pow(2, Math.round(Math.log2(span / width)));
+    }
     // Column coordinates are relative to the build origin, so translation never changes membership.
     function envelopeIndices(xs, ys, raw) {
         const indices = [];
@@ -60,19 +66,22 @@
     }
     // Runs of pixel columns whose samples reverse direction become a min/max band; the curve crosses each
     // banded column once on a smoothed midpoint, so dashes follow the trend instead of the noise. Isolated
-    // spikes and monotonic steep edges keep their exact envelope. Gaps are NaN rows in the line.
-    function jitterBands(xs, ys, raw, minRun = 3, trendRadius = 3) {
+    // spikes and monotonic steep edges keep their exact envelope. Gaps are NaN rows in the line. `grid` may supply
+    // each sample's column index and the column width in pixels instead of one column per Math.floor(xs).
+    function jitterBands(xs, ys, raw, minRun = 3, trendRadius = 3, grid = null) {
+        const columnOf = grid ? (i) => grid.columns[i] : (i) => Math.floor(xs[i]),
+            width = grid ? grid.width : 1;
         const columns = [];
         for (let i = 0; i < xs.length;) {
             if (raw[i].v === null) {
                 columns.push({ gap: i++ });
                 continue;
             }
-            const x = Math.floor(xs[i]);
+            const x = columnOf(i);
             let end = i + 1,
                 min = i,
                 max = i;
-            while (end < xs.length && raw[end].v !== null && Math.floor(xs[end]) === x) {
+            while (end < xs.length && raw[end].v !== null && columnOf(end) === x) {
                 if (ys[end] < ys[min]) min = end;
                 if (ys[end] > ys[max]) max = end;
                 end++;
@@ -131,7 +140,7 @@
                     c.trend = sum / (b - a + 1);
                 });
                 bands.push({
-                    xs: Float64Array.from(run, (c) => c.x + 0.5),
+                    xs: Float64Array.from(run, (c) => (c.x + 0.5) * width),
                     top: Float64Array.from(run, (c) => ys[c.min]),
                     bottom: Float64Array.from(run, (c) => ys[c.max])
                 });
@@ -145,7 +154,7 @@
                 lineX.push(xs[c.gap]);
                 lineY.push(NaN);
             } else if (c.noisy) {
-                lineX.push(c.x + 0.5);
+                lineX.push((c.x + 0.5) * width);
                 lineY.push(c.trend);
             } else {
                 let previous = -1;
@@ -173,7 +182,7 @@
         }
         const from = Math.max(start, bound(range.min, false) - 1),
             to = Math.min(arr.length, bound(range.max, true) + 1),
-            scale = width / Math.max(1, range.max - range.min),
+            bin = columnBin(Math.max(1, range.max - range.min), width),
             finite = Number.isFinite,
             floor = Math.floor;
         const result = [];
@@ -224,7 +233,7 @@
                 continue;
             }
             if (p.t >= range.min && p.t <= range.max) count++;
-            const next = floor((p.t - range.min) * scale);
+            const next = floor(p.t / bin);
             if (column !== next) {
                 flushColumn();
                 column = next;
@@ -334,6 +343,7 @@
         lowerBound,
         lowerNumber,
         pointAt,
+        columnBin,
         envelopeIndices,
         jitterBands,
         nearest,

@@ -9,6 +9,7 @@ const {
     MAX_POINTS,
     WINDOW_MS
 } = require("../src/services/chartHistoryStore");
+const { columnBin } = require("../src/webview/liveWatch/chartInspection");
 
 const coded = (code, message) => Object.assign(new Error(message), { code });
 
@@ -84,7 +85,8 @@ function referenceViewport(store, scope, names, range, width, snapshotId) {
                 return;
             }
             if (tt >= range.min && tt <= range.max) count++;
-            const next = Math.floor(((tt - range.min) * width) / Math.max(1, range.max - range.min));
+            // The shared helper also pins the store's standalone copy of the bin rule.
+            const next = Math.floor(tt / columnBin(Math.max(1, range.max - range.min), width));
             if (next !== column) {
                 flushColumn();
                 column = next;
@@ -337,9 +339,10 @@ for (let scenario = 0; scenario < 10; scenario++) {
 {
     const store = new ChartHistoryStore();
     configure(store, ["safe"]);
+    // Power-of-two sample spacing aligns the power-of-two columns with summary bucket boundaries.
     const samples = Array.from({ length: BLOCK_POINTS * 2 }, (_, i) => ({
         name: "safe",
-        t: i * 5,
+        t: i * 4,
         value: Math.sin(i / 37)
     }));
     appendBatches(store, samples);
@@ -444,6 +447,36 @@ for (let scenario = 0; scenario < 10; scenario++) {
     );
     errorCode(() => store.viewport("panel", ["left", "right"], range, 1));
     errorCode(() => referenceViewport(store, "panel", ["left", "right"], range, 1));
+}
+
+// A following viewport scrolls by fractional columns; its interior must keep the same reduced samples.
+{
+    const store = new ChartHistoryStore(),
+        epoch = 1.8e12;
+    configure(store, ["scroll"]);
+    appendBatches(
+        store,
+        Array.from({ length: 20000 }, (_, i) => ({
+            name: "scroll",
+            t: epoch + 1000 + i * 5,
+            value: i % 23 ? i % 7 : -50
+        }))
+    );
+    const interior = (shift) => {
+        const min = epoch + 30000 + shift;
+        return store
+            .viewport("panel", ["scroll"], { min, max: min + 30000 }, 900)
+            .series[0].arr.map((point) => point.t - epoch)
+            .filter((t) => t >= 32000 && t <= 58000);
+    };
+    for (const shift of [7, 13.3, 21.9]) assert.deepStrictEqual(interior(shift), interior(0), "shift " + shift);
+    // A growing ("All") range keeps its reduced samples while the power-of-two bin size is unchanged.
+    const grown = (grow) =>
+        store
+            .viewport("panel", ["scroll"], { min: epoch + 30000, max: epoch + 60000 + grow }, 900)
+            .series[0].arr.map((point) => point.t - epoch)
+            .filter((t) => t >= 32000 && t <= 58000);
+    for (const grow of [80, 560, 2400]) assert.deepStrictEqual(grown(grow), grown(0), "growth " + grow);
 }
 
 console.log(

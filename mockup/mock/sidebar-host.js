@@ -485,6 +485,10 @@
                 case "mcu-vscode.manageAgentSkills":
                     simulateSkillToggle(cmd);
                     break;
+                case "mcu-vscode.installMcpServer":
+                    send({ type: "commandSuccess", cmd: cmd });
+                    notify({ action: "toast", text: "已把 EmberProbe MCP 服务器添加到 Claude Code" });
+                    break;
                 case "mcu-vscode.downloadOfficialSvd":
                     simulateSvdDownload(cmd);
                     break;

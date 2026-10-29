@@ -148,9 +148,9 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         const card = dom.document.getElementById("flashDebugSection");
         assert.deepStrictEqual(
             [...card.children].map((child) => child.className),
-            ["primary-actions", "notice-area", "foot", "memory-inline"]
+            ["primary-actions", "flash-notice-box", "memory-inline"]
         );
-        assert.strictEqual(card.querySelector(".foot #statusText")?.id, "statusText");
+        assert.strictEqual(card.querySelector(".flash-notice-box #statusText")?.id, "statusText");
         const refresh = dom.document.getElementById("memoryRefresh");
         assert.strictEqual(refresh.closest("summary"), null);
         assert.strictEqual(

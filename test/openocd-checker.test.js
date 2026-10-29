@@ -14,8 +14,7 @@ const {
     resetCache,
     persistOpenOcdPath,
     resolveOpenOcdStatus,
-    MIN_OPENOCD_VERSION,
-    OPENOCD_GETTING_STARTED_URL
+    MIN_OPENOCD_VERSION
 } = checker;
 
 // 用 async IIFE 包裹 await，避免与 require 一起触发模块格式歧义
@@ -38,8 +37,8 @@ const {
     assert.strictEqual(checkCompatibility("").reason, "unknown");
     assert.strictEqual(isCompatibleResult({ found: true, version: "0.12.0" }), true);
     assert.strictEqual(isCompatibleResult({ found: true, version: "0.11.0" }), false);
-    assert.strictEqual(incompatibleStatus({ found: true, version: "0.11.0" }, true).key, "oc.incompatibleBundled");
-    assert.strictEqual(incompatibleStatus({ found: true, version: "" }, false).key, "oc.versionUnknownUpgrade");
+    assert.strictEqual(incompatibleStatus({ found: true, version: "0.11.0" }).key, "oc.incompatibleUpgrade");
+    assert.strictEqual(incompatibleStatus({ found: true, version: "" }).key, "oc.versionUnknownUpgrade");
 
     // 空路径应直接判定为未找到，不触发 spawn
     const empty = await probeOpenOcd("");
@@ -133,7 +132,7 @@ const {
     );
     assert.strictEqual(missingPath, null);
     assert.strictEqual(reported.at(-1).state, "missing");
-    assert.strictEqual(reported.at(-1).canInstall, false);
+    assert.strictEqual(Object.hasOwn(reported.at(-1), "canInstall"), false);
 
     const incompatiblePath = await resolveOpenOcdStatus(
         "old-openocd",
@@ -149,9 +148,6 @@ const {
     assert.strictEqual(incompatiblePath, null);
     assert.strictEqual(reported.at(-1).state, "incompatible");
     assert.strictEqual(reported.at(-1).key, "oc.incompatibleUpgrade");
-
-    // 获取页 URL 为官方地址
-    assert.ok(OPENOCD_GETTING_STARTED_URL.startsWith("https://openocd.org/"));
 
     console.log("OpenOCD checker tests passed");
 })();

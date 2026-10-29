@@ -26,6 +26,8 @@ function activate(context) {
         vscode.commands.registerCommand("mcu-vscode.folderAttachDebug", resource => provider.commandHandlers["mcu-vscode.attachDebug"](resource)),
         vscode.commands.registerCommand("mcu-vscode.folderDownload", resource => provider.commandHandlers["mcu-vscode.download"](resource)),
         vscode.commands.registerCommand("mcu-vscode.openLiveWatch", () => provider.commandHandlers["mcu-vscode.openLiveWatch"]()),
+        vscode.commands.registerCommand("mcu-vscode.selectChartBackgroundIcon", () => provider.chartBackground().select()),
+        vscode.commands.registerCommand("mcu-vscode.removeChartBackgroundIcon", () => provider.chartBackground().remove()),
         // Chart tabs left open at shutdown come back with their state when VS Code restarts.
         vscode.window.registerWebviewPanelSerializer("emberprobe.liveWatch", {
             deserializeWebviewPanel: async (panel, state) => provider.restoreLiveWatchPanel(panel, state)
@@ -42,6 +44,7 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
             const connectionChanged = ["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
             const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");

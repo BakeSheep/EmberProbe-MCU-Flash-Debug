@@ -9,9 +9,14 @@ const html = getModernWebviewContent({}, "en");
 const view = render(html);
 let saved;
 try {
+    const config = view.document.getElementById(ids[0]);
+    assert.strictEqual(config.open, false, "the MCU configuration card starts folded");
+    config.open = true;
+    config.dispatchEvent(new view.window.Event("toggle"));
+    for (const id of ids.slice(1))
+        assert.ok(view.document.getElementById(id).open, "first use keeps the default expansion");
     for (const id of ids) {
         const section = view.document.getElementById(id);
-        assert.ok(section.open, "first use keeps the default expansion");
         section.open = false;
         section.dispatchEvent(new view.window.Event("toggle"));
     }

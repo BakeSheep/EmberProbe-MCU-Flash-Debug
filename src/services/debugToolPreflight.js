@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const { execFile } = require("child_process");
 const { executableName, findOnPath, resolveCortexToolchain } = require("./cortexToolchainService");
+const { stToolchainCandidates } = require("./stToolchainDiscovery");
 
 function resolveDebugTools(options = {}) {
     const platform = options.platform || process.platform;
@@ -108,8 +109,29 @@ function debugToolOptions(vscode, folder, launch = {}) {
     };
 }
 
+function findStDebugTools(options = {}, discovery = {}) {
+    const candidates = stToolchainCandidates(discovery);
+    const configured = Object.fromEntries(Object.entries(options).filter(([, value]) => value));
+    // Try every installation to complete explicit paths before replacing stale settings.
+    if (options.gdbPath || options.toolchainPath || options.configuredObjdump) {
+        for (const candidate of candidates) {
+            const prefix = String(options.prefix || "arm-none-eabi").replace(/-+$/, "");
+            const gdbPath =
+                candidate.gdbPath ||
+                path.join(candidate.toolchainPath, executableName(`${prefix}-gdb`, candidate.platform));
+            const tools = resolveDebugTools({ ...candidate, gdbPath, ...configured, envPath: "" });
+            if (tools) return tools;
+        }
+    }
+    for (const candidate of candidates) {
+        const tools = resolveDebugTools({ ...candidate, prefix: options.prefix, envPath: "" });
+        if (tools) return tools;
+    }
+    return null;
+}
+
 // Settings, the remembered directory, then this process's PATH: no shell, no prompt.
-function findDebugTools(vscode, folder, state, launch = {}) {
+function findConfiguredOrPathTools(vscode, folder, state, launch) {
     const options = debugToolOptions(vscode, folder, launch);
     const configured = resolveDebugTools({ ...options, envPath: "" });
     if (configured) return configured;
@@ -118,11 +140,26 @@ function findDebugTools(vscode, folder, state, launch = {}) {
         const tools = resolveDebugTools({ prefix: options.prefix, envPath: "", toolchainPath: saved });
         if (tools) return tools;
     }
-    return resolveDebugTools(options);
+    return resolveDebugTools(options) || resolveDebugTools({ prefix: options.prefix });
 }
 
-async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrentPath, launch = {}) {
-    const found = findDebugTools(vscode, folder, state, launch);
+// Background warm-up can discover ST installations, but never refreshes PATH or prompts.
+function findDebugTools(vscode, folder, state, launch = {}, discover = findStDebugTools) {
+    return (
+        findConfiguredOrPathTools(vscode, folder, state, launch) || discover(debugToolOptions(vscode, folder, launch))
+    );
+}
+
+async function ensureDebugTools(
+    vscode,
+    folder,
+    state,
+    t,
+    readPath = readCurrentPath,
+    launch = {},
+    discover = findStDebugTools
+) {
+    const found = findConfiguredOrPathTools(vscode, folder, state, launch);
     if (found) return found;
     const options = debugToolOptions(vscode, folder, launch);
     const key = `emberprobeToolchain:${folder.uri.toString()}`;
@@ -130,9 +167,13 @@ async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrent
     // Long-running VS Code processes may still hold PATH from before toolchain installation.
     const currentPath = await readPath();
     if (currentPath) {
-        const tools = resolveDebugTools({ ...options, envPath: currentPath });
+        const tools =
+            resolveDebugTools({ ...options, envPath: currentPath }) ||
+            resolveDebugTools({ prefix: options.prefix, envPath: currentPath });
         if (tools) return tools;
     }
+    const discovered = discover(options);
+    if (discovered) return discovered;
     const select = t("msg.selectDebugToolchain");
     if ((await vscode.window.showWarningMessage(t("msg.debugToolchainMissing"), select)) !== select) return null;
     while (true) {
@@ -156,4 +197,11 @@ async function ensureDebugTools(vscode, folder, state, t, readPath = readCurrent
     }
 }
 
-module.exports = { resolveDebugTools, findDebugTools, ensureDebugTools, readWindowsPath, readCurrentPath };
+module.exports = {
+    resolveDebugTools,
+    findDebugTools,
+    ensureDebugTools,
+    findStDebugTools,
+    readWindowsPath,
+    readCurrentPath
+};

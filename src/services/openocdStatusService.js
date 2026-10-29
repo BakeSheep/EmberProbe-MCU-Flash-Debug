@@ -7,7 +7,7 @@ class OpenOcdStatusService {
         this.checker = options.checker;
         this.getLang = options.getLang;
         this.onStatus = options.onStatus;
-        this.status = { state: "checking", key: "oc.checking", canInstall: false };
+        this.status = { state: "checking", key: "oc.checking" };
         this.operation = 0;
         this.probes = new Map();
     }
@@ -53,19 +53,9 @@ class OpenOcdStatusService {
     }
 
     async handleAction(action) {
-        if (action !== "install" && action !== "select") return this.refresh(true);
+        if (action !== "select") return this.refresh(true);
         const operation = ++this.operation;
         const report = this.reporter(operation);
-        if (action === "install") {
-            const resolved = await this.checker.installBundledAndConfigure(
-                this.vscode,
-                this.context,
-                report,
-                this.getLang()
-            );
-            if (!resolved && this.status.state === "installing") await this.refresh(false);
-            return resolved;
-        }
         const resolved = await this.checker.pickOpenOcdPath(this.vscode, this.context, report, this.getLang());
         return resolved;
     }

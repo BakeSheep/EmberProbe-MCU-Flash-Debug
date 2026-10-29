@@ -1,10 +1,10 @@
 "use strict";
-// OpenOCD 环境探测、安装引导与路径配置。
+// OpenOCD 环境探测、内置运行时准备与路径配置。
 // 设计要点：
 // - 不修改系统 PATH / rc 文件 / 注册表，零系统副作用；
 // - 通过 emberprobe.openocdPath 扩展配置项指向 openocd 绝对路径即可运行；
 // - 内存级缓存避免每次烧录/调试/实时查看都重新探测；
-// - 所有检测与安装状态通过回调交给侧边栏展示，不发送通知弹窗。
+// - 所有检测与准备状态通过回调交给侧边栏展示，不发送通知弹窗。
 
 const { resolveExecutablePath } = require("./openocdScripts");
 const fs = require("fs");
@@ -13,7 +13,6 @@ const { decodeLine } = require("../skills/_emberprobe/tool-output");
 const installer = require("./openocdInstaller");
 const i18n = require("./i18n");
 
-const OPENOCD_GETTING_STARTED_URL = "https://openocd.org/pages/getting-openocd/";
 const {
     MIN_OPENOCD_VERSION,
     parseVersion,
@@ -182,13 +181,13 @@ function shouldUseBundledDefault(executable, context) {
 async function probeDefaultOpenOcd(executable, context, report) {
     if (!shouldUseBundledDefault(executable, context)) return undefined;
     // The installer reports progress only when it must extract; reusing a verified runtime
-    // keeps the sidebar status unchanged so flash/debug startup does not flash the install card.
+    // keeps the sidebar status unchanged so flash/debug startup does not flash the preparation card.
     try {
         let probed;
         const result = await installer.installBundledOpenOcd(
             null,
             context,
-            (progress) => reportStatus(report, { state: "installing", ...progress }),
+            (progress) => reportStatus(report, { state: "preparing", ...progress }),
             async (candidate) => {
                 const stamp = executableStamp(candidate);
                 const known = stamp ? bundledVerified.get(candidate) : undefined;
@@ -213,7 +212,7 @@ async function probeDefaultOpenOcd(executable, context, report) {
             requested: String(executable || "").trim(),
             version: "",
             error: error.message || String(error),
-            errorKey: "oc.installFailed",
+            errorKey: "oc.prepareFailed",
             errorParams: { error: error.message || String(error) }
         };
     }
@@ -268,8 +267,7 @@ async function pickOpenOcdPath(vscode, context, report, lang) {
         return fsPath;
     }
     if (result.found) {
-        const canInstall = hasBundledArchive(context);
-        reportStatus(report, incompatibleStatus(result, canInstall));
+        reportStatus(report, incompatibleStatus(result));
         return null;
     }
     reportStatus(report, {
@@ -285,109 +283,12 @@ async function pickOpenOcdPath(vscode, context, report, lang) {
     return null;
 }
 
-// 一键安装：从插件预置包解压到全局存储目录，通过 report 将状态发送给侧边栏。
-// 返回安装并配置后的最终路径，失败返回 null。
-async function installBundledAndConfigure(vscode, context, report, lang) {
-    const previousPath = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
-    const archive = installer.getBundledArchive(context);
-    if (!archive) {
-        // 当前平台无预置包：Linux/macOS 优先给出包管理器指引（比官网下载页更直接），
-        // 其它平台保持打开官方下载页
-        if (process.platform === "linux" || process.platform === "darwin") {
-            reportStatus(report, {
-                state: "missing",
-                canInstall: false,
-                key: process.platform === "linux" ? "oc.noBundleLinux" : "oc.noBundleDarwin",
-                params: { platform: process.platform + "-" + process.arch }
-            });
-            return null;
-        }
-        await vscode.env.openExternal(vscode.Uri.parse(OPENOCD_GETTING_STARTED_URL));
-        reportStatus(report, {
-            state: "missing",
-            canInstall: false,
-            key: "oc.noBundle",
-            params: { platform: process.platform + "-" + process.arch }
-        });
-        return null;
-    }
-    try {
-        let stagedProbe = null;
-        reportStatus(report, { state: "installing", key: "oc.preparing" });
-        const result = await installer.installBundledOpenOcd(
-            vscode,
-            context,
-            (p) => {
-                if (p.message || p.key)
-                    reportStatus(report, { state: "installing", key: p.key, params: p.params, message: p.message });
-            },
-            async (candidate) => {
-                reportStatus(report, { state: "checking", key: "oc.verifying" });
-                stagedProbe = await probeOpenOcd(candidate);
-                return {
-                    ok: isCompatibleResult(stagedProbe),
-                    version: stagedProbe.version,
-                    error:
-                        stagedProbe.found && !stagedProbe.compatible
-                            ? `OpenOCD ${stagedProbe.version || "(unknown version)"} is incompatible; ${MIN_OPENOCD_VERSION} or newer is required`
-                            : stagedProbe.error
-                };
-            }
-        );
-        if (!result.ok) {
-            reportStatus(report, {
-                state: "error",
-                key: "oc.installFailed",
-                params: { error: result.error || i18n.t(lang, "oc.unknownError") }
-            });
-            return null;
-        }
-        // 暂存目录中的可执行文件已经在替换旧安装前验证；缓存路径需改成最终目录。
-        const verify = stagedProbe
-            ? { ...stagedProbe, path: result.path, requested: result.path }
-            : await probeOpenOcd(result.path);
-        if (isCompatibleResult(verify)) {
-            await persistOpenOcdPath(vscode, result.path, previousPath);
-            setCache(verify);
-            reportStatus(report, {
-                state: "ready",
-                key: verify.version ? "oc.installedReadyVer" : "oc.installedReady",
-                params: { version: verify.version },
-                result: verify
-            });
-            return result.path;
-        }
-        setCache(verify);
-        reportStatus(report, {
-            state: "error",
-            key: "oc.verifyFailed",
-            params: { error: verify.error || i18n.t(lang, "oc.confirmManually") },
-            result: verify
-        });
-        return null;
-    } catch (error) {
-        reportStatus(report, {
-            state: "error",
-            key: "oc.installFailed",
-            params: { error: error.message || String(error) }
-        });
-        return null;
-    }
-}
-
-function incompatibleStatus(result, canInstall) {
+function incompatibleStatus(result) {
     const checked = withCompatibility(result);
     const hasVersion = Boolean(checked.version);
     return {
         state: "incompatible",
-        canInstall,
-        key: hasVersion
-            ? canInstall
-                ? "oc.incompatibleBundled"
-                : "oc.incompatibleUpgrade"
-            : canInstall
-              ? "oc.versionUnknownBundled"
-              : "oc.versionUnknownUpgrade",
+        key: hasVersion ? "oc.incompatibleUpgrade" : "oc.versionUnknownUpgrade",
         params: { version: checked.version, minimum: MIN_OPENOCD_VERSION },
         result: checked
     };
@@ -413,12 +314,11 @@ async function resolveOpenOcdStatus(executable, context, probedResult, report) {
         return result.path;
     }
     if (result.found) {
-        reportStatus(report, incompatibleStatus(result, hasBundledArchive(context)));
+        reportStatus(report, incompatibleStatus(result));
         return null;
     }
     reportStatus(report, {
         state: "missing",
-        canInstall: hasBundledArchive(context),
         key: result.errorKey || (result.error ? "oc.probeFailed" : "oc.missing"),
         params: result.errorKey ? result.errorParams : { error: result.error },
         message: result.error || "未检测到 OpenOCD",
@@ -442,9 +342,7 @@ module.exports = {
     resetCache,
     persistOpenOcdPath,
     pickOpenOcdPath,
-    installBundledAndConfigure,
     resolveOpenOcdStatus,
     incompatibleStatus,
-    MIN_OPENOCD_VERSION,
-    OPENOCD_GETTING_STARTED_URL
+    MIN_OPENOCD_VERSION
 };

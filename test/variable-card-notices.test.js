@@ -75,7 +75,8 @@ for (const language of ["en", "zh"]) {
             page.send({ type: listType, items: [object] });
             const footer = () => footerOf(cards()[0]);
             assert(footer().textContent.includes(translate("lw.waitSamples")));
-            const sample = (tree) => page.send({ type: "liveCompositeSample", samples: [{ name: "object", tree }] });
+            const sample = (tree, sampleName = "object") =>
+                page.send({ type: "liveCompositeSample", samples: [{ name: sampleName, tree }] });
             const leaf = { kind: "scalar", name: "value", type: "u32", value: 2 };
             for (const [reason, level, key] of [
                 ["opaque-pointee", "warning", "lw.pointeeOpaque"],
@@ -145,6 +146,49 @@ for (const language of ["en", "zh"]) {
             assert.strictEqual(footer().querySelectorAll(".array-more").length, 2);
             footer().querySelector(".array-more .notice-action").click();
             assert.strictEqual(footer().querySelectorAll(".array-more").length, 1);
+
+            // An opened pointee body reports card-wide states into the card footer once, not again.
+            const node = {
+                name: "node",
+                displayName: "node",
+                isComposite: true,
+                address: 0x20000000,
+                size: 8,
+                compositeLayout: { kind: "class", members: [] },
+                runtimeLayout: {
+                    root: 1,
+                    types: [
+                        { kind: "scalar", watchType: "u32", byteSize: 4 },
+                        {
+                            kind: "class",
+                            byteSize: 8,
+                            fields: [
+                                { name: "value", type: 0, offset: 0 },
+                                { name: "self", type: 2, offset: 4 }
+                            ]
+                        },
+                        { kind: "pointer", target: 1, byteSize: 4 }
+                    ]
+                }
+            };
+            page.send({ type: prefix + "Reset", version: "v2", generation: 8 });
+            page.send({ type: prefix + "Chunk", version: "v2", symbols: [node] });
+            const pointee = runtime.pointerDerefEntry("node.self", node);
+            page.send({ type: listType, items: [node, { ...pointee, isComposite: true }] });
+            assert.strictEqual(cards().length, 1, "the pointee renders inside its pointer's card");
+            const waiting = () =>
+                [...footer().querySelectorAll(".notice")].filter((box) =>
+                    box.textContent.includes(translate("lw.waitSamples"))
+                );
+            assert.strictEqual(waiting().length, 1, "card and pointee share one waiting notice");
+            const self = { name: "self", isPointer: true, type: "u32", value: 0x20000000 };
+            sample({ kind: "class", members: [leaf, self] }, "node");
+            assert.strictEqual(waiting().length, 1, "the unsampled pointee still waits");
+            page.send({
+                type: "liveCompositeSample",
+                samples: [{ name: pointee.name, tree: { kind: "class", members: [leaf] } }]
+            });
+            assert.strictEqual(waiting().length, 0, "the shared notice leaves with its last reporter");
             page.assertHealthy();
         } finally {
             page.close();
@@ -175,6 +219,75 @@ for (const language of ["en", "zh"]) {
     assert.strictEqual(child.children.length, 0, "pointee messages use the owning card footer");
     runtime.resetVariableNotices(child, (key) => key);
     assert.strictEqual(footer.querySelectorAll(".notice").length, 4, "a pointee refresh clears its subtree only");
+    dom.window.close();
+}
+
+// Card-wide notices are shared across pointee scopes; equal titled notices fold into one group.
+{
+    const dom = new JSDOM("<div id='root'></div><div id='footer'></div>");
+    const doc = dom.window.document;
+    const root = doc.getElementById("root");
+    const footer = doc.getElementById("footer");
+    const tr = (key, params) => t("en", key, params);
+    runtime.createVariableNotices(root, tr, footer, undefined, "card");
+    const pointee = doc.createElement("div");
+    pointee.variableNoticeParent = root;
+    runtime.resetVariableNotices(pointee, tr);
+    for (const container of [root, pointee]) runtime.renderVariableNotice(container, "Waiting", tr);
+    assert.strictEqual(footer.querySelectorAll(".notice").length, 1, "the same untitled state shows once");
+    // Raw-member visibility is one switch per variable: the counts of its bodies add up.
+    const role = (name) => ({ name, memberRole: "internal" });
+    const object = { kind: "class", members: [role("a"), role("b"), { name: "x" }] };
+    let toggled = 0;
+    runtime.renderMemberVisibility(root, object, "card", false, tr, () => toggled++);
+    runtime.renderMemberVisibility(
+        pointee,
+        { kind: "class", members: [role("c")] },
+        "card.p.value",
+        false,
+        tr,
+        () => {}
+    );
+    const visibility = () => footer.querySelectorAll(".member-visibility");
+    assert.strictEqual(visibility().length, 1);
+    assert.strictEqual(visibility()[0].querySelector(".hidden-members").textContent, tr("lw.hiddenMembers", { n: 3 }));
+    assert.strictEqual(visibility()[0].querySelector(".raw-members-toggle").dataset.variableName, "card");
+    runtime.resetVariableNotices(pointee, tr);
+    assert.strictEqual(visibility()[0].querySelector(".hidden-members").textContent, tr("lw.hiddenMembers", { n: 2 }));
+    visibility()[0].querySelector(".raw-members-toggle").click();
+    assert.strictEqual(toggled, 1, "a rebuilt shared notice keeps its action and hooks");
+    assert.strictEqual(footer.textContent.includes("Waiting"), true, "the card still reports waiting");
+    // Many equal budget warnings with different paths become one collapsed group.
+    for (let index = 0; index < 12; index++)
+        runtime.renderVariableNotice(
+            index % 2 ? pointee : root,
+            { level: "warning", title: "card.deep.b" + index, text: tr("lw.layoutExpansionBudget") },
+            tr,
+            "layout:card.deep.b" + index
+        );
+    const groups = footer.querySelectorAll(".notice-group");
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].querySelector(".notice-count").textContent, "12");
+    assert(groups[0].querySelector(".notice-group-list").hidden, "a new group starts collapsed");
+    groups[0].querySelector(".notice-group-toggle").click();
+    // A re-rendered card with the same state key keeps the group open.
+    const again = doc.createElement("div");
+    const againFooter = doc.createElement("div");
+    runtime.createVariableNotices(again, tr, againFooter, undefined, "card");
+    for (let index = 0; index < 2; index++)
+        runtime.renderVariableNotice(
+            again,
+            { level: "warning", title: "card.deep.b" + index, text: tr("lw.layoutExpansionBudget") },
+            tr,
+            "layout:card.deep.b" + index
+        );
+    assert(!againFooter.querySelector(".notice-group-list").hidden);
+    runtime.resetVariableNotices(pointee, tr);
+    assert.strictEqual(
+        groups[0].querySelector(".notice-count").textContent,
+        "6",
+        "a pointee refresh removes only its own group members"
+    );
     dom.window.close();
 }
 console.log("Variable card notice severity, footer placement, loading, refresh, names, language and actions passed");

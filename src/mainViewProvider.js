@@ -80,7 +80,6 @@ const {
     buildActiveReadPlan,
     buildChartHistoryItems,
     collectRuntimeHistoryLeaves,
-    nextLivePanelId,
     selectFocusedPanel,
     selectPausedDebugReadSession,
     filterRuntimeRamPlan,
@@ -91,6 +90,7 @@ const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
 const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
 const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore, appendMissingWatchItems } = require("./services/watchListStore");
+const { LivePanelRegistry } = require("./services/livePanelRegistry");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
@@ -240,6 +240,7 @@ class MainViewProvider {
         this._runtimeRamCache = null;
         this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
+        this._livePanelRegistry = null;
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
         this._symbolNameIndexes = new WeakMap();
         /** @type {Set<Promise<void>>} */
@@ -717,7 +718,7 @@ class MainViewProvider {
         return this._openOcdStatusService.refresh(showChecking);
     }
     async _handleOpenOcdAction(action) {
-        if (["select", "install"].includes(action)) this._assertConnectionEditable({ openocdPath: true });
+        if (action === "select") this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
     }
     // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。
@@ -3302,16 +3303,10 @@ class MainViewProvider {
         if (result) await this._syncAgentBridge(result);
         return result;
     }
-    // VS Code restores chart tabs left open at shutdown; each keeps its panel number and so its watch list.
+    // Hidden tabs restore lazily; the stable watch key survives any display-number conflict.
     restoreLiveWatchPanel(panel, state) {
-        const saved = Number(state?.panelId);
-        const panelId =
-            Number.isSafeInteger(saved) && saved >= 1 && !this._livePanels.has(saved)
-                ? saved
-                : nextLivePanelId(this._livePanels);
-        panel.title = this._t("lw.panelTitle", { n: panelId });
         panel.webview.options = { enableScripts: true, localResourceRoots: [this._webviewAssetRootUri] };
-        this.openLiveWatchPanel(panel, panelId);
+        return this.openLiveWatchPanel(panel, state).initialized;
     }
     _curveVisibility(watchKey) {
         const stored = this._context.workspaceState.get(CURVE_VISIBILITY_STATE_KEY);
@@ -3364,14 +3359,37 @@ class MainViewProvider {
     _panelRuntimeExpansions(watchKey) {
         return this._pointerExpandedOnly === true ? this._runtimeExpansions(watchKey) : null;
     }
+    chartBackground() {
+        if (!this._chartBackground) {
+            const { ChartBackgroundController } = require("./services/chartBackgroundController");
+            this._chartBackground = new ChartBackgroundController({
+                vscode,
+                state: this._context.globalState,
+                entries: () => this._livePanels.values(),
+                open: () => this.openLiveWatchPanel(),
+                t: (key) => this._t(key)
+            });
+        }
+        return this._chartBackground;
+    }
+
+    _chartBackgroundState() {
+        return this.chartBackground().state();
+    }
+
     // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
-    openLiveWatchPanel(restoredPanel = null, restoredId = null) {
+    openLiveWatchPanel(restoredPanel = null, restoredState = null) {
         if (!this._seriesStyleStore) {
             const { SeriesStyleStore } = require("./services/seriesStyleStore");
             this._seriesStyleStore = new SeriesStyleStore(this._context.workspaceState);
         }
-        const panelId = restoredId || nextLivePanelId(this._livePanels);
-        const watchKey = panelId === 1 ? CACHE_KEYS.watchList : `${CACHE_KEYS.watchList}.${panelId}`;
+        this._livePanelRegistry ||= new LivePanelRegistry(this._context.workspaceState, this._livePanels, () =>
+            (vscode.window.tabGroups?.all || []).flatMap((group) => group.tabs)
+        );
+        const identity = this._livePanelRegistry.claim(
+            restoredPanel ? { state: restoredState, title: restoredPanel.title } : null
+        );
+        const { panelId, watchKey } = identity;
         const cfg = vscode.workspace.getConfiguration("emberprobe");
         const panel =
             restoredPanel ||
@@ -3385,6 +3403,7 @@ class MainViewProvider {
                     localResourceRoots: [this._webviewAssetRootUri]
                 }
             );
+        panel.title = this._t("lw.panelTitle", { n: panelId });
         const panelWebview = panel.webview;
         const post = (m) => panelWebview.postMessage(m);
         const entry = {
@@ -3397,6 +3416,16 @@ class MainViewProvider {
             focusOrder: ++this._livePanelFocusOrder
         };
         this._livePanels.set(panelId, entry);
+        entry.initialized = identity.initialized
+            .then(() => {
+                this._watchLists?.invalidate(watchKey);
+                entry.initializing = false;
+            })
+            .catch((error) => {
+                entry.initializationError = error;
+                console.error("Chart identity persistence failed:", error);
+            });
+        entry.initializing = true;
         this._invalidateConsumerTypes();
         this._renderWebview(
             panel.webview,
@@ -3404,21 +3433,32 @@ class MainViewProvider {
                 {
                     backendHistory: true,
                     frequencyHz: this._liveFrequencyHz,
-                    panelId
+                    panelId,
+                    watchKey
                 },
                 this._lang
             ),
             `live-watch-${panelId}`
         );
         panel.onDidChangeViewState((event) => {
-            if (event.webviewPanel.active) entry.focusOrder = ++this._livePanelFocusOrder;
+            if (event.webviewPanel.active) {
+                entry.focusOrder = ++this._livePanelFocusOrder;
+                post(this._chartBackgroundState());
+            }
+        });
+        const backgroundFocus = vscode.window.onDidChangeWindowState?.((state) => {
+            if (state.focused) post(this._chartBackgroundState());
         });
         panel.onDidDispose(() => {
+            entry.disposed = true;
+            backgroundFocus?.dispose();
+            this._chartBackground?.cancel(entry);
             this._flushChartHistoryAppend(entry);
             if (entry._batchTimer) clearTimeout(entry._batchTimer);
             this._chartHistory?.request("remove", [this._debugSamplingScope(watchKey)]).catch(() => {});
             this._webviewRenders?.delete(panelWebview);
             this._livePanels.delete(panelId);
+            this._livePanelRegistry.release(panelId).catch(console.error);
             pruneWebviewAssets(this._webviewAssetRootUri.fsPath, `live-watch-${panelId}`, new Set());
             this._invalidateConsumerTypes();
             this._refreshSamplingPlan().catch(() => {});
@@ -3427,6 +3467,9 @@ class MainViewProvider {
             if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string")
                 return;
             try {
+                if (entry.initializing) await entry.initialized;
+                if (entry.disposed) return;
+                if (entry.initializationError) throw entry.initializationError;
                 if (message.panelId !== undefined && Number(message.panelId) !== panelId) {
                     throw Object.assign(new Error("Live panel identity mismatch"), { code: "INVALID_PANEL_ID" });
                 }
@@ -3450,6 +3493,8 @@ class MainViewProvider {
                                 .map((key) => this._context.workspaceState.get(key) || [])
                         );
                         post({ type: "seriesStyles", styles: this._seriesStyleStore.styles });
+                        post(this._chartBackgroundState());
+                        this.chartBackground().ready(entry);
                         post(this._unlimitedSamplingState());
                         post(this._pointerSamplingState());
                         post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
@@ -3470,6 +3515,9 @@ class MainViewProvider {
                             )
                                 post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
                         }
+                        break;
+                    case "chartBackgroundIconImported":
+                        await this.chartBackground().imported(entry, message);
                         break;
                     case "saveCurveVisibility":
                         await this._saveCurveVisibility(watchKey, message.hidden);
@@ -3780,6 +3828,7 @@ class MainViewProvider {
                 post({ type: "liveError", ...toUiError(error) });
             }
         });
+        return entry;
     }
     // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
     _invalidateElfState() {
@@ -5991,6 +6040,7 @@ class MainViewProvider {
         this._gdbWarmupTimer.unref?.();
     }
     shutdown() {
+        this._chartBackground?.cancel();
         if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
         this._gdbWarmupTimer = null;
         this._gdbWarmup?.dispose();
@@ -6034,6 +6084,7 @@ class MainViewProvider {
             const stopped = this.stopLiveWatch();
             if (stopped) await stopped;
             await this._flushPendingChartHistorySamples();
+            await this._livePanelRegistry?.pending.catch(console.error);
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
             this.disposeDebugBridge();

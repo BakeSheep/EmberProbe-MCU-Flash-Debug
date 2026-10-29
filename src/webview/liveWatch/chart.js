@@ -1,8 +1,9 @@
 "use strict";
 (function (root, factory) {
-    if (typeof module === "object" && module.exports) module.exports = factory(require("./chartInspection"));
-    else root.EmberProbeChart = factory(root.EmberProbeChartInspection);
-})(globalThis, function (defaultInspection) {
+    if (typeof module === "object" && module.exports)
+        module.exports = factory(require("./chartInspection"), require("./backgroundIcon"));
+    else root.EmberProbeChart = factory(root.EmberProbeChartInspection, root.EmberProbeBackgroundIcon);
+})(globalThis, function (defaultInspection, BackgroundIcon) {
     function exactInteger(point) {
         if (point.valueText != null && /^-?\d+$/.test(point.valueText)) return BigInt(point.valueText);
         return Number.isSafeInteger(point.v) ? BigInt(point.v) : null;
@@ -52,6 +53,7 @@
         chartState,
         norm,
         jitterBands,
+        backgroundIcon,
         series,
         hasBounds,
         pixelRatio,
@@ -163,6 +165,18 @@
             }
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, w, h);
+            ctx.font = "10px " + (style.fontFamily || "sans-serif");
+            const iconPadL =
+                prepared.origin === null
+                    ? 64
+                    : Math.max(64, ctx.measureText(String(prepared.origin) + ".00000").width + 20);
+            if (backgroundIcon && w > iconPadL + 18 && h > 60)
+                BackgroundIcon.paint(ctx, backgroundIcon, {
+                    padL: iconPadL,
+                    padT: 18,
+                    pw: w - iconPadL - 18,
+                    ph: h - 60
+                });
             var empty = $("chartEmpty");
             if (!hasBounds || !series.length) {
                 chartState.hits = [];
@@ -285,7 +299,10 @@
                 chartState.x.min < geometry.min ||
                 chartState.x.max > geometry.max
             ) {
-                const xRef = chartState.x.min,
+                // Jitter columns share the reductions' absolute power-of-two time bins, so spikes do not flip
+                // between the band and the line whenever the view scrolls or "All" grows.
+                const binMs = inspection.columnBin(xSpan, pw),
+                    xRef = Math.floor(chartState.x.min / binMs) * binMs,
                     yRef = chartState.y.max,
                     min = xRef - xSpan / 2,
                     max = chartState.x.max + xSpan / 2;
@@ -302,12 +319,14 @@
                             length = to - from,
                             xs = new Float64Array(length),
                             ys = new Float64Array(length),
+                            columns = jitterBands ? new Float64Array(length) : null,
                             raw = sourceSeries[index].arr.slice(from, to);
                         for (let i = 0; i < length; i++) {
                             const p = s.arr[from + i],
                                 value = norm ? (p.v - s.vMin) / (s.vMax - s.vMin || 1) : p.v;
                             xs[i] = (p.t - xRef) * pxPerMs;
                             ys[i] = (yRef - value) * pxPerValue;
+                            if (columns) columns[i] = Math.floor((p.t - xRef) / binMs);
                         }
                         return {
                             name: s.item.name,
@@ -315,7 +334,12 @@
                             ys,
                             raw,
                             ...(jitterBands
-                                ? { banded: inspection.jitterBands(xs, ys, raw) }
+                                ? {
+                                      banded: inspection.jitterBands(xs, ys, raw, undefined, undefined, {
+                                          columns,
+                                          width: binMs * pxPerMs
+                                      })
+                                  }
                                 : { drawing: inspection.envelopeIndices(xs, ys, raw) })
                         };
                     })

@@ -77,7 +77,7 @@ try {
     const openocd = sidebar.document.querySelector('#noticeGlobal [data-notice-id="openocd"]');
     assert(openocd.classList.contains("notice--error"));
     assert.strictEqual(openocd.querySelector(".notice-close"), null, "OpenOCD state cannot be dismissed");
-    openocd.querySelectorAll(".notice-action")[1].click();
+    openocd.querySelector(".notice-action.primary").click();
     assert.deepStrictEqual(sidebar.messages.at(-1), { type: "openocdAction", action: "select" });
     click("chipRead");
     assert.strictEqual(sidebar.messages.at(-1).type, "readChipInfo");

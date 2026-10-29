@@ -78,7 +78,8 @@ function getLiveWatchContent(cfg, lang) {
         autoMaxSamples: raw.autoMaxSamples !== false,
         frequencyHz,
         intervalMs: intervalMsFromHz(frequencyHz),
-        panelId: Math.max(1, Math.floor(Number(raw.panelId) || 1))
+        panelId: Math.max(1, Math.floor(Number(raw.panelId) || 1)),
+        watchKey: typeof raw.watchKey === "string" ? raw.watchKey : null
     };
     const L = normalizeLang(lang), tr = (k, p) => t(L, k, p), i18nJson = jsonForScript(STRINGS);
     const samplingHint = (id) => `<div class="sampling-hint" id="${id}" role="note"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6"/><path d="M8 4.5v4"/><circle class="sampling-hint-dot" cx="8" cy="11.5" r=".6"/></svg><span data-i18n="lw.samplingSelectionHint">${tr('lw.samplingSelectionHint')}</span></div>`;

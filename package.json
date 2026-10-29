@@ -101,6 +101,14 @@
         "title": "EmberProbe: 实时变量查看"
       },
       {
+        "command": "mcu-vscode.selectChartBackgroundIcon",
+        "title": "EmberProbe: 导入/更换波形背景图标"
+      },
+      {
+        "command": "mcu-vscode.removeChartBackgroundIcon",
+        "title": "EmberProbe: 移除波形背景图标"
+      },
+      {
         "command": "mcu-vscode.checkOpenOcd",
         "title": "EmberProbe: 检查 OpenOCD 环境"
       },
@@ -158,7 +166,7 @@
         "emberprobe.openocdPath": {
           "type": "string",
           "default": "openocd",
-          "description": "OpenOCD >= 0.12.0 可执行文件路径；不在 PATH 时请填写绝对路径（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
+          "description": "默认 openocd 在 Windows/Linux x64 上自动使用内置版本；可填写 OpenOCD >= 0.12.0 的绝对路径以使用外部版本（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
         },
         "emberprobe.tclPort": {
           "type": "number",
@@ -361,6 +369,13 @@
           "default": "extended-remote",
           "scope": "resource",
           "description": "Experimental external GDB connection mode. Read at attach startup; changing it does not redirect an active session."
+        },
+        "emberprobe.chartBackgroundIcon.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "ignoreSync": true,
+          "markdownDescription": "在波形图背景居中显示淡色图标。[导入/更换 PNG](command:mcu-vscode.selectChartBackgroundIcon) · [移除背景图标](command:mcu-vscode.removeChartBackgroundIcon)。支持透明底或纯色底 PNG，仅在本地处理，所有项目共享。不保存原图颜色和路径。 / [Import or replace PNG](command:mcu-vscode.selectChartBackgroundIcon) · [Remove](command:mcu-vscode.removeChartBackgroundIcon). Local, monochrome background shared across projects."
         }
       }
     },
