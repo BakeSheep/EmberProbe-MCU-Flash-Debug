@@ -304,7 +304,6 @@ module.exports = Object.freeze({
     "skill.scopeWorkspace": "Project",
     "skill.scopeGlobal": "Global",
     "sb.openocdEnv": "OpenOCD Environment",
-    "sb.install": "Install",
     "sb.selectPath": "Select Path",
     "sb.recheck": "Recheck",
     "sb.mcuConfig": "MCU Configuration",
@@ -505,7 +504,7 @@ module.exports = Object.freeze({
     "chip.busyAgent": "The Agent is reading variables; try again shortly",
     "chip.busyDebug": "A debug session is active and the probe is busy; stop debugging first",
     "chip.needConfig": "Select a debugger and MCU target first",
-    "chip.notReady": "OpenOCD not ready: install it or set the path in the sidebar first",
+    "chip.notReady": "OpenOCD not ready: check the environment or select a usable path in the sidebar first",
     "chip.timeout": "Reading chip info timed out (15s): check wiring, power and probe availability",
     "chip.noInfo": "No chip info obtained",
     "chip.stReading": "Reading",
@@ -670,31 +669,17 @@ module.exports = Object.freeze({
     "oc.checking": "Checking OpenOCD…",
     "oc.readyVer": "OpenOCD v{version} ready",
     "oc.ready": "OpenOCD ready",
-    "oc.incompatibleBundled":
-        "OpenOCD v{version} is incompatible (requires >= {minimum}). Upgrade it, or click Install to use the bundled xPack OpenOCD 0.12.0-7",
     "oc.incompatibleUpgrade":
         "OpenOCD v{version} is incompatible (requires >= {minimum}). Upgrade OpenOCD, then select the new executable",
-    "oc.versionUnknownBundled":
-        "The OpenOCD version could not be identified (requires >= {minimum}). Click Install to use the bundled xPack OpenOCD 0.12.0-7, or select a compatible version",
     "oc.versionUnknownUpgrade":
         "The OpenOCD version could not be identified (requires >= {minimum}). Upgrade OpenOCD, then select the new executable",
-    "oc.installedReadyVer": "OpenOCD v{version} installed and ready",
-    "oc.installedReady": "OpenOCD installed and ready",
     "oc.missing": "OpenOCD not found",
-    "oc.preparing": "Preparing OpenOCD installation…",
+    "oc.preparing": "Preparing bundled OpenOCD…",
     "oc.extracting": "Extracting OpenOCD…",
     "oc.extractingPct": "Extracting OpenOCD… {pct}%",
-    "oc.verifying": "Verifying OpenOCD…",
     "oc.validatingSelected": "Verifying the selected OpenOCD…",
-    "oc.installFailed": "OpenOCD installation failed: {error}",
-    "oc.verifyFailed": "OpenOCD verification failed: {error}; the previous setting was kept",
+    "oc.prepareFailed": "Bundled OpenOCD preparation failed: {error}",
     "oc.selectedUnusable": "The selected file is unusable: {error}",
-    "oc.noBundle":
-        "No bundled package for this platform ({platform}); the download page was opened — select the OpenOCD path after installing",
-    "oc.noBundleLinux":
-        'No bundled package for this platform ({platform}). Install OpenOCD with your system package manager (Debian/Ubuntu: sudo apt install openocd; Fedora: sudo dnf install openocd; Arch: sudo pacman -S openocd), then use "Select OpenOCD" to point at /usr/bin/openocd. USB probes also require udev rules or group membership.',
-    "oc.noBundleDarwin":
-        'No bundled package for this platform ({platform}). Install with brew install openocd, or download from openocd.org and use "Select OpenOCD" to point at the executable.',
     "oc.pickLabel": "Select OpenOCD",
     "oc.pickExe": "OpenOCD executables",
     "oc.allFiles": "All files",
@@ -705,8 +690,6 @@ module.exports = Object.freeze({
     "oc.errExit": "Exit code {code}, and the output was not recognized as OpenOCD",
     "oc.errNotOpenocd": "The selected file is not a valid OpenOCD",
     "oc.reselect": "please reselect",
-    "oc.unknownError": "unknown error",
-    "oc.confirmManually": "please verify manually",
     "run.starting": "Starting OpenOCD",
     "run.adapterClock": "Adapter clock {clock}",
     "run.flashClock": "Flash clock {clock}",
@@ -796,7 +779,7 @@ module.exports = Object.freeze({
     "live.needConfig": "Select a debugger and MCU target first",
     "live.needVar": "Add a variable to watch first",
     "live.notReady":
-        'OpenOCD not ready: run "EmberProbe: Check OpenOCD Environment" from the command palette to install or set the path',
+        'OpenOCD not ready: run "EmberProbe: Check OpenOCD Environment" from the command palette to check the environment or select a usable path',
     "live.serviceExited":
         "OpenOCD service exited (code {code}): the probe may be busy, the config wrong, or port {port} in use",
     "live.probeDisconnected": "Debugger disconnected; live sampling stopped automatically",

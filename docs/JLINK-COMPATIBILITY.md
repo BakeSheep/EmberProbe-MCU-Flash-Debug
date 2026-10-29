@@ -100,12 +100,12 @@ automatically extracts and verifies this runtime offline before hardware startup
 its archive-specific directory in extension global storage. It does not write settings or change
 the system installation. Explicit paths, including `/usr/bin/openocd`, take precedence.
 Preparation failures stop the operation without falling back to the affected system build.
-The sidebar installation action remains available for manual installation and path configuration.
+The sidebar offers path selection and rechecking; bundled runtime preparation needs no installation action.
 
 插件内置 Linux x64 的 xPack OpenOCD 0.12.0-7。路径为默认 `openocd` 或空值时，
 连接硬件前自动离线解压并验证，之后复用扩展全局存储中按预置包 SHA-256 分隔的目录。
 自动准备不改写设置或系统安装；包括 `/usr/bin/openocd` 在内的显式路径继续优先。
-准备失败时停止操作，不回退到有缺陷的系统构建；侧栏仍保留手动安装并配置路径的入口。
+准备失败时停止操作，不回退到有缺陷的系统构建；侧栏提供路径选择和重新检查，内置运行时无需手动安装。
 压缩包保留官方原始文件，并加入 [兼容配置](OPENOCD-TARGETS.md)。上游基础包 SHA-256 为
 `94b3790983beaf8ed57e646c0620dd66d705fddae03d290823a6ed3b439468d6`。
 合入后的压缩包哈希及原始可执行文件哈希记录在 `resources/openocd-targets-manifest.json`。

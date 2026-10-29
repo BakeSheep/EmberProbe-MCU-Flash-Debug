@@ -16,6 +16,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 优化 / Improved
 
+- 调试工具链按用户配置、记住的目录、PATH、已有 ST 工具链的顺序查找，最后才提示选择目录；支持常见 ST bundles、CubeCLT 和 CubeIDE 安装布局，以及独立 GDB 工具包。见 `docs/DEBUG-TOOLCHAIN.md`。
+- Debug tool lookup now checks user configuration, the remembered directory, PATH, and installed ST toolchains before prompting for a directory. Discovery supports common ST bundle, CubeCLT and CubeIDE layouts, including separate GDB bundles. See `docs/DEBUG-TOOLCHAIN.md`.
+
 - 波形图的 ELF 诊断与运行提示统一移入导入变量弹窗；移除波形工具栏的语言切换按钮，绘图设置按钮保留普通边框、取消强调色高亮，使用清晰的 VS Code 齿轮图标并保留键盘焦点提示。
 - Waveform ELF diagnostics and operation notices now appear in the variable import dialog. Removed the waveform toolbar's language toggle and kept a neutral border on chart settings without accent highlighting, using a clear VS Code gear icon and preserving keyboard focus feedback.
 

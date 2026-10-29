@@ -158,7 +158,7 @@
         "emberprobe.openocdPath": {
           "type": "string",
           "default": "openocd",
-          "description": "OpenOCD >= 0.12.0 可执行文件路径；不在 PATH 时请填写绝对路径（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
+          "description": "默认 openocd 在 Windows/Linux x64 上自动使用内置版本；可填写 OpenOCD >= 0.12.0 的绝对路径以使用外部版本（如 /usr/bin/openocd 或 C:\\openocd\\bin\\openocd.exe）"
         },
         "emberprobe.tclPort": {
           "type": "number",

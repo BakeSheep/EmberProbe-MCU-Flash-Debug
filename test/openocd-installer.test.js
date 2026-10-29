@@ -89,7 +89,7 @@ const {
         assert.strictEqual(reused.path, bundled.path);
         assert.strictEqual(fs.statSync(bundled.path).mtimeMs, installedAt, "重复解析不得覆盖缓存的运行时");
         assert.deepStrictEqual(reusedProgress, [], "复用已验证的运行时不得上报安装状态（避免烧录/调试时闪现安装卡片）");
-        assert.ok(progress.some((event) => event.key === "oc.preparing"));
+        assert.ok(progress.some((event) => event.key === "oc.preparing" && event.state === "preparing"));
         assert.ok(progress.some((event) => event.key === "oc.extracting"));
 
         // A verified runtime is reused by its size and mtime without starting it again; a stamp change re-verifies.
@@ -111,7 +111,7 @@ const {
         fs.unlinkSync(bundled.path);
         const damaged = await probeDefaultOpenOcd("openocd", mockContext);
         assert.strictEqual(damaged.found, false);
-        assert.strictEqual(damaged.errorKey, "oc.installFailed");
+        assert.strictEqual(damaged.errorKey, "oc.prepareFailed");
         assert.match(damaged.error, /缓存验证失败/);
 
         const corrupt = path.join(tmpBase, "default-corrupt.tar.gz");
@@ -121,7 +121,7 @@ const {
             globalStorageUri: { fsPath: tmpBase }
         });
         assert.strictEqual(invalid.found, false);
-        assert.strictEqual(invalid.errorKey, "oc.installFailed");
+        assert.strictEqual(invalid.errorKey, "oc.prepareFailed");
     }
     if (archive) {
         // 当前平台有预置包：文件必须真实存在且可读

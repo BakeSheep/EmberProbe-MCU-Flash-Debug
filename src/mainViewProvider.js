@@ -717,7 +717,7 @@ class MainViewProvider {
         return this._openOcdStatusService.refresh(showChecking);
     }
     async _handleOpenOcdAction(action) {
-        if (["select", "install"].includes(action)) this._assertConnectionEditable({ openocdPath: true });
+        if (action === "select") this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
     }
     // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。

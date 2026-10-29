@@ -1,5 +1,5 @@
 "use strict";
-// OpenOCD 捆绑预置包的一键安装：从插件内置 tar.gz 解压到全局存储目录，
+// OpenOCD 内置运行时准备：从插件内置 tar.gz 解压到全局存储目录，
 // 解压进度通过 onentry 回调上报；安装成功后返回 openocd 可执行文件路径。
 // 设计要点：
 // - 离线可用，不依赖网络；
@@ -114,7 +114,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
     if (!archive) {
         return {
             ok: false,
-            error: `当前平台（${process.platform}-${process.arch}）暂无预置 OpenOCD 包，请手动安装后用「配置 OpenOCD 路径」选择`
+            error: `当前平台（${process.platform}-${process.arch}）暂无预置 OpenOCD 包，请选择可用的 OpenOCD 路径`
         };
     }
     // Automatic defaults use an archive-specific sibling directory, leaving manual installations
@@ -135,7 +135,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
         }
         return { ok: true, path: binary, version: verification.version || "", verification, error: "" };
     }
-    if (progress) progress({ message: "正在准备安装 OpenOCD…", key: "oc.preparing" });
+    if (progress) progress({ message: "正在准备内置 OpenOCD…", key: "oc.preparing" });
     const parent = path.dirname(dest);
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const staging = path.join(parent, `.openocd-staging-${nonce}`);

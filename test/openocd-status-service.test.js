@@ -41,9 +41,10 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(await statusService.refresh(), "openocd");
         assert.strictEqual(await statusService.resolve("openocd"), "openocd");
         assert.ok(statusEvents.some((event) => event.state === "ready"));
-        checker.installBundledAndConfigure = async () => "/bundled/openocd";
+        checker.installBundledAndConfigure = async () =>
+            assert.fail("Legacy install actions must not install or configure");
         checker.pickOpenOcdPath = async () => "/picked/openocd";
-        assert.strictEqual(await statusService.handleAction("install"), "/bundled/openocd");
+        assert.strictEqual(await statusService.handleAction("install"), "openocd");
         assert.strictEqual(await statusService.handleAction("select"), "/picked/openocd");
         checker.cached = { found: true, path: "old", requested: "old", version: "0.12.0" };
         assert.strictEqual(await statusService.resolve("new-openocd"), "new-openocd");

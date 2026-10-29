@@ -55,8 +55,15 @@ try {
     assert.strictEqual(openocdShown(restored.document), true, "a new missing result remains visible");
     const notice = restored.document.querySelector('[data-notice-id="openocd"]');
     assert.ok(notice.classList.contains("notice--warning"));
+    assert.deepStrictEqual(
+        Array.from(notice.querySelectorAll(".notice-action"), (button) => button.textContent.trim()),
+        ["选择路径", "重新检测"],
+        "even legacy statuses with canInstall must only offer path selection and recheck"
+    );
     notice.querySelector(".notice-action.primary").click();
-    assert.deepStrictEqual(restored.messages.at(-1), { type: "openocdAction", action: "install" });
+    assert.deepStrictEqual(restored.messages.at(-1), { type: "openocdAction", action: "select" });
+    notice.querySelectorAll(".notice-action")[1].click();
+    assert.deepStrictEqual(restored.messages.at(-1), { type: "openocdAction", action: "check" });
     missing = restored.getState();
 } finally {
     restored.close();
@@ -66,6 +73,12 @@ const failed = render(html, missing);
 try {
     assert.strictEqual(openocdShown(failed.document), true);
     assert.strictEqual(failed.document.getElementById("skillStatus").getAttribute("aria-checked"), "false");
+    failed.send({ type: "setLang", lang: "en" });
+    failed.send({ type: "openocdStatus", state: "preparing", key: "oc.preparing" });
+    const preparation = failed.document.querySelector('[data-notice-id="openocd"]');
+    assert.ok(preparation.classList.contains("notice--busy"));
+    assert.match(preparation.textContent, /Preparing bundled OpenOCD/);
+    assert.strictEqual(preparation.querySelectorAll(".notice-action").length, 0);
     failed.send({ type: "openocdStatus", state: "checking", key: "oc.checking" });
     assert.ok(
         failed.document.querySelector('[data-notice-id="openocd"]').classList.contains("notice--busy"),

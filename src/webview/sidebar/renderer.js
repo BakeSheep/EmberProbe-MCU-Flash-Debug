@@ -2573,30 +2573,23 @@ function openocdStatus(m) {
     m = m || {};
     lastOpenocd = m;
     uiState.sidebarStatus ||= {};
-    const { state, key, params, message, canInstall } = m;
-    uiState.sidebarStatus.openocd = { state, key, params, message, canInstall };
+    const { state, key, params, message } = m;
+    uiState.sidebarStatus.openocd = { state, key, params, message };
     api?.setState?.(uiState);
     const k = m.state || "checking",
-        busy = k === "checking" || k === "installing";
+        busy = k === "checking" || k === "preparing";
     if (k === "ready") return clearNotice("global", "openocd");
     const action = (key, name, primary) => ({
         label: { key },
         primary,
         message: { type: "openocdAction", action: name }
     });
-    const install = m.canInstall !== false;
     setNotice("global", "openocd", {
         level: busy ? "info" : k === "missing" ? "warning" : "error",
         busy,
         title: { key: "sb.openocdEnv" },
         text: m.key ? { key: m.key, params: m.params } : m.message || { key: "oc.checking" },
-        actions: busy
-            ? []
-            : [
-                  ...(install ? [action("sb.install", "install", true)] : []),
-                  action("sb.selectPath", "select", !install),
-                  action("sb.recheck", "check")
-              ],
+        actions: busy ? [] : [action("sb.selectPath", "select", true), action("sb.recheck", "check")],
         dismissible: false
     });
 }
