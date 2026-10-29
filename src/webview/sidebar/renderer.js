@@ -1,6 +1,7 @@
 const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     dot = document.getElementById("statusDot"),
     text = document.getElementById("statusText"),
+    flashStatus = document.getElementById("flashStatus"),
     liveBox = document.getElementById("liveValues"),
     liveCard = liveBox && liveBox.closest(".live-box"),
     writeBox = document.getElementById("writeValues"),
@@ -541,7 +542,37 @@ function configurationIncomplete() {
         return !value || value.dataset.i18n === "common.notSelected" || !value.textContent.trim();
     });
 }
-function revealIncompleteConfiguration() {
+// The folded configuration card names the chip family and probe once ELF, debugger and target are all chosen.
+function configName(row) {
+    const value = mcuConfigSection?.querySelector(`${row} .row-copy > small`);
+    if (!value || value.dataset.i18n === "common.notSelected") return "";
+    return value.textContent
+        .trim()
+        .split(/[\\/]/)
+        .pop()
+        .replace(/\.cfg$/i, "");
+}
+const PROBE_NAMES = [
+    [/^jlink/i, "J-Link"],
+    [/^stlink/i, "ST-Link"],
+    [/^cmsis-dap/i, "CMSIS-DAP"]
+];
+function renderConfigSummary() {
+    const summary = document.getElementById("mcuConfigSummary");
+    if (!summary) return;
+    let shown = "";
+    if (!configurationIncomplete()) {
+        // OpenOCD names targets in lower case ("stm32f4x"); the family reads as STM32F4x.
+        const chip = configName('[data-command="mcu-vscode.selectMcuCore"]');
+        const probe = configName(".debugger-config-row");
+        const family = chip === chip.toLowerCase() ? chip.toUpperCase().replace(/X$/, "x") : chip;
+        shown = `${family} · ${PROBE_NAMES.find(([pattern]) => pattern.test(probe))?.[1] || probe}`;
+    }
+    summary.textContent = shown;
+    summary.title = shown;
+}
+function revealIncompleteConfiguration(e) {
+    if (e?.currentTarget?.hasAttribute?.("data-config-free")) return;
     if (!configurationIncomplete() || !mcuConfigSection || mcuConfigSection.open) return;
     mcuConfigSection.open = true;
     uiState.sections ||= {};
@@ -557,6 +588,7 @@ function showDebuggerConfig(name) {
     value.title = name;
     if (name) value.removeAttribute("data-i18n");
     else value.setAttribute("data-i18n", "common.notSelected");
+    renderConfigSummary();
 }
 function revealConnectedProbes() {
     if (!probeConfig) return;
@@ -604,6 +636,8 @@ function setStat(cls, key, params, txt) {
     dot.className = "status-dot " + cls;
     dot.title = s;
     text.textContent = s;
+    // The status line sits in the flash card's notice box, coloured like the toolbar dot.
+    if (flashStatus) flashStatus.dataset.state = cls || "busy";
     lastStatus = { cls: cls, key: key || "", params: params || null, text: s };
 }
 function applyStatus() {
@@ -874,8 +908,12 @@ function sbRenderScalarRow(item) {
         if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
     });
     row.append(nameWrap, val, rm);
-    const footer = EmberProbeRuntime.createVariableNotices(row, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        row,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     // The pointee is part of the variable's card, on a second grid row below its value.
     const host = info.isPointer && sbPointerPointee(row, item.name, sbDisplayName(item), info);
@@ -2415,8 +2453,12 @@ function sbRenderComposite(item) {
         arrow.classList.toggle("open", sbExpanded[item.name]);
         saveSbUi();
     };
-    const footer = EmberProbeRuntime.createVariableNotices(body, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        body,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;
@@ -2801,11 +2843,12 @@ if (svdDownload)
         } else if (lastSvd.state !== "cancelling")
             api.postMessage({ type: "executeCommand", cmd: "mcu-vscode.downloadOfficialSvd" });
     };
+renderConfigSummary();
 document.querySelectorAll("[data-command]").forEach(
     (b) =>
-        (b.onclick = () => {
+        (b.onclick = (e) => {
             if (!api) return setStat("error", "sb.extNotConnected");
-            revealIncompleteConfiguration();
+            revealIncompleteConfiguration(e);
             setStat("", "sb.executing");
             api.postMessage({ type: "executeCommand", cmd: b.dataset.command });
         })

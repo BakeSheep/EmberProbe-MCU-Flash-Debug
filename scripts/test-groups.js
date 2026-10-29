@@ -220,6 +220,7 @@ const TEST_GROUPS = Object.freeze({
         "sampling-read-efficiency.test.js",
         "sampling-scatter.test.js",
         "sampling-timing-link.test.js",
+        "sidebar-layout.test.js",
         "sidebar-sections.test.js",
         "sidebar-status-restore.test.js",
         "skill-installer.test.js",

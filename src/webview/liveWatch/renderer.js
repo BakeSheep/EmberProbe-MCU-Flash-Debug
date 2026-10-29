@@ -1268,8 +1268,12 @@ function renderScalarCard(item) {
         toggleCurve(item.name);
     });
     card.append(toggle, val, rm);
-    const footer = EmberProbeRuntime.createVariableNotices(card, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        card,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     // The pointee is part of the variable's card, on a grid row below its value.
     const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
@@ -1928,8 +1932,12 @@ function renderCompositeCard(item, idx, box) {
         saveUi();
         dirty = true;
     };
-    const footer = EmberProbeRuntime.createVariableNotices(body, t, document.createElement("div"), (text) =>
-        api?.postMessage({ type: "copyText", text })
+    const footer = EmberProbeRuntime.createVariableNotices(
+        body,
+        t,
+        document.createElement("div"),
+        (text) => api?.postMessage({ type: "copyText", text }),
+        item.name
     );
     if (item.runtimeLayout) {
         runtimeBodies[item.name] = body;

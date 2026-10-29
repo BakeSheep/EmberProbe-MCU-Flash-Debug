@@ -5,6 +5,8 @@
 })(typeof globalThis === "object" ? globalThis : this, function () {
     const LEVELS = ["error", "warning", "info", "success"];
     const SUCCESS_MS = 4000;
+    // Notices sharing a group key fold into one summary box once there are at least this many.
+    const GROUP_MIN = 2;
     // One 16px stroke family. The warning triangle is the one RTOS status and write-risk markers have used;
     // filled dots carry class "dot" so outlined circles stay hollow.
     const ICONS = {
@@ -39,6 +41,7 @@
         const later = options.setTimeout || setTimeout;
         const cancel = options.clearTimeout || clearTimeout;
         const entries = new Map();
+        const groups = new Map();
         container.classList.add("notice-area");
         container.hidden = true;
 
@@ -155,7 +158,74 @@
                 content.append(footer, panel);
             }
             if (content.childNodes.length) box.append(content);
+            // Callers attach query hooks here so a rebuild (update, language switch) keeps them.
+            notice.decorate?.(box);
             return box;
+        }
+        // A group is one box: the shared text, a member count and a toggle; its members keep their own
+        // nodes (title, actions, details) in a list below, so their buttons still work once opened.
+        function buildGroup(key, notice) {
+            const level = normalizeLevel(notice.level);
+            const box = element(
+                "div",
+                "notice notice-group notice--" + level + (notice.compact ? " notice--compact" : "")
+            );
+            box.dataset.noticeGroup = key;
+            box.setAttribute("role", "group");
+            const head = element("div", "notice-head notice-head--buttons");
+            head.insertAdjacentHTML("afterbegin", noticeIconSvg(level, "notice-icon"));
+            const label = element("div", "notice-text");
+            const count = element("span", "notice-count");
+            const buttons = element("div", "notice-buttons");
+            const toggle = button("notice-button notice-group-toggle");
+            buttons.append(toggle);
+            head.append(label, count, buttons);
+            const list = element("div", "notice-group-list");
+            list.id = "notice-group-" + String(key).replace(/[^\w-]/g, "_");
+            toggle.setAttribute("aria-controls", list.id);
+            box.append(head, list);
+            const group = { key, box, label, count, toggle, list, open: !!options.isGroupOpen?.(key) };
+            toggle.addEventListener("click", (event) => {
+                event.stopPropagation();
+                group.open = !group.open;
+                options.onGroupToggle?.(key, group.open);
+                paintGroup(group);
+            });
+            return group;
+        }
+        function paintGroup(group) {
+            const members = [...entries.values()].filter((entry) => entry.group === group.key);
+            group.label.textContent = resolve(members[0]?.notice.text);
+            group.count.textContent = String(members.length);
+            group.toggle.textContent = t(group.open ? "notice.groupHide" : "notice.groupShow");
+            group.toggle.setAttribute("aria-expanded", String(group.open));
+            group.list.hidden = !group.open;
+        }
+        // Moves a group's members into its box once it reaches GROUP_MIN, and back out when it shrinks.
+        function regroup(key) {
+            if (!key) return;
+            const members = [...entries.values()].filter((entry) => entry.group === key);
+            let group = groups.get(key);
+            if (members.length < GROUP_MIN) {
+                if (!group) return;
+                for (const entry of members) {
+                    entry.node.classList.remove("notice--grouped");
+                    group.box.before(entry.node);
+                }
+                group.box.remove();
+                groups.delete(key);
+                return;
+            }
+            if (!group) {
+                group = buildGroup(key, members[0].notice);
+                members[0].node.before(group.box);
+                groups.set(key, group);
+            }
+            for (const entry of members) {
+                entry.node.classList.add("notice--grouped");
+                if (entry.node.parentElement !== group.list) group.list.append(entry.node);
+            }
+            paintGroup(group);
         }
         function sync() {
             container.hidden = entries.size === 0;
@@ -170,13 +240,20 @@
                 node.querySelector(".notice-toggle")?.click();
             if (previous) previous.node.replaceWith(node);
             else container.append(node);
-            const entry = { notice, node, timer: null };
+            const entry = { notice, node, timer: null, group: notice.group || "" };
             const timeout = notice.timeoutMs || (normalizeLevel(notice.level) === "success" ? SUCCESS_MS : 0);
             if (timeout && !notice.sticky)
                 entry.timer = later(() => {
                     if (entries.get(id) === entry) clear(id);
                 }, timeout);
             entries.set(id, entry);
+            if (previous && previous.group !== entry.group) {
+                // A notice whose state changed (loading, failed) leaves its group and stands on its own.
+                if (groups.has(previous.group)) groups.get(previous.group).box.before(node);
+                node.classList.remove("notice--grouped");
+                regroup(previous.group);
+            }
+            regroup(entry.group);
             sync();
             return node;
         }
@@ -186,6 +263,7 @@
             if (entry.timer) cancel(entry.timer);
             entry.node.remove();
             entries.delete(id);
+            regroup(entry.group);
             sync();
         }
         function clearAll() {
@@ -195,9 +273,11 @@
         function relocalize() {
             for (const [id, entry] of entries) {
                 const node = build(id, entry.notice);
+                if (groups.has(entry.group)) node.classList.add("notice--grouped");
                 entry.node.replaceWith(node);
                 entry.node = node;
             }
+            for (const group of groups.values()) paintGroup(group);
         }
         return {
             set,
