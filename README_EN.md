@@ -40,10 +40,10 @@ The sidebar lists global/static variables of the selected ELF. Search by variabl
 - Freeze: sampling and current values continue updating. Resume live releases the snapshot and follows new data. New variables appear after resuming; clearing history clears the snapshot.
 - CSV export always uses original archived samples, defaulting to the selected variables since sampling began or history was last cleared. Freezing does not change the export range. Clear History affects the current panel and debug session; other panels are unaffected. Archives are deleted when the extension exits, so export data you want to keep.
 - Layered sampling: every waveform watch, including hidden curves, follows the waveform target and is archived. Sidebar-only watches and write cards target a fixed 20 Hz without history. Global pause stops both consumers; probe throughput determines the actual rates.
-- Background history keeps up to 30 minutes, subject to point and memory limits. Memory pressure can shorten retention or leave gaps while disk archiving continues. A full archive or disk-write failure pauses sampling. Set `emberprobe.chartHistoryMaxMiB` and `emberprobe.samplingArchiveMaxMiB` to adjust capacities; see [live sampling](docs/LAYERED-SAMPLING.md).
+- The timeline and the All window cover the whole session since sampling started (or history was last cleared): recent data stays in memory and older data is read from the temporary disk archive. Memory pressure only shortens what stays in memory. A full archive or disk-write failure pauses sampling. Set `emberprobe.chartHistoryMaxMiB` and `emberprobe.samplingArchiveMaxMiB` to adjust capacities; see [live sampling](docs/LAYERED-SAMPLING.md).
 
 - Chart navigation: wheel to zoom, left-drag to pan both axes, middle-drag to pan time only, and click a curve to freeze. Use Auto Y to restore automatic vertical scaling.
-- Sampling frequency: enter 0.1–200 Hz or choose a preset. Experimental [max-rate sampling](docs/UNLIMITED-SAMPLING.md) adds a Max rate preset for standalone sampling only.
+- Sampling frequency: enter 0.1–200 Hz or choose a preset. The preset slider also offers [Max rate](docs/UNLIMITED-SAMPLING.md), which applies to standalone sampling only.
 
 ## Agent Skills
 

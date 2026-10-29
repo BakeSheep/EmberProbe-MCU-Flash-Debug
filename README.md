@@ -31,7 +31,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 | [一、配置与连接](#一配置与连接) | 一键配置、Debug 构建预设、手动配置、J-Link 配置、ARM 工具链 |
 | [二、功能使用](#二功能使用) | 烧录、复位/不复位调试、芯片信息、实时读写、波形图、外设寄存器、RTOS 任务、内存占用 |
 | [三、高级功能](#三高级功能) | RTOS 栈使用配置、调用栈任务感知、launch.json、探针与采样设置、C++ 显示、Agent Skills |
-| [四、实验性功能](#四实验性功能) | 外部 GDB Server、不限速采样、多核共享调试组 |
+| [四、实验性功能](#四实验性功能) | 外部 GDB Server、多核共享调试组、STM32C5 支持 |
 | [常见问题](#常见问题) | 变量读不到、探针被占用、J-Link 打不开等 |
 
 ### 一、配置与连接
@@ -42,7 +42,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 2. **自动检测配置**：展开“MCU 配置”，点击 **自动检测配置**，确认以下结果：
    - **ELF 固件**：工作区内最新的 `*.elf`；
    - **MCU 目标**：根据工程中的芯片型号匹配目标配置；
-   - **调试器**：识别 ST-Link、CMSIS-DAP/DAPLink、J-Link 等探针，多台连接时按提示选择。
+   - **调试器**：识别 ST-Link、CMSIS-DAP/DAPLink、J-Link 等探针；连接了多台或多种探针时，在“已连接调试器”列表中点选。
 3. 检测结果有误时，在“手动配置”中调整。
 
 ![一键配置：自动检测、手动配置项与官方 SVD 下载](docs/images/tutorial/01-config.gif)
@@ -62,6 +62,7 @@ Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变�
 | ELF 固件 | 要烧录或观测的 `*.elf` |
 | 调试器 | 与探针对应的配置，如 `stlink.cfg`、`cmsis-dap.cfg`、`jlink.cfg` |
 | MCU 目标 | 与芯片对应的配置，如 `stm32f4x.cfg`、`stm32h7x.cfg` |
+| 已连接调试器 | 列出所有已连接的探针并标出下一次操作使用的设备，点选即固定；选择其他类型的设备时，“选择调试器”同步切换为该类型的默认脚本。点击 **↻** 刷新，并显示各探针所连芯片的内核 |
 
 “其他配置”中的可选项：
 
@@ -78,24 +79,24 @@ Release 或去掉调试信息的 ELF 可能导致变量无法展开、局部变�
 Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工具时通常需要恢复 SEGGER 驱动。
 
 1. 选择 `jlink.cfg`，或使用自动检测。
-2. 出现驱动不匹配诊断时，在“选择调试器”旁的驱动下拉框选择 **WinUSB**，按提示完成 Windows 管理员授权。
-3. 需要使用 J-Flash、Ozone 等工具时，在同一入口选择 **SEGGER** 恢复驱动。
+2. 出现驱动不匹配诊断时，在“已连接调试器”中该 J-Link 卡片的驱动下拉框选择 **WinUSB**，按提示完成 Windows 管理员授权。多台 J-Link 可逐台切换。
+3. 需要使用 J-Flash、Ozone 等工具时，在同一下拉框选择 **SEGGER** 恢复驱动。
 
 先关闭占用探针的其他软件。不同 J-Link 硬件与固件的兼容性可能不同，详细要求见 [J-Link 兼容性说明](docs/JLINK-COMPATIBILITY.md)。
 
-多台探针连接时按提示选择设备；指定的设备不在线时不会静默改用其他探针。序列号、协议与速度可在第三章“探针高级设置”中调整。
+多台探针连接时在“已连接调试器”中点选设备；所选设备拔出后显示“未连接”，不会改用其他探针。序列号、协议与速度可在第三章“探针高级设置”中调整。
 
 #### 5. ARM 工具链
 
 烧录与独立实时采样只需要 OpenOCD；**断点调试**还需要 ARM GDB 工具链，可使用 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)。
 
-插件优先从 PATH 查找。首次调试找不到工具链时，按提示选择工具链根目录或 `bin` 目录；也可设置 `emberprobe.armToolchainPath` / `emberprobe.gdbPath`。
+插件依次查找 `emberprobe.armToolchainPath` / `emberprobe.gdbPath` 等设置、之前选定的目录、PATH，以及 ST bundles、STM32CubeCLT 与 STM32CubeIDE 自带的工具链；均未找到时，再提示选择工具链根目录或 `bin` 目录。见 [调试工具链查找](docs/DEBUG-TOOLCHAIN.md)。
 
 ### 二、功能使用
 
 #### 1. 烧录
 
-点击 **烧录**，写入当前 ELF、校验并复位运行。状态行与日志显示进度，失败时展开“连接诊断”查看原因。
+点击 **烧录**，写入当前 ELF、校验并复位运行；固件与目标 Flash 一致时跳过擦写。状态行与日志显示进度，失败时展开“连接诊断”查看原因。
 
 也可右键工程文件夹选择 **EmberProbe: 下载程序**，或从命令面板执行同名命令。
 
@@ -105,7 +106,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 | 按钮 | 行为 |
 | --- | --- |
-| **复位调试** | 下载当前固件，复位并运行到 `main` 停下 |
+| **复位调试** | 下载当前固件（与目标一致时跳过），复位并运行到 `main` 停下 |
 | **不复位调试** | 附加并暂停目标，**不复位、不下载固件**，保留当前现场 |
 
 > 使用“不复位调试”时，选中的 ELF 必须与芯片中正在运行的固件一致。
@@ -113,7 +114,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 进入调试后，使用 VS Code 原生界面：
 
 - 继续/暂停、单步、重启与停止；
-- 断点、条件断点、调用栈、监视表达式与调试控制台；
+- 断点、条件断点、调用栈与监视表达式；调试控制台可直接输入 GDB 命令（如 `bt`、`x/16wx 0x20000000`），见 [GDB 控制台](docs/GDB-CONSOLE.md)；
 - 展开结构体、数组、枚举，以及 `std::vector`、`std::string` 等常见 STL 容器；
 - 侧边栏实时读写、外设与 RTOS 面板跟随当前调试会话，暂停时查看快照。
 
@@ -165,28 +166,32 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 点击实时读写中的 **图表**，或执行 **EmberProbe: 实时变量查看**，打开波形窗口并添加变量。
 
-![波形图：采样、冻结、曲线对比与导出（部分界面可能与当前版本不同）](docs/images/tutorial/06-waveform.gif)
+![波形图：采样、归一化、冻结、缩放与导出](docs/images/tutorial/06-waveform.gif)
 
 **工具栏**
 
 | 控件 | 作用 |
 | --- | --- |
-| 数值栏 | 查看当前值，可折叠或拖动分隔条调整宽度 |
-| 采样频率 | 输入 0.1–200 Hz 或选择预设挡位；默认 30 Hz，实际频率受探针吞吐影响 |
+| 数值栏 | 查看当前值，可折叠、拖动分隔条调整宽度，或切换为悬浮卡片 |
+| 采样频率 | 输入 0.1–200 Hz，或在下拉滑条中选择 20/50/100/200 Hz 与 **不限速**；默认 30 Hz，实际频率受探针吞吐影响 |
 | 冻结图表 / 恢复实时 | 冻结查看历史，后台继续采样；恢复后跟随最新数据 |
 | 归一化 | 将不同量级的曲线缩放到相近高度，方便比较 |
 | 清空历史 | 清空本窗口当前会话的历史 |
 | 导出 CSV | 选择变量与时间范围，默认导出从开始采样或上次清空历史以来的原始采样点 |
 | 自动 Y 轴 | 恢复纵轴自动缩放 |
+| 绘图设置（齿轮） | **高频绘图优化**：高频抖动段画成半透明包络带，曲线只描走势（默认开启）；**指针仅展开部分采样**：指针目标与 STL 容器只读取已展开的部分 |
 
 **图表操作**
 
 - 滚轮以鼠标位置为中心缩放：绘图区同时缩放两轴，坐标轴区域只缩放对应轴；
 - 左键拖动平移两轴，中键拖动仅平移时间轴；
 - 点击曲线冻结并查看该时刻读数，隐藏曲线不会停止采样；
-- 拖动底部时间轴的高亮区域或两端，调整查看范围。
+- 拖动底部时间轴的高亮区域或两端，调整查看范围；
+- 右键数值栏中的变量（或按 Shift+F10），修改类型、进制（DEC/HEX/BIN）、颜色与线型，进制只影响显示，不影响 CSV。
 
-冻结不改变 CSV 导出范围。内存历史最多保留最近 30 分钟，实际范围受容量限制；完整采样另存临时磁盘归档，扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。
+**不限速**按探针吞吐连续读取，仅在独立采样时生效，调试会话中按有限频率采样；高频会更快消耗内存与磁盘归档，见 [不限速采样](docs/UNLIMITED-SAMPLING.md)。
+
+时间轴与“全部”窗口覆盖从开始采样（或上次清空历史）以来的整段会话：最近数据保存在内存中，更早的数据从临时磁盘归档读取。冻结不改变 CSV 导出范围。归档在扩展退出后自动删除，需要保留的数据请先导出。容量设置见第三章。图表背景可显示自定义淡色图标，见 [波形图背景图标](docs/CHART-BACKGROUND-ICON.md)。
 
 #### 6. 外设寄存器
 
@@ -275,9 +280,10 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 
 | 设置 | 说明 |
 | --- | --- |
-| `emberprobe.probeSerial` | 指定探针序列号，多探针时固定设备 |
+| `emberprobe.probeSerial` | 指定探针序列号，优先于侧栏“已连接调试器”中的点选；一般直接在列表中点选即可 |
 | `emberprobe.transport` | 选择 `auto`（默认）、`swd` 或 `jtag` |
 | `emberprobe.adapterSpeedKhz` | 调试时钟，`0` 使用脚本默认值；连接不稳定时可降低 |
+| `emberprobe.samplingAdapterSpeedKhz` | 独立采样连接的调试时钟，`0` 沿用 `adapterSpeedKhz`；不影响调试与烧录 |
 | `emberprobe.openocdPath` | 指定 OpenOCD 可执行文件 |
 | `emberprobe.tclPort` | 采样连接端口，默认自动分配，一般无需修改 |
 
@@ -288,7 +294,7 @@ Windows 上，OpenOCD 使用 J-Link 需要 **WinUSB** 驱动；使用 SEGGER 工
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `emberprobe.sampleFrequencyHz` | 30 | 波形目标频率；侧边栏目标为 20 Hz |
-| `emberprobe.chartHistoryMaxMiB` | 512 | 内存历史预算；不足时缩短历史或产生缺口，磁盘归档继续 |
+| `emberprobe.chartHistoryMaxMiB` | 512 | 内存历史预算；不足时缩短内存保留范围，更早的数据仍可从磁盘归档查看 |
 | `emberprobe.samplingArchiveMaxMiB` | 1024 | 临时磁盘归档上限，扩展退出后删除 |
 
 隐藏曲线仍会采样和记录。磁盘归档达到上限或写入失败时会暂停采样。详细规则见 [实时变量采样说明](docs/LAYERED-SAMPLING.md)。
@@ -331,15 +337,13 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 
 支持断点、单步、变量与暂停时内存访问，不支持下载、复位、重启及运行期采样。结束后需自行停止服务器，并关闭实验开关以解除探针占用保护。
 
-#### 2. 不限速采样
-
-开启 `emberprobe.experimental.unlimitedSampling.enabled` 后，采样频率的下拉滑条增加 **不限速** 挡位。
-
-仅独立采样生效，调试会话仍使用有限目标频率；实际速率取决于探针吞吐与宿主处理能力。高频会缩短可回看的内存历史，并加快磁盘归档消耗，见 [不限速采样](docs/UNLIMITED-SAMPLING.md)。
-
-#### 3. 多核共享调试组
+#### 2. 多核共享调试组
 
 双核芯片可在 `launch.json` 中通过 `serverGroup`、`numberOfProcessors`、`targetProcessor` 让多个调试会话共用一个 OpenOCD 与探针：先启动一个核，初始化成功后再 attach 其他核。配置示例见 [多核共享 OpenOCD](docs/SHARED-DEBUG-GROUPS.md)。
+
+#### 3. STM32C5 支持
+
+内置 OpenOCD 包含 STM32C5 的 Flash 驱动与 `stm32c5x.cfg`（来自 ST 尚在上游评审中的补丁），`stm32c5` 工程自动选用。仅支持 Flash 擦写与读取，不含选项字节/RDP 命令，尚未经实板验证。见 [OpenOCD 目标配置](docs/OPENOCD-TARGETS.md)。
 
 ### 常见问题
 
@@ -370,10 +374,14 @@ CubeMX 生成支持 Windows/Linux：配置 CubeMX 与 `.ioc` 路径后，先在�
 - [实时变量采样说明](docs/LAYERED-SAMPLING.md)
 - [FreeRTOS 调试说明](docs/RTOS-AWARENESS.md)
 - [J-Link 兼容性说明](docs/JLINK-COMPATIBILITY.md)
+- [探针连接与选择](docs/PROBE-CONNECTIONS.md)
+- [调试工具链查找](docs/DEBUG-TOOLCHAIN.md)
+- [GDB 控制台](docs/GDB-CONSOLE.md)
+- [MCP 服务器](docs/MCP.md)
 - [枚举变量显示](docs/ENUM-VARIABLES.md)
 - [ELF 变量来源筛选](docs/VARIABLE-ORIGIN-FILTER.md)
 - [外部 GDB Server（实验性）](docs/EXTERNAL-GDB-SERVER.md)
-- [不限速采样（实验性）](docs/UNLIMITED-SAMPLING.md)
+- [不限速采样](docs/UNLIMITED-SAMPLING.md)
 - [多核共享调试组（实验性）](docs/SHARED-DEBUG-GROUPS.md)
 - [CubeMX 代码生成说明](docs/CUBEMX-GENERATION.md)
 - [Agent 信任边界](docs/AGENT-TRUST-BOUNDARIES.md)
