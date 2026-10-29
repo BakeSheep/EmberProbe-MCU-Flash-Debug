@@ -7,6 +7,7 @@ const path = require("path");
 const {
     resolveDebugTools,
     findDebugTools,
+    findWarmupDebugTools,
     ensureDebugTools,
     readWindowsPath,
     readCurrentPath
@@ -134,6 +135,29 @@ const { executableName } = require("../src/services/cortexToolchainService");
         Object.assign(vscode.window, prompts);
         currentPath = bin;
         assert.deepStrictEqual(await run(), expected, "refreshed PATH works without restarting the host");
+        const warmupLookup = (readPath, discoverTools = discover, platform = "win32") =>
+            findWarmupDebugTools(vscode, folder, state, readPath, discoverTools, platform);
+        assert.deepStrictEqual(
+            await warmupLookup(
+                async () => bin,
+                () => assert.fail("refreshed PATH must precede ST discovery")
+            ),
+            expected,
+            "Windows background warm-up resolves the same refreshed PATH as launch"
+        );
+        ownSettings.armToolchainPath = bin;
+        assert.deepStrictEqual(
+            await warmupLookup(() => assert.fail("configured tools need no system PATH refresh")),
+            expected
+        );
+        delete ownSettings.armToolchainPath;
+        assert.strictEqual(
+            await warmupLookup(() => assert.fail("background must not run a login shell"), discover, "linux"),
+            null
+        );
+        vscode.window.showWarningMessage = async () => assert.fail("warm-up must never prompt");
+        assert.strictEqual(await warmupLookup(async () => ""), null);
+        Object.assign(vscode.window, prompts);
         const otherBin = path.join(root, "other-bin");
         fs.mkdirSync(otherBin);
         for (const name of ["gdb", "objdump", "nm"]) {

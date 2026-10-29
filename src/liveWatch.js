@@ -1001,7 +1001,8 @@ class ManagedOpenOcdSession {
                     continue;
                 }
                 // A GDB/telnet/Tcl client closing its socket (WSA 10054, connection reset) is not a target fault.
-                if (/^Error on socket '/i.test(clean)) continue;
+                // OpenOCD prints it via LOG_ERROR, so the line arrives as "Error: Error on socket 'GDB': ...".
+                if (/^(?:Error\s*:\s*)?Error on socket '/i.test(clean)) continue;
                 // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (

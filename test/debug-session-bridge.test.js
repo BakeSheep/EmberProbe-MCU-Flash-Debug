@@ -420,6 +420,26 @@ async function testBackgroundStatusBroadcasts(debugType) {
             assert.strictEqual(memoryBridge.writing, false);
             memoryBridge.dispose();
         }
+        {
+            // Saving the write list refreshes the read plan while the paused write is in flight; the
+            // target is still halted, so the write completes and the refresh follows it.
+            const { memoryBridge, ram } = pausedMemoryBridge(false);
+            const memorySession = memoryBridge.activeSession;
+            const customRequest = memorySession.customRequest;
+            let refreshed = false;
+            memorySession.customRequest = async (command, args) => {
+                if (command === "readMemory" && !refreshed) {
+                    refreshed = true;
+                    memoryBridge.refreshSnapshot();
+                }
+                return customRequest(command, args);
+            };
+            await memoryBridge.writeAndVerify([{ name: "word", address: 0x20000000, bytes: [1, 2, 3, 4] }]);
+            assert.deepStrictEqual([...ram], [1, 2, 3, 4]);
+            assert.strictEqual(memoryBridge.snapshotPending, true, "the deferred plan refresh runs after the write");
+            assert.strictEqual(memoryBridge.refreshAfterWrite, false);
+            memoryBridge.dispose();
+        }
 
         bridge.setIntent(false);
         assert.strictEqual(bridge.canRead, false);

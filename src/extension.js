@@ -44,6 +44,9 @@ function activate(context) {
             await provider.refreshOpenOcdStatus(true);
         }),
         vscode.workspace.onDidChangeConfiguration(event => {
+            if (["gdbPath", "armToolchainPath", "armToolchainPrefix", "objdumpPath"].some(
+                key => event.affectsConfiguration("emberprobe." + key)
+            )) provider.scheduleGdbWarmup();
             if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
             if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
             const connectionChanged = ["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));

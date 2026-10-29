@@ -3,9 +3,8 @@
 const path = require("path");
 const { spawn } = require("child_process");
 
-// Windows can need seconds to start a large GDB executable the first time after boot or a toolchain
-// update (on-access scanning, cold file cache), and that start sits on the debug path while OpenOCD
-// already holds the probe. A throwaway `--version` run pays it in the background instead.
+// Windows can need seconds to start GDB cold. Complete a throwaway `--version` run in the background
+// where possible, and settle any remaining preparation before a managed launch acquires the probe.
 const REWARM_MS = 10 * 60 * 1000;
 const RUN_BUDGET_MS = 30000;
 
@@ -16,6 +15,7 @@ class GdbWarmup {
         this.platform = platform;
         this.budgetMs = budgetMs;
         this.warmedAt = new Map();
+        this.results = new Map();
         this.running = new Map();
         this.disposed = false;
     }
@@ -33,8 +33,23 @@ class GdbWarmup {
         if (active) return active.done;
         const last = this.warmedAt.get(key);
         if (last !== undefined && this.now() - last < REWARM_MS) return Promise.resolve(true);
-        const entry = { child: null, done: null };
+        const entry = { child: null, done: null, startedAt: this.now(), result: null, cancel: () => {} };
         entry.done = new Promise((resolve) => {
+            let settled = false;
+            let timer;
+            const finish = (ok) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                entry.result = {
+                    state: ok ? "ready" : "failed",
+                    durationMs: Math.max(0, this.now() - entry.startedAt)
+                };
+                this.results.set(key, entry.result);
+                if (ok && !this.disposed) this.warmedAt.set(key, this.now());
+                resolve(ok);
+            };
+            entry.cancel = () => finish(false);
             try {
                 entry.child = this.spawnProcess(gdbPath, ["--version"], {
                     stdio: "ignore",
@@ -42,29 +57,46 @@ class GdbWarmup {
                     shell: false
                 });
             } catch {
-                resolve(false);
+                finish(false);
                 return;
             }
-            const timer = setTimeout(() => entry.child.kill(), this.budgetMs);
+            timer = setTimeout(() => {
+                // Launch may await this promise. A missing exit event must not make that wait unbounded.
+                // Retain the child in running until exit so dispose can retry cleanup without duplicating it.
+                finish(false);
+                try {
+                    entry.child.kill();
+                } catch {
+                    /* Ownership remains until exit or disposal. */
+                }
+            }, this.budgetMs);
             timer.unref?.();
-            const finish = (ok) => {
-                clearTimeout(timer);
-                resolve(ok);
-            };
-            entry.child.once("error", () => finish(false));
-            entry.child.once("exit", (code) => finish(code === 0));
+            entry.child.once("error", () => {
+                if (!entry.child.pid) this.running.delete(key);
+                finish(false);
+            });
+            entry.child.once("exit", (code) => {
+                this.running.delete(key);
+                finish(code === 0);
+            });
             entry.child.unref?.();
-        }).then((ok) => {
-            this.running.delete(key);
-            if (ok && !this.disposed) this.warmedAt.set(key, this.now());
-            return ok;
         });
         this.running.set(key, entry);
+        if (!entry.child) this.running.delete(key);
         return entry.done;
+    }
+    // Durations and state only; safe to forward to the adapter's performance trace.
+    snapshot(gdbPath) {
+        const key = path.win32.normalize(gdbPath).toLowerCase();
+        const active = this.running.get(key);
+        if (active && !active.result)
+            return { state: "pending", durationMs: Math.max(0, this.now() - active.startedAt) };
+        return { ...(active?.result || this.results.get(key) || { state: "notStarted", durationMs: 0 }) };
     }
     dispose() {
         this.disposed = true;
-        for (const { child } of this.running.values()) {
+        for (const { child, cancel } of this.running.values()) {
+            cancel();
             try {
                 child?.kill();
             } catch {

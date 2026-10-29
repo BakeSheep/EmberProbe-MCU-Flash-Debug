@@ -33,6 +33,7 @@ const keepAlive = setInterval(() => {}, 1000);
         const { calls, spawnProcess } = fakeSpawn();
         const warmup = new GdbWarmup({ spawnProcess, now: () => now, platform: "win32" });
         const first = warmup.warm(GDB);
+        assert.deepStrictEqual(warmup.snapshot(GDB), { state: "pending", durationMs: 0 });
         // Concurrent requests for the same executable share one process, whatever the path casing.
         assert.strictEqual(warmup.warm(GDB.toUpperCase()), first);
         assert.strictEqual(calls.length, 1);
@@ -42,6 +43,7 @@ const keepAlive = setInterval(() => {}, 1000);
         assert(calls[0].child.unrefed, "a warm-up never keeps the extension host alive");
         calls[0].child.emit("exit", 0);
         assert.strictEqual(await first, true);
+        assert.deepStrictEqual(warmup.snapshot(GDB), { state: "ready", durationMs: 0 });
         assert.strictEqual(await warmup.warm(GDB), true);
         assert.strictEqual(calls.length, 1, "a recent warm-up is reused");
         now += REWARM_MS;
@@ -53,6 +55,7 @@ const keepAlive = setInterval(() => {}, 1000);
         assert.strictEqual(calls.length, 3, "a failed warm-up is not remembered");
         calls[2].child.emit("error", new Error("ENOENT"));
         assert.strictEqual(await retry, false);
+        assert.strictEqual(warmup.snapshot(GDB).state, "failed");
     }
     {
         const { calls, spawnProcess } = fakeSpawn();
@@ -86,6 +89,24 @@ const keepAlive = setInterval(() => {}, 1000);
         assert.strictEqual(calls.length, 2, "nothing starts after dispose");
     }
     {
+        const { calls, spawnProcess } = fakeSpawn();
+        const warmup = new GdbWarmup({ spawnProcess, platform: "win32", budgetMs: 5 });
+        const waiting = warmup.warm(GDB);
+        calls[0].child.kill = () => {
+            calls[0].child.killed = true;
+            return false;
+        };
+        assert.strictEqual(await waiting, false, "launch is bounded even when process exit is never confirmed");
+        assert.strictEqual(warmup.snapshot(GDB).state, "failed");
+        assert.strictEqual(warmup.warm(GDB), waiting, "an unconfirmed process is retained rather than duplicated");
+        calls[0].child.emit("exit", 0);
+        assert(!warmup.warmedAt.has(GDB.toLowerCase()), "a late clean exit cannot turn a timeout into success");
+        const retry = warmup.warm(GDB);
+        calls[1].child.emit("exit", 0);
+        assert.strictEqual(await retry, true);
+        warmup.dispose();
+    }
+    {
         // Activation scheduling: trusted workspaces with chosen firmware only, using the prompt-free lookup.
         const folder = { uri: { fsPath: "C:\\work", toString: () => "folder" } };
         const vscode = { workspace: { isTrusted: true } };
@@ -93,7 +114,7 @@ const keepAlive = setInterval(() => {}, 1000);
         const Host = loadProvider(vscode, {
             "./services/debugToolPreflight": {
                 ensureDebugTools: async () => null,
-                findDebugTools: (_vscode, target) => {
+                findWarmupDebugTools: async (_vscode, target) => {
                     lookups.push(target);
                     return { gdbPath: GDB };
                 }
@@ -110,7 +131,7 @@ const keepAlive = setInterval(() => {}, 1000);
             _shutdownPromise: null
         });
         const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
-        host.scheduleGdbWarmup(0);
+        host.scheduleGdbWarmup();
         await settle();
         assert.deepStrictEqual(warmed, [GDB]);
         assert.deepStrictEqual(lookups, [folder]);

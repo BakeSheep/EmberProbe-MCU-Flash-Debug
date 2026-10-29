@@ -111,6 +111,7 @@ class DebugSessionBridge {
         this.timer = null;
         this.polling = false;
         this.writing = false;
+        this.refreshAfterWrite = false;
         this.consecutiveErrors = 0;
         this.snapshotPending = false;
         this.snapshotReady = false;
@@ -401,6 +402,12 @@ class DebugSessionBridge {
 
     refreshSnapshot() {
         if (!this.intentEnabled || !this.paused || !this.hasSession || this.conflict) return;
+        // The target is still paused, so a changed read plan must not abort an in-flight write;
+        // refresh once the write has published its own snapshot.
+        if (this.writing) {
+            this.refreshAfterWrite = true;
+            return;
+        }
         this._invalidate();
         this.consecutiveErrors = 0;
         this.snapshotReady = false;
@@ -1109,6 +1116,10 @@ class DebugSessionBridge {
             return await this._writeAndVerifyPaused(items, session);
         } finally {
             this.writing = false;
+            if (this.refreshAfterWrite) {
+                this.refreshAfterWrite = false;
+                this.refreshSnapshot();
+            }
         }
     }
 

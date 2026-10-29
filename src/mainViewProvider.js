@@ -101,7 +101,7 @@ const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegrati
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
-const { ensureDebugTools, findDebugTools } = require("./services/debugToolPreflight");
+const { ensureDebugTools, findWarmupDebugTools } = require("./services/debugToolPreflight");
 const { GdbWarmup } = require("./services/gdbWarmup");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
@@ -144,6 +144,15 @@ const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 // older and a newer state of the same variable.
 function latestByName(pending, next) {
     return [...new Map([...(pending || []), ...(next || [])].map((sample) => [sample.name, sample])).values()];
+}
+// Reordering watch cards keeps the same reads; only a changed set refreshes the paused snapshot.
+// Session start and plan refreshes must build the key the same way, or the first refresh of a
+// session (e.g. saving a write-list value) looks like a plan change and aborts an in-flight write.
+function debugReadPlanKey(items) {
+    return items
+        .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
+        .sort()
+        .join("|");
 }
 // 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
@@ -889,8 +898,9 @@ class MainViewProvider {
                 // The user dismissed the toolchain prompt: a cancellation, not a failure.
                 if (!cortexTools) return null;
                 startup?.phase("tools");
-                // Overlaps a cold GDB start with probe preflight and OpenOCD start-up.
-                void this._gdbWarmup?.warm(cortexTools.gdbPath);
+                // Finish a cold start before holding the probe. Background preparation normally already
+                // completed; overlap any remainder with OpenOCD/SVD resolution, never a second cold GDB.
+                const warming = this._gdbWarmup?.warm(cortexTools.gdbPath);
                 const ownDebug = vscode.workspace.getConfiguration("emberprobe", workspaceFolder.uri);
                 const images = normalizeDebugImages(
                     configuration || {},
@@ -916,6 +926,9 @@ class MainViewProvider {
                 ]);
                 if (!openocdPath) return false;
                 startup?.phase("openocd");
+                await warming;
+                startup?.phase("warmup");
+                if (this._shutdownPromise || vscode.workspace.isTrusted === false) return false;
                 const svdPath = cleanWindowsPath(resolvedSvdPath);
                 openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
                 if (serverOptions.serverGroup) {
@@ -989,7 +1002,10 @@ class MainViewProvider {
                 // A changed image downloads at the sidebar's programming clock (see docs/FLASH-PERFORMANCE.md).
                 if (debugConfig.request === "launch" && this._managedDebugServer?.options)
                     debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this._managedDebugServer.options);
-                if (startup) debugConfig.__emberprobeStartupTrace = startup.finish();
+                if (startup)
+                    debugConfig.__emberprobeStartupTrace = startup.finish(
+                        this._gdbWarmup?.snapshot?.(cortexTools.gdbPath)
+                    );
                 const startupGate = this._armDebugStartupWatchdog();
                 if (configuration) {
                     startAccepted = true;
@@ -5303,11 +5319,7 @@ class MainViewProvider {
         }
         for (const entry of this._livePanels.values()) this._configureChartHistory(entry);
         if (this._debugBridge.hasSession) {
-            // Reordering watch cards keeps the same reads; only a changed set refreshes the snapshot.
-            const planKey = active
-                .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
-                .sort()
-                .join("|");
+            const planKey = debugReadPlanKey(active);
             this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
             if (
                 this._managedDebugServer &&
@@ -5858,9 +5870,7 @@ class MainViewProvider {
         const grouped = this._managedDebugGroup?.bind(session);
         if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
             this._debugLifecycle.session = session;
-        this._debugReadPlanKey = this._activeReadPlan()
-            .map((item) => `${item.name}:${item.address}:${item.size}`)
-            .join("|");
+        this._debugReadPlanKey = debugReadPlanKey(this._activeReadPlan());
         // 多根工作区中会话归属以 VS Code 实际调试目录为准，避免被缓存 ELF 所在目录覆盖。
         this._debugBridge.setWorkspace(session.workspaceFolder || this._commandContext().folder);
         if (
@@ -6021,9 +6031,9 @@ class MainViewProvider {
         this._debugBridge.dispose();
     }
     // Background GDB start for a workspace that has already chosen firmware; see services/gdbWarmup.js.
-    scheduleGdbWarmup(delayMs = 5000) {
+    scheduleGdbWarmup(delayMs = 0) {
         if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
-        this._gdbWarmupTimer = setTimeout(() => {
+        this._gdbWarmupTimer = setTimeout(async () => {
             this._gdbWarmupTimer = null;
             // Workspace settings choose the executable, so an untrusted workspace never runs it.
             if (this._shutdownPromise || !vscode.workspace.isTrusted) return;
@@ -6031,8 +6041,9 @@ class MainViewProvider {
             const { folder } = this._commandContext();
             if (!folder) return;
             try {
-                const tools = findDebugTools(vscode, folder, this._context.workspaceState);
-                if (tools) void this._gdbWarmup.warm(tools.gdbPath);
+                const tools = await findWarmupDebugTools(vscode, folder, this._context.workspaceState);
+                if (tools && !this._shutdownPromise && vscode.workspace.isTrusted)
+                    void this._gdbWarmup.warm(tools.gdbPath);
             } catch (error) {
                 console.error("GDB warm-up skipped:", error);
             }

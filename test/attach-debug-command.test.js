@@ -87,6 +87,44 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     assert(Number.isSafeInteger(startup.startedAt) && startup.startedAt <= Date.now());
     assert.deepStrictEqual(Object.keys(startup.phases), STARTUP_PHASES);
     assert(Object.values(startup.phases).every((duration) => Number.isInteger(duration) && duration >= 0));
+    await host._stopManagedDebugServer();
+    let releaseWarmup;
+    let warmupStarted;
+    const warming = new Promise((resolve) => (warmupStarted = resolve));
+    const gate = new Promise((resolve) => (releaseWarmup = resolve));
+    host._gdbWarmup = {
+        warm: () => {
+            warmupStarted();
+            return gate;
+        },
+        snapshot: () => ({ state: "ready", durationMs: 5300 })
+    };
+    let prepared = false;
+    host.prepareProbeForDebug = async () => (prepared = true);
+    const waiting = host.commandHandlers["mcu-vscode.debug"](undefined, {
+        request: "launch",
+        performanceTrace: true
+    });
+    await warming;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(prepared, false, "a cold GDB prepares before stopping sampling or acquiring the probe");
+    assert.strictEqual(host._probeCoordinator.anyActive(), false);
+    releaseWarmup(true);
+    const warmed = await waiting;
+    assert(prepared);
+    assert.deepStrictEqual(warmed.__emberprobeStartupTrace.gdbWarmup, { state: "ready", durationMs: 5300 });
+    await host._stopManagedDebugServer();
+    host._gdbWarmup = {
+        warm: async () => false,
+        snapshot: () => ({ state: "failed", durationMs: 30000 })
+    };
+    const failedWarmup = await host.commandHandlers["mcu-vscode.debug"](undefined, {
+        request: "attach",
+        performanceTrace: true
+    });
+    assert.strictEqual(failedWarmup.request, "attach", "a failed optimization does not prevent normal startup");
+    assert.strictEqual(failedWarmup.__emberprobeStartupTrace.gdbWarmup.state, "failed");
+    await host._stopManagedDebugServer();
     console.log("attach-debug-command tests passed");
 })().catch((error) => {
     console.error(error);

@@ -143,11 +143,35 @@ function findConfiguredOrPathTools(vscode, folder, state, launch) {
     return resolveDebugTools(options) || resolveDebugTools({ prefix: options.prefix });
 }
 
-// Background warm-up can discover ST installations, but never refreshes PATH or prompts.
+// Synchronous, prompt-free lookup for callers that must not refresh the environment.
 function findDebugTools(vscode, folder, state, launch = {}, discover = findStDebugTools) {
     return (
         findConfiguredOrPathTools(vscode, folder, state, launch) || discover(debugToolOptions(vscode, folder, launch))
     );
+}
+
+// Windows launch refreshes the system PATH before ST discovery. Warm the same executable even
+// when VS Code inherited PATH before a toolchain was installed; never prompt or run a login shell.
+async function findWarmupDebugTools(
+    vscode,
+    folder,
+    state,
+    readPath = readWindowsPath,
+    discover = findStDebugTools,
+    platform = process.platform
+) {
+    if (platform !== "win32") return null;
+    const found = findConfiguredOrPathTools(vscode, folder, state, {});
+    if (found) return found;
+    const options = debugToolOptions(vscode, folder);
+    const currentPath = await readPath();
+    if (currentPath) {
+        const refreshed =
+            resolveDebugTools({ ...options, envPath: currentPath }) ||
+            resolveDebugTools({ prefix: options.prefix, envPath: currentPath });
+        if (refreshed) return refreshed;
+    }
+    return discover(options);
 }
 
 async function ensureDebugTools(
@@ -200,6 +224,7 @@ async function ensureDebugTools(
 module.exports = {
     resolveDebugTools,
     findDebugTools,
+    findWarmupDebugTools,
     ensureDebugTools,
     findStDebugTools,
     readWindowsPath,

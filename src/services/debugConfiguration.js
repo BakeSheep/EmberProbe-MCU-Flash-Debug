@@ -58,7 +58,7 @@ function normalizeDebugServerOptions(config = {}, internal = false) {
 }
 
 // Managed launch phases the extension completes before the adapter starts GDB, in order.
-const STARTUP_PHASES = ["tools", "openocd", "prepare", "preflight", "server"];
+const STARTUP_PHASES = ["tools", "openocd", "warmup", "prepare", "preflight", "server"];
 
 // Durations only, like the adapter's launch trace: no paths or probe identities reach the Debug Console.
 function startupTrace(now = () => performance.now(), clock = Date.now) {
@@ -71,7 +71,7 @@ function startupTrace(now = () => performance.now(), clock = Date.now) {
             phases[name] = Math.round(at - mark);
             mark = at;
         },
-        finish: () => ({ startedAt, phases: { ...phases } })
+        finish: (gdbWarmup) => ({ startedAt, phases: { ...phases }, ...(gdbWarmup ? { gdbWarmup } : {}) })
     };
 }
 
@@ -84,7 +84,15 @@ function normalizeStartupTrace(value) {
         const duration = value.phases?.[name];
         if (Number.isSafeInteger(duration) && duration >= 0) phases[name] = duration;
     }
-    return { startedAt: value.startedAt, phases };
+    const warmup = value.gdbWarmup;
+    const gdbWarmup =
+        warmup &&
+        ["ready", "failed", "pending", "notStarted"].includes(warmup.state) &&
+        Number.isSafeInteger(warmup.durationMs) &&
+        warmup.durationMs >= 0
+            ? { state: warmup.state, durationMs: warmup.durationMs }
+            : null;
+    return { startedAt: value.startedAt, phases, ...(gdbWarmup ? { gdbWarmup } : {}) };
 }
 
 function validateDebugConfiguration(config, folder) {

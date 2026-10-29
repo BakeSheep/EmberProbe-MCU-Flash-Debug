@@ -279,7 +279,8 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
             const unchanged = await launch("unchanged", {
                 __emberprobeStartupTrace: {
                     startedAt: Date.now() - 5000,
-                    phases: { tools: 1, openocd: 2, prepare: -1, preflight: 3.5, server: 4, extra: 9 }
+                    phases: { tools: 1, openocd: 2, warmup: 3, prepare: -1, preflight: 3.5, server: 4, extra: 9 },
+                    gdbWarmup: { state: "ready", durationMs: 5300, executable: primary }
                 }
             });
             const check = unchanged.commands.indexOf(consoleCommand("compare-sections"));
@@ -298,8 +299,9 @@ const consoleCommand = (command) => `-interpreter-exec console ${quote(command)}
                 assert(Number.isInteger(trace.phases[phase]), phase);
             assert(!("postDownloadReset" in trace.phases));
             // Extension-side phases arrive through the launch arguments; only known non-negative integers pass.
-            assert.deepStrictEqual(trace.startup, { tools: 1, openocd: 2, server: 4 });
-            assert.strictEqual(trace.startupMs, 7);
+            assert.deepStrictEqual(trace.startup, { tools: 1, openocd: 2, warmup: 3, server: 4 });
+            assert.strictEqual(trace.startupMs, 10);
+            assert.deepStrictEqual(trace.gdbWarmup, { state: "ready", durationMs: 5300 });
             assert(!unchanged.output.includes(primary), "the trace carries no paths");
             // The extension's firmware record follows the launch: a confirmed image carries the stamp of the
             // executable GDB read, so the record can tell it from a later rebuild.

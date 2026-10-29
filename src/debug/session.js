@@ -795,7 +795,8 @@ class EmberDebugSession extends DebugSession {
                     ...(startup
                         ? {
                               startupMs: Object.values(startup.phases).reduce((sum, value) => sum + value, 0),
-                              startup: startup.phases
+                              startup: startup.phases,
+                              ...(startup.gdbWarmup ? { gdbWarmup: startup.gdbWarmup } : {})
                           }
                         : {})
                 };
