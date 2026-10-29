@@ -431,6 +431,9 @@ class ChartHistoryStore {
         const state = this._source(scope, snapshotId);
         const series = [];
         const span = Math.max(1, range.max - range.min);
+        // Same power-of-two bins as chartInspection.columnBin; this file also runs standalone in the mockup page.
+        const bin = Math.pow(2, Math.round(Math.log2(span / width))),
+            columnOf = (time) => Math.floor(time / bin);
         let totalPoints = 0;
         for (const name of new Set(names)) {
             const s = state.series.get(name);
@@ -497,7 +500,7 @@ class ChartHistoryStore {
                     return;
                 }
                 if (tt >= range.min && tt <= range.max) count++;
-                const next = Math.floor(((tt - range.min) * width) / span);
+                const next = columnOf(tt);
                 if (next !== column) {
                     flushColumn();
                     column = next;
@@ -557,8 +560,7 @@ class ChartHistoryStore {
                                 if (
                                     firstTime < range.min ||
                                     endTime > range.max ||
-                                    Math.floor(((firstTime - range.min) * width) / span) !==
-                                        Math.floor(((endTime - range.min) * width) / span)
+                                    columnOf(firstTime) !== columnOf(endTime)
                                 )
                                     continue;
                                 consume(block, firstIndex, order + firstIndex - part.start);

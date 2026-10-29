@@ -14,13 +14,15 @@ const tracked = new Proxy(raw, {
     }
 });
 const end = raw.at(-1).t;
+// Reductions keep at most four points per power-of-two time bin; bins are within √2 of one column.
+const budget = 4 * Math.ceil(903 * Math.SQRT2);
 const short = visibleSegments(tracked, { min: end - 30000, max: end }, 900);
 assert.equal(
     short.reduce((n, s) => n + s.visibleCount, 0),
     6001
 );
 assert.ok(reads < 60000, "offscreen samples are located with binary search instead of scanned");
-assert.ok(short.flatMap((s) => s.arr).length <= 4 * 903);
+assert.ok(short.flatMap((s) => s.arr).length <= budget);
 
 // Extrema, boundary neighbours and gaps survive reduction; raw history remains untouched.
 const values = [0, 80, -70, 0, null, 0, 90, -60, 0];
@@ -56,6 +58,19 @@ expired.retainedStart = 2;
 assert.equal(visibleSegments(expired, { min: 0, max: 8 }, 1).length, 2);
 assert.deepStrictEqual(visibleSegments([], { min: 0, max: 8 }, 1), []);
 
+// A following range that scrolls by fractional columns keeps the same reduced samples in its interior.
+const epoch = 1.8e12,
+    epochRaw = raw.map((p) => ({ t: epoch + p.t, v: p.v }));
+const scrolled = (shift, grow = 0) => {
+    const min = epoch + 100000 + shift;
+    return visibleSegments(epochRaw, { min, max: min + 30000 + grow }, 900)[0]
+        .arr.map((p) => p.t - epoch)
+        .filter((t) => t >= 102000 && t <= 128000);
+};
+for (const shift of [7, 13.3, 21.9]) assert.deepStrictEqual(scrolled(shift), scrolled(0), "shift " + shift);
+// A growing ("All") range keeps its reduced samples while the power-of-two bin size is unchanged.
+for (const grow of [80, 560, 2400]) assert.deepStrictEqual(scrolled(0, grow), scrolled(0), "growth " + grow);
+
 const graph = render(getLiveWatchContent({ frequencyHz: 200 }, "en"));
 try {
     const w = graph.window;
@@ -66,11 +81,11 @@ try {
     w.invalidateSeries();
     w.draw(1000);
     assert.equal(graph.document.getElementById("points").textContent, "6001 samples");
-    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= 4 * 903);
+    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= budget);
     w.applyWindowPreset("0");
     w.draw(1100);
     assert.equal(graph.document.getElementById("points").textContent, "240001 samples");
-    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= 4 * 903);
+    assert.ok(w.chartState.curveGeometry.value[0].xs.length <= budget);
     assert.equal(w.data.tick.length, 240001, "drawing never downsamples export buffers");
     w.freezeChart();
     assert.equal(w.analysis.snapshot.tick.length, 240001);

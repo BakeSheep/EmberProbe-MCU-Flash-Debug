@@ -108,7 +108,8 @@ async function fastPaths(dir) {
             ).series
         );
     }
-    const range = { min: 0, max: decoded.at(-1).t + 10 },
+    // Wide enough that one power-of-two column holds every sample.
+    const range = { min: 0, max: 2 * decoded.at(-1).t + 10 },
         names = items.map((item) => item.name);
     const before = store.archive.stats.rawBytes;
     assert.deepStrictEqual(
@@ -314,6 +315,8 @@ async function fastPaths(dir) {
                 [
                     [171, 6],
                     [186, 27],
+                    [251, 2],
+                    [266, 23],
                     [291, 0],
                     [296, 7]
                 ]

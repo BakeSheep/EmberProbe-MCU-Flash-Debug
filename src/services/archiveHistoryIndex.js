@@ -2,6 +2,7 @@
 
 const fsp = require("fs/promises");
 const { decodeRecords, scanRecords } = require("./samplingArchiveFormat");
+const { columnBin } = require("../webview/liveWatch/chartInspection");
 
 const MISSING = 1;
 const EXACT = 2;
@@ -36,8 +37,7 @@ const textBytes = (texts) => texts.reduce((n, t) => n + (t?.length || 0) * 2 + 8
 class Columns {
     constructor(range, width, filter) {
         this.range = range;
-        this.width = width;
-        this.span = Math.max(1, range.max - range.min);
+        this.bin = columnBin(Math.max(1, range.max - range.min), width);
         this.filter = filter;
         this.output = [];
         this.weights = filter.keepWeights ? [] : null;
@@ -69,7 +69,7 @@ class Columns {
         if (t > this.range.max) this.done = true;
     }
     accept(t, value, text, weight) {
-        const column = Math.floor(((t - this.range.min) * this.width) / this.span);
+        const column = Math.floor(t / this.bin);
         if (column !== this.column) {
             this.flush();
             this.column = column;
@@ -738,7 +738,7 @@ class ArchiveHistoryIndex {
                 ? new Columns(range, width, filter)
                 : null;
         const plans = [],
-            pixel = Math.max(1, range.max - range.min) / width;
+            pixel = columnBin(Math.max(1, range.max - range.min), width);
         const visit = (l, i) => {
             const level = s.levels[l],
                 at = level.tailIndex === i ? 0 : (i % PAGE) * FIELDS,

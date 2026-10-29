@@ -256,7 +256,8 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
     assert.strictEqual(status.bounds.min, 500);
     assert.ok(store.bytes < 13 * 1024 * 1024);
     const view = store.viewport("panel", ["silent"], status.bounds, 800);
-    assert.ok(view.series.reduce((count, s) => count + s.arr.length, 0) <= 3204);
+    // At most four points per power-of-two time bin; bins are within √2 of one column.
+    assert.ok(view.series.reduce((count, s) => count + s.arr.length, 0) <= 4 * Math.ceil(801 * Math.SQRT2));
     assert.strictEqual(
         view.series.reduce((count, s) => count + s.visibleCount, 0),
         MAX_POINTS
