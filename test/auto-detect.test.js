@@ -105,6 +105,8 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
         "/DSTM32F407xx": "stm32f4x.cfg",
         "startup_stm32f407xx.s": "stm32f4x.cfg",
         stm32c031c6: "stm32c0x.cfg",
+        stm32c562re: "stm32c5x.cfg",
+        "-DSTM32C5A3xx": "stm32c5x.cfg",
         stm32g071rb: "stm32g0x.cfg",
         stm32h743zitx: "stm32h7x_dual_bank.cfg",
         stm32h745zitx: "stm32h7x_dual_bank.cfg",

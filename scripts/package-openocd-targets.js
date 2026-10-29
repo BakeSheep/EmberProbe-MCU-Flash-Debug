@@ -34,29 +34,35 @@ async function archiveInventory(file) {
     return entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-function originalPayloadDigest(entries, archive, targets) {
-    const added = new Set(targets.map((target) => `${archive.scriptsRoot}/${target.path}`));
+// Reviewed files EmberProbe adds under the scripts root: target wrappers and vendor flash loaders.
+function scriptAdditions(manifest) {
+    return [...manifest.targets, ...(manifest.flashLoaders || [])];
+}
+
+function originalPayloadDigest(entries, archive, additions) {
+    const added = new Set(additions.map((addition) => `${archive.scriptsRoot}/${addition.path}`));
     added.add(`${archive.prefix}distro-info/emberprobe-targets.json`);
     return sha256(JSON.stringify(entries.filter((entry) => !added.has(entry.path))));
 }
 
 async function packageTargets() {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-    for (const target of manifest.targets) {
+    const additions = scriptAdditions(manifest);
+    for (const target of additions) {
         const bytes = fs.readFileSync(path.join(root, "resources", "openocd-targets", target.path));
         if (sha256(bytes) !== target.sha256) throw new Error(`Review changed wrapper: ${target.path}`);
     }
     for (const archive of manifest.archives) {
         const file = path.join(root, "resources", archive.file);
         const inventory = await archiveInventory(file);
-        const digest = originalPayloadDigest(inventory, archive, manifest.targets);
+        const digest = originalPayloadDigest(inventory, archive, additions);
         if (digest !== archive.originalPayloadSha256) throw new Error(`Original payload changed: ${archive.file}`);
         const staging = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-targets-"));
         const nextArchive = path.join(os.tmpdir(), `emberprobe-targets-${process.pid}-${archive.platform}.tar.gz`);
         try {
-            const added = new Set(manifest.targets.map((target) => `${archive.scriptsRoot}/${target.path}`));
+            const added = new Set(additions.map((target) => `${archive.scriptsRoot}/${target.path}`));
             added.add(`${archive.prefix}distro-info/emberprobe-targets.json`);
-            for (const target of manifest.targets) {
+            for (const target of additions) {
                 const dest = path.join(staging, archive.scriptsRoot, target.path);
                 const existing = inventory.find((entry) => entry.path === `${archive.scriptsRoot}/${target.path}`);
                 if (existing && existing.sha256 !== target.sha256)
@@ -77,7 +83,8 @@ async function packageTargets() {
                             : { baseArchiveSha256: archive.baseArchiveSha256 }),
                         binarySha256: archive.binarySha256,
                         originalPayloadSha256: archive.originalPayloadSha256,
-                        targets: manifest.targets
+                        targets: manifest.targets,
+                        ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {})
                     },
                     null,
                     4
@@ -107,7 +114,7 @@ async function packageTargets() {
                 [`@${file}`, ...added].map((name) => (name.startsWith("@") ? `@${path.resolve(name.slice(1))}` : name))
             );
             const result = await archiveInventory(nextArchive);
-            if (originalPayloadDigest(result, archive, manifest.targets) !== digest)
+            if (originalPayloadDigest(result, archive, additions) !== digest)
                 throw new Error(`Repacking changed original files or links: ${archive.file}`);
             fs.copyFileSync(nextArchive, file);
             archive.sha256 = sha256(fs.readFileSync(file));
@@ -127,4 +134,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { archiveInventory, originalPayloadDigest };
+module.exports = { archiveInventory, originalPayloadDigest, scriptAdditions };

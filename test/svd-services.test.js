@@ -55,6 +55,7 @@ function zipBuffer(entries) {
         "STM32F407VG"
     ]);
     assert.strictEqual(targetIdentity("stm32f4x.cfg").family, "STM32F4XX");
+    assert.strictEqual(targetIdentity("stm32c0x.cfg").family, "STM32C0XX");
 
     const workspace = await fs.promises.mkdtemp(path.join(os.tmpdir(), "emberprobe-identity-"));
     await fs.promises.writeFile(path.join(workspace, "board.ioc"), "Mcu.Name=STM32F407VGT6\n");

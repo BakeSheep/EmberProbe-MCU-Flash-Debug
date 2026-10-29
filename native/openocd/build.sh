@@ -18,7 +18,7 @@ fi
 grep -qx 'VERSION_ID="10"' /etc/os-release || { echo 'Debian 10 build baseline required' >&2; exit 1; }
 exec 9>"$cache/build.lock"
 flock 9
-key=$(cat "$repo/native/openocd/build-lock.json" "$repo/native/openocd/build.sh" "$repo/native/openocd/prepare-build.js" "$repo/native/openocd/0001-emberprobe-read-scatter.patch" | sha256sum | cut -c1-20)
+key=$(cat "$repo/native/openocd/build-lock.json" "$repo/native/openocd/build.sh" "$repo/native/openocd/prepare-build.js" "$repo"/native/openocd/0*.patch | sha256sum | cut -c1-20)
 work="$cache/work-$key"
 export npm_config_cache="$cache/npm-cache" XPACKS_STORE_FOLDER="$cache/xpacks-store" XPACKS_CACHE_FOLDER="$cache/xpacks-cache"
 export XDG_CACHE_HOME="$cache/xdg-cache" XDG_CONFIG_HOME="$cache/xdg-config" WINEPREFIX="$cache/wine" TMPDIR="$cache/tmp"
@@ -39,6 +39,9 @@ for platform in win32-x64 linux-x64; do
 done
 mkdir -p patches
 cp "$repo/native/openocd/0001-emberprobe-read-scatter.patch" patches/emberprobe-scatter.git.patch
+cp "$repo/native/openocd/0002-stldr-flash-driver.patch" patches/emberprobe-stldr.git.patch
+cp "$repo/native/openocd/0003-stm32c5x-target.patch" patches/emberprobe-stm32c5x.git.patch
+cp "$repo/native/openocd/0004-emberprobe-c5-local-loaders.patch" patches/emberprobe-c5-loaders.git.patch
 node "$repo/native/openocd/prepare-build.js" prepare "$assets" "$cache"
 for platform in win32-x64 linux-x64; do
     "$xpm" run build --config "$platform"

@@ -10,6 +10,7 @@ const { pipeline } = require("stream/promises");
 const {
     PLATFORMS,
     SOURCE_FILE,
+    PATCHES,
     sha256,
     safePath,
     buildIdentity,
@@ -33,7 +34,7 @@ async function main() {
     const sourceDir = path.join(tmp, "sources");
     const source = path.join(input, path.basename(SOURCE_FILE));
     try {
-        for (const name of ["build.sh", "prepare-build.js", "0001-emberprobe-read-scatter.patch", "README.md"])
+        for (const name of ["build.sh", "prepare-build.js", ...PATCHES, "README.md"])
             put(path.join(root, "native/openocd", name), `fixture ${name}`);
         json(path.join(root, "native/openocd/build-lock.json"), {
             image: "fixture@sha256:" + "a".repeat(64),
@@ -50,20 +51,26 @@ async function main() {
             { path: "target/wrapper.cfg", canonical: "target/canonical.cfg", sha256: sha256(Buffer.from(targetBytes)) }
         ];
         put(path.join(root, "resources/openocd-targets/target/wrapper.cfg"), targetBytes);
+        const loaderBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 1, 1, 0]);
+        const flashLoaders = [{ path: "flash_loaders/fixture/loader.xldr", sha256: sha256(loaderBytes) }];
+        put(path.join(root, "resources/openocd-targets/flash_loaders/fixture/loader.xldr"), loaderBytes);
         json(path.join(root, "resources/openocd-targets-manifest.json"), {
             schemaVersion: 1,
             upstream: { revision: "upstream" },
             targets,
+            flashLoaders,
             archives: []
         });
         for (const name of [
             "openocd/src/target/arm_adi_v5.c",
+            "openocd/src/flash/nor/stldr.c",
+            "openocd/tcl/target/stm32c5x.cfg",
             "openocd/jimtcl/jim.c",
             "openocd/src/jtag/drivers/libjaylink/libjaylink/core.c",
             "openocd/COPYING"
         ])
             put(path.join(sourceDir, name), "source " + name);
-        for (const name of ["build.sh", "prepare-build.js", "build-lock.json", "0001-emberprobe-read-scatter.patch"])
+        for (const name of ["build.sh", "prepare-build.js", "build-lock.json", ...PATCHES])
             put(path.join(sourceDir, "recipes", name), fs.readFileSync(path.join(root, "native/openocd", name)));
         put(path.join(sourceDir, "downloads/dependency.tar.gz"), "dependency source");
         const sourceFiles = {};
@@ -127,7 +134,18 @@ async function main() {
         await makeRaw("linux-x64");
         const manifest = await packageRuntime(input, root);
         assert.strictEqual(manifest.schemaVersion, 2);
+        assert.deepStrictEqual(manifest.flashLoaders, flashLoaders);
         await verifyBundle(root);
+        // Flash loaders are reviewed additions like target wrappers: shipped in every archive, bytes pinned.
+        for (const platform of PLATFORMS) {
+            const entries = await inspectArchive(path.join(root, `resources/openocd-${platform}.tar.gz`));
+            const loader = entries.find((entry) => entry.path === `openocd/scripts/${flashLoaders[0].path}`);
+            assert.strictEqual(loader?.sha256, flashLoaders[0].sha256, platform);
+        }
+        const loaderFile = path.join(root, "resources/openocd-targets", flashLoaders[0].path);
+        fs.writeFileSync(loaderFile, "changed loader");
+        await assert.rejects(packageRuntime(input, root), /Review changed target/);
+        fs.writeFileSync(loaderFile, loaderBytes);
         const unchanged = fs.readFileSync(path.join(root, "resources/openocd-targets-manifest.json"));
         fs.rmSync(path.join(rawDirs["win32-x64"], "bin/libusb-1.0.dll"));
         await tar.c(
@@ -151,13 +169,9 @@ async function main() {
         const names = [
             "resources/openocd-targets-manifest.json",
             ...PLATFORMS.map((platform) => `resources/openocd-${platform}.tar.gz`),
-            ...[
-                "build.sh",
-                "prepare-build.js",
-                "build-lock.json",
-                "0001-emberprobe-read-scatter.patch",
-                "README.md"
-            ].map((name) => "native/openocd/" + name),
+            ...["build.sh", "prepare-build.js", "build-lock.json", ...PATCHES, "README.md"].map(
+                (name) => "native/openocd/" + name
+            ),
             "THIRD_PARTY_NOTICES.md"
         ];
         const zip = async (changed = "", omit = "") => {

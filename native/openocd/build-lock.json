@@ -62,5 +62,17 @@
     "libudev1": "241-7~deb10u10",
     "libudev-dev": "241-7~deb10u10"
   },
-  "helperIntegrity": "sha512-WdpbzEqM3qiy+qv2OfYdlGZfK510GmeQ/gK6O3PonimZOOVTYk0pjxTHohlzK014j8fbDxGAmORRjCZxD+jyLQ=="
+  "helperIntegrity": "sha512-WdpbzEqM3qiy+qv2OfYdlGZfK510GmeQ/gK6O3PonimZOOVTYk0pjxTHohlzK014j8fbDxGAmORRjCZxD+jyLQ==",
+  "upstreamReviews": {
+    "0002-stldr-flash-driver.patch": {
+      "review": "https://review.openocd.org/c/openocd/+/9697/8",
+      "commit": "578e55ded6592c77cd04262ea3ce24e5853a6170",
+      "sha256": "9db535231a7a229f5057eaa217f931fb46899942d95b0c1e4eeb9d1d6930ffcc"
+    },
+    "0003-stm32c5x-target.patch": {
+      "review": "https://review.openocd.org/c/openocd/+/9699/6",
+      "commit": "1f744cece76571a8dc5ac59f3024996227bb022a",
+      "sha256": "9631a4d6c6269b3289aa48bcea015cfbcffc3fc20acc82c2f1ca8fcab4578dd9"
+    }
+  }
 }

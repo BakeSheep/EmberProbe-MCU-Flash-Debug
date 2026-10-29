@@ -201,6 +201,34 @@ const {
             );
             if (name === "rp2040-core0.cfg") assert.match(output, /EP_TARGETS=rp2040\.core0\s*$/m);
         }
+        // STM32C5 declares an stldr bank, and every DEV_ID loader resolves inside the bundled scripts.
+        assert.ok(targets.includes("stm32c5x.cfg") && targets.includes("stm32c0x.cfg"));
+        const c5 = spawnSync(
+            located,
+            [
+                "-f",
+                "interface/cmsis-dap.cfg",
+                "-c",
+                "transport select swd",
+                "-f",
+                "target/stm32c5x.cfg",
+                "-c",
+                "echo EP_TARGETS=[target names]",
+                "-c",
+                "echo EP_BANKS=[flash list]",
+                ...targetManifest.flashLoaders
+                    .filter((loader) => loader.devId)
+                    .flatMap((loader) => ["-c", `echo EP_LOADER=[file exists [find ${loader.path}]]`]),
+                "-c",
+                "shutdown"
+            ],
+            { encoding: "utf8", timeout: 10000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+        );
+        const c5Output = `${c5.stdout || ""}\n${c5.stderr || ""}`;
+        assert.strictEqual(c5.status, 0, c5Output);
+        assert.match(c5Output, /EP_TARGETS=[\s\S]*stm32c5x\.cpu/);
+        assert.match(c5Output, /EP_BANKS=[\s\S]*driver\s+stldr\s+base\s+0x08000000/);
+        assert.deepStrictEqual(c5Output.match(/^EP_LOADER=.*$/gm), ["EP_LOADER=1", "EP_LOADER=1", "EP_LOADER=1"]);
 
         // 新包损坏时安装应失败，但已经可用的旧目录必须原样保留。
         const marker = path.join(destRoot, "existing-install.marker");

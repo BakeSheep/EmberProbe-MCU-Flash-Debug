@@ -118,4 +118,18 @@ scenario("Diagnose Linux USB permission failures with udev guidance", () => {
     assert(denied.suggestedActions.some((action) => action.includes("udev")));
 });
 
+scenario("Diagnose STM32C5 HLA refusal and missing stldr loaders", () => {
+    const { diagnoseOpenOcdFailure } = require("../skills/_emberprobe/openocd-diagnostics");
+    const hla = diagnoseOpenOcdFailure(["Error : The selected adapter does not support debugging this device"]);
+    assert.strictEqual(hla.code, "TARGET_ADAPTER_UNSUPPORTED");
+    assert.strictEqual(hla.retryable, false);
+    assert(hla.suggestedActions.some((action) => action.includes("interface/stlink.cfg")));
+    const memAp = diagnoseOpenOcdFailure([
+        "openocd/scripts/target/stm32c5x.cfg:42: Error: The selected transport doesn't support this target"
+    ]);
+    assert.strictEqual(memAp.code, "TARGET_ADAPTER_UNSUPPORTED");
+    const loader = diagnoseOpenOcdFailure(["Error : No STLDR loader file found for device ID 0x44E"]);
+    assert.strictEqual(loader.code, "FLASH_LOADER_MISSING");
+});
+
 console.log("OpenOCD parser tests passed");

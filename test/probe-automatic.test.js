@@ -49,6 +49,16 @@ async function main() {
     assert.strictEqual(explicitUser.transport, "jtag");
     assert.strictEqual(explicitUser.selection.transport, "explicit");
 
+    // SWD-only C0 and the C5/U0/WBA scripts must not inherit J-Link's JTAG default
+    for (const target of ["stm32c0x.cfg", "stm32c5x.cfg", "stm32u0x.cfg", "stm32wbax.cfg"]) {
+        const resolved = resolveProbeConnection(
+            { ...config, target, successfulConnection: legacyConnection },
+            inventory
+        );
+        assert.strictEqual(resolved.transport, "swd", target);
+        assert.strictEqual(resolved.selection.transport, "cortex-m", target);
+    }
+
     // Non-Cortex-M target uses script default
     const nonCortex = resolveProbeConnection(
         { ...config, target: "gd32vf103.cfg", successfulConnection: legacyConnection },

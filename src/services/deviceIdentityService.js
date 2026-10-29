@@ -39,7 +39,7 @@ function targetIdentity(target) {
         .toUpperCase();
     /** @type {Array<[RegExp, string]>} */
     const aliases = [
-        [/^STM32([FGLHUW]\d)X?$/i, "STM32$1XX"],
+        [/^STM32([CFGLHUW]\d)X?$/i, "STM32$1XX"],
         [/^NRF(51|52)$/i, "NRF$1"],
         [/^GD32([A-Z]\d{2})X$/i, "GD32$1X"],
         [/^ATSAM([A-Z0-9]+)XX$/i, "ATSAM$1"]

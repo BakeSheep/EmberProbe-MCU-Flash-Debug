@@ -1,0 +1,44 @@
+--- a/tcl/target/stm32c5x.cfg
++++ b/tcl/target/stm32c5x.cfg
+@@ -5,7 +5,6 @@
+ 
+ source [find target/swj-dp.tcl]
+ source [find mem_helper.tcl]
+-source [find tools/stldr_helper.tcl]
+ 
+ if { [info exists CHIPNAME] } {
+     set _CHIPNAME $CHIPNAME
+@@ -117,14 +116,12 @@
+     return [expr {$flash_size * 1024}]
+ }
+ 
+-# Set DEV_ID loader_file/link
+-# 0x44E "/path/to/STM32C5\[56\]x.xldr"
+-# or
+-# 0x44E "https://......./STM32C5\[56\]x.xldr"
++# EmberProbe: DEV_ID -> flash loader shipped with the scripts (STMicroelectronics
++# stm32c5xx-dfp Flash/*.xldr, BSD-3-Clause). Loaders are never downloaded.
+ array set dev_id_loader {
+-    0x44E "https://github.com/STMicroelectronics/stm32c5xx-dfp/raw/refs/heads/main/Flash/STM32C5%5B56%5Dx.xldr"
+-    0x44F "https://github.com/STMicroelectronics/stm32c5xx-dfp/raw/refs/heads/main/Flash/STM32C5%5B34%5Dx.xldr"
+-    0x45A "https://github.com/STMicroelectronics/stm32c5xx-dfp/raw/refs/heads/main/Flash/STM32C5%5B9A%5Dx.xldr"
++    0x44E flash_loaders/stm32c5/STM32C55x_C56x.xldr
++    0x44F flash_loaders/stm32c5/STM32C53x_C54x.xldr
++    0x45A flash_loaders/stm32c5/STM32C59x_C5Ax.xldr
+ }
+ 
+ set EXAMINED 0
+@@ -146,12 +143,7 @@
+ 
+         set flash_size [stm32c5x_get_size $dev_id]
+         set flash_list [flash list]
+-        if {[info exists dev_id_loader($dev_id)]} {
+-            if {[file exists $dev_id_loader($dev_id)]} {
+-                set loader_file $dev_id_loader($dev_id)
+-            } else {
+-                set loader_file [download_loader $dev_id_loader($dev_id)]
+-            }
++        if {[info exists dev_id_loader($dev_id)] && ![catch {find $dev_id_loader($dev_id)} loader_file]} {
+             stldr set_loader $_CHIPNAME.flash $loader_file
+             stldr set_size $_CHIPNAME.flash $flash_size
+         } else {

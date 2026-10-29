@@ -46,6 +46,35 @@
             "sourceUrl": "https://github.com/openocd-org/openocd/blob/e5888bda3/tcl/target/st/stm32mp15x.cfg"
         }
     ],
+    "flashLoaders": [
+        {
+            "path": "flash_loaders/stm32c5/STM32C53x_C54x.xldr",
+            "sha256": "4645574f274f5274de869dbd2a6b35fd79d134f7ec07224c3f17ed2d40c7b8b6",
+            "devId": "0x44F",
+            "license": "BSD-3-Clause",
+            "sourceUrl": "https://github.com/STMicroelectronics/stm32c5xx-dfp/blob/a5f65bc64535cfa723e9d25f58d7ce23d0937aed/Flash/STM32C5%5B34%5Dx.xldr"
+        },
+        {
+            "path": "flash_loaders/stm32c5/STM32C55x_C56x.xldr",
+            "sha256": "131784c2e4eb4589200b614e56b83abd21a34906c1fd485ca3d806378d28732d",
+            "devId": "0x44E",
+            "license": "BSD-3-Clause",
+            "sourceUrl": "https://github.com/STMicroelectronics/stm32c5xx-dfp/blob/a5f65bc64535cfa723e9d25f58d7ce23d0937aed/Flash/STM32C5%5B56%5Dx.xldr"
+        },
+        {
+            "path": "flash_loaders/stm32c5/STM32C59x_C5Ax.xldr",
+            "sha256": "b9aacec837613f273b0d88fb3ca41c5c52712752fd26271959dd03a41dab8e53",
+            "devId": "0x45A",
+            "license": "BSD-3-Clause",
+            "sourceUrl": "https://github.com/STMicroelectronics/stm32c5xx-dfp/blob/a5f65bc64535cfa723e9d25f58d7ce23d0937aed/Flash/STM32C5%5B9A%5Dx.xldr"
+        },
+        {
+            "path": "flash_loaders/stm32c5/LICENSE.html",
+            "sha256": "fca363eff5a862a6e86e81c2b6054c230144e9a0b752388086997bcbcb49b0df",
+            "license": "BSD-3-Clause",
+            "sourceUrl": "https://github.com/STMicroelectronics/stm32c5xx-dfp/blob/a5f65bc64535cfa723e9d25f58d7ce23d0937aed/LICENSE.html"
+        }
+    ],
     "archives": [
         {
             "platform": "win32-x64",
@@ -53,15 +82,15 @@
             "prefix": "",
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd.exe",
-            "binarySha256": "5488e2d8bc4836b43e6348c001ae3633d16dd79bf592a6bb4f9b0b0807433b12",
-            "originalPayloadSha256": "c1d54ad8a039944a9f85ead235187af7a929c1244c4f51e78b5779ea1ad1894e",
+            "binarySha256": "ed0be5ce635b6a8dcf9b8388a993c47490d7073effb91651eaec8e59f70af022",
+            "originalPayloadSha256": "8f6d61abe28a2eac5df3c2a4e50d90cc0abc1c15975e7c2393055e6d01178433",
             "requiredFiles": [
                 "bin/openocd.exe",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
                 "bin/libusb-1.0.dll",
                 "bin/libftdi1.dll"
             ],
-            "sha256": "f1e428c92c9f47c13ad71f12476e59fbdcc5351bad6c6eca19b211b795161cc9"
+            "sha256": "227754ab5493ed5b2b05500cddfe081cc93f3f3620068c4fb33c67c7688892fe"
         },
         {
             "platform": "linux-x64",
@@ -69,8 +98,8 @@
             "prefix": "",
             "scriptsRoot": "openocd/scripts",
             "binary": "bin/openocd",
-            "binarySha256": "4bda2e41d54aa33c2a4a582712ba79cac361c3b1f66187ed81f0a64c3686697c",
-            "originalPayloadSha256": "83f3f1ce0b7f483b2909fe9fda55c3605323dd05389c55f91bf1724633dec478",
+            "binarySha256": "c79ab1b8aff1424ad635e07eb25c9d59fb01c51d4dbf477a285dfd6d72338f13",
+            "originalPayloadSha256": "f44e3438c732159b2a9192c1bdb7c5601bac53d64d73bc8b5bf4f46d507bbccd",
             "requiredFiles": [
                 "bin/openocd",
                 "distro-info/licenses/openocd-0.12.0/COPYING",
@@ -81,17 +110,22 @@
                 "distro-info/licenses/libudev-241/LICENSE.LGPL2.1",
                 "distro-info/licenses/libudev-241/SOURCE.txt"
             ],
-            "sha256": "34c52a2d0177a2707b08e2a90339771227994c2206e2511c349e90ffa1f5e10c"
+            "sha256": "c56fea1f249504dab0a78c918c84182054930754fd8d1061d03856e63a29286a"
         }
     ],
     "build": {
-        "distribution": "EmberProbe OpenOCD 0.12.0-7 + scatter v1",
-        "buildId": "158e3c409685b33ec42e6a02153d75cc5f9e93153da7cbe17dd200ee18778781",
+        "distribution": "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5",
+        "buildId": "a3f2cc8a78836c4b29a412d3637bae7f5db990eb327e7fc1c1bde0adfdd42ab4",
         "identity": {
-            "lockSha256": "f5d8f73ee69cb0d4163d395f21dd440057c537f8dc63020849ab754fc4b206da",
-            "patchSha256": "c6b04faf24609b8083e452fa5de7f3177b415af97334a6bd3cc772924bf2f63b",
-            "buildScriptSha256": "4da69d593e5a24ab00c32c3f3ff6c729589819fe377a2d992b910f2f55267c42",
-            "prepareScriptSha256": "cc45e8c155b6219babb6c0c425b5fed4a6eb2fdaae94a00de8172b8edf42c967",
+            "lockSha256": "d85e60228caed490b7861158c9de972e470202c85e354d206b87e452093a5dd9",
+            "patches": {
+                "0001-emberprobe-read-scatter.patch": "c6b04faf24609b8083e452fa5de7f3177b415af97334a6bd3cc772924bf2f63b",
+                "0002-stldr-flash-driver.patch": "9db535231a7a229f5057eaa217f931fb46899942d95b0c1e4eeb9d1d6930ffcc",
+                "0003-stm32c5x-target.patch": "9631a4d6c6269b3289aa48bcea015cfbcffc3fc20acc82c2f1ca8fcab4578dd9",
+                "0004-emberprobe-c5-local-loaders.patch": "be51f8a2f64b17b816363cd3868d9d402481fa10f5d8fe990e649b4e59ae6e41"
+            },
+            "buildScriptSha256": "fbd479511d7963c4cf84519028dde344761d2bd75c70d0555e628b8438f34afe",
+            "prepareScriptSha256": "97a81d33b7981ef1fa2dd629a1802fe7103bc8e70c922053df4d895c88c8440b",
             "image": "ilegeul/debian@sha256:bce3e1f8db63c5fe3ad382bfcaeb8b595214b90b45facf9170de96e2c76334e9",
             "openocdRevision": "e5888bda38f4952e2ae92f7dc5b25fc9a2d1c2b3",
             "xpackRevision": "10eb7ea34d422bc3405d1b322952ef4a68c84cc4",
@@ -103,6 +137,6 @@
     },
     "source": {
         "file": "native/openocd/emberprobe-openocd-source.tar.gz",
-        "sha256": "539d3eb0f16cc47450b157e44dfc8bc903b89d10dc18f4e34e8232273c1a86d9"
+        "sha256": "101f0fb58c800b9d0a2079fa1e392a3974adf364fe973e4bc047d1d652bd5086"
     }
 }

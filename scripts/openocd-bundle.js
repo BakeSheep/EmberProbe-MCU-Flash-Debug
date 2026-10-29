@@ -5,11 +5,19 @@ const { createHash } = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const tar = require("tar");
-const { archiveInventory, originalPayloadDigest } = require("./package-openocd-targets");
+const { archiveInventory, originalPayloadDigest, scriptAdditions } = require("./package-openocd-targets");
 
 const ROOT = path.resolve(__dirname, "..");
 const PLATFORMS = ["win32-x64", "linux-x64"];
 const SOURCE_FILE = "native/openocd/emberprobe-openocd-source.tar.gz";
+// Applied in this order; 0002/0003 are pending upstream reviews 9697/9699 pinned by build-lock.json.
+const PATCHES = [
+    "0001-emberprobe-read-scatter.patch",
+    "0002-stldr-flash-driver.patch",
+    "0003-stm32c5x-target.patch",
+    "0004-emberprobe-c5-local-loaders.patch"
+];
+const DISTRIBUTION = "EmberProbe OpenOCD 0.12.0-7 + scatter v1 + stldr/STM32C5";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 
@@ -66,7 +74,9 @@ function buildIdentity(root = ROOT) {
     const lock = readJson(path.join(root, "native/openocd/build-lock.json"));
     return {
         lockSha256: sha256(fs.readFileSync(path.join(root, "native/openocd/build-lock.json"))),
-        patchSha256: sha256(fs.readFileSync(path.join(root, "native/openocd/0001-emberprobe-read-scatter.patch"))),
+        patches: Object.fromEntries(
+            PATCHES.map((name) => [name, sha256(fs.readFileSync(path.join(root, "native/openocd", name)))])
+        ),
         buildScriptSha256: sha256(fs.readFileSync(path.join(root, "native/openocd/build.sh"))),
         prepareScriptSha256: sha256(fs.readFileSync(path.join(root, "native/openocd/prepare-build.js"))),
         image: lock.image,
@@ -93,13 +103,15 @@ async function verifySources(file, identity) {
     }
     for (const name of [
         "openocd/src/target/arm_adi_v5.c",
+        "openocd/src/flash/nor/stldr.c",
+        "openocd/tcl/target/stm32c5x.cfg",
         "openocd/jimtcl/jim.c",
         "openocd/src/jtag/drivers/libjaylink/libjaylink/core.c",
         "openocd/COPYING",
         "recipes/build.sh",
         "recipes/prepare-build.js",
         "recipes/build-lock.json",
-        "recipes/0001-emberprobe-read-scatter.patch"
+        ...PATCHES.map((name) => `recipes/${name}`)
     ])
         assert.ok(entries.has(name), `Corresponding source missing: ${name}`);
     for (const [name, digest] of Object.entries(source.files)) {
@@ -112,7 +124,8 @@ async function verifySources(file, identity) {
     assert.strictEqual(entries.get("recipes/build-lock.json").sha256, identity.lockSha256);
     assert.strictEqual(entries.get("recipes/build.sh").sha256, identity.buildScriptSha256);
     assert.strictEqual(entries.get("recipes/prepare-build.js").sha256, identity.prepareScriptSha256);
-    assert.strictEqual(entries.get("recipes/0001-emberprobe-read-scatter.patch").sha256, identity.patchSha256);
+    for (const name of PATCHES)
+        assert.strictEqual(entries.get(`recipes/${name}`).sha256, identity.patches[name], `Patch mismatch: ${name}`);
     return source;
 }
 
@@ -132,7 +145,10 @@ async function verifyBundle(root = ROOT) {
         assert.strictEqual(sha256(fs.readFileSync(file)), archive.sha256, "Runtime archive changed");
         const inventory = await inspectArchive(file);
         const entries = new Map(inventory.map((entry) => [entry.path, entry]));
-        assert.strictEqual(originalPayloadDigest(inventory, archive, manifest.targets), archive.originalPayloadSha256);
+        assert.strictEqual(
+            originalPayloadDigest(inventory, archive, scriptAdditions(manifest)),
+            archive.originalPayloadSha256
+        );
         assert.strictEqual(entries.get(archive.binary)?.sha256, archive.binarySha256);
         if (archive.platform === "linux-x64") assert.ok(entries.get(archive.binary).mode & 0o111);
         for (const required of archive.requiredFiles)
@@ -141,6 +157,8 @@ async function verifyBundle(root = ROOT) {
             assert.strictEqual(entries.get(`${archive.scriptsRoot}/${target.path}`)?.sha256, target.sha256);
             assert.ok(entries.has(`${archive.scriptsRoot}/${target.canonical}`));
         }
+        for (const loader of manifest.flashLoaders || [])
+            assert.strictEqual(entries.get(`${archive.scriptsRoot}/${loader.path}`)?.sha256, loader.sha256);
         checkBuild(await archiveJson(file, `${archive.prefix}BUILD-INFO.json`), identity, archive.platform);
         const provenance = await archiveJson(file, `${archive.prefix}distro-info/emberprobe-targets.json`);
         assert.deepStrictEqual(provenance, {
@@ -149,7 +167,8 @@ async function verifyBundle(root = ROOT) {
             source: manifest.source,
             binarySha256: archive.binarySha256,
             originalPayloadSha256: archive.originalPayloadSha256,
-            targets: manifest.targets
+            targets: manifest.targets,
+            ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {})
         });
     }
     return manifest;
@@ -159,6 +178,8 @@ module.exports = {
     ROOT,
     PLATFORMS,
     SOURCE_FILE,
+    PATCHES,
+    DISTRIBUTION,
     sha256,
     readJson,
     safePath,

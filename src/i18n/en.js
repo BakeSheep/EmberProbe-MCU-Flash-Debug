@@ -161,6 +161,8 @@ module.exports = Object.freeze({
         "Cannot verify the effective OpenOCD interface configuration. Check its adapter driver and sourced scripts.",
     "probe.driverMissing":
         "This OpenOCD build does not include the selected adapter driver. Select a compatible OpenOCD build.",
+    "probe.hlaUnsupported":
+        "{target} cannot be debugged through an HLA adapter ({probe}). For ST-Link, select interface/stlink.cfg.",
     "probe.backendAmbiguous":
         "The CMSIS-DAP script has a TCP host but uses automatic backend selection. Select TCP or USB explicitly in the script.",
     "probe.endpointInvalid": "Configure a valid CMSIS-DAP TCP host and port in the interface script.",

@@ -221,6 +221,32 @@ function diagnoseOpenOcdFailure(lines, details = {}) {
             "检查探针 VTref/GND 接线；J-Link OB 测量能力未知时，零读数不能单独证明目标断电。"
         ]);
     }
+    // HLA cannot create the debug-AP target some scripts (stm32c5x.cfg) declare, or the script refuses HLA itself.
+    if (
+        /selected adapter does not support debugging this device|selected transport doesn't support this target/.test(
+            text
+        )
+    ) {
+        return make(
+            "TARGET_ADAPTER_UNSUPPORTED",
+            "configuration",
+            "目标配置拒绝当前适配器模式（HLA）。",
+            ["ST-Link 请改用 interface/stlink.cfg（st-link 驱动），不要使用 stlink-hla.cfg。"],
+            false
+        );
+    }
+    if (/no stldr loader file found/.test(text)) {
+        return make(
+            "FLASH_LOADER_MISSING",
+            "configuration",
+            "OpenOCD 找不到该芯片的 STM32 flash 加载器（.xldr）。",
+            [
+                "确认使用 EmberProbe 内置 OpenOCD；外部 OpenOCD 需自备对应 DEV_ID 的加载器。",
+                "核对芯片型号与 DEV_ID 是否在内置加载器表中。"
+            ],
+            false
+        );
+    }
     if (
         /cannot read idr|error connecting dp|target not examined|init failed|no target connected|dp initialisation failed|unable to connect to target|jtag scan chain interrogation failed|all ones|all zeroes/.test(
             text

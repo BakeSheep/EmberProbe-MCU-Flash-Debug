@@ -104,6 +104,14 @@ async function main() {
     assert.strictEqual(targetMatchesModel(H750, "stm32f4x.cfg"), false);
     assert.strictEqual(targetMatchesModel({ cpuid: "411FC271" }, "stm32h7x.cfg"), true, "core decides without IDCODE");
     assert.strictEqual(targetMatchesModel(F407, "nordic/nrf52.cfg"), null);
+    // C0 shares the G0 DBGMCU address; C5 is read through its CPU-side DBGMCU.
+    const c0 = targetCheckCommand("stm32c0x.cfg");
+    assert(c0.includes("idcode [_ep_target_word 0x40015800 1]") && c0.includes("uid [_ep_target_word 0x1fff7550 3]"));
+    const c5 = targetCheckCommand("stm32c5x.cfg");
+    assert(c5.includes("idcode [_ep_target_word 0x44024000 1]") && c5.includes("uid [_ep_target_word 0x8fff800 3]"));
+    assert.strictEqual(targetMatchesModel({ cpuid: "410CC601", idcode: "10006453" }, "stm32c0x.cfg"), true);
+    assert.strictEqual(targetMatchesModel({ cpuid: "410FD213", idcode: "1000644E" }, "stm32c5x.cfg"), true);
+    assert.strictEqual(targetMatchesModel({ cpuid: "410FD213", idcode: "1000644E" }, "stm32c0x.cfg"), false);
 
     // A session's output records the observed chip under its check id; a mismatch becomes one structured error.
     const mismatches = [];

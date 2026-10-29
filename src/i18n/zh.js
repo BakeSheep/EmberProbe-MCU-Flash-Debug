@@ -145,6 +145,7 @@ module.exports = Object.freeze({
     "probe.identityUnverified": "写入前无法确认本次 USB 连接身份。请重新插拔探针后重试，或配置准确的 USB 序列号。",
     "probe.capabilityUnknown": "无法确认 OpenOCD 接口的实际配置，请检查适配器驱动及其引用的脚本。",
     "probe.driverMissing": "当前 OpenOCD 未包含所选适配器驱动，请选择兼容的 OpenOCD。",
+    "probe.hlaUnsupported": "{target} 不支持通过 HLA 适配器（{probe}）调试。ST-Link 请改选 interface/stlink.cfg。",
     "probe.backendAmbiguous": "CMSIS-DAP 脚本配置了 TCP 主机，但仍自动选择后端。请在脚本中明确选择 TCP 或 USB。",
     "probe.endpointInvalid": "请在接口脚本中配置有效的 CMSIS-DAP TCP 主机及端口。",
     "probe.configurationChanged": "连接准备期间设置已变更，请使用当前设置重新操作。",
