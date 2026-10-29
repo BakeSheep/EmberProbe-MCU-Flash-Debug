@@ -467,6 +467,20 @@ async function main() {
         assert.throws(() => resolveProbeConnection({ probe: "stlink.cfg", probeSerial: "other" }, inventory), {
             code: "PROBE_SELECTED_NOT_FOUND"
         });
+        // stm32c5x.cfg refuses HLA; the st-link driver behind interface/stlink.cfg is accepted.
+        for (const config of [
+            { probe: "stlink-hla.cfg" },
+            { probe: "stlink.cfg", adapterFamily: "hla" },
+            { probe: "custom.cfg", profile: { driver: "hla", kind: "usb", family: "stlink" } }
+        ])
+            assert.throws(() => resolveProbeConnection({ ...config, target: "stm32c5x.cfg" }, inventory), {
+                code: "PROBE_HLA_UNSUPPORTED",
+                i18nKey: "probe.hlaUnsupported"
+            });
+        assert.doesNotThrow(() => resolveProbeConnection({ probe: "stlink.cfg", target: "stm32c5x.cfg" }, inventory));
+        assert.doesNotThrow(() =>
+            resolveProbeConnection({ probe: "stlink-hla.cfg", target: "stm32c0x.cfg" }, inventory)
+        );
 
         const rawUid = Buffer.from("57FF72067265575742132067", "hex").toString("latin1");
         const oldStlink = await listProbes(

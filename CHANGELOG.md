@@ -8,6 +8,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 新增 / Added
 
+- 内置 OpenOCD 新增实验性 STM32C5（C531/C532/C542/C551/C552/C562/C591/C593/C5A3）支持：合入 ST 尚在上游评审中的 `stldr` Flash 驱动与 `stm32c5x.cfg`，并内置 ST `stm32c5xx-dfp` 2.1.0 的三个 Flash 加载器（BSD-3-Clause），按 DEV_ID 自动选用，运行时不联网下载。仅支持擦写与读取 Flash，不含选项字节/RDP 命令；尚未经实板验证。见 `docs/OPENOCD-TARGETS.md`。
+- The bundled OpenOCD adds experimental STM32C5 support (C531/C532/C542/C551/C552/C562/C591/C593/C5A3): STMicroelectronics' `stldr` flash driver and `stm32c5x.cfg`, still under upstream review, plus the three flash loaders from ST's `stm32c5xx-dfp` 2.1.0 (BSD-3-Clause), chosen by DEV_ID and never downloaded at run time. Only flash erase, programming and reads are supported, without option-byte or RDP commands; not yet verified on hardware. See `docs/OPENOCD-TARGETS.md`.
 - MCP 客户端安装菜单新增 Antigravity 和 DeepSeek Harness (DSH)：分别复制专用 JSON 与可通过 `--patch` 加载的 YAML 配置，显式设置当前主工作区与 30 分钟客户端调用超时，复用稳定启动器、Bridge 鉴权及现有敏感操作确认。DSH 使用官方 `@deepseek-ai/dsh-mcp-client`；客户端交互尚待实测。见 `docs/MCP.md`。
 - Add Antigravity and DeepSeek Harness (DSH) to the MCP client installer: copy dedicated JSON or a loadable YAML patch with the current primary workspace and a 30-minute client call timeout, reusing the stable launcher, Bridge authentication and existing sensitive-operation confirmation. DSH uses the official `@deepseek-ai/dsh-mcp-client`; interactive client validation is still pending. See `docs/MCP.md`.
 
@@ -55,6 +57,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### 修复 / Fixed
 
+- 修复 STM32C0 无法正常连接与识别：内置 OpenOCD 本已包含 C0 驱动，但 J-Link 在自动传输模式下对 `stm32c0x.cfg` 沿用脚本默认的 JTAG，而 C0 仅有 SWD；现在 C0（以及 U0、WBA）与其他已知 Cortex-M 一样自动使用 SWD。芯片信息与自动模式身份核对新增 C0（C011/C031/C051/C071/C091/C092）的 DEV_ID、Flash 容量与 UID 地址，C0 也加入备用目标列表。STM32C5 的 DEV_ID、内核与寄存器地址同步收录，`stm32c5` 工程自动选择 `stm32c5x.cfg`。`stm32c5x.cfg` 与 HLA 适配器（`stlink-hla.cfg`）组合会在启动前提示改用 `interface/stlink.cfg`。
+- STM32C0 connections and identification now work: the bundled OpenOCD already supports C0 flash, but with transport `auto` a J-Link kept the script's JTAG default for `stm32c0x.cfg`, and C0 has SWD only. C0 (as well as U0 and WBA) now selects SWD like other known Cortex-M targets. Chip info and automatic-mode identity checks add the C0 (C011/C031/C051/C071/C091/C092) DEV_IDs, flash-size and UID addresses, and C0 joins the fallback target list. STM32C5 DEV_IDs, core and register addresses are added as well, and `stm32c5` projects select `stm32c5x.cfg`. Combining `stm32c5x.cfg` with an HLA adapter (`stlink-hla.cfg`) is reported before start-up with a hint to use `interface/stlink.cfg`.
 - 修复 CubeMX 在启动进程前取消时遗留脚本文件，导致下一次调用报 `EEXIST`：已取消的调用不创建脚本，写入期间取消则等待清理后返回；增加确定性回归测试，修复 macOS CI 的偶发失败。
 - Fix CubeMX cancellation before process startup leaving a script that makes the next call fail with `EEXIST`: pre-cancelled calls create no script, and cancellation during writing awaits cleanup. Add deterministic regression coverage for the intermittent macOS CI failure.
 

@@ -64,6 +64,16 @@ function prepare(assets, cache) {
           git apply --check "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-scatter.git.patch"
           git apply "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-scatter.git.patch")
       fi
+      # EmberProbe locked STM32C5 hook: stldr driver, stm32c5x.cfg, bundled loaders
+      if [ ! -e "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}/src/flash/nor/stldr.c" ]; then
+        (cd "\${XBB_SOURCES_FOLDER_PATH}/\${openocd_src_folder_name}";
+          for patch in stldr stm32c5x c5-loaders; do
+            git apply --check "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-\${patch}.git.patch"
+            git apply "\${XBB_BUILD_ROOT_PATH}/patches/emberprobe-\${patch}.git.patch"
+          done
+          # New files must be tracked so the corresponding-source export (git ls-files) includes them.
+          git add --intent-to-add src/flash/nor/stldr.c tcl/target/stm32c5x.cfg)
+      fi
 `
         );
     recipe = recipe.replace(
@@ -153,7 +163,8 @@ function finish(assets, cache, output) {
         fs.cpSync(from, to, { preserveTimestamps: true, verbatimSymlinks: true });
     }
     fs.mkdirSync(path.join(staging, "recipes"), { recursive: true });
-    for (const name of ["build.sh", "prepare-build.js", "build-lock.json", "0001-emberprobe-read-scatter.patch"])
+    const { PATCHES } = require("../../scripts/openocd-bundle");
+    for (const name of ["build.sh", "prepare-build.js", "build-lock.json", ...PATCHES])
         fs.copyFileSync(path.join(__dirname, name), path.join(staging, "recipes", name));
     fs.cpSync(path.join(assets, "scripts"), path.join(staging, "recipes/xpack/scripts"), { recursive: true });
     fs.copyFileSync(path.join(assets, "package.json"), path.join(staging, "recipes/xpack/package.json"));

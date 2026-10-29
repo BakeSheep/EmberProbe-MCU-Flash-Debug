@@ -4,14 +4,14 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const yauzl = require("yauzl");
-const { ROOT, sha256, verifyBundle } = require("./openocd-bundle");
+const { ROOT, PATCHES, sha256, verifyBundle } = require("./openocd-bundle");
 
 async function verifyOpenOcdVsix(file, root = ROOT) {
     const manifest = await verifyBundle(root);
     const required = [
         "resources/openocd-targets-manifest.json",
         ...manifest.archives.map((archive) => `resources/${archive.file}`),
-        "native/openocd/0001-emberprobe-read-scatter.patch",
+        ...PATCHES.map((name) => `native/openocd/${name}`),
         "native/openocd/build-lock.json",
         "native/openocd/build.sh",
         "native/openocd/prepare-build.js",

@@ -51,6 +51,44 @@ uses archive hashes in its cache key, so the default runtime receives a new cach
 directory without replacing a runtime used by another window. See the
 [build and source distribution guide](../native/openocd/README.md).
 
+## STM32C0 and STM32C5
+
+STM32C0 needs no additional files: the canonical `stm32c0x.cfg` and the `stm32l4x` flash
+driver of the base build cover C011/C031/C051/C071/C091/C092. C0 has no JTAG pins, so a
+J-Link with transport `auto` uses SWD for this target, as for other known Cortex-M scripts.
+
+STM32C5 (Cortex-M33) is **experimental and not hardware-verified**. Upstream OpenOCD has
+no C5 support yet; the build applies STMicroelectronics' pending reviews instead:
+
+| Patch | Source | Content |
+| --- | --- | --- |
+| `0002-stldr-flash-driver.patch` | review 9697, patch set 8 | `stldr` flash driver running STM32CubeProgrammer flash loaders on the target |
+| `0003-stm32c5x-target.patch` | review 9699, patch set 6 | `target/stm32c5x.cfg` |
+| `0004-emberprobe-c5-local-loaders.patch` | EmberProbe | load the bundled loader for the detected DEV_ID; never download |
+
+Review 9699 originally downloaded loaders from GitHub during `examine` (review 9698, not
+applied). EmberProbe instead ships the three loaders from ST's `stm32c5xx-dfp` 2.1.0 under
+`scripts/flash_loaders/stm32c5/` and pins their hashes in the manifest:
+
+| DEV_ID | Devices | Loader |
+| --- | --- | --- |
+| 0x44F | C531/C532/C542 | `STM32C53x_C54x.xldr` |
+| 0x44E | C551/C552/C562 | `STM32C55x_C56x.xldr` |
+| 0x45A | C591/C593/C5A3 | `STM32C59x_C5Ax.xldr` |
+
+Limits of this support:
+
+- The configuration needs a debug-AP target that HLA cannot create (OpenOCD reports
+  "The selected transport doesn't support this target"). EmberProbe rejects `stm32c5x.cfg`
+  with an HLA adapter (`interface/stlink-hla.cfg`) before starting; `interface/stlink.cfg`
+  uses the `st-link` driver (dapdirect SWD) and loads the configuration, as do J-Link and
+  CMSIS-DAP.
+- The loader only erases, programs and reads flash. Option bytes and RDP have no OpenOCD
+  commands for C5.
+- Erase/program speed and timeouts come from the loader. They have not been measured.
+- An external OpenOCD needs its own C5 scripts and loaders; a missing loader is reported as
+  `FLASH_LOADER_MISSING`.
+
 ## Compatibility boundary
 
 For GD32, the bundled upstream E23x and VF103 target scripts remain unchanged.

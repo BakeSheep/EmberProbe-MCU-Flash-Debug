@@ -4,11 +4,13 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const tar = require("tar");
-const { originalPayloadDigest } = require("./package-openocd-targets");
+const { originalPayloadDigest, scriptAdditions } = require("./package-openocd-targets");
 const {
     ROOT,
     PLATFORMS,
     SOURCE_FILE,
+    PATCHES,
+    DISTRIBUTION,
     sha256,
     readJson,
     inspectArchive,
@@ -56,7 +58,7 @@ async function packageRuntime(input, root = ROOT) {
     try {
         manifest.schemaVersion = 2;
         manifest.build = {
-            distribution: "EmberProbe OpenOCD 0.12.0-7 + scatter v1",
+            distribution: DISTRIBUTION,
             buildId: sha256(JSON.stringify(identity)),
             identity
         };
@@ -65,7 +67,7 @@ async function packageRuntime(input, root = ROOT) {
         fs.mkdirSync(path.join(staging, "resources"), { recursive: true });
         fs.mkdirSync(path.join(staging, "native/openocd"), { recursive: true });
         fs.copyFileSync(sourceInput, path.join(staging, SOURCE_FILE));
-        for (const name of ["build-lock.json", "build.sh", "prepare-build.js", "0001-emberprobe-read-scatter.patch"])
+        for (const name of ["build-lock.json", "build.sh", "prepare-build.js", ...PATCHES])
             fs.copyFileSync(path.join(root, "native/openocd", name), path.join(staging, "native/openocd", name));
         for (const platform of PLATFORMS) {
             const raw = path.join(input, `${platform}.tar.gz`);
@@ -99,9 +101,9 @@ async function packageRuntime(input, root = ROOT) {
                 requiredFiles,
                 sha256: ""
             };
-            archive.originalPayloadSha256 = originalPayloadDigest(inventory, archive, manifest.targets);
+            archive.originalPayloadSha256 = originalPayloadDigest(inventory, archive, scriptAdditions(manifest));
             const additions = [];
-            for (const target of manifest.targets) {
+            for (const target of scriptAdditions(manifest)) {
                 const name = `${archive.scriptsRoot}/${target.path}`;
                 assert.ok(
                     !entries.has(name) || entries.get(name).sha256 === target.sha256,
@@ -121,7 +123,8 @@ async function packageRuntime(input, root = ROOT) {
                 source: manifest.source,
                 binarySha256: archive.binarySha256,
                 originalPayloadSha256: archive.originalPayloadSha256,
-                targets: manifest.targets
+                targets: manifest.targets,
+                ...(manifest.flashLoaders ? { flashLoaders: manifest.flashLoaders } : {})
             };
             fs.mkdirSync(path.join(staging, "additions", platform, "distro-info"), { recursive: true });
             fs.writeFileSync(

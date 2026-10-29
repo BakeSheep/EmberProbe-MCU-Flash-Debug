@@ -9,6 +9,7 @@ function connectionError(code, message, details = {}) {
         PROBE_IDENTITY_UNVERIFIED: "probe.identityUnverified",
         PROBE_CAPABILITY_UNKNOWN: "probe.capabilityUnknown",
         PROBE_DRIVER_MISSING: "probe.driverMissing",
+        PROBE_HLA_UNSUPPORTED: "probe.hlaUnsupported",
         PROBE_CONFIGURATION_CHANGED: "probe.configurationChanged",
         PROBE_SESSION_STALE: "probe.staleConnection",
         PROBE_SERIAL_INVALID: "probe.serialInvalid"
@@ -129,6 +130,16 @@ function resolveProbeConnection(config, inventory = { devices: [], available: fa
             transport: config.transport && config.transport !== "auto" ? "explicit" : "script-default"
         }
     };
+    // stm32c5x.cfg shuts OpenOCD down under HLA; report it before the session starts.
+    const hla = profile
+        ? profile.driver === "hla"
+        : config.adapterFamily === "hla" || /(?:^|\/)stlink-hla\.cfg$/i.test(result.probe);
+    if (hla && /(?:^|\/)stm32c5x\.cfg$/i.test(result.target))
+        throw connectionError(
+            "PROBE_HLA_UNSUPPORTED",
+            "STM32C5 cannot be debugged through an HLA adapter; use interface/stlink.cfg for ST-Link",
+            { target: result.target, probe: result.probe }
+        );
     // Network, local and unverified adapters keep OpenOCD's own selection; an explicit serial is still passed.
     if (profile && ["tcp", "local", "unknown"].includes(profile.kind)) {
         const serial =
@@ -292,7 +303,7 @@ function windowsHidOnly(device) {
 
 // Only targets already recognized by autoDetect; do not infer architecture from a probe's name.
 function isKnownCortexM(target) {
-    return /^(?:stm32(?:f[012347]|g[04]|h7|l[0145]|u5|wb|wl)x?|geehy\/apm32f[014]x|gd32e23x|nordic\/nrf5[12]|rp2040)\.cfg$/.test(
+    return /^(?:stm32(?:c[05]|f[012347]|g[04]|h7|l[0145]|u[05]|wba?|wl)x?|geehy\/apm32f[014]x|gd32e23x|nordic\/nrf5[12]|rp2040)\.cfg$/.test(
         target
     );
 }

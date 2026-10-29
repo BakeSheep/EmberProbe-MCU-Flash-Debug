@@ -34,6 +34,7 @@ const TARGET_RULES = Object.freeze([
     rule(`${B}stm32f4`, "stm32f4x.cfg", "stm32f4", "arm"),
     rule(`${B}stm32f7`, "stm32f7x.cfg", "stm32f7", "arm"),
     rule(`${B}stm32c0`, "stm32c0x.cfg", "stm32c0", "arm"),
+    rule(`${B}stm32c5`, "stm32c5x.cfg", "stm32c5", "arm"),
     rule(`${B}stm32g0`, "stm32g0x.cfg", "stm32g0", "arm"),
     rule(`${B}stm32g4`, "stm32g4x.cfg", "stm32g4", "arm"),
     // Dual-bank H7 parts; stm32h7x.cfg alone declares only bank 1.

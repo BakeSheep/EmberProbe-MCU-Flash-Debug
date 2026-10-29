@@ -233,7 +233,11 @@ const expectedFamilies = {
     0x483: "STM32H7x",
     0x479: "STM32G4x",
     0x456: "STM32G0x",
-    0x497: "STM32WLx"
+    0x497: "STM32WLx",
+    0x443: "STM32C0x",
+    0x493: "STM32C0x",
+    0x44e: "STM32C5x",
+    0x45a: "STM32C5x"
 };
 for (const [dev, family] of Object.entries(expectedFamilies))
     assert.strictEqual(DEV_ID_FAMILY[dev], family, "DEV_ID 0x" + Number(dev).toString(16));
@@ -256,6 +260,24 @@ const h723 = parseChip("stm32g0x.cfg", ["0xe000ed00: 411fc272", "0x40015800: 100
 assert.strictEqual(h723.core, "Cortex-M7");
 assert.strictEqual(h723.series, "STM32H7x");
 assert.strictEqual(h723.coreMismatch, "");
+// C031 误选 stm32g0x 目标：同一 DBGMCU 地址上的 DEV_ID 0x453 纠正为 C0，读其 Flash 容量/UID 地址
+const c031 = parseChip("stm32g0x.cfg", [
+    "0xe000ed00: 410cc601",
+    "0x40015800: 10006453",
+    "0x1fff75a0: 00000020",
+    "0x1fff75e0: 00000040",
+    "0x1fff7550: 00290041 4b4b5009 20363343"
+]);
+assert.strictEqual(c031.series, "STM32C0x");
+assert.strictEqual(c031.coreMismatch, "");
+assert.strictEqual(c031.flashSize, "32 KiB");
+assert.strictEqual(c031.uid, "0x00290041" + "4B4B5009" + "20363343");
+// C5（M33）：CPU 侧 DBGMCU 与 0x08FFF80C Flash 容量
+const c562 = parseChip("stm32c5x.cfg", ["0xe000ed00: 410fd213", "0x44024000: 1000644e", "0x08fff80c: 00000200"]);
+assert.strictEqual(c562.series, "STM32C5x");
+assert.strictEqual(c562.coreMismatch, "");
+assert.strictEqual(c562.flashSize, "512 KiB");
+assert.match(buildChipInfoCommands("stm32c5x.cfg").join("\n"), /mdw 0x44024000\].*mdw 0x8fff80c\].*mdw 0x8fff800 3\]/);
 // F100（M3）DEV_ID 0x420 属 F1，而非 F0
 const f100 = parseChip("stm32f1x.cfg", ["0xe000ed00: 411fc231", "0xe0042000: 10016420"]);
 assert.strictEqual(f100.series, "STM32F1x");

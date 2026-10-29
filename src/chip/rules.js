@@ -28,7 +28,9 @@ const STM32_UID_BASE = {
     stm32l1: 0x1ff80050,
     stm32l4x: 0x1fff7590,
     stm32wbx: 0x1fff7590,
-    stm32wlx: 0x1fff7590
+    stm32wlx: 0x1fff7590,
+    stm32c0x: 0x1fff7550,
+    stm32c5x: 0x08fff800
 };
 const STM32_IDCODE_BASE = {
     stm32f0x: 0x40015800,
@@ -44,7 +46,10 @@ const STM32_IDCODE_BASE = {
     stm32l4x: 0xe0042000,
     stm32g4x: 0xe0042000,
     stm32wbx: 0xe0042000,
-    stm32wlx: 0xe0042000
+    stm32wlx: 0xe0042000,
+    stm32c0x: 0x40015800,
+    // CPU-side DBGMCU (AHB3 + 0x4000, as ST's H5 driver reads it); stm32c5x.cfg reads the debug-AP alias 0xe00e4000.
+    stm32c5x: 0x44024000
 };
 // Geehy APM32F4 exposes DBGMCU_IDCODE at the classic address. Keep UID and
 // flash-size reads disabled until their addresses are verified for APM32F4.
@@ -62,7 +67,9 @@ const STM32_FLASHSIZE_BASE = {
     stm32l0: 0x1ff8007c,
     stm32l4x: 0x1fff75e0,
     stm32wbx: 0x1fff75e0,
-    stm32wlx: 0x1fff75e0
+    stm32wlx: 0x1fff75e0,
+    stm32c0x: 0x1fff75a0,
+    stm32c5x: 0x08fff80c
 };
 const CPUID_ADDR = 0xe000ed00;
 const CPUID_HEX = "0x" + CPUID_ADDR.toString(16);
@@ -142,7 +149,15 @@ const DEV_ID_FAMILY = {
     0x417: "STM32L0x", // cat.3
     0x447: "STM32L0x", // cat.5
     0x495: "STM32WBx", // WB55/WB35
-    0x497: "STM32WLx" // WLE5/WL55
+    0x497: "STM32WLx", // WLE5/WL55
+    0x443: "STM32C0x", // C011
+    0x453: "STM32C0x", // C031
+    0x44c: "STM32C0x", // C051
+    0x493: "STM32C0x", // C071
+    0x44d: "STM32C0x", // C091/C092
+    0x44f: "STM32C5x", // C531/C532/C542
+    0x44e: "STM32C5x", // C551/C552/C562
+    0x45a: "STM32C5x" // C591/C593/C5A3
 };
 // 各系列可被调试器选中的内核（双核系列包含第二内核，用于 CPUID 与 DEV_ID 交叉校验）
 const STM32_SERIES_CORES = {
@@ -161,7 +176,9 @@ const STM32_SERIES_CORES = {
     STM32L5x: ["Cortex-M33"],
     STM32U5x: ["Cortex-M33"],
     STM32WBx: ["Cortex-M4", "Cortex-M0+"],
-    STM32WLx: ["Cortex-M4", "Cortex-M0+"]
+    STM32WLx: ["Cortex-M4", "Cortex-M0+"],
+    STM32C0x: ["Cortex-M0+"],
+    STM32C5x: ["Cortex-M33"]
 };
 // 内核与 DEV_ID 推断系列是否相符；任一未知时返回 null（无法判定）
 function coreMatchesSeries(core, series) {
