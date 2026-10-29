@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-29
+
 ### 新增 / Added
 
 - 内置 OpenOCD 新增实验性 STM32C5（C531/C532/C542/C551/C552/C562/C591/C593/C5A3）支持：合入 ST 尚在上游评审中的 `stldr` Flash 驱动与 `stm32c5x.cfg`，并内置 ST `stm32c5xx-dfp` 2.1.0 的三个 Flash 加载器（BSD-3-Clause），按 DEV_ID 自动选用，运行时不联网下载。仅支持擦写与读取 Flash，不含选项字节/RDP 命令；尚未经实板验证。见 `docs/OPENOCD-TARGETS.md`。
@@ -23,6 +25,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 - 扩展宿主繁忙（如其他扩展执行 CMake 配置）时，采样 Worker 继续按时钟读取并在本地缓冲，宿主恢复后按分片补交，不再降速或要求重新开始采样；缓冲超过 16 MiB / 4096 批 / 30 秒时丢弃最早数据并在波形中断开。磁盘归档繁忙只暂停交付（4 MiB 暂停、1 MiB 恢复），不再丢弃已采样本；暂停后恢复不再回到 100 ms 预热。速率提示新增宿主阻塞、积压与丢弃统计。
 - While the extension host is busy (for example another extension running a CMake configure), the sampling Worker keeps reading on its clock, buffers locally and delivers bounded chunks once the host recovers, instead of slowing down or requiring a restart; beyond 16 MiB / 4096 batches / 30 s the oldest samples are dropped and the waveform shows a gap. A busy disk archive now only holds delivery (pause at 4 MiB, resume at 1 MiB) without discarding acquired samples, and resuming after a pause no longer restarts the 100 ms warm-up. The rate tooltip adds host stall, backlog and dropped statistics.
+
+- Windows 上 GDB 预热在激活、选择 ELF、授予工作区信任及修改工具链设置后立即开始，并按与正式启动相同的顺序查找 GDB（必要时刷新系统 PATH），避免预热另一份 GDB；托管调试在停止采样、占用探针前等候剩余预热，`performanceTrace` 新增 `startup.warmup` 阶段与不含路径的 `gdbWarmup` 状态。暂停时写变量期间请求的读取计划刷新改为在写入后执行，不再中断写入。见 `docs/FLASH-PERFORMANCE.md`。
+- On Windows, GDB warm-up now starts right after activation, ELF selection, granting workspace trust and toolchain setting changes, resolving GDB in the same order as a real launch (refreshing the system PATH when needed) so it never warms a different GDB. A managed launch waits for any remaining warm-up before stopping sampling or acquiring the probe, and `performanceTrace` adds a `startup.warmup` phase and a path-free `gdbWarmup` state. A read-plan refresh requested during a paused variable write now runs after the write instead of aborting it. See `docs/FLASH-PERFORMANCE.md`.
 
 - 调试工具链按用户配置、记住的目录、PATH、已有 ST 工具链的顺序查找，最后才提示选择目录；支持常见 ST bundles、CubeCLT 和 CubeIDE 安装布局，以及独立 GDB 工具包。见 `docs/DEBUG-TOOLCHAIN.md`。
 - Debug tool lookup now checks user configuration, the remembered directory, PATH, and installed ST toolchains before prompting for a directory. Discovery supports common ST bundle, CubeCLT and CubeIDE layouts, including separate GDB bundles. See `docs/DEBUG-TOOLCHAIN.md`.

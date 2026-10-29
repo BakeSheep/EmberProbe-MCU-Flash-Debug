@@ -22,7 +22,7 @@ EmberProbe 是一款基于 OpenOCD 面向 Cortex-M 开发的 VS Code 扩展，�
 - OpenOCD 0.12.0 或更高版本
 - ARM GDB 工具链（断点调试必需）
 
-当前扩展版本为 `0.8.9-beta.1`。
+当前扩展版本为 `0.9.0`。
 
 ## 使用教程
 
