@@ -5,7 +5,9 @@ const path = require("path");
 // Durable docs. Images and other assets are always kept; no link parser is needed.
 const MAIN_DOCS = new Set([
     "AGENT-TRUST-BOUNDARIES.md",
+    "CHART-BACKGROUND-ICON.md",
     "CUBEMX-GENERATION.md",
+    "DEBUG-TOOLCHAIN.md",
     "ENUM-VARIABLES.md",
     "EXTERNAL-GDB-SERVER.md",
     "FLASH-PERFORMANCE.md",
@@ -23,7 +25,8 @@ const MAIN_DOCS = new Set([
     "SHARED-DEBUG-GROUPS.md",
     "UNLIMITED-SAMPLING.md",
     "VARIABLE-NAMES.md",
-    "VARIABLE-ORIGIN-FILTER.md"
+    "VARIABLE-ORIGIN-FILTER.md",
+    "WAVEFORM-PANELS.md"
 ]);
 
 function cleanDocs(root, { dryRun = true } = {}) {
