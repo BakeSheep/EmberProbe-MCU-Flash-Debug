@@ -156,7 +156,7 @@ function run(w, Store, transport, channels, seconds) {
 }
 const scenarios = [3, 10].flatMap((channels) => [1200, 1800].map((seconds) => ({ channels, seconds })));
 if (process.argv.includes("--browser-html")) {
-    const html = getLiveWatchContent({ backendHistory: true, frequencyHz: 200 }, "en");
+    const html = getLiveWatchContent({ frequencyHz: 200 }, "en");
     const nonce = /<script nonce="([^"]+)"/.exec(html)?.[1];
     const storeCode = fs
         .readFileSync(path.join(__dirname, "../../src/services/chartHistoryStore.js"), "utf8")
@@ -175,7 +175,7 @@ if (process.argv.includes("--browser-html")) {
     );
 } else {
     const results = scenarios.map(({ channels, seconds }) => {
-        const page = render(getLiveWatchContent({ backendHistory: true, frequencyHz: 200 }, "en"));
+        const page = render(getLiveWatchContent({ frequencyHz: 200 }, "en"));
         try {
             Object.defineProperties(page.document.getElementById("chart"), {
                 clientWidth: { value: 900 },

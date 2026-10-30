@@ -105,20 +105,20 @@ class FakeDebugBridge {
         (error) => error.code === "UNSUPPORTED_SVD_REGISTER_SIZE"
     );
 
-    // §17.2：SVD 数值必须在 BigInt 转换前拒绝超长输入。enumeratedValue 曾用逐字符
-    // `value <<= 1n`（Θ(L²)）且无长度上限，几 MB 的 <value>#1010…</value> 能卡死扩展宿主数分钟。
+    // SVD numbers reject over-long input before BigInt conversion: bit-by-bit `value <<= 1n` is Θ(L²), so a few-MB
+    // <value>#1010...</value> without a length limit could stall the extension host for minutes.
     assert.throws(
         () => parseSvd(Buffer.from(SVD.replace("<value>1</value>", `<value>#${"1".repeat(4096)}</value>`))),
         (error) => error.code === "INVALID_SVD_VALUE",
-        "超长二进制 enumeratedValue 必须被拒绝，而不是逐字符移位"
+        "an over-long binary enumeratedValue is rejected instead of shifted bit by bit"
     );
-    // integer() 的十进制分支在 bigint:true 时跳过 MAX_SAFE_INTEGER 检查，同样需要长度守卫。
+    // integer()'s decimal branch skips the MAX_SAFE_INTEGER check with bigint:true, so it needs the length guard too.
     assert.throws(
         () => integer("9".repeat(4096), "reset value", { bigint: true }),
         (error) => error.code === "INVALID_SVD_VALUE",
-        "超长十进制 SVD 数值必须被拒绝"
+        "an over-long decimal SVD number is rejected"
     );
-    // 合法宽度（≤64 位）的数值仍应正常解析，上限不得过紧。
+    // Values of legal width (<= 64 bits) still parse; the limit must not be too tight.
     assert.strictEqual(integer("0xFFFFFFFFFFFFFFFF", "reset value", { bigint: true }), 0xffffffffffffffffn);
     assert.strictEqual(integer("#1111", "enumerated value", { bigint: true }), 15n);
 

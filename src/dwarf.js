@@ -11,8 +11,8 @@ const {
 const { parseElfSymbols, qualifySameNameSymbols } = require("./elfSymbols");
 const { createRuntimeLayoutResolver, resolveRuntimeLayout } = require("./dwarf/runtimeTypes");
 const { MAX_DIAGNOSTICS } = require("./dwarf/diagnostics");
-// 模块级解析缓存：同一 Buffer 对象只完整解析一次，变量类型视图与复合布局视图共享结果。
-// 外层（extension.js）仍按 ELF SHA-256 缓存最终结果；两层缓存职责不同。
+// Module-level parse cache: one Buffer object is parsed fully once, and the variable type and composite layout views
+// share the result. The outer layer still caches final results by ELF SHA-256; the two caches serve different purposes.
 const _parseCache = new WeakMap();
 
 function _parseDwarfCached(buffer, options = {}) {
@@ -24,7 +24,8 @@ function _parseDwarfCached(buffer, options = {}) {
         parsed = _parseDwarfInternal(buf, options);
         let symbols = [];
         try {
-            // 同名 static 的编译单元身份必须在绑定前按 DWARF 源文件确定，与 Worker 路径保持一致。
+            // Compilation-unit identities of same-named statics must come from DWARF source files before binding, as on
+            // the Worker path.
             symbols = qualifySameNameSymbols(parseElfSymbols(buf).symbols, parsed.variables);
         } catch {
             // Synthetic or stripped DWARF can still be inspected without a symbol table.
@@ -40,7 +41,7 @@ function parseDwarfVariableTypes(buffer) {
         const parsed = _parseDwarfCached(buffer);
         return parsed ? buildVariableTypes(parsed) : new Map();
     } catch (e) {
-        return new Map(); // 任意异常一律降级为空表
+        return new Map(); // any exception degrades to an empty table
     }
 }
 function parseCompositeLayout(buffer) {
@@ -53,7 +54,7 @@ function parseCompositeLayout(buffer) {
 }
 function parseDwarf(buffer, options = {}) {
     try {
-        // 先统一为一个 Buffer 对象，避免 Uint8Array 输入在两个视图入口各包装一次。
+        // Normalize to one Buffer first so a Uint8Array input is not wrapped separately by both view entry points.
         const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
         const parsed = _parseDwarfCached(buf, options);
         if (!parsed)
@@ -125,8 +126,8 @@ function parseDwarf(buffer, options = {}) {
             types: new Map(),
             layouts: new Map(),
             displayNames: new Map(),
-            // 仅保留 DWARF_BUDGET_EXCEEDED 这类解析器主动抛出的结构化错误码；
-            // 其余异常（如 Buffer.from(null) 的 ERR_INVALID_ARG_TYPE）一律归为 DWARF_PARSE_FAILED。
+            // Only structured codes the parser throws on purpose (such as DWARF_BUDGET_EXCEEDED) are kept; any other
+            // exception (such as ERR_INVALID_ARG_TYPE from Buffer.from(null)) becomes DWARF_PARSE_FAILED.
             diagnostics: [
                 {
                     code: e.code === "DWARF_BUDGET_EXCEEDED" ? e.code : "DWARF_PARSE_FAILED",

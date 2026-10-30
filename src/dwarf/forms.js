@@ -115,7 +115,7 @@ function createFormReader({ buf, str, lineStr }) {
                     return ctx.exactInteger ? exactLeb(cur, false) : readULEB(buf, cur);
                 case 0x10: {
                     return { ref: (ctx.sectionBase || 0) + offset(cur, ctx.offsetSize) };
-                } // ref_addr（节内偏移）
+                } // ref_addr (section offset)
                 case 0x11: {
                     const v = buf[cur.p];
                     cur.p += 1;
@@ -233,9 +233,9 @@ function createFormReader({ buf, str, lineStr }) {
                     cur.p += 4;
                     return { addrx };
                 }
-                // GNU split-dwarf 扩展 form：按已知长度推进游标即可，值本身不可用
-                // （split-dwarf 的完整信息在 .dwo 文件中，本解析器不消费）。
-                // 若在此抛错会中止整个 CU，导致后续所有变量丢失 DWARF 布局。
+                // GNU split-DWARF extension forms: advance by their known length; the value itself is unusable
+                // (split-DWARF keeps the full information in .dwo files, which this parser does not read). Throwing
+                // here would abort the whole CU and lose the DWARF layout of every later variable.
                 case 0x1f01:
                     return { addrx: readULEB(buf, cur) }; // GNU_addr_index
                 case 0x1f02:

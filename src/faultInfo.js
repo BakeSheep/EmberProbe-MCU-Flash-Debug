@@ -1,12 +1,12 @@
 "use strict";
-// 一次性读取 Cortex-M SCB 故障寄存器（CFSR/HFSR/DFSR/MMFAR/BFAR/ICSR/SHCSR）并解码故障位。
-// 模式同 chipInfo.readChipInfo：一次性 OpenOCD 命令行 + mdw 输出按地址分派。
-// 注意：OpenOCD 0.12.0 中 catch 会吞掉 mdw 输出，必须用 catch { echo [mdw ...] } 形式。
+// Reads the Cortex-M SCB fault registers (CFSR/HFSR/DFSR/MMFAR/BFAR/ICSR/SHCSR) in one OpenOCD run and decodes the
+// fault bits, dispatching mdw output by address like chipInfo.readChipInfo. OpenOCD 0.12.0's catch swallows mdw output,
+// so the catch { echo [mdw ...] } form is required.
 const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { parseMdwDump, parseRegLine, parseKv } = require("./chipInfo");
 const { runOpenOcdOnce } = require("./services/openocdExec");
 
-// SCB 故障相关寄存器地址（Cortex-M3/M4/M7/M33 调试地址空间，运行态可直读）
+// SCB fault register addresses (Cortex-M3/M4/M7/M33 debug address space, readable while running)
 const FAULT_REGS = {
     icsr: 0xe000ed04,
     shcsr: 0xe000ed24,
@@ -17,23 +17,23 @@ const FAULT_REGS = {
     bfar: 0xe000ed38
 };
 
-// CFSR/HFSR 各故障位定义：[寄存器字段, 位号, 标志名]
+// CFSR/HFSR fault bits: [register field, bit, flag name]
 /** @type {Array<[number, string, string, string]>} */
 const CFSR_BITS = [
-    // MemManage Fault Status（bits 0-7）
+    // MemManage fault status (bits 0-7)
     [0, "IACCVIOL", "mem", "取指访问违例（MPU 或 XN 区域执行）"],
     [1, "DACCVIOL", "mem", "数据访问违例（MPU 拒绝）"],
     [3, "MUNSTKERR", "mem", "异常返回出栈时访问违例"],
     [4, "MSTKERR", "mem", "异常进入压栈时访问违例"],
     [5, "MLSPERR", "mem", "浮点惰性压栈时访问违例"],
-    // BusFault Status（bits 8-15）
+    // BusFault status (bits 8-15)
     [8, "IBUSERR", "bus", "取指总线错误"],
     [9, "PRECISERR", "bus", "精确数据总线错误（BFAR 指向出错地址）"],
     [10, "IMPRECISERR", "bus", "非精确数据总线错误（写缓冲，PC 已越过出错指令）"],
     [11, "UNSTKERR", "bus", "异常返回出栈时总线错误"],
     [12, "STKERR", "bus", "异常进入压栈时总线错误（常见于栈溢出）"],
     [13, "LSPERR", "bus", "浮点惰性压栈时总线错误"],
-    // UsageFault Status（bits 16-31）
+    // UsageFault status (bits 16-31)
     [16, "UNDEFINSTR", "usage", "未定义指令"],
     [17, "INVSTATE", "usage", "非法 EPSR 状态（如跳转地址缺少 Thumb bit）"],
     [18, "INVPC", "usage", "非法 EXC_RETURN / PC 加载"],
@@ -49,8 +49,8 @@ const HFSR_BITS = [
     [31, "DEBUGEVT", "hard", "调试事件引起"]
 ];
 
-// 纯函数：解码故障寄存器，返回 { faultDetected, faults, exception, mmfarValid, bfarValid }
-// 输入为数值（undefined/null 表示未读到）
+// Pure decoder for the fault registers, returning { faultDetected, faults, exception, mmfarValid, bfarValid }. Inputs
+// are numbers; undefined/null means not read.
 function decodeFaultRegisters(regs) {
     const cfsr = Number(regs?.cfsr) >>> 0;
     const hfsr = Number(regs?.hfsr) >>> 0;
@@ -78,7 +78,8 @@ function decodeFaultRegisters(regs) {
             if (hfsr & (1 << bit)) faults.push({ register: "HFSR", flag, group, description });
         }
     }
-    // ICSR.VECTACTIVE（bits 0-8）：当前活跃异常号（0=线程模式，3=HardFault，4=MemManage，5=BusFault，6=UsageFault）
+    // ICSR.VECTACTIVE (bits 0-8): active exception number (0 = thread mode, 3 = HardFault, 4 = MemManage, 5 = BusFault,
+    // 6 = UsageFault)
     const vectactive = icsr & 0x1ff;
     const EXCEPTIONS = {
         2: "NMI",
@@ -103,15 +104,15 @@ function decodeFaultRegisters(regs) {
     return { faultDetected: faults.length > 0, faults, exception, mmfarValid, bfarValid };
 }
 
-// 一次性读取故障寄存器与 CPU 寄存器。options: { executable, probe, target, cwd }
-// resolve { targetState, registers: {cfsr,...}（十六进制串）, values: {cfsr,...}（数值）, pc, sp, lr, xpsr }
+// Reads fault and CPU registers in one run. options: { executable, probe, target, cwd }. Resolves { targetState,
+// registers: {cfsr,...} (hex strings), values: {cfsr,...} (numbers), pc, sp, lr, xpsr }
 async function readFaultInfo(options) {
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }
     const regReads = Object.values(FAULT_REGS).map((a) => `catch { echo [mdw 0x${a.toString(16)}] }`);
-    // CPU 寄存器需 halt 才能读：记录原状态 → 非 halted 则 halt → 读取 → 若曾 halt 则 resume。
-    // catch 会吞掉命令输出，寄存器行必须与 mdw 相同的 echo [...] 形式才能到达 stdout
+    // CPU registers need a halt: record the state, halt if not halted, read, and resume if this run halted. catch
+    // swallows command output, so register lines need the same echo [...] form as mdw to reach stdout
     const cpuRegCmd =
         'catch { set o [[target current] curstate]; set h 0; if {$o ne "halted"} { if {![catch {halt}]} { set h 1 } }; ' +
         "catch { echo [reg pc] }; catch { echo [reg sp] }; catch { echo [reg lr] }; catch { echo [reg xPSR] }; if {$h} { catch { resume } } }";
@@ -139,7 +140,7 @@ async function readFaultInfo(options) {
             if (!result[reg.name]) result[reg.name] = reg.value;
             return;
         }
-        // xPSR 行（parseRegLine 不覆盖）："xPSR (/32): 0x61000000"
+        // xPSR line (not covered by parseRegLine): "xPSR (/32): 0x61000000"
         const xpsr = clean.match(/\bxPSR\s*\(\/\d+\)\s*:\s*0x([0-9a-f]+)/i);
         if (xpsr) {
             if (!result.xpsr) result.xpsr = "0x" + xpsr[1].toUpperCase();
@@ -176,7 +177,7 @@ async function readFaultInfo(options) {
                 i18nKey: "chip.timeout"
             })
     });
-    // 只要读到关键故障寄存器即视为成功；否则用 OpenOCD 日志归类失败原因
+    // Succeeds once the key fault registers are read; otherwise the OpenOCD log classifies the failure
     if (result.values.cfsr !== undefined || result.values.hfsr !== undefined) return result;
     const diagnostic =
         execution.diagnostic ||

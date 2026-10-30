@@ -441,7 +441,8 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     await managed.stop();
     await debugFake.stop();
 
-    // Reload Window 停用扩展时必须先让 OpenOCD 收到 shutdown 并退出，不能立即断 socket/杀进程。
+    // When Reload Window deactivates the extension, OpenOCD must receive shutdown and exit first instead of having its
+    // socket cut or process killed immediately.
     const child = new EventEmitter();
     child.exitCode = null;
     child.signalCode = null;
@@ -541,8 +542,8 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(recoverySamples.length, 3);
     assert.deepStrictEqual(recoveryStatuses, [{ key: "sb.sampling" }]);
 
-    // 写入事务独占 Tcl 连接期间到达的采样节拍必须重新排队：采样链是自调度的，
-    // 直接丢弃节拍会让查看列表在写入一个变量后永久停更。
+    // Sampling ticks that arrive while a write transaction holds the Tcl connection are requeued: the sampling chain
+    // schedules itself, so dropping a tick would freeze the watch list after one write.
     const busySamples = [];
     const busySession = new ManagedOpenOcdSession(
         null,

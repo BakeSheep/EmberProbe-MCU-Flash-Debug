@@ -87,7 +87,7 @@ const execFileAsync = promisify(execFile);
             (action) => action.includes("--stop") && action.includes("--start")
         )
     );
-    // --list 默认 NDJSON，--json-array 输出单个 JSON 对象且仅可与 --list 合用
+    // --list defaults to NDJSON; --json-array prints a single JSON object and only works with --list
     assert.strictEqual(liveSkill.args(["--list", "--json-array"])["json-array"], true);
     const listInput = {
         elf: "/w/app.elf",
@@ -116,7 +116,8 @@ const execFileAsync = promisify(execFile);
     assert.strictEqual(listArray.symbols[0].name, "counter");
     assert.strictEqual(listArray.symbols[0].inferredType, ndjsonLines[0].inferredType);
     assert.strictEqual(listArray.symbols[0].elf, undefined);
-    // 调试会话文案只指向 EmberProbe 内置调试器，不再提及已移除的 Cortex-Debug 兼容。
+    // Debug session wording points only at the built-in EmberProbe debugger, without the removed Cortex-Debug
+    // compatibility.
     for (const code of [
         "DEBUG_SESSION_NOT_ACTIVE",
         "DEBUG_SESSION_CONFLICT",
@@ -145,7 +146,7 @@ const execFileAsync = promisify(execFile);
         operation: "rtos.snapshot"
     });
     assert.ok(rtosNotPaused.error.suggestedActions.some((action) => action.includes("emberprobe")));
-    // 服务端给出的具体建议优先于客户端模板
+    // Specific server suggestions take precedence over client templates
     const serverActions = diagnosticForError(
         Object.assign(new Error("none"), { code: "DEBUG_SESSION_NOT_ACTIVE", suggestedActions: ["server"] }),
         { operation: "rtos.snapshot" }
@@ -208,7 +209,7 @@ const execFileAsync = promisify(execFile);
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-bridge-"));
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-bridge-storage-"));
-    // 捕获 chip.read 实际收到的参数，验证 --fields 单独使用时不会回落到 identity 组
+    // Capture what chip.read actually receives to check that a lone --fields does not fall back to the identity group
     const chipReadParams = [];
     const csvExportParams = [];
     const watchAddParams = [];
@@ -216,7 +217,8 @@ const execFileAsync = promisify(execFile);
         root,
         async (method, params) => {
             if (method === "config.set") {
-                // 与扩展端 _setAgentConfiguration 相同的守卫：openocdPath 不允许经 Agent Bridge 修改
+                // The same guard as the extension's _setAgentConfiguration: openocdPath may not be changed through the
+                // Agent Bridge
                 require("../src/services/configurationStore").assertAgentSettable(params.values || {});
                 return { updated: true };
             }
@@ -337,7 +339,7 @@ const execFileAsync = promisify(execFile);
             !fs.existsSync(path.join(root, ".emberprobe")),
             "starting the new Bridge must remove the empty legacy pointer directory"
         );
-        // 描述文件（含 token）必须落在用户目录而非工作区；工作区只留指针
+        // The descriptor (with token) must be in the user directory, not the workspace, which keeps only a pointer
         assert.deepStrictEqual(descriptor, JSON.parse(fs.readFileSync(bridge.descriptorPath, "utf8")));
         assert.ok(bridge.descriptorPath.startsWith(storageDir), "descriptor must live in the storage dir");
         const pointer = JSON.parse(
@@ -478,7 +480,8 @@ const execFileAsync = promisify(execFile);
         assert.ok(emptyCsvDiagnostic.error.details.requestedRange.resolvedUtc.from.endsWith("Z"));
         assert.ok(emptyCsvDiagnostic.error.suggestedActions[0].includes("ISO 8601 UTC"));
 
-        // —— mcu-chip-info：--fields 单独使用时 sections 必须为空，否则扩展端会把 identity 整组字段并回结果 ——
+        // mcu-chip-info: with a lone --fields, sections must be empty, or the extension merges the whole identity group
+        // back into the result
         await execFileAsync(process.execPath, [
             path.resolve(__dirname, "../skills/mcu-chip-info/scripts/read-chip.js"),
             "--workspace",
@@ -531,7 +534,7 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(failedTrend.error.details.openocdTail[0], "Error: cannot read IDR");
         assert.ok(fs.existsSync(path.join(root, ".agents", "skills", "_emberprobe", "agent-bridge.json")));
 
-        // Bridge 侧 config.set 拒绝修改 openocdPath：该键可把探针调用引向任意可执行文件
+        // Bridge config.set refuses openocdPath, which could point probe calls at any executable
         let forbidden;
         try {
             await call(root, "config.set", { values: { openocdPath: "/tmp/evil" } });
@@ -545,7 +548,8 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(forbiddenDiagnostic.error.retryable, false);
         assert.ok(forbiddenDiagnostic.error.suggestedActions.length > 0);
 
-        // —— mcu-variables 写入：先返回聊天确认，再凭一次性 ID 写入并记住工作区授权 ——
+        // mcu-variables writes: first a chat confirmation, then a write with the one-time ID that remembers the
+        // workspace authorization
         const writeRequest = await execFileAsync(process.execPath, [
             path.resolve(__dirname, "../skills/mcu-variables/scripts/write.js"),
             "--workspace",
@@ -589,7 +593,7 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(faultPayload.faults[0].flag, "PRECISERR");
         assert.strictEqual(faultPayload.pcSymbol, "uart_send+0x12");
 
-        // —— mcu-elf-analyze（含 --top 透传） ——
+        // mcu-elf-analyze (including --top passthrough)
         const elfOut = await execFileAsync(process.execPath, [
             path.resolve(__dirname, "../skills/mcu-elf-analyze/scripts/analyze-elf.js"),
             "--workspace",
@@ -601,7 +605,7 @@ const execFileAsync = promisify(execFile);
         assert.strictEqual(elfPayload.flash.total, 0x110);
         assert.strictEqual(elfPayload.requestedTop, 5);
 
-        // 停止 Bridge 后描述文件与工作区指针一并清理
+        // Stopping the Bridge removes both the descriptor and the workspace pointer
         await bridge.stop();
         assert.ok(!fs.existsSync(bridge.descriptorPath), "descriptor must be removed on stop");
         assert.ok(
@@ -613,14 +617,15 @@ const execFileAsync = promisify(execFile);
             "empty bridge runtime directory must be removed on stop"
         );
 
-        // 目录内存在用户文件时只删指针，不删用户内容或非空目录。
+        // With user files in the directory only the pointer is deleted, never user content or a non-empty directory.
         await bridge.start();
         const keepFile = path.join(root, ".agents", "skills", "_emberprobe", "keep.txt");
         fs.writeFileSync(keepFile, "keep");
         await bridge.stop();
         assert.strictEqual(fs.readFileSync(keepFile, "utf8"), "keep");
 
-        // 旧格式兼容：工作区描述文件直接含 token（旧版扩展写入）时，agent-client 仍可原地读取
+        // Old format: when the workspace descriptor contains the token inline (written by older extensions),
+        // agent-client still reads it in place
         const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-bridge-legacy-"));
         try {
             const legacyFile = path.join(legacyRoot, ".emberprobe", "agent-bridge.json");

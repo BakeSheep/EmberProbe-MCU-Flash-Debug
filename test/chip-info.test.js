@@ -30,51 +30,51 @@ const {
 } = require("../src/chipInfo");
 const { createChipParser } = require("../src/chip/parser");
 
-// SCB CPUID 0x410FC241 → Cortex-M4 r0p1（ARM）
+// SCB CPUID 0x410FC241 -> Cortex-M4 r0p1 (ARM)
 const m4 = decodeCpuid(0x410fc241);
 assert.strictEqual(m4.core, "Cortex-M4");
 assert.strictEqual(m4.revision, "r0p1");
 assert.strictEqual(m4.implementer, "ARM");
 assert.strictEqual(m4.raw, "0x410FC241");
 
-// 覆盖常见 Cortex-M part number（bits[15:4]）
+// Common Cortex-M part numbers (bits[15:4])
 assert.strictEqual(decodeCpuid(0x410cc200).core, "Cortex-M0");
 assert.strictEqual(decodeCpuid(0x410cc601).core, "Cortex-M0+");
 assert.strictEqual(decodeCpuid(0x412fc231).core, "Cortex-M3");
 assert.strictEqual(decodeCpuid(0x410fc271).core, "Cortex-M7");
 assert.strictEqual(decodeCpuid(0x410cd200).core, "Cortex-M23");
 
-// 未知 part number：core 为空但仍给出 raw / revision
+// Unknown part number: empty core but raw and revision are still given
 const unknown = decodeCpuid(0x41000000);
 assert.strictEqual(unknown.core, "");
 assert.ok(unknown.raw.startsWith("0x"));
 assert.strictEqual(unknown.revision, "r0p0");
 
-// 非法输入返回 null
+// Invalid input returns null
 assert.strictEqual(decodeCpuid(null), null);
 assert.strictEqual(decodeCpuid(undefined), null);
 assert.strictEqual(decodeCpuid(NaN), null);
 
-// mdw 输出行解析（大小写不敏感，带地址校验）
+// mdw output line parsing (case-insensitive, with address check)
 assert.strictEqual(parseMdwWord("0xe000ed00: 410fc241", 0xe000ed00), 0x410fc241);
 assert.strictEqual(parseMdwWord("0xE000ED00: 410FC241"), 0x410fc241);
-assert.strictEqual(parseMdwWord("0x20000000: deadbeef", 0xe000ed00), null); // 地址不匹配应丢弃
-assert.strictEqual(parseMdwWord("Info : hla_swd"), null); // 非内存转储行
+assert.strictEqual(parseMdwWord("0x20000000: deadbeef", 0xe000ed00), null); // a mismatched address is dropped
+assert.strictEqual(parseMdwWord("Info : hla_swd"), null); // not a memory dump line
 
-// EP_KV 标记行解析
+// EP_KV marker line parsing
 assert.deepStrictEqual(parseKv("EP_KV name stm32f4x.cpu"), { key: "name", value: "stm32f4x.cpu" });
 assert.deepStrictEqual(parseKv("EP_KV state running"), { key: "state", value: "running" });
 assert.deepStrictEqual(parseKv("EP_KV endian little"), { key: "endian", value: "little" });
 assert.strictEqual(parseKv("random line"), null);
 
-// parseMdwDump / formatUid：UID 三字转储
+// parseMdwDump / formatUid: three-word UID dump
 const dump = parseMdwDump("0x1ff1e800: 00360026 32355114 20393443");
 assert.strictEqual(dump.addr, 0x1ff1e800);
 assert.deepStrictEqual(dump.words, [0x00360026, 0x32355114, 0x20393443]);
 assert.strictEqual(parseMdwDump("Info : hla_swd"), null);
 assert.strictEqual(formatUid([0x00360026, 0x32355114, 0x20393443]), "0x003600263235511420393443");
 
-// splitIdcode：STM32 DBGMCU_IDCODE 拆分为 DEV_ID / REV_ID
+// splitIdcode: STM32 DBGMCU_IDCODE split into DEV_ID / REV_ID
 const id = splitIdcode(0x10076413);
 assert.strictEqual(id.deviceId, "0x413");
 assert.strictEqual(id.revId, "0x1007");
@@ -85,19 +85,19 @@ assert.strictEqual(splitIdcode(""), null);
 assert.strictEqual(splitIdcode("not-a-device-id"), null);
 assert.strictEqual(splitIdcode("0x450 trailing"), null);
 
-// parseRegLine：寄存器行（r13/r14/r15 归一化为 sp/lr/pc，值转大写）
+// parseRegLine: register lines (r13/r14/r15 normalized to sp/lr/pc, values upper-cased)
 assert.deepStrictEqual(parseRegLine("pc (/32): 0x080034ac"), { name: "pc", value: "0x080034AC" });
 assert.deepStrictEqual(parseRegLine("sp (/32): 0x2407ff90"), { name: "sp", value: "0x2407FF90" });
 assert.deepStrictEqual(parseRegLine("r15 (/32): 0x08000abc"), { name: "pc", value: "0x08000ABC" });
 assert.strictEqual(parseRegLine("Info : something"), null);
 
-// normalizeTransport：传输协议归一化
+// normalizeTransport: transport normalization
 assert.strictEqual(normalizeTransport("hla_swd"), "SWD");
 assert.strictEqual(normalizeTransport("dapdirect_swd"), "SWD");
 assert.strictEqual(normalizeTransport("jtag"), "JTAG");
 assert.strictEqual(normalizeTransport(""), "");
 
-// seriesFromTarget / uidBaseForTarget：由目标配置名推断系列与 UID 基址
+// seriesFromTarget / uidBaseForTarget: series and UID base inferred from the target configuration name
 assert.strictEqual(seriesFromTarget("stm32h7x.cfg"), "STM32H7x");
 assert.strictEqual(seriesFromTarget("geehy/apm32f4x.cfg"), "APM32F4X");
 assert.strictEqual(seriesFromTarget("stm32f4x_dual.cfg"), "STM32F4x");
@@ -105,14 +105,14 @@ assert.strictEqual(uidBaseForTarget("stm32h7x.cfg"), 0x1ff1e800);
 assert.strictEqual(uidBaseForTarget("stm32f4x.cfg"), 0x1fff7a10);
 assert.strictEqual(uidBaseForTarget("nrf52.cfg"), 0);
 
-// seriesFromFlashDriver：由 flash 驱动名推断系列（硬件实测优先）
+// seriesFromFlashDriver: series inferred from the flash driver name (hardware measurement wins)
 assert.strictEqual(seriesFromFlashDriver("stm32f1x"), "STM32F1x");
 assert.strictEqual(seriesFromFlashDriver("stm32h7x"), "STM32H7x");
 assert.strictEqual(seriesFromFlashDriver("stm32l4x"), "STM32L4x");
 assert.strictEqual(seriesFromFlashDriver(""), "");
 assert.strictEqual(seriesFromFlashDriver("nrf5"), "");
 
-// idcodeBaseForTarget / flashSizeBaseForTarget：DBGMCU_IDCODE 与 FLASHSIZE 寄存器基址（H7 与经典型号）
+// idcodeBaseForTarget / flashSizeBaseForTarget: DBGMCU_IDCODE and FLASHSIZE register bases (H7 and classic parts)
 assert.strictEqual(idcodeBaseForTarget("stm32h7x.cfg"), 0x5c001000);
 assert.strictEqual(idcodeBaseForTarget("stm32f4x.cfg"), 0xe0042000);
 assert.strictEqual(idcodeBaseForTarget("geehy/apm32f4x.cfg"), 0xe0042000);
@@ -121,31 +121,32 @@ assert.strictEqual(flashSizeBaseForTarget("stm32h7x.cfg"), 0x1ff1e880);
 assert.strictEqual(flashSizeBaseForTarget("stm32f4x.cfg"), 0x1fff7a22);
 assert.strictEqual(flashSizeBaseForTarget("nrf52.cfg"), 0);
 
-// normalizeFlashSize：kbytes → KiB
+// normalizeFlashSize: kbytes -> KiB
 assert.strictEqual(normalizeFlashSize("1024 kbytes"), "1024 KiB");
 
-// decodeRomPidr：CoreSight ROM 表厂商指纹解码
+// decodeRomPidr: CoreSight ROM table vendor fingerprint
 const CIDR_OK = [0x0d, 0x10, 0x05, 0xb1];
-// 真 STM32F407：设计者 ST（bank 0, 0x20），器件号 = DEV_ID 0x413（OpenOCD 显示为 Peripheral ID 0x00000A0413）
+// Genuine STM32F407: designer ST (bank 0, 0x20), part number = DEV_ID 0x413 (OpenOCD shows Peripheral ID 0x00000A0413)
 const stRom = decodeRomPidr([0x13, 0x04, 0x0a, 0x00], [0x00, 0, 0, 0], CIDR_OK);
 assert.strictEqual(stRom.key, "0:0x20");
 assert.strictEqual(stRom.designer, "STMicroelectronics");
 assert.strictEqual(stRom.part, "0x413");
-// Arm 默认 ROM 表（GD32/CH32 等兼容片常见）：设计者 Arm（bank 4, 0x3B），Cortex-M3 ROM 器件号 0x4C3
+// Arm default ROM table (common on compatible chips such as GD32/CH32): designer Arm (bank 4, 0x3B), Cortex-M3 ROM part
+// number 0x4C3
 const armRom = decodeRomPidr([0xc3, 0xb4, 0x0b, 0x00], [0x04, 0, 0, 0], CIDR_OK);
 assert.strictEqual(armRom.key, "4:0x3b");
 assert.strictEqual(armRom.designer, "Arm");
 assert.strictEqual(armRom.part, "0x4C3");
-// Geehy（珠海极海，Apex 旗下）：bank 11, 0x23
+// Geehy (Zhuhai Geehy, part of Apex): bank 11, 0x23
 const geehyRom = decodeRomPidr([0x13, 0x34, 0x0a, 0x00], [0x0b, 0, 0, 0], CIDR_OK);
 assert.strictEqual(geehyRom.key, "11:0x23");
 assert.strictEqual(geehyRom.designer, "Apex Microelectronics (Geehy)");
-// CIDR 前导码非法（总线错误/杂值）→ null；未用 JEDEC 编码（PIDR2 bit3=0）→ null
+// Invalid CIDR preamble (bus error or noise) -> null; no JEDEC code (PIDR2 bit3 = 0) -> null
 assert.strictEqual(decodeRomPidr([0x13, 0x04, 0x0a, 0x00], [0x00, 0, 0, 0], [0, 0, 0, 0]), null);
 assert.strictEqual(decodeRomPidr([0x13, 0x04, 0x02, 0x00], [0x00, 0, 0, 0], CIDR_OK), null);
 assert.strictEqual(decodeRomPidr(null, null, CIDR_OK), null);
 
-// assessAuthenticity：仅对宣称 STM32 的芯片做原厂/兼容判定
+// assessAuthenticity: only chips claiming to be STM32 get a genuine/compatible verdict
 assert.strictEqual(assessAuthenticity("STM32F4x", "0:0x20").authenticity, "genuine");
 const apm = assessAuthenticity("STM32F4x", "11:0x23");
 assert.strictEqual(apm.authenticity, "compatible");
@@ -153,14 +154,14 @@ assert.strictEqual(apm.compatBrand, "Geehy APM32");
 assert.strictEqual(apm.compatVendor, "Apex Microelectronics (Geehy)");
 const gd = assessAuthenticity("STM32F1x", "7:0x51");
 assert.strictEqual(gd.compatBrand, "GigaDevice GD32");
-// Arm 内核自带 ROM 表（M7/M33 等原厂 ST 芯片也会读到）：不能判为兼容芯片
+// The Arm core's own ROM table (also read on genuine ST M7/M33 parts) must not mark a chip as compatible
 assert.strictEqual(assessAuthenticity("STM32H7x", "4:0x3b").authenticity, "");
 assert.strictEqual(assessAuthenticity("STM32F4x", "4:0x3b").authenticity, "");
-// 非 STM32 系列（如 nRF52 由 Arm 设计 ROM 表）不参与判定
+// Non-STM32 series (nRF52 with an Arm-designed ROM table, for example) are not judged
 assert.strictEqual(assessAuthenticity("NRF52", "4:0x3b").authenticity, "");
 assert.strictEqual(assessAuthenticity("STM32F4x", "").authenticity, "");
 
-// deriveVendor：仅采信 ROM 表中已知的非 Arm 硬件厂商码；无法确认时保持未知
+// deriveVendor: only trusts known non-Arm hardware vendor codes from the ROM table; otherwise unknown
 assert.strictEqual(deriveVendor("STM32F4x", { key: "0:0x20", designer: "STMicroelectronics" }), "STMicroelectronics");
 assert.strictEqual(
     deriveVendor("STM32F4x", { key: "11:0x23", designer: "Apex Microelectronics (Geehy)" }),
@@ -171,24 +172,26 @@ assert.strictEqual(deriveVendor("STM32H7x", null), "");
 assert.strictEqual(deriveVendor("NRF52", { key: "2:0x44", designer: "Nordic Semiconductor" }), "Nordic Semiconductor");
 assert.strictEqual(deriveVendor("NRF52", null), "");
 
-// chooseIdcode：优先取 DEV_ID 已知的读数（H750 误选 f1x 目标时，经典地址读到杂值、H7 地址读到 0x450）
+// chooseIdcode: prefers a read with a known DEV_ID (with an H750 under the wrong f1x target, the classic address reads
+// noise and the H7 address reads 0x450)
 assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001, 0x5c001000: 0x10036450 }), 0x10036450);
-// 无已知 DEV_ID 时：只接受目标家族地址上的读数，其它候选地址的杂值不能回退
+// Without a known DEV_ID only the target family's address is accepted; noise at other candidate addresses cannot be a
+// fallback
 assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }, 0xe0042000), 0x00002001);
 assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }, 0x5c001000), null);
 assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00002001 }), null);
-// 全 0/全 F 的 DEV_ID 视为无效
+// All-zero or all-F DEV_IDs are invalid
 assert.strictEqual(chooseIdcode({ 0xe0042000: 0x00000000, 0x40015800: 0x0000ffff }, 0xe0042000), null);
 assert.strictEqual(chooseIdcode({}, 0xe0042000), null);
-// 候选地址集应覆盖经典/F0系/H7 三类 DBGMCU 地址
+// The candidate set covers the classic, F0 and H7 DBGMCU addresses
 assert.ok(
     ALL_IDCODE_ADDRS.includes(0xe0042000) &&
         ALL_IDCODE_ADDRS.includes(0x40015800) &&
         ALL_IDCODE_ADDRS.includes(0x5c001000)
 );
 
-// 芯片信息读取不得改变运行目标状态。H7 running 分支只读本系列身份寄存器，
-// 已知型号即便暂停也不应扫描其他系列寄存器。
+// Reading chip information must not change the target's run state. The H7 running branch reads only that series'
+// identity registers, and a known part does not scan other series' registers even when halted.
 const chipInfoCommands = buildChipInfoCommands("stm32h7x.cfg");
 const allChipInfoCommands = chipInfoCommands.join("\n");
 assert.ok(!/(?:^|[;{\s])halt(?:[;}\s]|$)/.test(allChipInfoCommands), "chip info must never halt a running target");
@@ -213,14 +216,14 @@ const apmInfo = apmParser.finish(0);
 assert.strictEqual(apmInfo.series, "APM32F4X");
 assert.strictEqual(apmInfo.deviceId, "0x413");
 
-// CPUID 部件号：M55/M85/M52/M35P 与 OpenOCD cortex_m.h 一致
+// CPUID part numbers: M55/M85/M52/M35P as in OpenOCD's cortex_m.h
 assert.strictEqual(decodeCpuid(0x410fd220).core, "Cortex-M55");
 assert.strictEqual(decodeCpuid(0x410fd230).core, "Cortex-M85");
 assert.strictEqual(decodeCpuid(0x410fd240).core, "Cortex-M52");
 assert.strictEqual(decodeCpuid(0x410fd310).core, "Cortex-M35P");
 assert.strictEqual(decodeCpuid(0x410fd210).core, "Cortex-M33");
 
-// DEV_ID → 系列：曾错配的型号，以及每个系列的内核与 STM32_SERIES_CORES 一致
+// DEV_ID -> series: previously mismatched parts, and each series' cores agree with STM32_SERIES_CORES
 const expectedFamilies = {
     0x420: "STM32F1x",
     0x428: "STM32F1x",
@@ -255,12 +258,13 @@ function parseChip(target, lines) {
     for (const line of lines) parser.handleLine(line);
     return parser.finish(0);
 }
-// H723 误选 stm32g0x 目标：DEV_ID 0x483 应纠正为 H7，内核一致
+// H723 under the wrong stm32g0x target: DEV_ID 0x483 corrects it to H7 with a matching core
 const h723 = parseChip("stm32g0x.cfg", ["0xe000ed00: 411fc272", "0x40015800: 10016483"]);
 assert.strictEqual(h723.core, "Cortex-M7");
 assert.strictEqual(h723.series, "STM32H7x");
 assert.strictEqual(h723.coreMismatch, "");
-// C031 误选 stm32g0x 目标：同一 DBGMCU 地址上的 DEV_ID 0x453 纠正为 C0，读其 Flash 容量/UID 地址
+// C031 under the wrong stm32g0x target: DEV_ID 0x453 at the same DBGMCU address corrects it to C0 and reads its flash
+// size/UID addresses
 const c031 = parseChip("stm32g0x.cfg", [
     "0xe000ed00: 410cc601",
     "0x40015800: 10006453",
@@ -272,28 +276,29 @@ assert.strictEqual(c031.series, "STM32C0x");
 assert.strictEqual(c031.coreMismatch, "");
 assert.strictEqual(c031.flashSize, "32 KiB");
 assert.strictEqual(c031.uid, "0x00290041" + "4B4B5009" + "20363343");
-// C5（M33）：CPU 侧 DBGMCU 与 0x08FFF80C Flash 容量
+// C5 (M33): CPU-side DBGMCU and flash size at 0x08FFF80C
 const c562 = parseChip("stm32c5x.cfg", ["0xe000ed00: 410fd213", "0x44024000: 1000644e", "0x08fff80c: 00000200"]);
 assert.strictEqual(c562.series, "STM32C5x");
 assert.strictEqual(c562.coreMismatch, "");
 assert.strictEqual(c562.flashSize, "512 KiB");
 assert.match(buildChipInfoCommands("stm32c5x.cfg").join("\n"), /mdw 0x44024000\].*mdw 0x8fff80c\].*mdw 0x8fff800 3\]/);
-// F100（M3）DEV_ID 0x420 属 F1，而非 F0
+// F100 (M3) DEV_ID 0x420 belongs to F1, not F0
 const f100 = parseChip("stm32f1x.cfg", ["0xe000ed00: 411fc231", "0xe0042000: 10016420"]);
 assert.strictEqual(f100.series, "STM32F1x");
 assert.strictEqual(f100.coreMismatch, "");
-// 内核与 DEV_ID 家族冲突：不改写系列，并给出不一致说明
+// Core conflicts with the DEV_ID family: the series is not rewritten and the mismatch is explained
 const clash = parseChip("stm32f4x.cfg", ["0xe000ed00: 410fc241", "0xe0042000: 10006460"]);
 assert.strictEqual(clash.series, "STM32F4x");
 assert.strictEqual(clash.coreMismatch, "Cortex-M4 ≠ STM32G0x (DEV_ID 0x460)");
-// 无 DEV_ID 时按目标系列校验内核
+// Without DEV_ID the core is checked against the target series
 const wrongTarget = parseChip("stm32f1x.cfg", ["0xe000ed00: 410cc601"]);
 assert.strictEqual(wrongTarget.coreMismatch, "Cortex-M0+ ≠ STM32F1x");
-// OpenOCD "processor detected" 行中的 M35P 不应被截断
+// M35P in OpenOCD's "processor detected" line must not be truncated
 const m35p = parseChip("stm32f1x.cfg", ["Info : [x.cpu] Cortex-M35P r1p0 processor detected"]);
 assert.strictEqual(m35p.core, "Cortex-M35P");
 assert.strictEqual(m35p.coreRevision, "r1p0");
-// L5 等未收录地址的家族不得从其它家族地址回退 Flash 容量/UID
+// Families whose addresses are not in the table (L5, ...) must not fall back to flash size/UID from other families'
+// addresses
 const l5 = parseChip("stm32l5x.cfg", ["0xe000ed00: 410fd214", "0xe0042000: 10006472", "0x1fff7a22: 00000400"]);
 assert.strictEqual(l5.series, "STM32L5x");
 assert.strictEqual(l5.flashSize, "");

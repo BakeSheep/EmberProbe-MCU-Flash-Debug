@@ -5,7 +5,7 @@ const path = require("path");
 
 const cache = new Map();
 
-// 开发模式下 __dirname=src，打包后 __dirname=dist；发布包保留 src/webview 资产。
+// __dirname is src in development and dist when packaged; the published package keeps the src/webview assets.
 function loadWebviewAsset(area, name) {
     const key = `${area}/${name}`;
     if (cache.has(key)) return cache.get(key);

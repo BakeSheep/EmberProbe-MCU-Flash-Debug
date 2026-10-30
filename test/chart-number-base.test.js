@@ -3,7 +3,7 @@ const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 
-const html = getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en");
+const html = getLiveWatchContent({}, "en");
 const graph = render(html);
 try {
     const w = graph.window;
@@ -17,7 +17,7 @@ try {
         { name: "fraction", value: 1.5, t: 1000 },
         { name: "wide", value: Number("18446744073709551615"), valueText: "18446744073709551615", t: 1000 }
     ];
-    graph.send({ type: "liveSample", samples });
+    graph.send({ type: "chartValues", samples });
     w.updateValues();
     const value = (name) => doc.querySelector(`[data-series-name="${name}"] .var-value`).textContent;
     const open = (name) => {
@@ -26,7 +26,6 @@ try {
         );
     };
     const base = (radix) => doc.querySelector(`[data-radix="${radix}"]`).click();
-    const originalData = JSON.stringify(w.data);
     const messageCount = graph.messages.length;
     w.chartState.hits = samples.slice(0, 2).map((sample) => ({ name: sample.name, point: { v: sample.value } }));
     w.controls.refresh();
@@ -41,7 +40,6 @@ try {
         "unchanged hover hits refresh with each variable's own base"
     );
     assert.equal(graph.messages.length, messageCount, "base selection stays in the current webview");
-    assert.equal(JSON.stringify(w.data), originalData, "display conversion never rewrites recorded samples");
     open("b");
     assert.equal(doc.querySelector('[data-radix="10"]').getAttribute("aria-pressed"), "true");
     base(2);
@@ -73,7 +71,7 @@ try {
     const restored = render(html, saved);
     try {
         restored.send({ type: "watchList", items });
-        restored.send({ type: "liveSample", samples });
+        restored.send({ type: "chartValues", samples });
         restored.window.updateValues();
         assert.equal(restored.document.querySelector('[data-series-name="a"] .var-value').textContent, "0x1A");
     } finally {
@@ -110,7 +108,7 @@ try {
             { name: "imu.angle.roll", address: 0x20000000, type: "f32", size: 4 }
         ]
     });
-    nested.send({ type: "liveSample", samples: [{ name: "imu.angle", value: { members }, t: 1000 }] });
+    nested.send({ type: "liveCompositeSample", samples: [{ name: "imu.angle", tree: { members }, t: 1000 }] });
     nested.window.updateValues();
     const row = nested.document.querySelector('[data-series-name="imu.angle.roll"]');
     row.dispatchEvent(new nested.window.MouseEvent("contextmenu", { bubbles: true }));

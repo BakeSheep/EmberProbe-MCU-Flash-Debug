@@ -19,9 +19,8 @@ const {
     OPENOCD_BIN
 } = installer;
 
-// 用 async IIFE 包裹，避免与 require 一起触发模块格式歧义
 (async () => {
-    // 解包路径断言（Zip Slip 纵深防御）：越出 staging 的条目必须拒绝
+    // Extraction path checks (Zip Slip defence in depth): entries escaping staging are rejected
     const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ep-slip-"));
     try {
         assert.doesNotThrow(() => assertSafeEntryPath(staging, "bin/openocd.exe"));
@@ -43,20 +42,21 @@ const {
         fs.rmSync(staging, { recursive: true, force: true });
     }
 
-    // 平台映射：当前进程平台应能映射到已知键或返回 null
+    // Platform mapping: the current platform maps to a known key or null
     const key = platformKey();
-    assert.ok(typeof key === "string" || key === null, "platformKey 必须返回 string 或 null");
+    assert.ok(typeof key === "string" || key === null, "platformKey returns a string or null");
     if (process.platform === "win32" && process.arch === "x64") {
-        assert.strictEqual(key, "win32-x64", "win32-x64 应映射到预置包键");
+        assert.strictEqual(key, "win32-x64", "win32-x64 maps to a bundled archive key");
     }
 
-    // 用统一 mock context：asAbsolutePath 指向项目根用于定位预置包，globalStorageUri 指向临时目录用于解压
+    // Shared mock context: asAbsolutePath points at the project root to find bundled archives, globalStorageUri at a
+    // temporary extraction directory
     const projectRoot = path.resolve(__dirname, "..");
     const linuxArchive = path.join(projectRoot, "resources", "openocd-linux-x64.tar.gz");
     assert.strictEqual(
         createHash("sha256").update(fs.readFileSync(linuxArchive)).digest("hex"),
         targetManifest.archives.find((item) => item.platform === "linux-x64").sha256,
-        "Linux x64 预置包必须与合入兼容配置后的清单 SHA-256 一致"
+        "the Linux x64 archive matches the manifest SHA-256 after merging compatibility configs"
     );
     const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "ep-test-"));
     const mockContext = {
@@ -78,17 +78,32 @@ const {
         ]);
         assert.ok(bundled.found && bundled.compatible, JSON.stringify(bundled));
         assert.ok(otherWindow.found && otherWindow.compatible, JSON.stringify(otherWindow));
-        assert.strictEqual(otherWindow.path, bundled.path, "跨窗口并发准备必须共享已发布的运行时");
+        assert.strictEqual(
+            otherWindow.path,
+            bundled.path,
+            "concurrent preparation across windows shares the published runtime"
+        );
         assert.strictEqual(bundled.bundled, true);
         assert.strictEqual(bundled.requested, "openocd");
-        assert.ok(bundled.path.startsWith(tmpBase), "默认运行时必须安装在扩展全局存储内");
+        assert.ok(
+            bundled.path.startsWith(tmpBase),
+            "the default runtime installs inside the extension's global storage"
+        );
         assert.notStrictEqual(bundled.path, "/usr/bin/openocd");
         const installedAt = fs.statSync(bundled.path).mtimeMs;
         const reusedProgress = [];
         const reused = await probeDefaultOpenOcd("openocd", mockContext, (event) => reusedProgress.push(event));
         assert.strictEqual(reused.path, bundled.path);
-        assert.strictEqual(fs.statSync(bundled.path).mtimeMs, installedAt, "重复解析不得覆盖缓存的运行时");
-        assert.deepStrictEqual(reusedProgress, [], "复用已验证的运行时不得上报安装状态（避免烧录/调试时闪现安装卡片）");
+        assert.strictEqual(
+            fs.statSync(bundled.path).mtimeMs,
+            installedAt,
+            "resolving again does not overwrite the cached runtime"
+        );
+        assert.deepStrictEqual(
+            reusedProgress,
+            [],
+            "reusing a verified runtime reports no install state (no install card flashing during flash/debug)"
+        );
         assert.ok(progress.some((event) => event.key === "oc.preparing" && event.state === "preparing"));
         assert.ok(progress.some((event) => event.key === "oc.extracting"));
 
@@ -124,38 +139,45 @@ const {
         assert.strictEqual(invalid.errorKey, "oc.prepareFailed");
     }
     if (archive) {
-        // 当前平台有预置包：文件必须真实存在且可读
-        assert.ok(fs.existsSync(archive), `预置包应存在：${archive}`);
-        assert.ok(archive.endsWith("openocd-win32-x64.tar.gz") || /\.tar\.gz$/.test(archive), "预置包应为 tar.gz");
+        // With a bundled archive for this platform the file must exist and be readable
+        assert.ok(fs.existsSync(archive), `bundled archive exists: ${archive}`);
+        assert.ok(
+            archive.endsWith("openocd-win32-x64.tar.gz") || /\.tar\.gz$/.test(archive),
+            "bundled archive is a tar.gz"
+        );
     } else {
-        // 当前平台无预置包：getBundledArchive 返回 null，不应抛错
+        // Without a bundled archive for this platform getBundledArchive returns null instead of throwing
         assert.strictEqual(archive, null);
     }
 
-    // installDir：基于 mock context 的 globalStorageUri
+    // installDir: based on the mock context's globalStorageUri
     const dest = installDir(mockContext);
-    assert.ok(dest.includes(path.join("emberprobe", "openocd")), "installDir 应包含 emberprobe/openocd 子目录");
+    assert.ok(
+        dest.includes(path.join("emberprobe", "openocd")),
+        "installDir contains the emberprobe/openocd subdirectory"
+    );
 
-    // 若有预置包，执行一次真实解压安装并定位可执行文件（解压到临时目录，不污染真实全局存储）
+    // With a bundled archive, run one real extraction install and locate the executable (into a temporary directory,
+    // never the real global storage)
     const archiveForInstall = archive;
     if (archiveForInstall) {
         const progressCalls = [];
         const result = await installBundledOpenOcd(null, mockContext, (p) => progressCalls.push(p));
-        assert.ok(result.ok, `安装应成功，实际：${result.error || JSON.stringify(result)}`);
-        assert.ok(result.path, "安装成功应返回可执行文件路径");
-        assert.ok(result.path.endsWith(OPENOCD_BIN), `路径应以 ${OPENOCD_BIN} 结尾，实际：${result.path}`);
-        assert.ok(fs.existsSync(result.path), "解压出的可执行文件应真实存在");
+        assert.ok(result.ok, `install succeeds, got: ${result.error || JSON.stringify(result)}`);
+        assert.ok(result.path, "a successful install returns the executable path");
+        assert.ok(result.path.endsWith(OPENOCD_BIN), `path ends with ${OPENOCD_BIN}, got: ${result.path}`);
+        assert.ok(fs.existsSync(result.path), "the extracted executable exists");
         const probe = await probeOpenOcd(result.path);
-        assert.ok(probe.found, `预置 OpenOCD 应可执行，实际：${probe.error || JSON.stringify(probe)}`);
-        assert.ok(progressCalls.length > 0, "解压过程应上报进度");
-        // locateOpenOcdBinary 独立验证
+        assert.ok(probe.found, `bundled OpenOCD runs, got: ${probe.error || JSON.stringify(probe)}`);
+        assert.ok(progressCalls.length > 0, "extraction reports progress");
+        // locateOpenOcdBinary on its own
         const destRoot = installDir(mockContext);
         const located = locateOpenOcdBinary(destRoot);
-        assert.ok(located, "locateOpenOcdBinary 应能在解压目录内定位到可执行文件");
+        assert.ok(located, "locateOpenOcdBinary finds the executable in the extraction directory");
         const targets = discoverTargetConfigs(located);
-        assert.ok(targets.includes("geehy/apm32f0x.cfg"), "预置包应包含 APM32F0 target");
-        assert.ok(targets.includes("geehy/apm32f1x.cfg"), "预置包应包含 APM32F1 target");
-        assert.ok(targets.includes("geehy/apm32f4x.cfg"), "预置包应包含 APM32F4 target");
+        assert.ok(targets.includes("geehy/apm32f0x.cfg"), "the bundled archive includes the APM32F0 target");
+        assert.ok(targets.includes("geehy/apm32f1x.cfg"), "the bundled archive includes the APM32F1 target");
+        assert.ok(targets.includes("geehy/apm32f4x.cfg"), "the bundled archive includes the APM32F4 target");
         // Configuration-only execution: explicit shutdown prevents implicit init or probe access.
         for (const target of targetManifest.targets) {
             const name = target.path.slice("target/".length);
@@ -230,15 +252,15 @@ const {
         assert.match(c5Output, /EP_BANKS=[\s\S]*driver\s+stldr\s+base\s+0x08000000/);
         assert.deepStrictEqual(c5Output.match(/^EP_LOADER=.*$/gm), ["EP_LOADER=1", "EP_LOADER=1", "EP_LOADER=1"]);
 
-        // 新包损坏时安装应失败，但已经可用的旧目录必须原样保留。
+        // A corrupt new archive fails the install, leaving an already working old directory untouched.
         const marker = path.join(destRoot, "existing-install.marker");
         fs.writeFileSync(marker, "keep");
         const rejected = await installBundledOpenOcd(null, mockContext, null, async () => ({
             ok: false,
             error: "simulated runtime failure"
         }));
-        assert.strictEqual(rejected.ok, false, "可执行性验证失败时必须中止安装");
-        assert.ok(fs.existsSync(marker), "可执行性验证失败不得替换已有 OpenOCD");
+        assert.strictEqual(rejected.ok, false, "a failed executable check aborts the install");
+        assert.ok(fs.existsSync(marker), "a failed executable check keeps the existing OpenOCD");
 
         const corruptArchive = path.join(tmpBase, "corrupt.tar.gz");
         fs.writeFileSync(corruptArchive, "not a tar archive");
@@ -247,9 +269,8 @@ const {
             globalStorageUri: { fsPath: tmpBase }
         };
         const failed = await installBundledOpenOcd(null, corruptContext);
-        assert.strictEqual(failed.ok, false, "损坏的预置包必须安装失败");
-        assert.ok(fs.existsSync(marker), "安装失败不得删除已有 OpenOCD");
-        // 清理临时安装目录
+        assert.strictEqual(failed.ok, false, "a corrupt bundled archive fails to install");
+        assert.ok(fs.existsSync(marker), "a failed install keeps the existing OpenOCD");
         try {
             fs.rmSync(destRoot, { recursive: true, force: true });
         } catch (e) {
@@ -257,7 +278,6 @@ const {
         }
     }
 
-    // 清理临时基目录
     try {
         fs.rmSync(tmpBase, { recursive: true, force: true });
     } catch (e) {

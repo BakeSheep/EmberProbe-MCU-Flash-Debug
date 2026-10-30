@@ -2,14 +2,12 @@
 
 const { scenario } = require("./helpers/scenario");
 
-const path = require("path");
-
 const assert = require("assert");
 const { OpenOcdStatusService } = require("../src/services/openocdStatusService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { context } = fixture;
     try {
         const statusEvents = [];
         const checker = {
@@ -126,15 +124,19 @@ const { createFixture } = require("./helpers/service-fixture");
                 "/storage/bundled/openocd",
                 "/storage/bundled/openocd"
             ]);
-            assert.strictEqual(preparations, 2, "并发默认路径解析必须共用一次准备操作");
-            assert.deepStrictEqual(probes, [], "不得探测或启动系统默认可执行文件");
+            assert.strictEqual(preparations, 2, "concurrent default path resolution shares one preparation");
+            assert.deepStrictEqual(probes, [], "never probes or starts the system default executable");
             assert.strictEqual(await service.resolve("/usr/bin/openocd"), "/usr/bin/openocd");
             assert.strictEqual(await service.resolve("/custom/openocd"), "/custom/openocd");
             assert.deepStrictEqual(probes, ["/usr/bin/openocd", "/custom/openocd"]);
 
             checker.probeDefaultOpenOcd = async () => ({ found: false, requested: "openocd", error: "install failed" });
             assert.strictEqual(await service.resolve("openocd"), null);
-            assert.deepStrictEqual(probes, ["/usr/bin/openocd", "/custom/openocd"], "准备失败不得回退到系统包");
+            assert.deepStrictEqual(
+                probes,
+                ["/usr/bin/openocd", "/custom/openocd"],
+                "a failed preparation does not fall back to the system package"
+            );
         }
     );
 })().catch((error) => {

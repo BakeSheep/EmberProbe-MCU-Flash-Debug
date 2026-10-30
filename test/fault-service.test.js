@@ -4,7 +4,6 @@ const { FaultService } = require("../src/services/faultService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
     try {
         const fault = new FaultService(
             {

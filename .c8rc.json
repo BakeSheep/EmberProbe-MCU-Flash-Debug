@@ -12,9 +12,7 @@
     "src/openocdInstaller.js",
     "src/webview/**/renderer.js",
     "src/webview/liveWatch/viewport.js",
-    "src/i18n/**/*.js",
-    "scripts/extract-webview-assets.js",
-    "scripts/split-i18n.js"
+    "src/i18n/**/*.js"
   ],
   "reporter": ["text", "json-summary"],
   "reports-dir": "coverage",

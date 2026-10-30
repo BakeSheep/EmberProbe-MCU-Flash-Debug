@@ -22,9 +22,9 @@ function normalizeSpawnError(error, executable) {
         : new Error(error && error.message ? error.message : String(error));
 }
 
-// 执行一次性 OpenOCD 任务：构造 -f/-c 参数、拆分 stdout/stderr 行、
-// 统一 ANSI 清理、超时、ENOENT 语义与日志尾部留存。
-// resolve { exitCode, openocdTail, commands }；OpenOCD 非零退出码由业务层结合解析结果判定。
+// Runs a one-shot OpenOCD task: builds -f/-c arguments, splits stdout/stderr lines, strips ANSI, and handles timeouts,
+// ENOENT and the log tail. Resolves { exitCode, openocdTail, commands }; callers judge non-zero exit codes together
+// with their parsed results.
 function runOpenOcdOnce(options) {
     const commands = withTargetCheck(options.buildCommands(), options.targetCheck, options.target);
     const targetCheck = targetCheckMonitor(options.targetCheck);
@@ -144,14 +144,14 @@ function runOpenOcdOnce(options) {
             try {
                 child.kill();
             } catch (error) {
-                // 进程可能已经退出，保留原超时语义。
+                // The process may already have exited; keep the timeout result.
             }
             setTimeout(() => {
                 if (child.exitCode == null && child.signalCode == null) {
                     try {
                         child.kill("SIGKILL");
                     } catch (error) {
-                        // 进程可能已经退出。
+                        // The process may already have exited.
                     }
                 }
             }, 500).unref?.();

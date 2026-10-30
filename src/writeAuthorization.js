@@ -41,8 +41,8 @@ function connectionFingerprint(plan) {
 
 const DEFAULT_STORAGE_KEY = "agent.writeTrusted";
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
-// workspace 信任有效期：持久放行会让任何持有 Bridge token 的进程在用户无感知的情况下静默写 RAM，
-// 限制为 24 小时，到期后必须重新走两阶段确认
+// Workspace trust expiry: a permanent grant would let any process holding the Bridge token write RAM silently without
+// the user noticing, so it lasts 24 hours and then the two-stage confirmation is required again
 const DEFAULT_TRUST_TTL_MS = 24 * 60 * 60 * 1000;
 
 function writePlanIdentity(plan) {

@@ -3,22 +3,13 @@ const { appendDiagnostic } = require("./diagnostics");
 const { isEmptyUpperBound } = require("./subranges");
 const { normalizeTypeDeclarations } = require("./typeIdentity");
 const {
-    DW_TAG_array_type,
     DW_TAG_structure_type,
     DW_TAG_union_type,
     DW_TAG_enumeration_type,
     DW_TAG_enumerator,
-    DW_TAG_pointer_type,
     DW_TAG_typedef,
-    DW_TAG_base_type,
-    DW_TAG_const_type,
-    DW_TAG_volatile_type,
-    DW_TAG_restrict_type,
     DW_TAG_variable,
-    DW_TAG_member,
-    DW_TAG_subrange_type,
     DW_TAG_class_type,
-    DW_TAG_inheritance,
     DW_TAG_namespace,
     DW_TAG_subprogram,
     DW_AT_name,
@@ -38,13 +29,7 @@ const {
     DW_AT_upper_bound,
     DW_AT_linkage_name,
     DW_AT_virtuality,
-    DW_AT_artificial,
-    DW_ATE_boolean,
-    DW_ATE_float,
-    DW_ATE_signed,
-    DW_ATE_signed_char,
-    DW_ATE_unsigned,
-    DW_ATE_unsigned_char
+    DW_AT_artificial
 } = require("./constants");
 // These DIEs describe execution state. Watch metadata only consumes static-address variables,
 // types (including every type child), subprogram identities, and their scope/reference chains.
@@ -144,13 +129,13 @@ function _parseDwarfInternal(buffer, options = {}) {
         return value <= BigInt(Number.MAX_SAFE_INTEGER) ? cstr(str.data, Number(value)) : "";
     };
 
-    // 读取单个属性值并推进游标
+    // Reads one attribute value and advances the cursor
 
-    const dies = new Map(); // 节内偏移 → DIE 记录
-    const childrenMap = new Map(); // 父 DIE 偏移 → [子 DIE 偏移]
-    const parentOf = new Map(); // 子 DIE 偏移 → 父 DIE 偏移（构造 C++ 限定名用）
-    const variableOffsets = []; // 所有变量 DIE；跨 CU 的 origin 继承需在完整解析后处理
-    const subprogramOffsets = []; // 所有子程序 DIE（函数显示名用）
+    const dies = new Map(); // section offset -> DIE record
+    const childrenMap = new Map(); // parent DIE offset -> [child DIE offsets]
+    const parentOf = new Map(); // child DIE offset -> parent DIE offset (for C++ qualified names)
+    const variableOffsets = []; // every variable DIE; cross-CU origin inheritance runs after the full parse
+    const subprogramOffsets = []; // every subprogram DIE (for function display names)
     const signatures = new Map();
     const units = [];
     const skippedOffsets = []; // Sorted offsets only; skipped DIEs allocate no records or relationship entries.
@@ -159,9 +144,9 @@ function _parseDwarfInternal(buffer, options = {}) {
     let externalBytes = 0;
     const loaded = new Set();
     const companions = [];
-    // §2：缩写缓存改为有界 LRU，并以全局预算约束跨 CU 的缩写/属性总量。
-    // abbrevOff 是文件可控的 u32，旧实现以它为键无界缓存，N 个不同偏移
-    // 就能让 N 份完整缩写表同时存活，直至扩展宿主 OOM。
+    // Abbreviation tables live in a bounded LRU, and a global budget limits abbreviations and attributes across CUs.
+    // abbrevOff is a file-controlled u32, so an unbounded cache keyed by it would let N different offsets keep N
+    // complete tables alive until the extension host runs out of memory.
     const MAX_ABBREV_CACHE_ENTRIES = 8;
     const abbrevCache = new Map();
     const abbrevBudget = { abbrevs: 0, attrs: 0, maxAbbrevs: budgets.abbrevs, maxAttrs: budgets.attrs };
@@ -169,7 +154,7 @@ function _parseDwarfInternal(buffer, options = {}) {
         if (!abbrevCache.has(key)) return undefined;
         const value = abbrevCache.get(key);
         abbrevCache.delete(key);
-        abbrevCache.set(key, value); // 移到末尾（最近使用）
+        abbrevCache.set(key, value); // move to the end (most recently used)
         return value;
     };
     const abbrevCacheSet = (key, value) => {
@@ -177,8 +162,8 @@ function _parseDwarfInternal(buffer, options = {}) {
         abbrevCache.set(key, value);
         while (abbrevCache.size > MAX_ABBREV_CACHE_ENTRIES) abbrevCache.delete(abbrevCache.keys().next().value);
     };
-    // §3：DIE 预算改为整个解析全局。旧实现 guard 定义在 CU 循环内，每个 CU 都重置，
-    // 而 dies/childrenMap/variableOffsets 从不重置，因此预算只约束单个 CU。
+    // The DIE budget covers the whole parse, not one CU: dies, childrenMap and variableOffsets are never reset between
+    // CUs, so a per-CU guard would not bound them.
     const MAX_DIES_TOTAL = budgets.dies;
     let totalDies = 0;
     // A budget error keeps every complete unit: the journal records what the unit being parsed added,
@@ -454,8 +439,10 @@ function _parseDwarfInternal(buffer, options = {}) {
                                             if (typeof v === "number") {
                                                 rec.memberOffset = v;
                                             } else if (v && v.block && v.block.length > 1 && v.block[0] === 0x23) {
-                                                // 仅当整段表达式唯一定义为 DW_OP_plus_uconst (0x23) + ULEB 常量时，才认定为固定成员偏移；
-                                                // 包含运行期取指针/计算的复杂表达式（如虚基类位置）不作静态数值误判。
+                                                // Only an expression consisting solely of DW_OP_plus_uconst (0x23) and
+                                                // a ULEB constant is a fixed member offset; complex expressions that
+                                                // dereference or compute at run time (virtual base locations, for
+                                                // example) are not misread as static numbers.
                                                 let bp = 1;
                                                 let val = 0,
                                                     sh = 0,
@@ -547,7 +534,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                                     const dieOff = sectionBase + cur.p;
                                     const code = readULEB(cuBuffer, cur);
                                     if (code === 0) {
-                                        // 兄弟链结束标记：弹出当前父级
+                                        // End of a sibling chain: pop the current parent
                                         if (parentStack.length) parentStack.pop();
                                         continue;
                                     }
@@ -602,7 +589,8 @@ function _parseDwarfInternal(buffer, options = {}) {
                                         });
                                 }
                             } catch (e) {
-                                // 全局预算耗尽必须停止继续解析，交由外层回滚当前 CU，而不是吞掉后继续累积内存。
+                                // An exhausted global budget must stop parsing so the caller rolls back the current CU,
+                                // instead of swallowing the error and accumulating memory.
                                 if (e.code === "DWARF_BUDGET_EXCEEDED") throw e;
                                 appendDiagnostic(passDiagnostics, {
                                     code: /unknown DWARF form/.test(e.message)
@@ -761,7 +749,7 @@ function _parseDwarfInternal(buffer, options = {}) {
                 message: "Split DWARF compilation-unit identity does not match its ELF"
             });
     }
-    // 统一解析 strx 名称
+    // Resolve strx names uniformly
     for (const [key, d] of dies) if (d.unit.input.parent && !d.unit.input.valid) dies.delete(key);
     for (const d of dies.values()) {
         if (d.typeSignature) d.typeRef = signatures.get(d.typeSignature);
@@ -830,7 +818,7 @@ function _parseDwarfInternal(buffer, options = {}) {
         }
     }
 
-    // 作用域链（namespace/class/struct/union 祖先）构造 C++ 限定名；遇到 CU 根自然终止。
+    // Builds C++ qualified names from the scope chain (namespace/class/struct/union ancestors); the CU root ends it.
     const SCOPE_TAGS = new Set([DW_TAG_namespace, DW_TAG_class_type, DW_TAG_structure_type, DW_TAG_union_type]);
     const scopePrefix = (dieOff) => {
         const parts = [];
@@ -847,7 +835,8 @@ function _parseDwarfInternal(buffer, options = {}) {
     const buildQualifiedName = (scopeDieOff, name) => {
         let parts = scopePrefix(scopeDieOff);
         if (!parts.length) {
-            // 具体 DIE 直接挂在 CU 下（如类静态成员的地址 DIE）时，回落到声明 DIE 的作用域。
+            // When a concrete DIE sits directly under the CU (the address DIE of a static class member, for example),
+            // use the declaration DIE's scope.
             const d = dies.get(scopeDieOff);
             for (const ref of [d?.specificationRef, d?.abstractOriginRef]) {
                 if (ref === undefined) continue;
@@ -875,8 +864,9 @@ function _parseDwarfInternal(buffer, options = {}) {
 
     normalizeTypeDeclarations({ dies, childrenMap, parentOf });
 
-    // LTO 常把地址留在具体变量 DIE，而把名称和类型放进 abstract_origin/specification。
-    // 所有 CU 都完成后再继承，才能正确解析 DW_FORM_ref_addr 的跨 CU 引用。
+    // LTO often leaves the address on the concrete variable DIE and puts name and type on
+    // abstract_origin/specification. Inherit only after every CU is parsed, so cross-CU DW_FORM_ref_addr references
+    // resolve.
     const resolveVariableIdentity = (dieOff, seen = new Set()) => {
         if (seen.has(dieOff) || seen.size >= 16)
             return { name: "", typeRef: undefined, linkageName: "", scopeDieOff: dieOff };
@@ -915,7 +905,7 @@ function _parseDwarfInternal(buffer, options = {}) {
         });
     }
 
-    // 函数显示名：以 linkage name（ELF 中的 mangled 名）为键关联限定名。
+    // Function display names: map linkage names (mangled ELF names) to qualified names.
     const subprograms = [];
     for (const dieOff of subprogramOffsets) {
         const identity = resolveVariableIdentity(dieOff);

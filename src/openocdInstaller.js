@@ -1,23 +1,23 @@
 "use strict";
-// OpenOCD 内置运行时准备：从插件内置 tar.gz 解压到全局存储目录，
-// 解压进度通过 onentry 回调上报；安装成功后返回 openocd 可执行文件路径。
-// 设计要点：
-// - 离线可用，不依赖网络；
-// - 手动安装到 globalStorageUri/emberprobe/openocd/，自动默认运行时使用按压缩包摘要区分的同级目录；
-// - 预置包按 平台-架构 命名，未匹配当前平台时返回 null 由上层兜底（引导手动配置）。
+// Bundled OpenOCD runtime preparation: extracts the bundled tar.gz into global storage, reporting progress through the
+// onentry callback, and returns the openocd executable path on success. Design points:
+// - works offline;
+// - manual installs go to globalStorageUri/emberprobe/openocd/, the automatic default runtime to sibling directories
+// named by archive digest;
+// - bundles are named platform-arch; an unmatched platform returns null so the caller can guide manual configuration.
 const fs = require("fs");
 const { createHash } = require("crypto");
 const path = require("path");
 const { leavesDirectory } = require("../skills/_emberprobe/file-identity");
 const tar = require("tar");
 
-// 预置包相对扩展根的目录；package.json 的 files 字段需包含 "resources/**/*"
+// Bundle directory relative to the extension root; the files field of package.json must include "resources/**/*"
 const BUNDLED_DIR = "resources";
-// Windows 下可执行文件名；macOS/Linux 为 openocd
+// Executable name on Windows; openocd on macOS/Linux
 const OPENOCD_BIN = process.platform === "win32" ? "openocd.exe" : "openocd";
 
-// 返回当前平台-架构对应的预置包绝对路径；不存在返回 null。
-// 扩展根通过传入的 context.asAbsolutePath 解析，避免 cwd 漂移。
+// Returns the absolute path of the bundle for the current platform-arch, or null. The extension root is resolved
+// through context.asAbsolutePath so cwd changes do not matter.
 function getBundledArchive(context) {
     const plat = platformKey();
     if (!plat) return null;
@@ -31,10 +31,10 @@ function getBundledArchive(context) {
     return abs;
 }
 
-// 平台标识：与预置包命名约定一致；未覆盖平台返回 null。
+// Platform key matching the bundle naming convention; null for unsupported platforms.
 function platformKey() {
     const { platform, arch } = process;
-    // 当前包含 win32-x64 和 linux-x64；其他平台仅在添加对应资源包后可离线安装。
+    // win32-x64 and linux-x64 are bundled; other platforms install offline only once a matching bundle is added.
     if (platform === "win32" && arch === "x64") return "win32-x64";
     if (platform === "darwin" && arch === "x64") return "darwin-x64";
     if (platform === "darwin" && arch === "arm64") return "darwin-arm64";
@@ -43,19 +43,19 @@ function platformKey() {
     return null;
 }
 
-// 计算安装目标目录：globalStorageUri/emberprobe/openocd/
-// VS Code 保证 globalStorageUri 存在，但子目录需自行创建。
+// Install target directory: globalStorageUri/emberprobe/openocd/. VS Code guarantees globalStorageUri exists, but
+// subdirectories must be created.
 function installDir(context) {
     const base = context.globalStorageUri.fsPath;
     return path.join(base, "emberprobe", "openocd");
 }
 
-// 在已解压目录内定位 openocd 可执行文件：优先 bin/openocd(.exe)，
-// 兼容 xpack 风格的顶层 xpack-openocd-*/openocd/bin/。
+// Finds the openocd executable in an extracted directory: bin/openocd(.exe) first, then the xpack layout
+// xpack-openocd-*/openocd/bin/.
 function locateOpenOcdBinary(root) {
     const candidates = [
         path.join(root, "bin", OPENOCD_BIN),
-        // 兜底：解压出带版本号子目录的情况
+        // Fallback for archives that extract into a versioned subdirectory
         ...globFirst(root, (d) => fs.existsSync(path.join(d, "bin", OPENOCD_BIN))).map((d) =>
             path.join(d, "bin", OPENOCD_BIN)
         )
@@ -69,7 +69,7 @@ function locateOpenOcdBinary(root) {
     }
     return null;
 }
-// 简易：列出 root 下的子目录用于兜底查找
+// Lists subdirectories of root for the fallback search
 function globFirst(root, predicate) {
     let out = [];
     try {
@@ -97,8 +97,8 @@ function archiveDigest(archive) {
     return digest;
 }
 
-// 解包路径断言：拒绝解析后落在 staging 目录之外的条目（Zip Slip 纵深防御；
-// node-tar 默认已剥离绝对路径与 ".."，此处显式校验以防未来版本行为变化）
+// Extraction path assertion: reject entries that resolve outside the staging directory (Zip Slip defence in depth;
+// node-tar already strips absolute paths and "..", and this check guards against future changes)
 function assertSafeEntryPath(staging, entryPath) {
     const target = path.resolve(staging, String(entryPath || ""));
     const relative = path.relative(staging, target);
@@ -107,8 +107,9 @@ function assertSafeEntryPath(staging, entryPath) {
     }
 }
 
-// 安装预置包到全局存储目录；progress(report) 上报进度，verifyBinary 在替换旧版本前验证暂存文件。
-// 返回 { ok, path?, version?, error? }；path 为 openocd 可执行文件绝对路径。
+// Installs the bundle into global storage; progress(report) reports progress and verifyBinary checks the staged files
+// before the old version is replaced. Returns { ok, path?, version?, error? }, where path is the absolute openocd
+// executable path.
 async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { reuse = false } = {}) {
     const archive = getBundledArchive(context);
     if (!archive) {
@@ -142,11 +143,11 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
     const backup = path.join(parent, `.openocd-backup-${nonce}`);
     fs.mkdirSync(staging, { recursive: true });
 
-    // tar.x 流式解压；onentry 每处理一个条目回调一次，用于推进进度
+    // tar.x extracts as a stream; onentry fires once per entry to advance progress
     let total = 0;
     let processed = 0;
     try {
-        // 先统计条目数以计算百分比，避免进度跳跃
+        // Count entries first to compute percentages without jumps
         await tar.t({
             file: archive,
             onentry: () => {
@@ -158,7 +159,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
         await tar.x({
             file: archive,
             cwd: staging,
-            // 安全：剥离绝对路径与 .. 遍历（tar 包内均为相对路径，额外防御）
+            // Strip absolute paths and .. traversal (archive paths are all relative; extra defence)
             preserveOwner: false,
             onentry: (entry) => {
                 assertSafeEntryPath(staging, entry.path);
@@ -223,7 +224,8 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
             fs.rmSync(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
             return installBundledOpenOcd(vscode, context, progress, verifyBinary, { reuse: true });
         }
-        // 新目录切换失败时恢复旧安装；staging/backup 都限定在扩展全局存储子目录内。
+        // Restore the old install if switching to the new directory fails; staging and backup stay inside the
+        // extension's global storage subdirectory.
         try {
             if (!fs.existsSync(dest) && movedOld && fs.existsSync(backup)) fs.renameSync(backup, dest);
         } catch (e) {
@@ -239,7 +241,7 @@ async function installBundledOpenOcd(vscode, context, progress, verifyBinary, { 
     try {
         fs.rmSync(backup, { recursive: true, force: true });
     } catch (e) {
-        /* 下次安装不依赖该备份 */
+        /* The next install does not depend on this backup */
     }
     return {
         ok: true,

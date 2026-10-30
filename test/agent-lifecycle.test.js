@@ -128,7 +128,8 @@ const { call } = require("../skills/_emberprobe/agent-client");
             await first.start({ legacyPointer: true });
             await second.start({ legacyPointer: true });
             await assert.rejects(call(workspace, "config.get"), { code: "BRIDGE_AMBIGUOUS" });
-            // 后启动者停止时只删除自己的登记；先启动者仍可被发现（旧版指针会被它删除，这是旧客户端的残留问题）
+            // When the later instance stops it removes only its own entry and the earlier one stays discoverable (it
+            // deletes the legacy pointer, a leftover issue of old clients)
             await second.stop();
             assert.deepStrictEqual(await call(workspace, "config.get"), { host: "vscode" });
             const marker = JSON.parse(fs.readFileSync(second.registry.file, "utf8"));
@@ -142,13 +143,7 @@ const { call } = require("../skills/_emberprobe/agent-client");
             assert.strictEqual(entry.instanceId, second.instanceId(), "restarts keep the window instance id");
             assert.strictEqual((await second.call("capabilities")).protocol, locator.BRIDGE_PROTOCOL);
             if (process.platform !== "win32") assert.strictEqual(fs.statSync(second.registry.file).mode & 0o777, 0o600);
-            // 工作区文件夹变化后原子重写登记，port/token 保持不变
-            second.workspaceFoldersProvider = () => [workspace, base];
-            await second.refreshRegistration();
-            const rewritten = JSON.parse(fs.readFileSync(second.registry.file, "utf8"));
-            assert.deepStrictEqual(rewritten.workspaceFolders, [workspace, base]);
-            assert.strictEqual(rewritten.token, entry.token);
-            // 不写旧版指针的 Bridge 只通过注册表被发现
+            // A Bridge that writes no legacy pointer is discoverable only through the registry
             await second.stop();
             await second.start({ legacyPointer: false });
             assert.strictEqual(

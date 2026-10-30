@@ -783,7 +783,7 @@ async function main() {
             await service.dispose();
         }
 
-        const page = render(getLiveWatchContent({ backendHistory: true }, "en"));
+        const page = render(getLiveWatchContent({}, "en"));
         try {
             const w = page.window;
             Object.defineProperties(page.document.getElementById("chart"), {

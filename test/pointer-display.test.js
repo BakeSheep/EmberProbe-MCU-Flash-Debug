@@ -59,7 +59,7 @@ function setup(sidebar, lang, initialState = {}) {
             this.flush();
         },
         scalar(samples) {
-            view.send({ type: "liveSample", samples });
+            view.send({ type: sidebar ? "liveSample" : "chartValues", samples });
             this.flush();
         },
         flush() {

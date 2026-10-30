@@ -1,8 +1,9 @@
 "use strict";
 const { MAX_COMPOSITE_DEPTH } = require("./dwarf/layoutLimits");
 const { isStdType } = require("./dwarf/memberRoles");
-// 纯 JS 解析 ELF32（小端，Cortex-M）符号表，提取全局/静态变量的地址与大小。
-// 说明：本模块为受 MCUViewer（GPLv3）的 Variable Viewer 概念启发的独立实现，未使用其任何代码。
+// Pure JS parser for the ELF32 (little-endian, Cortex-M) symbol table, extracting addresses and sizes of global and
+// static variables. It is an independent implementation inspired by the Variable Viewer concept of MCUViewer (GPLv3)
+// and uses none of its code.
 
 const elfFormat = require("./elfFormat");
 const { validateComposite } = require("./compositeValidation");
@@ -40,7 +41,7 @@ function isItaniumMangled(name) {
 function normalizeSourcePath(value) {
     return String(value || "").replace(/\\/g, "/");
 }
-// 路径后缀匹配只在路径分隔符边界成立：main.c 匹配 src/main.c，但不匹配 mymain.c。
+// Path suffixes only match at separator boundaries: main.c matches src/main.c but not mymain.c.
 function sourceMatches(source, file) {
     return !!source && !!file && (source === file || source.endsWith("/" + file));
 }
@@ -52,10 +53,11 @@ function uniqueSourceSuffix(paths, index) {
     }
     return "";
 }
-// 同名的内部链接变量（各编译单元的 C static、C++ _ZL/匿名命名空间对象、函数内 static 的编号名）
-// 在 ELF 中名字相同、地址不同。逐个给出唯一身份 <最短唯一源文件路径后缀>::<ELF 名>，
-// 无法区分时退回 0x<地址>::<ELF 名>。源文件优先取 DWARF 中地址精确且唯一的变量所属 CU，
-// 其次是 STT_FILE（仅 basename）。可重复调用：DWARF 就绪后传入 variables 精化身份。
+// Same-named internal-linkage variables (C statics of different compilation units, C++ _ZL/anonymous-namespace objects,
+// numbered function-local statics) share an ELF name at different addresses. Each gets the unique identity <shortest
+// unique source path suffix>::<ELF name>, or 0x<address>::<ELF name> when indistinguishable. The source file comes from
+// the DWARF CU whose variable has exactly that address, otherwise from STT_FILE (basename only). Repeatable: pass
+// variables once DWARF is ready to refine identities.
 const MAX_QUALIFIED_GROUP = 64;
 function qualifySameNameSymbols(symbols, variables = null) {
     const sources = new Map();
@@ -97,7 +99,8 @@ function qualifySameNameSymbols(symbols, variables = null) {
             const name = scopedName || scopedVariableName(address, elfName);
             const previous = identities.get(name);
             if (previous) {
-                // 同地址不同尺寸的同名符号无法给出唯一身份：保留首项但标记歧义，任何按名读写都会拒绝。
+                // Same-named symbols at one address with different sizes have no unique identity: keep the first,
+                // flagged ambiguous, so every read or write by name is rejected.
                 previous.addressAmbiguous = true;
                 return;
             }
@@ -114,8 +117,9 @@ function qualifySameNameSymbols(symbols, variables = null) {
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
 }
-// 同名符号先以 STT_FILE 身份发布；DWARF 就绪后按源文件路径精化（原地修改）。
-// 返回精化后的列表，以及每个同名符号的 [原身份名, 新身份 | null（因地址歧义被合并）]。
+// Same-named symbols are first published with STT_FILE identities and refined in place by source path once DWARF is
+// ready. Returns the refined list and, for each same-named symbol, [old identity, new identity | null (merged because
+// of address ambiguity)].
 function refineSameNameSymbols(symbols, variables) {
     const previous = new Map(symbols.filter((symbol) => symbol.elfName).map((symbol) => [symbol, symbol.name]));
     if (!previous.size) return { symbols, identities: [] };
@@ -135,25 +139,6 @@ function refineSameNameSymbols(symbols, variables) {
             : null
     ]);
     return { symbols: refined, identities };
-}
-// Explicit diagnostics only; normal ELF loading presents same-named variables as source-qualified list entries.
-function sameNameSymbolWarning(symbols, t) {
-    const groups = new Map();
-    for (const symbol of symbols || []) {
-        if (!symbol.elfName) continue;
-        if (!groups.has(symbol.elfName)) groups.set(symbol.elfName, []);
-        groups.get(symbol.elfName).push(symbol);
-    }
-    if (!groups.size) return "";
-    const shown = Array.from(groups)
-        .slice(0, 5)
-        .map(([name, entries]) => {
-            const readable = entries.find((symbol) => symbol.displayName && symbol.displayName !== symbol.name);
-            const label = readable ? variableScope(readable.displayName)?.name || readable.displayName : name;
-            const ids = entries.slice(0, 4).map((symbol) => symbol.displayName || symbol.name);
-            return `${label} (${ids.join(", ")}${entries.length > 4 ? ", …" : ""})`;
-        });
-    return t("live.sameNameSymbols", { count: groups.size, names: shown.join("; ") + (groups.size > 5 ? "; …" : "") });
 }
 function symbolCandidates(symbols) {
     return symbols.slice(0, 32).map((symbol) => ({
@@ -182,11 +167,15 @@ function scopeMatches(symbols, file) {
     const matches = filter(false);
     return matches.length ? matches : filter(true);
 }
-// Agent 读写、观察列表与界面共用的变量名解析：
-// 1. 身份名精确匹配；2. 编译单元限定名 file.c::name、'dir/file.c'::name、0xADDR::name（文件名按路径后缀匹配，
-// 只接受唯一 CU）；3. 唯一 displayName 别名（C++ 限定名）；4. 大小写不敏感的唯一匹配。
-// 同名变量分布在多个编译单元时，裸名一律以 VARIABLE_AMBIGUOUS 拒绝并列出候选，绝不默认取第一项。
-// foldCase: false 关闭第 4 步（写入目标必须精确命名），大小写不同的候选只在错误详情中给出。
+// Variable name resolution shared by agent reads/writes, watch lists and the UI:
+// 1. exact identity name;
+// 2. compilation-unit qualified file.c::name, 'dir/file.c'::name or 0xADDR::name (file names match by path suffix, only
+// a unique CU is accepted);
+// 3. a unique displayName alias (C++ qualified name);
+// 4. a unique case-insensitive match.
+// A bare name defined in several compilation units is always rejected with VARIABLE_AMBIGUOUS and its candidates, never
+// the first match. foldCase: false disables step 4 (write targets must be named exactly); candidates differing only in
+// case appear in the error details.
 function createSymbolResolver(symbols, { foldCase = true } = {}) {
     const list = Array.isArray(symbols) ? symbols : [];
     let exact = null,
@@ -245,7 +234,7 @@ function createSymbolResolver(symbols, { foldCase = true } = {}) {
         const matches = byKey.get(key) || [];
         if (matches.length > 1) throw ambiguous(requestedName, matches);
         if (matches.length === 1) return accept(matches[0], requestedName);
-        // 与标量解析一致的大小写不敏感回退：唯一匹配时接受，多匹配交由歧义错误
+        // Case-insensitive fallback as for scalars: accept a unique match and leave several to the ambiguity error
         const foldedMatches = folded.get(key.toLowerCase()) || [];
         if (!foldCase && foldedMatches.length)
             throw Object.assign(
@@ -300,7 +289,8 @@ function resolveVariableRequests(symbols, requests) {
     });
 }
 
-// 将数值按类型编码为小端字节数组（与 decodeValue 对称），越界/非法值抛错
+// Encodes a number as little-endian bytes for its type (the inverse of decodeValue); out-of-range or invalid values
+// throw
 function encodeValue(value, type) {
     if (!SUPPORTED_TYPES.includes(type))
         throw Object.assign(new Error(`Unsupported type: ${type}`), { code: "UNSUPPORTED_VARIABLE_TYPE" });
@@ -393,7 +383,7 @@ function encodeValue(value, type) {
     return Array.from(new Uint8Array(view.buffer));
 }
 
-// 从 src 的 offset 起按小端读取一个标量（decodeValue 与 decodeComposite 共用的唯一实现）
+// Reads one little-endian scalar from src at offset (the single implementation behind decodeValue and decodeComposite)
 function decodeScalarAt(view, offset, type) {
     switch (type) {
         case "u8":
@@ -421,7 +411,7 @@ function decodeScalarAt(view, offset, type) {
     }
 }
 
-// 将原始小端字节按类型解码为数值；bytes 可为 Buffer / Uint8Array / number[]
+// Decodes raw little-endian bytes by type; bytes may be a Buffer, Uint8Array or number[]
 function decodeValue(bytes, type) {
     const need = typeByteLength(type);
     if (!bytes || bytes.length < need) return null;
@@ -429,7 +419,7 @@ function decodeValue(bytes, type) {
     return decodeScalarAt(view, 0, type);
 }
 
-// 64 位标量的精确/特殊文本表示；其他值返回 null。
+// Exact or special text for 64-bit scalars; null for other values.
 function decodeValueText(bytes, type) {
     const need = typeByteLength(type);
     if (!bytes || bytes.length < need) return null;
@@ -466,7 +456,7 @@ function enumValueText(decoded, enumInfo) {
     return name ? `${name}(${value})` : null;
 }
 
-// 解析 ELF32 符号表，返回 { symbols: [{name,address,size}], warnings: [] }
+// Parses the ELF32 symbol table and returns { symbols: [{name,address,size}], warnings: [] }
 function parseElfSymbols(buffer) {
     const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const header = elfFormat.readElf32Header(buf);
@@ -515,9 +505,10 @@ function parseElfSymbols(buffer) {
     const SHN_ABS = 0xfff1;
     const SHF_WRITE = 1;
     const SHF_ALLOC = 2;
-    // GCC 在 -O0 且未启用 -fdata-sections 时，把 .bss 中的文件作用域 static（C 标量、C++ 匿名类型对象等）
-    // 发成不带 .type 的 NOTYPE LOCAL 符号。仅接纳有尺寸、完整落在可写已分配节内的此类符号；
-    // 映射符号 $d、节符号与链接脚本标记（尺寸为 0 或 GLOBAL）仍被排除。类型仍由 DWARF 决定。
+    // At -O0 without -fdata-sections GCC emits file-scope statics in .bss (C scalars, C++ objects of anonymous types,
+    // ...) as NOTYPE LOCAL symbols without .type. Only sized ones entirely inside a writable allocated section are
+    // accepted; $d mapping symbols, section symbols and linker script markers (size 0 or GLOBAL) stay excluded. DWARF
+    // still decides the type.
     const isUntypedLocalData = (stInfo, stShndx, stValue, stSize) => {
         if (stInfo >> 4 !== STB_LOCAL || stSize === 0) return false;
         const section = sections[stShndx];
@@ -530,7 +521,8 @@ function parseElfSymbols(buffer) {
     if (count > 200000) throw budgetError();
     const seen = new Map();
     const seenFuncs = new Map();
-    // STT_FILE 标记其后局部符号所属的目标文件（通常只有源文件 basename），在 DWARF 不可用时用于区分同名 static。
+    // STT_FILE marks the object file (usually just the source basename) of the local symbols that follow,
+    // distinguishing same-named statics when DWARF is unavailable.
     let objectFile = "";
     for (let i = 0; i < count; i++) {
         if (i % 1024 === 0 && Date.now() > deadline) throw budgetError();
@@ -548,16 +540,18 @@ function parseElfSymbols(buffer) {
         }
         if (stShndx === SHN_UNDEF || stShndx === SHN_ABS) continue;
         if (stType === STT_FUNC) {
-            // 函数符号单独收集（故障分析的 PC/LR 符号化与体积排名用），清除 Thumb bit
+            // Function symbols are collected separately (for PC/LR symbolization in fault analysis and size ranking),
+            // with the Thumb bit cleared
             const name = readCStr(strtab.offset, stName);
             const address = (stValue & ~1) >>> 0;
-            // 不同编译单元可以有同名 static 函数；仅去除名称和地址都相同的重复条目。
+            // Different compilation units may have same-named static functions; only entries with the same name and
+            // address are duplicates.
             const key = `${name}\0${address}`;
             if (!name || seenFuncs.has(key)) continue;
             seenFuncs.set(key, { name, address, size: stSize >>> 0 });
             continue;
         }
-        // 仅数据对象（变量）与函数
+        // Data objects (variables) and functions only
         if (stType !== STT_OBJECT && !(stType === STT_NOTYPE && isUntypedLocalData(stInfo, stShndx, stValue, stSize)))
             continue;
         const name = readCStr(strtab.offset, stName);
@@ -571,7 +565,8 @@ function parseElfSymbols(buffer) {
         };
         const group = seen.get(name);
         if (!group) seen.set(name, [entry]);
-        // 不同编译单元的同名内部链接变量全部保留，随后按编译单元限定身份；仅丢弃地址与大小都相同的别名。
+        // Same-named internal-linkage variables of different compilation units are all kept and qualified by
+        // compilation unit afterwards; only aliases with the same address and size are dropped.
         else if (!group.some((other) => other.address === entry.address && other.size === entry.size))
             group.push(entry);
     }
@@ -582,8 +577,8 @@ function parseElfSymbols(buffer) {
     return { symbols, functions, warnings };
 }
 
-// 解析 ELF32 节头（含节名/加载地址/标志）与程序头，供可写段校验与 Flash/RAM 占用分析。
-// 返回 { sections: [{name,type,addr,offset,size,flags}], programHeaders: [{vaddr,paddr,filesz,memsz,flags}] }
+// Parses ELF32 section headers (name, load address, flags) and program headers for writable-region checks and flash/RAM
+// usage. Returns { sections: [{name,type,addr,offset,size,flags}], programHeaders: [{vaddr,paddr,filesz,memsz,flags}] }
 function parseElfSections(buffer) {
     const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     const header = elfFormat.readElf32Header(buf);
@@ -618,11 +613,12 @@ function parseElfSections(buffer) {
     return { sections, programHeaders, ...(heapStack ? { runtimeRegions: [heapStack] } : {}) };
 }
 
-// 运行期堆栈区：newlib `_sbrk` 从链接脚本的 `_end` 一直分配到 `_estack - _Min_Stack_Size`，
-// 而 `._user_heap_stack` 节只占 `_Min_Heap_Size + _Min_Stack_Size`，超出部分的 STL 容器存储与 new
-// 出的对象不在任何节内。仅在 `_end` 落在（或紧接）某个可写已分配节、`_estack` 在其后 16 MiB 内、
-// 且区间不与其他已分配节重叠时返回 { name, start, end }。只用于运行时对象的指针目标读取，
-// 不扩大变量地址校验与写入范围。
+// Run-time heap/stack region: newlib `_sbrk` allocates from the linker script's `_end` up to `_estack -
+// _Min_Stack_Size`, while the `._user_heap_stack` section only covers `_Min_Heap_Size + _Min_Stack_Size`, so STL
+// container storage and objects created with new beyond that lie in no section. Returns { name, start, end } only when
+// `_end` is in (or right after) a writable allocated section, `_estack` is within 16 MiB after it, and the range
+// overlaps no other allocated section. Used only for pointer targets of runtime objects; it does not widen variable
+// address checks or writes.
 function linkerHeapStackRange(buf, entries, sections) {
     const SHT_SYMTAB = 2;
     const SHF_WRITE = 1;
@@ -655,37 +651,40 @@ function linkerHeapStackRange(buf, entries, sections) {
             start >= s.addr &&
             start <= s.addr + s.size
     );
-    // 堆栈区只能接在 RAM 节之后；区间内出现只读节（Flash、常量）说明符号不可信。区间内的可写节
-    // （如 `._user_heap_stack` 本身）仍是同一块 RAM；跨到另一块 RAM 的区间已被 16 MiB 上限排除。
+    // The heap/stack region can only follow a RAM section; a read-only section (flash, constants) inside the range
+    // means the symbols are untrustworthy. Writable sections inside it (such as `._user_heap_stack` itself) are the
+    // same RAM; ranges reaching another RAM bank are excluded by the 16 MiB limit.
     if (!owner || allocated.some((s) => !(s.flags & SHF_WRITE) && s.addr < end && s.addr + s.size > start)) return null;
     return { name: "heap-stack", start, end };
 }
 
-// 在按地址升序的函数符号中定位地址所属函数，返回 { name, offset } 或 null
+// Finds the function containing an address among function symbols sorted by address; returns { name, offset } or null
 function nearestFunction(functions, address) {
     const addr = (Number(address) & ~1) >>> 0;
     if (!Array.isArray(functions) || !functions.length || !Number.isFinite(addr)) return null;
     let best = null;
     for (const fn of functions) {
-        if (fn.address > addr) break; // 已按地址升序
+        if (fn.address > addr) break; // already sorted by address
         best = fn;
     }
     if (!best) return null;
     const offset = addr - best.address;
-    // 有大小时要求落在函数范围内；无大小（汇编符号）时限制偏移不超 64KB 避免跨区域误报
+    // Sized functions must contain the address; unsized ones (assembly symbols) allow at most a 64 KiB offset to avoid
+    // matching across regions
     if (best.size > 0 ? offset >= best.size : offset > 0x10000) return null;
     return { name: best.name, displayName: best.displayName || best.name, offset };
 }
 
-// —— 复合类型路径解析与解码 ——
+// Composite type path parsing and decoding
 
-// 解析成员路径：sensor.x → { base:'sensor', segments:[{kind:'member',name:'x'}] }
-// buf[0] → { base:'buf', segments:[{kind:'index',index:0}] }
-// buf[1:5] → { base:'buf', segments:[{kind:'range',start:1,end:5}] }
-// buf[*] → { base:'buf', segments:[{kind:'all'}] }
-// buf[0].x → { base:'buf', segments:[{kind:'index',index:0},{kind:'member',name:'x'}] }
-// main.c::cfg.mode / 'dir/main.c'::cfg[0] → base 为原样的限定前缀加变量名（保持是输入的前缀，
-// 调用方据此切出成员后缀），scope:{file:'main.c',name:'cfg'} 供按编译单元解析。
+// Parses member paths:
+// sensor.x -> { base:'sensor', segments:[{kind:'member',name:'x'}] }
+// buf[0] -> { base:'buf', segments:[{kind:'index',index:0}] }
+// buf[1:5] -> { base:'buf', segments:[{kind:'range',start:1,end:5}] }
+// buf[*] -> { base:'buf', segments:[{kind:'all'}] }
+// buf[0].x -> { base:'buf', segments:[{kind:'index',index:0},{kind:'member',name:'x'}] }
+// main.c::cfg.mode / 'dir/main.c'::cfg[0] -> base keeps the qualifying prefix as written plus the variable name
+// (callers cut the member suffix off it), and scope:{file:'main.c',name:'cfg'} resolves it by compilation unit.
 function parseMemberPath(pathStr) {
     const str = String(pathStr || "").trim();
     const scope = variableScope(str);
@@ -699,8 +698,8 @@ function parseMemberPath(pathStr) {
         };
     }
     if (!str || !/^[A-Za-z_]/.test(str)) return null;
-    // 匹配 baseName 后跟 .member 或 [index/range/*]
-    // base 允许 C++ 限定名（ns::Foo::bar）、模板名（Holder<int>::object）与 mangled 名（_Z...）。
+    // Matches baseName followed by .member or [index/range/*]. base may be a C++ qualified name (ns::Foo::bar), a
+    // template name (Holder<int>::object) or a mangled name (_Z...).
     let depth = 0;
     let baseEnd = -1;
     for (let i = 0; i < str.length; i++) {
@@ -737,7 +736,7 @@ function parseMemberPath(pathStr) {
         }
         if (rest[pos] === ".") {
             pos++;
-            // 成员名允许 @baseN 基类段、? 匿名段、或标准标识符。
+            // Member names are @baseN base segments, ? anonymous segments or standard identifiers.
             const nameMatch = rest.slice(pos).match(/^(@base\d+|\?|[A-Za-z_]\w*)/);
             if (!nameMatch) return null;
             segments.push({ kind: "member", name: nameMatch[1] });
@@ -764,7 +763,7 @@ function parseMemberPath(pathStr) {
             }
             pos = end + 1;
         } else {
-            return null; // 非法字符
+            return null; // invalid character
         }
     }
     return { base, segments };
@@ -940,11 +939,11 @@ function expandedStaticLeaves(symbol, pathSpec) {
     return target?.usedExpansion ? expandCompositeLeaves(symbol, symbol.compositeLayout, pathSpec) : [];
 }
 
-// 将复合变量的叶子成员展开为扁平读取项列表
+// Expands the leaf members of a composite variable into a flat list of reads.
 // symbol: { name, address, size }
-// layout: CompositeLayout（来自 dwarf.parseCompositeLayout）
-// pathSpec: parseMemberPath 的结果（可选，无则展开全部叶子）
-// 返回 [{ name, path, address, size, type, typeName }]
+// layout: CompositeLayout (from dwarf.parseCompositeLayout)
+// pathSpec: parseMemberPath result (optional; all leaves without it)
+// Returns [{ name, path, address, size, type, typeName }]
 function expandCompositeLeaves(symbol, layout, pathSpec) {
     if (!layout || !symbol) return [];
     validateLayoutContext(symbol, layout);
@@ -1040,10 +1039,10 @@ function expandCompositeLeaves(symbol, layout, pathSpec) {
     return leaves;
 }
 
-// 从原始字节按布局解码为树形值结构
-// bytes: Buffer / Uint8Array / number[]（变量的完整字节）
+// Decodes raw bytes into a value tree following the layout.
+// bytes: Buffer / Uint8Array / number[] (the variable's complete bytes)
 // layout: CompositeLayout
-// 返回 { kind, typeName, members/elements, value? }
+// Returns { kind, typeName, members/elements, value? }
 function decodeComposite(bytes, layout, symbol = {}) {
     if (!bytes || !layout) return null;
     validateLayoutContext({ ...symbol, size: layout.byteSize ?? bytes.length }, layout);
@@ -1068,7 +1067,8 @@ function decodeComposite(bytes, layout, symbol = {}) {
         );
     };
 
-    // offset 为该节点相对变量基址的绝对字节偏移，供 UI/Agent 计算成员地址与定位路径。
+    // offset is the node's byte offset from the variable's base address, used by the UI and agents to compute member
+    // addresses and paths.
     function decodeLayout(offset, lyt, path, depth = 0, charge = true) {
         if ((charge && ++visits > MAX_LAYOUT_VISITS) || depth > MAX_LAYOUT_PATH_DEPTH)
             throw Object.assign(new Error("Layout decode budget exceeded"), { code: "DWARF_BUDGET_EXCEEDED" });
@@ -1196,9 +1196,9 @@ function decodeBitfieldValue(bytes, type, bitOffset, bitSize) {
     return { value: number, valueText: Number.isSafeInteger(number) ? null : text };
 }
 
-// 在已解码的树形值中按路径规格（parseMemberPath 的结果）导航到目标节点。
-// 返回标量叶子节点（含 value/type/offset）或子树节点（struct/union/array）；找不到返回 null。
-// range 段返回一个合成的数组子树（仅含选中范围内的元素）。
+// Navigates a decoded value tree to the node named by a path spec (parseMemberPath result). Returns a scalar leaf (with
+// value/type/offset) or a subtree (struct/union/array), or null when not found. A range segment returns a synthesized
+// array subtree containing only the selected elements.
 function navigateCompositeTree(tree, pathSpec) {
     if (!tree) return null;
     if (!pathSpec || !Array.isArray(pathSpec.segments) || !pathSpec.segments.length) return tree;
@@ -1224,7 +1224,7 @@ function navigateCompositeTree(tree, pathSpec) {
                 elements: els
             };
         } else if (seg.kind === "all") {
-            // 停留在当前数组节点
+            // stay on the current array node
         } else {
             return null;
         }
@@ -1232,7 +1232,7 @@ function navigateCompositeTree(tree, pathSpec) {
     return node;
 }
 
-// 判断一个树节点是否为标量叶子（含 value/type，无 members/elements 子结构）。
+// Whether a tree node is a scalar leaf (value/type without members/elements).
 function isScalarLeafNode(node) {
     return (
         !!node &&
@@ -1247,7 +1247,6 @@ module.exports = {
     parseElfSymbols,
     qualifySameNameSymbols,
     refineSameNameSymbols,
-    sameNameSymbolWarning,
     createSymbolResolver,
     isCppRuntimeSymbol,
     isItaniumMangled,

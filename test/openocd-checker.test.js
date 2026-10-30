@@ -17,9 +17,8 @@ const {
     MIN_OPENOCD_VERSION
 } = checker;
 
-// 用 async IIFE 包裹 await，避免与 require 一起触发模块格式歧义
 (async () => {
-    // 版本号解析：兼容标准格式与带 -rc2 后缀的开发版
+    // Version parsing: standard format and development builds with an -rc2 suffix
     assert.strictEqual(parseVersion("Open On-Chip Debugger 0.12.0"), "0.12.0");
     assert.strictEqual(parseVersion("Open On-Chip Debugger 0.11.0-rc2 (2021-09-30)"), "0.11.0-rc2");
     assert.strictEqual(parseVersion("some unrelated text"), "");
@@ -40,26 +39,26 @@ const {
     assert.strictEqual(incompatibleStatus({ found: true, version: "0.11.0" }).key, "oc.incompatibleUpgrade");
     assert.strictEqual(incompatibleStatus({ found: true, version: "" }).key, "oc.versionUnknownUpgrade");
 
-    // 空路径应直接判定为未找到，不触发 spawn
+    // An empty path is not found, without spawning
     const empty = await probeOpenOcd("");
     assert.strictEqual(empty.found, false);
     assert.strictEqual(empty.path, "");
-    assert.ok(empty.error, "空路径应给出错误原因");
+    assert.ok(empty.error, "an empty path gives a reason");
 
-    // 不存在的可执行文件应判定为未找到（ENOENT），并给出可读错误
+    // A missing executable is not found (ENOENT) and gets a readable error
     const missing = await probeOpenOcd("this-binary-does-not-exist-xyz-98765");
     assert.strictEqual(missing.found, false);
     assert.strictEqual(missing.path, "this-binary-does-not-exist-xyz-98765");
-    assert.ok(missing.error, "缺失时应给出可读错误");
+    assert.ok(missing.error, "a missing executable gives a readable error");
 
-    // 对一个一定存在的命令（node 自身）探测：它不是 OpenOCD，应识别为 found=false
+    // Probing a command that certainly exists (node itself): it is not OpenOCD, so found=false
     const nodePath = process.execPath;
     const fakeResult = await probeOpenOcd(nodePath);
-    // node --version 输出不含 "open on-chip debugger"，必须判为未找到
-    assert.strictEqual(fakeResult.found, false, "非 OpenOCD 可执行文件不应误判为已就绪");
+    // node --version output lacks "open on-chip debugger", so it must count as not found
+    assert.strictEqual(fakeResult.found, false, "a non-OpenOCD executable is not reported as ready");
     assert.strictEqual(fakeResult.path, nodePath);
 
-    // 缓存读写一致性
+    // Cache read/write round trip
     resetCache();
     assert.strictEqual(getCachedResult(), null);
     setCache({ found: true, path: "/x/openocd", version: "0.12.0", error: "" });
@@ -70,7 +69,8 @@ const {
     resetCache();
     assert.strictEqual(getCachedResult(), null);
 
-    // 打开工作区时写 Workspace，并覆盖仍指向旧路径的 Folder 设置；自定义为其他值的 Folder 不应被改写。
+    // With a workspace open, write the Workspace setting and override Folder settings still pointing at the old path;
+    // Folder settings customized to other values are left alone.
     const updates = [];
     const folders = [{ uri: { id: "a" } }, { uri: { id: "b" } }];
     const vscodeMock = {
@@ -102,7 +102,8 @@ const {
         { uri: "a", key: "openocdPath", value: "new-openocd", target: 3 }
     ]);
 
-    // 已有探测结果传入引导函数时应直接返回最终路径，不再重复启动探测进程。
+    // Passing an existing probe result to the bootstrap function returns the final path without starting another probe
+    // process.
     const reported = [];
     const readyPath = await resolveOpenOcdStatus(
         "ready-openocd",

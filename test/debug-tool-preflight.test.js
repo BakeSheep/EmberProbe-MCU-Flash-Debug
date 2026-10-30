@@ -6,7 +6,6 @@ const os = require("os");
 const path = require("path");
 const {
     resolveDebugTools,
-    findDebugTools,
     findWarmupDebugTools,
     ensureDebugTools,
     readWindowsPath,
@@ -118,15 +117,13 @@ const { executableName } = require("../src/services/cortexToolchainService");
         );
         saved.clear();
         const prompts = { ...vscode.window };
+        const warmupLookup = (readPath, discoverTools = discover, platform = "win32") =>
+            findWarmupDebugTools(vscode, folder, state, readPath, discoverTools, platform);
         vscode.window.showWarningMessage = async () => assert.fail("background lookup never prompts");
-        assert.strictEqual(
-            findDebugTools(vscode, folder, state, {}, discover),
-            null,
-            "background lookup never prompts"
-        );
+        assert.strictEqual(await warmupLookup(async () => ""), null, "background lookup never prompts");
         saved.set("emberprobeToolchain:workspace-one", bin);
         assert.deepStrictEqual(
-            findDebugTools(vscode, folder, state, {}, discover),
+            await warmupLookup(() => assert.fail("a saved choice needs no PATH refresh")),
             expected,
             "background lookup uses the saved choice"
         );
@@ -135,8 +132,6 @@ const { executableName } = require("../src/services/cortexToolchainService");
         Object.assign(vscode.window, prompts);
         currentPath = bin;
         assert.deepStrictEqual(await run(), expected, "refreshed PATH works without restarting the host");
-        const warmupLookup = (readPath, discoverTools = discover, platform = "win32") =>
-            findWarmupDebugTools(vscode, folder, state, readPath, discoverTools, platform);
         assert.deepStrictEqual(
             await warmupLookup(
                 async () => bin,
@@ -191,7 +186,7 @@ const { executableName } = require("../src/services/cortexToolchainService");
             "discovery does not overwrite the remembered manual choice"
         );
         assert.deepStrictEqual(
-            findDebugTools(vscode, folder, state, {}, discover),
+            await warmupLookup(async () => ""),
             other,
             "background lookup also discovers ST tools without prompting"
         );

@@ -11,7 +11,7 @@ const { hasWorkspaceSkills } = require("../src/services/skillStatusService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { temp, context } = fixture;
     try {
         const skillEvents = [];
         const skillStatus = {
@@ -75,11 +75,9 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(await managedSkills.manage(), skillStatus);
         assert.strictEqual(await managedSkills.manage(), skillStatus);
         assert.ok(skillCalls.includes("install:workspace") && skillCalls.includes("uninstall:workspace"));
-        managedSkills.lastStatus = { state: "modified" };
-        managedSkills.warnIfModified();
         managedSkills.promptUpgrade({ state: "outdated" });
         await new Promise((resolve) => setImmediate(resolve));
-        assert.ok(notices.length >= 2);
+        assert.ok(notices.length >= 1);
         assert.ok(!skillCalls.some((call) => call.includes(":global")));
         for (const state of ["outdated", "modified", "partial"]) {
             skillStatus.scopes.workspace = { state, root: temp };
@@ -160,7 +158,7 @@ const { createFixture } = require("./helpers/service-fixture");
         const skills = new SkillStatusService({
             context: {},
             installer: {
-                // 合并视图以 workspace 为先，旧检查会认为一切正常
+                // The merged view puts the workspace first, so checking only it would report everything as fine
                 inspectSkills: async () => ({ state: "installed", scopes }),
                 inspectSkillRoot: async (_context, root, scope) => ({
                     scope,
@@ -205,7 +203,7 @@ const { createFixture } = require("./helpers/service-fixture");
                 await skills.checkForCall({ channel: "skill", skillRoot: globalRoot.toUpperCase() });
                 assert.strictEqual(dialogs.length, 4, "Windows roots compare case-insensitively");
             }
-            // 不属于任何已知根的副本总是审批，并在 detail 中给出实际路径
+            // Copies outside every known root always need approval, with the real path in detail
             await skills.checkForCall({ channel: "skill", skillRoot: customRoot });
             assert.strictEqual(dialogs[4].message, "approval.skillsCustom");
             assert.strictEqual(dialogs[4].detail.root, customRoot);
@@ -223,7 +221,7 @@ const { createFixture } = require("./helpers/service-fixture");
             await assert.rejects(skills.checkForCall({ channel: "skill", skillRoot: customRoot }), {
                 code: "SKILLS_CHANGED_DURING_APPROVAL"
             });
-            // MCP 服务器代码随扩展安装，不检查 skill 哈希
+            // The MCP server code ships with the extension, so no skill hashes are checked
             skills.vscode.window.showWarningMessage = async () => assert.fail("MCP calls must not prompt");
             await skills.checkForCall({ channel: "mcp", client: "test/1" });
         } finally {

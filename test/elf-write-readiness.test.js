@@ -355,7 +355,7 @@ const elfSymbols = require("../src/elfSymbols");
             ]
         };
         const dataLayout = buildCompositeLayouts(parsed).get("data");
-        // 验证 _agentWritePlan 对 const 变量及 const 复合成员的写入拦截
+        // _agentWritePlan blocks writes to const variables and const composite members
         const Provider = loadProvider();
         const provider = Object.create(Provider.prototype);
         provider.readElfSymbols = () => ({

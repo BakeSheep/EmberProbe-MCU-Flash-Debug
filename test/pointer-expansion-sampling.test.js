@@ -310,7 +310,7 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
     assert.deepStrictEqual(restored._runtimeExpansions("other"), {});
 
     // Webview: the switch, closed rows, and expansions sent to the host.
-    const view = render(getLiveWatchContent({ backendHistory: true }, "en"));
+    const view = render(getLiveWatchContent({}, "en"));
     try {
         const sent = (type) => view.messages.filter((message) => message.type === type);
         assert.strictEqual(sent("saveRuntimeExpansions").length, 0, "nothing is sent before the host's list");

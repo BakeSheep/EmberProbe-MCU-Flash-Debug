@@ -1,7 +1,8 @@
 "use strict";
 const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs, buildOpenOcdTargetArgs } = require("./openocdScripts");
-// 管理单一 OpenOCD 服务：独立模式仅开放 Tcl，调试模式同时开放 GDB，Tcl-RPC 采样 RAM 并允许不暂停的字写入。
-// 说明：受 MCUViewer（GPLv3）概念启发的独立实现，未使用其任何代码。
+// Manages a single OpenOCD server: standalone mode opens only Tcl, debug mode also opens GDB. Tcl-RPC samples RAM and
+// allows word writes without halting. An independent implementation inspired by MCUViewer (GPLv3) concepts, using none
+// of its code.
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
@@ -24,7 +25,7 @@ const { MultiRatePlan } = require("./services/multiRatePlan");
 const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
 
-const SUB = "\x1a"; // Tcl-RPC 命令/响应分帧符 0x1A
+const SUB = "\x1a"; // Tcl-RPC command/response delimiter 0x1A
 const MAX_DEBUG_READ_BYTES = 4096;
 const MAX_DEBUG_READ_COMMANDS = 32;
 const MAX_DEBUG_CYCLE_MS = 1000;
@@ -49,8 +50,8 @@ function normalizeRamSectionRanges(ranges) {
         .map(({ start, end }) => ({ start, end }));
 }
 
-// 让操作系统分配一个当前空闲的临时端口。OpenOCD 的 Tcl 端口无认证，固定端口会让
-// 采样期间的任意本机进程都能连接并下发 halt/write_memory；未显式配置端口时应随机选用。
+// Lets the OS pick a free ephemeral port. OpenOCD's Tcl port has no authentication, so a fixed port would let any local
+// process connect during sampling and issue halt/write_memory; pick a random one unless a port is configured.
 function findFreePort() {
     return new Promise((resolve) => {
         const server = net.createServer();
@@ -83,24 +84,6 @@ function waitForChildExit(child, timeoutMs) {
         child.once("close", onExit);
         if (child.exitCode !== null || child.signalCode != null) finish(true);
     });
-}
-
-// 解析 read_memory / ocd_read_memory 的返回值：支持十进制、0x 前缀，并剥离可能的地址标签
-function parseMemoryValues(text) {
-    if (!text) return [];
-    const cleaned = String(text)
-        .replace(/\x1a/g, " ")
-        .replace(/(^|\s)(0x)?[0-9a-fA-F]+:/g, " ");
-    const out = [];
-    for (const tok of cleaned.trim().split(/\s+/)) {
-        if (!tok) continue;
-        let n;
-        if (/^0x[0-9a-fA-F]+$/i.test(tok)) n = parseInt(tok, 16);
-        else if (/^-?[0-9]+$/.test(tok)) n = parseInt(tok, 10);
-        else continue;
-        if (Number.isInteger(n) && n >= 0 && n <= 255) out.push(n);
-    }
-    return out;
 }
 
 function parseMemoryElements(text, widthBits) {
@@ -336,7 +319,7 @@ function compileReadBatches(items, ramSectionRanges = [], debug = false, reserve
     return batches;
 }
 
-// 复用 openocdRunner 的配置名白名单校验
+// Reuse openocdRunner's configuration name allowlist
 
 class ManagedOpenOcdSession {
     // options: { executable, probe, target, cwd, port, gdbPort, intervalMs, mode }
@@ -360,12 +343,12 @@ class ManagedOpenOcdSession {
         this._hostHoldSpans = [];
         this._hostWindowStartedAt = Number(process.hrtime.bigint()) / 1e6;
         this.stopped = false;
-        this.pending = ""; // socket 响应缓冲
-        this.queue = []; // 待响应的命令（串行，单条在途）
+        this.pending = ""; // socket response buffer
+        this.queue = []; // commands awaiting a response (serial, one in flight)
         this.watch = []; // [{name,address,size,type}]
-        this.readCmd = "ocd_read_memory"; // 主用命令，不可用时回退 read_memory
+        this.readCmd = "ocd_read_memory"; // preferred read command, falling back to read_memory
         this.altTried = false;
-        this.writeCmd = "ocd_write_memory"; // 写入主用命令，不可用时回退 write_memory
+        this.writeCmd = "ocd_write_memory"; // preferred write command, falling back to write_memory
         this.writeAltTried = false;
         this._lastReadError = "";
         this._notifiedError = "";
@@ -382,7 +365,8 @@ class ManagedOpenOcdSession {
         this.rpcTimeoutMs = this.options.backendKind === "tcp" ? 5000 : 2000;
         this.connectionFailed = false;
         this.connectionError = null;
-        this._startReject = null; // start() 进行中时捕获的 reject，用于单通道上报连接期失败
+        // reject captured while start() runs, so connection failures are reported on one channel
+        this._startReject = null;
         this._openOcdLogTail = [];
         this._openOcdRawTail = "";
         this._stopPromise = null;
@@ -894,7 +878,8 @@ class ManagedOpenOcdSession {
             this.handlers.onDegraded?.(error);
         } else this._abortConnection(error);
     }
-    // 采样中拔出调试器的致命日志特征（USB 读写失败 / 设备丢失），用于自动停止采样
+    // Fatal log signatures of a probe unplugged while sampling (USB read/write failure, device lost), used to stop
+    // sampling automatically
     _isFatalProbeLog(line) {
         return /WriteFile|ReadFile|LIBUSB_ERROR_(?:NO_DEVICE|IO|PIPE)|error (?:writing|reading) data|target communication error/i.test(
             String(line || "")
@@ -941,12 +926,14 @@ class ManagedOpenOcdSession {
             "-c",
             "telnet_port disabled",
             ...(this.mode === "debug" ? buildOpenOcdTargetArgs(this.options, this.options.gdbPorts) : []),
-            // RTOS 感知只在调试模式下配置：独立采样是非侵入轮询，让 OpenOCD 遍历内核数据结构会改变采样行为。
+            // RTOS awareness is configured only in debug mode: standalone sampling is non-intrusive polling, and
+            // letting OpenOCD walk kernel data structures would change it.
             ...(this.mode === "debug" ? buildOpenOcdRtosArgs(this.options.rtos, !!this.options.serverGroup) : []),
             ...(this.mode === "debug"
                 ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
                 : []),
-            // 仅初始化，不 halt/不 reset，保持非侵入；自动模式下随后校验目标芯片
+            // Initialize only, without halt or reset, to stay non-intrusive; automatic mode checks the target chip
+            // afterwards
             ...withTargetCheck(["init"], this.options.targetCheck, this.options.target).flatMap((command) => [
                 "-c",
                 command
@@ -998,7 +985,8 @@ class ManagedOpenOcdSession {
                 if (!this._tclListening && readyPattern.test(this._openOcdRawTail)) this._tclListening = true;
                 this._openOcdLogTail.push(clean.slice(0, 500));
                 if (this._openOcdLogTail.length > 4096) this._openOcdLogTail.shift();
-                // 采样中拔出调试器：USB 读写失败等致命信号 → 自动停止采样，避免错误反复刷屏
+                // Probe unplugged while sampling: fatal signals such as USB read/write failures stop sampling
+                // automatically instead of repeating errors
                 if (this._isFatalProbeLog(clean)) {
                     if (!this.stopped && !this.connectionFailed) {
                         this._abortConnection(
@@ -1021,7 +1009,8 @@ class ManagedOpenOcdSession {
                 // A GDB/telnet/Tcl client closing its socket (WSA 10054, connection reset) is not a target fault.
                 // OpenOCD prints it via LOG_ERROR, so the line arrives as "Error: Error on socket 'GDB': ...".
                 if (/^(?:Error\s*:\s*)?Error on socket '/i.test(clean)) continue;
-                // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍识别常见连接失败。
+                // "Info : Unable to ..." may just be a normal hint such as a speed reduction; non-Info lines still
+                // detect common connection failures.
                 const isInfo = /\bInfo\s*:/i.test(clean);
                 if (
                     /\bError\s*:/i.test(clean) ||
@@ -1073,8 +1062,8 @@ class ManagedOpenOcdSession {
             }
         });
 
-        // start() 进行期间若子进程退出，_abortConnection 通过 _startReject 拒绝此 Promise，
-        // 由调用方一次性上报；避免 onDisconnect 与 start() 抛出重复通知。
+        // If the child process exits while start() runs, _abortConnection rejects this promise through _startReject and
+        // the caller reports it once, so onDisconnect and start() do not both notify.
         let ready;
         try {
             this._initializing = true;
@@ -1314,7 +1303,8 @@ class ManagedOpenOcdSession {
                 if (q) q.resolve(resp);
                 if (socket !== this.socket || this.connectionFailed || this.stopped) return;
             }
-            // 失控流兜底：若缓冲累积超过 1MB 仍未出现分帧符，说明响应流异常，丢弃并重置连接，避免无限增长
+            // Runaway stream guard: more than 1 MiB without a delimiter means the response stream is broken, so drop it
+            // and reset the connection instead of growing forever
             if (this.pending.length > 1048576) {
                 this.pending = "";
                 this._handleRpcFailure(new Error("Invalid OpenOCD response stream: framing delimiter missing"));
@@ -1375,7 +1365,8 @@ class ManagedOpenOcdSession {
         return this._reconnectPromise;
     }
 
-    // 响应是无 ID 的 FIFO 流。任一请求超时后无法判断迟到响应属于谁，只能废弃整条连接。
+    // Responses are an ID-less FIFO stream. After any request times out a late response cannot be attributed, so the
+    // whole connection is discarded.
     _abortConnection(error) {
         const err = /** @type {Error & { i18nKey?: string }} */ (
             error instanceof Error ? error : new Error(String(error || "Connection disconnected"))
@@ -1448,7 +1439,8 @@ class ManagedOpenOcdSession {
                 /* ignore */
             }
         }
-        // start() 仍在进行中时，以拒绝其 Promise 作为唯一通知通道，避免 onDisconnect 重复上报
+        // While start() is still running, rejecting its promise is the only notification, so onDisconnect does not
+        // report twice
         if (this._startReject) {
             const reject = this._startReject;
             this._startReject = null;
@@ -1460,7 +1452,7 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 串行发送单条 Tcl 命令并等待响应（带超时）
+    // Sends one Tcl command serially and waits for the response (with a timeout)
     _handleRpcFailure(error) {
         if (!this._detectingScatter) return this._abortConnection(error);
         // Capability probing is optional. Discard an ambiguous FIFO before reconnecting;
@@ -1554,8 +1546,9 @@ class ManagedOpenOcdSession {
         return this._silentResponseFile;
     }
 
-    // OpenOCD 会把 Tcl RPC 的非空返回值广播给 GDB，导致调试控制台持续刷出
-    // EP_OK:<value>。调试模式把机器响应写入扩展创建的私有临时文件，让 Tcl RPC 本身返回空串。
+    // OpenOCD broadcasts non-empty Tcl RPC results to GDB, flooding the debug console with EP_OK:<value>. In debug mode
+    // machine responses go to a private temporary file the extension creates, and the Tcl RPC itself returns an empty
+    // string.
     async _sendSilentDebugCommand(cmd) {
         const responseFile = await this._ensureSilentResponseFile();
         const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; set _ep_file [open ${quoteTclWord(responseFile)} w]; puts -nonewline $_ep_file "\${_ep_rc}\\n"; puts -nonewline $_ep_file $_ep_msg; close $_ep_file; set _ep_msg ""`;
@@ -1587,7 +1580,7 @@ class ManagedOpenOcdSession {
         });
     }
 
-    // 按地址/长度选择 32/16/8 bit 传输，再统一解包为小端字节。
+    // Chooses 32/16/8-bit transfers by address and length, then unpacks everything into little-endian bytes.
     async _readMemoryBytes(addr, count) {
         const hex = "0x" + (addr >>> 0).toString(16);
         const shape = transferShape(addr, count);
@@ -1976,7 +1969,8 @@ class ManagedOpenOcdSession {
         return { samples, ok };
     }
 
-    // 在现有 Tcl 连接上读取一组变量一次，不改变 UI 的观察列表或采样定时器。
+    // Reads a set of variables once over the existing Tcl connection without changing the UI watch list or sampling
+    // timer.
     async readOnce(items, timeoutMs = 2500) {
         if (!Array.isArray(items) || !items.length) return [];
         if (this.mode === "debug") validateManagedReadPlan(items);
@@ -2002,9 +1996,10 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 对齐的单字直接写入。其他变量先按自然宽度只写变量自身的字节，避免 halt 期间 DMA/外设
-    // 刚更新的相邻字节被旧值覆盖；回读发现窄写被丢弃（某些 Cortex-M7/AHB-AP 的 byte-lane）
-    // 时，再退回对齐的 32-bit 读-改-写。
+    // Aligned single words are written directly. Other variables first write only their own bytes at their natural
+    // width, so neighbouring bytes just updated by DMA or peripherals during the halt are not overwritten with stale
+    // values; if read-back shows the narrow write was dropped (byte lanes on some Cortex-M7/AHB-AP), fall back to an
+    // aligned 32-bit read-modify-write.
     async _writeMemoryBytes(addr, bytes) {
         if (this.mode === "debug") validateManagedWritePlan([{ address: addr, bytes }]);
         const address = addr >>> 0;
@@ -2075,7 +2070,8 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // 全部为对齐单字时不查询或改变运行状态；其他事务保持 halt、读-改-写、校验及恢复。
+    // When every write is an aligned single word the run state is neither queried nor changed; other transactions halt,
+    // read-modify-write, verify and resume.
     async writeAndVerify(items, timeoutMs = 5000) {
         if (!Array.isArray(items) || !items.length) return { before: [], after: [], halted: false };
         const nonHalting = items.every(isNonHaltingWordWrite);
@@ -2334,7 +2330,6 @@ module.exports = {
     compileReadBatches,
     MAX_BATCH_GROUPS,
     MAX_BATCH_BYTES,
-    parseMemoryValues,
     parseMemoryElements,
     transferShape,
     bytesToElements,

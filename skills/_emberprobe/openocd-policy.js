@@ -1,8 +1,8 @@
 "use strict";
 const MIN_OPENOCD_VERSION = "0.12.0";
-// 从输出文本中提取 OpenOCD 版本号，兼容多种格式：
-//   Open On-Chip Debugger 0.12.0
-//   Open On-Chip Debugger 0.11.0-rc2 (2021-09-30-15:23)
+// Extracts the OpenOCD version from its output, for example:
+// Open On-Chip Debugger 0.12.0
+// Open On-Chip Debugger 0.11.0-rc2 (2021-09-30-15:23)
 function parseVersion(text) {
     if (!text) return "";
     const m = String(text).match(/open on-chip debugger\s+v?(\d+\.\d+(?:\.\d+)?(?:[-+.\w]*)?)/i);
@@ -28,8 +28,8 @@ function compareVersions(left, right) {
     return 0;
 }
 
-// EmberProbe 的实时读写依赖 OpenOCD 0.12 的 read_memory/write_memory Tcl 接口。
-// 0.12.0-rc 仍视为低于正式版；xPack 的 0.12.0-7 是发行包修订号，可正常使用。
+// EmberProbe live reads and writes need the read_memory/write_memory Tcl commands from OpenOCD 0.12. 0.12.0-rc still
+// counts as older than the release; xPack's 0.12.0-7 is a packaging revision and works.
 function checkCompatibility(version, minimum = MIN_OPENOCD_VERSION) {
     const value = String(version || "").trim();
     const comparison = compareVersions(value, minimum);

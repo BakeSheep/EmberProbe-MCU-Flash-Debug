@@ -1,6 +1,7 @@
 "use strict";
-// MCP 工具目录：与 Bridge 方法一一对应或少量合并。schema 只负责提前拦截明显错误，
-// 最终校验仍由 Bridge（src/validation.js 等）完成。readOnlyHint 由 agent-client 的方法集合派生。
+// MCP tool catalogue: one tool per Bridge method, with a few merged. Schemas only catch obvious mistakes early; the
+// Bridge (src/validation.js and friends) still does the final validation. readOnlyHint derives from agent-client's
+// method sets.
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -36,7 +37,7 @@ const confirmation = {
     ),
     remember: bool("Only when the user explicitly chose the 24-hour workspace permission for this plan.")
 };
-// probeSerial 保持字符串原样传递，不做大小写或前导零处理。
+// probeSerial is passed through as a string without case or leading-zero changes.
 const flashPlan = {
     elf: str("ELF path; defaults to the workspace selection or the newest build."),
     target: str("OpenOCD target script, e.g. target/stm32f4x.cfg; never guess it."),
@@ -669,7 +670,8 @@ const TOOLS = [
         }),
         request: (args, context) => cubemxRequest("cubemx.execute", args, context, 360000),
         plan: cubemxPlan,
-        // 同步生成不返回 operationId；取消时转发不带 ID 的 cubemx.cancel（取消本工作区正在运行的生成）。
+        // Synchronous generation returns no operationId; cancelling forwards cubemx.cancel without an ID (cancelling
+        // this workspace's running generation).
         cancel: () => ({ method: "cubemx.cancel", params: {} })
     },
     {
@@ -689,7 +691,7 @@ function cubemxRequest(method, args, context, timeoutMs = 30000) {
         params.candidatePath = workspacePath(context, args.candidatePath);
         params.candidateHash = candidateHash(params.candidatePath);
     }
-    // 同一次工具调用（含确认后的重调）复用同一个 requestId，Bridge 据此去重。
+    // One tool call (including the repeat after confirmation) reuses one requestId so the Bridge can deduplicate.
     params.requestId = args.requestId || crypto.randomUUID();
     return { method, params, timeoutMs };
 }
@@ -723,7 +725,8 @@ function withoutApproval(result) {
     };
 }
 
-// 有意不暴露为 MCP 工具的 Bridge 路由方法（漂移测试要求每个路由要么被映射，要么列在这里）。
+// Bridge routes deliberately not exposed as MCP tools (the drift test requires every route to be mapped or listed
+// here).
 const EXCLUDED_METHODS = Object.freeze([]);
 
 function annotations(tool) {
@@ -762,7 +765,7 @@ function listing(tool) {
     };
 }
 
-// 诊断里的 Bridge 方法名在 MCP 通道中显示为对应工具名（取第一个映射该方法的工具）。
+// Bridge method names in diagnostics appear as tool names on the MCP channel (the first tool mapping that method).
 const METHOD_TOOLS = new Map();
 for (const tool of TOOLS)
     for (const method of tool.methods) if (!METHOD_TOOLS.has(method)) METHOD_TOOLS.set(method, tool.name);

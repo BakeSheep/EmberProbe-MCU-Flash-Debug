@@ -155,12 +155,12 @@ function debugReadPlanKey(items) {
         .sort()
         .join("|");
 }
-// 核心修改1：添加路径清洗工具函数（处理Windows路径问题）
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
 }
-// 构建符号名索引：原始名（稳定身份）优先，追加唯一 displayName 别名以支持 C++ 限定名解析。
-// 解析出的观察项/写入项身份仍写原始 symbol.name，displayName 仅用于查表命中。
+// Builds the symbol name index: original names (stable identities) first, plus unique displayName aliases so C++
+// qualified names resolve. Resolved watch and write items still store the original symbol.name; displayName only serves
+// lookups.
 function buildSymbolNameIndex(symbols) {
     const list = Array.isArray(symbols) ? symbols : [];
     const byName = new Map(list.map((symbol) => [symbol.name, symbol]));
@@ -175,7 +175,8 @@ function buildSymbolNameIndex(symbols) {
     }
     return byName;
 }
-// Agent 批量读取中单个变量的失败项：保留错误码/消息/细节，供 Skill 映射为结构化诊断。
+// One failed variable of a batch agent read keeps its error code, message and details so the skill can map it to a
+// structured diagnostic.
 function variableErrorEntry({ requestedName, error }) {
     return {
         requestedName,
@@ -215,10 +216,8 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
     });
 }
 
-// 实现WebviewViewProvider接口的类
 class MainViewProvider {
     constructor(context) {
-        // 存储命令执行函数（主进程）
         this.commandHandlers = {};
         this._context = context;
         // Created by the `_notices` getter.
@@ -229,7 +228,8 @@ class MainViewProvider {
         /** @type {readonly number[]} */
         this._chartHistoryRecoveryDelaysMs = CHART_HISTORY_RECOVERY_DELAYS_MS;
         this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
-        // 语言优先级：用户显式切换过的选择（globalState）> VS Code 显示语言自动匹配（zh-* → 中文，其余 → 英文）
+        // Language priority: an explicit user choice (globalState) > the VS Code display language (zh-* -> Chinese,
+        // anything else -> English)
         const savedLang = context.globalState.get("emberprobe.lang");
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
         this._probeCoordinator = new ProbeCoordinator(() => this._postProbeOperationStatus());
@@ -566,12 +566,12 @@ class MainViewProvider {
             recordFlashed: (entry) => this._firmwareRecord.record(entry),
             isDebugActive: () => this._debugBridge.hasAnySession || !!this._liveDebugSession()
         });
-        // VS Code 在本窗口启动了 EmberProbe MCP 服务器（用户已在 MCP 信任提示中同意）。
+        // VS Code started the EmberProbe MCP server in this window (the user accepted the MCP trust prompt).
         this._mcpBridgeRequested = false;
         this._bridgeRegistry = null;
         const storageDir = context.globalStorageUri?.fsPath;
         if (storageDir) {
-            // 每个窗口一条实例登记；启动时顺带清理宿主进程已退出的旧条目。
+            // One instance entry per window; startup also removes entries whose host process has exited.
             this._bridgeRegistry = new BridgeRegistry({
                 storageDir,
                 hostApp: vscode.env?.appName || "",
@@ -585,7 +585,8 @@ class MainViewProvider {
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
             workspaceFoldersProvider: () =>
                 (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath),
-            // Bridge 描述文件（含 token）写入 globalStorage，工作区只留指针，避免令牌随 git/云同步泄露
+            // The Bridge descriptor (with token) goes to globalStorage and the workspace keeps only a pointer, so the
+            // token cannot leak through git or cloud sync
             storageDirProvider: () => this._context.globalStorageUri.fsPath,
             registry: this._bridgeRegistry,
             onCall: (_method, _params, meta) => this._warnIfSkillsModified(meta),
@@ -624,10 +625,8 @@ class MainViewProvider {
     get _debugStarting() {
         return this._probeCoordinator?.isActive("debugStart") ?? false;
     }
-    get _debugServerRunning() {
-        return this._probeCoordinator?.isActive("debugServer") ?? false;
-    }
-    // 当前界面语言（简体中文/English），由侧边栏或实时面板右上角按钮切换并持久化到全局状态
+    // Current UI language (Simplified Chinese/English), switched from the sidebar or live panel title button and
+    // persisted in global state
     _t(key, params) {
         return i18n.t(this._lang, key, params);
     }
@@ -731,11 +730,11 @@ class MainViewProvider {
         if (action === "select") this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
     }
-    // 烧录/调试/实时查看前解析可用的 OpenOCD 路径；缺失状态只发送到侧边栏。
+    // Resolves a usable OpenOCD path before programming, debugging or live watch; a missing OpenOCD is only reported to
+    // the sidebar.
     async _resolveOpenOcdPath(executable) {
         return this._openOcdStatusService.resolve(executable);
     }
-    // 注册命令处理函数（主进程执行）
     registerCommandHandlers() {
         this.commandHandlers["mcu-vscode.autoDetect"] = async () => this.runAutoDetect(true);
         this.commandHandlers["mcu-vscode.selectCubeMx"] = () => this._cubemxConfiguration.select("cubemx");
@@ -747,11 +746,10 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.cleanupGlobalSkills"] = async () => this.cleanupGlobalSkills();
         this.commandHandlers["mcu-vscode.installMcpServer"] = async () => this._mcpRegistration.installClient();
         this.commandHandlers["mcu-vscode.openLiveWatch"] = async () => this.openLiveWatchPanel();
-        // 1. 选择 ELF 文件（核心修改2：使用fsPath+路径清洗）
+        // Select ELF
         this.commandHandlers["mcu-vscode.selectElf"] = async () => {
             const cmd = "mcu-vscode.selectElf";
             try {
-                console.log("主进程执行选择 ELF 文件命令");
                 const elfFiles = await vscode.workspace.findFiles(
                     ELF_FILE_GLOB,
                     "{**/node_modules/**,**/.git/**,**/CMakeFiles/**}",
@@ -762,7 +760,7 @@ class MainViewProvider {
                     return false;
                 }
                 const items = elfFiles.map((file) => {
-                    const cleanPath = cleanWindowsPath(file.fsPath); // 替换file.path为file.fsPath，再清洗
+                    const cleanPath = cleanWindowsPath(file.fsPath);
                     return {
                         label: path.basename(cleanPath),
                         description: cleanPath
@@ -780,7 +778,7 @@ class MainViewProvider {
                 await this.updateView();
                 return true;
             } catch (err) {
-                console.error("选择 ELF 文件失败：", err.message);
+                console.error("Selecting ELF failed:", err.message);
                 this._notices.notify("config", cmd, {
                     level: "error",
                     titleKey: COMMAND_FAILURE_TITLES[cmd],
@@ -789,14 +787,13 @@ class MainViewProvider {
                 throw err; // Reported above; callers outside the sidebar still see the failure.
             }
         };
-        // 2. 选择调试器
+        // Select debug probe
         this.commandHandlers["mcu-vscode.selectDebugger"] = async () => {
             this._assertConnectionEditable({ debugger: true });
-            console.log("主进程执行选择调试器命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this._resolveOpenOcdPath(configured);
-            // 以当前 OpenOCD 实际包含的 interface 脚本为准，支持 WCH 等厂商分支。
-            // OpenOCD 尚未就绪时仍允许先完成手动配置，继续使用内置列表。
+            // Offer the interface scripts the current OpenOCD actually ships, including vendor forks such as WCH.
+            // Before OpenOCD is ready manual configuration still works with the built-in list.
             const discovered = executable ? openocdScripts.discoverInterfaceConfigs(executable) : [];
             const debuggers = discovered.length ? discovered : DEBUGGER_LIST;
             const selected = await vscode.window.showQuickPick(
@@ -813,14 +810,13 @@ class MainViewProvider {
             await this._refreshConnectedProbes();
             return true;
         };
-        // 3. 选择 MCU 核心（无修改）
+        // Select MCU target
         this.commandHandlers["mcu-vscode.selectMcuCore"] = async () => {
             this._assertConnectionEditable({ mcu: true });
-            console.log("主进程执行选择 MCU 核心命令");
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
             const executable = await this._resolveOpenOcdPath(configured);
-            // 展示当前 OpenOCD 实际包含的 target，包括 geehy/* 等厂商子目录。
-            // OpenOCD 尚未就绪时仍允许先完成手动配置，继续使用内置列表。
+            // Offer the targets the current OpenOCD actually ships, including vendor subdirectories such as geehy/*.
+            // Before OpenOCD is ready manual configuration still works with the built-in list.
             const discovered = executable ? openocdScripts.discoverTargetConfigs(executable) : [];
             const targets = discovered.length ? discovered : MCU_CORE_LIST;
             const selected = await vscode.window.showQuickPick(
@@ -841,8 +837,8 @@ class MainViewProvider {
         this.commandHandlers["mcu-vscode.downloadOfficialSvd"] = () => this._svdManager.downloadOfficial();
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
-        // 4. 启动调试（核心修改4：处理TypeScript类型匹配+路径清洗）
-        // startOptions.attach：托管 OpenOCD 但走 attach 请求，只 halt 不复位不下载，用于保留现场。
+        // Start debugging. startOptions.attach keeps a managed OpenOCD but sends an attach request that only halts,
+        // without reset or download, to preserve the current state.
         this.commandHandlers["mcu-vscode.debug"] = async (
             resource,
             configuration,
@@ -869,7 +865,6 @@ class MainViewProvider {
                 this._debugStartupCmd = cmd;
                 this._debugStartupErrorReported = false;
                 this._debugStartupFailureCleanedUp = false;
-                console.log("主进程执行启动调试命令");
                 const startup = configuration?.performanceTrace ? startupTrace() : null;
                 const serverOptions = normalizeDebugServerOptions(configuration || {});
                 let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
@@ -878,13 +873,12 @@ class MainViewProvider {
                     (await this._probeConnectionService.resolveProbe());
                 const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
                 if (!elfPath || !debuggerCfg || !mcuCore) return warn("msg.configIncomplete");
-                // 在取得探针租约之前解析，非法取值直接失败，不需要任何启动清理。
-                // 解析只做一次，OpenOCD 参数与适配器 launch config 必须看到同一个值。
+                // Parsed before taking the probe lease, so an invalid value fails without any startup cleanup. Parsed
+                // once, because the OpenOCD arguments and the adapter launch config must see the same value.
                 const rtos = resolveRtos(
                     configuration,
                     vscode.workspace.getConfiguration("emberprobe").get("rtos", "")
                 );
-                // 修复类型错误：处理 undefined 情况，用空字符串兜底
                 elfPath = cleanWindowsPath(elfPath);
                 const { folder: workspaceFolder } = this._commandContext(resource);
                 if (!workspaceFolder) return warn("msg.openWorkspaceForDebug");
@@ -917,7 +911,7 @@ class MainViewProvider {
                     },
                     configuration?.cwd || workspaceFolder.uri.fsPath
                 );
-                // 与下载共用同一个 OpenOCD 路径配置，避免 OpenOCD 不在 PATH 时调试失败
+                // Use the same OpenOCD path as programming, so debugging works when OpenOCD is not on PATH
                 const configuredOpenOcdPath =
                     serverOptions.serverpath ||
                     vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -994,7 +988,8 @@ class MainViewProvider {
                     svdPath
                 );
                 if (svdPath) debugConfig.svdFile = svdPath;
-                // 适配器据此判断自己是否处于 RTOS 感知模式；显式空值必须能覆盖 launch.json 里的旧值。
+                // The adapter uses this to decide whether it runs RTOS-aware; an explicit empty value must override an
+                // old value in launch.json.
                 if (rtos) debugConfig.rtos = rtos;
                 else delete debugConfig.rtos;
                 Object.assign(debugConfig, cortexTools);
@@ -1051,7 +1046,7 @@ class MainViewProvider {
                 return true;
             } catch (err) {
                 this._clearDebugStartupWatchdog();
-                console.error("调试启动失败：", err.stack || err.message);
+                console.error("Debug start failed:", err.stack || err.message);
                 this._notices.notify("flash", cmd, {
                     level: "error",
                     titleKey: COMMAND_FAILURE_TITLES[cmd],
@@ -1071,7 +1066,7 @@ class MainViewProvider {
                 }
             }
         };
-        // 6. 下载程序（核心修改5：生成命令时清洗路径）
+        // Program firmware
         this.commandHandlers["mcu-vscode.download"] = async (resource) => {
             const cmd = "mcu-vscode.download";
             const notify = (notice) => this._notices.notify("flash", cmd, notice);
@@ -1110,7 +1105,6 @@ class MainViewProvider {
                     .get("openocdPath", "openocd");
                 const executable = await this._resolveOpenOcdPath(configuredExecutable);
                 if (!executable) return warn("notice.openocdRequired");
-                console.log("主进程执行下载程序命令");
                 let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
                 const debuggerCfg =
                     this._context.workspaceState.get(CACHE_KEYS.debugger) ||
@@ -1157,7 +1151,7 @@ class MainViewProvider {
                 notify({ level: "success", key: "msg.downloadSuccess" });
                 return true;
             } catch (err) {
-                console.error("固件下载失败：", err.message);
+                console.error("Programming failed:", err.message);
                 notify({
                     level: "error",
                     titleKey: COMMAND_FAILURE_TITLES[cmd],
@@ -1335,14 +1329,9 @@ class MainViewProvider {
             }
         );
     }
-    async _authorizeAgentFlash(params) {
-        return this._agentFlashService.authorize(params);
-    }
-    _workspacePath(value, extension) {
-        return this._configurationStore.workspacePath(value, extension);
-    }
     async _setAgentConfiguration(values) {
-        // openocdPath 可把探针调用引向任意可执行文件，禁止经 Agent Bridge 修改；由用户在设置或侧边栏更改
+        // openocdPath could point probe calls at any executable, so the Agent Bridge may not change it; the user
+        // changes it in settings or the sidebar
         assertAgentSettable(values);
         const updated = await this._configurationStore.update(values);
         if (Object.hasOwn(values || {}, "svd")) {
@@ -1440,10 +1429,11 @@ class MainViewProvider {
             }
         };
         for (const rawName of names) {
-            // 支持路径语法：sensor.x, buf[0], buf[1:5]
+            // Supports path syntax: sensor.x, buf[0], buf[1:5]
             const parsed = elfSymbols.parseMemberPath(rawName);
             const baseName = parsed ? parsed.base : rawName;
-            // 同名多编译单元的裸名会抛 VARIABLE_AMBIGUOUS，绝不把第一项写进观察列表。
+            // A bare name defined in several compilation units throws VARIABLE_AMBIGUOUS; the first match is never
+            // added to the watch list.
             const symbol = resolveSymbol(baseName, rawName);
             if (symbol.name !== baseName) aliases[baseName] = symbol.name;
             // Watch lists persist raw ELF identities; normalizeWatchList does not resolve
@@ -1531,8 +1521,9 @@ class MainViewProvider {
         if (destination === "chart" || destination === "both") await addTo(chartKey, "chart");
         return results;
     }
-    // 逐项规划：单个变量的解析/布局失败记入 variableErrors，不影响同批其余变量；
-    // 全部失败时抛出首个错误（保持单变量请求原有的错误码），多项失败附带 details.variableErrors。
+    // Plans each item separately: a resolution or layout failure of one variable goes to variableErrors without
+    // affecting the rest of the batch. If all fail, the first error is thrown (keeping the error code of a
+    // single-variable request), with details.variableErrors when several failed.
     _agentVariablePlan(params, layoutErrors = null) {
         const raw = Array.isArray(params.variables) ? params.variables : [];
         const requests = raw.map((item) =>
@@ -1554,7 +1545,8 @@ class MainViewProvider {
             const parsed = elfSymbols.parseMemberPath(req.name);
             const baseName = parsed ? parsed.base : req.name;
             const symbol = resolveSymbol(baseName, req.name);
-            // 预取布局失败（预算/解析错误等）时报告原始错误，而不是笼统的 COMPOSITE_LAYOUT_MISSING
+            // When layout prefetch failed (budget, parse error, ...) report that error instead of a generic
+            // COMPOSITE_LAYOUT_MISSING
             const layoutError = !symbol.compositeLayout && layoutErrors?.get(symbol.name);
             if (layoutError) throw layoutError;
             const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
@@ -1578,7 +1570,8 @@ class MainViewProvider {
                 });
             if (symbol.isComposite) {
                 if (!symbol.compositeLayout) {
-                    // 缺布局时不能把完整路径丢进标量解析器，否则会得到误导性的 VARIABLE_NOT_FOUND
+                    // Without a layout the full path must not reach the scalar resolver, which would report a
+                    // misleading VARIABLE_NOT_FOUND
                     throw Object.assign(new Error(`Composite variable has no DWARF layout: ${req.name}`), {
                         code: "COMPOSITE_LAYOUT_MISSING",
                         details: { base: symbol.name, reason: symbol.unsupportedReason }
@@ -1612,11 +1605,13 @@ class MainViewProvider {
                     { code: "INVALID_VARIABLE_PATH" }
                 );
             } else {
-                // 标量按已解析的身份名重解析，限定名（'main.c'::x、路径后缀）不必再与身份名逐字一致。
+                // Scalars are re-resolved by their resolved identity, so qualified names ('main.c'::x, path suffixes)
+                // need not match the identity literally.
                 scalarRequests.push({ req: { ...req, name: symbol.name }, requestedName: req.name, index });
             }
         };
-        // 只有带错误码的预期失败按项隔离；无错误码的异常属于程序缺陷，继续整体抛出
+        // Only expected failures with an error code are isolated per item; exceptions without one are bugs and still
+        // throw for the whole call
         const isolate = (index, fn) => {
             try {
                 fn();
@@ -1637,7 +1632,8 @@ class MainViewProvider {
                       .map((item, position) => ({ ...item, requestedName: scalarRequests[position].requestedName }))
                 : [];
         } catch {
-            // 批量解析遇到首个错误即中止；逐项重解析以隔离失败项，并在项间保持重复请求检查。
+            // Batch resolution stops at the first error; re-resolve item by item to isolate failures while keeping the
+            // duplicate request check between items.
             scalarPlan = [];
             const seen = new Set();
             for (const { req, requestedName, index } of scalarRequests) {
@@ -1699,7 +1695,8 @@ class MainViewProvider {
                 const baseAddr = comp.address >>> 0;
                 const addrHex = (off) => `0x${((baseAddr + (off || 0)) >>> 0).toString(16).toUpperCase()}`;
                 if (elfSymbols.isScalarLeafNode(node)) {
-                    // 路径定位到单个标量成员/元素：以标量形式返回，便于趋势分析与阅读
+                    // A path that reaches a single scalar member or element is returned as a scalar for trend analysis
+                    // and readability
                     values[comp.requestedName] = {
                         requestedName: comp.requestedName,
                         value: node.value,
@@ -1755,8 +1752,8 @@ class MainViewProvider {
         const layoutErrors = new Map();
         await this._prepareRequestedLayouts(params.variables, { layoutErrors });
         const { elfResult, plan, compositePlan, variableErrors } = this._agentVariablePlan(params, layoutErrors);
-        // 合并标量与复合变量的实际读取项：复合变量按基址整体读一次（同名去重），
-        // 解码时再按各路径导航；避免同一结构体多次重复读取。
+        // Merges the actual reads of scalar and composite variables: each composite is read once by base address
+        // (deduplicated by name) and navigated per path while decoding, so one struct is not read repeatedly.
         const readItems = [];
         const seenRead = new Set();
         for (const item of plan) {
@@ -1813,10 +1810,11 @@ class MainViewProvider {
             { syncStatus, total: count, allowPausedDebugRead: true }
         );
     }
-    // 获取 Agent 探针会话：复用活动采样连接或创建临时会话，handler({session, source, temporary}) 完成实际读写，
-    // finally 中临时会话必释放。互斥与状态同步语义与原 _runAgentSamples 一致。
-    // Tcl 端口：用户显式配置过 emberprobe.tclPort 时使用配置值，否则随机选用临时端口。
-    // OpenOCD 的 Tcl 端口无认证，固定默认端口会让采样期间的任意本机进程都能下发 halt/write_memory。
+    // Acquires an agent probe session: reuses the active sampling connection or creates a temporary session;
+    // handler({session, source, temporary}) performs the reads/writes, and a temporary session is always released in
+    // finally. Tcl port: the configured emberprobe.tclPort if the user set one, otherwise a random ephemeral port,
+    // because OpenOCD's unauthenticated Tcl port on a fixed default would let any local process issue halt/write_memory
+    // during sampling.
     async _resolveTclPort(cfg) {
         const inspect = typeof cfg.inspect === "function" ? cfg.inspect("tclPort") : null;
         if (inspect && (inspect.workspaceValue !== undefined || inspect.globalValue !== undefined)) {
@@ -2447,7 +2445,7 @@ class MainViewProvider {
             });
         const syncStatus = !!options.syncStatus;
         const total = options.total || 0;
-        // 若 UI 正在启动采样，短暂等待其完成连接，随后直接复用同一个 Tcl 会话。
+        // If the UI is starting sampling, wait briefly for it to connect and then reuse the same Tcl session.
         const liveDeadline = Date.now() + 7000;
         while (this._liveStarting && Date.now() < liveDeadline) {
             await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2646,8 +2644,9 @@ class MainViewProvider {
         const intervalMs = validation.clampInteger(params.intervalMs, 200, 5, 60000);
         return this._runAgentSamples(params, count, intervalMs, true);
     }
-    // 解析写入请求：只允许标量符号与复合类型的单个标量叶子路径，且目标地址必须落在
-    // ELF 的可写段（SHF_ALLOC|SHF_WRITE，即 .data/.bss）内，防止误写 Flash/外设寄存器。
+    // Parses a write request: only scalar symbols and single scalar leaf paths of composites are allowed, and the
+    // target address must lie in a writable ELF section (SHF_ALLOC|SHF_WRITE, i.e. .data/.bss), so flash and peripheral
+    // registers are never written by mistake.
     _agentWritePlan(values, options = {}) {
         const requests = (Array.isArray(values) ? values : []).map((item) => ({
             name: String(item?.name || "").trim(),
@@ -2684,7 +2683,8 @@ class MainViewProvider {
                 throw Object.assign(new Error("Variable name is required"), { code: "INVALID_VARIABLE_NAME" });
             const parsed = elfSymbols.parseMemberPath(req.name);
             const baseName = parsed ? parsed.base : req.name;
-            // 写入目标必须唯一：同名多编译单元的裸名抛 VARIABLE_AMBIGUOUS，绝不默认写第一项。
+            // Write targets must be unique: a bare name defined in several compilation units throws VARIABLE_AMBIGUOUS
+            // instead of writing the first match.
             const symbol = resolveSymbol(baseName, req.name);
             let target;
             if (symbol && symbol.isComposite) {
@@ -2826,7 +2826,8 @@ class MainViewProvider {
         }
         return { elfResult, items };
     }
-    // 会话内写入执行核心：写前读取 → 写入 → 回读校验，Agent 与侧边栏 UI 写入共用。
+    // Core of a write inside a session: read before, write, read back and verify. Shared by agent and sidebar UI
+    // writes.
     async _executeWritePlan(session, source, plan) {
         const connection = this._sessionWriteConnection(session);
         if (!plan.connection || JSON.stringify(connection) !== JSON.stringify(writeConnectionIdentity(plan.connection)))
@@ -2933,8 +2934,9 @@ class MainViewProvider {
         }
         return { source, elf: elfResult.elf, results, halted };
     }
-    // 高危操作：首次先返回聊天确认请求；一次性确认 ID 与 ELF/地址/类型/值绑定。
-    // 用户可选择仅本次授权，或在首次成功写入后记住当前工作区授权。
+    // High-risk operation: the first call returns a chat confirmation request whose one-time ID binds the ELF, address,
+    // type and value. The user may authorize just this write or remember the authorization for this workspace after the
+    // first successful write.
     async _writeAgentVariables(params) {
         // "false" or 0 must never be read as a request to remember write permission.
         if (params.remember !== undefined && typeof params.remember !== "boolean")
@@ -2988,11 +2990,11 @@ class MainViewProvider {
             return { mode: "once", trusted: false, remembered: false, warning: error.message };
         }
     }
-    // 侧边栏写入列表：用户在 UI 中直接操作，不经过 WriteAuthorization 确认；
-    // 保留 _agentWritePlan 的全部安全校验（DWARF 类型已知、目标地址在 .data/.bss 可写段内）。
-    // 仅在实时采样运行时允许写入，直接复用采样的 Tcl 会话。
-    // A rebuilt but unflashed ELF moves RAM addresses, and read-back verification reads the
-    // same wrong address. Require one explicit choice per ELF digest before UI writes proceed.
+    // Sidebar write list: the user acts directly in the UI, without WriteAuthorization confirmation, but every safety
+    // check of _agentWritePlan still applies (known DWARF type, target address inside writable .data/.bss). Writes are
+    // only allowed while live sampling runs and reuse its Tcl session. A rebuilt but unflashed ELF moves RAM addresses,
+    // and read-back verification reads the same wrong address, so one explicit choice per ELF digest is required before
+    // UI writes proceed.
     async _confirmUiWriteFirmware(requestedAt) {
         let elf;
         try {
@@ -3081,7 +3083,8 @@ class MainViewProvider {
             code: "INVALID_PERMISSION_ACTION"
         });
     }
-    // 读取并解码 Cortex-M 故障寄存器；与 chip.read 共用 _chipInfoRunning 互斥（一次性 OpenOCD 进程同一时刻只能有一个）
+    // Reads and decodes the Cortex-M fault registers; shares the _chipInfoRunning lock with chip.read (only one
+    // one-shot OpenOCD process at a time)
     async _readAgentFault() {
         const busy = (key, code) => {
             throw Object.assign(new Error(this._t(key)), { i18nKey: key, code });
@@ -3143,16 +3146,10 @@ class MainViewProvider {
     async _handleAgentCall(method, params) {
         return this._agentService.call(method, params);
     }
-    async startAgentBridge() {
-        return this._agentService.start();
-    }
-    isAgentBridgeStarted() {
-        return this._agentService.isStarted();
-    }
     async stopAgentBridge() {
         return this._agentService.stop();
     }
-    // 按工作区生效的 Agent 访问开关：enabled | disabled | 未设置（undefined）。只写 workspaceState。
+    // Per-workspace Agent access switch: enabled | disabled | unset (undefined). Stored only in workspaceState.
     _agentAccess() {
         const value = this._context?.workspaceState?.get(AGENT_ACCESS_STATE_KEY);
         return value === "enabled" || value === "disabled" ? value : undefined;
@@ -3162,7 +3159,7 @@ class MainViewProvider {
         const access = this._agentAccess();
         if (access === "disabled") return { enabled: false, state: "disabled" };
         if (access === "enabled") return { enabled: true, reason: "access" };
-        // 兼容：已装工作区 skills 且未显式设置时视为启用。
+        // Compatibility: with workspace skills installed and no explicit setting, access counts as enabled.
         if (hasWorkspaceSkills(status)) return { enabled: true, reason: "skills" };
         if (this._mcpBridgeRequested) return { enabled: true, reason: "mcp" };
         return { enabled: false, state: "disabled" };
@@ -3183,7 +3180,8 @@ class MainViewProvider {
     _agentAccessView(status = this._skillStatusService.lastStatus, decision = this._agentAccessDecision(status)) {
         const access = this._agentAccess();
         const legacyGlobal = legacyGlobalSkills(status);
-        // 检测到全局副本或用户复制过外部 MCP 配置、但本工作区未启用时，提示启用。
+        // Suggest enabling access when global copies exist or the user copied an external MCP configuration but this
+        // workspace has it off.
         const external =
             this._skillStatusService.scopeHasContent(status?.scopes?.global) ||
             this._context?.globalState?.get(MCP_CONFIGURED_STATE_KEY) === true;
@@ -3203,8 +3201,9 @@ class MainViewProvider {
         this._mcpRegistration?.changed();
         return true;
     }
-    // VS Code MCP provider：受信任、打开了文件夹且未显式停用 Agent 访问的窗口才提供服务器定义。
-    // Cursor 注册另外要求 Agent 访问已启用（isEnabled），因为它没有信任提示。
+    // VS Code MCP provider: only trusted windows with an open folder and Agent access not explicitly disabled provide
+    // server definitions. Cursor registration additionally requires access to be enabled (isEnabled), because Cursor
+    // has no trust prompt.
     _mcpAvailable() {
         return (
             !!vscode.workspace.isTrusted &&
@@ -3213,14 +3212,16 @@ class MainViewProvider {
             !!this._bridgeRegistry
         );
     }
-    // emberprobe.mcp.toolsets → EMBERPROBE_MCP_TOOLSETS；默认工具集返回空串，不注入环境变量。
+    // emberprobe.mcp.toolsets -> EMBERPROBE_MCP_TOOLSETS; the default toolset yields an empty string and injects no
+    // variable.
     _mcpToolsets() {
         const configured = vscode.workspace.getConfiguration?.("emberprobe").get("mcp.toolsets");
         const selected = TOOLSETS.filter((name) => Array.isArray(configured) && configured.includes(name));
         if (!selected.length || selected.join(",") === DEFAULT_TOOLSETS.join(",")) return "";
         return selected.join(",");
     }
-    // VS Code 在用户同意 MCP 信任提示后解析定义：此时为本窗口启动 Bridge（不写工作区文件）。
+    // VS Code resolves the definition after the user accepts the MCP trust prompt; start the Bridge for this window
+    // then (no workspace files are written).
     async _requestMcpBridge() {
         this._mcpBridgeRequested = true;
         await this._syncAgentBridge();
@@ -3238,7 +3239,7 @@ class MainViewProvider {
     mcpConfigurationChanged() {
         this._mcpRegistration.changed();
     }
-    // 清理已停止维护的全局 skills 副本：只删除 EmberProbe 清单内的条目。
+    // Cleans up unmaintained global skill copies, deleting only entries in the EmberProbe manifest.
     async cleanupGlobalSkills() {
         const confirm = this._t("agent.cleanup");
         const choice = await vscode.window.showWarningMessage(
@@ -3253,15 +3254,12 @@ class MainViewProvider {
         await this._syncAgentBridge(status);
         return true;
     }
-    _postSkillStatus(status) {
-        this._skillStatusService.post(status);
-    }
     async refreshSkillStatus(autoUpdate = false) {
         const status = await this._skillStatusService.refresh(autoUpdate);
         await this._syncAgentBridge(status);
         return status;
     }
-    // 在输出面板记录“谁执行了哪次调用”：通道、客户端、方法与结果码，不含参数值。
+    // Logs who made which call in the output panel: channel, client, method and result code, without parameter values.
     _auditAgentCall(entry) {
         if (!vscode.window.createOutputChannel) return;
         if (!this._agentAudit) {
@@ -3271,12 +3269,14 @@ class MainViewProvider {
         const caller = [entry.channel || "legacy", entry.client].filter(Boolean).join(" ");
         this._agentAudit.appendLine(`${new Date().toISOString()} ${caller} ${entry.method} ${entry.code}`);
     }
-    // 调用前检查实际发起调用的 skill 副本；自定义内容需独立 UI 批准，内容再次变化会失效。
+    // Checks the skill copy that actually issued the call before running it; custom content needs a separate UI
+    // approval, which expires when the content changes again.
     async _warnIfSkillsModified(meta) {
         await this._skillStatusService.checkForCall(meta);
     }
-    // 后台生成没有自己的 withProgress 窗口（Bridge 调用立即返回 operationId），
-    // 因此为运行中的操作挂一个可取消的通知，复用既有进度与取消交互
+    // Background generation has no withProgress window of its own (the Bridge call returns an operationId immediately),
+    // so a cancellable notification is attached to the running operation, reusing the existing progress and cancel
+    // handling
     _startAgentCubeMxOperation(params) {
         return this._cubemxService.start(params).then((started) => {
             if (started?.operationId) this._showAgentCubeMxProgress(started.operationId);
@@ -3303,21 +3303,11 @@ class MainViewProvider {
             }
         );
     }
-    // 已安装 Skills 与插件内置版本存在差异（可更新/被修改/不完整）时提示升级；
-    // 每个会话最多提示一次，避免侧边栏刷新与工作区切换反复打扰
-    _promptSkillUpgrade(status) {
-        this._skillStatusService.promptUpgrade(status);
-    }
-    _scopeStateText(scope) {
-        return this._skillStatusService.scopeStateText(scope);
-    }
-    _scopeHasContent(scope) {
-        return this._skillStatusService.scopeHasContent(scope);
-    }
-    // Agent Skills 工作区安装开关
+    // Agent Skills workspace install switch
     async manageAgentSkills() {
         const result = await this._skillStatusService.manage();
-        // 显式停用过的工作区重新安装 skills 时恢复为未设置，使 skills 开关与过去一样开启 Bridge。
+        // Reinstalling skills in a workspace that disabled access explicitly resets the switch to unset, so the skills
+        // switch turns the Bridge on as before.
         if (result && hasWorkspaceSkills(result) && this._agentAccess() === "disabled")
             await this._context.workspaceState.update(AGENT_ACCESS_STATE_KEY, undefined);
         if (result) await this._syncAgentBridge(result);
@@ -3397,7 +3387,7 @@ class MainViewProvider {
         return this.chartBackground().state();
     }
 
-    // 打开/聚焦实时变量查看面板（独立 WebviewPanel，编辑区宽度足够绘图）
+    // Opens or focuses the live watch panel (a separate WebviewPanel, wide enough for charts in the editor area)
     openLiveWatchPanel(restoredPanel = null, restoredState = null) {
         if (!this._seriesStyleStore) {
             const { SeriesStyleStore } = require("./services/seriesStyleStore");
@@ -3410,7 +3400,6 @@ class MainViewProvider {
             restoredPanel ? { state: restoredState, title: restoredPanel.title } : null
         );
         const { panelId, watchKey } = identity;
-        const cfg = vscode.workspace.getConfiguration("emberprobe");
         const panel =
             restoredPanel ||
             vscode.window.createWebviewPanel(
@@ -3451,7 +3440,6 @@ class MainViewProvider {
             panel.webview,
             liveWatchView.getLiveWatchContent(
                 {
-                    backendHistory: true,
                     frequencyHz: this._liveFrequencyHz,
                     panelId,
                     watchKey
@@ -3676,8 +3664,7 @@ class MainViewProvider {
                     }
                     case "chartViewport":
                     case "chartFreeze":
-                    case "chartResume":
-                    case "chartExportInfo": {
+                    case "chartResume": {
                         if (!this._chartHistory) break;
                         if ((message.historyRevision || 0) !== (entry.historyRevision || 0)) break;
                         const scope = this._debugSamplingScope(watchKey);
@@ -3712,9 +3699,7 @@ class MainViewProvider {
                             }
                         } else if (message.type === "chartFreeze")
                             result = await this._chartHistory.request("freeze", [scope]);
-                        else if (message.type === "chartResume")
-                            result = await this._chartHistory.request("resume", [scope]);
-                        else result = await this._chartHistory.request("status", [scope, message.snapshotId]);
+                        else result = await this._chartHistory.request("resume", [scope]);
                         if (scope === this._debugSamplingScope(watchKey) && revision === (entry.historyRevision || 0))
                             post({
                                 type: message.type + "Result",
@@ -3770,46 +3755,14 @@ class MainViewProvider {
                                 (message.historyRevision !== undefined && message.historyRevision !== historyRevision)
                             )
                                 throw new Error("History changed before export");
-                            let result;
-                            if (
-                                this._chartHistory &&
-                                message.backendHistory &&
-                                ["snapshot", "retained"].includes(message.source)
-                            ) {
-                                if (
-                                    message.historyRevision !== (entry.historyRevision || 0) ||
-                                    archiveScope !== this._debugSamplingScope(watchKey)
-                                )
-                                    throw new Error("History changed before export");
-                                this._flushChartHistoryAppend(entry);
-                                result = await this._chartHistory.request("export", [
-                                    {
-                                        scope: archiveScope,
-                                        outputPath: target.fsPath,
-                                        names: message.names,
-                                        displayNames: [...displayNames],
-                                        fromMs: message.fromMs,
-                                        toMs: message.toMs,
-                                        snapshotId: message.source === "snapshot" ? message.snapshotId : undefined
-                                    }
-                                ]);
-                            } else if (message.source === "snapshot" || message.source === "retained") {
-                                if (typeof message.csv !== "string" || message.csv.length > 64 * 1024 * 1024)
-                                    throw new Error("Invalid chart CSV");
-                                await vscode.workspace.fs.writeFile(target, Buffer.from(message.csv, "utf8"));
-                                result = {
-                                    seriesCount: Array.isArray(message.names) ? message.names.length : 0,
-                                    rows: liveWatchView.csvDataRowCount(message.csv)
-                                };
-                            } else
-                                result = await this._exportArchiveCsvWithProgress(post, {
-                                    scope: archiveScope,
-                                    outputPath: target.fsPath,
-                                    names: message.names,
-                                    displayNames,
-                                    fromMs: message.fromMs,
-                                    toMs: message.toMs
-                                });
+                            const result = await this._exportArchiveCsvWithProgress(post, {
+                                scope: archiveScope,
+                                outputPath: target.fsPath,
+                                names: message.names,
+                                displayNames,
+                                fromMs: message.fromMs,
+                                toMs: message.toMs
+                            });
                             // The panel's notice offers "reveal in folder" for the file it just wrote.
                             entry._lastCsvExport = target;
                             post({
@@ -3834,11 +3787,11 @@ class MainViewProvider {
                 }
             } catch (error) {
                 if (
-                    ["chartViewport", "chartFreeze", "chartResume", "chartExportInfo"].includes(message.type) &&
+                    ["chartViewport", "chartFreeze", "chartResume"].includes(message.type) &&
                     (this._chartHistory?.failed || this._chartHistoryRecovery)
                 )
                     return;
-                if (["chartViewport", "chartFreeze", "chartResume", "chartExportInfo"].includes(message.type))
+                if (["chartViewport", "chartFreeze", "chartResume"].includes(message.type))
                     post({
                         type: message.type + "Result",
                         requestId: message.requestId,
@@ -3850,7 +3803,7 @@ class MainViewProvider {
         });
         return entry;
     }
-    // 读取当前 ELF 的全局变量符号，并尽力附带 DWARF 类型信息
+    // Reads the global variable symbols of the current ELF, attaching DWARF type information where possible
     _invalidateElfState() {
         this._elfService.invalidate();
         this._watchLists.invalidate();
@@ -3925,9 +3878,11 @@ class MainViewProvider {
         this._symbolNameIndexes.set(symbols, { length: symbols.length, index });
         return index;
     }
-    // Agent 读写、观察列表与界面手动添加共用的名称解析（elfSymbols.createSymbolResolver）：身份名 →
-    // 编译单元限定名（main.c::cfg）→ 唯一 displayName → 大小写不敏感的唯一匹配。同名变量分布在多个编译单元时
-    // 裸名以 VARIABLE_AMBIGUOUS 拒绝。布局预取与读写规划必须共用它，否则按显示名请求的复合变量会缺布局。
+    // Name resolution shared by agent reads/writes, watch lists and manual UI additions
+    // (elfSymbols.createSymbolResolver): identity name -> compilation-unit qualified name (main.c::cfg) -> unique
+    // displayName -> unique case-insensitive match. A bare name defined in several compilation units is rejected with
+    // VARIABLE_AMBIGUOUS. Layout prefetch and read/write planning must share it, or composites requested by display
+    // name would lack layouts.
     _agentSymbolResolver(symbols, options) {
         return elfSymbols.createSymbolResolver(symbols, options);
     }
@@ -3969,8 +3924,9 @@ class MainViewProvider {
         if (generation !== this._elfService.generation || version !== this._elfVersion(this._elfService.cache)) return;
         post({ type: "addResolved", ...reply, symbol: found });
     }
-    // 预取请求中复合变量的 DWARF 布局。传入 options.layoutErrors 时逐项收集布局错误（键为原始符号名）
-    // 而不中止整批；未传入时保持原语义，首个布局错误直接抛出。名称解析失败留给后续规划报告。
+    // Prefetches DWARF layouts of the composites in a request. With options.layoutErrors, layout errors are collected
+    // per item (keyed by original symbol name) without aborting the batch; without it the first layout error throws.
+    // Name resolution failures are left to the later planning step.
     async _prepareRequestedLayouts(requests, options = {}) {
         const result = await this._elfService.ready();
         const resolveSymbol = this._agentSymbolResolver(result.symbols);
@@ -4193,7 +4149,7 @@ class MainViewProvider {
         for (const entry of this._livePanels.values()) this._syncGraphTarget(entry, true);
         await this._refreshSamplingPlan();
     }
-    // 图表和侧边栏各自维护选择；同一探针连接采样两边当前启用列表的并集。
+    // Chart and sidebar keep separate selections; one probe connection samples the union of both enabled lists.
     _postLive(message) {
         if (message.type === "liveStatus") message = withWriteAccessStatus({ ...this._samplingStatus(), ...message });
         if (message.type === "liveError" && message.message && typeof message.message === "object")
@@ -4265,7 +4221,8 @@ class MainViewProvider {
             })
         );
     }
-    // 侧边栏观察项附带 displayName（C++ 限定名）供展示；数据索引仍按原始 item.name。
+    // Sidebar watch items carry displayName (C++ qualified name) for display; data is still indexed by the original
+    // item.name.
     _watchListWithDisplayNames(key) {
         const items = this._scalarWatchList(key);
         if (!Array.isArray(items) || !items.length) return items;
@@ -4385,8 +4342,7 @@ class MainViewProvider {
                 if (sample.tree) compositeSamples.push({ ...sample, t: now });
                 else scalarSamples.push({ ...sample, t: now });
             }
-            if (scalarSamples.length)
-                post({ type: this._chartHistory ? "chartValues" : "liveSample", samples: scalarSamples });
+            if (scalarSamples.length) post({ type: "chartValues", samples: scalarSamples });
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
     }
@@ -4420,9 +4376,9 @@ class MainViewProvider {
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
     }
-    // 图表与侧栏各自维护观察列表；同一变量在两侧可能选择不同观察类型。
-    // 读取计划按变量名去重，宽度取两侧的最大值，一次读取覆盖所有消费者。
-    // 复合变量（结构体/数组）展开为叶子成员读取项，按变量整体地址范围合并读取。
+    // Chart and sidebar keep separate watch lists, and a variable may use a different watch type on each side. The read
+    // plan deduplicates by variable name using the wider width, so one read serves every consumer. Composites
+    // (structs/arrays) expand into leaf reads merged over the variable's whole address range.
     _activeReadPlan() {
         const lists = [];
         const expansions = [];
@@ -4433,12 +4389,13 @@ class MainViewProvider {
         // Sidebar cards read the parts they opened, like chart cards; write cards read runtime objects whole.
         lists.push(this._scalarWatchList(CACHE_KEYS.sidebarWatchList));
         expansions.push(this._panelRuntimeExpansions(CACHE_KEYS.sidebarWatchList));
-        // 写入列表变量也纳入采样读取，使写入卡片能实时同步当前值；不回写存储，避免丢失 min/max 等 UI 字段
+        // Write list variables are sampled too so write cards show current values; the stored list is not rewritten,
+        // which would lose UI fields such as min/max
         try {
             const writeItems = this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || [];
             lists.push(validation.normalizeWatchList(writeItems, this.readElfSymbols().symbols));
         } catch (e) {
-            /* ELF 不可用时忽略写入列表 */
+            /* Ignore the write list when the ELF is unavailable */
         }
         const plan = buildActiveReadPlan(lists, elfSymbols, expansions);
         return this._runtimeReadRanges(plan);
@@ -4465,7 +4422,7 @@ class MainViewProvider {
         try {
             ramSectionRanges = writableRamSectionRanges(this.readElfSymbols().memory?.sections);
         } catch {
-            /* ELF 不可用时只合并重叠或相邻读取。 */
+            /* Without an ELF only overlapping or adjacent reads are merged. */
         }
         if (typeof session.setSamplingPlan !== "function") {
             session.setWatch(active, ramSectionRanges);
@@ -4797,7 +4754,7 @@ class MainViewProvider {
         this._chartHistoryRecovery = task;
         return task;
     }
-    // 各消费者对每个变量的观察类型，用于把同一份原始字节按各自类型解码后分别推送。
+    // Each consumer's watch type per variable, so the same raw bytes are decoded and pushed per type.
     _consumerTypes() {
         const build = (key) => {
             const m = new Map();
@@ -4811,7 +4768,8 @@ class MainViewProvider {
             return m;
         };
         const sidebar = build(CACHE_KEYS.sidebarWatchList);
-        // 写入列表变量按自身观察类型解码后推送到侧栏；同名变量以查看列表类型优先
+        // Write list variables are decoded with their own watch type and pushed to the sidebar; for the same name the
+        // watch list type wins
         for (const item of this._context.workspaceState.get(CACHE_KEYS.sidebarWriteList) || []) {
             if (item?.name && item.type && !sidebar.has(item.name)) {
                 const symbols = this.readElfSymbols().symbols;
@@ -4962,58 +4920,36 @@ class MainViewProvider {
 
     _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
         if (!entry.ready) return;
-        if (this._chartHistory) {
-            entry._pendingScalars = latestByName(entry._pendingScalars, scalarSamples);
-            entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
-            if (!entry._batchTimer)
-                entry._batchTimer = setTimeout(() => {
-                    entry._batchTimer = null;
-                    const scalars = entry._pendingScalars,
-                        composites = entry._pendingComposites;
-                    entry._pendingScalars = [];
-                    entry._pendingComposites = [];
-                    const status = this._samplingStatus();
-                    if (scalars.length)
-                        entry.post({
-                            type: "chartValues",
-                            samples: scalars,
-                            t,
-                            actualHz: status.actualHz,
-                            bytesPerSecond: status.bytesPerSecond,
-                            unlimitedActive: status.unlimitedActive,
-                            limitedBy: status.limitedBy,
-                            archive: this._samplingArchiveBudget()
-                        });
-                    if (composites.length)
-                        entry.post({
-                            type: "liveCompositeSample",
-                            samples: composites,
-                            t,
-                            actualHz: status.actualHz,
-                            bytesPerSecond: status.bytesPerSecond
-                        });
-                }, 50);
-            return;
-        }
-        const interval = this._liveIntervalMs;
-        if (interval >= 30 || !this._liveWatchRunning) {
-            if (scalarSamples?.length) entry.post({ type: "liveSample", samples: scalarSamples, t });
-            if (compositeSamples?.length) entry.post({ type: "liveCompositeSample", samples: compositeSamples, t });
-            return;
-        }
-        entry._pendingScalars = (entry._pendingScalars || []).concat(scalarSamples);
+        entry._pendingScalars = latestByName(entry._pendingScalars, scalarSamples);
         entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
-        if (!entry._batchTimer) {
+        if (!entry._batchTimer)
             entry._batchTimer = setTimeout(() => {
                 entry._batchTimer = null;
-                const scalars = entry._pendingScalars;
-                const composites = entry._pendingComposites;
+                const scalars = entry._pendingScalars,
+                    composites = entry._pendingComposites;
                 entry._pendingScalars = [];
                 entry._pendingComposites = [];
-                if (scalars?.length) entry.post({ type: "liveSample", samples: scalars, t: Date.now() });
-                if (composites?.length) entry.post({ type: "liveCompositeSample", samples: composites, t: Date.now() });
-            }, 25);
-        }
+                const status = this._samplingStatus();
+                if (scalars.length)
+                    entry.post({
+                        type: "chartValues",
+                        samples: scalars,
+                        t,
+                        actualHz: status.actualHz,
+                        bytesPerSecond: status.bytesPerSecond,
+                        unlimitedActive: status.unlimitedActive,
+                        limitedBy: status.limitedBy,
+                        archive: this._samplingArchiveBudget()
+                    });
+                if (composites.length)
+                    entry.post({
+                        type: "liveCompositeSample",
+                        samples: composites,
+                        t,
+                        actualHz: status.actualHz,
+                        bytesPerSecond: status.bytesPerSecond
+                    });
+            }, 50);
     }
 
     _postSidebarBatch(scalarSamples, compositeSamples, t) {
@@ -5072,7 +5008,7 @@ class MainViewProvider {
                     const scalars = entry._pendingScalars;
                     entry._pendingScalars = [];
                     entry.post({
-                        type: this._chartHistory ? "chartValues" : "liveSample",
+                        type: "chartValues",
                         samples: scalars,
                         t: Date.now()
                     });
@@ -5773,10 +5709,6 @@ class MainViewProvider {
         this._liveStopPromise.catch((error) => this._postLive?.({ type: "liveError", ...toUiError(error) }));
         return this._liveStopPromise;
     }
-    // 仅在采样进行中时停止；用于调试会话起止等外部事件触发的自动清理
-    stopLiveWatchIfRunning() {
-        if (this._liveWatchRunning) this.stopLiveWatch({ preserveIntent: true });
-    }
     async externalDebugSettingsChanged() {
         await this._externalDebug.releaseIfDisabled();
     }
@@ -5903,7 +5835,8 @@ class MainViewProvider {
         if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
             this._debugLifecycle.session = session;
         this._debugReadPlanKey = debugReadPlanKey(this._activeReadPlan());
-        // 多根工作区中会话归属以 VS Code 实际调试目录为准，避免被缓存 ELF 所在目录覆盖。
+        // In multi-root workspaces the session belongs to VS Code's actual debug folder, not the folder of the cached
+        // ELF.
         this._debugBridge.setWorkspace(session.workspaceFolder || this._commandContext().folder);
         if (
             session.configuration?.__emberprobeManagedToken &&
@@ -6153,19 +6086,21 @@ class MainViewProvider {
             lease?.release();
         });
     }
-    // 推送芯片信息状态与（可选的）结果到侧边栏
+    // Pushes chip info state and the optional result to the sidebar
     _postChipInfo(status, info) {
         this._chipInfoService.post(status, info);
     }
-    // 同步侧边栏：视图重建后回放已缓存的芯片信息与当前状态
+    // Syncs the sidebar: replays cached chip info and the current state after the view is rebuilt
     _syncChipInfo(post) {
         this._chipInfoService.sync(post);
     }
-    // 通过 OpenOCD 一次性读取芯片基本信息；与下载/实时查看/调试互斥（探针同一时刻只能被一个进程占用）
+    // Reads basic chip information with a one-shot OpenOCD run; exclusive with programming, live watch and debugging
+    // (one process owns the probe at a time)
     async readChipInfoAction(forAgent = false) {
         return this._chipInfoService.read(forAgent);
     }
-    // 将芯片信息读取的原始 OpenOCD 命令与输出写入输出面板，便于诊断（如 ID/UID/Flash 读取异常）
+    // Writes the raw OpenOCD commands and output of a chip read to the output panel for diagnosis (ID/UID/flash read
+    // problems, for example)
     _writeChipDiagnostics(diag, info) {
         if (!diag) return;
         if (!this._chipOutput) {
@@ -6215,10 +6150,9 @@ class MainViewProvider {
         ch.appendLine("");
         ch.appendLine(this._t("diag.rawOutput"));
         (diag.lines || []).forEach((l) => ch.appendLine("  " + l));
-        // Device ID 或 UID 缺失时自动展示，便于复制反馈
+        // Shown automatically when the device ID or UID is missing, so it can be copied into a report
         if (!info || !info.deviceId || (chipInfo.uidBaseForTarget(diag.target) && !info.uid)) ch.show(true);
     }
-    // 实现接口要求的resolveWebviewView方法（无修改）
     resolveWebviewView(webviewView) {
         this._stopProbeInventoryMonitor();
         this._sidebarReady = false;
@@ -6227,7 +6161,8 @@ class MainViewProvider {
             enableScripts: true,
             localResourceRoots: [this._context.extensionUri, this._webviewAssetRootUri]
         };
-        // 监听Webview消息，主进程执行命令（先释放上一次视图的监听器，避免累积）
+        // Webview messages run commands in the extension host; dispose the previous view's listener first so listeners
+        // do not accumulate
         this._messageListener?.dispose();
         this._messageListener = webviewView.webview.onDidReceiveMessage(async (message) => {
             if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string")
@@ -6242,7 +6177,6 @@ class MainViewProvider {
                     const revision = this._notices.revision;
                     let result;
                     try {
-                        console.log("主进程接收命令：", cmd);
                         if (
                             Object.hasOwn(this.commandHandlers, cmd) &&
                             typeof this.commandHandlers[cmd] === "function"
@@ -6259,7 +6193,7 @@ class MainViewProvider {
                             this._notices.notify(area, cmd, { level: "error", key: "sb.commandFailed" });
                     } catch (error) {
                         result = false;
-                        console.error("命令执行失败：", error.message);
+                        console.error("Command failed:", error.message);
                         if (!error.reported)
                             this._notices.notify(area, cmd, {
                                 level: "error",
@@ -6299,7 +6233,7 @@ class MainViewProvider {
                 case "initCheck": {
                     this._getMemoryAnalysisController().refresh();
                     this._sidebarReady = true;
-                    // Webview初始化检查，直接返回成功（无需依赖commands接口）
+                    // Acknowledge the webview's init check directly
                     webviewView.webview.postMessage({ type: "initSuccess" });
                     if (this._probeDriverSwitching)
                         webviewView.webview.postMessage({ type: "probeDriverSwitch", busy: true });
@@ -6309,12 +6243,14 @@ class MainViewProvider {
                     this._notices.replay((notice) => webviewView.webview.postMessage(notice));
                     this._syncSidebarTarget((message) => webviewView.webview.postMessage(message));
                     this._syncChipInfo((message) => webviewView.webview.postMessage(message));
-                    this._svdManager.syncStatus().catch((error) => console.error("SVD 状态检查失败：", error.message));
+                    this._svdManager
+                        .syncStatus()
+                        .catch((error) => console.error("SVD status check failed:", error.message));
                     this._postPeripheralDebugStatus((message) => webviewView.webview.postMessage(message));
                     webviewView.webview.postMessage({ type: "openocdStatus", ...this._openOcdStatusService.status });
                     this.refreshOpenOcdStatus(false);
                     this.refreshSkillStatus().catch((error) =>
-                        console.error("Agent Skills 状态检查失败：", error.message)
+                        console.error("Agent Skills status check failed:", error.message)
                     );
                     break;
                 }
@@ -6459,8 +6395,9 @@ class MainViewProvider {
                     const requestedAt = Date.now();
                     const ticket = ++this._uiWriteTicket;
                     this._uiWriteLatest.set(name, ticket);
-                    // 串行化：同一时刻只有一次写入在途，后续请求排队；失败只回发 writeResult，不弹全局错误。
-                    // 拖动滑条时排队中的旧值已被同一变量的新请求取代，直接跳过，避免松手后逐个回放积压的写入。
+                    // Serialized: one write in flight at a time with later requests queued; a failure only posts
+                    // writeResult, never a global error. While a slider is dragged, queued old values superseded by a
+                    // newer request for the same variable are skipped, so releasing it does not replay the backlog.
                     this._uiWritePromise = this._uiWritePromise
                         .catch(() => {})
                         .then(async () => {
@@ -6566,7 +6503,9 @@ class MainViewProvider {
                 });
             if (this._lastAgentAccess) sidebarWebview.postMessage({ type: "agentAccess", ...this._lastAgentAccess });
             this.refreshOpenOcdStatus(false);
-            this.refreshSkillStatus().catch((error) => console.error("Agent Skills 状态检查失败：", error.message));
+            this.refreshSkillStatus().catch((error) =>
+                console.error("Agent Skills status check failed:", error.message)
+            );
         });
         webviewView.onDidDispose(() => {
             visibilityListener?.dispose();
@@ -6577,10 +6516,10 @@ class MainViewProvider {
                 this._sidebarReady = false;
             }
         });
-        // 设置初始内容
         this._renderWebview(webviewView.webview, this.getModernWebviewContent(), "sidebar");
         this.updateView().catch(console.error);
-        // 仅在配置不完整时执行自动检测，避免每次展开视图都全量扫描工作区
+        // Auto-detect only when the configuration is incomplete, so expanding the view does not rescan the whole
+        // workspace every time
         const configured =
             this._context.workspaceState.get(CACHE_KEYS.elfPath) &&
             this._context.workspaceState.get(CACHE_KEYS.debugger) &&
@@ -6589,7 +6528,7 @@ class MainViewProvider {
             setTimeout(
                 () =>
                     this.runAutoDetect(false).catch((error) => {
-                        console.error("自动检测失败：", error.message);
+                        console.error("Auto-detection failed:", error.message);
                         this._notices.notify("config", "mcu-vscode.autoDetect", {
                             level: "error",
                             titleKey: COMMAND_FAILURE_TITLES["mcu-vscode.autoDetect"],
@@ -6599,14 +6538,13 @@ class MainViewProvider {
                 0
             );
     }
-    // 更新Webview内容（无修改）
     async runAutoDetect(force) {
         if (force) this._assertConnectionEditable({ debugger: true, mcu: true });
         const detectedIoc = force ? await this._cubemxConfiguration.detectIoc() : "";
         const currentElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
         const currentDebugger = this._context.workspaceState.get(CACHE_KEYS.debugger);
         const currentMcu = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        // 只采用当前 OpenOCD 实际提供的脚本；用户选定的 .ioc 单独决定 MCU。
+        // Only use scripts the current OpenOCD actually provides; a user-selected .ioc alone decides the MCU.
         const scripts = await this._availableOpenOcdScripts();
         const result = await autoDetect.detectWorkspace(vscode, {
             ioc: detectedIoc,
@@ -6625,8 +6563,9 @@ class MainViewProvider {
         const writeElf = !!result.elf && (force || !currentElf);
         let writeDebugger = !!result.debugger && (force || !currentDebugger);
         let writeMcu = !!result.mcu && (force || !currentMcu);
-        // 先确认可写再落盘任何字段，避免只写入一半配置。自动检测遇到忙碌会话时
-        // 静默跳过连接配置，不向用户报告其未发起的操作失败。
+        // Confirm the configuration is editable before storing any field, so it is never half written. When
+        // auto-detection meets a busy session it silently skips the connection settings instead of reporting a failure
+        // of an operation the user did not start.
         if (writeDebugger || writeMcu) {
             try {
                 this._assertConnectionEditable({ debugger: true, mcu: true });
@@ -6668,7 +6607,8 @@ class MainViewProvider {
         }
         return result;
     }
-    // 当前 OpenOCD 可用的 target/interface 脚本；OpenOCD 未就绪时返回空列表，不做过滤。
+    // Target/interface scripts available in the current OpenOCD; an empty list (no filtering) when OpenOCD is not
+    // ready.
     async _availableOpenOcdScripts() {
         try {
             const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");

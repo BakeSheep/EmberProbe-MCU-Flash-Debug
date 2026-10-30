@@ -39,7 +39,7 @@ async function run() {
     }
     console.log("✓ activates and registers public commands");
 
-    // 支持 MCP API 的宿主注册 provider；旧版本安静跳过（单元测试覆盖跳过路径）。
+    // Hosts with the MCP API register the provider; older versions skip it quietly (unit tests cover the skip path).
     const mcpSupported = typeof vscode.lm?.registerMcpServerDefinitionProvider === "function";
     assert.strictEqual(extension.exports.mcpRegistered, mcpSupported);
     assert.ok(fs.existsSync(path.join(extension.extensionPath, "dist", "mcp-server.js")), "MCP server is bundled");

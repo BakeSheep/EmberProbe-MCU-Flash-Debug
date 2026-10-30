@@ -12,11 +12,9 @@ const { writeConnectionIdentity } = require("../src/writeAuthorization");
 const { SamplingArchive } = require("../src/services/samplingArchive");
 const { readArchive } = require("../src/services/samplingArchiveFormat");
 const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
-const { exportHistory } = require("../src/chartHistoryWorker");
 const { encodeViewport, decodeViewport } = require("../src/webview/liveWatch/chartTransport");
 const { createSampleTimeFormatter } = require("../src/services/sampleTime");
 const { LiveWatchService } = require("../src/services/liveWatchService");
-const { buildCsv } = require("../src/liveWatchView");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { loadProvider } = require("./helpers/load-provider");
@@ -251,10 +249,6 @@ async function fractionalStorage() {
             decodeViewport(encodeViewport(viewport).message.series).map((s) => s.arr[0].t),
             [t, later]
         );
-        const outputPath = path.join(dir, "history.csv");
-        await exportHistory(store, { scope: "p", names: ["a", "b"], outputPath });
-        assert((await fs.readFile(outputPath, "utf8")).includes(expected));
-        assert(buildCsv(["a"], [[{ t, v: 1 }]]).includes(expected));
     } finally {
         await archive.dispose();
         await fs.rm(dir, { recursive: true, force: true });

@@ -5,7 +5,8 @@ const os = require("os");
 const crypto = require("crypto");
 const i18n = require("./i18n");
 
-// 安装范围:workspace = 当前工作区 .agents/skills;global = 用户主目录 ~/.agents/skills(所有项目可用)
+// Scopes: workspace = .agents/skills in the current workspace; global = ~/.agents/skills, which is no longer installed
+// but is still inspected and uninstalled
 async function readManifest(context) {
     const file = path.join(context.extensionPath, "skills", "manifest.json");
     const value = JSON.parse(await fs.readFile(file, "utf8"));
@@ -27,11 +28,12 @@ function insidePath(root, target) {
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
 }
 
-// §1 加固：工作区（或用户主目录）下的 .agents / .agents/skills / _emberprobe / 各 skill
-// 目录若被替换为符号链接或 junction，旧实现会穿透链接并对链接目标执行 readdir+rm，
-// 等价于对工作区外任意目录执行 rm -rf。这里在任何 mkdir/readdir/rm/cp 之前先消毒：
-// - 符号链接或非目录：fs.rm 只 unlink 链接本身，绝不进入目标（Node.js 行为，已实测）；
-// - 真实目录：realpath 必须落在允许的根之内，否则拒绝操作。
+// Hardening: if .agents, .agents/skills, _emberprobe or a skill directory under the workspace (or home directory) is
+// replaced by a symlink or junction, following it would run readdir+rm on the link target, which amounts to rm -rf
+// outside the workspace. So paths are sanitized before any mkdir/readdir/rm/cp:
+// - a symlink or non-directory: fs.rm only unlinks the link itself and never enters the target (Node.js behaviour,
+// verified);
+// - a real directory: its realpath must stay inside the allowed root, otherwise the operation is refused.
 async function sanitizeSkillPath(target, realRoot) {
     const st = await fs.lstat(target).catch(() => null);
     if (!st) return;
@@ -53,8 +55,6 @@ async function sanitizeSkillTree(targetRoot, rootBase, manifest) {
     await sanitizeSkillPath(targetRoot, realRoot);
     await sanitizeSkillPath(path.join(targetRoot, "_emberprobe"), realRoot);
     for (const entry of manifest.skills) await sanitizeSkillPath(path.join(targetRoot, entry.name), realRoot);
-    for (const entry of manifest.legacySkills || [])
-        await sanitizeSkillPath(path.join(targetRoot, entry.name), realRoot);
 }
 
 async function digest(file) {
@@ -65,52 +65,6 @@ async function digest(file) {
         .createHash("sha256")
         .update(await fs.readFile(file))
         .digest("hex");
-}
-
-async function listFiles(root, current = "") {
-    const result = [];
-    for (const entry of await fs.readdir(path.join(root, current), { withFileTypes: true })) {
-        const relative = path.join(current, entry.name);
-        if (entry.isDirectory()) result.push(...(await listFiles(root, relative)));
-        else if (entry.isFile() && relative !== ".emberprobe-skill.json")
-            result.push(relative.split(path.sep).join("/"));
-        else if (!entry.isFile()) result.push(relative.split(path.sep).join("/"));
-    }
-    return result.sort();
-}
-
-async function isUnmodifiedLegacySkill(targetRoot, entry) {
-    const target = path.join(targetRoot, entry.name);
-    if (!(await exists(target))) return false;
-    let metadata;
-    try {
-        metadata = JSON.parse(await fs.readFile(path.join(target, ".emberprobe-skill.json"), "utf8"));
-    } catch {
-        return false;
-    }
-    if (metadata.name !== entry.name || metadata.version !== entry.version) return false;
-    const expected = Object.keys(entry.files || {}).sort();
-    let actual;
-    try {
-        actual = await listFiles(target);
-    } catch {
-        return false;
-    }
-    if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index])) return false;
-    for (const relative of expected) {
-        if ((await digest(path.join(target, relative))) !== entry.files[relative]) return false;
-    }
-    return true;
-}
-
-async function removeUnmodifiedLegacySkills(manifest, targetRoot) {
-    const removed = [];
-    for (const entry of manifest.legacySkills || []) {
-        if (!(await isUnmodifiedLegacySkill(targetRoot, entry))) continue;
-        await fs.rm(path.join(targetRoot, entry.name), { recursive: true, force: true });
-        removed.push(entry.name);
-    }
-    return removed;
 }
 
 function workspaceSkillsRoot(vscode) {
@@ -180,10 +134,11 @@ async function inspectSkill(sourceRoot, targetRoot, entry) {
 async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
     const skills = [];
     for (const entry of manifest.skills) skills.push(await inspectSkill(sourceRoot, targetRoot, entry));
-    // 共享运行时按 manifest.shared 显式清单逐一比对（agent-client、flash-common 等脚本，
-    // 以及 agent-workflow.md 等共享 Markdown）。任一缺失或内容更新都会反映到依赖运行时的
-    // skill 状态上。用显式清单而非扩展名过滤，确保新增的共享文档不会被漏检；drift 测试
-    // 保证清单与源 _emberprobe 目录一致。源目录缺失时各项 exists 为假，等同无运行时依赖。
+    // The shared runtime is compared file by file against the explicit manifest.shared list (scripts such as
+    // agent-client and flash-common, plus shared Markdown such as agent-workflow.md). Any missing or updated file is
+    // reflected in the status of skills that depend on the runtime. An explicit list rather than an extension filter
+    // makes sure new shared documents are checked; a drift test keeps the list in line with the source _emberprobe
+    // directory. Without a source directory every exists check is false, as if there were no runtime dependency.
     const runtimeStatus = { missing: [], modified: false };
     const runtimeContents = [];
     for (const name of Array.isArray(manifest.shared) ? manifest.shared : []) {
@@ -212,31 +167,28 @@ async function inspectRoot(manifest, sourceRoot, targetRoot, scope) {
     else if (skills.some((item) => item.state === "partial" || item.state === "notInstalled")) state = "partial";
     else if (skills.some((item) => item.state === "outdated")) state = "outdated";
     else if (skills.some((item) => item.state === "modified")) state = "modified";
-    const legacy = [];
-    for (const entry of manifest.legacySkills || []) {
-        if (await exists(path.join(targetRoot, entry.name))) legacy.push(entry.name);
-    }
-    if (legacy.length && state === "installed") state = "modified";
     const fingerprint = crypto
         .createHash("sha256")
-        .update(JSON.stringify([skills, runtimeContents, runtimeStatus.missing, legacy]))
+        .update(JSON.stringify([skills, runtimeContents, runtimeStatus.missing]))
         .digest("hex");
-    // 只有含可执行脚本的副本才是“完整 skills”；只含文档的知识包不执行代码。
+    // Only copies with executable scripts are complete skills; a documentation-only knowledge pack runs no code.
     let hasScripts = await exists(path.join(targetRoot, "_emberprobe", "agent-client.js"));
     for (const entry of manifest.skills) {
         if (hasScripts) break;
         hasScripts = await exists(path.join(targetRoot, entry.name, "scripts"));
     }
-    return { scope, root: targetRoot, state, installed, total: skills.length, skills, legacy, fingerprint, hasScripts };
+    return { scope, root: targetRoot, state, installed, total: skills.length, skills, fingerprint, hasScripts };
 }
 
-// 检查任意 skill 根目录（例如 agent 直接从自定义副本运行脚本时），用于按实际执行的副本审批。
+// Inspects any skill root (for example when an agent runs scripts from a custom copy) so approval follows the copy that
+// actually runs.
 async function inspectSkillRoot(context, targetRoot, scope = "custom") {
     const manifest = await readManifest(context);
     return inspectRoot(manifest, path.join(context.extensionPath, "skills"), targetRoot, scope);
 }
 
-// 检查两个安装范围;顶层为兼容 webview 的合并视图(每个 skill 取较优状态),scopes 供菜单与提示细分
+// Inspects both scopes; the top level is the merged view the webview expects (the better state per skill), and scopes
+// give the per-scope detail for menus and prompts
 async function inspectSkills(vscode, context) {
     const manifest = await readManifest(context);
     const sourceRoot = path.join(context.extensionPath, "skills");
@@ -246,8 +198,8 @@ async function inspectSkills(vscode, context) {
             : null,
         global: await inspectRoot(manifest, sourceRoot, globalSkillsRoot(), "global")
     };
-    // Agent 发现顺序以 workspace 为先；状态必须反映实际会被执行的那份 Skill，
-    // 不能让干净的全局副本掩盖已被篡改的 workspace 副本。
+    // Agents discover the workspace first, so the status must reflect the skill that will actually run; a clean global
+    // copy must not mask a tampered workspace copy.
     const skills = manifest.skills.map((entry, index) => {
         const workspace = scopes.workspace?.skills[index];
         return workspace && workspace.state !== "notInstalled" ? workspace : scopes.global.skills[index];
@@ -258,8 +210,6 @@ async function inspectSkills(vscode, context) {
     else if (skills.some((item) => item.state === "partial" || item.state === "notInstalled")) state = "partial";
     else if (skills.some((item) => item.state === "outdated")) state = "outdated";
     else if (skills.some((item) => item.state === "modified")) state = "modified";
-    const resolvedLegacy = scopes.workspace?.legacy?.length ? scopes.workspace.legacy : scopes.global.legacy;
-    if (resolvedLegacy.length && state === "installed") state = "modified";
     return { state, installed, total: skills.length, skills, scopes };
 }
 
@@ -271,7 +221,7 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
     const manifest = await readManifest(context);
     const sourceRoot = path.join(context.extensionPath, "skills");
     const targetRoot = skillsRootFor(vscode, scope);
-    // §1：在任何 mkdir/readdir/rm/cp 之前消毒整条工作区路径，拒绝穿透符号链接。
+    // Sanitize the whole workspace path before any mkdir/readdir/rm/cp, refusing to follow symlinks.
     await sanitizeSkillTree(targetRoot, workspace.uri.fsPath, manifest);
     const stage = path.join(path.dirname(targetRoot), `.emberprobe-stage-${process.pid}-${Date.now()}`);
     await fs.mkdir(stage, { recursive: true });
@@ -320,7 +270,6 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
                 force: true
             });
         }
-        await removeUnmodifiedLegacySkills(manifest, targetRoot);
     } finally {
         await fs.rm(stage, { recursive: true, force: true });
     }
@@ -328,11 +277,11 @@ async function installSkill(vscode, context, lang, scope = "workspace") {
     return inspectSkills(vscode, context);
 }
 
-// 按范围卸载:只删除 manifest 清单内的 skill 与共享运行时,不触碰用户自建的其它 skill
+// Uninstalls a scope: deletes only the manifest's skills and the shared runtime, never other skills the user created
 async function uninstallSkill(vscode, context, lang, scope) {
     const manifest = await readManifest(context);
     const targetRoot = skillsRootFor(vscode, scope);
-    // §1：卸载同样不得穿透工作区/主目录中的符号链接。
+    // Uninstalling must not follow symlinks in the workspace or home directory either.
     const rootBase = scope === "global" ? os.homedir() : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     await sanitizeSkillTree(targetRoot, rootBase, manifest);
     if (targetRoot && (await exists(targetRoot))) {
@@ -341,9 +290,8 @@ async function uninstallSkill(vscode, context, lang, scope) {
             if (!(await exists(target))) continue;
             await fs.rm(target, { recursive: true, force: true });
         }
-        await removeUnmodifiedLegacySkills(manifest, targetRoot);
         let emberprobeSkillRemains = false;
-        for (const entry of [...manifest.skills, ...(manifest.legacySkills || [])]) {
+        for (const entry of manifest.skills) {
             if (await exists(path.join(targetRoot, entry.name))) {
                 emberprobeSkillRemains = true;
                 break;
@@ -352,15 +300,15 @@ async function uninstallSkill(vscode, context, lang, scope) {
         if (!emberprobeSkillRemains) {
             await fs.rm(path.join(targetRoot, "_emberprobe"), { recursive: true, force: true });
         }
-        // skills 目录已空则一并移除;仍含用户内容时保留
+        // Remove the skills directory too once it is empty; keep it while it holds user content
         try {
             if ((await fs.readdir(targetRoot)).length === 0) await fs.rm(targetRoot, { recursive: true, force: true });
         } catch {
-            /* 目录已不存在或无法移除 */
+            /* The directory is already gone or cannot be removed */
         }
     }
-    // 新指针位于上面一并删除的 _emberprobe 运行时目录。这里额外清理旧版本可能
-    // 遗留在项目根目录的指针；只移除空目录，避免触碰用户的其它内容。
+    // The current pointer lives in the _emberprobe runtime directory removed above. Also remove the pointer older
+    // versions may have left in the project root, deleting only an empty directory so no other user content is touched.
     if (scope === "workspace") {
         const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (workspace) {
@@ -369,7 +317,7 @@ async function uninstallSkill(vscode, context, lang, scope) {
             await fs.rmdir(bridgeDir).catch(() => {});
         }
     }
-    // The sidebar's Skills switch and legacy card show the result; no separate notification.
+    // The sidebar's Skills switch shows the result; no separate notification.
     return inspectSkills(vscode, context);
 }
 
@@ -379,7 +327,5 @@ module.exports = {
     inspectSkills,
     inspectSkill,
     inspectSkillRoot,
-    readManifest,
-    isUnmodifiedLegacySkill,
-    removeUnmodifiedLegacySkills
+    readManifest
 };

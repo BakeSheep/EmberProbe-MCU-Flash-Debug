@@ -1,9 +1,8 @@
 "use strict";
-// ELF32（小端，Cortex-M）格式层单一实现：文件头校验与节头表/节名读取。
-// 此前 elfSymbols（符号视图、节视图）与 dwarf（调试段定位）各自维护一份近似拷贝，
-// 格式规则改动需同步三处；统一收敛到本模块，行为语义以原 elfSymbols 实现为准。
+// ELF32 (little-endian, Cortex-M) format layer shared by elfSymbols and dwarf: header validation and section header and
+// name reading.
 
-// 校验并读取 ELF32 LE 文件头；非法文件抛出与原实现一致的错误
+// Validates and reads an ELF32 LE header; invalid files throw
 function readElf32Header(buf) {
     if (buf.length < 52) throw new Error("文件过小，不是有效的 ELF");
     if (!(buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46)) {
@@ -23,7 +22,7 @@ function readElf32Header(buf) {
     };
 }
 
-// 读取全部节头条目（不含节名；节名依赖 shstrtab，按需经 readSectionNames 解析）
+// Reads every section header entry (names need shstrtab and are resolved on demand by readSectionNames)
 function readSectionEntries(buf, header) {
     const { shoff, shentsize, shnum } = header;
     if (!shoff || !shnum) throw new Error("缺少节头表，可能已被 strip（请用 Debug 构建）");
@@ -48,7 +47,8 @@ function readSectionEntries(buf, header) {
     return entries;
 }
 
-// 经 shstrtab 解析各节名；shstrtab 缺失或偏移越界时该节名返回 ''（防御式：坏节名不致命）
+// Resolves section names through shstrtab; a missing shstrtab or out-of-range offset yields '' so a bad name is not
+// fatal
 function readSectionNames(buf, entries, shstrndx) {
     const shstr = entries[shstrndx];
     const readName = (rel) => {
@@ -63,13 +63,7 @@ function readSectionNames(buf, entries, shstrndx) {
     return entries.map((entry) => readName(entry.nameOffset));
 }
 
-// 对外使用格式层通用名；32 位限制由实现内的 class 校验保证。
-const readElfHeader = readElf32Header;
-const readSectionHeaders = readSectionEntries;
-
 module.exports = {
-    readElfHeader,
-    readSectionHeaders,
     readSectionNames,
     readElf32Header,
     readSectionEntries

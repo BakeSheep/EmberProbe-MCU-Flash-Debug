@@ -9,9 +9,10 @@ const {
     isAlive
 } = require("../../skills/_emberprobe/bridge-locator");
 
-// 每个扩展窗口在 <globalStorage>/agent-bridges/<instanceId>.json 登记一条记录。instanceId 在窗口
-// 激活时生成，Bridge 重启时保持不变，因此 VS Code 注入的 EMBERPROBE_BRIDGE_INSTANCE 一直有效。
-// Bridge 运行时记录含 port/token；未运行时只保留不含 token 的“未启用”标记，供定位方给出准确诊断。
+// Each extension window registers one record at <globalStorage>/agent-bridges/<instanceId>.json. instanceId is created
+// when the window activates and survives Bridge restarts, so the EMBERPROBE_BRIDGE_INSTANCE VS Code injects stays
+// valid. While the Bridge runs the record holds port/token; otherwise only a token-free disabled marker remains so
+// locators can diagnose precisely.
 class BridgeRegistry {
     constructor(options) {
         this.dir = path.join(options.storageDir, REGISTRY_DIR);
@@ -46,7 +47,7 @@ class BridgeRegistry {
         };
     }
 
-    // 写入串行化并原子替换，读取方不会看到写了一半的文件。
+    // Writes are serialized and replaced atomically, so readers never see a half-written file.
     publish(state) {
         const run = async () => {
             await fs.mkdir(this.dir, { recursive: true });
@@ -72,7 +73,8 @@ class BridgeRegistry {
     }
 }
 
-// 扩展启动时清理宿主进程已退出的条目和残留临时文件；定位方本身从不删除文件。
+// On startup the extension removes entries whose host process has exited and leftover temporary files; locators never
+// delete files.
 async function cleanupStaleEntries(storageDir, alive = isAlive) {
     const dir = path.join(storageDir, REGISTRY_DIR);
     let names;

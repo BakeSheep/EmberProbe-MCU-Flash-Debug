@@ -16,6 +16,7 @@ const path = require("path");
 const pkg = require("../package.json");
 const modernView = require("../src/modernView");
 const liveWatchView = require("../src/liveWatchView");
+const mockCsv = require("./mock-csv");
 const { versionLabel } = require("../src/buildInfo");
 
 const root = __dirname;
@@ -92,9 +93,6 @@ function buildLiveWatch(lang) {
     return inject(
         liveWatchView.getLiveWatchContent(
             {
-                maxSamples: 2000,
-                autoMaxSamples: true,
-                backendHistory: true,
                 frequencyHz: 30,
                 panelId: 1
             },
@@ -117,15 +115,7 @@ function main() {
         .readFileSync(path.join(root, "../src/services/chartHistoryStore.js"), "utf8")
         .replace("module.exports =", "root.EmberProbeMockHistory =");
     fs.writeFileSync(path.join(dist, "chart-history.js"), "(function(root) {\n" + historySource + "\n})(window);\n");
-    fs.writeFileSync(
-        path.join(dist, "csv.js"),
-        "window.EmberProbeMockCsv = { buildCsv: " +
-            liveWatchView.buildCsv.toString() +
-            ", csvDataRowCount: " +
-            liveWatchView.csvDataRowCount.toString() +
-            " };\n",
-        "utf8"
-    );
+    fs.writeFileSync(path.join(dist, "csv.js"), mockCsv.browserSource(), "utf8");
 
     for (const name of ["index.html", "shell.css", "shell.js", "shell-data.js"]) {
         copyFile(path.join(shellDir, name), path.join(dist, name));

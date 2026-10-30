@@ -10,6 +10,7 @@ const { buildDwarfElf } = require("./helpers/elf-fixture");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { cstr: string, u32, uleb } = require("./helpers/dwarf-tree");
 
 // Path rules: library/vendor trees and generated vendor files; segments are anchored.
 for (const [file, origin] of [
@@ -88,17 +89,6 @@ assert.strictEqual(classify({ name: "HAL_RCC_ADC12_CLK_ENABLED", sourceFile: "C:
 assert.strictEqual(classify(null), "user");
 
 // DWARF: each variable carries its compilation unit path, joined with DW_AT_comp_dir.
-function uleb(value) {
-    const bytes = [];
-    do {
-        const byte = value & 0x7f;
-        value >>>= 7;
-        bytes.push(byte | (value ? 0x80 : 0));
-    } while (value);
-    return bytes;
-}
-const u32 = (value) => [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
-const string = (value) => [...Buffer.from(value), 0];
 const abbrev = Buffer.from([
     ...[1, 0x11, 1, 0x03, 0x08, 0x1b, 0x08, 0, 0],
     ...[2, 0x24, 0, 0x03, 0x08, 0x3e, 0x0b, 0x0b, 0x0b, 0, 0],

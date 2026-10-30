@@ -4,128 +4,125 @@ const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 
 for (const lang of ["zh", "en"]) {
-    for (const backendHistory of [false, true]) {
-        const page = render(getLiveWatchContent({ backendHistory }, lang));
-        try {
-            const { window: w, document: doc } = page;
-            assert.strictEqual(doc.getElementById("exportSource"), null);
-            assert.strictEqual(doc.querySelector(".export-history-note"), null);
-            // Freezing or losing old in-memory points must not select a partial export source.
-            w.frozen = true;
-            w.remoteHistory.snapshotId = "snapshot";
-            w.showExport();
-            assert.deepStrictEqual(page.messages.at(-1), {
-                type: "samplingArchiveInfo",
-                openExport: true,
-                historyRevision: 0,
-                panelId: 1
-            });
-            const info = {
-                type: "samplingArchiveInfo",
-                openExport: true,
-                historyRevision: 0,
-                variables: ["old", "chosen"],
-                displayNames: { chosen: "app::chosen" },
-                firstTimestampMs: 1000,
-                lastTimestampMs: 4 * 60 * 60 * 1000
-            };
-            page.send(info);
-            const fileName = doc.getElementById("exportFileName"),
-                search = doc.getElementById("exportSearch"),
-                heading = doc.querySelector(".export-series-heading"),
-                series = doc.getElementById("exportSeries");
-            assert.strictEqual(fileName.value, "", "the default name is a placeholder, not an input value");
-            assert.match(fileName.placeholder, /^emberprobe-live-\d{8}-\d{6}$/);
-            assert.strictEqual(fileName.nextElementSibling.textContent, ".csv");
-            assert.strictEqual(fileName.parentElement.nextElementSibling, heading);
-            assert.strictEqual(heading.nextElementSibling, search);
-            assert.strictEqual(search.nextElementSibling, series);
-            assert.strictEqual(search.placeholder, lang === "zh" ? "搜索曲线" : "Search series");
-            const filter = (value) => {
-                search.value = value;
-                search.dispatchEvent(new w.Event("input"));
-            };
-            filter(" APP::CHOSEN ");
-            assert.deepStrictEqual(
-                Array.from(series.querySelectorAll("tbody tr"), (row) => row.hidden),
-                [true, false],
-                "search matches displayed names regardless of case and surrounding spaces"
-            );
-            doc.getElementById("exportInvert").click();
-            assert.deepStrictEqual(
-                Array.from(w.selectedExportCandidates(), (item) => item.name),
-                ["old"],
-                "filtering and inverting preserve hidden selections"
-            );
-            doc.getElementById("exportSelectAll").click();
-            filter("no match");
-            doc.getElementById("exportInvert").click();
-            assert.strictEqual(w.selectedExportCandidates().length, 2, "empty results leave selections intact");
-            filter("");
-            assert.ok(Array.from(series.querySelectorAll("tbody tr")).every((row) => !row.hidden));
-            assert.strictEqual(doc.querySelector('input[name="exportRange"]'), null);
-            assert.strictEqual(doc.getElementById("exportFromRange").disabled, false);
-            assert.strictEqual(doc.getElementById("exportFromRange").value, "0");
-            assert.strictEqual(doc.getElementById("exportToRange").value, doc.getElementById("exportToRange").max);
-            const selectAll = doc.getElementById("exportSelectAll");
-            const invert = doc.getElementById("exportInvert");
-            const selectedNames = () => Array.from(w.selectedExportCandidates(), (item) => item.name);
-            assert.strictEqual(selectAll.textContent, lang === "zh" ? "全选" : "Select all");
-            assert.strictEqual(invert.textContent, lang === "zh" ? "反选" : "Invert");
-            doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
-            invert.click();
-            assert.deepStrictEqual(selectedNames(), ["old"], "invert toggles every row from a mixed selection");
-            invert.click();
-            assert.deepStrictEqual(selectedNames(), ["chosen"]);
-            selectAll.click();
-            selectAll.click();
-            assert.deepStrictEqual(selectedNames(), ["old", "chosen"], "select all is idempotent");
-            invert.click();
-            assert.deepStrictEqual(selectedNames(), [], "invert supports deselecting all rows");
-            invert.click();
-            assert.deepStrictEqual(selectedNames(), ["old", "chosen"], "invert supports selecting all rows");
-            doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
-            w.applyExport();
-            const exported = page.messages.at(-1);
-            assert.deepStrictEqual(exported.names, ["chosen"]);
-            assert.strictEqual(exported.historyRevision, 0);
-            assert.strictEqual(exported.fileName, fileName.placeholder + ".csv");
-            for (const field of ["source", "snapshotId", "backendHistory", "csv", "fromMs", "toMs"])
-                assert.strictEqual(exported[field], undefined, field);
-            w.showExport();
-            page.send(info);
-            fileName.value = "  电源采样.CSV  ";
-            doc.getElementById("exportFromRange").value = String(info.lastTimestampMs - info.firstTimestampMs - 10000);
-            w.updateExportTimeline("from");
-            w.applyExport();
-            assert.strictEqual(page.messages.at(-1).fileName, "电源采样.csv", "custom names get one CSV extension");
-            assert.strictEqual(page.messages.at(-1).fromMs, info.lastTimestampMs - 10000);
-            assert.strictEqual(page.messages.at(-1).toMs, info.lastTimestampMs);
-            w.clearHistory();
-            const revision = w.historyRevision;
-            page.send(info);
-            assert.strictEqual(w.exportCandidates.length, 0, "late archive replies cannot resurrect cleared history");
-            const count = page.messages.length;
-            w.showExport();
-            assert.strictEqual(page.messages.length, count, "wait for history clear acknowledgement");
-            page.send({ type: "samplingHistoryCleared", historyRevision: revision });
-            w.showExport();
-            page.send({
-                ...info,
-                historyRevision: revision,
-                variables: ["chosen"],
-                firstTimestampMs: info.lastTimestampMs + 10,
-                lastTimestampMs: info.lastTimestampMs + 20
-            });
-            assert.strictEqual(fileName.value, "", "reopening restores the suggested name");
-            assert.strictEqual(search.value, "", "reopening clears the series filter");
-            w.applyExport();
-            assert.strictEqual(page.messages.at(-1).historyRevision, revision);
-            assert.strictEqual(w.exportTimelineStart, info.lastTimestampMs + 10);
-            page.assertHealthy();
-        } finally {
-            page.close();
-        }
+    const page = render(getLiveWatchContent({}, lang));
+    try {
+        const { window: w, document: doc } = page;
+        assert.strictEqual(doc.getElementById("exportSource"), null);
+        assert.strictEqual(doc.querySelector(".export-history-note"), null);
+        // Freezing or losing old in-memory points must not select a partial export source.
+        w.frozen = true;
+        w.remoteHistory.snapshotId = "snapshot";
+        w.showExport();
+        assert.deepStrictEqual(page.messages.at(-1), {
+            type: "samplingArchiveInfo",
+            openExport: true,
+            historyRevision: 0,
+            panelId: 1
+        });
+        const info = {
+            type: "samplingArchiveInfo",
+            openExport: true,
+            historyRevision: 0,
+            variables: ["old", "chosen"],
+            displayNames: { chosen: "app::chosen" },
+            firstTimestampMs: 1000,
+            lastTimestampMs: 4 * 60 * 60 * 1000
+        };
+        page.send(info);
+        const fileName = doc.getElementById("exportFileName"),
+            search = doc.getElementById("exportSearch"),
+            heading = doc.querySelector(".export-series-heading"),
+            series = doc.getElementById("exportSeries");
+        assert.strictEqual(fileName.value, "", "the default name is a placeholder, not an input value");
+        assert.match(fileName.placeholder, /^emberprobe-live-\d{8}-\d{6}$/);
+        assert.strictEqual(fileName.nextElementSibling.textContent, ".csv");
+        assert.strictEqual(fileName.parentElement.nextElementSibling, heading);
+        assert.strictEqual(heading.nextElementSibling, search);
+        assert.strictEqual(search.nextElementSibling, series);
+        assert.strictEqual(search.placeholder, lang === "zh" ? "搜索曲线" : "Search series");
+        const filter = (value) => {
+            search.value = value;
+            search.dispatchEvent(new w.Event("input"));
+        };
+        filter(" APP::CHOSEN ");
+        assert.deepStrictEqual(
+            Array.from(series.querySelectorAll("tbody tr"), (row) => row.hidden),
+            [true, false],
+            "search matches displayed names regardless of case and surrounding spaces"
+        );
+        doc.getElementById("exportInvert").click();
+        assert.deepStrictEqual(
+            Array.from(w.selectedExportCandidates(), (item) => item.name),
+            ["old"],
+            "filtering and inverting preserve hidden selections"
+        );
+        doc.getElementById("exportSelectAll").click();
+        filter("no match");
+        doc.getElementById("exportInvert").click();
+        assert.strictEqual(w.selectedExportCandidates().length, 2, "empty results leave selections intact");
+        filter("");
+        assert.ok(Array.from(series.querySelectorAll("tbody tr")).every((row) => !row.hidden));
+        assert.strictEqual(doc.querySelector('input[name="exportRange"]'), null);
+        assert.strictEqual(doc.getElementById("exportFromRange").disabled, false);
+        assert.strictEqual(doc.getElementById("exportFromRange").value, "0");
+        assert.strictEqual(doc.getElementById("exportToRange").value, doc.getElementById("exportToRange").max);
+        const selectAll = doc.getElementById("exportSelectAll");
+        const invert = doc.getElementById("exportInvert");
+        const selectedNames = () => Array.from(w.selectedExportCandidates(), (item) => item.name);
+        assert.strictEqual(selectAll.textContent, lang === "zh" ? "全选" : "Select all");
+        assert.strictEqual(invert.textContent, lang === "zh" ? "反选" : "Invert");
+        doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
+        invert.click();
+        assert.deepStrictEqual(selectedNames(), ["old"], "invert toggles every row from a mixed selection");
+        invert.click();
+        assert.deepStrictEqual(selectedNames(), ["chosen"]);
+        selectAll.click();
+        selectAll.click();
+        assert.deepStrictEqual(selectedNames(), ["old", "chosen"], "select all is idempotent");
+        invert.click();
+        assert.deepStrictEqual(selectedNames(), [], "invert supports deselecting all rows");
+        invert.click();
+        assert.deepStrictEqual(selectedNames(), ["old", "chosen"], "invert supports selecting all rows");
+        doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
+        w.applyExport();
+        const exported = page.messages.at(-1);
+        assert.deepStrictEqual(exported.names, ["chosen"]);
+        assert.strictEqual(exported.historyRevision, 0);
+        assert.strictEqual(exported.fileName, fileName.placeholder + ".csv");
+        for (const field of ["fromMs", "toMs"]) assert.strictEqual(exported[field], undefined, field);
+        w.showExport();
+        page.send(info);
+        fileName.value = "  电源采样.CSV  ";
+        doc.getElementById("exportFromRange").value = String(info.lastTimestampMs - info.firstTimestampMs - 10000);
+        w.updateExportTimeline("from");
+        w.applyExport();
+        assert.strictEqual(page.messages.at(-1).fileName, "电源采样.csv", "custom names get one CSV extension");
+        assert.strictEqual(page.messages.at(-1).fromMs, info.lastTimestampMs - 10000);
+        assert.strictEqual(page.messages.at(-1).toMs, info.lastTimestampMs);
+        w.clearHistory();
+        const revision = w.historyRevision;
+        page.send(info);
+        assert.strictEqual(w.exportCandidates.length, 0, "late archive replies cannot resurrect cleared history");
+        const count = page.messages.length;
+        w.showExport();
+        assert.strictEqual(page.messages.length, count, "wait for history clear acknowledgement");
+        page.send({ type: "samplingHistoryCleared", historyRevision: revision });
+        w.showExport();
+        page.send({
+            ...info,
+            historyRevision: revision,
+            variables: ["chosen"],
+            firstTimestampMs: info.lastTimestampMs + 10,
+            lastTimestampMs: info.lastTimestampMs + 20
+        });
+        assert.strictEqual(fileName.value, "", "reopening restores the suggested name");
+        assert.strictEqual(search.value, "", "reopening clears the series filter");
+        w.applyExport();
+        assert.strictEqual(page.messages.at(-1).historyRevision, revision);
+        assert.strictEqual(w.exportTimelineStart, info.lastTimestampMs + 10);
+        page.assertHealthy();
+    } finally {
+        page.close();
     }
 }
 console.log("Full sampling archive export, language, frozen charts, selection and clear isolation passed");

@@ -19,7 +19,8 @@ const symbols = [
         compositeLayout: { kind: "struct", typeName: "struct State", byteSize: 8, members: [] }
     }
 ];
-// 标量按类型宽度校验并去重；复合变量（结构体/数组）保留布局信息，不做标量类型校验。
+// Scalars are checked against their type width and deduplicated; composites (structs/arrays) keep their layout and skip
+// scalar type checks.
 assert.deepStrictEqual(
     normalizeWatchList(
         [
@@ -51,7 +52,7 @@ assert.deepStrictEqual(
     "a selected type must not read beyond the symbol"
 );
 
-// 复合变量成员路径（sensor.y）应解析为标量叶子，地址 = 基址 + 成员偏移
+// A composite member path (sensor.y) resolves to a scalar leaf at base address + member offset
 const compositeSymbols = [
     {
         name: "sensor",

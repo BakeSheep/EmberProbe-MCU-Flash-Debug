@@ -1,83 +1,15 @@
 "use strict";
 const { STRINGS, t, normalizeLang, jsonForScript } = require("./i18n");
-const { DEFAULT_FREQUENCY_HZ, frequencyHzFromInterval, intervalMsFromHz, normalizeFrequencyHz } = require("./samplingFrequency");
+const { DEFAULT_FREQUENCY_HZ, normalizeFrequencyHz } = require("./samplingFrequency");
 const { loadWebviewAsset } = require("./webviewTemplate");
-const { createSampleTimeFormatter } = require("./services/sampleTime");
 const liveWatchCss = loadWebviewAsset("", "notice.css") + loadWebviewAsset("liveWatch", "app.css");
 const liveWatchViewport = loadWebviewAsset("liveWatch", "viewport.js");
 const liveWatchRenderer = loadWebviewAsset("liveWatch", "renderer.js");
-// 独立实时变量面板：无外部依赖，使用高 DPI Canvas 绘制曲线。
-// 采样序列 → RFC 4180 CSV：time 列（ISO 8601 UTC）+ 每变量一列，行尾 CRLF，带 UTF-8 BOM；
-// 各序列按采样时间戳对齐（同一 tick 共享同一时刻，可含亚毫秒），晚加入的序列起始前留空单元格
-function buildCsv(names, buffers, opts) {
-    opts = opts || {};
-    const from = Number.isFinite(opts.from) ? opts.from : -Infinity;
-    const to = Number.isFinite(opts.to) ? opts.to : Infinity;
-    // This function is serialized into the live-watch page as window.__BUILD_CSV__, so it must stay
-    // self-contained and cannot close over module imports. Keep these rules in step with csvField /
-    // csvHeaderField in src/services/samplingArchive.js, which serves the archive-backed exports.
-    const NUMERIC_CELL = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
-    function esc(value, header) {
-        let text = String(value);
-        // Header names never contain numbers, so any leading "-" is a formula risk there. Data cells
-        // are dominated by negative readings, so "-" only counts when the rest is not a plain number.
-        const risky = header
-            ? /^[=+\-@\t\r]/.test(text)
-            : /^[=+@\t\r]/.test(text) || (text.charAt(0) === "-" && !NUMERIC_CELL.test(text));
-        if (risky) text = "'" + text;
-        return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
-    }
-    const rows = [['time'].concat(names.map(function(name){return esc(name,true)})).join(',')];
-    const times = [];
-    const cellsByTime = new Map();
-    buffers.forEach((arr, seriesIndex) => {
-        for (const point of arr) {
-            if (!point) continue;
-            const time = Number(point.t);
-            if (!Number.isFinite(time) || time < from || time > to) continue;
-            let cells = cellsByTime.get(time);
-            if (!cells) {
-                cells = new Array(names.length).fill('');
-                cellsByTime.set(time, cells);
-                times.push(time);
-            }
-            cells[seriesIndex] = point.v == null
-                ? ''
-                : esc(point.valueText !== null && point.valueText !== undefined ? point.valueText : point.v);
-        }
-    });
-    times.sort((a, b) => a - b);
-    const iso = createSampleTimeFormatter();
-    for (const time of times) rows.push([iso(time)].concat(cellsByTime.get(time)).join(','));
-    return '\uFEFF' + rows.join('\r\n') + '\r\n';
-}
-function csvDataRowCount(csv) {
-    let quoted = false;
-    let lines = 0;
-    for (let i = 0; i < csv.length; i++) {
-        if (csv[i] === '"') {
-            if (quoted && csv[i + 1] === '"') i++;
-            else quoted = !quoted;
-        } else if (csv[i] === '\n' && !quoted) lines++;
-    }
-    if (csv && !csv.endsWith('\n')) lines++;
-    return Math.max(0, lines - 1);
-}
 // The inline gear uses the bundled VS Code Codicon glyph; attribution is in THIRD_PARTY_NOTICES.md.
 function getLiveWatchContent(cfg, lang) {
     const raw = cfg || {};
-    const frequencyHz =
-        raw.frequencyHz !== undefined
-            ? normalizeFrequencyHz(raw.frequencyHz)
-            : raw.intervalMs !== undefined
-              ? frequencyHzFromInterval(Math.min(10000, Math.max(5, Number(raw.intervalMs) || 100)))
-              : DEFAULT_FREQUENCY_HZ;
     const conf = {
-        maxSamples: Math.min(360001, Math.max(100, Math.floor(Number(raw.maxSamples) || 2000))),
-        backendHistory: !!raw.backendHistory,
-        autoMaxSamples: raw.autoMaxSamples !== false,
-        frequencyHz,
-        intervalMs: intervalMsFromHz(frequencyHz),
+        frequencyHz: raw.frequencyHz !== undefined ? normalizeFrequencyHz(raw.frequencyHz) : DEFAULT_FREQUENCY_HZ,
         panelId: Math.max(1, Math.floor(Number(raw.panelId) || 1)),
         watchKey: typeof raw.watchKey === "string" ? raw.watchKey : null
     };
@@ -96,10 +28,10 @@ ${liveWatchCss}
 <div class="chart-settings" id="chartSettings"><button class="chart-settings-toggle" id="chartSettingsToggle" type="button" aria-expanded="false" aria-controls="chartSettingsPopup" data-i18n-title="lw.chartSettings" data-i18n-aria="lw.chartSettings" title="${tr('lw.chartSettings')}" aria-label="${tr('lw.chartSettings')}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M9.12 4.37 8.59 1.97H7.41L6.88 4.37L6.19 4.69L4.21 3.41L3.31 4.21L4.59 6.19L4.43 6.88L2.03 7.41V8.59L4.43 9.12L4.69 9.92L3.41 11.89L4.21 12.69L6.19 11.41L6.99 11.68L7.41 13.97H8.59L9.12 11.57L9.92 11.31L11.89 12.59L12.69 11.79L11.41 9.81L11.68 9.01L14.03 8.59V7.41L11.63 6.88L11.31 6.08L12.59 4.11L11.79 3.31L9.81 4.59ZM9.39 1.01 9.92 3.41 12 2.08 14.03 4.11 12.59 6.19 14.99 6.61V9.39L12.59 9.92L14.03 12L12 13.97L9.92 12.59L9.39 14.99H6.61L6.08 12.59L4 13.92L2.03 11.89L3.41 9.81L1.01 9.39V6.61L3.41 6.08L2.08 4L4.11 1.97L6.19 3.41L6.61 1.01ZM10.03 8Q10.03 8.8 9.41 9.39Q8.8 9.97 8 9.97Q7.2 9.97 6.61 9.39Q6.03 8.8 6.03 8Q6.03 7.2 6.61 6.59Q7.2 5.97 8 5.97Q8.8 5.97 9.41 6.59Q10.03 7.2 10.03 8ZM8 9.01Q8.43 9.01 8.72 8.72Q9.01 8.43 9.01 8Q9.01 7.57 8.72 7.28Q8.43 6.99 8 6.99Q7.57 6.99 7.28 7.28Q6.99 7.57 6.99 8Q6.99 8.43 7.28 8.72Q7.57 9.01 8 9.01Z"/></svg></button><div class="chart-settings-popup" id="chartSettingsPopup" role="group" aria-labelledby="chartSettingsToggle" hidden><label class="chart-settings-option"><span class="chart-settings-text"><span data-i18n="lw.jitterBands">${tr('lw.jitterBands')}</span><small data-i18n="lw.jitterBandsHint">${tr('lw.jitterBandsHint')}</small></span><input type="checkbox" class="switch" role="switch" id="jitterBands" checked></label><label class="chart-settings-option"><span class="chart-settings-text"><span data-i18n="lw.pointerExpandedOnly">${tr('lw.pointerExpandedOnly')}</span><small data-i18n="lw.pointerExpandedOnlyHint">${tr('lw.pointerExpandedOnlyHint')}</small></span><input type="checkbox" class="switch" role="switch" id="pointerExpandedOnly" checked></label></div></div></div></div><main class="layout" id="layout"><aside class="side" id="valuePane"><div class="side-head" id="panelHandle"><strong data-i18n="lw.currentValues">${tr('lw.currentValues')}</strong><span class="badge" id="count">0</span><span id="rate">0.0kb/s | 0.0Hz</span><div class="side-actions"><button type="button" class="panel-icon" id="panelMode" aria-pressed="false" title="${tr('lw.panelFloat')}"><svg class="icon-float" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><rect class="solid" x="6.5" y="6" width="6" height="5" rx="1"/></svg><svg class="icon-dock" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path class="solid" d="M3.5 2.5h2.5v11H3.5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z"/></svg></button><button type="button" class="panel-icon" id="panelClose" title="${tr('lw.panelClose')}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button></div></div><div class="var-list" id="vars"><div class="empty" data-i18n="lw.varListEmpty">${tr('lw.varListEmpty')}</div></div><div class="float-resize" data-edge="n"></div><div class="float-resize" data-edge="s"></div><div class="float-resize" data-edge="e"></div><div class="float-resize" data-edge="w"></div><div class="float-resize" data-edge="ne"></div><div class="float-resize" data-edge="nw"></div><div class="float-resize" data-edge="sw"></div><div class="float-resize" data-edge="se" id="panelResize" tabindex="0" aria-controls="valuePane" data-i18n-title="lw.panelResizeHint" title="${tr('lw.panelResizeHint')}"></div></aside><div class="side-splitter" id="sideSplitter" role="separator" tabindex="0" aria-controls="valuePane" aria-orientation="vertical" data-i18n-title="lw.splitterHint" title="${tr('lw.splitterHint')}"></div><section class="chart-pane"><div class="chart-head"><strong data-i18n="lw.history">${tr('lw.history')}</strong><span id="range">—</span><span class="spacer"></span><span id="points">${tr('lw.points',{n:0})}</span></div><div class="chart-wrap" id="chartWrap"><div class="chart-stage" id="chartStage"><canvas id="chart"></canvas><div class="chart-empty" id="chartEmpty" data-i18n="lw.chartEmpty">${tr('lw.chartEmpty')}</div></div><div class="chart-overview" id="chartOverview"><div class="range-timeline chart-timeline" id="chartTimeline" data-i18n-title="lw.chartTimelineHint" title="${tr('lw.chartTimelineHint')}"><div class="range-fill chart-range-fill" id="chartRangeFill"></div><div class="chart-timeline-labels"><span id="chartAxisStart">00:00</span><span id="chartAxisEnd">00:00</span></div><input type="range" id="chartFromRange" min="0" max="1" value="0" aria-label="${tr('lw.chartFrom')}"><input type="range" id="chartToRange" min="0" max="1" value="1" aria-label="${tr('lw.chartTo')}"></div></div></div></section></main>
 <div class="overlay hidden" id="overlay"><div class="panel"><h3 data-i18n="lw.importTitle">${tr('lw.importTitle')}</h3><div class="import-filter"><div class="filter-wrap"><input id="impFilter" data-i18n-ph="lw.filterVars" placeholder="${tr('lw.filterVars')}"><button class="filter-clear" id="impFilterClear" type="button" data-i18n-title="lw.clearFilter" title="${tr('lw.clearFilter')}" aria-label="${tr('lw.clearFilter')}">×</button></div><button class="secondary" id="impUserOnly" type="button" data-i18n="sb.userVarsOnly" data-i18n-title="sb.userVarsOnlyTitle" title="${tr('sb.userVarsOnlyTitle')}" aria-pressed="false">${tr('sb.userVarsOnly')}</button></div>${samplingHint("impSamplingHint")}<div class="imp-meta" id="impCount"></div><div class="import-notices"><div class="notice-area" id="importDiagnostics" hidden></div><div class="notice-area" id="lwNotice" hidden></div></div><div class="imp-list" id="impList"></div><div class="right"><button class="secondary" id="impCancel" data-i18n="lw.cancel">${tr('lw.cancel')}</button><button id="impAdd" data-i18n="lw.importSelected">${tr('lw.importSelected')}</button></div></div></div>
 <div class="overlay hidden" id="exportOverlay"><div class="panel export-panel"><h3 data-i18n="lw.exportTitle">${tr('lw.exportTitle')}</h3><div class="export-filename"><input type="text" id="exportFileName" maxlength="180" aria-label="${tr('lw.exportFileName')}" data-i18n-aria="lw.exportFileName"><span>.csv</span></div><div class="export-series-heading"><div class="export-label" id="exportSeriesLabel" data-i18n="lw.exportSeries">${tr('lw.exportSeries')}</div><div class="export-series-actions" role="group" aria-labelledby="exportSeriesLabel"><button type="button" id="exportSelectAll" data-i18n="lw.exportSelectAll">${tr('lw.exportSelectAll')}</button><button type="button" id="exportInvert" data-i18n="lw.exportInvert">${tr('lw.exportInvert')}</button></div></div><input type="search" id="exportSearch" class="export-search" placeholder="${tr('lw.exportSearch')}" data-i18n-ph="lw.exportSearch" aria-label="${tr('lw.exportSearch')}" data-i18n-aria="lw.exportSearch"><div class="export-series" id="exportSeries"></div><div class="export-custom" id="exportCustom"><div class="export-timeline-title" data-i18n="lw.exportTimeline">${tr('lw.exportTimeline')}</div><div class="export-axis-labels"><span id="exportAxisStart">00:00</span><span id="exportAxisEnd">00:00</span></div><div class="range-timeline export-timeline"><div class="range-fill export-range-fill" id="exportRangeFill"></div><input type="range" id="exportFromRange" min="0" max="1" value="0" aria-label="${tr('lw.exportFrom')}"><input type="range" id="exportToRange" min="0" max="1" value="1" aria-label="${tr('lw.exportTo')}"></div><div class="export-selection" id="exportSelection"></div></div><div class="notice-area" id="exportWarn" hidden></div><div class="right"><button class="secondary" id="exportCancel" data-i18n="lw.cancel">${tr('lw.cancel')}</button><button id="exportApply" data-i18n="lw.exportSave">${tr('lw.exportSave')}</button></div></div></div>
-<script>window.__CFG__=${jsonForScript(conf)};window.__LANG__=${jsonForScript(L)};window.__I18N__=${i18nJson};window.__BUILD_CSV__=(()=>{const createSampleTimeFormatter=${createSampleTimeFormatter.toString()};return ${buildCsv.toString()};})();</script><script>
+<script>window.__CFG__=${jsonForScript(conf)};window.__LANG__=${jsonForScript(L)};window.__I18N__=${i18nJson};</script><script>
 ${liveWatchViewport}
 </script><script>
 ${liveWatchRenderer}
 </script></body></html>`;
 }
-module.exports = { getLiveWatchContent, buildCsv, csvDataRowCount };
+module.exports = { getLiveWatchContent };

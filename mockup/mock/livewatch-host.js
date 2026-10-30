@@ -24,14 +24,12 @@
         var archive = [];
         var archiveLimit = Math.min(20000, Math.max(1, options.archiveLimit || 20000));
         var archiveTruncated = false;
-        var history = root.EmberProbeMockHistory ? new root.EmberProbeMockHistory.ChartHistoryStore() : null;
+        var history = new root.EmberProbeMockHistory.ChartHistoryStore();
         var historyRevision = 0,
             historySignature = "",
-            snapshotId = null,
             lastValues = 0,
             lastStatus = 0;
         function configureHistory() {
-            if (!history) return;
             var signature = JSON.stringify(watchItems);
             if (signature !== historySignature) {
                 var items = new Map();
@@ -144,17 +142,15 @@
                 return item.name;
             });
             var samples = simulator.scalarSamples(names, t);
-            if (history) {
-                configureHistory();
-                if (t - lastStatus >= 80) {
-                    send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
-                    lastStatus = t;
-                }
-                if (t - lastValues >= 50) {
-                    send({ type: "chartValues", samples: samples, t: t });
-                    lastValues = t;
-                }
-            } else send({ type: "liveSample", samples: samples, t: t });
+            configureHistory();
+            if (t - lastStatus >= 80) {
+                send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+                lastStatus = t;
+            }
+            if (t - lastValues >= 50) {
+                send({ type: "chartValues", samples: samples, t: t });
+                lastValues = t;
+            }
             var composite = names
                 .map(function (name) {
                     return simulator.compositeSample(name, t);
@@ -180,7 +176,7 @@
             composite.forEach(function (sample) {
                 flatten(sample.tree, sample.name);
             });
-            if (history) history.append("mock", archivedSamples, t);
+            history.append("mock", archivedSamples, t);
             if (archivedSamples.length) archive.push({ t: t, samples: archivedSamples });
             if (archive.length > archiveLimit) {
                 archive.splice(0, archive.length - archiveLimit);
@@ -259,8 +255,7 @@
         function sendReady() {
             sendBackground();
             configureHistory();
-            if (history)
-                send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
+            send({ type: "chartHistoryStatus", ...history.status("mock"), historyRevision: historyRevision });
             send({ type: "seriesStyles", styles: styles });
             send({ type: "watchList", items: watchItems, resetValues: true });
             sendVariableList();
@@ -282,9 +277,8 @@
             switch (message.type) {
                 case "chartViewport":
                 case "chartFreeze":
-                case "chartResume":
-                case "chartExportInfo": {
-                    if (!history || message.historyRevision !== historyRevision) break;
+                case "chartResume": {
+                    if (message.historyRevision !== historyRevision) break;
                     configureHistory();
                     try {
                         var result;
@@ -296,14 +290,11 @@
                                 message.width,
                                 message.snapshotId
                             );
-                        else if (message.type === "chartFreeze") {
-                            result = history.freeze("mock");
-                            snapshotId = result.snapshotId;
-                        } else if (message.type === "chartResume") {
+                        else if (message.type === "chartFreeze") result = history.freeze("mock");
+                        else {
                             history.resume("mock");
-                            snapshotId = null;
                             result = {};
-                        } else result = history.status("mock", message.snapshotId);
+                        }
                         send({
                             type: message.type + "Result",
                             ...result,
@@ -419,47 +410,31 @@
                     archive = [];
                     archiveTruncated = false;
                     historyRevision = message.historyRevision;
-                    if (history) history.clear("mock");
-                    snapshotId = null;
+                    history.clear("mock");
                     send({ type: "samplingHistoryCleared", historyRevision: message.historyRevision });
                     break;
                 case "exportCsv": {
-                    var csv = message.csv;
-                    var names = Array.isArray(message.names) ? message.names : [];
-                    if (typeof csv !== "string") {
-                        if (history && message.backendHistory) {
-                            var source = history._source("mock", message.source === "snapshot" ? snapshotId : null);
-                            csv = root.EmberProbeMockCsv.buildCsv(
-                                names.map(displayName),
-                                names.map(function (name) {
-                                    return source.series.has(name)
-                                        ? Array.from(history.points(source.series.get(name)))
-                                        : [];
-                                }),
-                                { from: message.fromMs, to: message.toMs }
-                            );
-                        } else {
-                            var available = archiveInfo(false).variables;
-                            names = Array.from(new Set(names)).filter(function (name) {
-                                return available.indexOf(name) >= 0;
-                            });
-                            var buffers = names.map(function (name) {
-                                return archive.flatMap(function (row) {
-                                    return row.samples
-                                        .filter(function (sample) {
-                                            return sample.name === name;
-                                        })
-                                        .map(function (sample) {
-                                            return { t: row.t, v: sample.value };
-                                        });
-                                });
-                            });
-                            csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
-                                from: message.fromMs,
-                                to: message.toMs
-                            });
+                    var available = archiveInfo(false).variables;
+                    var names = Array.from(new Set(Array.isArray(message.names) ? message.names : [])).filter(
+                        function (name) {
+                            return available.indexOf(name) >= 0;
                         }
-                    }
+                    );
+                    var buffers = names.map(function (name) {
+                        return archive.flatMap(function (row) {
+                            return row.samples
+                                .filter(function (sample) {
+                                    return sample.name === name;
+                                })
+                                .map(function (sample) {
+                                    return { t: row.t, v: sample.value };
+                                });
+                        });
+                    });
+                    var csv = root.EmberProbeMockCsv.buildCsv(names.map(displayName), buffers, {
+                        from: message.fromMs,
+                        to: message.toMs
+                    });
                     var rows = root.EmberProbeMockCsv.csvDataRowCount(csv);
                     var ok = rows > 0 && triggerDownload(csv, message.fileName);
                     if (!ok) send({ type: "liveError", key: "lw.noDataToExport" });

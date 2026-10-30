@@ -6,6 +6,7 @@ const A = require("../src/webview/liveWatch/analysisState");
 const { SeriesStyleStore } = require("../src/services/seriesStyleStore");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { chartHistoryHost } = require("./helpers/chart-history-host");
 
 (async () => {
     const record = Object.create(null);
@@ -52,20 +53,6 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         },
         { item: { name: "x" }, arr: [{ t: 40, v: 4 }] }
     ];
-    assert.equal(I.read(series, "x", 15).v, 1);
-    assert.equal(I.read(series, "x", 30), null);
-    assert.equal(I.read(series, "missing", 15), null);
-    assert.equal(I.read(series, "x", 40).v, 4);
-    assert.equal(I.nearest([], 0), null);
-    assert.equal(
-        I.delta({ v: 0, valueText: "18446744073709551614" }, { v: 0, valueText: "18446744073709551615" }),
-        "1"
-    );
-    assert.equal(I.delta({ v: 1.5 }, { v: 2.5 }), "1");
-    assert.equal(I.delta(null, { v: 1 }), null);
-    assert.equal(I.adjacent(series, 20, 1), 40);
-    assert.equal(I.adjacent(series, 20, -1), 10);
-    assert.equal(I.adjacent(series, 40, 1), 40);
     const geometry = ["b", "a"].map((name) => ({
         name,
         points: [
@@ -81,50 +68,31 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
     assert.deepEqual(I.hit(geometry, null), []);
     assert.equal(I.hit([{ name: "dot", points: [{ x: 0, y: 0, raw: { t: 0, v: 0 } }] }], { x: 3, y: 4 }).length, 1);
 
-    const analysis = A.create(),
-        data = {
-            x: [
-                { t: 10, v: 1 },
-                { t: 20, v: 2 }
-            ]
-        };
-    A.freeze(analysis, data, 1);
-    data.x[1].v = 99;
-    A.freeze(analysis, data, 1);
-    assert.equal(analysis.snapshot.x[0].v, 2);
-    let hidden = A.focus(analysis, { z: true }, ["x", "y", "z"], "x");
-    hidden = A.focus(analysis, hidden, ["x", "y", "z"], "y");
+    const analysis = A.create();
+    const hidden = A.focus(analysis, { z: true }, ["x", "y", "z"], "x");
+    A.focus(analysis, hidden, ["x", "y", "z"], "y");
     assert.deepEqual(A.restore(analysis, ["x", "y", "z", "new"]), { x: false, y: false, z: true, new: false });
-    A.remove(analysis, ["x"]);
-    assert.ok(!analysis.snapshot.x);
-    A.resume(analysis);
-    assert.equal(analysis.snapshot, null);
 
-    const graph = render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en"));
+    const graph = render(getLiveWatchContent({}, "en"));
     try {
         const w = graph.window,
-            doc = graph.document;
+            doc = graph.document,
+            host = chartHistoryHost(graph);
         Object.defineProperties(doc.getElementById("chart"), {
             clientWidth: { value: 700 },
             clientHeight: { value: 400 }
         });
         const scalar = (name) => ({ name, address: 0x20000000, size: 4, type: "u32" });
         graph.send({ type: "watchList", items: [scalar("a"), scalar("b"), scalar("c")] });
-        graph.send({
-            type: "liveSample",
-            samples: [
-                { name: "a", value: 1, t: 1000 },
-                { name: "b", value: 2, t: 1000 }
-            ]
-        });
-        graph.send({
-            type: "liveSample",
-            samples: [
-                { name: "a", value: 3, t: 2000 },
-                { name: "b", value: 4, t: 2000 }
-            ]
-        });
-        w.draw(100);
+        host.samples([
+            { name: "a", value: 1, t: 1000 },
+            { name: "b", value: 2, t: 1000 }
+        ]);
+        host.samples([
+            { name: "a", value: 3, t: 2000 },
+            { name: "b", value: 4, t: 2000 }
+        ]);
+        host.draw(100);
         assert.equal(doc.querySelector(".top .bar"), null, "the redundant chart title row is removed");
         assert.equal(doc.getElementById("sideToggle").previousElementSibling, doc.getElementById("dot"));
         assert.equal(doc.getElementById("langToggle"), null, "the chart has no language toggle");
@@ -163,28 +131,27 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         doc.getElementById("chart").dispatchEvent(
             new w.MouseEvent("click", { button: 0, clientX: hitPoint.x, clientY: hitPoint.y })
         );
+        host.pump();
         assert.ok(w.frozen, "click identifies its own position without waiting for a hover frame");
         w.chartState.pointer = { x: hitPoint.x, y: hitPoint.y };
-        w.dirty = true;
-        w.draw(150);
+        host.draw(150);
         assert.equal(doc.getElementById("curveTooltip").textContent, "a: 1");
         const nextPoint = w.Inspection.pointAt(
             w.chartState.curveGeometry.value[0],
             w.chartState.curveGeometry.value[0].raw.length - 1
         );
         w.chartState.pointer = { x: nextPoint.x, y: nextPoint.y };
-        w.dirty = true;
-        w.draw(250);
+        host.draw(250);
         assert.equal(doc.getElementById("curveTooltip").textContent, "a: 3", "frozen hover updates at new position");
         const otherPoint = w.Inspection.pointAt(
             w.chartState.curveGeometry.value[1],
             w.chartState.curveGeometry.value[1].raw.length - 1
         );
         w.chartState.pointer = { x: otherPoint.x, y: otherPoint.y };
-        w.dirty = true;
-        w.draw(350);
+        host.draw(350);
         assert.equal(doc.getElementById("curveTooltip").textContent, "b: 4", "frozen hover can inspect another series");
         w.resumeChart();
+        host.pump();
         const card = doc.querySelector('[data-series-name="b"]');
         w.chartState.pointer = { x: otherPoint.x, y: otherPoint.y };
         w.chartState.hits = [{ name: "b", point: { t: 2000, v: 4 } }];
@@ -196,14 +163,13 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         card.dispatchEvent(new w.Event("pointerleave"));
         w.draw(370);
         assert.equal(doc.querySelector(".curve-emphasis"), null);
-        graph.send({ type: "liveSample", samples: [{ name: "b", value: 5, t: 2100 }] });
-        w.draw(470);
+        host.samples([{ name: "b", value: 5, t: 2100 }]);
+        host.draw(470);
         assert.equal(doc.querySelector(".curve-emphasis"), null, "new samples cannot restore stale card hover");
         const oldColor = w.colorFor("b"),
             count = graph.messages.length;
         doc.querySelector(".swatch").click();
         assert.equal(graph.messages.length, count, "hiding never alters sampling subscription");
-        assert.equal(w.data.a.length, 2);
         assert.equal(doc.querySelector(".curve-toggle").getAttribute("aria-pressed"), "false");
         doc.querySelector(".var-name").click();
         assert.equal(w.hidden.a, false, "clicking the scalar name restores the curve");
@@ -231,12 +197,18 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         doc.body.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Alt", bubbles: true }));
         assert.equal(w.frozen, false, "Alt no longer freezes the chart");
         w.freezeChart();
-        for (let i = 0; i < 105; i++)
-            graph.send({ type: "liveSample", samples: [{ name: "a", value: i, t: 3000 + i }] });
-        assert.equal(w.retainedPoints(w.data.a).length, 100);
+        host.pump();
+        for (let i = 0; i < 105; i++) host.samples([{ name: "a", value: i, t: 3000 + i }]);
         assert.equal(w.latest.a, 104);
-        assert.equal(w.analysis.snapshot.a.length, 2);
-        assert.equal(w.chartData().find((s) => s.item.name === "a").arr[0].v, 1);
+        host.draw(480);
+        assert.equal(
+            w
+                .chartData()
+                .find((s) => s.item.name === "a")
+                .arr.at(-1).v,
+            3,
+            "a frozen chart keeps drawing its snapshot"
+        );
         w.showExport();
         assert.equal(doc.getElementById("exportSource"), null);
         assert.equal(graph.messages.at(-1).type, "samplingArchiveInfo", "frozen charts export full history");
@@ -250,28 +222,19 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         });
         w.applyExport();
         assert.equal(graph.messages.at(-1).type, "exportCsv");
-        assert.equal(graph.messages.at(-1).source, undefined);
-        assert.equal(graph.messages.at(-1).csv, undefined);
         w.removeVar("a");
         assert.equal(w.colorFor("b"), oldColor);
-        assert.ok(!w.analysis.snapshot.a);
         w.resumeChart();
+        host.pump();
         assert.equal(w.frozen, false);
         w.draw(500);
         assert.equal(w.chartState.autoY, false);
         w.clearHistory();
-        graph.send({ type: "samplingHistoryCleared", historyRevision: w.historyRevision });
-        graph.send({ type: "liveSample", samples: [{ name: "b", value: 1, t: 1000 }] });
-        graph.send({ type: "liveSample", samples: [{ name: "b", value: 2, t: 1100 }] });
-        assert.equal(
-            doc.getElementById("rate").textContent,
-            "0.0kb/s | 10.0Hz",
-            "delivery bursts do not distort measured acquisition rate"
-        );
+        host.pump();
+        host.samples([{ name: "b", value: 1, t: 1000 }]);
         w.clearHistory();
-        assert.equal(w.analysis.snapshot, null);
-        graph.send({ type: "samplingHistoryCleared", historyRevision: w.historyRevision });
-        w.draw(600);
+        host.pump();
+        host.draw(600);
         assert.ok(doc.getElementById("chartEmpty").textContent.includes("Waiting"));
         graph.send({ type: "watchList", items: [] });
         w.draw(700);
@@ -289,11 +252,10 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.addSymbol(symbol);
         assert.equal(doc.querySelector(".comp-body .comp-note"), null, "omit the member plotting hint");
         doc.querySelector(".member-name").click();
-        graph.send({ type: "liveSample", samples: [{ name: "sensor.x", value: 8, t: 1000 }] });
+        host.samples([{ name: "sensor.x", value: 8, t: 1000 }]);
         const before = graph.messages.length;
         doc.querySelector(".member-name").click();
         assert.equal(w.hidden["sensor.x"], true);
-        assert.equal(w.data["sensor.x"].length, 1);
         assert.equal(graph.messages.length, before);
         assert.ok(w.watch.some((v) => v.name === "sensor.x"));
         doc.querySelector(".member-swatch").click();
@@ -332,17 +294,17 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
     } finally {
         graph.close();
     }
-    const timeline = render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en"));
+    const timeline = render(getLiveWatchContent({}, "en"));
     try {
         const w = timeline.window;
+        const host = chartHistoryHost(timeline);
         const doc = timeline.document;
         const from = doc.getElementById("chartFromRange");
         const to = doc.getElementById("chartToRange");
         Object.defineProperty(doc.getElementById("chartTimeline"), "clientWidth", { value: 500 });
         timeline.send({ type: "watchList", items: [{ name: "tick", address: 0x20000000, type: "u32", size: 4 }] });
         const origin = 1000000;
-        const sample = (time) =>
-            timeline.send({ type: "liveSample", samples: [{ name: "tick", value: time, t: origin + time }] });
+        const sample = (time) => host.samples([{ name: "tick", value: time, t: origin + time }]);
         const sync = () => {
             w.syncTimeBounds();
             w.refreshChartTimeline();

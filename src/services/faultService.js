@@ -16,7 +16,7 @@ class FaultService {
         let symbolication = "ok";
         try {
             const functions = functionsProvider() || [];
-            // symbolize 同时产出可读显示名与原始（mangled）名，供核对。
+            // symbolize returns both the readable display name and the raw (mangled) name for cross-checking.
             const symbolize = (hex) => {
                 const fn = this.elfSymbols.nearestFunction(functions, parseInt(hex, 16));
                 if (!fn) return { display: "", raw: "" };

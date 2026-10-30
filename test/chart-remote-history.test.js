@@ -4,7 +4,7 @@ const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
 const { encodeViewport } = require("../src/webview/liveWatch/chartTransport");
-const page = render(getLiveWatchContent({ backendHistory: true, frequencyHz: 200 }, "en"));
+const page = render(getLiveWatchContent({ frequencyHz: 200 }, "en"));
 try {
     const w = page.window,
         canvas = page.document.getElementById("chart");
@@ -26,7 +26,6 @@ try {
     w.hidden.b = true;
     page.send({ type: "chartValues", samples: [{ name: "b", value: 10000, t: 51000 }] });
     assert.strictEqual(w.latest.b, 10000);
-    assert.strictEqual(w.data.b.length, 0, "silent samples never enter Webview history");
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
     function request() {
         w.remoteHistory.lastRequest = -Infinity;
@@ -82,10 +81,7 @@ try {
     w.applyExport();
     const exported = page.messages.at(-1);
     assert.strictEqual(exportInfo.type, "samplingArchiveInfo");
-    assert.strictEqual(exported.backendHistory, undefined);
-    assert.strictEqual(exported.source, undefined);
     assert.deepStrictEqual(exported.names, ["a", "b"]);
-    assert.ok(!exported.csv, "export requests original backend history");
     w.resumeChart();
     const stale = request();
     w.clearHistory();
@@ -100,7 +96,7 @@ try {
 }
 
 for (const follow of [false, true]) {
-    const delayed = render(getLiveWatchContent({ backendHistory: true }, "en"));
+    const delayed = render(getLiveWatchContent({}, "en"));
     try {
         const w = delayed.window;
         Object.defineProperties(delayed.document.getElementById("chart"), {
@@ -166,7 +162,7 @@ for (const [index, change] of [
         w.hidden.value = true;
     }
 ].entries()) {
-    const changed = render(getLiveWatchContent({ backendHistory: true }, "en"));
+    const changed = render(getLiveWatchContent({}, "en"));
     try {
         const w = changed.window;
         Object.defineProperties(changed.document.getElementById("chart"), {
@@ -209,7 +205,7 @@ for (const [index, change] of [
     }
 }
 
-const reloaded = render(getLiveWatchContent({ backendHistory: true }, "en"));
+const reloaded = render(getLiveWatchContent({}, "en"));
 try {
     const w = reloaded.window;
     reloaded.send({ type: "chartHistoryReady", historyRevision: 4 });
@@ -235,7 +231,7 @@ try {
     reloaded.close();
 }
 
-const hiddenPage = render(getLiveWatchContent({ backendHistory: true }, "en"));
+const hiddenPage = render(getLiveWatchContent({}, "en"));
 try {
     const w = hiddenPage.window;
     Object.defineProperties(hiddenPage.document.getElementById("chart"), {
@@ -302,7 +298,7 @@ try {
     hiddenPage.close();
 }
 
-const compositePage = render(getLiveWatchContent({ backendHistory: true }, "en"));
+const compositePage = render(getLiveWatchContent({}, "en"));
 try {
     const w = compositePage.window;
     Object.defineProperties(compositePage.document.getElementById("chart"), {
@@ -348,4 +344,28 @@ try {
     compositePage.close();
 }
 
-console.log("Remote viewport, silent history, stale replies, freeze and raw export UI tests passed");
+// Values in flight before the clear acknowledgement are dropped; only the matching acknowledgement resumes them.
+const clearing = render(getLiveWatchContent({}, "en"));
+try {
+    const w = clearing.window;
+    clearing.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 0x20000000 }] });
+    clearing.send({ type: "chartValues", samples: [{ name: "tick", value: 1, t: 1000 }], t: 1000 });
+    w.clearHistory();
+    const revision = w.historyRevision;
+    assert.strictEqual(clearing.messages.at(-1).type, "clearSamplingHistory");
+    clearing.send({ type: "chartValues", samples: [{ name: "tick", value: 99, t: 2000 }], t: 2000 });
+    assert.strictEqual(w.latest.tick, null, "values sent before the clear acknowledgement are discarded");
+    clearing.send({ type: "samplingHistoryCleared", historyRevision: revision - 1 });
+    assert.strictEqual(w.historyClearPending, true, "an older acknowledgement does not end the clear");
+    clearing.send({ type: "samplingHistoryCleared", historyRevision: revision });
+    clearing.send({ type: "chartValues", samples: [{ name: "tick", value: 7, t: 3000 }], t: 3000 });
+    assert.strictEqual(w.latest.tick, 7);
+    w.clearHistory();
+    clearing.send({ type: "debugSessionChanged" });
+    assert.strictEqual(w.historyClearPending, false, "session changes clear the view without erasing the archive");
+    clearing.assertHealthy();
+} finally {
+    clearing.close();
+}
+
+console.log("Remote viewport, silent history, stale replies, freeze, clear races and raw export UI tests passed");

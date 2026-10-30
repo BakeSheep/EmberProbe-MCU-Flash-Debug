@@ -332,7 +332,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         await fs.rm(restoreDir, { recursive: true, force: true });
     }
 
-    const page = render(getLiveWatchContent({ backendHistory: true }, "en"));
+    const page = render(getLiveWatchContent({}, "en"));
     try {
         page.send({
             type: "chartHistoryStatus",

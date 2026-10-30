@@ -12,7 +12,6 @@ const { ReplFocusRestorer } = require("./services/replFocus");
 let activeProvider = null;
 
 function activate(context) {
-    console.log("MCU_VSCODE 下载与调试器已激活！");
     const provider = new MainViewProvider(context);
     activeProvider = provider;
     const replFocus = new ReplFocusRestorer({ focusRepl: () => vscode.commands.executeCommand("workbench.debug.action.focusRepl") });
@@ -134,7 +133,8 @@ function activate(context) {
     provider.scheduleGdbWarmup();
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
-    // 支持 MCP API 的宿主注册 server definition provider；旧版本安静跳过，外部客户端仍可用启动器。
+    // Hosts with the MCP API register a server definition provider; older hosts skip it quietly, and external clients
+    // can still use the launcher.
     const mcpRegistered = provider.activateMcp();
     if (process.env.EMBERPROBE_E2E === "1") {
         return { debugTestProvider: provider, mcpRegistered, viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
@@ -147,5 +147,4 @@ async function deactivate() {
     if (provider) {
         await provider.shutdown();
     }
-    console.log("MCU_VSCODE 下载与调试器已停用！");
 }

@@ -1,19 +1,11 @@
 "use strict";
 const {
-    CORTEX_M_PARTS,
-    IMPLEMENTERS,
     STM32_UID_BASE,
-    STM32_IDCODE_BASE,
     STM32_FLASHSIZE_BASE,
     CPUID_ADDR,
-    CPUID_HEX,
     ROM_PIDR4_ADDR,
     ROM_PIDR0_ADDR,
     ROM_CIDR_ADDR,
-    CLASSIC_IDCODE_ADDR,
-    FALLBACK_FLASHSIZE_ADDRS,
-    FALLBACK_UID_ADDRS,
-    ALL_IDCODE_ADDRS,
     ALL_FLASHSIZE_ADDRS,
     ALL_UID_ADDRS,
     IDCODE_ADDR_SET,
@@ -21,16 +13,11 @@ const {
     UID_ADDR_SET,
     DEV_ID_FAMILY,
     coreMatchesSeries,
-    JEP106_DESIGNERS,
-    ST_JEP106_KEY,
-    ARM_JEP106_KEY,
-    COMPAT_BRANDS,
     decodeRomPidr,
     assessAuthenticity,
     deriveVendor,
     chooseIdcode,
     decodeCpuid,
-    parseMdwWord,
     parseMdwDump,
     parseRegLine,
     parseKv,
@@ -43,7 +30,6 @@ const {
     idcodeBaseForTarget,
     flashSizeBaseForTarget,
     formatUid,
-    buildChipInfoCommands,
     normalizeFlashSize
 } = require("./rules");
 const { parseLine } = require("../openocdRunner");
@@ -53,17 +39,19 @@ function createChipParser(target) {
         idcodeBase = idcodeBaseForTarget(target),
         flashSizeBase = flashSizeBaseForTarget(target);
     const info = {
-        // 内核
+        // Core
         core: "",
         coreRevision: "",
         cpuid: "",
         implementer: "",
-        // CPUID 内核与 DEV_ID/目标推导系列不一致时的说明（空表示一致或无法判定）
+        // Explains a CPUID core that disagrees with the series derived from DEV_ID or the target (empty when consistent
+        // or unknown)
         coreMismatch: "",
-        // 芯片系列
+        // Chip series
         chip: "",
         series: seriesFromTarget(options.target),
-        // 厂商指纹（ROM 表 JEP106）与原厂/兼容判定；designer=指纹确认的芯片厂商，romDesigner=CoreSight ROM 表原始设计者
+        // Vendor fingerprint (JEP106 from the ROM table) and genuine/compatible verdict; designer is the vendor the
+        // fingerprint confirms, romDesigner the raw CoreSight ROM table designer
         designer: "",
         romDesigner: "",
         designerCode: "",
@@ -71,7 +59,7 @@ function createChipParser(target) {
         authenticity: "",
         compatVendor: "",
         compatBrand: "",
-        // 芯片信息
+        // Chip information
         idcode: "",
         deviceId: "",
         revId: "",
@@ -80,7 +68,7 @@ function createChipParser(target) {
         flashDriver: "",
         endian: "",
         uid: "",
-        // 调试连接
+        // Debug connection
         probeName: "",
         probeVersion: "",
         probeHardwareVersion: "",
@@ -90,7 +78,7 @@ function createChipParser(target) {
         clock: "",
         voltage: "",
         targetName: "",
-        // 运行信息
+        // Run state
         targetState: "",
         stateError: "",
         haltReason: "",
@@ -101,11 +89,11 @@ function createChipParser(target) {
     const errors = [];
     const rawTail = [];
     const rawAll = [];
-    // 全家族扫描的原始读数（地址 → 值），收尾时按真实家族选值
+    // Raw reads from the all-family scan (address -> value); the real family picks among them when the parser closes
     const idcReads = {},
         flsReads = {},
         uidReads = {};
-    let idcodeLog = ""; // OpenOCD flash 驱动自报的 device id（仅作最后回退）
+    let idcodeLog = ""; // Device id reported by the OpenOCD flash driver (last resort only)
     let transportLog = "";
     const handleLine = (raw) => {
         const clean = raw;
@@ -115,7 +103,7 @@ function createChipParser(target) {
         rawAll.push(clean);
         if (rawAll.length > 400) rawAll.shift();
 
-        // 1) 自定义标记：目标名称/状态/字节序/传输协议
+        // Custom markers: target name, state, endianness and transport
         const kv = parseKv(clean);
         if (kv) {
             if (kv.key === "name" && kv.value) info.targetName = kv.value;
@@ -125,13 +113,14 @@ function createChipParser(target) {
             else if (kv.key === "transport" && !info.transport) info.transport = normalizeTransport(kv.value);
             return;
         }
-        // 2) 寄存器行（仅在已暂停时 OpenOCD 才会输出）
+        // Register lines (OpenOCD prints them only while halted)
         const reg = parseRegLine(clean);
         if (reg && (reg.name === "pc" || reg.name === "sp" || reg.name === "lr")) {
             if (!info[reg.name]) info[reg.name] = reg.value;
             return;
         }
-        // 3) mdw 读取（CPUID / DBGMCU IDCODE / FLASHSIZE / UID），按地址分派——不依赖 flash 驱动的日志措辞
+        // mdw reads (CPUID / DBGMCU IDCODE / FLASHSIZE / UID), dispatched by address rather than by flash driver log
+        // wording
         const dump = parseMdwDump(clean);
         if (dump) {
             const a = dump.addr >>> 0;
@@ -139,13 +128,14 @@ function createChipParser(target) {
                 const d = decodeCpuid(dump.words[0]);
                 if (d) {
                     info.cpuid = d.raw;
-                    if (d.core && !info.core) info.core = d.core; // "processor detected" 行已给出内核时不覆盖
+                    // Keep the core already given by a "processor detected" line
+                    if (d.core && !info.core) info.core = d.core;
                     if (!info.coreRevision) info.coreRevision = d.revision;
                     info.implementer = d.implementer;
                 }
                 return;
             }
-            // ROM 表 PIDR/CIDR（厂商指纹）：收集三组字，统一在 close 时解码
+            // ROM table PIDR/CIDR (vendor fingerprint): collect the three word groups and decode them on close
             if (a === ROM_PIDR4_ADDR >>> 0 && dump.words.length >= 4) {
                 if (!info._pidr47) info._pidr47 = dump.words.slice(0, 4);
                 return;
@@ -158,7 +148,8 @@ function createChipParser(target) {
                 if (!info._cidr) info._cidr = dump.words.slice(0, 4);
                 return;
             }
-            // 身份寄存器全家族扫描：只收集原始读数，不在此处判断取舍（目标配置可能选错）
+            // All-family identity register scan: only collect raw reads here, without choosing (the target
+            // configuration may be wrong)
             if (IDCODE_ADDR_SET.has(a)) {
                 if (idcReads[a] == null) idcReads[a] = dump.words[0] >>> 0;
                 return;
@@ -173,13 +164,13 @@ function createChipParser(target) {
             }
         }
         let m;
-        // 5) 内核识别行：Info : [xxx] Cortex-M4 r0p1 processor detected（比 CPUID 更直观且更早出现）
+        // Core line such as "Info : [xxx] Cortex-M4 r0p1 processor detected" (clearer than CPUID and printed earlier)
         if (/processor detected/i.test(clean) && (m = clean.match(/\b(Cortex-[MAR]\d+(?:\+|P)?)\s+(r\d+p\d+)\b/i))) {
             if (!info.core) info.core = m[1];
             if (!info.coreRevision) info.coreRevision = m[2];
             return;
         }
-        // 6) 探针家族与版本
+        // Probe family and version
         if (/CMSIS-DAP/i.test(clean)) {
             if (!info.probeName) info.probeName = "CMSIS-DAP";
             if (!info.probeVersion) {
@@ -202,12 +193,12 @@ function createChipParser(target) {
             info.probeHardwareVersion = hardwareVersion[1];
             info.probeVersion = hardwareVersion[1];
         }
-        // 7) 传输协议（日志兜底：DAP 打印 SWD DPIDR；JTAG 打印 JTAG tap:）
+        // Transport (log fallback: DAP prints SWD DPIDR, JTAG prints "JTAG tap:")
         if (!transportLog) {
             if (/SWD DPIDR/i.test(clean)) transportLog = "SWD";
             else if (/JTAG tap:/i.test(clean)) transportLog = "JTAG";
         }
-        // 8) 停止原因（仅当发生 halt 事件时才会出现，通常不主动触发）
+        // Halt reason (only present after a halt event, which is usually not triggered)
         if (!info.haltReason) {
             const hr = clean.match(/halted due to\s+([^,]+)/i);
             if (hr) info.haltReason = hr[1].trim();
@@ -217,12 +208,12 @@ function createChipParser(target) {
             if (!info.flashDriver) info.flashDriver = m[1];
             if (!info.flashBase) info.flashBase = m[2];
         }
-        // 9.5) 部分驱动（如 H7）打印 "flash size probed value 2048"（单位 KB），补充非 "flash size =" 措辞
+        // Some drivers (H7, for example) print "flash size probed value 2048" in KiB instead of "flash size ="
         if (!info.flashSize) {
             const fp = clean.match(/flash size probed value\s+(\d+)/i);
             if (fp) info.flashSize = fp[1] + " KiB";
         }
-        // 10) 复用固件下载的日志解析：probe / adapter / voltage / chip / flash
+        // Reuse the firmware download log parser: probe, adapter, voltage, chip and flash
         const event = parseLine(clean);
         if (!event) return;
         if (event.stage === "probe") {
@@ -246,8 +237,9 @@ function createChipParser(target) {
         rawLines: () => rawAll.slice(),
         finish(code) {
             if (!info.transport && transportLog) info.transport = transportLog;
-            // IDCODE：先取任意候选地址上已知的 DEV_ID（目标选错也能命中），再采信 OpenOCD 自报值；
-            // 两者都没有时，未收录 DEV_ID 仅允许从目标家族的 IDCODE 地址回退。
+            // IDCODE: first take a known DEV_ID at any candidate address (this works even with the wrong target), then
+            // trust OpenOCD's own value. Without either, an unknown DEV_ID may only come from the target family's
+            // IDCODE address.
             const knownIdcode = chooseIdcode(idcReads);
             if (knownIdcode != null) info.idcode = "0x" + (knownIdcode >>> 0).toString(16).toUpperCase();
             else if (idcodeLog && idcodeBase) info.idcode = idcodeLog;
@@ -262,8 +254,9 @@ function createChipParser(target) {
                     info.revId = split.revId;
                 }
             }
-            // 由 DEV_ID 推断实际芯片家族，修正目标配置名推导的系列（用户选错 target 时仍能正确显示）。
-            // CPUID 内核与该家族不符时不采信 DEV_ID 改写系列，并标记不一致供界面提示。
+            // The family inferred from DEV_ID corrects the series derived from the target configuration name, so a
+            // wrongly chosen target still shows the right chip. If the CPUID core does not match that family, DEV_ID
+            // does not rewrite the series and the mismatch is flagged for the UI.
             let devFamily = "";
             if (info.deviceId && /^stm32/i.test(info.series)) {
                 const family = DEV_ID_FAMILY[parseInt(info.deviceId, 16)];
@@ -274,17 +267,19 @@ function createChipParser(target) {
                     if (family !== info.series) info.series = family;
                 }
             }
-            // 硬件实测的 flash 驱动名优先于目标配置名修正系列（避免用户选错 target 时显示错误系列）
+            // A flash driver name measured on hardware overrides the target configuration when correcting the series
             const hwSeries = seriesFromFlashDriver(info.flashDriver);
             if (hwSeries && hwSeries !== info.series && !devFamily) info.series = hwSeries;
             if (!info.coreMismatch && coreMatchesSeries(info.core, info.series) === false)
                 info.coreMismatch = `${info.core} ≠ ${info.series}`;
-            // Flash 容量：优先取“修正后家族”地址的寄存器值（权威，覆盖日志推导值），次取目标配置地址；
-            // 均未命中时仅对 STM32 系列接受任意候选地址的有效值（避免非 STM32 芯片展示杂值）
+            // Flash size: prefer the register at the corrected family's address (authoritative, overriding log-derived
+            // values), then the target configuration's address. If neither hits, accept a valid value at any candidate
+            // address only for STM32, so other chips do not show stray values.
             {
                 const seriesKey = String(info.series || "").toLowerCase();
                 const famFlashBase = lookupStmBase(STM32_FLASHSIZE_BASE, seriesKey);
-                // DEV_ID 已确认家族但本表未收录其地址（如 L1/L5/U5）时，其它家族地址上的读数只是杂值
+                // When DEV_ID confirms a family whose address is not in this table (L1/L5/U5, for example), reads at
+                // other families' addresses are noise
                 const knownLayoutElsewhere = Boolean(devFamily) && !famFlashBase;
                 let kb = null;
                 if (famFlashBase && flsReads[famFlashBase >>> 0] != null) kb = flsReads[famFlashBase >>> 0];
@@ -299,7 +294,7 @@ function createChipParser(target) {
                         }
                     }
                 }
-                // UID：同样按修正后家族 → 目标配置 → STM32 任意候选的顺序选值
+                // UID: same order as flash size: corrected family, target configuration, then any STM32 candidate
                 const famUidBase = lookupStmBase(STM32_UID_BASE, seriesKey);
                 let uidWords =
                     (famUidBase && uidReads[famUidBase >>> 0]) || (uidBase && uidReads[uidBase >>> 0]) || null;
@@ -313,8 +308,8 @@ function createChipParser(target) {
                 }
                 if (uidWords) info.uid = formatUid(uidWords);
             }
-            // 厂商指纹：解码 ROM 表 PIDR 得到 CoreSight 设计者，对 STM32 系列做原厂/兼容判定，
-            // 并推导芯片设计厂商（Arm 内核 ROM 表或读取失败时保持未知）
+            // Vendor fingerprint: decode the ROM table PIDR to get the CoreSight designer, judge genuine/compatible for
+            // STM32, and derive the chip vendor (unknown for Arm core ROM tables or failed reads)
             const rom = decodeRomPidr(info._pidr03, info._pidr47, info._cidr);
             if (rom) {
                 info.romDesigner = rom.designer;
@@ -329,7 +324,8 @@ function createChipParser(target) {
             delete info._pidr03;
             delete info._pidr47;
             delete info._cidr;
-            // 拿到芯片层关键信息即视为成功；仅有适配器层字段（探针名/时钟/目标名）但存在错误时仍报错
+            // Succeeds once chip-level information is known; with only adapter-level fields (probe name, clock, target
+            // name) any error is still reported
             const gotChip = info.core || info.chip || info.idcode || info.flashSize || info.uid;
             const gotAny = gotChip || info.targetName || info.clock || info.probeName;
             if (gotChip || (gotAny && !errors.length)) {

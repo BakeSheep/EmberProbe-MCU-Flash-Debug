@@ -1,86 +1,10 @@
 "use strict";
 const { parentPort, workerData, isMainThread } = require("worker_threads");
-const fsp = require("fs/promises");
-const path = require("path");
-const crypto = require("crypto");
 const { WINDOW_MS } = require("./services/chartHistoryStore");
 const { ArchiveChartHistoryStore } = require("./services/archiveChartHistoryStore");
-const { csvField, csvHeaderField } = require("./services/samplingArchive");
-const { createSampleTimeFormatter } = require("./services/sampleTime");
 const { readArchive } = require("./services/samplingArchiveFormat");
 const { serializeError } = require("./services/errorEnvelope");
 const { encodeViewport } = require("./webview/liveWatch/chartTransport");
-
-async function exportHistory(store, request) {
-    const capture = store.freeze(request.scope, "export", request.snapshotId);
-    const source = store._source(request.scope, capture.snapshotId);
-    const names = [...new Set(request.names)].filter((name) => source.series.get(name)?.count);
-    const outputPath = path.resolve(request.outputPath);
-    if (path.extname(outputPath).toLowerCase() !== ".csv") {
-        store.release(capture.snapshotId);
-        throw new Error("A CSV output path is required");
-    }
-    const temporary = path.join(
-        path.dirname(outputPath),
-        `.${path.basename(outputPath)}.${crypto.randomBytes(8).toString("hex")}.tmp`
-    );
-    let output;
-    try {
-        if (!names.length)
-            throw Object.assign(new Error("No retained samples are available"), { code: "CSV_EXPORT_EMPTY" });
-        const from = request.fromMs ?? -Infinity,
-            to = request.toMs ?? Infinity;
-        if (from > to) throw new Error("Invalid CSV range");
-        output = await fsp.open(temporary, "wx", 0o600);
-        let bytes = 0,
-            batch = "",
-            rows = 0;
-        const write = async (text) => {
-            bytes += Buffer.byteLength(text);
-            if (bytes > 64 * 1024 * 1024)
-                throw Object.assign(new Error("Chart CSV exceeds 64 MiB; use the archive export"), {
-                    code: "CSV_EXPORT_TOO_LARGE"
-                });
-            await output.write(text);
-        };
-        const displayNames = new Map(request.displayNames || []);
-        await write(
-            "\uFEFFtime," + names.map((name) => csvHeaderField(displayNames.get(name) || name)).join(",") + "\r\n"
-        );
-        const iterators = names.map((name) => store.points(source.series.get(name)));
-        const current = iterators.map((iterator) => iterator.next());
-        const iso = createSampleTimeFormatter();
-        while (current.some((entry) => !entry.done)) {
-            const time = Math.min(...current.map((entry) => (entry.done ? Infinity : entry.value.t)));
-            const cells = current.map((entry, i) => {
-                if (entry.done || entry.value.t !== time) return "";
-                let point = entry.value;
-                do {
-                    current[i] = iterators[i].next();
-                    if (!current[i].done && current[i].value.t === time) point = current[i].value;
-                } while (!current[i].done && current[i].value.t === time);
-                return point.v === null ? "" : csvField(point.valueText ?? point.v);
-            });
-            if (time < from || time > to) continue;
-            batch += `${iso(time)},${cells.join(",")}\r\n`;
-            rows++;
-            if (batch.length >= 65536) {
-                await write(batch);
-                batch = "";
-            }
-        }
-        if (batch) await write(batch);
-        await output.datasync();
-        await output.close();
-        output = null;
-        await fsp.rename(temporary, outputPath);
-        return { rows, seriesCount: names.length, outputPath };
-    } finally {
-        if (output) await output.close().catch(() => {});
-        await fsp.rm(temporary, { force: true }).catch(() => {});
-        store.release(capture.snapshotId);
-    }
-}
 
 async function restoreHistory(store, request) {
     if (!request.cutoff || !Number.isFinite(request.lastTimestampMs)) return store.status(request.scope);
@@ -174,8 +98,7 @@ function run(port, options = {}) {
     port.on("message", async ({ id, method, args = [] }) => {
         try {
             let result;
-            if (method === "export") result = await exportHistory(store, args[0]);
-            else if (method === "restore") result = await restoreHistory(store, args[0]);
+            if (method === "restore") result = await restoreHistory(store, args[0]);
             else if (
                 [
                     "configure",
@@ -227,4 +150,4 @@ function run(port, options = {}) {
     });
 }
 if (!isMainThread && require.main === module) run(parentPort, workerData);
-module.exports = { run, exportHistory, restoreHistory };
+module.exports = { run, restoreHistory };

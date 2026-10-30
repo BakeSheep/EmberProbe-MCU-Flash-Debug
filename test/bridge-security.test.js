@@ -82,7 +82,8 @@ const { AgentBridge, MAX_BODY, requestMeta } = require("../src/agentBridge");
         assert.strictEqual(calls, 3, "aborted uploads must not execute a method");
         assert.strictEqual((await send()).status, 200, "server must survive an aborted upload");
 
-        // 调用方请求头只用于定位与审计：不能替代或绕过 token，且只接受已知通道与可解码的值
+        // Caller request headers only locate and audit: they cannot replace or bypass the token, and only known
+        // channels and decodable values are accepted
         const metas = [];
         bridge.handler = async (_method, _params, meta) => {
             metas.push(meta);

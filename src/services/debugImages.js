@@ -256,9 +256,6 @@ class DebugImages {
         const lines = output.split(/\r?\n/).filter((line) => line.startsWith("Section "));
         return lines.length > 0 && lines.every((line) => SECTION_MATCHED.test(line)) ? "matched" : "unknown";
     }
-    async firmwareUnchanged() {
-        return (await this.compareSections()) === "matched";
-    }
     // Managed launches pass the sidebar's programming clock. It is raised through OpenOCD only for Cortex-M
     // over SWD and only when CPUID reads back unchanged; anything else downloads at the script clock.
     // Returns the effective kHz, or 0 when the clock was left alone.

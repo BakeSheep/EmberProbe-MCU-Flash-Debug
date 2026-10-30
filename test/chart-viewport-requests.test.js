@@ -8,7 +8,7 @@ const { encodeViewport } = require("../src/webview/liveWatch/chartTransport");
 function scenario(run) {
     let now = 10000;
     const page = render(
-        getLiveWatchContent({ backendHistory: true }, "en"),
+        getLiveWatchContent({}, "en"),
         {},
         {
             beforeParse(w) {

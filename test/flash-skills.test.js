@@ -1,9 +1,9 @@
 "use strict";
 const { minimalElf } = require("./helpers/elf-fixture");
-// mcu-flash Agent Skill 中编程/校验两个入口的跨平台测试：
-// 通过 fake Agent Bridge 提供 EmberProbe 配置，用假 OpenOCD 可执行文件验证预检与执行路径。
-// Windows 上 Node 以 shell:false spawn .cmd/.sh 脚本会失败（EINVAL），因此 --execute 场景
-// 仅在 Unix 上运行；预检部分是纯 Node 逻辑，全平台执行。
+// Cross-platform tests of the mcu-flash Agent Skill's program and verify entry points: a fake Agent Bridge supplies the
+// EmberProbe configuration and a fake OpenOCD executable checks preflight and execution. Node cannot spawn .cmd/.sh
+// scripts with shell:false on Windows (EINVAL), so --execute cases run only on Unix; preflight is pure Node and runs
+// everywhere.
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -355,7 +355,7 @@ function lastJsonLine(stdout) {
         assert.ok(/^[0-9a-f]{64}$/.test(downloadPreflight.elfSha256));
         if (canRunFakeOpenOcd) assert.strictEqual(downloadPreflight.flashAuthorization.confirmationRequired, true);
         else assert.strictEqual(downloadPreflight.flashAuthorization, undefined);
-        // 任务2：配置成功时来源标记为 config，且没有降级诊断
+        // A successful config read marks the source as config, with no degradation diagnostics
         if (canRunFakeOpenOcd) assert.deepStrictEqual(downloadPreflight.diagnostics, []);
         else assert.strictEqual(downloadPreflight.diagnostics[0].error.code, "OPENOCD_EXECUTABLE_UNSUPPORTED");
         assert.deepStrictEqual(downloadPreflight.sources, {
@@ -394,7 +394,8 @@ function lastJsonLine(stdout) {
             assert.strictEqual(verified.verified, true);
             assert.strictEqual(verified.elf, canonicalFileSync(elf));
             assert.strictEqual(verified.elfSha256, downloadPreflight.elfSha256);
-            // openocdTail 逐行截断到 500 字符，命令断言必须基于返回的 commands 而非 stdout 回显。
+            // openocdTail truncates each line at 500 characters, so command assertions use the returned commands rather
+            // than the stdout echo.
             assert.ok(
                 verified.commands.join(" ").includes("-work-area-size 0"),
                 "verify should force host-side comparison without target work-area"
@@ -442,7 +443,8 @@ function lastJsonLine(stdout) {
             );
         }
 
-        // bridge 不可用时降级为工作区自动检测；大写扩展名的 ELF 也必须被发现（Linux 大小写敏感）
+        // Without a Bridge, fall back to workspace auto-detection; an ELF with an upper-case extension must also be
+        // found (Linux is case-sensitive)
         const bareRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-skills-bare-"));
         try {
             const upperElf = path.join(bareRoot, "APP.ELF");
@@ -461,7 +463,8 @@ function lastJsonLine(stdout) {
             const bareJson = firstJsonLine(bare.stdout);
             assert.strictEqual(bareJson.elf, canonicalFileSync(upperElf));
             assert.strictEqual(bareJson.ready, false);
-            // 任务2：Bridge 不可用时降级为自动检测，来源与诊断完整，且不得误报硬件故障
+            // Without a Bridge, auto-detection takes over with complete source and diagnostics and no false hardware
+            // fault
             assert.deepStrictEqual(bareJson.sources, {
                 elf: "auto",
                 target: "explicit",
@@ -477,13 +480,14 @@ function lastJsonLine(stdout) {
                 !/硬件未连接|hardware (?:not connected|disconnected)|probe (?:not connected|disconnected)|not attached/i.test(
                     JSON.stringify(bareJson)
                 ),
-                "配置不可用不得被解释为硬件未连接"
+                "an unavailable configuration is not reported as disconnected hardware"
             );
         } finally {
             fs.rmSync(bareRoot, { recursive: true, force: true });
         }
 
-        // 任务2：配置获取超时但显式参数完整时，预检仍可用，来源标记为 explicit，诊断保留原始超时
+        // A config read timeout with complete explicit arguments still allows preflight: the source is explicit and the
+        // diagnostics keep the original timeout
         const cfgFailRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-flash-cfgfail-"));
         const cfgFailElf = path.join(cfgFailRoot, "fw.elf");
         fs.writeFileSync(cfgFailElf, minimalElf());

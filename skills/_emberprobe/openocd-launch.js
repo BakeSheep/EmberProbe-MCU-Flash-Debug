@@ -258,8 +258,8 @@ function resolveConfigFile(scriptsRoot, kind, config) {
     return resolved;
 }
 
-// OpenOCD 会优先从 cwd 查找相对脚本。所有启动入口都应该使用这个解析结果，
-// 并以 scriptsRoot 作为 OpenOCD 的 cwd，防止工作区中的 target/ / interface/ / mem_helper.tcl 遮蔽官方脚本。
+// OpenOCD looks up relative scripts in cwd first. Every launch path should use this result and run OpenOCD with
+// scriptsRoot as cwd, so target/, interface/ or mem_helper.tcl in the workspace cannot shadow the official scripts.
 function resolveOpenOcdLaunch(executable, probe, target, transport = "auto") {
     normalizeTransport(transport);
     const resolvedExecutable = resolveExecutablePath(executable);

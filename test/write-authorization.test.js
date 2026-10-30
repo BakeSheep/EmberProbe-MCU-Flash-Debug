@@ -112,12 +112,12 @@ function makePlan(overrides = {}) {
     assert.strictEqual(auth.isTrusted(plan), false, "future timestamps must not extend trust");
     await storage.update("agent.writeTrusted", savedTrust);
 
-    // workspace 信任 24 小时后过期，需重新走两阶段确认
+    // Workspace trust expires after 24 hours and needs the two-stage confirmation again
     now += 24 * 60 * 60 * 1000 + 1;
     assert.strictEqual(auth.isTrusted(plan), false);
     assert.strictEqual(auth.authorize(plan).authorized, false);
 
-    // 旧版本存储的布尔 true 一律视为未信任，升级后强制重新确认
+    // Boolean true values stored by older versions count as untrusted, forcing reconfirmation after the upgrade
     await auth.trustWorkspace(plan);
     now -= 24 * 60 * 60 * 1000;
     await storage.update("agent.writeTrusted", true);

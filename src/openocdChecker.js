@@ -1,10 +1,9 @@
 "use strict";
-// OpenOCD 环境探测、内置运行时准备与路径配置。
-// 设计要点：
-// - 不修改系统 PATH / rc 文件 / 注册表，零系统副作用；
-// - 通过 emberprobe.openocdPath 扩展配置项指向 openocd 绝对路径即可运行；
-// - 内存级缓存避免每次烧录/调试/实时查看都重新探测；
-// - 所有检测与准备状态通过回调交给侧边栏展示，不发送通知弹窗。
+// OpenOCD detection, bundled runtime preparation and path configuration. Design points:
+// - never changes the system PATH, rc files or registry;
+// - runs with emberprobe.openocdPath pointing at an absolute openocd path;
+// - an in-memory cache avoids probing again for every programming, debug or live watch run;
+// - detection and preparation state reach the sidebar through callbacks, never notification pop-ups.
 
 const { resolveExecutablePath } = require("./openocdScripts");
 const fs = require("fs");
@@ -20,7 +19,7 @@ const {
     checkCompatibility
 } = require("../skills/_emberprobe/openocd-policy");
 
-// 内存级探测结果缓存
+// In-memory probe result cache
 let _cachedResult = null;
 // Verified bundled runtimes by executable path. Flash, debug and live starts each resolve the bundled default,
 // and a cold Windows start of `openocd --version` can take hundreds of milliseconds, so a runtime whose
@@ -45,8 +44,8 @@ function isCompatibleResult(result) {
     return Boolean(result && result.found && withCompatibility(result).compatible);
 }
 
-// 探测指定可执行文件是否为可运行的 OpenOCD。
-// spawn 失败（ENOENT）或 5s 内无响应均视为未找到；返回结构化结果供上层判断。
+// Checks whether an executable is a runnable OpenOCD. A spawn failure (ENOENT) or no response within 5 s counts as not
+// found; returns a structured result for the caller.
 function probeOpenOcd(executable) {
     const target = executable && String(executable).trim();
     if (!target) {
@@ -62,7 +61,8 @@ function probeOpenOcd(executable) {
         new Promise((resolve) => {
             let child;
             try {
-                // windowsHide 避免一闪而过的控制台窗口；shell:false 直接调用，避免 PATH 注入
+                // windowsHide avoids a flashing console window; shell:false calls the binary directly to avoid PATH
+                // injection
                 child = spawn(resolved, ["--version"], { windowsHide: true, shell: false });
             } catch (error) {
                 resolve({
@@ -119,8 +119,8 @@ function probeOpenOcd(executable) {
             child.on("close", (code) => {
                 const out = `${decodeLine(Buffer.concat(stdout))}\n${decodeLine(Buffer.concat(stderr))}`;
                 const version = parseVersion(out);
-                // 多数版本 --version 退出码为 0；个别老版本/特殊构建退出码非 0 但仍会打印标识，
-                // 只要输出含 "open on-chip debugger" 即视为可运行，避免误判。
+                // --version usually exits with 0; some old or special builds exit non-zero but still print their
+                // banner, so any output containing "open on-chip debugger" counts as runnable.
                 if (version || /open on-chip debugger/i.test(out)) {
                     done(withCompatibility({ found: true, path: resolved, requested: target, version, error: "" }));
                 } else {
@@ -218,8 +218,8 @@ async function probeDefaultOpenOcd(executable, context, report) {
     }
 }
 
-// 将路径写入当前实际使用的配置层级。打开工作区时优先写入 Workspace，
-// 并同步替换值仍等于旧路径的 Folder 覆盖项，避免 Global 值被更高优先级设置遮蔽。
+// Writes the path to the configuration level actually in effect. With a workspace open it prefers Workspace and also
+// replaces Folder overrides still equal to the old path, so a higher-priority setting does not shadow the new value.
 async function persistOpenOcdPath(vscode, fsPath, previousPath) {
     const folders = vscode.workspace.workspaceFolders || [];
     const target = folders.length ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
@@ -239,7 +239,8 @@ async function persistOpenOcdPath(vscode, fsPath, previousPath) {
     return fsPath;
 }
 
-// 通过文件选择器让用户选中 openocd(.exe)，立即验证并写入扩展配置；返回最终路径或 null。
+// Lets the user pick openocd(.exe) in a file dialog, validates it and writes the extension setting; returns the final
+// path or null.
 async function pickOpenOcdPath(vscode, context, report, lang) {
     const isWin = process.platform === "win32";
     const previousPath = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
@@ -256,7 +257,8 @@ async function pickOpenOcdPath(vscode, context, report, lang) {
     const result = await probeOpenOcd(fsPath);
     if (isCompatibleResult(result)) {
         await persistOpenOcdPath(vscode, fsPath, previousPath);
-        // 配置变更监听会 resetCache；这里同步更新缓存，使本次后续动作立即可用
+        // The configuration change listener resets the cache; update it here as well so the rest of this action can use
+        // it immediately
         _cachedResult = result;
         reportStatus(report, {
             state: "ready",
@@ -294,8 +296,8 @@ function incompatibleStatus(result) {
     };
 }
 
-// 探测并通过侧边栏回调报告状态；不显示右下角通知。
-// 返回当前可执行路径（命中缓存或刚配置成功均可），未就绪返回 null。
+// Probes and reports the state through the sidebar callback, without notifications. Returns the current executable path
+// (cached or just configured), or null when not ready.
 async function resolveOpenOcdStatus(executable, context, probedResult, report) {
     const target = String(executable || "").trim();
     const rawResult =

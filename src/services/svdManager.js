@@ -7,10 +7,6 @@ const { DeviceIdentityService } = require("./deviceIdentityService");
 const { SvdLibraryService } = require("./svdLibraryService");
 const { OfficialSvdService, compareVersions } = require("./officialSvdService");
 
-function folderKey(folder) {
-    return folder?.uri?.toString?.() || "";
-}
-
 function findFiles(root, predicate, limit = 1000, maxEntries = Math.max(5000, limit * 10)) {
     const result = [];
     if (!root || !fs.existsSync(root)) return result;
@@ -76,7 +72,6 @@ class SvdManager {
         this.library = new SvdLibraryService({ context: options.context, workerPath: options.workerPath });
         this.official = options.official || new OfficialSvdService();
         this.activeDownload = null;
-        this.legacyWarned = false;
     }
 
     workspaceForElf() {
@@ -169,26 +164,6 @@ class SvdManager {
                 "CMSIS_PACK_ROOT"
             );
             if (cmsis) return { ...cmsis, source: "cmsis-pack-root" };
-        }
-
-        const legacy = this.context.workspaceState.get(this.cacheKeys.svdPath);
-        if (legacy) {
-            try {
-                if (fs.statSync(legacy).isFile())
-                    return {
-                        ...(await this.importAndBind(legacy, folder, identity, {
-                            source: "legacy",
-                            originalPath: legacy
-                        })),
-                        source: "legacy"
-                    };
-            } catch {
-                await this.context.workspaceState.update(this.cacheKeys.svdPath, undefined);
-                if (!this.legacyWarned) {
-                    this.legacyWarned = true;
-                    this.notify({ level: "warning", key: "svd.legacyMissing" });
-                }
-            }
         }
         return null;
     }
@@ -462,4 +437,4 @@ class SvdManager {
     }
 }
 
-module.exports = { SvdManager, findFiles, findFilesAsync, folderKey };
+module.exports = { SvdManager, findFiles, findFilesAsync };

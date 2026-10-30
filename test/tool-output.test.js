@@ -3,7 +3,8 @@
 const assert = require("assert");
 const { ansiEncoding, decodeLine, createLineDecoder, decodeOutput } = require("../skills/_emberprobe/tool-output");
 
-// "远程主机强迫关闭了一个现有的连接。" in GBK, as Windows FormatMessage prints it for WSA 10054.
+// The Chinese Windows FormatMessage text for WSA 10054 ("An existing connection was forcibly closed by the remote
+// host"), GBK-encoded.
 const gbk = Buffer.from("d4b6b3ccd6f7bbfac7bfc6c8b9d8b1d5c1cbd2bbb8f6cfd6d3d0b5c4c1acbdd3a1a3", "hex");
 const expected = "远程主机强迫关闭了一个现有的连接。";
 const win = { platform: "win32", locale: "zh-CN" };

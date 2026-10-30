@@ -114,12 +114,6 @@ async function main() {
     });
     // The native helper is a release artifact; test the service's invocation boundary without a binary.
     service.invoke = async (action, selected) => service.run("helper", action, selected);
-    assert.throws(() => service.requireWinUsb(before), {
-        code: "PROBE_DRIVER_UNSUPPORTED",
-        i18nKey: "probe.driverUnsupported"
-    });
-    assert.strictEqual(service.requireWinUsb(ready), ready);
-    assert.throws(() => service.requireWinUsb(connection({ inf: "" })), { code: "PROBE_DRIVER_UNSUPPORTED" });
     assert.strictEqual(calls, 0, "driver validation must not invoke the installer");
     let transportChecks = 0;
     await assert.rejects(

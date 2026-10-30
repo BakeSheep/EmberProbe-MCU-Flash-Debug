@@ -1,7 +1,7 @@
 "use strict";
 
-// Self-contained so the fallback webview CSV exporter can serialize the same formatter.
-// Integer-ms times keep the legacy `.mmmZ` text; sub-ms times add three microsecond digits.
+// Self-contained so mockup/mock-csv.js can serialize it into the browser mock.
+// Integer-ms times keep the plain `.mmmZ` text; sub-ms times add three microsecond digits.
 function createSampleTimeFormatter() {
     let second = NaN,
         prefix = "";

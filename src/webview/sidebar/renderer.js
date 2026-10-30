@@ -247,7 +247,6 @@ const peripheralView = window.EmberProbePeripheralView?.create({ api, t, uiState
 const rtosView = window.EmberProbeRtosView?.create({ api, t, uiState });
 const memoryView = window.EmberProbeMemoryView?.create({ api, t, uiState });
 const mcuConfigSection = document.getElementById("mcuConfigSection");
-const memoryAnalysisSection = document.getElementById("memoryAnalysisSection");
 for (const id of [
     "mcuConfigSection",
     "memoryAnalysisSection",
@@ -1379,9 +1378,11 @@ function renderAvailableContents(content) {
 function sbIsComposite(it) {
     return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
 }
-// 写入列表：与查看列表共用 ELF 变量栏添加；拖动时最多 10 Hz 连续写入，结果由 writeResult 反馈
+// Write list: variables are added from the same ELF variable pane as the watch list; dragging writes continuously at up
+// to 10 Hz, and writeResult reports the outcome
 const WRITE_INTERVAL_MS = 100;
-// 调试暂停时 CPU 看不到拖动中的中间值，每次写入却会让调试器刷新变量与 RTOS 视图；只写停稳后的值
+// While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger refresh
+// variables and RTOS views, so only the settled value is written
 const PAUSED_WRITE_SETTLE_MS = 300;
 const TYPE_RANGE = {
     u8: [0, 255],
@@ -1404,7 +1405,8 @@ function defBounds(type) {
     if (type === "u8" || type === "i8" || type === "u16" || type === "i16") return [r[0], r[1]];
     return [0, 100];
 }
-// 采样值或回读值超出滑块范围时扩展范围，使滑块位置可表示当前值（与加入写入列表时的初始范围规则一致）
+// Widen the slider range when a sampled or read-back value falls outside it, so the slider can show the current value
+// (same rule as the initial range when added to the write list)
 function widenWriteBounds(item, v) {
     let min = Number(item.min),
         max = Number(item.max);
@@ -1470,7 +1472,8 @@ function addWriteStep(value, delta, type) {
 function inWriteList(name) {
     return writeList.some((w) => w.name === name);
 }
-// 对齐的 32 位变量可在 CPU 运行时直接写入；8/16 位、未对齐与 64 位写入需短暂 halt 执行读-改-写
+// Aligned 32-bit variables can be written while the CPU runs; 8/16-bit, unaligned and 64-bit writes briefly halt for a
+// read-modify-write
 function writeRisk(item) {
     return EmberProbeRuntime.writeHaltRisk(item.address, LEAF_W[item.type] || item.size);
 }
@@ -1478,7 +1481,7 @@ function writeGateKey(item) {
     if (!liveCanWrite) return liveWriteUnavailableKey;
     return !liveHaltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
 }
-// 风险说明用自绘浮层：原生 title 无法限制宽度，且会与名称的 title 叠加
+// The risk note is a custom overlay: a native title cannot limit its width and would stack with the name's title
 let writeRiskTip = null;
 function showWriteRiskTip(icon) {
     if (!writeRiskTip) {
@@ -2001,7 +2004,8 @@ function setWriteFeedback(notice) {
     if (!notice) return clearNotice("write", "write");
     setNotice("write", "write", notice.level === "error" ? notice : { level: "warning", timeoutMs: 5000, ...notice });
 }
-// 写入结果反馈：变量名前的小圆点渐亮后消失（成功绿点/失败红点）；失败另在标题区显示错误原因
+// Write result feedback: the dot before the variable name lights up and fades (green on success, red on failure);
+// failures also show the reason in the title area
 function knownWriteValue(item) {
     if (isWideInt(item.type)) return latestText[item.name] ?? writeConfirmed[item.name];
     const sampled = latest[item.name];
@@ -2544,7 +2548,8 @@ function refreshDisplayedValues() {
     });
     syncWriteValues();
 }
-// 采样运行时写入卡片实时同步当前值；用户正在编辑（聚焦/写入在途/防抖中）的卡片不覆盖
+// While sampling, write cards follow the current value; cards the user is editing (focused, write in flight or
+// debouncing) are not overwritten
 function syncWriteValues() {
     if (!liveCanRead) return;
     writeList.forEach((item) => {
@@ -2651,7 +2656,8 @@ function renderSkillStatus(m) {
     el.setAttribute("aria-checked", String(!!workspace && workspace.state !== "notInstalled"));
     el.disabled = !workspace || !!lastSkill.busy;
 }
-// Agent 访问开关与遗留全局 skills 提示；状态只来自扩展推送的 agentAccess 消息。
+// Agent access switch and the legacy global skills notice; the state comes only from the extension's agentAccess
+// messages.
 function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
     const state = lastAgentAccess?.card || "";

@@ -23,30 +23,13 @@ const {
     DW_TAG_const_type,
     DW_TAG_volatile_type,
     DW_TAG_restrict_type,
-    DW_TAG_variable,
     DW_TAG_member,
-    DW_TAG_subrange_type,
     DW_TAG_class_type,
     DW_TAG_inheritance,
     DW_TAG_reference_type,
     DW_TAG_rvalue_reference_type,
     DW_TAG_ptr_to_member_type,
     DW_TAG_subroutine_type,
-    DW_AT_name,
-    DW_AT_byte_size,
-    DW_AT_abstract_origin,
-    DW_AT_encoding,
-    DW_AT_specification,
-    DW_AT_type,
-    DW_AT_location,
-    DW_AT_declaration,
-    DW_AT_str_offsets_base,
-    DW_AT_data_member_location,
-    DW_AT_bit_size,
-    DW_AT_bit_offset,
-    DW_AT_data_bit_offset,
-    DW_AT_count,
-    DW_AT_upper_bound,
     DW_ATE_boolean,
     DW_ATE_float,
     DW_ATE_signed,
@@ -341,10 +324,10 @@ function _resolveTypeInfo(refKey, dies, childrenMap, cache, depth = 0, active = 
                 break;
             case DW_TAG_array_type: {
                 const inner = d.typeRef !== undefined ? resolveInner(d.typeRef) : placeholder;
-                // GCC/Clang 不为数组类型发 DW_AT_byte_size，多维数组的元素大小必须按
-                // 本层 subrange 维度 × 内层大小推导，否则行 stride 恒为 0、所有行都
-                // 解码到第 0 行的地址。单个数组 DIE 挂多个 subrange 的产生器同样按
-                // 维度乘积推导。
+                // GCC and Clang emit no DW_AT_byte_size for array types, so the element size of a multi-dimensional
+                // array must be derived as this subrange's extent times the inner size; otherwise the row stride is 0
+                // and every row decodes at row 0's address. Producers that put several subranges on one array DIE are
+                // handled by the same product.
                 const dimensions = arrayDimensions(refKey, dies, childrenMap);
                 const dimsProduct = dimensions.reduce((product, count) => product * count, 1);
                 result = {
@@ -446,7 +429,8 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
         const value = memberRole(parentName, member);
         return value ? { memberRole: value } : {};
     };
-    // 基类合成成员（@baseN）置于自身成员之前，保持每条基类路径独立，天然消除跨基类同名歧义。
+    // Synthesized base-class members (@baseN) come before the class's own members, keeping each base path separate and
+    // avoiding same-name ambiguity across bases.
     let baseIndex = 0;
     for (const childOff of childOffsets) {
         const child = dies.get(childOff);
@@ -457,8 +441,9 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
                 ? _resolveTypeInfo(child.typeRef, dies, childrenMap, typeCache)
                 : { kind: "unknown", typeName: "", watchType: "", byteSize: 0 };
         if (child.virtuality || child.memberOffset === undefined) {
-            // 虚基类偏移依赖运行期 vtable，静态阶段不产地址、不出叶子（阶段 3 再接管求址）。
-            // unobservable 是稳定的机器代码而非展示文案，消费方只判真值；如需面向用户请走 i18n。
+            // Virtual base offsets depend on the run-time vtable, so the static pass produces neither an address nor
+            // leaves (runtime expansion resolves them). unobservable is a stable machine code rather than display text;
+            // consumers only test it, and user-facing text goes through i18n.
             members.push({
                 name: "@base" + index,
                 offset: 0,
@@ -524,7 +509,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
             offset = Math.floor(child.dataBitOffset / 8);
             bitOffset = child.dataBitOffset % 8;
         } else if (Number.isInteger(child.bitOffset) && Number.isInteger(child.bitSize) && byteSize > 0) {
-            // DWARF4 DW_AT_bit_offset 是从存储单元高位端计数；ELF32 已限定小端。
+            // DWARF 4 DW_AT_bit_offset counts from the high end of the storage unit; ELF32 here is little-endian.
             bitOffset = byteSize * 8 - child.bitOffset - child.bitSize;
             if (bitOffset >= 8) {
                 offset += Math.floor(bitOffset / 8);
@@ -550,7 +535,7 @@ function _collectMembers(typeDieOff, dies, childrenMap, typeCache) {
             member.bitSize = child.bitSize;
             member.bitOffset = bitOffset;
         }
-        // 若成员本身是复合类型，附加嵌套布局信息（按需，延迟到 UI 展开）
+        // For composite members, attach the nested layout (expanded lazily by the UI)
         if (
             memberType.kind === "struct" ||
             memberType.kind === "class" ||
@@ -897,7 +882,8 @@ function buildCompositeLayouts(parsed, onError) {
     }
     return result;
 }
-// 以 linkage name（缺失时回落普通名）为键，映射到 DWARF 作用域链构造的 C++ 限定名，供 ELF 绑定与函数显示名使用。
+// Maps linkage names (falling back to plain names) to C++ qualified names built from the DWARF scope chain, for ELF
+// binding and function display names.
 function buildDisplayNames(parsed) {
     const result = new Map();
     const add = (rec) => {

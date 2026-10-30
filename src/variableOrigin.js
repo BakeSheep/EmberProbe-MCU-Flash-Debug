@@ -2,8 +2,8 @@
 
 // Heuristic origin of an ELF variable, used only to filter the variable browser.
 // Inputs are DWARF compilation-unit paths, DWARF type names and symbol names. The
-// result never affects reads, writes or authorization; "user" is the safe default.
-const ORIGINS = Object.freeze(["user", "vendor", "rtos", "middleware", "runtime"]);
+// result is "user", "vendor", "rtos", "middleware" or "runtime". It never affects reads, writes or
+// authorization; "user" is the safe default.
 
 // Segment-anchored so a project folder such as C:/Work/Drivers-demo is not matched.
 const RUNTIME_PATH =
@@ -180,4 +180,4 @@ function classifyVariableOrigin(symbol, options = {}) {
     return "user";
 }
 
-module.exports = { ORIGINS, classifyVariableOrigin, originFromPath };
+module.exports = { classifyVariableOrigin, originFromPath };

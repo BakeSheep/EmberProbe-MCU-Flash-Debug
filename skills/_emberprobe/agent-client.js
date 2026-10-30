@@ -3,10 +3,10 @@ const path = require("path");
 const http = require("http");
 const { locate } = require("./bridge-locator");
 
-// 实际发起调用的 skill 根目录（.agents/skills 或自定义副本），供扩展按副本做完整性检查。
+// Skill root that issued the call (.agents/skills or a custom copy), so the extension can check that copy's integrity.
 const SKILL_ROOT = path.resolve(__dirname, "..");
 
-// 兼容导出：返回定位到的描述（host/port/token）。新代码使用 bridge-locator 的 locate()。
+// Compatibility export returning the located descriptor (host/port/token). New code uses locate() from bridge-locator.
 function descriptor(workspace) {
     return locate(workspace).descriptor;
 }
@@ -454,8 +454,9 @@ const DIAGNOSTICS = {
     ]
 };
 
-// Bridge 方法按副作用分类：只读方法在传输超时后可在相同前置条件下最多重试一次；
-// 其余方法(状态变更)超时后结果未知，必须查询实际状态、不得自动重发。未知方法按状态变更安全处理。
+// Bridge methods by side effect: read-only methods may be retried once after a transport timeout if their preconditions
+// still hold. Any other (state-changing) method has an unknown result after a timeout: query the actual state and never
+// resend automatically. Unknown methods are treated as state-changing.
 const READ_ONLY_METHODS = new Set([
     "cubemx.inspect",
     "config.get",
@@ -469,8 +470,9 @@ const READ_ONLY_METHODS = new Set([
     "peripherals.list"
 ]);
 
-// 观察类方法：不改变目标、工作区或扩展状态，但可能访问硬件或首次安装 USB 驱动，
-// 因而不在可重试的只读集合内。MCP 工具的 readOnlyHint 由这两个集合派生。
+// Observation methods do not change the target, workspace or extension state, but may touch hardware or install a USB
+// driver the first time, so they are not in the retryable read-only set. MCP tools derive readOnlyHint from these two
+// sets.
 const OBSERVATION_METHODS = new Set([
     ...READ_ONLY_METHODS,
     "cubemx.detect",
@@ -502,7 +504,7 @@ const DRIVER_SETUP_METHODS = new Set([
     "flash.verify"
 ]);
 
-// 状态变更超时后用于核对实际结果的查询方法；未列出的方法给出通用查询提示。
+// Queries that confirm the real outcome after a state-changing call times out; unlisted methods get a generic hint.
 const STATUS_QUERY_FOR = {
     "chip.read": "probe.list",
     "fault.read": "probe.list",
@@ -523,13 +525,14 @@ function isReadOnlyMethod(method) {
     return READ_ONLY_METHODS.has(method);
 }
 
-// RTOS 快照与暂停对象检查只由原生 emberprobe 调试器提供。
+// RTOS snapshots and paused-object inspection are only provided by the native emberprobe debugger.
 function requiresNativeSession(operation) {
     return typeof operation === "string" && (operation.startsWith("rtos.") || operation === "debug.inspect");
 }
 
-// 建议动作中与通道相关的片段写成 {{token}}：skill 脚本渲染成原有的 CLI 写法（输出保持不变），
-// MCP 服务器渲染成工具名与参数名。methods 汇总为机器可读的 actions，与通道无关。
+// Channel-specific fragments of suggested actions are written as {{token}}: skill scripts render them as the existing
+// CLI syntax (output unchanged), and the MCP server renders tool and parameter names. methods become machine-readable
+// actions independent of the channel.
 const RENDERINGS = {
     config: { skill: "mcu-config Skill", mcp: "config_get 与 config_set 工具", methods: ["config.get", "config.set"] },
     configSvd: { skill: "mcu-config", mcp: "config_set（values.svd）", methods: ["config.set"] },
@@ -554,7 +557,7 @@ const RENDERINGS = {
     csvVariables: { skill: "--variables", mcp: "variables", methods: [] }
 };
 
-// render.channel 为 "skill"（默认）或 "mcp"；render.method 把 Bridge 方法名映射为该通道的写法。
+// render.channel is "skill" (default) or "mcp"; render.method maps a Bridge method name to that channel's syntax.
 function renderSuggestions(texts, render = {}) {
     const channel = render.channel === "mcp" ? "mcp" : "skill";
     const methodLabel = render.method || ((method) => method);
@@ -582,7 +585,8 @@ function diagnosticForError(error, context = {}) {
     const details = { ...(error?.details || {}) };
     let retryable = error?.retryable ?? preset[3] ?? false;
     let suggestedActions = error?.suggestedActions || preset[2] || ["保留本诊断并检查 EmberProbe/OpenOCD 日志。"];
-    // RTOS 快照/暂停对象检查只能使用原生 emberprobe 会话，建议动作需指明启动方式。
+    // RTOS snapshots and paused-object inspection need a native emberprobe session; suggested actions must say how to
+    // start one.
     if (requiresNativeSession(context.operation || details.method)) {
         if (code === "DEBUG_SESSION_NOT_ACTIVE" && !error?.suggestedActions)
             suggestedActions = [
@@ -593,8 +597,9 @@ function diagnosticForError(error, context = {}) {
         else if (code === "TARGET_NOT_PAUSED" && !error?.suggestedActions)
             suggestedActions = ["使用 {{debugPause}} 暂停原生 emberprobe 会话后重试。"];
     }
-    // 传输超时缺少服务端结果：只读方法可在前置不变时重试一次；状态变更方法结果未知，
-    // 必须查询实际状态、不得自动重发，也不声称请求已取消。
+    // A transport timeout has no server result: read-only methods may be retried once if preconditions are unchanged;
+    // state-changing methods have an unknown result, so query the actual state, never resend automatically, and never
+    // claim the request was cancelled.
     if (code === "BRIDGE_TIMEOUT") {
         const method = details.method || context.operation || "";
         const readOnly = isReadOnlyMethod(method);
@@ -632,8 +637,9 @@ function diagnosticForError(error, context = {}) {
     };
 }
 
-// 批量变量读取的部分失败：扩展在结果中返回 variableErrors[{ requestedName, error }]，
-// 其余变量照常返回。按错误码补全 likelyCause/suggestedActions，形状与整体诊断的 error 字段一致。
+// Partial failure of a batch variable read: the extension returns variableErrors[{ requestedName, error }] and the
+// remaining variables as usual. likelyCause/suggestedActions are filled in by error code, in the same shape as the
+// error field of a whole-call diagnostic.
 function variableErrorDiagnostics(result, context = {}) {
     const entries = Array.isArray(result?.variableErrors) ? result.variableErrors : [];
     return entries.map((entry) => ({
@@ -646,7 +652,8 @@ function writeDiagnostic(error, context) {
     process.stderr.write(JSON.stringify(diagnosticForError(error, context)) + "\n");
 }
 
-// 请求头只用于定位与审计，不构成鉴权；值做 URI 编码以容纳非 ASCII 路径。
+// Request headers only locate and audit callers and are not authentication; values are URI-encoded to carry non-ASCII
+// paths.
 function channelHeaders(channel) {
     const headers = { "X-EmberProbe-Channel": channel.name };
     if (channel.skillRoot) headers["X-EmberProbe-Skill-Root"] = encodeURIComponent(channel.skillRoot);
@@ -699,8 +706,8 @@ function send(located, channel, method, params, budget) {
             )
         );
         request.on("error", (error) => {
-            // 连接层失败(ECONNREFUSED/ECONNRESET 等)保留原始传输错误码与方法上下文，
-            // 由 diagnosticForError 映射为 BRIDGE_UNAVAILABLE，与请求超时区分描述。
+            // Connection failures (ECONNREFUSED, ECONNRESET, ...) keep the original transport error code and method
+            // context; diagnosticForError maps them to BRIDGE_UNAVAILABLE, described separately from request timeouts.
             const err = /** @type {NodeJS.ErrnoException & { details?: Record<string, unknown> }} */ (error);
             if (err && typeof err === "object" && !err.details)
                 err.details = { method, transportError: err.code || "transport" };
@@ -710,7 +717,8 @@ function send(located, channel, method, params, budget) {
     });
 }
 
-// 实际(钳制后)超时预算与起始时间随超时错误一并上报，供 agent 判断耗时与恢复动作。
+// Timeout errors report the effective (clamped) timeout budget and start time so agents can judge elapsed time and
+// recovery.
 function requestBudget(method, timeoutMs) {
     return Math.max(
         1000,
@@ -718,8 +726,9 @@ function requestBudget(method, timeoutMs) {
     );
 }
 
-// 通过定位模块发起一次 Bridge 调用；channel 描述调用方（skill 脚本或 MCP 服务器）。
-// 注册表条目连接被拒（窗口正在关闭）时请求从未送达，换下一个匹配实例重试是安全的。
+// Makes one Bridge call through the locator; channel describes the caller (skill script or MCP server). If a registry
+// entry refuses the connection (its window is closing) the request never arrived, so retrying the next matching
+// instance is safe.
 async function callVia(channel, workspace, method, params, timeoutMs) {
     const budget = requestBudget(method, timeoutMs);
     const exclude = new Set();

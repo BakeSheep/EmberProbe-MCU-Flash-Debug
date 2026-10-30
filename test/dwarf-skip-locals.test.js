@@ -14,20 +14,8 @@ const {
 } = require("../src/dwarf/types");
 const { createRuntimeLayoutResolver } = require("../src/dwarf/runtimeTypes");
 const { buildDwarfElf, buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
+const { cstr: string, u32, uleb } = require("./helpers/dwarf-tree");
 
-function uleb(value) {
-    const bytes = [];
-    do {
-        const byte = value & 0x7f;
-        value >>>= 7;
-        bytes.push(byte | (value ? 0x80 : 0));
-    } while (value);
-    return bytes;
-}
-function u32(value) {
-    return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
-}
-const string = (value) => [...Buffer.from(value), 0];
 const ref = (target) => ({ target });
 const address = (value) => [5, 0x03, ...u32(value)];
 const stackLocation = [2, 0x91, 0];

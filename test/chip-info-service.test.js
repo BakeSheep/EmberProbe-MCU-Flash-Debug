@@ -7,7 +7,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
 const { resolveProbeConnection } = require("../skills/_emberprobe/probe-connection");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { temp, state, cacheKeys, context, vscode } = fixture;
     try {
         const active = new Set();
         const chipPosts = [];

@@ -1,8 +1,9 @@
 "use strict";
-// 任务2：Agent Bridge 客户端诊断上下文与降级证据。
-// 覆盖：请求挂起(传输超时)、拒绝连接、状态变更晚完成、只读与状态变更超时的不同恢复动作、
-// 服务端具体诊断优先于客户端模板、旧错误对象缺少新增详情仍可处理、诊断不泄露 token。
-// 普通测试不依赖 OpenOCD、真实探针或网络：用本机 net/http 黑hole 与已关闭端口模拟传输层。
+// Agent Bridge client diagnostic context and degradation evidence. Covers a hanging request (transport timeout), a
+// refused connection, a late state change, different recovery for read-only and state-changing timeouts, server
+// diagnostics taking precedence over client templates, older error objects without the newer details, and diagnostics
+// never leaking the token. Normal tests need no OpenOCD, probe or network: a local net/http black hole and a closed
+// port simulate the transport.
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -18,20 +19,21 @@ const {
     renderSuggestions
 } = require("../skills/_emberprobe/agent-client");
 
-// 接受连接但永不响应的服务器，用于触发客户端传输超时（请求挂起 / 状态变更晚完成）。
+// A server that accepts connections but never responds, to trigger client transport timeouts (hanging request / late
+// state change).
 function startBlackholeServer() {
     return new Promise((resolve) => {
         const sockets = new Set();
         const server = net.createServer((socket) => {
             sockets.add(socket);
             socket.on("close", () => sockets.delete(socket));
-            // 故意不写任何响应，让客户端 socket 空闲超时。
+            // Deliberately writes no response so the client socket times out idle.
         });
         server.listen(0, "127.0.0.1", () => resolve({ server, port: server.address().port, sockets }));
     });
 }
 
-// 绑定后立即关闭，得到一个几乎肯定无人监听的端口，用于触发 ECONNREFUSED。
+// Closed right after binding, giving a port almost certainly nobody listens on, to trigger ECONNREFUSED.
 function reserveClosedPort() {
     return new Promise((resolve, reject) => {
         const server = net.createServer();
@@ -43,8 +45,8 @@ function reserveClosedPort() {
     });
 }
 
-// 定位只看本测试的空注册表；用旧格式工作区指针（直接含 host/port/token）指向测试端口，
-// 避免依赖真实扩展 Bridge。
+// Locate only through this test's empty registry, with an old-format workspace pointer (host/port/token inline) aimed
+// at the test port, so no real extension Bridge is needed.
 process.env.EMBERPROBE_BRIDGE_REGISTRY = path.join(os.tmpdir(), "emberprobe-agent-diagnostics-no-registry");
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-agent-diagnostics-"));
 const pointerFile = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-bridge.json");
@@ -60,16 +62,20 @@ function unpatchDescriptor() {
     const TOKEN = "super-secret-bridge-token";
 
     try {
-        // ---- 方法分类：只读可在相同前置条件下重试一次；其余按状态变更处理 ----
+        // Method classes: read-only may be retried once under the same preconditions; everything else is state-changing
         assert.strictEqual(isReadOnlyMethod("config.get"), true);
         assert.strictEqual(isReadOnlyMethod("variables.read"), false, "a hardware read may configure its USB driver");
         assert.strictEqual(isReadOnlyMethod("debug.status"), true);
         assert.strictEqual(isReadOnlyMethod("config.set"), false);
         assert.strictEqual(isReadOnlyMethod("debug.start"), false);
         assert.strictEqual(isReadOnlyMethod("peripherals.write"), false);
-        assert.strictEqual(isReadOnlyMethod("some.future.method"), false, "未知方法必须按状态变更安全处理");
+        assert.strictEqual(
+            isReadOnlyMethod("some.future.method"),
+            false,
+            "unknown methods are treated as state-changing"
+        );
 
-        // ---- 请求挂起：传输超时携带方法名、实际预算与耗时 ----
+        // Hanging request: the transport timeout carries the method name, effective budget and elapsed time
         const blackhole = await startBlackholeServer();
         let timeoutError;
         patchDescriptor(blackhole.port, TOKEN);
@@ -80,10 +86,10 @@ function unpatchDescriptor() {
         } finally {
             unpatchDescriptor();
         }
-        assert.ok(timeoutError, "挂起请求必须超时 reject");
+        assert.ok(timeoutError, "a hanging request must time out and reject");
         assert.strictEqual(timeoutError.code, "BRIDGE_TIMEOUT");
         assert.strictEqual(timeoutError.details.method, "config.set");
-        assert.strictEqual(timeoutError.details.timeoutMs, 1000, "必须报告实际(钳制后)超时预算");
+        assert.strictEqual(timeoutError.details.timeoutMs, 1000, "reports the actual (clamped) timeout budget");
         assert.ok(Number.isFinite(timeoutError.details.elapsedMs) && timeoutError.details.elapsedMs >= 0);
         for (const socket of blackhole.sockets) socket.destroy();
         blackhole.server.close();
@@ -117,22 +123,27 @@ function unpatchDescriptor() {
         assert.deepStrictEqual(methods, ["chip.read", "probe.list"], "do not replay the hardware request");
         assert.deepStrictEqual(driverTimeout.details.driverInventory, { available: true, devices: [] });
 
-        // 状态变更超时：结果未知、不得声称已取消、不得自动重发、提示查询实际状态
+        // State-changing timeout: unknown result, never claimed cancelled, never resent automatically, with a hint to
+        // query the actual state
         const stateChangeDiag = diagnosticForError(timeoutError, { operation: "config.set" });
         assert.strictEqual(stateChangeDiag.error.details.resultUnknown, true);
-        assert.strictEqual(stateChangeDiag.error.retryable, false, "状态变更超时不可自动重试");
+        assert.strictEqual(
+            stateChangeDiag.error.retryable,
+            false,
+            "state-changing timeouts are not retried automatically"
+        );
         const stateText = JSON.stringify(stateChangeDiag.error.suggestedActions);
-        assert.ok(stateText.includes("config.get"), "必须提示用查询方法核对实际状态");
-        assert.ok(!stateText.includes("采样"), "不得暗示通用超时等于采样占用");
+        assert.ok(stateText.includes("config.get"), "suggests checking the actual state with a query method");
+        assert.ok(!stateText.includes("采样"), "a generic timeout is not presented as a busy probe");
         assert.ok(!stateChangeDiag.error.likelyCause.includes("采样"));
         assert.ok(
             !JSON.stringify(stateChangeDiag).includes("已取消") &&
                 !JSON.stringify(stateChangeDiag).includes("cancelled"),
-            "超时不得声称请求已取消"
+            "a timeout never claims the request was cancelled"
         );
-        assert.ok(!JSON.stringify(stateChangeDiag).includes(TOKEN), "诊断不得泄露 Bridge token");
+        assert.ok(!JSON.stringify(stateChangeDiag).includes(TOKEN), "diagnostics never leak the Bridge token");
 
-        // 只读超时：允许在相同前置条件下重试一次，结果未知为 false
+        // Read-only timeout: one retry under the same preconditions is allowed, and resultUnknown is false
         const readOnlyDiag = diagnosticForError(
             Object.assign(new Error("Agent Bridge request timed out"), {
                 code: "BRIDGE_TIMEOUT",
@@ -144,7 +155,8 @@ function unpatchDescriptor() {
         assert.strictEqual(readOnlyDiag.error.details.resultUnknown, false);
         assert.ok(!JSON.stringify(readOnlyDiag).includes("采样"));
 
-        // ---- 拒绝连接：与超时区分描述，保留原始传输错误码，不泄露 token ----
+        // Refused connection: described differently from a timeout, keeping the original transport error code without
+        // leaking the token
         const closedPort = await reserveClosedPort();
         let connError;
         patchDescriptor(closedPort, TOKEN);
@@ -155,15 +167,19 @@ function unpatchDescriptor() {
         } finally {
             unpatchDescriptor();
         }
-        assert.ok(connError, "拒绝连接必须 reject");
+        assert.ok(connError, "a refused connection rejects");
         const connDiag = diagnosticForError(connError, { operation: "config.get" });
         assert.strictEqual(connDiag.error.code, "BRIDGE_UNAVAILABLE");
         assert.strictEqual(connDiag.error.details.transportError, "ECONNREFUSED");
         assert.strictEqual(connDiag.error.details.method, "config.get");
-        assert.notStrictEqual(connDiag.error.code, "BRIDGE_TIMEOUT", "连接失败与请求超时必须是不同错误");
-        assert.ok(!JSON.stringify(connDiag).includes(TOKEN), "连接失败诊断不得泄露 token");
+        assert.notStrictEqual(
+            connDiag.error.code,
+            "BRIDGE_TIMEOUT",
+            "connection failures and request timeouts are different errors"
+        );
+        assert.ok(!JSON.stringify(connDiag).includes(TOKEN), "connection failure diagnostics never leak the token");
 
-        // ---- 服务端具体诊断优先于客户端默认模板 ----
+        // Specific server diagnostics take precedence over the client's default template
         const serverDiag = diagnosticForError(
             Object.assign(new Error("probe busy"), {
                 code: "PROBE_BUSY",
@@ -177,16 +193,21 @@ function unpatchDescriptor() {
         assert.deepStrictEqual(serverDiag.error.suggestedActions, ["扩展返回的具体动作"]);
         assert.strictEqual(serverDiag.error.details.activeOperation, "debug");
 
-        // ---- 旧错误对象缺少新增详情仍可处理（向后兼容）----
+        // Older error objects without the newer details are still handled
         const bareDiag = diagnosticForError(Object.assign(new Error("timed out"), { code: "BRIDGE_TIMEOUT" }));
         assert.strictEqual(bareDiag.error.code, "BRIDGE_TIMEOUT");
-        assert.strictEqual(bareDiag.error.details.resultUnknown, true, "无方法上下文时按状态未知安全处理");
+        assert.strictEqual(
+            bareDiag.error.details.resultUnknown,
+            true,
+            "without a method context the state counts as unknown"
+        );
         assert.strictEqual(bareDiag.error.retryable, false);
         assert.ok(!JSON.stringify(bareDiag).includes("采样"));
         assert.ok(Array.isArray(bareDiag.error.suggestedActions) && bareDiag.error.suggestedActions.length > 0);
         assert.ok(bareDiag.error.suggestedActions.some((text) => text.includes("对应查询方法")));
 
-        // ---- 建议动作与通道无关：skill 渲染保持原 CLI 写法，MCP 渲染成工具名，actions 机器可读 ----
+        // Suggested actions are channel-independent: skill rendering keeps the CLI syntax, MCP rendering uses tool
+        // names, and actions are machine-readable
         const inactive = Object.assign(new Error("no session"), { code: "DEBUG_SESSION_NOT_ACTIVE" });
         const skillView = diagnosticForError(inactive, { operation: "debug.control" });
         assert.deepStrictEqual(skillView.error.suggestedActions, ["使用 mcu-debug-control --start 启动调试后重试。"]);
@@ -203,7 +224,7 @@ function unpatchDescriptor() {
         });
         assert.ok(timeoutView.error.suggestedActions.some((text) => text.includes("先用 config_get 核对")));
         assert.deepStrictEqual(timeoutView.error.actions, [{ method: "config.get" }]);
-        // 诊断表中不再出现 CLI 写法；所有占位符都有两种渲染
+        // The diagnostics table no longer contains CLI syntax; every placeholder has both renderings
         for (const [code, preset] of Object.entries(DIAGNOSTICS)) {
             for (const text of preset[2]) {
                 assert.ok(!/mcu-[a-z-]+ --|(^|\s)--[a-z]/.test(text.replace("udevadm control --reload", "")), code);

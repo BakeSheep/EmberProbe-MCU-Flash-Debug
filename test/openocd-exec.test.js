@@ -27,7 +27,8 @@ function resolver(executable = "openocd") {
 }
 
 (async () => {
-    // stdout/stderr 独立拆行；交错的分块和结尾残行不能互相污染。
+    // stdout/stderr are split into lines independently; interleaved chunks and trailing partial lines must not
+    // contaminate each other.
     const lines = [];
     let capturedArgs = null;
     const child = fakeChild();
@@ -124,7 +125,7 @@ function resolver(executable = "openocd") {
     assert.strictEqual(crash.diagnostic.details.signal, "SIGABRT");
     assert.strictEqual(crash.diagnostic.details.probeSerial, "0001234");
 
-    // 同步 spawn 失败与异步 error 事件的 ENOENT 语义必须一致。
+    // Synchronous spawn failures and asynchronous error events have the same ENOENT semantics.
     const enoent = Object.assign(new Error("missing"), { code: "ENOENT" });
     await assert.rejects(
         runOpenOcdOnce({
@@ -155,7 +156,7 @@ function resolver(executable = "openocd") {
         (error) => error.i18nKey === "run.notFound"
     );
 
-    // 超时只 settle 一次并尝试终止子进程。
+    // A timeout settles only once and tries to terminate the child process.
     const timeoutChild = fakeChild();
     await assert.rejects(
         runOpenOcdOnce({

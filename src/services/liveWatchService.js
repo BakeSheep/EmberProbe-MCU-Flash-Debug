@@ -104,10 +104,9 @@ function runtimeOpenPaths(item, list, expansions) {
     return paths;
 }
 
-// 将多个消费者的观察列表合并为单一原始字节读取计划。
-// 同名标量取最大宽度，复合变量按整体内存范围读取。
-// `runtimeExpansions[i]` limits list i's runtime objects to the paths its view opened; a missing
-// entry reads them whole. A runtime object shared by several lists reads the union.
+// Merges the watch lists of several consumers into one raw byte read plan. Same-named scalars use the widest width;
+// composites are read over their whole memory range. `runtimeExpansions[i]` limits list i's runtime objects to the
+// paths its view opened; a missing entry reads them whole. A runtime object shared by several lists reads the union.
 function buildActiveReadPlan(watchLists, elfSymbols, runtimeExpansions = []) {
     const byName = new Map();
     const opened = new Map();
@@ -306,7 +305,7 @@ function selectPausedDebugReadSession(debugBridge) {
     };
 }
 
-// 单消费者解码层：同一份原始字节可按每个面板自己的类型/复合布局分别解码。
+// Per-consumer decoding: the same raw bytes can be decoded with each panel's own type or composite layout.
 class LiveWatchService {
     constructor(elfSymbols, pointerSymbolizer = null) {
         this.elfSymbols = elfSymbols;

@@ -1,5 +1,6 @@
 "use strict";
-// MCP 工具目录与 Bridge 路由的漂移检查、只读注解来源、schema 严格性与工具集开关。
+// Drift checks between the MCP tool catalog and Bridge routes, read-only annotation sources, schema strictness and
+// toolset switches.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -127,7 +128,7 @@ const validator = new AjvJsonSchemaValidator();
 
     await scenario("Translate arguments to Bridge requests", () => {
         const tool = (name) => tools.TOOLS.find((item) => item.name === name);
-        // probeSerial 原样传递；写入值统一为字符串
+        // probeSerial passes through unchanged; write values are always strings
         assert.deepStrictEqual(tool("variables_read").request({ variables: ["tick", { name: "kp", type: "f32" }] }), {
             method: "variables.read",
             params: { variables: [{ name: "tick" }, { name: "kp", type: "f32" }] }

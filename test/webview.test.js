@@ -1,19 +1,20 @@
 "use strict";
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
-const { getModernWebviewContent, shiftSliderBounds } = require("../src/modernView");
+const { FakeClock } = require("./helpers/fake-clock");
+const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
-for (const [input, expected] of [
-    [[0, 100, 30, 130], { min: 100, max: 200 }],
-    [[0, 100, 70, -30], { min: -100, max: 0 }],
-    [[0, 100, 30, 60], { min: 0, max: 100 }]
-])
-    assert.deepStrictEqual(shiftSliderBounds(...input), expected);
 const sidebar = render(
     getModernWebviewContent({ elf: "<script>evil()</script>", debugger: "stlink.cfg", mcu: "stm32f4x.cfg" }, "en")
 );
 try {
     sidebar.assertHealthy();
+    for (const [input, expected] of [
+        [[0, 100, 30, 130], { min: 100, max: 200 }],
+        [[0, 100, 70, -30], { min: -100, max: 0 }],
+        [[0, 100, 30, 60], { min: 0, max: 100 }]
+    ])
+        assert.deepStrictEqual({ ...sidebar.window.shiftSliderBounds(...input) }, expected);
     assert.ok(sidebar.messages.some((m) => m.type === "initCheck"));
     for (const id of [
         "liveValues",
@@ -557,13 +558,11 @@ try {
 } finally {
     jlinkSidebar.close();
 }
-const graph = render(getLiveWatchContent({ maxSamples: -10, intervalMs: 1, panelId: 2 }, "en"));
+const graph = render(getLiveWatchContent({ frequencyHz: 500, panelId: 2 }, "en"));
 try {
     graph.assertHealthy();
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
-    assert.strictEqual(graph.window.__CFG__.maxSamples, 100);
-    assert.strictEqual(graph.window.__CFG__.intervalMs, 5);
-    assert.strictEqual(graph.window.__CFG__.frequencyHz, 200);
+    assert.strictEqual(graph.window.__CFG__.frequencyHz, 200, "requested rates are clamped to the 200 Hz maximum");
     assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
     graph.document.getElementById("importSidebar").click();
@@ -578,8 +577,6 @@ try {
     assert.ok(graph.document.body.classList.contains("debug-stale"));
     graph.send({ type: "liveStatus", source: "openocd", canRead: true, intentEnabled: true });
     assert.ok(!graph.document.body.classList.contains("debug-stale"));
-    graph.send({ type: "liveSample", samples: [{ name: "tick", value: 7, valueText: "7", t: 1000 }] });
-    assert.strictEqual(graph.window.MAXPTS, 360001, "200 Hz retains a full 30-minute chart window");
     graph.send({
         type: "liveStatus",
         running: true,
@@ -593,9 +590,7 @@ try {
     assert.ok(graph.document.getElementById("rate").title.includes("Target: 200 Hz"));
     assert.ok(graph.document.getElementById("rate").title.includes("Effective: 125.0 Hz (8 ms)"));
     assert.ok(graph.document.getElementById("rate").title.includes("P95: 3.2ms"));
-    graph.send({ type: "liveSample", samples: [{ name: "tick", value: null, valueText: "-", t: 1050 }] });
     graph.send({ type: "liveFrequency", frequencyHz: 30, intervalMs: 33 });
-    assert.strictEqual(graph.window.MAXPTS, 54547, "retention follows the real 33 ms period, not the nominal 30 Hz");
     assert.strictEqual(graph.document.getElementById("frequency").value, "30");
     graph.document.getElementById("frequency").value = "45";
     graph.document.getElementById("frequency").onchange();
@@ -781,7 +776,8 @@ console.log("Live-watch keyboard autocomplete tests passed");
             view.close();
         }
     }
-    const lazy = render(getModernWebviewContent({}, "en"));
+    const clock = new FakeClock();
+    const lazy = render(getModernWebviewContent({}, "en"), {}, { clock });
     try {
         const doc = lazy.document;
         const search = (text) => {
@@ -796,24 +792,24 @@ console.log("Live-watch keyboard autocomplete tests passed");
             symbols: Array.from({ length: 6 }, (_, i) => ({ ...symbol, name: "device" + i, compositeLayout: null }))
         });
         search("gain");
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 0, "wait for ELF types to finish loading");
         lazy.send({ type: "availableTypesDone", version: "elf-1" });
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 4, "bound concurrent metadata requests");
         lazy.send({ type: "compositeLayoutResult", name: "device0", version: "stale-elf", layout });
         assert.equal(doc.querySelector(".av-leaf-name"), null, "ignore stale ELF results");
         lazy.send({ type: "compositeLayoutResult", name: "device0", version: "elf-1", layout });
         assert.equal(doc.querySelector(".av-leaf-name").textContent, ".settings.gain");
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "continue searching remaining composites as slots become free");
         search("");
         lazy.send({ type: "compositeLayoutResult", name: "device1", version: "elf-1", error: "Unavailable type" });
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "clearing the query stops further requests");
         search("gain");
         lazy.send({ type: "availableVariablesReset", version: "elf-2" });
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "ELF replacement cancels queued search work");
         lazy.assertHealthy();
     } finally {

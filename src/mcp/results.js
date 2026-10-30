@@ -1,6 +1,7 @@
 "use strict";
-// 把 Bridge 结果与错误转换成 MCP 工具结果。失败时 structuredContent 与 skill 脚本写到 stderr 的
-// diagnostic 同形，由同一个 diagnosticForError 生成；建议动作按 MCP 通道渲染成工具名。
+// Converts Bridge results and errors into MCP tool results. On failure structuredContent has the same shape as the
+// diagnostic skill scripts write to stderr, produced by the same diagnosticForError; suggested actions are rendered as
+// tool names for the MCP channel.
 const { diagnosticForError } = require("../../skills/_emberprobe/agent-client");
 const { toolForMethod } = require("./tools");
 
@@ -12,7 +13,7 @@ function text(value) {
     return `${json.slice(0, MAX_TEXT)}… [truncated ${json.length - MAX_TEXT} characters; read structuredContent for the full result]`;
 }
 
-// structuredContent 必须是对象；数组或标量结果包一层 result。
+// structuredContent must be an object; array or scalar results are wrapped in result.
 function structured(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : { result: value };
 }
@@ -27,7 +28,7 @@ function failure(error, operation) {
     return { isError: true, content: [{ type: "text", text: text(diagnostic) }], structuredContent: diagnostic };
 }
 
-// 已有业务含义的失败（如预检未就绪）原样返回，并标记为错误。
+// Failures with a domain meaning (such as an unready preflight) are returned as is and marked as errors.
 function rejected(value) {
     const content = structured(value);
     return { isError: true, content: [{ type: "text", text: text(content) }], structuredContent: content };

@@ -6,7 +6,8 @@ function hasWorkspaceSkills(status) {
     return !!workspace && workspace.state !== "notInstalled";
 }
 
-// 全局安装已停止维护：仍含可执行脚本、且版本过期/被修改/不完整的全局副本需要提示清理。
+// Global installs are no longer maintained: global copies that still contain executable scripts and are outdated,
+// modified or partial should be cleaned up.
 function legacyGlobalSkills(status) {
     const global = status?.scopes?.global;
     if (!global || !global.hasScripts || !["outdated", "modified", "partial"].includes(global.state)) return null;
@@ -25,7 +26,6 @@ class SkillStatusService {
         // Messages go to the host's notice box; without one they fall back to VS Code notifications.
         this.notify = options.notify || ((notice) => this.vscode.window.showInformationMessage(this.t(notice.key)));
         this.lastStatus = null;
-        this.bridgeWarned = false;
         this.upgradePrompted = false;
         this.approvedRoots = new Map();
     }
@@ -73,16 +73,9 @@ class SkillStatusService {
         }
     }
 
-    warnIfModified() {
-        if (this.bridgeWarned || this.lastStatus?.state !== "modified") return;
-        this.bridgeWarned = true;
-        const manage = this.t("msg.skillsManage");
-        this.vscode.window.showWarningMessage(this.t("msg.skillsModifiedBridgeWarn"), manage).then((choice) => {
-            if (choice === manage) this.vscode.commands.executeCommand("mcu-vscode.manageAgentSkills");
-        });
-    }
-    // meta 来自 Bridge 请求头：skill 通道按实际发起调用的副本检查；MCP 服务器代码随扩展安装，
-    // 不检查 skill 哈希；没有 meta 的旧脚本沿用合并视图检查。请求头不构成鉴权。
+    // meta comes from Bridge request headers: the skill channel checks the copy that issued the call; MCP server code
+    // ships with the extension and skips skill hashes; old scripts without meta are checked against the merged view.
+    // Request headers are not authentication.
     async checkForCall(meta) {
         if (meta?.channel === "mcp") return;
         if (meta?.channel === "skill" && typeof meta.skillRoot === "string" && meta.skillRoot)
@@ -103,7 +96,8 @@ class SkillStatusService {
 
     async checkSkillRoot(skillRoot) {
         const { actual, scope, custom } = await this.inspectCallerRoot(skillRoot);
-        // 自定义副本（不在已知的 workspace/global 根下）总是需要审批；已知根只在内容偏离时审批。
+        // Custom copies (outside the known workspace/global roots) always need approval; known roots only when their
+        // content deviates.
         if (!custom && !["modified", "partial", "outdated", "notInstalled"].includes(scope.state)) return;
         if (this.approvedRoots.get(actual) === scope.fingerprint) return;
         const allow = this.t("approval.skillsAllow");
@@ -131,7 +125,8 @@ class SkillStatusService {
             throw Object.assign(new Error("Skills changed during approval; review them again"), {
                 code: "SKILLS_CHANGED_DURING_APPROVAL"
             });
-        // 缓存键为“根目录 + 该根目录指纹”：批准 workspace 副本不会连带放行全局副本。
+        // The cache key is root + that root's fingerprint, so approving a workspace copy does not also approve a global
+        // one.
         this.approvedRoots.set(actual, scope.fingerprint);
     }
 

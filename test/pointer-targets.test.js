@@ -17,6 +17,7 @@ const { PointerSymbolizer, layoutPathAt } = require("../src/services/pointerSymb
 const { loadProvider } = require("./helpers/load-provider");
 const { normalizeWatchList } = require("../src/validation");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const fixture = require("./fixtures/pointer-targets/elf.json");
@@ -251,7 +252,7 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
             const pump = async () => {
                 const decoded = await sample(items);
                 view.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
-                view.send({ type: "liveSample", samples: decoded.scalarSamples });
+                view.send({ type: sidebar ? "liveSample" : "chartValues", samples: decoded.scalarSamples });
                 if (sidebar) view.window.refreshDisplayedValues();
                 else view.window.updateValues();
             };
@@ -441,7 +442,7 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                 view.send({ type: "watchList", items: list });
                 const decoded = await decodePlan();
                 view.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
-                view.send({ type: "liveSample", samples: decoded.scalarSamples });
+                view.send({ type: "chartValues", samples: decoded.scalarSamples });
                 view.window.updateValues();
                 const cards = [...view.document.querySelectorAll(".var-card")];
                 assert.strictEqual(cards.length, 1, "only the pointer variable has a card");
@@ -476,7 +477,7 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                 reopened.send({ type: "watchList", items: list });
                 const decoded = await decodePlan();
                 reopened.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
-                reopened.send({ type: "liveSample", samples: decoded.scalarSamples });
+                reopened.send({ type: "chartValues", samples: decoded.scalarSamples });
                 reopened.window.updateValues();
                 assert.ok(swatchOf(members[0]).classList.contains("off"), "a briefly omitted member stays off");
                 assert.ok(!swatchOf(members[1]).classList.contains("off"), "other members stay charted");
@@ -512,10 +513,13 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                 ...(entry.isPointer ? { isPointer: true, pointerTarget: entry.pointerTarget } : {})
             }));
             const open = (sidebar, state, config = {}, version = "v1") => {
+                const clock = new FakeClock();
                 const view = render(
                     sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent(config, "en"),
-                    state
+                    state,
+                    { clock }
                 );
+                view.clock = clock;
                 const list = sidebar ? "availableVariables" : "variablesList";
                 if (!sidebar) view.document.getElementById("import").click();
                 view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: saved });
@@ -540,7 +544,7 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                     ?.querySelector(sidebar ? ".value-number, .sb-mval" : ".var-value");
             let states = {};
             for (const sidebar of [true, false]) {
-                const view = open(sidebar, {}, { backendHistory: true });
+                const view = open(sidebar, {});
                 try {
                     const decoded = await sample(saved);
                     assert.strictEqual(
@@ -568,13 +572,12 @@ const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "emberp
                     if (!sidebar)
                         assert.ok(view.document.querySelector(".var-card .swatch.off"), "pointer curves start hidden");
                     view.send({ type: "liveCompositeSample", samples: decoded.compositeSamples });
-                    // The chart panel receives scalar samples as chartValues when history is kept by the host.
                     view.send({ type: sidebar ? "liveSample" : "chartValues", samples: decoded.scalarSamples });
                     if (sidebar) view.window.refreshDisplayedValues();
                     else view.window.updateValues();
                     assert.strictEqual(focusCell(view, sidebar).textContent, "&g_widgets[1]", "targets, not addresses");
                     assert.strictEqual(topComposites(view, sidebar).length, 1);
-                    await new Promise((resolve) => setTimeout(resolve, 2200));
+                    await view.clock.advance(2200); // pointer targets are saved at most every 2 s
                     states[sidebar] = view.getState();
                     view.assertHealthy();
                 } finally {

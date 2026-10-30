@@ -1,7 +1,8 @@
 "use strict";
-// MCP 服务器进程内连接真实 Agent Bridge：确认的接受/拒绝/过期、无 elicitation 回退、
-// 确认 ID 不泄露、超时按未知处理、取消转发、roots 变化后重新定位、进度通知与参数校验。
-// 敏感路由使用真实的授权、烧录、外设、CubeMX 与调试检查服务，确认消息按 Bridge 的真实响应形状渲染。
+// In-process MCP server against a real Agent Bridge: confirmation accept/decline/expiry, fallback without elicitation,
+// confirmation IDs never leak, timeouts treated as unknown, cancellation forwarding, relocation after roots change,
+// progress notifications and argument validation. Sensitive routes use the real authorization, flash, peripheral,
+// CubeMX and debug check services, and confirmation messages render from the Bridge's real response shape.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -419,7 +420,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             });
             assert.strictEqual(result.structuredContent.permission.remembered, true);
             await writeAuthorization.reset();
-            // Bridge 只给出 once 时不会出现 workspace 选项
+            // With only once from the Bridge there is no workspace option
             const peripheral = await connect({
                 elicitation: true,
                 env: { EMBERPROBE_WORKSPACE: workspace },
@@ -542,7 +543,7 @@ const inspection = new AgentDebugInspection(debugBridge);
             assert.strictEqual(result.structuredContent.error.code, "BRIDGE_TIMEOUT");
             assert.strictEqual(result.structuredContent.error.details.resultUnknown, true);
             assert.strictEqual(result.structuredContent.error.retryable, false);
-            // 建议动作指向 MCP 工具而不是 CLI 参数
+            // Suggested actions point at MCP tools rather than CLI arguments
             const advice = result.structuredContent.error.suggestedActions.join("\n");
             assert.ok(advice.includes("debug_status") && !advice.includes("--status"));
             assert.deepStrictEqual(result.structuredContent.error.actions, [{ method: "debug.status" }]);

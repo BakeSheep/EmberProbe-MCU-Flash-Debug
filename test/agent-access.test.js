@@ -1,6 +1,7 @@
 "use strict";
-// 按工作区生效的 Agent 访问开关：Bridge 启停只取决于信任、显式开关和（兼容的）工作区 skills，
-// 卸载 skills 不会关闭显式启用的通道；开关只写 workspaceState。
+// Per-workspace Agent access switch: starting and stopping the Bridge depends only on trust, the explicit switch and
+// (for compatibility) workspace skills. Uninstalling skills does not close an explicitly enabled channel; the switch is
+// stored only in workspaceState.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -61,7 +62,7 @@ const withoutSkills = { scopes: { workspace: { state: "notInstalled" }, global: 
         assert.deepStrictEqual(events.updates, [["emberprobe.agentAccess", "enabled"]]);
         assert.deepStrictEqual(events.starts, [{ legacyPointer: false }], "no workspace pointer without skills");
         assert.strictEqual(events.posts.at(-1).card, "enabled");
-        // 卸载 skills 不再隐式关闭显式启用的通道
+        // Uninstalling skills no longer closes an explicitly enabled channel implicitly
         provider._skillStatusService.lastStatus = withoutSkills;
         await provider._syncAgentBridge(withoutSkills);
         assert.strictEqual(events.starts.length, 2);

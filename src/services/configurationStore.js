@@ -35,8 +35,9 @@ const NUMBER_RANGES = Object.freeze({
     maxSamples: [100, 360001]
 });
 
-// Agent Bridge 禁止修改的配置键：openocdPath 可把探针调用引向任意可执行文件（token → 本地执行链），
-// 修改必须由用户在 VS Code 设置或侧边栏中完成；UI 路径不经过 store.update，不受此断言影响。
+// Configuration keys the Agent Bridge may not change: openocdPath could point probe calls at any executable (token ->
+// local execution), so the user must change it in VS Code settings or the sidebar. UI paths do not use store.update and
+// are unaffected by this assertion.
 const AGENT_FORBIDDEN_KEYS = Object.freeze(["openocdPath", "cubemxPath"]);
 
 function assertAgentSettable(values) {

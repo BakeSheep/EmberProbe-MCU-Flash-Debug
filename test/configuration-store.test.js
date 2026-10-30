@@ -11,7 +11,7 @@ const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-outside-"));
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { temp, elf, state, settings, store } = fixture;
     try {
         const snapshot = await store.update({
             elf: "firmware.elf",
@@ -28,7 +28,8 @@ const { createFixture } = require("./helpers/service-fixture");
         const ioc = path.join(temp, "project space.ioc");
         fs.writeFileSync(ioc, "ProjectManager.FirmwarePackage=STM32Cube FW_H7 V1.13.0\n");
         const selected = await store.update({ iocPath: "project space.ioc" });
-        // store 经 fs/promises realpath（native 绑定）展开 Windows 8.3 短名，期望值须用同一实现。
+        // The store expands Windows 8.3 short names through fs/promises realpath (native binding), so the expectation
+        // must use the same implementation.
         assert.strictEqual(selected.iocPath, await fs.promises.realpath(ioc));
         assert.strictEqual(state.get("mcu.iocPath"), selected.iocPath);
         assert.strictEqual(fixture.changed, 2);
@@ -52,7 +53,8 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual((await store.update({ sampleFrequencyHz: 30.5 })).sampleFrequencyHz, 30.5);
         await assert.rejects(store.update({ sampleFrequencyHz: 30.55 }), { code: "INVALID_CONFIG_VALUE" });
 
-        // Agent Bridge 禁改键：openocdPath 可把探针调用引向任意可执行文件，必须拒绝
+        // Keys the Agent Bridge may not change: openocdPath could point probe calls at any executable and must be
+        // refused
         assert.throws(
             () => assertAgentSettable({ openocdPath: "/tmp/evil" }),
             (error) => error.code === "CONFIG_KEY_FORBIDDEN" && error.retryable === false

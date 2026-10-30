@@ -9,7 +9,8 @@ const vm = require("vm");
 const { render } = require("./helpers/render-webview");
 const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
-const csvTools = require("../src/liveWatchView");
+const liveWatchView = require("../src/liveWatchView");
+const mockCsv = require("../mockup/mock-csv");
 const sidebarData = require("../mockup/mock/sidebar-data");
 const liveData = require("../mockup/mock/livewatch-data");
 const { createMockServer } = require("../mockup/serve");
@@ -25,7 +26,8 @@ function hostEnvironment() {
     const root = {
         EmberProbeSidebarData: sidebarData,
         EmberProbeLiveWatchData: liveData,
-        EmberProbeMockCsv: csvTools,
+        EmberProbeMockCsv: mockCsv,
+        EmberProbeMockHistory: require("../src/services/chartHistoryStore"),
         addEventListener: (_type, handler) => listeners.add(handler),
         removeEventListener: (_type, handler) => listeners.delete(handler)
     };
@@ -74,6 +76,8 @@ function hostEnvironment() {
         return {
             messages,
             contentWindow: {
+                // The real page provides collectLeaves; composite curves are not charted by these host checks.
+                collectLeaves: () => [],
                 postMessage(message) {
                     const copy = JSON.parse(JSON.stringify(message));
                     messages.push(copy);
@@ -212,7 +216,7 @@ function testHostsAndRenderer() {
         assert.equal(latest(live, "sidebarImportResult").added, 0, "repeated imports are idempotent");
         const list = latest(live, "watchList").items.concat(sidebarData.watchItem("g_target_rpm"));
         env.deliver(live, { type: "start", items: list, frequencyHz: 30 });
-        assert.equal(latest(live, "liveSample").samples.find((sample) => sample.name === "g_target_rpm").value, 2000);
+        assert.equal(latest(live, "chartValues").samples.find((sample) => sample.name === "g_target_rpm").value, 2000);
         assert.ok(latest(live, "liveCompositeSample").samples.some((sample) => sample.name === "g_imu"));
 
         env.deliver(sidebar, { type: "chipControl", action: "reset" });
@@ -276,16 +280,13 @@ function testArchive() {
         assert.equal(info.firstTimestampMs, first + 200);
         env.deliver(frame, { type: "exportCsv", names: ["g_motor_rpm"], fromMs: first, toMs: first + 100 });
         assert.equal(latest(frame, "exportCsvResult").ok, false, "an empty time range does not report success");
-        const localCsv = csvTools.buildCsv(["g_sensor_temp"], [[{ t: first, v: -2.5 }]]);
-        env.deliver(frame, { type: "exportCsv", source: "snapshot", names: ["g_sensor_temp"], csv: localCsv });
-        assert.equal(env.downloads.at(-1), localCsv, "snapshot/retained exports preserve the renderer's CSV");
         env.deliver(frame, { type: "stop" });
         env.advance(200);
         env.deliver(frame, { type: "samplingArchiveInfo" });
         assert.equal(latest(frame, "samplingArchiveInfo").lastTimestampMs, first + 400);
         env.deliver(frame, { type: "start", items: [], frequencyHz: 10 });
         env.advance(100);
-        assert.deepStrictEqual(latest(frame, "liveSample").samples, [], "an empty list never restarts old series");
+        assert.deepStrictEqual(latest(frame, "chartValues").samples, [], "an empty list never restarts old series");
     } finally {
         host.destroy();
     }
@@ -407,7 +408,7 @@ function testDebugBusyBridge() {
 
 function shellHtml() {
     const assets = {
-        "csv.js": `window.EmberProbeMockCsv = { buildCsv: ${csvTools.buildCsv}, csvDataRowCount: ${csvTools.csvDataRowCount} };`
+        "csv.js": mockCsv.browserSource()
     };
     return fs
         .readFileSync(path.join(mockup, "shell/index.html"), "utf8")
@@ -590,19 +591,27 @@ function testThemeBridge() {
 }
 
 async function testFrozenChartTheme() {
-    const view = render(csvTools.getLiveWatchContent({}, "zh"));
+    const view = render(liveWatchView.getLiveWatchContent({}, "zh"));
     try {
         view.send({ type: "watchList", items: liveData.watchList() });
-        view.send({ type: "liveSample", t: 1000, samples: [{ name: "g_sensor_temp", value: 36.4, t: 1000 }] });
+        view.send({ type: "chartValues", samples: [{ name: "g_sensor_temp", value: 36.4, t: 1000 }] });
         view.document.getElementById("freeze").click();
+        const request = view.messages.findLast((message) => message.type === "chartFreeze");
+        view.send({
+            type: "chartFreezeResult",
+            requestId: request.requestId,
+            historyRevision: request.historyRevision,
+            snapshotId: 7,
+            revision: 1,
+            bounds: { min: 1000, max: 1000 }
+        });
         assert.equal(view.window.frozen, true);
-        const history = JSON.stringify(view.window.data);
         view.window.dirty = false;
         view.document.body.classList.add("vscode-light");
         await Promise.resolve();
         assert.equal(view.window.dirty, true, "changing themes repaints a frozen canvas");
         assert.equal(view.window.frozen, true);
-        assert.equal(JSON.stringify(view.window.data), history, "theme changes keep recorded chart data");
+        assert.equal(view.window.remoteHistory.snapshotId, 7, "theme changes keep the frozen snapshot");
         view.assertHealthy();
     } finally {
         view.close();

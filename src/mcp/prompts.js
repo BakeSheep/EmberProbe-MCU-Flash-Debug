@@ -1,6 +1,6 @@
 "use strict";
-// MCP prompts：内容直接读取随扩展分发的 skills/<name>/SKILL.md 与 agent-workflow.md，
-// skills/ 仍是唯一来源；脚本名到 MCP 工具的对照表由漂移测试检查。
+// MCP prompts read skills/<name>/SKILL.md and agent-workflow.md shipped with the extension, keeping skills/ the single
+// source; a drift test checks the script-to-MCP-tool mapping.
 const fs = require("fs");
 const path = require("path");
 
@@ -54,7 +54,7 @@ const PROMPTS = Object.freeze([
     }
 ]);
 
-// 打包后位于 dist/，源码运行时位于 src/mcp/；两种布局下都找到扩展的 skills 目录。
+// Packaged code lives in dist/ and source runs from src/mcp/; find the extension's skills directory in both layouts.
 function skillsRoot() {
     for (const candidate of [path.join(__dirname, "..", "skills"), path.join(__dirname, "..", "..", "skills")])
         if (fs.existsSync(path.join(candidate, "_emberprobe", "agent-workflow.md"))) return candidate;

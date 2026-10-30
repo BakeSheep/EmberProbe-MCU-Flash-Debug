@@ -97,14 +97,6 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
     ]);
     assert.strictEqual(clash.length, 1);
     assert.throws(() => elf.createSymbolResolver(clash)("0x20000000::x"), { code: "VARIABLE_AMBIGUOUS" });
-    // The warning is localized by the host; the Worker has no UI language.
-    const translate = (lang) => (key, params) => i18n.t(lang, key, params);
-    assert.match(elf.sameNameSymbolWarning(elfOnly, translate("zh")), /^3 个变量名在多个编译单元中各有定义/);
-    assert.match(
-        elf.sameNameSymbolWarning(elfOnly, translate("en")),
-        /^3 variable names are defined in several compilation units.*g_localConfig \(main\.c::g_localConfig, other\.c::g_localConfig\)/
-    );
-    assert.strictEqual(elf.sameNameSymbolWarning([{ name: "x" }], translate("en")), "");
     // DWARF refinement reports each renamed identity so already-published symbols can follow it.
     const refinedCopy = elfOnly.map((symbol) => ({ ...symbol }));
     const before = refinedCopy.find((symbol) => symbol.elfName === "s_counter" && symbol.name.startsWith("0x"));

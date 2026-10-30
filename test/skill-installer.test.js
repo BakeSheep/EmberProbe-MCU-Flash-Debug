@@ -3,16 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const crypto = require("crypto");
-const {
-    inspectSkill,
-    installSkill,
-    uninstallSkill,
-    inspectSkills,
-    readManifest,
-    isUnmodifiedLegacySkill,
-    removeUnmodifiedLegacySkills
-} = require("../src/skillInstaller");
+const { inspectSkill, installSkill, uninstallSkill, inspectSkills, readManifest } = require("../src/skillInstaller");
 
 (async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-skills-"));
@@ -43,40 +34,8 @@ const {
         fs.rmSync(root, { recursive: true, force: true });
     }
 
-    // 重命名迁移只删除元数据、版本、文件集和指纹都与已发布版本一致的旧 Skill。
-    const legacyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-legacy-"));
-    const legacyEntry = {
-        name: "old-skill",
-        version: "1.0.0",
-        files: {
-            "SKILL.md": crypto.createHash("sha256").update("legacy skill").digest("hex"),
-            "scripts/run.js": crypto.createHash("sha256").update("legacy script").digest("hex")
-        }
-    };
-    try {
-        const legacySkill = path.join(legacyRoot, legacyEntry.name);
-        fs.mkdirSync(path.join(legacySkill, "scripts"), { recursive: true });
-        fs.writeFileSync(path.join(legacySkill, "SKILL.md"), "legacy skill");
-        fs.writeFileSync(path.join(legacySkill, "scripts", "run.js"), "legacy script");
-        fs.writeFileSync(
-            path.join(legacySkill, ".emberprobe-skill.json"),
-            JSON.stringify({ name: legacyEntry.name, version: legacyEntry.version })
-        );
-        assert.strictEqual(await isUnmodifiedLegacySkill(legacyRoot, legacyEntry), true);
-        fs.writeFileSync(path.join(legacySkill, "scripts", "run.js"), "user modified");
-        assert.strictEqual(await isUnmodifiedLegacySkill(legacyRoot, legacyEntry), false);
-        assert.deepStrictEqual(await removeUnmodifiedLegacySkills({ legacySkills: [legacyEntry] }, legacyRoot), []);
-        assert.ok(fs.existsSync(legacySkill), "modified legacy skill must be preserved");
-        fs.writeFileSync(path.join(legacySkill, "scripts", "run.js"), "legacy script");
-        assert.deepStrictEqual(await removeUnmodifiedLegacySkills({ legacySkills: [legacyEntry] }, legacyRoot), [
-            legacyEntry.name
-        ]);
-        assert.ok(!fs.existsSync(legacySkill), "unmodified legacy skill should be removed during migration");
-    } finally {
-        fs.rmSync(legacyRoot, { recursive: true, force: true });
-    }
-
-    // 双范围安装/卸载:全局目录经 os.homedir() 解析,测试内重定向到临时目录保证确定性
+    // Install/uninstall in both scopes: the global directory resolves through os.homedir(), redirected to a temporary
+    // directory for determinism
     const realHomedir = os.homedir;
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-home-"));
     os.homedir = () => home;
@@ -130,8 +89,8 @@ const {
             "reinstall must replace EmberProbe-owned skill directories instead of merging extras"
         );
 
-        // 任务1：共享参考文档(Markdown)也必须纳入完整性检查——缺失触发需修复、变更触发更新，
-        // 不能只检测 _emberprobe 下的 .js 运行时脚本。
+        // Shared reference documents (Markdown) are part of the integrity check too: a missing one needs repair and a
+        // changed one an update; checking only the .js runtime scripts under _emberprobe is not enough.
         assert.strictEqual((await inspectSkills(vscode, context)).scopes.workspace.state, "installed");
         const sharedDoc = path.join(workspace, ".agents", "skills", "_emberprobe", "agent-workflow.md");
         assert.ok(fs.existsSync(sharedDoc), "shared agent-workflow.md must be installed with the runtime");
@@ -158,7 +117,8 @@ const {
             "modified shared Markdown must mark runtime skills as modified"
         );
 
-        // manifest.shared 必须与源 _emberprobe 目录实际文件完全一致，防止新增共享文件漏检
+        // manifest.shared must match the files actually in the source _emberprobe directory, so new shared files are
+        // never missed
         const manifest = await readManifest(context);
         const sharedSourceDir = path.join(context.extensionPath, "skills", "_emberprobe");
         const actualShared = fs
@@ -171,7 +131,7 @@ const {
             "manifest.shared must exactly match skills/_emberprobe contents"
         );
 
-        // 项目范围卸载:只移除 manifest 内 skill 与共享运行时,保留用户自建 skill
+        // Project-scope uninstall removes only manifest skills and the shared runtime, keeping user-created skills
         fs.mkdirSync(path.join(workspace, ".agents", "skills", "user-skill"), { recursive: true });
         fs.mkdirSync(path.join(workspace, ".emberprobe"), { recursive: true });
         fs.writeFileSync(path.join(workspace, ".emberprobe", "agent-bridge.json"), "{}");
@@ -188,7 +148,7 @@ const {
             "workspace uninstall must remove the Bridge pointer directory"
         );
 
-        // 全局卸载后目录已空,应整体移除 skills 目录
+        // After global uninstall the empty skills directory is removed
         const globalUninstall = await uninstallSkill(vscode, context, "en", "global");
         assert.strictEqual(globalUninstall.scopes.global.state, "notInstalled");
         assert.strictEqual(globalUninstall.state, "notInstalled");
@@ -204,9 +164,9 @@ const {
     process.exitCode = 1;
 });
 
-// §1 回归：工作区中的符号链接/junction 绝不可被安装/卸载流程穿透。
-// 攻击者可在仓库里提交 .agents/skills/_emberprobe → 任意目录 的链接，
-// 旧实现会 readdir 跟随链接并逐个 rm 条目，等价于对工作区外目录执行 rm -rf。
+// Symlinks/junctions in the workspace are never followed by install or uninstall. A repository could commit a
+// .agents/skills/_emberprobe link to any directory; following it with readdir and removing entries one by one would
+// amount to rm -rf outside the workspace.
 (async () => {
     const context = { extensionPath: path.resolve(__dirname, "..") };
     const linkType = process.platform === "win32" ? "junction" : "dir";
@@ -236,7 +196,7 @@ const {
         }
     }
 
-    // (a) _emberprobe 是指向工作区外目录的链接
+    // (a) _emberprobe links outside the workspace
     await runCase(
         "runtime",
         async (workspace, victim) => {
@@ -251,7 +211,7 @@ const {
         }
     );
 
-    // (b) .agents/skills 本身是链接
+    // (b) .agents/skills itself is a link
     await runCase(
         "target-root",
         async (workspace, victim) => {
@@ -265,7 +225,7 @@ const {
         }
     );
 
-    // (c) 单个 skill 目录是链接
+    // (c) a single skill directory is a link
     await runCase(
         "per-skill",
         async (workspace, victim) => {
@@ -279,7 +239,7 @@ const {
         }
     );
 
-    // (d) .agents 本身是链接（mkdir recursive 会穿透）
+    // (d) .agents itself is a link (recursive mkdir would follow it)
     await runCase(
         "agents-dir",
         async (workspace, victim) => {
@@ -292,7 +252,7 @@ const {
         }
     );
 
-    // (e) uninstallSkill 遇到 .agents/skills 是链接时也不得穿透
+    // (e) uninstallSkill must not follow .agents/skills when it is a link
     await runCase(
         "uninstall",
         async (workspace, victim) => {

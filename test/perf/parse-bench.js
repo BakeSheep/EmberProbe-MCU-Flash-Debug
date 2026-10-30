@@ -1,11 +1,11 @@
 "use strict";
-// DWARF 解析性能基准（手动运行，不进 CI）：
-//   node test/perf/parse-bench.js [--cus 300] [--vars 400] [--structs 4] [--members 8]
-// 程序化生成合成 ELF32 + DWARF v4（多 CU、结构体/数组/标量变量），无需外部工具链，确定性输出。
-// 对比两条路径的成本：
-//   double-parse : 重构前的行为——parseDwarfVariableTypes 与 parseCompositeLayout
-//                  各自全量解析（用两个 Buffer 副本绕过解析缓存，等价于旧实现的两次完整遍历）
-//   parseDwarf   : 重构后的聚合入口——一次完整解析 + 两个视图构建（重构前不存在，显示 N/A）
+// DWARF parsing benchmark (run manually, not in CI):
+// node test/perf/parse-bench.js [--cus 300] [--vars 400] [--structs 4] [--members 8]
+// Generates a deterministic synthetic ELF32 + DWARF v4 (several CUs with struct/array/scalar variables) without an
+// external toolchain, and compares:
+// double-parse: parseDwarfVariableTypes and parseCompositeLayout each parse in full (two Buffer copies bypass the parse
+// cache)
+// parseDwarf: the combined entry point, one full parse feeding both views
 const dwarf = require("../../src/dwarf");
 
 function parseArgs(argv) {
@@ -28,21 +28,21 @@ function strBytes(s) {
     return b;
 }
 
-// DWARF v4 缩写表（与 test/dwarf-composite.test.js 同构）：
-// 1=compile_unit(有子) 2=base_type(name,encoding,byte_size) 3=structure_type(name,byte_size,有子)
+// DWARF v4 abbreviation table (same shape as test/dwarf-composite.test.js):
+// 1=compile_unit(children) 2=base_type(name,encoding,byte_size) 3=structure_type(name,byte_size,children)
 // 4=member(name,type ref4,data_member_location data1) 5=variable(name,type ref4,location exprloc)
-// 6=array_type(type ref4,byte_size,有子) 7=subrange(upper_bound data1)
+// 6=array_type(type ref4,byte_size,children) 7=subrange(upper_bound data1)
 const ABBREV = Buffer.from([
     1, 0x11, 1, 0, 0, 2, 0x24, 0, 0x03, 0x08, 0x3e, 0x0b, 0x0b, 0x0b, 0, 0, 3, 0x13, 1, 0x03, 0x08, 0x0b, 0x0b, 0, 0, 4,
     0x0d, 0, 0x03, 0x08, 0x49, 0x13, 0x38, 0x0b, 0, 0, 5, 0x34, 0, 0x03, 0x08, 0x49, 0x13, 0x02, 0x18, 0, 0, 6, 0x01, 1,
     0x49, 0x13, 0x0b, 0x0b, 0, 0, 7, 0x21, 0, 0x2f, 0x0b, 0, 0, 0
 ]);
 
-// 构建一个 CU 的 .debug_info 负载；ref4 为 CU 相对偏移（DW_FORM_ref4 语义）
+// Builds one CU's .debug_info payload; ref4 values are CU-relative offsets (DW_FORM_ref4)
 function buildCu(index, cfg) {
     const b = [];
     const off = () => b.length;
-    b.push(...u32(0), 4, 0, ...u32(0), 4); // unit_length 占位 + version 4 + abbrev_off 0 + addr_size 4
+    b.push(...u32(0), 4, 0, ...u32(0), 4); // unit_length placeholder + version 4 + abbrev_off 0 + addr_size 4
     b.push(1); // compile_unit
     const intOff = off();
     b.push(2, ...strBytes("int"), 0x05, 4); // base_type int
@@ -60,11 +60,11 @@ function buildCu(index, cfg) {
     }
     const arrOff = off();
     b.push(6, ...u32(intOff), 16); // array_type of int
-    b.push(7, 3, 0); // subrange upper_bound=3 → 4 元素
+    b.push(7, 3, 0); // subrange upper_bound=3 -> 4 elements
     b.push(5, ...strBytes(`cu${index}_f`), ...u32(floatOff), 5, 0x03, ...u32(0x20000000 + index * 4));
     b.push(5, ...strBytes(`cu${index}_a`), ...u32(arrOff), 5, 0x03, ...u32(0x20010000 + index * 4));
     for (let v = 0; v < cfg.vars; v++) {
-        const kind = v % (2 + cfg.structs); // int、float、各 struct 轮转
+        const kind = v % (2 + cfg.structs); // rotate through int, float and each struct
         const typeRef = kind === 0 ? intOff : kind === 1 ? floatOff : structOffs[kind - 2];
         b.push(
             5,
@@ -186,39 +186,32 @@ if (require.main === module) {
     const cfg = parseArgs(process.argv);
     const { buf, debugInfoBytes } = buildElf(cfg);
     console.log(
-        `合成 ELF: .debug_info=${(debugInfoBytes / 1024).toFixed(0)} KiB，CU=${cfg.cus}，每 CU 变量=${cfg.vars + 2}，结构体=${cfg.structs}×${cfg.members} 成员`
+        `Synthetic ELF: .debug_info=${(debugInfoBytes / 1024).toFixed(0)} KiB, CUs=${cfg.cus}, variables per CU=${cfg.vars + 2}, structs=${cfg.structs}x${cfg.members} members`
     );
 
-    // 旧路径成本：两个 Buffer 副本各完整解析一次（重构前 parseDwarfVariableTypes/parseCompositeLayout 无共享缓存）
+    // Double parse: two Buffer copies each parsed in full, so the two views share no cache
     let t0 = process.hrtime.bigint();
-    const bufA = Buffer.from(buf);
-    const types = dwarf.parseDwarfVariableTypes(bufA);
+    const types = dwarf.parseDwarfVariableTypes(Buffer.from(buf));
     const tTypes = ms(t0);
     t0 = process.hrtime.bigint();
-    const bufB = Buffer.from(buf);
-    const layouts = dwarf.parseCompositeLayout(bufB);
+    const layouts = dwarf.parseCompositeLayout(Buffer.from(buf));
     const tLayouts = ms(t0);
     console.log(
-        `double-parse（旧路径等价成本）: types=${fmt(tTypes)} ms  layouts=${fmt(tLayouts)} ms  合计=${fmt(tTypes + tLayouts)} ms`
+        `double-parse: types=${fmt(tTypes)} ms  layouts=${fmt(tLayouts)} ms  total=${fmt(tTypes + tLayouts)} ms`
     );
 
-    if (typeof dwarf.parseDwarf === "function") {
-        // 新聚合入口：同一 Buffer 一次解析、两个视图
-        dwarf.parseDwarf(Buffer.from(buf)); // 预热（JIT）
-        t0 = process.hrtime.bigint();
-        const agg = dwarf.parseDwarf(Buffer.from(buf));
-        const tAgg = ms(t0);
-        console.log(`parseDwarf（聚合入口）        : ${fmt(tAgg)} ms`);
-        if (agg.types.size !== types.size || agg.layouts.size !== layouts.size) {
-            console.error(
-                `!! 视图结果数不一致: agg types=${agg.types.size} layouts=${agg.layouts.size} vs legacy ${types.size}/${layouts.size}`
-            );
-            process.exitCode = 1;
-        } else {
-            console.log(`结果一致性: types=${agg.types.size} 项, layouts=${agg.layouts.size} 项 ✓`);
-        }
+    // Combined entry point: one parse of one Buffer, two views
+    dwarf.parseDwarf(Buffer.from(buf)); // warm-up (JIT)
+    t0 = process.hrtime.bigint();
+    const agg = dwarf.parseDwarf(Buffer.from(buf));
+    console.log(`parseDwarf:   ${fmt(ms(t0))} ms`);
+    if (agg.types.size !== types.size || agg.layouts.size !== layouts.size) {
+        console.error(
+            `!! view sizes differ: parseDwarf types=${agg.types.size} layouts=${agg.layouts.size} vs ${types.size}/${layouts.size}`
+        );
+        process.exitCode = 1;
     } else {
-        console.log("parseDwarf（聚合入口）        : N/A（尚未实现）");
+        console.log(`views match: types=${agg.types.size}, layouts=${agg.layouts.size}`);
     }
 }
 

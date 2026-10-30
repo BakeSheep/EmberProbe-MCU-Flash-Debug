@@ -18,14 +18,15 @@ const cases = [
 
 for (const [line, stage] of cases) assert.strictEqual(parseLine(line)?.stage, stage, line);
 
-// 失败流程中 OpenOCD 同样会打印 "shutdown command invoked"，不能据此判定完成（以退出代码为准）
+// OpenOCD prints "shutdown command invoked" in failed runs too, so completion is decided by the exit code, not that
+// line
 assert.strictEqual(parseLine("shutdown command invoked"), null);
-// 剥离 "Error:" 前缀后为空时回退为整行，避免产生空消息
+// When stripping the "Error:" prefix leaves nothing, fall back to the whole line instead of an empty message
 const errEvent = parseLine("embedded:startup.tcl:1789: Error:");
 assert.strictEqual(errEvent?.stage, "error");
 assert.ok(errEvent.message.length > 0, "error message should not be empty");
 
-// wrote/verified 事件应携带结构化字段（含可选速率）
+// wrote/verified events carry structured fields (with an optional rate)
 const wrote = parseLine("wrote 524288 bytes from file app.elf in 2.1s (249.9 KiB/s)");
 assert.strictEqual(wrote?.stage, "program");
 assert.strictEqual(wrote.bytes, 524288);
@@ -36,7 +37,7 @@ assert.strictEqual(verified?.stage, "verify");
 assert.strictEqual(verified.bytes, 524288);
 assert.strictEqual(verified.speed, "");
 
-// 新增信息行：芯片、Flash 容量、适配器时钟、目标电压
+// Info lines: chip, flash size, adapter clock and target voltage
 const chipId = parseLine("Info : device id = 0x10076413");
 assert.strictEqual(chipId?.stage, "chip");
 assert.strictEqual(chipId.deviceId, "0x10076413");
@@ -49,14 +50,14 @@ assert.ok(flashInfo.flashSize.includes("1024"));
 assert.strictEqual(parseLine("Info : clock speed 1800 kHz")?.stage, "adapter");
 assert.strictEqual(parseLine("Info : Target voltage: 3.239000")?.level, "info");
 assert.strictEqual(parseLine("Info : Target voltage: 0.000000")?.level, "error");
-// 配置脚本缺失应归类为错误
+// A missing configuration script is classified as an error
 assert.strictEqual(parseLine("Error: Can't find interface/stlink.cfg")?.stage, "error");
-// 正常 Info 提示（含 "unable to"/"failed" 等关键词）不应被误判为错误
+// Normal Info hints (even with words like "unable to"/"failed") are not misread as errors
 assert.strictEqual(parseLine("Info : Unable to match requested speed 5000 kHz, using 1800 kHz"), null);
 assert.strictEqual(parseLine("Info : clock speed 1800 kHz")?.stage, "adapter");
 assert.strictEqual(parseLine("libusb_open() failed with LIBUSB_ERROR_ACCESS")?.stage, "error");
 
-// Tcl 双引号内的变量与命令替换必须被禁用，同时保留空格路径。
+// Variable and command substitution inside Tcl double quotes is disabled while paths with spaces keep working.
 assert.strictEqual(
     quoteTclWord('C:/work/$board/[danger]/app "debug".elf'),
     '"C:/work/\\$board/\\[danger\\]/app \\"debug\\".elf"'

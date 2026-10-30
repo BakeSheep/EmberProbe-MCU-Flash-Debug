@@ -39,6 +39,11 @@ function render(html, initialState = {}, options = {}) {
                                   : () => {}
                     }
                 );
+            // A FakeClock in options.clock drives the page's timeouts instead of real time.
+            if (options.clock) {
+                window.setTimeout = (fn, ms = 0, ...args) => options.clock.schedule(() => fn(...args), ms);
+                window.clearTimeout = (id) => options.clock.cancel(id);
+            }
             // Lets a test replace window globals (e.g. timers) before page scripts run.
             if (options.beforeParse) options.beforeParse(window);
         }

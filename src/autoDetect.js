@@ -1,10 +1,6 @@
 "use strict";
 const fs = require("fs/promises");
-const {
-    detectProbe,
-    usbInventory,
-    probeFromText: debuggerFromInventory
-} = require("../skills/_emberprobe/probe-detection");
+const { detectProbe } = require("../skills/_emberprobe/probe-detection");
 const targets = require("../skills/_emberprobe/target-detection");
 const elfFormat = require("./elfFormat");
 
@@ -157,5 +153,4 @@ async function detectWorkspace(vscode, options = {}) {
     };
 }
 
-const targetFromText = targets.targetFromText;
-module.exports = { detectWorkspace, detectMcu, elfImages, targetFromText, debuggerFromInventory, usbInventory };
+module.exports = { detectWorkspace, elfImages };

@@ -45,7 +45,8 @@ class AgentService {
         this.onAudit = options.onAudit || null;
         this.isTrusted = options.isTrusted || (() => true);
         this.handlers = { ...options.handlers };
-        // 实例注册表（可选）：Bridge 运行时登记 port/token，未运行时登记不含 token 的未启用标记。
+        // Instance registry (optional): a running Bridge registers port/token; otherwise a token-free disabled marker
+        // is registered.
         this.registry = options.registry || null;
         this.workspaceFoldersProvider =
             options.workspaceFoldersProvider ||
@@ -85,7 +86,7 @@ class AgentService {
         return this.registry?.instanceId || "";
     }
 
-    // 调用审计只记录通道、客户端、方法与结果码，不记录参数值。
+    // Call auditing records only channel, client, method and result code, never parameter values.
     async call(method, params = {}, meta) {
         try {
             const result = await this.dispatch(method, params, meta);
@@ -140,7 +141,8 @@ class AgentService {
         );
     }
 
-    // options.legacyPointer：是否为旧版脚本写工作区指针（工作区装了 skills 时为真）。
+    // options.legacyPointer: whether to write the workspace pointer for older scripts (true while workspace skills are
+    // installed).
     start(options = {}) {
         if (this.closed)
             return Promise.reject(
@@ -173,7 +175,7 @@ class AgentService {
                 }
                 if (this.registry) {
                     await this.registry.publish({ bridge: result, workspaceFolders: this.folders() });
-                    // stop() 在登记期间到来时，它的未启用标记排在本次登记之后写入。
+                    // If stop() arrives during registration, its disabled marker is written after this registration.
                     if (epoch !== this.lifecycleEpoch) {
                         await bridge.stop();
                         return null;
@@ -220,27 +222,13 @@ class AgentService {
         return this.workspaceFoldersProvider() || [];
     }
 
-    // 记录未运行原因（disabled/untrusted），并在不运行时登记为不含 token 的标记。
-    setAccessState(state) {
-        this.accessState = state || "disabled";
-        return this.bridge ? Promise.resolve() : this.publishMarker();
-    }
-
-    // 工作区文件夹变化后重写登记内容；运行中的 Bridge 保留原 port/token。
-    refreshRegistration() {
-        if (!this.registry) return Promise.resolve();
-        if (this.bridge && this.descriptor)
-            return this.registry.publish({ bridge: this.descriptor, workspaceFolders: this.folders() });
-        return this.publishMarker();
-    }
-
     async publishMarker() {
         if (!this.registry || this.bridge) return;
         try {
             if (!this.folders().length) await this.registry.remove();
             else await this.registry.publish({ workspaceFolders: this.folders(), agentAccess: this.accessState });
         } catch (error) {
-            // 标记只服务于诊断，写入失败不影响扩展其余功能。
+            // The marker only serves diagnostics; a failed write does not affect the rest of the extension.
             console.warn("Unable to update the Agent Bridge registry:", error?.message || error);
         }
     }

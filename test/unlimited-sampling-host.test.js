@@ -116,7 +116,7 @@ function createProvider() {
     assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"], undefined);
     await assert.rejects(provider._controlAgentSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
 
-    const graph = render(getLiveWatchContent({ backendHistory: true, panelId: 3 }, "en"));
+    const graph = render(getLiveWatchContent({ panelId: 3 }, "en"));
     try {
         graph.assertHealthy();
         const doc = graph.document;

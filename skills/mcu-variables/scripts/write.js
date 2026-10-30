@@ -14,7 +14,7 @@ function args(argv) {
     return out;
 }
 
-// 解析 --set 的 name=value 对（逗号分隔）；变量名可含路径语法（sensor.x / buf[0]）
+// Parses --set name=value pairs (comma separated); names may use path syntax (sensor.x / buf[0])
 function parseSet(text) {
     const values = [];
     for (const part of String(text || "")

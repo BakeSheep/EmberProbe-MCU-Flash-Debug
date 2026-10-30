@@ -1,5 +1,6 @@
 "use strict";
-// 显示名（C++ 限定名）在故障定位、ELF 排行与变量解析中的呈现，同时保留原始 mangled 名。
+// Display names (C++ qualified names) in fault location, ELF ranking and variable resolution, keeping the original
+// mangled names.
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -8,7 +9,7 @@ const { FaultService } = require("../src/services/faultService");
 const { resolveVariableRequests } = require("../src/elfSymbols");
 const { loadProvider } = require("./helpers/load-provider");
 
-// 最小合法 ELF32（仅空头 + 一个空节头），供 _analyzeElf 的 parseElfSections 读取。
+// Minimal valid ELF32 (an empty header and one empty section header) for _analyzeElf's parseElfSections.
 function minimalElf() {
     const buf = Buffer.alloc(52 + 40);
     buf[0] = 0x7f;
@@ -29,7 +30,7 @@ function minimalElf() {
     return buf;
 }
 
-// —— faultService：pcSymbol 用显示名，pcSymbolRaw 保留原始名 ——
+// faultService: pcSymbol uses the display name and pcSymbolRaw keeps the original
 (async () => {
     const fault = new FaultService(
         {
@@ -50,20 +51,21 @@ function minimalElf() {
         }
     );
     const r = await fault.read({}, () => [{ name: "_ZN2ns4funcEv" }]);
-    assert.strictEqual(r.pcSymbol, "ns::func+0x4", "PC 用可读显示名");
-    assert.strictEqual(r.pcSymbolRaw, "_ZN2ns4funcEv+0x4", "PC 同时保留原始 mangled 名");
-    assert.strictEqual(r.lrSymbol, "", "无匹配时显示名为空");
+    assert.strictEqual(r.pcSymbol, "ns::func+0x4", "PC uses the readable display name");
+    assert.strictEqual(r.pcSymbolRaw, "_ZN2ns4funcEv+0x4", "PC keeps the original mangled name");
+    assert.strictEqual(r.lrSymbol, "", "no match leaves the display name empty");
     assert.strictEqual(r.lrSymbolRaw, "");
 
-    // —— resolveVariableRequests：displayName 唯一别名解析，身份仍返回原始名 ——
+    // resolveVariableRequests: unique displayName aliases resolve while the identity stays the original name
     const symbols = [
         { name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", address: 0x20000020, size: 4, watchType: "i32" }
     ];
     const [req] = resolveVariableRequests(symbols, [{ name: "ns::nsVar" }]);
-    assert.strictEqual(req.name, "_ZN2ns5nsVarE", "解析身份始终为原始规范名");
+    assert.strictEqual(req.name, "_ZN2ns5nsVarE", "the resolved identity is always the original name");
     assert.strictEqual(req.address >>> 0, 0x20000020);
 
-    // 多个符号共享同一 displayName（重载）→ 不作别名，以歧义拒绝并列出候选身份
+    // Several symbols sharing one displayName (overloads) are not aliased; the request is rejected as ambiguous with
+    // the candidate identities
     const overloaded = [
         { name: "_ZN2ns1fv", displayName: "ns::f", address: 0x20000100, size: 4, watchType: "i32" },
         { name: "_ZN2ns1fw", displayName: "ns::f", address: 0x20000104, size: 4, watchType: "i32" }
@@ -75,7 +77,7 @@ function minimalElf() {
             error.details.candidates.map((candidate) => candidate.name).join() === "_ZN2ns1fv,_ZN2ns1fw"
     );
 
-    // —— _analyzeElf：topSymbols 含 displayName 且保留 name ——
+    // _analyzeElf: topSymbols carry displayName and keep name
     const tmp = path.join(fs.realpathSync(os.tmpdir()), `emberprobe-cpp-display-${process.pid}.elf`);
     fs.writeFileSync(tmp, minimalElf());
     try {
@@ -96,8 +98,8 @@ function minimalElf() {
         const result = await provider._analyzeElf({ top: 20 });
         const fn = result.topSymbols.find((s) => s.kind === "function");
         const obj = result.topSymbols.find((s) => s.kind === "object");
-        assert.strictEqual(fn.name, "_ZN2ns4funcEv", "保留原始名");
-        assert.strictEqual(fn.displayName, "ns::func", "附带显示名");
+        assert.strictEqual(fn.name, "_ZN2ns4funcEv", "keeps the original name");
+        assert.strictEqual(fn.displayName, "ns::func", "carries the display name");
         assert.strictEqual(obj.name, "_ZN2ns5nsVarE");
         assert.strictEqual(obj.displayName, "ns::nsVar");
 
@@ -107,7 +109,11 @@ function minimalElf() {
         provider._onElfChange("types", { elf: { sha256: "x" } }, [
             { name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", watchType: "i32", isComposite: false }
         ]);
-        assert.strictEqual(updates[0].symbols[0].displayName, "ns::nsVar", "渐进加载向侧边栏发送 C++ 显示名");
+        assert.strictEqual(
+            updates[0].symbols[0].displayName,
+            "ns::nsVar",
+            "progressive loading sends C++ display names to the sidebar"
+        );
 
         provider._context = {
             workspaceState: { get: () => [{ name: "_ZN2ns5nsVarE.member" }] }

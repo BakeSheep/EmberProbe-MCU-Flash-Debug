@@ -1,7 +1,6 @@
 "use strict";
 const assert = require("assert");
 const elf = require("../src/elfSymbols");
-const { t } = require("../src/i18n");
 const { loadProvider } = require("./helpers/load-provider");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
@@ -28,9 +27,6 @@ const candidates = symbols.map(({ name, displayName, sourceFile, address, size }
     size
 }));
 for (const lang of ["en", "zh"]) {
-    const warning = elf.sameNameSymbolWarning(symbols, (key, params) => t(lang, key, params));
-    assert(!warning.includes("_ZN"), warning);
-    assert(warning.includes("probe_lab.cpp::g_sameNameCounter"));
     assert.throws(
         () => elf.createSymbolResolver(symbols)("g_sameNameCounter"),
         (error) => {

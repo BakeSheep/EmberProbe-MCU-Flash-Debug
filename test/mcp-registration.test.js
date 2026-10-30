@@ -1,6 +1,7 @@
 "use strict";
-// MCP 注册：VS Code provider 与 Cursor 扩展 API 的特性检测与可用性、稳定启动器与 POSIX 包装脚本、
-// 绝对路径的启动命令、按客户端安装（CLI / 安装链接 / 剪贴板）与 CLI 查找和调用。
+// MCP registration: feature detection and availability of the VS Code provider and Cursor extension API, the stable
+// launcher and POSIX wrapper script, absolute-path launch commands, per-client installation (CLI / install link /
+// clipboard), and CLI lookup and invocation.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -247,7 +248,7 @@ function cursorApi() {
             assert.strictEqual(file, path.join(context.globalStorageUri.fsPath, "mcp", "emberprobe-mcp.js"));
             assert.strictEqual(fs.readFileSync(file, "utf8"), launcherSource(registration.serverPath()));
             assert.ok(!fs.existsSync(registration.wrapperPath()), "Windows needs no shell wrapper");
-            // 启动器调用打包入口导出的 main()：用一个假服务器验证
+            // The launcher calls main() exported by the bundled entry point; checked with a fake server
             const fake = path.join(base, "fake-server.js");
             fs.writeFileSync(fake, "exports.main = async () => { process.stdout.write('started'); };");
             const launcher = path.join(base, "launcher.js");
@@ -275,7 +276,7 @@ function cursorApi() {
             const script = path.join(base, "wrapper-check");
             fs.writeFileSync(script, wrapperSource(process.execPath, launch), { mode: 0o755 });
             assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "1");
-            // 运行时已不存在时回退到 PATH 中的 node
+            // Falls back to node on PATH when the runtime no longer exists
             fs.writeFileSync(script, wrapperSource(path.join(base, "gone"), launch));
             env.PATH = `${path.dirname(process.execPath)}:${process.env.PATH}`;
             assert.strictEqual(execFileSync(script, { encoding: "utf8", env }), "undefined");
@@ -466,7 +467,7 @@ function cursorApi() {
             assert.strictEqual(exe.ok, true);
             assert.strictEqual(calls[2].file, "C:\\bin\\claude.exe");
             if (process.platform !== "win32") return;
-            // 真实的 .cmd 包装：路径含空格、括号与 &，参数应原样到达
+            // A real .cmd wrapper: arguments arrive unchanged with spaces, parentheses and & in the path
             const dir = path.join(base, "npm (x86) & co");
             fs.mkdirSync(dir, { recursive: true });
             const echo = path.join(dir, "echo-args.js");

@@ -2,7 +2,7 @@
 const assert = require("assert");
 const { WatchListStore, appendMissingWatchItems } = require("../src/services/watchListStore");
 const { createChipParser } = require("../src/chip/parser");
-const { parseDwarf, readULEB } = require("../src/dwarf");
+const { parseDwarf } = require("../src/dwarf");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const existing = [

@@ -48,9 +48,9 @@ const element = (value, index = 0, address = 0x20000100 + index * 4) => ({
 const array = (...elements) => ({ kind: "array", elements });
 const sample = (tree) => ({ type: "liveCompositeSample", samples: [{ name: "values", tree }] });
 
-for (const [label, html, listType, selector] of [
-    ["sidebar", getModernWebviewContent({}, "en"), "sidebarWatchList", ".sb-mval"],
-    ["chart", getLiveWatchContent({}, "en"), "watchList", ".member-value"]
+for (const [label, html, listType, scalarType, selector] of [
+    ["sidebar", getModernWebviewContent({}, "en"), "sidebarWatchList", "liveSample", ".sb-mval"],
+    ["chart", getLiveWatchContent({}, "en"), "watchList", "chartValues", ".member-value"]
 ]) {
     const view = render(html);
     const advance = clock(view);
@@ -64,7 +64,7 @@ for (const [label, html, listType, selector] of [
 
         // The host delivers scalars first, then composites; neither may blank valid rows.
         advance(25);
-        view.send({ type: "liveSample", samples: [{ name: "tick", value: 7, t: 10025 }] });
+        view.send({ type: scalarType, samples: [{ name: "tick", value: 7, t: 10025 }] });
         view.send(sample(array(element(43))));
         assert.strictEqual(view.document.querySelector(selector), cell, `${label}: values reuse existing rows`);
         assert.strictEqual(cell.textContent, "42", `${label}: a throttled sample keeps the last displayed value`);

@@ -191,16 +191,7 @@ try {
     paint({ ...options, norm: true });
     paint(options);
     assert.equal(chartState.autoY, false);
-    const dense = [
-        { x: 0, y: 2 },
-        { x: 0.2, y: -10 },
-        { x: 0.3, y: 100 },
-        { x: 0.4, y: 5 },
-        { x: 1, y: 3 }
-    ];
-    assert.ok(I.envelope(dense).some((p) => p.y === -10));
-    assert.ok(I.envelope(dense).some((p) => p.y === 100));
-    console.log("Chart controls, accessibility, overlap and envelope tests passed");
+    console.log("Chart controls, accessibility and overlap tests passed");
 } finally {
     dom.window.close();
 }

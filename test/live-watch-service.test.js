@@ -12,7 +12,6 @@ const { filterRuntimeRamPlan } = require("../src/services/liveWatchService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
     try {
         const liveService = new LiveWatchService({
             decodeValue: (bytes, type) => `${type}:${bytes[0]}`,

@@ -373,7 +373,7 @@ class CubeMxService {
 
     cancel(params = {}) {
         if (params.operationId) {
-            for (const [root, job] of this.jobs.entries()) {
+            for (const job of this.jobs.values()) {
                 if (job.operationId === params.operationId) {
                     job.controller.abort();
                     job.retryStop?.();

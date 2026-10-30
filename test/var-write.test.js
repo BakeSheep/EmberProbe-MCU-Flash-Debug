@@ -30,7 +30,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         });
     validateManagedWritePlan([{ address: 0xfffffffc, bytes: Buffer.from([1, 2, 3, 4]) }]);
 
-    // —— encodeValue：各类型小端编码与 decodeValue 往返 ——
+    // encodeValue: little-endian encoding per type and round trip through decodeValue
     assert.deepStrictEqual(encodeValue(255, "u8"), [0xff]);
     assert.deepStrictEqual(encodeValue(-1, "i16"), [0xff, 0xff]);
     assert.deepStrictEqual(encodeValue(0x12345678, "u32"), [0x78, 0x56, 0x34, 0x12]);
@@ -38,7 +38,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.strictEqual(decodeValue(encodeValue(1.5, "f32"), "f32"), 1.5);
     assert.strictEqual(decodeValue(encodeValue(-123456, "i32"), "i32"), -123456);
 
-    // 越界 / 非法值 / 非法类型
+    // Out of range / invalid values / invalid types
     assert.throws(
         () => encodeValue(256, "u8"),
         (e) => e.code === "INVALID_WRITE_VALUE"
@@ -112,7 +112,8 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.strictEqual(decodeValue(encodeValue("inf", "f64"), "f64"), Infinity);
     assert.strictEqual(decodeValue(encodeValue("-inf", "f64"), "f64"), -Infinity);
 
-    // —— _writeMemoryBytes：先按自然宽度写，窄写被丢弃时回退 32 位读-改-写、ocd_→ 无前缀回退、失败抛错 ——
+    // _writeMemoryBytes: write at natural width first, fall back to a 32-bit read-modify-write when narrow writes are
+    // dropped, fall back from ocd_ to unprefixed commands, and throw on failure
     const okSession = new LiveWatchSession(null, {}, {});
     const sent = [];
     okSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
@@ -284,7 +285,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         assert.deepStrictEqual(await session.writeAndVerify([]), { before: [], after: [], halted: false });
     });
 
-    // —— variables/write.js 的 --set 解析 ——
+    // --set parsing in variables/write.js
     assert.deepStrictEqual(writeSkill.parseSet("kp=0.5,counter=2"), [
         { name: "kp", value: "0.5" },
         { name: "counter", value: "2" }

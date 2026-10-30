@@ -14,8 +14,9 @@ const {
 
 const SUPPORTED_SIZES = new Set([8, 16, 32, 64]);
 const NORMAL_WRITE_ACCESS = "read-write";
-// SVD 数值受寄存器宽度约束（≤64 位），任何合法表示都远短于此上限；
-// 超过即拒绝，避免逐字符 BigInt 移位（Θ(L²)）或超长十进制 BigInt 解析卡死扩展宿主。
+// SVD values are bounded by register width (64 bits at most), so every valid representation is far shorter than this
+// limit. Longer input is rejected to avoid per-character BigInt shifts (quadratic) or huge decimal BigInt parses
+// stalling the extension host.
 const MAX_SVD_VALUE_CHARS = 256;
 
 function consumeBudget(budget) {
@@ -158,7 +159,8 @@ function enumerationValue(rawValue) {
         const value = integer(raw, "enumerated value", { bigint: true });
         return { value, mask: null };
     }
-    // 逐字符 `<<= 1n` 是 Θ(L²)：先按位上限拒绝，杜绝超长二进制占位符卡死事件循环。
+    // A per-character `<<= 1n` is quadratic: reject by bit limit first so a very long binary placeholder cannot block
+    // the event loop.
     if (binary[1].length > MAX_SVD_VALUE_CHARS)
         throw Object.assign(new Error(`SVD enumerated value exceeds ${MAX_SVD_VALUE_CHARS} bits`), {
             code: "INVALID_SVD_VALUE"

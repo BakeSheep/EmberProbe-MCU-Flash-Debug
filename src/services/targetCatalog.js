@@ -1,5 +1,5 @@
 "use strict";
-// 调试器配置列表
+// Debug probe configurations
 const DEBUGGER_LIST = [
     "altera-usb-blaster.cfg",
     "altera-usb-blaster2.cfg",
@@ -49,7 +49,7 @@ const DEBUGGER_LIST = [
     "vsllink.cfg",
     "xds110.cfg"
 ];
-// MCU核心配置列表
+// MCU target configurations
 const MCU_CORE_LIST = [
     "1986ве1т.cfg",
     "adsp-sc58x.cfg",
@@ -354,6 +354,6 @@ const MCU_CORE_LIST = [
     "zynq_7000.cfg",
     "к1879xб1я.cfg"
 ];
-// 缓存键名
+// Cache key names
 
 module.exports = { DEBUGGER_LIST, MCU_CORE_LIST };

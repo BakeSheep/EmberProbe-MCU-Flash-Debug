@@ -1,6 +1,7 @@
 "use strict";
-// Bridge 定位：注册表匹配、最长前缀、win32 大小写、歧义、陈旧条目、向上查找指针、协议错配，
-// 以及客户端请求头与连接被拒后的安全重试。只使用本机 http 服务器与临时目录。
+// Bridge locator: registry matching, longest prefix, win32 case, ambiguity, stale entries, upward pointer search,
+// protocol mismatch, client request headers and safe retry after a refused connection. Uses only local http servers and
+// temporary directories.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
@@ -113,12 +114,13 @@ function startServer(reply = (method) => ({ method })) {
             clearRegistries();
             const upper = project.toUpperCase();
             writeEntry(registry, { workspaceFolders: [upper], port: 1004 });
-            // macOS APFS 默认不区分大小写：realpath 会把大写路径解析回磁盘上的实际目录
+            // macOS APFS is case-insensitive by default: realpath resolves an upper-case path back to the directory on
+            // disk
             let sameDirectory = false;
             try {
                 sameDirectory = fs.realpathSync.native(upper) === fs.realpathSync.native(project);
             } catch {
-                /* 区分大小写的文件系统上大写路径不存在 */
+                /* On case-sensitive file systems the upper-case path does not exist */
             }
             if (process.platform === "win32" || sameDirectory)
                 assert.strictEqual(locator.locate(nested).descriptor.port, 1004);
@@ -139,7 +141,7 @@ function startServer(reply = (method) => ({ method })) {
                     return true;
                 }
             );
-            // 显式指定实例时不做路径匹配
+            // An explicitly chosen instance skips path matching
             assert.strictEqual(locator.locate(nested, { instance: second.instanceId }).instanceId, second.instanceId);
             process.env.EMBERPROBE_BRIDGE_INSTANCE = first.instanceId;
             try {
@@ -175,7 +177,7 @@ function startServer(reply = (method) => ({ method })) {
                     error.details.registryEntries === 1 &&
                     error.details.searchedFrom === nested
             );
-            // 运行中的实例优先于同一文件夹的未启用标记
+            // A running instance wins over a disabled marker for the same folder
             const live = writeEntry(otherRegistry, { workspaceFolders: [project] });
             assert.strictEqual(locator.locate(nested).instanceId, live.instanceId);
         });
@@ -208,7 +210,7 @@ function startServer(reply = (method) => ({ method })) {
             const located = locator.locate(nested);
             assert.strictEqual(located.source, "pointer");
             assert.strictEqual(located.descriptor.port, 1007);
-            // 指针旁的 globalStorage 注册表也会被搜索，即使没有设置环境变量
+            // The globalStorage registry next to the pointer is searched too, even without the environment variable
             const saved = process.env.EMBERPROBE_BRIDGE_REGISTRY;
             const pointerRegistry = path.join(root, "storage", locator.REGISTRY_DIR);
             fs.mkdirSync(pointerRegistry);
@@ -243,7 +245,8 @@ function startServer(reply = (method) => ({ method })) {
             const closedPort = closed.port;
             await new Promise((resolve) => closed.server.close(resolve));
             try {
-                // 关闭端口的条目最长匹配，连接被拒后排除它，再连到下一个匹配实例
+                // An entry with a closed port matches longest; after the refused connection it is excluded and the next
+                // matching instance is used
                 writeEntry(registry, { workspaceFolders: [nested], port: closedPort });
                 writeEntry(otherRegistry, { workspaceFolders: [library, project], port: live.port });
                 const result = await call(nested, "config.get", {});
@@ -262,7 +265,7 @@ function startServer(reply = (method) => ({ method })) {
                 assert.strictEqual(mcp["x-emberprobe-channel"], "mcp");
                 assert.strictEqual(decodeURIComponent(mcp["x-emberprobe-client"]), "客户端/1.0");
                 assert.strictEqual(mcp["x-emberprobe-skill-root"], undefined);
-                // 数组结果保持原样，不附加 bridge 字段
+                // Array results stay as they are, without a bridge field
                 live.requests.length = 0;
                 clearRegistries();
                 writeEntry(registry, { workspaceFolders: [library, project], port: live.port });

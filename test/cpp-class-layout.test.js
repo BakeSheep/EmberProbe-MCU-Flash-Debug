@@ -2,15 +2,16 @@
 
 const { scenario } = require("./helpers/scenario");
 
-// 合成 DWARF 覆盖 C++ 类/继承布局：普通类、单继承、多继承同名歧义、虚基类不可观测、
-// 嵌套对象与数组、@baseN 路径导航、非法布局与预算拒绝。
+// Synthetic DWARF for C++ class/inheritance layouts: plain classes, single inheritance, same-name ambiguity under
+// multiple inheritance, unobservable virtual bases, nested objects and arrays, @baseN path navigation, invalid layouts
+// and budget rejection.
 const assert = require("assert");
 const c = require("../src/dwarf/constants");
 const { buildCompositeLayouts } = require("../src/dwarf/types");
 const { validateComposite } = require("../src/compositeValidation");
 const { parseMemberPath, expandCompositeLeaves, decodeComposite, navigateCompositeTree } = require("../src/elfSymbols");
 
-// 构造 { dies, childrenMap, variables } fixture 的小工具。
+// Small helper building a { dies, childrenMap, variables } fixture.
 function builder() {
     const dies = new Map();
     const childrenMap = new Map();
@@ -26,7 +27,7 @@ function leavesOf(name, address, size, layout, pathStr) {
     return expandCompositeLeaves(symbol, layout, pathSpec);
 }
 
-// —— 单继承：Derived : Base，@base0.value 与自身 extra 各自地址正确 ——
+// Single inheritance: Derived : Base, with correct addresses for @base0.value and its own extra
 {
     const b = builder();
     b.add(1, intDie());
@@ -43,8 +44,12 @@ function leavesOf(name, address, size, layout, pathStr) {
         variables: [{ name: "object", typeRef: 20 }]
     });
     const layout = layouts.get("object");
-    assert.strictEqual(layout.kind, "class", "class 布局 kind 应为 class");
-    assert.strictEqual(layout.members[0].name, "@base0", "基类合成成员应置于自身成员之前");
+    assert.strictEqual(layout.kind, "class", "class layouts have kind class");
+    assert.strictEqual(
+        layout.members[0].name,
+        "@base0",
+        "synthesized base members come before the class's own members"
+    );
     assert.strictEqual(layout.members[0].isBase, true);
     validateComposite(layout, 8);
     const leaves = leavesOf("object", 0x20000000, 8, layout);
@@ -54,12 +59,12 @@ function leavesOf(name, address, size, layout, pathStr) {
     assert.strictEqual(baseLeaf.address >>> 0, 0x20000000);
     assert.strictEqual(leaves.find((l) => l.path === "object.extra").address >>> 0, 0x20000004);
 
-    // 显式 @base0 路径导航命中同一地址。
+    // An explicit @base0 path reaches the same address.
     const nav = leavesOf("object", 0x20000000, 8, layout, "object.@base0.value");
     assert.strictEqual(nav.length, 1);
     assert.strictEqual(nav[0].address >>> 0, 0x20000000);
 
-    // 解码与树导航复用 @baseN 段。
+    // Decoding and tree navigation reuse @baseN segments.
     const bytes = Buffer.alloc(8);
     bytes.writeInt32LE(11, 0);
     bytes.writeInt32LE(22, 4);
@@ -68,7 +73,7 @@ function leavesOf(name, address, size, layout, pathStr) {
     assert.strictEqual(node.value, 11);
 }
 
-// —— 多继承：跨基类同名成员 value 经 @base0/@base1 消除歧义 ——
+// Multiple inheritance: a member value present in both bases is disambiguated through @base0/@base1
 {
     const b = builder();
     b.add(1, intDie());
@@ -90,11 +95,11 @@ function leavesOf(name, address, size, layout, pathStr) {
     validateComposite(layout, 8);
     const b0 = leavesOf("m", 0x20001000, 8, layout, "m.@base0.value");
     const b1 = leavesOf("m", 0x20001000, 8, layout, "m.@base1.value");
-    assert.strictEqual(b0[0].address >>> 0, 0x20001000, "@base0.value 落在第一条基类路径");
-    assert.strictEqual(b1[0].address >>> 0, 0x20001004, "@base1.value 落在第二条基类路径");
+    assert.strictEqual(b0[0].address >>> 0, 0x20001000, "@base0.value lies on the first base path");
+    assert.strictEqual(b1[0].address >>> 0, 0x20001004, "@base1.value lies on the second base path");
 }
 
-// —— 嵌套对象与数组成员 ——
+// Nested object and array members
 {
     const b = builder();
     b.add(1, intDie());
@@ -120,7 +125,7 @@ function leavesOf(name, address, size, layout, pathStr) {
     assert.strictEqual(leaves.find((l) => l.path === "h.arr[2]").address >>> 0, 0x20002000 + 4 + 8);
 }
 
-// —— 虚基类：静态阶段无叶子产出、显式路径返回 []、成员标 unobservable ——
+// Virtual base: no leaves in the static pass, an explicit path returns [], members marked unobservable
 {
     const b = builder();
     b.add(1, intDie());
@@ -138,22 +143,30 @@ function leavesOf(name, address, size, layout, pathStr) {
     }).get("v");
     const base = layout.members[0];
     assert.strictEqual(base.name, "@base0");
-    assert.strictEqual(base.virtual, true, "虚基类合成成员应标 virtual");
-    assert.ok(base.unobservable, "虚基类应标 unobservable");
+    assert.strictEqual(base.virtual, true, "synthesized virtual base members are marked virtual");
+    assert.ok(base.unobservable, "virtual bases are marked unobservable");
     assert.strictEqual(base.byteSize, 0);
-    assert.strictEqual(base.compositeLayout, undefined, "虚基类静态阶段不生成嵌套布局");
+    assert.strictEqual(base.compositeLayout, undefined, "virtual bases get no nested layout in the static pass");
     validateComposite(layout, 8, 0x20003000);
     const leaves = leavesOf("v", 0x20003000, 8, layout);
     assert.deepStrictEqual(
         leaves.map((l) => l.path),
         ["v.own"],
-        "虚基类分支不产叶子"
+        "virtual base branches produce no leaves"
     );
-    assert.deepStrictEqual(leavesOf("v", 0x20003000, 8, layout, "v.@base0.vval"), [], "指向虚基类子路径返回空");
-    assert.deepStrictEqual(leavesOf("v", 0x20003000, 8, layout, "v.@base0"), [], "指向虚基类成员本身返回空");
+    assert.deepStrictEqual(
+        leavesOf("v", 0x20003000, 8, layout, "v.@base0.vval"),
+        [],
+        "paths into a virtual base return nothing"
+    );
+    assert.deepStrictEqual(
+        leavesOf("v", 0x20003000, 8, layout, "v.@base0"),
+        [],
+        "the virtual base member itself returns nothing"
+    );
 }
 
-// —— 非法布局：越界 offset 被 validateComposite 拒绝 ——
+// Invalid layout: an out-of-range offset is rejected by validateComposite
 {
     const bad = {
         kind: "class",
@@ -164,7 +177,8 @@ function leavesOf(name, address, size, layout, pathStr) {
     assert.throws(() => validateComposite(bad, 4), { code: "INVALID_COMPOSITE_LAYOUT" });
 }
 
-// —— 前向声明或缺少大小的类型不生成可导入布局；完整空类仍可识别 ——
+// Forward declarations and types without a size produce no importable layout; complete empty classes are still
+// recognized
 {
     const b = builder();
     b.add(10, { tag: c.DW_TAG_class_type, name: "Declared", isDecl: true });
@@ -184,7 +198,7 @@ function leavesOf(name, address, size, layout, pathStr) {
     assert.deepStrictEqual(layouts.get("empty").members, []);
 }
 
-// —— 超预算：巨量成员触发 DWARF_BUDGET_EXCEEDED ——
+// Over budget: a huge member count triggers DWARF_BUDGET_EXCEEDED
 {
     const b = builder();
     b.add(1, intDie());
@@ -207,7 +221,7 @@ function leavesOf(name, address, size, layout, pathStr) {
     );
 }
 
-// 同一 ELF 名绑定不同布局时不能任选一个布局供观察或写入。
+// When one ELF name binds different layouts, no layout may be chosen arbitrarily for watching or writing.
 {
     const b = builder();
     b.add(10, { tag: c.DW_TAG_class_type, name: "First", byteSize: 4 });
@@ -229,11 +243,11 @@ scenario("Exclude static members from instance layout and addresses", () => {
         const dies = new Map([
             [1, { tag: c.DW_TAG_base_type, name: "int", encoding: c.DW_ATE_signed, byteSize: 4 }],
             [10, { tag: c.DW_TAG_structure_type, name: "Plain", byteSize: 4 }],
-            // 静态成员声明：无 memberOffset 且 isDecl 为 true
+            // Static member declaration: no memberOffset and isDecl is true
             [11, { tag: c.DW_TAG_member, name: "shared", typeRef: 1, isDecl: true }],
-            // 实例成员
+            // Instance member
             [12, { tag: c.DW_TAG_member, name: "x", typeRef: 1, memberOffset: 0 }],
-            // 全局静态成员变量定义
+            // Definition of a global static member variable
             [20, { tag: c.DW_TAG_variable, name: "shared", typeRef: 1, hasAddr: true, specificationRef: 11 }]
         ]);
         const childrenMap = new Map([[10, [11, 12]]]);
@@ -258,7 +272,7 @@ scenario("Exclude static members from instance layout and addresses", () => {
         assert.strictEqual(leaves[0].path, "plain.x");
         assert.strictEqual(leaves[0].address, 0x20000004);
 
-        // 访问 plain.shared 应该返回空（非实例成员）
+        // plain.shared yields nothing (not an instance member)
         const sharedLeaf = expandCompositeLeaves(
             { name: "plain", address: 0x20000004, size: 4 },
             plainLayout,
@@ -274,12 +288,12 @@ scenario("Parse virtual inheritance without inventing constant offsets", () => {
     {
         assert.strictEqual(c.DW_AT_virtuality, 0x4c, "DW_AT_virtuality must be 0x4c per DWARF standard");
 
-        // 构造包含 DW_AT_virtuality=1 以及复杂 DW_AT_data_member_location 表达式的 DWARF
+        // Builds DWARF with DW_AT_virtuality=1 and complex DW_AT_data_member_location expressions
         function u32(v) {
             return [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
         }
         const di = [];
-        di.push(...u32(0)); // unit_length 占位
+        di.push(...u32(0)); // unit_length placeholder
         di.push(4, 0); // version = 4
         di.push(...u32(0)); // abbrev_offset = 0
         di.push(4); // address_size = 4
@@ -348,120 +362,19 @@ scenario("Resolve safe scoped declarations to class definitions", () => {
     const { parseDwarf } = require("../src/dwarf");
     const { parseDwarfInternal } = require("../src/dwarf/parser");
     const { buildCompositeLayouts, buildVariableTypes } = require("../src/dwarf/types");
-    const { buildElf32, buildDebugSections } = require("./helpers/elf-fixture");
-    function fixed(value, width = 4) {
-        const bytes = Buffer.alloc(8);
-        bytes.writeBigUInt64LE(BigInt.asUintN(64, BigInt(value)));
-        return Array.from(bytes.subarray(0, width));
-    }
-    function leb(value, signed = false) {
-        let remaining = BigInt(value);
-        const bytes = [];
-        do {
-            let byte = Number(remaining & 127n);
-            remaining >>= 7n;
-            const last = signed
-                ? (remaining === 0n && !(byte & 64)) || (remaining === -1n && !!(byte & 64))
-                : remaining === 0n;
-            if (!last) byte |= 128;
-            bytes.push(byte);
-            if (last) break;
-        } while (true);
-        return bytes;
-    }
-    const node = (id, tag, attrs = [], children = []) => ({ id, tag, attrs, children });
-    const attr = (at, form, value) => [at, form, value];
-    const nameAttr = (name) => attr(c.DW_AT_name, 8, name);
-    const typeAttr = (ref) => attr(c.DW_AT_type, 0x13, ref);
-    const base = (id, name = "int", size = 4, encoding = c.DW_ATE_signed) =>
-        node(id, c.DW_TAG_base_type, [
-            nameAttr(name),
-            attr(c.DW_AT_byte_size, 0x0b, size),
-            attr(c.DW_AT_encoding, 0x0b, encoding)
-        ]);
-    const composite = (id, name, size, children = [], tag = c.DW_TAG_class_type) =>
-        node(id, tag, [...(name ? [nameAttr(name)] : []), attr(c.DW_AT_byte_size, 6, size)], children);
-    const declaration = (id, name, tag = c.DW_TAG_class_type) =>
-        node(id, tag, [nameAttr(name), attr(c.DW_AT_declaration, 0x19, true)]);
-    const member = (id, name, type, offset) =>
-        node(id, c.DW_TAG_member, [nameAttr(name), typeAttr(type), attr(c.DW_AT_data_member_location, 6, offset)]);
-    const pointer = (id, type) => node(id, c.DW_TAG_pointer_type, [typeAttr(type)]);
-    const variable = (name, type, address = 0x20000000, expression) =>
-        node("var-" + name, c.DW_TAG_variable, [
-            nameAttr(name),
-            typeAttr(type),
-            attr(c.DW_AT_location, 0x18, expression || [3, ...fixed(address)])
-        ]);
-    function fixture(units, { version = 4, symbols = [], sections = [] } = {}) {
-        const info = [],
-            abbrev = [],
-            definitions = new Map(),
-            offsets = new Map(),
-            references = [];
-        const value = (form, input, cuStart) => {
-            if ([0x13, 0x10].includes(form)) {
-                references.push({ offset: info.length, label: input, cuStart: form === 0x13 ? cuStart : 0 });
-                info.push(0, 0, 0, 0);
-            } else if ([0x0b, 5, 6, 7].includes(form)) info.push(...fixed(input, { 0x0b: 1, 5: 2, 6: 4, 7: 8 }[form]));
-            else if (form === 8) info.push(...Buffer.from(input + "\0"));
-            else if (form === 0x18) info.push(...leb(input.length), ...input);
-            else if ([0x0f, 0x0d].includes(form)) info.push(...leb(input, form === 0x0d));
-            else if (form === 0x16) {
-                info.push(...leb(input.form));
-                value(input.form, input.value, cuStart);
-            } else if (![0x19, 0x21].includes(form)) throw new Error("Unsupported fixture form " + form);
-        };
-        const emit = (die, cuStart) => {
-            offsets.set(die.id, info.length);
-            const key = JSON.stringify([
-                die.tag,
-                !!die.children.length,
-                die.attrs.map(([at, form, v]) => [at, form, form === 0x21 ? v : null])
-            ]);
-            if (!definitions.has(key)) {
-                const code = definitions.size + 1;
-                definitions.set(key, code);
-                abbrev.push(...leb(code), ...leb(die.tag), Number(!!die.children.length));
-                for (const [at, form, v] of die.attrs) {
-                    abbrev.push(...leb(at), ...leb(form));
-                    if (form === 0x21) abbrev.push(...leb(v, true));
-                }
-                abbrev.push(0, 0);
-            }
-            info.push(...leb(definitions.get(key)));
-            for (const [, form, v] of die.attrs) value(form, v, cuStart);
-            for (const child of die.children) emit(child, cuStart);
-            if (die.children.length) info.push(0);
-        };
-        for (let index = 0; index < units.length; index++) {
-            const cuStart = info.length;
-            info.push(0, 0, 0, 0, version, 0);
-            if (version === 5) info.push(1, 4, 0, 0, 0, 0);
-            else info.push(0, 0, 0, 0, 4);
-            const unit = Array.isArray(units[index]) ? node("cu-" + index, 0x11, [], units[index]) : units[index];
-            emit(unit, cuStart);
-            fixed(info.length - cuStart - 4).forEach((byte, offset) => {
-                info[cuStart + offset] = byte;
-            });
-        }
-        for (const ref of references) {
-            assert(offsets.has(ref.label), "Unknown reference " + ref.label);
-            fixed(offsets.get(ref.label) - ref.cuStart).forEach((byte, offset) => {
-                info[ref.offset + offset] = byte;
-            });
-        }
-        abbrev.push(0);
-        return {
-            buffer: buildElf32({
-                sections: [
-                    ...buildDebugSections({ info: Buffer.from(info), abbrev: Buffer.from(abbrev) }),
-                    ...sections
-                ],
-                symbols
-            }),
-            offsets
-        };
-    }
+    const {
+        attr,
+        base,
+        composite,
+        declaration,
+        fixture,
+        member,
+        nameAttr,
+        node,
+        pointer,
+        typeAttr,
+        variable
+    } = require("./helpers/dwarf-tree");
     function declarationTests() {
         for (const version of [4, 5]) {
             const inner = composite(

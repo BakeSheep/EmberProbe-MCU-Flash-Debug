@@ -43,7 +43,7 @@ for (const file of [
         };
         const cases = [
             ["sidebar", modernView.getModernWebviewContent({ elf: "", debugger: "", mcu: "", svd: "" }, "en")],
-            ["live", liveWatchView.getLiveWatchContent({ maxSamples: 100, intervalMs: 20 }, "en")]
+            ["live", liveWatchView.getLiveWatchContent({}, "en")]
         ];
         for (const [scope, source] of cases) {
             const result = await externalizeWebviewHtml({
@@ -95,7 +95,7 @@ for (const file of [
         }
         assert.strictEqual(scans, 0, "identical renders must skip disk scanning");
 
-        // 旧哈希资产在重新 externalize 后被清理；其他 scope 与无关文件不受影响
+        // Old hashed assets are removed after re-externalizing; other scopes and unrelated files are untouched
         const staleSidebar = path.join(temp, "sidebar-style-0-deadbeef.css");
         const staleOtherScope = path.join(temp, "live-style-0-deadbeef.css");
         const unrelated = path.join(temp, "notes.txt");
@@ -139,7 +139,7 @@ for (const file of [
     process.exitCode = 1;
 });
 
-// §4 CSP 构建加固：对畸形/恶意标记 fail-closed，并保证唯一权威 CSP meta。
+// CSP build hardening: malformed or malicious markup fails closed, leaving exactly one authoritative CSP meta.
 (async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), "emberprobe-webview-csp-"));
     try {
@@ -155,7 +155,7 @@ for (const file of [
         };
         const base = `<head><style>body{color:red}</style></head><body><script>var a=1;</script></body>`;
 
-        // (1) 第二个注入的 CSP meta 不得存活；最终只保留唯一权威 meta。
+        // (1) A second injected CSP meta must not survive; only the authoritative meta remains.
         const twoMeta =
             `<head>` +
             `<meta http-equiv="Content-Security-Policy" content="default-src 'none';script-src 'self'">` +
@@ -173,7 +173,7 @@ for (const file of [
         assert.ok(!/default-src\s+\*/i.test(result.html), "injected permissive CSP must be removed");
         assert.ok(!/'unsafe-inline'/i.test(result.html), "no policy may retain 'unsafe-inline'");
 
-        // (2) 脚本体内含 "</script>" 时不得把标记泄漏到 nonce 脚本标签之外。
+        // (2) "</script>" inside a script body must not leak markup outside the nonce script tag.
         await assert.rejects(
             () =>
                 externalizeWebviewHtml({
@@ -187,7 +187,7 @@ for (const file of [
             "stray </script> must fail closed"
         );
 
-        // (3) 非标准 <stylesheet> 块不得原样穿透。
+        // (3) Non-standard <stylesheet> blocks must not pass through unchanged.
         await assert.rejects(
             () =>
                 externalizeWebviewHtml({
@@ -201,7 +201,7 @@ for (const file of [
             "<stylesheet> must fail closed"
         );
 
-        // (4) 内联事件处理器 / style 属性不得在外部化后存活。
+        // (4) Inline event handlers / style attributes must not survive externalization.
         await assert.rejects(
             () =>
                 externalizeWebviewHtml({

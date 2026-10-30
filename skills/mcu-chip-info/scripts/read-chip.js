@@ -15,7 +15,8 @@ function args(argv) {
 async function main() {
     const opt = args(process.argv.slice(2));
     const result = await call(opt.workspace || process.cwd(), "chip.read", {
-        // --fields 单独出现时不能回落到 identity 组，否则扩展端会把整组字段并回结果
+        // A lone --fields must not fall back to the identity group, or the extension would merge the whole group back
+        // into the result
         sections: String(opt.section || (opt.fields ? "" : "identity"))
             .split(",")
             .filter(Boolean),

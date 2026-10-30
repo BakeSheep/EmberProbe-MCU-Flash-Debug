@@ -1,38 +1,26 @@
 "use strict";
-// §2 / §3 回归：DWARF 缩写与 DIE 预算必须是「整个解析全局」而非「每次调用 / 每个 CU 独立」。
-// 旧实现下 abbrevCache 以文件可控的 abbrevOff 为键无界增长、DIE guard 在每个 CU 重置，
-// 攻击者用多个 CU / 多个缩写表偏移即可让扩展宿主累积数百 MB 堆直至 OOM。
-// 这里用程序化构造的最小 ELF32 验证全局预算会及时停止解析；超出预算的 CU 整体回滚，
-// 已完整解析的 CU 保留，并以一条 DWARF_PARTIAL 诊断报告（§2 Stage A）。
+// DWARF abbreviation and DIE budgets cover the whole parse, not each call or CU; otherwise a file with many CUs or
+// abbreviation table offsets could make the extension host accumulate hundreds of MB of heap. A minimal programmatic
+// ELF32 checks that the global budget stops parsing in time: the CU exceeding it is rolled back as a whole, fully
+// parsed CUs are kept, and one DWARF_PARTIAL diagnostic is reported.
 const assert = require("assert");
 const { parseDwarfInternal } = require("../src/dwarf/parser");
 const { buildDwarfElf: buildElf } = require("./helpers/elf-fixture");
+const { uleb } = require("./helpers/dwarf-tree");
 
-function uleb(v) {
-    const out = [];
-    do {
-        let b = v & 0x7f;
-        v >>>= 7;
-        if (v) b |= 0x80;
-        out.push(b);
-    } while (v);
-    return out;
-}
-
-// 一个含 count 个零属性缩写的表；返回 { bytes, size }。code 从 1 递增。
+// A table of count zero-attribute abbreviations with codes from 1; returns { bytes, size }.
 function abbrevTable(count, tag) {
     const bytes = [];
     for (let code = 1; code <= count; code++) {
         bytes.push(...uleb(code), ...uleb(tag), 0, 0, 0); // hasChildren=0, at=0, form=0
     }
-    bytes.push(0); // 表结束（code 0）
+    bytes.push(0); // end of table (code 0)
     return Buffer.from(bytes);
 }
 
-// —— §2：全局缩写预算 ——
-// 三个 CU 各引用一个不同的 abbrevOff，每张表 8000 个缩写。
-// 旧实现：每次 parseAbbrev 独立计数（8000 < 每调用上限 100000），三张表全部缓存存活，无错误。
-// 新实现：全局缩写预算（≤20000）在第三张表解析途中耗尽，前两个 CU 保留，第三个 CU 被丢弃。
+// Global abbreviation budget: three CUs each reference a different abbrevOff with 8000 abbreviations per table. Each
+// table is under the per-call limit, but the global budget (<= 20000) runs out inside the third table, so the first two
+// CUs are kept and the third is dropped.
 {
     const PER_TABLE = 8000;
     const tables = [abbrevTable(PER_TABLE, 0x24), abbrevTable(PER_TABLE, 0x24), abbrevTable(PER_TABLE, 0x24)];
@@ -44,7 +32,7 @@ function abbrevTable(count, tag) {
     }
     const abbrevData = Buffer.concat(tables);
 
-    // 每个 CU：unit_length(u32) + version(u16=4) + abbrev_off(u32) + addr_size(u8=4) + code1 DIE
+    // Each CU: unit_length(u32) + version(u16=4) + abbrev_off(u32) + addr_size(u8=4) + code1 DIE
     const infoParts = [];
     for (const off of offsets) {
         const dieBytes = Buffer.from([1]); // code 1
@@ -63,25 +51,23 @@ function abbrevTable(count, tag) {
     assert.deepStrictEqual(
         parsed.partial,
         { budget: "global abbreviation", loadedUnits: 2, droppedUnits: 1, droppedBytes: infoParts[2].length },
-        "全局缩写预算必须跨 CU 生效"
+        "the global abbreviation budget spans CUs"
     );
     assert.strictEqual(parsed.diagnostics[0].code, "DWARF_PARTIAL");
-    assert.strictEqual(parsed.dies.size, 2, "只保留前两个 CU 的根 DIE");
+    assert.strictEqual(parsed.dies.size, 2, "only the root DIEs of the first two CUs remain");
 }
 
-// —— §3：全局 DIE 预算 ——
-// 两个 CU，各含约 105 万个零属性 DIE。
-// 旧实现：guard 每个 CU 重置（每 CU 105 万 < 每 CU 上限 200 万），两个 CU 都完整解析，
-//         dies 映射累积约 210 万条（数百 MB 堆）且不报错。
-// 新实现：全局 DIE 预算（≤200 万）在第二个 CU 解析途中耗尽；第二个 CU 已存入的 DIE 全部回滚。
+// Global DIE budget: two CUs with about 1.05 million zero-attribute DIEs each. Each CU is under a per-CU limit, but the
+// global budget (<= 2 million) runs out inside the second CU, and every DIE it stored is rolled back.
 {
     const DIES_PER_CU = 1050000;
-    // 缩写表：code1 = compile_unit(0x11, 无子, 0 属性)，code2 = base_type(0x24, 无子, 0 属性)
+    // Abbreviation table: code1 = compile_unit (0x11, no children, 0 attributes), code2 = base_type (0x24, no children,
+    // 0 attributes)
     const abbrevData = Buffer.from([1, 0x11, 0, 0, 0, 2, 0x24, 0, 0, 0, 0]);
 
     const infoParts = [];
     for (let cu = 0; cu < 2; cu++) {
-        // header: version(2) + abbrev_off(4) + addr_size(1)；DIE: code1 + code2 × N
+        // header: version(2) + abbrev_off(4) + addr_size(1); DIEs: code1 + code2 x N
         const dieCount = 1 + DIES_PER_CU;
         const unitLen = 2 + 4 + 1 + dieCount;
         const cuBuf = Buffer.alloc(4 + unitLen);
@@ -90,7 +76,7 @@ function abbrevTable(count, tag) {
         cuBuf.writeUInt32LE(0, 6); // abbrev offset 0
         cuBuf.writeUInt8(4, 10);
         cuBuf.writeUInt8(1, 11); // compile_unit DIE
-        cuBuf.fill(2, 12, 12 + DIES_PER_CU); // 其余全是 code2 DIE
+        cuBuf.fill(2, 12, 12 + DIES_PER_CU); // all remaining DIEs are code2
         infoParts.push(cuBuf);
     }
     const infoData = Buffer.concat(infoParts);
@@ -99,9 +85,9 @@ function abbrevTable(count, tag) {
     assert.deepStrictEqual(
         parsed.partial,
         { budget: "DIE", loadedUnits: 1, droppedUnits: 1, droppedBytes: infoParts[1].length },
-        "全局 DIE 预算必须跨 CU 生效"
+        "the global DIE budget spans CUs"
     );
-    assert.strictEqual(parsed.dies.size, 1 + DIES_PER_CU, "第二个 CU 的 DIE 不得残留");
+    assert.strictEqual(parsed.dies.size, 1 + DIES_PER_CU, "no DIEs of the second CU remain");
     assert.ok([...parsed.dies.keys()].every((offset) => offset < infoParts[0].length));
 }
 

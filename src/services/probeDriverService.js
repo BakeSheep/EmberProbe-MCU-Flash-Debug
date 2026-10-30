@@ -5,7 +5,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { listProbes } = require("../../skills/_emberprobe/probe-inventory");
 const { connectionError } = require("../../skills/_emberprobe/probe-connection");
-const { classifyJlinkDriver, requireJlinkWinUsb, JLINK_PIDS } = require("../../skills/_emberprobe/jlink-driver");
+const { classifyJlinkDriver, JLINK_PIDS } = require("../../skills/_emberprobe/jlink-driver");
 
 function driverError(code, message, details = {}) {
     return connectionError(code, message, details);
@@ -234,10 +234,6 @@ class ProbeDriverService {
                 }
             );
         }
-    }
-
-    requireWinUsb(connection) {
-        return requireJlinkWinUsb(connection, this.platform, this.arch);
     }
 
     async ensure(connection) {

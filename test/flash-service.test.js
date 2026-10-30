@@ -10,7 +10,7 @@ const { normalizeFileIdentity } = require("../skills/_emberprobe/file-identity")
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { elf } = fixture;
     try {
         let flashOptions;
         fs.writeFileSync(elf, minimalElf());

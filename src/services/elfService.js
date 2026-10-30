@@ -9,13 +9,13 @@ const { classifyVariableOrigin } = require("../variableOrigin");
 const MAX_LAYOUT_EXPANSIONS = 32;
 const MAX_LAYOUT_EXPANSION_BYTES = 8 * 1024 * 1024;
 
-// §3：解析前的 ELF 体积硬上限。MCU 固件 64 MiB 已极宽裕；
-// autoDetect 会取工作区 mtime 最新的 .elf，无上限时多 GB 文件会被
-// 整份 readFileSync 进内存再送入 DWARF 解析，直接压垮扩展宿主。
+// Hard ELF size limit before parsing. 64 MiB is generous for MCU firmware; autoDetect picks the newest .elf in the
+// workspace, and without a limit a multi-GB file would be read whole with readFileSync and passed to the DWARF parser,
+// overwhelming the extension host.
 const MAX_ELF_BYTES = 64 * 1024 * 1024;
 
-// 单个 ELF 的 C++ 绑定诊断上限。大型固件可能链接大量无调试信息的 C++ 目标文件，
-// 内部诊断仍有上限；普通类型缺失不进入整体下发到 webview 的 warnings。
+// Limit on C++ binding diagnostics per ELF. Large firmware may link many C++ objects without debug information;
+// internal diagnostics stay bounded, and ordinary missing types do not join the warnings sent to the webview.
 const MAX_CPP_DIAGNOSTICS = 50;
 
 function isPartialDwarf(diagnostics) {
@@ -598,7 +598,7 @@ class ElfService {
                 throw new Error("ELF changed while it was being read; retry after the build finishes");
             }
         } catch (error) {
-            // 体积上限是结构化拒绝，不能被下面的通用读取失败包裹掉。
+            // The size limit is a structured rejection and must not be wrapped by the generic read failure below.
             if (error.code === "ELF_TOO_LARGE") throw error;
             throw Object.assign(new Error(this.t("live.elfReadFail", { path: elfPath })), {
                 code: "ELF_READ_FAILED",
@@ -629,7 +629,8 @@ class ElfService {
             encoding: buffer[5]
         };
         const parsed = this.dwarf.parseDwarf(buffer, { filePath: elfPath, runtime: true });
-        // DWARF 已按源文件给同名 static 定下编译单元身份；按 ELF 名+地址+尺寸采用它们，使类型/布局键与符号名一致。
+        // DWARF has already given same-named statics their compilation-unit identities by source file; adopt them by
+        // ELF name + address + size so type/layout keys match symbol names.
         const qualified = new Map();
         for (const symbol of Array.isArray(parsed?.symbols) ? parsed.symbols : [])
             if (symbol.elfName) qualified.set(`${symbol.elfName}\0${symbol.address}\0${symbol.size}`, symbol);

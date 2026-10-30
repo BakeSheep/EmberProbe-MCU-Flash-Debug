@@ -174,7 +174,7 @@ function followScenario(run, reduced = false) {
         drawCost = 0,
         paints = 0;
     const page = render(
-        getLiveWatchContent({ backendHistory: true }, "en"),
+        getLiveWatchContent({}, "en"),
         {},
         {
             beforeParse(w) {

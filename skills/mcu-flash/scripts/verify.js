@@ -1,6 +1,7 @@
 "use strict";
-// 将片上 Flash 与本地 ELF 比对（OpenOCD verify_image）：halt 目标、校验、恢复原运行状态。
-// 先输出预检 JSON，--execute 输出 {verified, elf, elfSha256, detail} 并以退出码反映结果。
+// Compares on-chip flash with the local ELF (OpenOCD verify_image): halts the target, verifies and restores its run
+// state. Prints the preflight JSON first; --execute prints {verified, elf, elfSha256, detail} and reports the result in
+// the exit code.
 const fs = require("fs");
 const { call } = require("../../_emberprobe/agent-client");
 const {

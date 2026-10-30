@@ -9,6 +9,7 @@ const elfSymbols = require("../src/elfSymbols");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { render } = require("./helpers/render-webview");
+const { chartHistoryHost } = require("./helpers/chart-history-host");
 const {
     SamplingArchive,
     csvField,
@@ -519,7 +520,7 @@ async function main() {
     // The live-watch webview asks for the archive bounds of its own history revision and labels the
     // timeline relative to the archive's first sample, not the oldest point still retained in the chart.
     {
-        const view = render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en"));
+        const view = render(getLiveWatchContent({}, "en"));
         try {
             const doc = view.document;
             const axis = () => {
@@ -541,8 +542,8 @@ async function main() {
             assert.strictEqual(view.messages.at(-1).historyRevision, 4);
             view.send({ type: "watchList", items: [{ name: "tick", address: 0x20000000, type: "u32", size: 4 }] });
             const origin = 1000000;
-            for (const time of [60000, 70000])
-                view.send({ type: "liveSample", samples: [{ name: "tick", value: time, t: origin + time }] });
+            const host = chartHistoryHost(view);
+            for (const time of [60000, 70000]) host.samples([{ name: "tick", value: time, t: origin + time }]);
             assert.deepStrictEqual(axis(), ["00:00", "00:10"], "without archive info the chart start is the origin");
             view.send({ type: "samplingArchiveInfo", historyRevision: 3, rows: 2, firstTimestampMs: origin });
             assert.deepStrictEqual(axis(), ["00:00", "00:10"], "archive info for an old revision is ignored");

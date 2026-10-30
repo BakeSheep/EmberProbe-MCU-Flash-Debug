@@ -1,6 +1,6 @@
 "use strict";
-// 将工作区 ELF 固件烧录到 MCU（OpenOCD program ... verify reset exit）。
-// 先输出预检 JSON（含检测到的 ELF/目标/探针/OpenOCD），--execute 才真正执行烧录。
+// Programs the workspace ELF into the MCU (OpenOCD program ... verify reset exit). Prints the preflight JSON (detected
+// ELF/target/probe/OpenOCD) first; only --execute programs.
 const fs = require("fs");
 const { call } = require("../../_emberprobe/agent-client");
 const {

@@ -5,6 +5,8 @@ const { scenario } = require("./helpers/scenario");
 const assert = require("assert");
 const { MAX_COMPOSITE_DEPTH } = require("../src/dwarf/layoutLimits");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
+const { chartHistoryHost } = require("./helpers/chart-history-host");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { loadProvider } = require("./helpers/load-provider");
@@ -346,7 +348,8 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             page.close();
         }
     }
-    const lazy = render(getLiveWatchContent({}, "en"));
+    const clock = new FakeClock();
+    const lazy = render(getLiveWatchContent({}, "en"), {}, { clock });
     try {
         const doc = lazy.document;
         const search = (value) => {
@@ -369,10 +372,10 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         lazy.send({ type: "variablesListDone", version: "search-1" });
         doc.getElementById("impUserOnly").click();
         search("gain");
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 0, "wait for DWARF types before searching layouts");
         lazy.send({ type: "variableTypesDone", version: "search-1" });
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 4, "limit concurrent metadata requests");
         assert.deepStrictEqual(
             requests().map((request) => request.name),
@@ -384,16 +387,16 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device0", layout });
         assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".settings.gain");
         doc.querySelector("input[data-leaf-path]").click();
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "continue searching when a slot becomes free");
         lazy.send({ type: "compositeLayoutResult", version: "search-1", name: "device1", error: "Unavailable type" });
         assert.equal(doc.querySelector("input[data-leaf-path]").checked, true, "layout replies retain checked matches");
         search("");
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "clearing search cancels queued metadata work");
         search("gain");
         lazy.send({ type: "variablesListReset", version: "search-2" });
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "ELF replacement cancels queued work");
         lazy.send({
             type: "variablesList",
@@ -405,7 +408,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
         });
         search("gain");
         doc.getElementById("impCancel").click();
-        await new Promise((resolve) => setTimeout(resolve, 220));
+        await clock.advance(220);
         assert.equal(requests().length, 5, "closing import cancels queued work");
         const manyLeaves = {
             kind: "struct",
@@ -502,7 +505,9 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
                 null,
                 new Map()
             );
-            graph.send({ type: "liveSample", samples: decoded.scalarSamples });
+            const host = chartHistoryHost(graph);
+            host.samples(decoded.scalarSamples);
+            host.draw(1000);
             assert.equal(graph.window.chartData()[0].arr[0].v, 5);
             graph.assertHealthy();
         } finally {

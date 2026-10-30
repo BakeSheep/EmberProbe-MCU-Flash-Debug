@@ -85,15 +85,15 @@ const ALL_UID_ADDRS = Array.from(new Set([...FALLBACK_UID_ADDRS, ...Object.value
 const IDCODE_ADDR_SET = new Set(ALL_IDCODE_ADDRS);
 const FLASHSIZE_ADDR_SET = new Set(ALL_FLASHSIZE_ADDRS);
 const UID_ADDR_SET = new Set(ALL_UID_ADDRS);
-// DBGMCU DEV_ID → 系列，依据 ST 各系列参考手册 DBGMCU_IDCODE 章节与 OpenOCD flash 驱动表
+// DBGMCU DEV_ID -> series, from the DBGMCU_IDCODE chapter of each ST reference manual and OpenOCD's flash driver tables
 const DEV_ID_FAMILY = {
-    0x410: "STM32F1x", // F101/F102/F103 中密度
-    0x412: "STM32F1x", // 低密度
-    0x414: "STM32F1x", // 高密度
-    0x418: "STM32F1x", // 互联型 F105/F107
-    0x420: "STM32F1x", // F100 超值型低/中密度
-    0x428: "STM32F1x", // F100 超值型高密度
-    0x430: "STM32F1x", // XL 密度
+    0x410: "STM32F1x", // F101/F102/F103 medium density
+    0x412: "STM32F1x", // low density
+    0x414: "STM32F1x", // high density
+    0x418: "STM32F1x", // connectivity line F105/F107
+    0x420: "STM32F1x", // F100 value line low/medium density
+    0x428: "STM32F1x", // F100 value line high density
+    0x430: "STM32F1x", // XL density
     0x411: "STM32F2x",
     0x413: "STM32F4x", // F405/F407/F415/F417
     0x419: "STM32F4x", // F42x/F43x
@@ -105,20 +105,20 @@ const DEV_ID_FAMILY = {
     0x441: "STM32F4x", // F412
     0x458: "STM32F4x", // F410
     0x463: "STM32F4x", // F413/F423
-    0x422: "STM32F3x", // F302xB/C、F303xB/C、F358
+    0x422: "STM32F3x", // F302xB/C, F303xB/C, F358
     0x432: "STM32F3x", // F37x
-    0x438: "STM32F3x", // F303x6/8、F334、F328
-    0x439: "STM32F3x", // F301、F302x6/8、F318
-    0x446: "STM32F3x", // F302xD/E、F303xD/E、F398
-    0x440: "STM32F0x", // F030x8、F05x
-    0x442: "STM32F0x", // F030xC、F09x
+    0x438: "STM32F3x", // F303x6/8, F334, F328
+    0x439: "STM32F3x", // F301, F302x6/8, F318
+    0x446: "STM32F3x", // F302xD/E, F303xD/E, F398
+    0x440: "STM32F0x", // F030x8, F05x
+    0x442: "STM32F0x", // F030xC, F09x
     0x444: "STM32F0x", // F03x
-    0x445: "STM32F0x", // F04x、F070x6
-    0x448: "STM32F0x", // F070xB、F07x
+    0x445: "STM32F0x", // F04x, F070x6
+    0x448: "STM32F0x", // F070xB, F07x
     0x449: "STM32F7x", // F74x/F75x
     0x451: "STM32F7x", // F76x/F77x
     0x452: "STM32F7x", // F72x/F73x
-    0x450: "STM32H7x", // H74x/H75x（含双核 H745/H747/H755/H757）
+    0x450: "STM32H7x", // H74x/H75x (including dual-core H745/H747/H755/H757)
     0x480: "STM32H7x", // H7A3/H7B3
     0x483: "STM32H7x", // H72x/H73x
     0x456: "STM32G0x", // G05x/G06x
@@ -142,7 +142,7 @@ const DEV_ID_FAMILY = {
     0x416: "STM32L1x", // cat.1
     0x429: "STM32L1x", // cat.2
     0x427: "STM32L1x", // cat.3
-    0x436: "STM32L1x", // cat.4/cat.3 中密度增强
+    0x436: "STM32L1x", // cat.4/cat.3 medium density plus
     0x437: "STM32L1x", // cat.5/cat.6
     0x457: "STM32L0x", // cat.1
     0x425: "STM32L0x", // cat.2
@@ -159,7 +159,8 @@ const DEV_ID_FAMILY = {
     0x44e: "STM32C5x", // C551/C552/C562
     0x45a: "STM32C5x" // C591/C593/C5A3
 };
-// 各系列可被调试器选中的内核（双核系列包含第二内核，用于 CPUID 与 DEV_ID 交叉校验）
+// Cores a debugger can select in each series (dual-core series include the second core), for cross-checking CPUID
+// against DEV_ID
 const STM32_SERIES_CORES = {
     STM32F0x: ["Cortex-M0"],
     STM32F1x: ["Cortex-M3"],
@@ -180,7 +181,7 @@ const STM32_SERIES_CORES = {
     STM32C0x: ["Cortex-M0+"],
     STM32C5x: ["Cortex-M33"]
 };
-// 内核与 DEV_ID 推断系列是否相符；任一未知时返回 null（无法判定）
+// Whether the core matches the series inferred from DEV_ID; null when either is unknown
 function coreMatchesSeries(core, series) {
     const allowed = STM32_SERIES_CORES[series];
     if (!core || !allowed) return null;
@@ -232,7 +233,7 @@ const COMPAT_BRANDS = {
 function decodeRomPidr(pidr03, pidr47, cidr) {
     if (!Array.isArray(pidr03) || pidr03.length < 4 || !Array.isArray(pidr47) || pidr47.length < 1) return null;
     if (!Array.isArray(cidr) || cidr.length < 4) return null;
-    // CIDR 前导码固定为 0x0D / 0xX0 / 0x05 / 0xB1（CIDR1 高 4 位为组件类型）
+    // CIDR preambles are fixed at 0x0D / 0xX0 / 0x05 / 0xB1 (the top 4 bits of CIDR1 are the component class)
     if (
         (cidr[0] & 0xff) !== 0x0d ||
         (cidr[1] & 0x0f) !== 0x00 ||
@@ -244,11 +245,11 @@ function decodeRomPidr(pidr03, pidr47, cidr) {
         p1 = pidr03[1] & 0xff,
         p2 = pidr03[2] & 0xff,
         p4 = pidr47[0] & 0xff;
-    if (!(p2 & 0x08)) return null; // 未使用 JEDEC 分配的设计者代码
-    const id = ((p2 & 0x07) << 4) | ((p1 >>> 4) & 0x0f); // JEP106 识别码（7 位，不含奇偶位）
-    const cont = p4 & 0x0f; // JEP106 延续码个数（bank）
+    if (!(p2 & 0x08)) return null; // designer code not assigned by JEDEC
+    const id = ((p2 & 0x07) << 4) | ((p1 >>> 4) & 0x0f); // JEP106 identity code (7 bits, without parity)
+    const cont = p4 & 0x0f; // JEP106 continuation code count (bank)
     const key = cont + ":0x" + id.toString(16).padStart(2, "0");
-    const part = ((p1 & 0x0f) << 8) | p0; // ST 芯片此值等于 DEV_ID，可作交叉校验
+    const part = ((p1 & 0x0f) << 8) | p0; // equals DEV_ID on ST chips, usable for cross-checking
     return {
         key,
         designer: JEP106_DESIGNERS[key] || "",
@@ -260,7 +261,7 @@ function assessAuthenticity(series, designerKey) {
     const none = { authenticity: "", compatVendor: "", compatBrand: "" };
     if (!designerKey || !/^stm32/i.test(String(series || ""))) return none;
     if (designerKey === ST_JEP106_KEY) return { authenticity: "genuine", compatVendor: "", compatBrand: "" };
-    if (designerKey === ARM_JEP106_KEY) return none; // 内核 ROM 表不携带芯片厂商信息，无法判定
+    if (designerKey === ARM_JEP106_KEY) return none; // a core ROM table carries no chip vendor, so it cannot be judged
     return {
         authenticity: "compatible",
         compatVendor: JEP106_DESIGNERS[designerKey] || "",

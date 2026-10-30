@@ -379,7 +379,7 @@ try {
     );
     assert(!box.querySelector(".var-column"));
     resize(600);
-    columnsView.send({ type: "liveSample", samples: [{ name: "first", value: 7, t: 1000 }] });
+    columnsView.send({ type: "chartValues", samples: [{ name: "first", value: 7, t: 1000 }] });
     assert.strictEqual(first.querySelector(".var-value").textContent, "7", "moved value cells still update");
     fourth.querySelector(".remove").click();
     assert.strictEqual(document.getElementById("count").textContent, "4");

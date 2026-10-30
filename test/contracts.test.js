@@ -12,18 +12,19 @@ function runContract(name, test) {
 // auto-detect.test.js
 runContract("auto-detect", () => {
     const assert = require("assert");
-    const { debuggerFromInventory, targetFromText } = require("../src/autoDetect");
+    const { probeFromText } = require("../skills/_emberprobe/probe-detection");
+    const { targetFromText } = require("../skills/_emberprobe/target-detection");
 
-    assert.strictEqual(debuggerFromInventory("CMSIS-DAP v2 Interface"), "cmsis-dap.cfg");
-    assert.strictEqual(debuggerFromInventory("CMSIS DAP compliant debugger"), "cmsis-dap.cfg");
-    assert.strictEqual(debuggerFromInventory("USB\\VID_0D28&PID_0204 DAPLink CMSIS-DAP"), "cmsis-dap.cfg");
-    assert.strictEqual(debuggerFromInventory("MCU-Link CMSIS-DAP V3.128"), "cmsis-dap.cfg");
-    assert.strictEqual(debuggerFromInventory("Raspberry Pi Picoprobe"), "cmsis-dap.cfg");
-    assert.strictEqual(debuggerFromInventory("SEGGER J-Link"), "jlink.cfg");
-    assert.strictEqual(debuggerFromInventory("ST-LINK/V2"), "stlink.cfg");
-    assert.strictEqual(debuggerFromInventory("Texas Instruments XDS110"), "xds110.cfg");
-    assert.strictEqual(debuggerFromInventory("Nuvoton Nu-Link"), "nulink.cfg");
-    assert.strictEqual(debuggerFromInventory("USB Composite Device"), "");
+    assert.strictEqual(probeFromText("CMSIS-DAP v2 Interface"), "cmsis-dap.cfg");
+    assert.strictEqual(probeFromText("CMSIS DAP compliant debugger"), "cmsis-dap.cfg");
+    assert.strictEqual(probeFromText("USB\\VID_0D28&PID_0204 DAPLink CMSIS-DAP"), "cmsis-dap.cfg");
+    assert.strictEqual(probeFromText("MCU-Link CMSIS-DAP V3.128"), "cmsis-dap.cfg");
+    assert.strictEqual(probeFromText("Raspberry Pi Picoprobe"), "cmsis-dap.cfg");
+    assert.strictEqual(probeFromText("SEGGER J-Link"), "jlink.cfg");
+    assert.strictEqual(probeFromText("ST-LINK/V2"), "stlink.cfg");
+    assert.strictEqual(probeFromText("Texas Instruments XDS110"), "xds110.cfg");
+    assert.strictEqual(probeFromText("Nuvoton Nu-Link"), "nulink.cfg");
+    assert.strictEqual(probeFromText("USB Composite Device"), "");
 
     assert.strictEqual(targetFromText("Project for STM32F407"), "stm32f4x.cfg");
     assert.strictEqual(targetFromText("Project for APM32F407"), "geehy/apm32f4x.cfg");
@@ -34,9 +35,10 @@ runContract("auto-detect", () => {
 
 // skill-contract.test.js
 runContract("skill-contract", () => {
-    // Skills 的操作与证据契约接线校验（结构性，不替代行为验收）。
-    // 只验证共享参考文档存在、被 manifest 登记，且每个 SKILL.md 都显式引用它，
-    // 防止后续编辑意外删除跨 skill 的失败处理与结果表达约定。
+    // Structural check of how the skills' operation and evidence contracts are wired (not a substitute for behavioural
+    // acceptance). It only verifies that the shared reference document exists, is registered in the manifest and is
+    // referenced by every SKILL.md, so later edits cannot drop the cross-skill failure handling and result conventions
+    // by accident.
     const assert = require("assert");
     const fs = require("fs");
     const path = require("path");
@@ -51,7 +53,7 @@ runContract("skill-contract", () => {
         "manifest.shared must register agent-workflow.md so install integrity covers it"
     );
 
-    // 每个 skill 必须引用共享工作流文档，agent 才能加载统一约定。
+    // Every skill must reference the shared workflow document so agents load the common conventions.
     assert.strictEqual(manifest.skills.length, 10, "the extension ships ten agent skills");
     for (const skill of manifest.skills) {
         const skillMd = fs.readFileSync(path.join(skillsRoot, skill.name, "SKILL.md"), "utf8");

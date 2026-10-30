@@ -50,15 +50,15 @@ function clampInteger(value, fallback, min, max) {
     return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }
 
-// 将复合变量的成员/元素路径（如 sensor.x、buf[0]）解析为单个标量观察项，
-// 使其能像普通标量一样被读取与绘图；仅支持解析为唯一标量叶子的路径。
+// Resolves a member/element path of a composite (sensor.x, buf[0], ...) to a single scalar watch item, so it can be
+// read and plotted like a plain scalar; only paths ending in a unique scalar leaf are supported.
 function resolveLeafPath(name, byName, supported) {
     const parsed = parseMemberPath(name);
     if (!parsed || !parsed.segments.length) return null;
     const base = byName.get(parsed.base);
     if (!base || !base.isComposite || !base.compositeLayout) return null;
     const leaves = expandCompositeLeaves(base, base.compositeLayout, parsed);
-    if (leaves.length !== 1) return null; // 仅单标量叶子可入观察列表
+    if (leaves.length !== 1) return null; // only a single scalar leaf may join the watch list
     const leaf = leaves[0];
     if (!supported.has(leaf.type)) return null;
     return {
@@ -138,7 +138,7 @@ function normalizeWatchList(items, symbols, options = {}) {
         }
         if (runtimeSymbol && requiresRuntimePath(runtimeSymbol, path?.segments || [])) continue;
         if (!symbol) {
-            // 非直接符号：尝试按复合变量成员/元素路径解析为标量叶子
+            // Not a direct symbol: try to resolve a composite member/element path to a scalar leaf
             const leaf = resolveLeafPath(item.name, byName, supported);
             if (leaf) {
                 const displayName = variableDisplayName(leaf, byName);
@@ -147,7 +147,7 @@ function normalizeWatchList(items, symbols, options = {}) {
             }
             continue;
         }
-        // 复合变量（结构体/数组）保留布局信息，跳过标量类型校验
+        // Composites (structs/arrays) keep their layout and skip the scalar type check
         if (symbol.isComposite) {
             seen.add(item.name);
             result.push({

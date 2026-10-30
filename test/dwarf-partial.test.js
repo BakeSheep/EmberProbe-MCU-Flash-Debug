@@ -11,18 +11,8 @@ const { ElfService } = require("../src/services/elfService");
 const elfSymbols = require("../src/elfSymbols");
 const { formatDiagnostic } = require("../src/webview/elfDiagnostics");
 const { buildDwarfElf } = require("./helpers/elf-fixture");
+const { cstr: string, u32, uleb } = require("./helpers/dwarf-tree");
 
-function uleb(value) {
-    const bytes = [];
-    do {
-        const byte = value & 0x7f;
-        value >>>= 7;
-        bytes.push(byte | (value ? 0x80 : 0));
-    } while (value);
-    return bytes;
-}
-const u32 = (value) => [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
-const string = (value) => [...Buffer.from(value), 0];
 const address = (value) => [5, 0x03, ...u32(value)];
 const ref = (label) => ({ label });
 const refAddr = (unit, label) => ({ unit, label });

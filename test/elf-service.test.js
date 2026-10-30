@@ -6,7 +6,7 @@ const { ElfService } = require("../src/services/elfService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { elf } = fixture;
     try {
         let dwarfParses = 0;
         const elfService = new ElfService({
@@ -86,8 +86,8 @@ const { createFixture } = require("./helpers/service-fixture");
         );
         assert.strictEqual(pointer.isComposite, false, "a pointer to a struct must remain a scalar pointer");
 
-        // §3：解析前必须有 ELF 体积硬上限。autoDetect 会取工作区 mtime 最新的 .elf，
-        // 旧实现 readFileSync 无任何上限，多 GB 的 .elf 会被整份读入内存并送入 DWARF 解析。
+        // ELF size has a hard limit before parsing. autoDetect picks the workspace .elf with the newest mtime, and
+        // without a limit a multi-GB .elf would be read whole and fed to the DWARF parser.
         let readCalls = 0;
         const oversized = new ElfService({
             context: { workspaceState: { get: () => "/fake/huge.elf" } },
@@ -109,8 +109,8 @@ const { createFixture } = require("./helpers/service-fixture");
             },
             dwarf: { parseDwarf: () => ({ types: new Map(), layouts: new Map() }) }
         });
-        assert.throws(() => oversized.read(), { code: "ELF_TOO_LARGE" }, "超过体积上限的 ELF 必须被拒绝");
-        assert.strictEqual(readCalls, 0, "体积校验必须在 readFileSync 之前生效");
+        assert.throws(() => oversized.read(), { code: "ELF_TOO_LARGE" }, "an ELF over the size limit is rejected");
+        assert.strictEqual(readCalls, 0, "the size check runs before readFileSync");
     } finally {
         fixture.dispose();
     }

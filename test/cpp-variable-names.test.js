@@ -210,14 +210,13 @@ try {
     nested.window.controls.refresh();
     assert.strictEqual(nested.document.getElementById("curveTooltip").textContent, ".bus_voltage_v: 11.49");
     assert.strictEqual(nested.document.querySelector(".curve-hit").dataset.rawName, voltageName);
-    nested.send({ type: "liveSample", samples: [{ name: voltageName, value: 11.4875, t: 1000 }] });
+    nested.send({ type: "chartValues", samples: [{ name: voltageName, value: 11.4875, t: 1000 }], t: 1000 });
     assert.strictEqual(nested.window.latest[voltageName], 11.4875, "display changes preserve the sampling identity");
     nested.window.showArchiveExport({ variables: [voltageName], firstTimestampMs: 1000, lastTimestampMs: 1000 });
     assert.strictEqual(nested.document.querySelector("#exportSeries span").textContent, "pwr.data_.bus_voltage_v");
     nested.window.applyExport();
     let csv = nested.messages.findLast((message) => message.type === "exportCsv");
     assert.deepStrictEqual(Array.from(csv.names), [voltageName]);
-    assert.strictEqual(csv.csv, undefined, "original samples are exported by the archive service");
     nested.window.freezeChart();
     nested.window.showExport();
     assert.strictEqual(nested.messages.at(-1).type, "samplingArchiveInfo");
@@ -230,9 +229,7 @@ try {
         lastTimestampMs: 1000
     });
     nested.window.applyExport();
-    csv = nested.messages.findLast((message) => message.type === "exportCsv");
-    assert.strictEqual(csv.source, undefined);
-    assert.strictEqual(csv.csv, undefined);
+    assert.strictEqual(nested.messages.at(-1).type, "exportCsv", "frozen charts export from the archive too");
     nested.window.showArchiveExport({
         variables: [voltageName, "removed"],
         displayNames: { [voltageName]: "pwr.data_.bus_voltage_v", removed: "app::removed" },
@@ -245,49 +242,10 @@ try {
     );
     nested.window.applyExport();
     csv = nested.messages.findLast((message) => message.type === "exportCsv");
-    assert.deepStrictEqual(Array.from(csv.names), [voltageName, "removed"]);
-    assert.strictEqual(csv.csv, undefined, "archive export selects raw identities for the host to read");
+    assert.deepStrictEqual(Array.from(csv.names), [voltageName, "removed"], "export selects raw identities");
     nested.assertHealthy();
 } finally {
     nested.close();
 }
 
 console.log("C++ member display names, saved identities and qualified-name presentation passed");
-
-// Optional visual fixture, generated from the production webview without changing mock data.
-if (process.argv.includes("--browser-preview")) {
-    const fs = require("fs");
-    const path = require("path");
-    const root = path.resolve(__dirname, "..");
-    const css = fs.readFileSync(path.join(root, "mockup/mock/theme.css"), "utf8");
-    const colors = require("../mockup/vendor/light-modern-colors.json");
-    const lightCss = Object.entries(colors)
-        .map(([key, value]) => `--vscode-${key.replace(/\./g, "-")}:${value};`)
-        .join("");
-    const state = { expanded: { [power.name]: true, [power.name + ".data_"]: true } };
-    const setup = `window.acquireVsCodeApi = () => ({postMessage() {}, getState() {
-        return ${JSON.stringify(state)}; }, setState() {}});`;
-    const fixture = `
-        const power = ${JSON.stringify(power)};
-        const member = ${JSON.stringify(voltageName)};
-        const send = data => window.dispatchEvent(new MessageEvent("message", {data}));
-        send({type:"watchList",items:[power,{name:member,type:"f32",address:power.address,size:4}]});
-        send({type:"variablesList",symbols:[power]});
-        send({type:"liveSample",samples:Array.from({length:901},(_,i)=>({name:member,value:11.4875,
-            t:Date.now()-30000+i*33}))});
-        send({type:"liveCompositeSample",samples:[{name:power.name,tree:{members:[{name:"data_",members:[
-            {name:"bus_voltage_v",type:"f32",value:11.4875}
-        ]}]}}]});
-        send({type:"liveStatus",running:false});
-    `;
-    const html = getLiveWatchContent({ panelId: 1 }, "zh")
-        .replace(
-            "<head>",
-            `<head><style>${css}\n:root{${lightCss}color-scheme:light;}</style><script>${setup}</script>`
-        )
-        .replace("</body>", `<script>${fixture}</script></body>`);
-    const destination = path.join(root, "mockup/dist/curve-name-preview.html");
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.writeFileSync(destination, html);
-    console.log(destination);
-}

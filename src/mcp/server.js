@@ -1,6 +1,7 @@
 "use strict";
-// EmberProbe MCP 服务器（stdio）。它和 skill 脚本一样只是 Agent Bridge 的客户端：只做 schema 校验、
-// 确认交互映射和结果/诊断转换；鉴权、确认 ID 校验、输入校验与硬件互斥都留在扩展进程内。
+// EmberProbe MCP server (stdio). Like the skill scripts it is only an Agent Bridge client: it validates schemas, maps
+// confirmation interactions and converts results and diagnostics. Authentication, confirmation ID checks, input
+// validation and hardware locking stay in the extension process.
 const fs = require("fs");
 const path = require("path");
 const { fileURLToPath } = require("url");
@@ -80,7 +81,7 @@ function createServer(options = {}) {
         };
     }
 
-    // 工作区定位：EMBERPROBE_WORKSPACE > MCP roots（第一个 file: 根）> cwd。
+    // Workspace lookup: EMBERPROBE_WORKSPACE > MCP roots (first file: root) > cwd.
     async function workspace() {
         if (env.EMBERPROBE_WORKSPACE) return env.EMBERPROBE_WORKSPACE;
         if (server.getClientCapabilities()?.roots) {
@@ -105,7 +106,7 @@ function createServer(options = {}) {
             return await confirm.elicit(server, result, { signal: extra.signal, timeout });
         } catch (error) {
             if (error?.code === "CONFIRMATION_DENIED") throw error;
-            // 弹窗失败、超时或被取消都按未批准处理，操作不会执行。
+            // A failed, timed-out or cancelled prompt counts as not approved and the operation does not run.
             throw Object.assign(confirm.denied(), { details: { reason: String(error?.message || error) } });
         }
     }
@@ -148,7 +149,7 @@ function createServer(options = {}) {
             },
             { call: (_workspace, method, params, timeoutMs) => call(method, params, timeoutMs) }
         );
-        // 预检未就绪：直接报告 diagnostics 和 notes，不进入确认。
+        // Preflight not ready: report diagnostics and notes directly without asking for confirmation.
         if (!plan.ready) return results.rejected({ ok: false, type: "preflight", ...plan });
         if (
             !fs.existsSync(plan.elf) ||
@@ -179,7 +180,7 @@ function createServer(options = {}) {
                 ...(program && args.remember ? { remember: true } : {})
             });
         const authorization = await call("flash.authorize", { ...identity, operation: tool.operation });
-        // 已有 24 小时工作区授权时直接执行，结果中带 trustedExpiresAt。
+        // With a 24-hour workspace authorization in place, run directly and include trustedExpiresAt in the result.
         if (program && authorization?.authorized === true)
             return execute({}).then((value) => {
                 value.structuredContent.authorization = authorization;
@@ -213,7 +214,8 @@ function createServer(options = {}) {
         }
     }
 
-    // Bridge 只有请求/响应：等待期间按固定间隔发送只含已耗时的进度通知，避免客户端判定无响应。
+    // The Bridge is request/response only, so progress notifications with just the elapsed time are sent at a fixed
+    // interval while waiting, so the client does not consider the call stalled.
     async function withProgress(extra, work) {
         const progressToken = extra?._meta?.progressToken;
         if (progressToken === undefined) return work();
@@ -265,7 +267,7 @@ function createServer(options = {}) {
 }
 
 async function main() {
-    // stdout 只承载 MCP 协议；任何意外的日志都转到 stderr。
+    // stdout carries only the MCP protocol; any unexpected log goes to stderr.
     console.log = console.error;
     console.info = console.error;
     const server = createServer();

@@ -1,5 +1,6 @@
 "use strict";
-// MCP prompts 与 skills 的漂移检查：内容来自 SKILL.md 与 agent-workflow.md，脚本对照表指向真实文件与工具。
+// Drift check between MCP prompts and skills: content comes from SKILL.md and agent-workflow.md, and the script table
+// points at real files and tools.
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");

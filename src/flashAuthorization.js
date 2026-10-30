@@ -13,8 +13,9 @@ const {
 } = require("../skills/_emberprobe/probe-connection");
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
-// 烧录的 workspace 授权：绑定 ELF 路径与连接，不绑定 ELF 内容，便于迭代编译后重复烧录；
-// 每次烧录仍在结果中报告实际 SHA-256。仅限 flash.execute，校验（flash.verify）始终逐次确认。
+// Workspace authorization for programming binds the ELF path and connection, not the ELF contents, so rebuilt firmware
+// can be programmed again; every result still reports the actual SHA-256. Only flash.execute qualifies; verification
+// (flash.verify) is always confirmed per call.
 const DEFAULT_TRUST_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STORAGE_KEY = "agent.flashTrusted";
 

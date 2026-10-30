@@ -17,8 +17,8 @@ function parseTargetVoltage(line) {
     return match ? Number(match[1]) : null;
 }
 
-// 将 OpenOCD 原始日志归一化为稳定的机器可读诊断，供 UI 与 Agent Skills 共用。
-// 匹配顺序很重要：目标芯片未连接与调试器未找到是两类完全不同的故障。
+// Normalizes raw OpenOCD logs into stable machine-readable diagnostics shared by the UI and Agent Skills. Match order
+// matters: an unconnected target chip and a missing debug probe are different faults.
 function diagnoseOpenOcdFailure(lines, details = {}) {
     const retained = (Array.isArray(lines) ? lines : [lines])
         .map((line) =>

@@ -1,12 +1,14 @@
 "use strict";
-// Agent Bridge 定位：skill 脚本与 MCP 服务器共用。优先读取扩展写在 globalStorage 的实例注册表，
-// 按工作区文件夹最长前缀匹配；找不到时回退到工作区指针（向上逐级查找）。只读文件，不删除陈旧条目。
+// Agent Bridge locator shared by skill scripts and the MCP server. It prefers the instance registry the extension
+// writes in globalStorage, matched by the longest workspace-folder prefix, and falls back to the workspace pointer
+// (searched upwards). It only reads files and never deletes stale entries.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { leavesDirectory } = require("./file-identity");
 
-// Bridge 端声明 protocol / minClientProtocol；客户端声明自己的协议与可接受的最低 Bridge 协议。
+// The Bridge declares protocol / minClientProtocol; the client declares its own protocol and the lowest Bridge protocol
+// it accepts.
 const BRIDGE_PROTOCOL = 2;
 const MIN_CLIENT_PROTOCOL = 1;
 const CLIENT_PROTOCOL = 2;
@@ -24,12 +26,12 @@ function canonicalPath(value) {
     try {
         resolved = fs.realpathSync.native(resolved);
     } catch {
-        /* 不存在的路径按字面比较 */
+        /* Paths that do not exist are compared literally */
     }
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-// root 本身或其祖先返回 true；两者都应已 canonicalPath。
+// True for root itself or any ancestor; both should already be canonicalPath results.
 function isWithin(root, target) {
     const relative = path.relative(root, target);
     return relative === "" || !leavesDirectory(relative);
@@ -45,7 +47,7 @@ function isAlive(pid) {
     }
 }
 
-// 未显式给出 --workspace 时（脚本默认传入 cwd），EMBERPROBE_WORKSPACE 优先于 cwd。
+// Without an explicit --workspace (scripts pass cwd by default), EMBERPROBE_WORKSPACE takes precedence over cwd.
 function resolveTarget(workspace, env = process.env) {
     const cwd = path.resolve(process.cwd());
     const explicit = workspace ? path.resolve(workspace) : "";
@@ -65,8 +67,8 @@ function listDir(dir) {
     }
 }
 
-// 各宿主（VS Code、Insiders、Cursor、VSCodium、远程服务端……）各有自己的 globalStorage。
-// 扫描已知的用户数据根目录，而不是写死宿主名称。
+// Each host (VS Code, Insiders, Cursor, VSCodium, remote servers, ...) has its own globalStorage. Scan the known
+// user-data roots instead of hard-coding host names.
 function wellKnownRegistryDirs(env = process.env, platform = process.platform) {
     const home = os.homedir();
     const bases = [];
@@ -83,7 +85,8 @@ function wellKnownRegistryDirs(env = process.env, platform = process.platform) {
     return dirs;
 }
 
-// EMBERPROBE_BRIDGE_REGISTRY（path.delimiter 分隔）设置后只搜索这些目录；测试与受控环境用它隔离。
+// When EMBERPROBE_BRIDGE_REGISTRY (path.delimiter separated) is set, only those directories are searched; tests and
+// controlled environments use it for isolation.
 function registryDirs(options = {}) {
     const env = options.env || process.env;
     const dirs = [];
@@ -116,7 +119,7 @@ function readRegistry(dirs) {
                 if (entry && typeof entry === "object" && entry.instanceId === item.name.slice(0, -5))
                     entries.push({ ...entry, registryFile: path.join(dir, item.name) });
             } catch {
-                /* 正在原子替换或已损坏的条目跳过 */
+                /* Skip entries that are being replaced atomically or are corrupt */
             }
         }
     }
@@ -191,7 +194,8 @@ function findPointer(target) {
     }
 }
 
-// 旧格式：工作区文件为指针（不含 token），真实描述文件位于用户目录；更早的格式直接存 token。
+// Older format: the workspace file is a pointer (no token) to the real descriptor in the user directory; the oldest
+// format stored the token directly.
 function readPointer(found) {
     let pointer;
     try {
@@ -219,7 +223,7 @@ function readPointer(found) {
     return { value, file };
 }
 
-// 最长前缀匹配；只有能连接的实例参与比较，已停用的窗口只用于诊断。
+// Longest-prefix match; only reachable instances compete, and stopped windows are used for diagnostics only.
 function matchRegistry(entries, target, exclude) {
     let best = [];
     let bestLength = -1;
@@ -263,7 +267,7 @@ function locate(workspace, options = {}) {
             if (typeof value.descriptorPath === "string" && value.descriptorPath)
                 extraDirs.push(path.join(path.dirname(value.descriptorPath), REGISTRY_DIR));
         } catch {
-            /* 指针损坏时由回退路径给出诊断 */
+            /* A corrupt pointer is diagnosed by the fallback path */
         }
     }
     const entries = readRegistry(registryDirs({ env, extraDirs }));

@@ -92,7 +92,7 @@ assert.strictEqual(leaves[3].address, 0x2000000c);
 scenario("Preserve UTF, reference, member pointer and const member metadata", () => {
     const { buildVariableTypes, buildCompositeLayouts, encodingToWatchType } = require("../src/dwarf/types");
     const { expandCompositeLeaves } = require("../src/elfSymbols");
-    // UTF 编码
+    // UTF character encodings
     for (const [bytes, watchType] of [
         [1, "u8"],
         [2, "u16"],
@@ -101,7 +101,7 @@ scenario("Preserve UTF, reference, member pointer and const member metadata", ()
         assert.strictEqual(encodingToWatchType(c.DW_ATE_UTF, bytes), watchType, `UTF character width: ${bytes}`);
     }
 
-    // 引用类型与成员指针
+    // Reference types and member pointers
     const dies = new Map([
         [1, { tag: c.DW_TAG_base_type, name: "int", encoding: c.DW_ATE_signed, byteSize: 4 }],
         [2, { tag: c.DW_TAG_reference_type, typeRef: 1 }],

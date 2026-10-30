@@ -12,12 +12,12 @@ const {
 } = require("../skills/_emberprobe/openocd-flash");
 const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
 
-// 配置路径白名单校验：允许 geehy/apm32f4x.cfg 等 scripts 内安全相对路径。
+// Configuration path allowlist: safe relative paths inside scripts, such as geehy/apm32f4x.cfg.
 function isSafeCfg(name) {
     return isSafeCfgPath(name);
 }
 
-// Tcl 的双引号字符串仍会展开 $变量 和 [命令]，因此路径必须逐字符转义。
+// Double-quoted Tcl strings still expand $variables and [commands], so paths are escaped character by character.
 function quoteTclWord(value) {
     const escaped = String(value)
         .replace(/\\/g, "\\\\")
@@ -69,7 +69,7 @@ function parseLine(line) {
     if (/open on-chip debugger/i.test(clean)) return { stage: "start", level: "info", message: clean };
     if (/CMSIS-DAP|ST-?LINK|J-?Link|DAPLink/i.test(clean) && /Info\s*:/i.test(clean))
         return { stage: "probe", level: "info", message: clean.replace(/^.*?Info\s*:\s*/i, "") || clean };
-    // 适配器时钟：Info : clock speed 1800 kHz / adapter speed: 2000 kHz
+    // Adapter clock: "Info : clock speed 1800 kHz" / "adapter speed: 2000 kHz"
     if ((match = clean.match(/(?:clock speed|adapter speed:?)\s*([\d.]+\s*k?hz)/i)))
         return {
             stage: "adapter",
@@ -79,7 +79,7 @@ function parseLine(line) {
             params: { clock: match[1] },
             clock: match[1]
         };
-    // 目标电压：Info : Target voltage: 3.239000（≈0 视为目标板未供电）
+    // Target voltage: "Info : Target voltage: 3.239000" (about 0 means the target board is unpowered)
     const volts = parseTargetVoltage(clean);
     if (volts !== null) {
         return {
@@ -94,7 +94,7 @@ function parseLine(line) {
             volts
         };
     }
-    // 芯片/器件识别：Info : device id = 0x10076413 / Info : Device: STM32F40x
+    // Chip/device identity: "Info : device id = 0x10076413" / "Info : Device: STM32F40x"
     if ((match = clean.match(/device id\s*=\s*(0x[0-9a-f]+)/i)))
         return {
             stage: "chip",
@@ -113,7 +113,7 @@ function parseLine(line) {
             params: { chip: match[1].trim() },
             chip: match[1].trim()
         };
-    // Flash 容量：Info : flash size = 1024 kbytes
+    // Flash size: "Info : flash size = 1024 kbytes"
     if ((match = clean.match(/flash size\s*=\s*([\d.]+\s*k?bytes?)/i)))
         return {
             stage: "flash",
@@ -151,8 +151,9 @@ function parseLine(line) {
             seconds: Number(match[2]),
             speed: match[3] || ""
         };
-    // 注意：失败时 OpenOCD 也会打印 "shutdown command invoked"，不能据此判定完成，统一以退出代码为准
-    // Info : Unable to ... 可能只是降速等正常提示；非 Info 行仍保留常见失败模式识别。
+    // OpenOCD prints "shutdown command invoked" on failure too, so completion is judged only by the exit code. "Info :
+    // Unable to ..." may just be a normal hint such as a speed reduction; non-Info lines still match common failure
+    // patterns.
     const isInfo = /\bInfo\s*:/i.test(clean);
     if (
         /\bError\s*:/i.test(clean) ||
@@ -170,7 +171,7 @@ const {
     connectionDetails
 } = require("../skills/_emberprobe/openocd-diagnostics");
 
-// 复用同一个终端，避免每次下载都新建终端导致堆叠
+// Reuse one terminal so downloads do not stack up new terminals
 let sharedTerminal = null;
 let sharedEmitter = null;
 let sharedChild = null;
@@ -203,7 +204,7 @@ function runOpenOcd(vscode, options, onProgress) {
         );
     }
     if (sharedChild) sharedChild = null;
-    // 安全校验：配置只能是 OpenOCD scripts 目录内的安全相对路径
+    // Configurations may only be safe relative paths inside the OpenOCD scripts directory
     if (!isSafeCfg(options.probe) || !isSafeCfg(options.target)) {
         return Promise.reject(new Error(`非法的 OpenOCD 配置名：${options.probe} / ${options.target}`));
     }
@@ -217,7 +218,7 @@ function runOpenOcd(vscode, options, onProgress) {
         const { terminal, writeEmitter, created } = acquireTerminal(vscode);
         terminal.show(true);
         const elfPath = options.elf.replace(/\\/g, "/");
-        // 关键修复：ELF 路径含空格时必须加引号，否则 OpenOCD 的 TCL 解析会把路径拆成多个参数
+        // ELF paths containing spaces must be quoted, or OpenOCD's Tcl parser splits them into several arguments
         let programCmd;
         try {
             programCmd = buildFlashProgramCommand(quoteTclWord(elfPath), flashSpeedKhz(options));
@@ -241,7 +242,7 @@ function runOpenOcd(vscode, options, onProgress) {
             )
         ];
         const targetCheck = targetCheckMonitor(options.targetCheck);
-        // 终端不再镜像 OpenOCD 原始输出，只展示解析后的关键事件与最终结论
+        // The terminal shows parsed key events and the final verdict, not raw OpenOCD output
         const print = (text, color) => writeEmitter.fire((color || "") + text + "\x1b[0m\r\n");
         const printEvent = (event) => {
             const color = event.level === "error" ? "\x1b[31m" : event.level === "success" ? "\x1b[32m" : "";
@@ -258,7 +259,7 @@ function runOpenOcd(vscode, options, onProgress) {
             sharedChild = child;
         } catch (error) {
             print(`✗ 启动 OpenOCD 失败：${error.message}`, "\x1b[31m");
-            // 新建终端却启动失败时清理空终端；复用的终端保留历史输出
+            // Remove a newly created terminal whose launch failed; a reused terminal keeps its history
             if (created) {
                 sharedTerminal = null;
                 sharedEmitter = null;
@@ -323,7 +324,8 @@ function runOpenOcd(vscode, options, onProgress) {
         };
         const rawTail = [];
         const trackFlashClock = flashClockTracker();
-        // OpenOCD 默认把所有日志输出到 stderr，需逐行解析；未识别的行不展示，仅留作失败诊断
+        // OpenOCD logs everything to stderr, parsed line by line; unrecognized lines are not shown and only kept for
+        // failure diagnosis
         const flushLine = (line) => {
             const text = line.replace(/\r/g, "");
             targetCheck.line(text);
@@ -410,7 +412,7 @@ function runOpenOcd(vscode, options, onProgress) {
             clearTimeout(timeout);
             if (sharedChild === child) sharedChild = null;
             for (const stream of ["stdout", "stderr"]) pending[stream].end();
-            if (spawnFailed) return; // spawn 失败已由 error 事件处理
+            if (spawnFailed) return; // spawn failures are handled by the error event
             if (terminalError) {
                 reject(terminalError);
                 return;

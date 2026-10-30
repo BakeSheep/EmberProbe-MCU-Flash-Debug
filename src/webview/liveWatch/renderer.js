@@ -1,16 +1,5 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
-var HISTORY_WINDOW_MS = 30 * 60 * 1000;
-var HISTORY_MAX_POINTS = HISTORY_WINDOW_MS / 5 + 1;
-var RETENTION_TRIM_CHUNK = 4096;
-function retainedSampleLimit(frequencyHz, intervalMs) {
-    if (!CFG.autoMaxSamples) return CFG.maxSamples;
-    // Use the actual rounded clock period, including when the host omits intervalMs.
-    var ms = Number(intervalMs) > 0 ? Number(intervalMs) : Math.round(1000 / Number(frequencyHz));
-    ms = Math.min(10000, Math.max(5, ms || 33));
-    return Math.min(HISTORY_MAX_POINTS, Math.ceil(HISTORY_WINDOW_MS / ms) + 1);
-}
-var MAXPTS = retainedSampleLimit(CFG.frequencyHz, CFG.intervalMs);
 var remoteHistory = {
     // While following, render bounds advance with detail; liveStatus always tracks the latest event.
     status: null,
@@ -51,7 +40,6 @@ function followingChartHistory() {
 }
 function smoothFollowEnabled() {
     return (
-        CFG.backendHistory &&
         running &&
         !remoteHistory.operation &&
         followingChartHistory() &&
@@ -137,7 +125,7 @@ function chartHistoryBoundsValid(bounds) {
     return bounds && Number.isFinite(bounds.min) && Number.isFinite(bounds.max) && bounds.max >= bounds.min;
 }
 function requestChartViewport(range, width) {
-    if (!CFG.backendHistory || historyClearPending) return;
+    if (historyClearPending) return;
     var config = chartHistoryConfig();
     if (!config.names.length) {
         remoteHistory.view = remoteHistory.overview = null;
@@ -264,31 +252,10 @@ function dispatchChartViewport() {
         historyRevision: historyRevision
     });
 }
-function retainedPoints(arr) {
-    return arr.slice(arr.retainedStart || 0);
-}
-function trimHistory(arr, cutoff) {
-    var start = arr.retainedStart || 0,
-        limit = CFG.autoMaxSamples ? HISTORY_MAX_POINTS : MAXPTS,
-        countStart = Math.max(start, arr.length - limit);
-    // Release expired objects immediately; move the remaining references only once per chunk.
-    // A frequency reduction must not discard high-rate samples still inside the time window.
-    while (start < arr.length && (start < countStart || arr[start].t < cutoff)) {
-        arr[start++] = undefined;
-    }
-    if (start >= RETENTION_TRIM_CHUNK || start * 2 >= arr.length) {
-        arr.splice(0, start);
-        start = 0;
-    }
-    arr.retainedStart = start;
-}
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
     return window.EmberProbeRuntime.translate(I18N, LANG, k, p);
-}
-function msgText(m) {
-    return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
 var statusMsg = { key: "lw.ready" };
 var requestedFrequencyHz = CFG.frequencyHz;
@@ -451,7 +418,6 @@ function selectFrequencyPreset() {
     if (!Number.isInteger(index) || index < 0 || index > UNLIMITED_NOTCH) return;
     if (index === UNLIMITED_NOTCH) {
         if (!unlimitedState.enabled) {
-            sampleTimes = [];
             unlimitedState.enabled = true;
             post({ type: "setUnlimitedSampling", enabled: true });
         }
@@ -459,7 +425,6 @@ function selectFrequencyPreset() {
     } else commitFrequency(frequencyPresets[index]);
 }
 function commitFrequency(value) {
-    if (unlimitedState.enabled || value !== requestedFrequencyHz) sampleTimes = [];
     if (unlimitedState.enabled) {
         unlimitedState.enabled = false;
         unlimitedState.active = false;
@@ -487,13 +452,9 @@ var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     seriesStyles = Object.create(null),
     styleRequests = new Set(),
     analysis = Analysis.create(),
-    dataRevision = 0,
-    seriesCache = null,
-    boundsCache = null,
     axisModes = {},
     controls;
 var watch = [],
-    data = Object.create(null),
     latest = Object.create(null),
     latestText = Object.create(null),
     latestEnum = Object.create(null),
@@ -517,7 +478,6 @@ var watch = [],
     norm = false,
     jitterBands = true,
     allSymbols = [],
-    sampleTimes = [],
     samplingOrigin = null,
     dirty = true,
     lastDraw = 0,
@@ -610,14 +570,6 @@ function styleFor(name) {
     }
     return seriesStyles[name];
 }
-function plotBuffers() {
-    return analysis.snapshot || data;
-}
-function invalidateSeries() {
-    dataRevision++;
-    seriesCache = null;
-    boundsCache = null;
-}
 function toggleCurve(name) {
     analysis.previousHidden = null;
     analysis.focused = null;
@@ -658,7 +610,6 @@ function fmtExact(v, valueText, enumText, name) {
 function setDisplayedValue(cell, value) {
     EmberProbeRuntime.setValueCell(cell, value);
 }
-var buildCsv = window.__BUILD_CSV__;
 var historyRevision = 0,
     historyClearPending = false;
 function defType(size) {
@@ -841,9 +792,6 @@ function forgetPointers(name) {
 function hidePointerCurve(item) {
     if (item && item.isPointer && hidden[item.name] === undefined) hidden[item.name] = true;
 }
-function ensureBuf(n) {
-    if (!Object.prototype.hasOwnProperty.call(data, n)) data[n] = [];
-}
 // Notices live in the import and export dialogs, plus the variable-source picker.
 var noticeAreas = {};
 function noticeArea(id) {
@@ -1024,7 +972,6 @@ function addSymbol(sym, resolved = false) {
               }
             : {})
     });
-    ensureBuf(sym.name);
     hidePointerCurve(sym);
     renderVars();
     saveWatch();
@@ -1049,15 +996,7 @@ function removeVar(name) {
                 return w.name;
             })
         );
-    Analysis.remove(
-        analysis,
-        rmv.map(function (w) {
-            return w.name;
-        })
-    );
-    invalidateSeries();
     rmv.forEach(function (w) {
-        delete data[w.name];
         delete latest[w.name];
         delete latestText[w.name];
         delete latestEnum[w.name];
@@ -1097,7 +1036,6 @@ function createCurveToggle(swatch, content, onClick) {
 }
 function renderVars() {
     displayInfos = new WeakMap();
-    invalidateSeries();
     dirty = true;
     if (analysis.focused)
         watch.forEach(function (w) {
@@ -1323,7 +1261,7 @@ var valueRefreshTimer = null;
 var lastValueRefresh = 0;
 function scheduleValueRefresh() {
     if (valueRefreshTimer !== null) return;
-    var interval = CFG.backendHistory ? 50 : 100;
+    var interval = 50;
     var elapsed = Date.now() - lastValueRefresh;
     if (elapsed >= interval) {
         lastValueRefresh = Date.now();
@@ -1335,46 +1273,6 @@ function scheduleValueRefresh() {
         lastValueRefresh = Date.now();
         updateValues();
     }, interval - elapsed);
-}
-function onSamples(samples) {
-    if (historyClearPending) return;
-    if (!frozen) invalidateSeries();
-    var now = Date.now();
-    // Measure acquisition timestamps, not delayed Webview message delivery.
-    var tick =
-        (samples || []).reduce(function (last, sample) {
-            return Number.isFinite(sample.t) ? Math.max(last, sample.t) : last;
-        }, 0) || now;
-    (samples || []).forEach(function (s) {
-        var st = Number(s.t);
-        if (Number.isFinite(st) && (!sampleTimes.length || st > sampleTimes[sampleTimes.length - 1])) {
-            sampleTimes.push(st);
-        }
-    });
-    var expiredTicks = 0;
-    while (expiredTicks < sampleTimes.length - 1 && sampleTimes[expiredTicks] < tick - 3000) expiredTicks++;
-    if (expiredTicks) sampleTimes.splice(0, expiredTicks);
-    var elapsed = sampleTimes.length > 1 ? tick - sampleTimes[0] : 0;
-    $("rate").textContent = rateText(elapsed > 0 ? ((sampleTimes.length - 1) * 1000) / elapsed : 0);
-    (samples || []).forEach(function (s) {
-        var time = Number(s.t) || now;
-        if (samplingOrigin === null) samplingOrigin = time;
-        latest[s.name] = s.value;
-        latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
-        latestEnum[s.name] = s.enumText ?? null;
-        recordPointerSample(s);
-        // Preserve failed samples as breaks rather than drawing across a gap.
-        ensureBuf(s.name);
-        var arr = data[s.name];
-        arr.push({ t: time, v: s.value == null ? null : Number(s.value), valueText: s.valueText ?? null });
-        trimHistory(arr, time - HISTORY_WINDOW_MS);
-    });
-    Object.keys(data).forEach(function (name) {
-        // Also expire a channel that stopped producing samples while other channels keep running.
-        trimHistory(data[name], tick - HISTORY_WINDOW_MS);
-    });
-    scheduleValueRefresh();
-    dirty = true;
 }
 function recordPointerSample(s) {
     latestPointer[s.name] = {
@@ -2015,7 +1913,6 @@ function addLeafWatch(path, address, watchType, node) {
         ...(node?.layoutExpanded ? { layoutExpanded: true, staticRuntimeStorage: node.staticRuntimeStorage } : {}),
         ...(node && Number.isInteger(node.bitSize) ? { bitSize: node.bitSize, bitOffset: node.bitOffset } : {})
     });
-    ensureBuf(path);
     return true;
 }
 function toggleLeafInChart(path, address, watchType, node) {
@@ -2178,29 +2075,20 @@ function stop() {
 function clearHistory(clearArchive = true) {
     historyRevision++;
     historyClearPending = clearArchive;
-    if (CFG.backendHistory) {
-        remoteHistory.status = remoteHistory.liveStatus = null;
-        resetChartHistoryViews();
-        remoteHistory.operation = remoteHistory.snapshotId = null;
-    }
-    archiveExportInfo = null;
+    remoteHistory.status = remoteHistory.liveStatus = null;
+    resetChartHistoryViews();
+    remoteHistory.operation = remoteHistory.snapshotId = null;
     exportCandidates = [];
     hideExport();
     if (clearArchive) post({ type: "clearSamplingHistory", historyRevision: historyRevision });
-    Analysis.resume(analysis);
     frozen = false;
     $("freeze").textContent = t("lw.freeze");
-    invalidateSeries();
-    Object.keys(data).forEach(function (n) {
-        data[n] = [];
-    });
     Object.keys(latest).forEach(function (n) {
         latest[n] = null;
         latestText[n] = null;
         latestEnum[n] = null;
         delete latestPointer[n];
     });
-    sampleTimes = [];
     samplingOrigin = null;
     $("rate").textContent = rateText(0, 0);
     updateValues();
@@ -2460,11 +2348,6 @@ function renderImport() {
             ? t("sb.filteredCount", { shown: pool.length, total: allSymbols.length })
             : t("lw.totalVars", { n: allSymbols.length })) +
         (matched.length > shown.length ? t("lw.showingFirst", { n: shown.length }) : "");
-}
-function showImport(symbols) {
-    allSymbols = symbols || [];
-    impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
-    openImport();
 }
 function openImport() {
     impPicks.clear();
@@ -2837,7 +2720,6 @@ function hideExport() {
     $("exportOverlay").classList.add("hidden");
     exportNotice(null);
 }
-var archiveExportInfo = null;
 function showExport() {
     if (historyClearPending) return;
     post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
@@ -3001,40 +2883,21 @@ function resetChartView() {
 function freezeChart() {
     syncTimeBounds();
     resetFollowClock();
-    if (CFG.backendHistory) {
-        if (remoteHistory.operation || frozen) return;
-        remoteHistory.operation = ++remoteHistory.nextId;
-        dirty = true;
-        chartState.fastDirty = true;
-        post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
-        return;
-    }
-    // Auto retention can exceed the new rate's point target while preserving earlier high-rate history.
-    var buffers = Object.fromEntries(
-        Object.entries(data).map(function (entry) {
-            return [entry[0], retainedPoints(entry[1])];
-        })
-    );
-    Analysis.freeze(analysis, buffers, CFG.autoMaxSamples ? HISTORY_MAX_POINTS : MAXPTS);
-    frozen = true;
-    chartState.follow = false;
-    invalidateSeries();
+    if (remoteHistory.operation || frozen) return;
+    remoteHistory.operation = ++remoteHistory.nextId;
     dirty = true;
     chartState.fastDirty = true;
+    post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
 }
 function resumeChart() {
     resetFollowClock();
     $("freeze").textContent = t("lw.freeze");
-    if (CFG.backendHistory) {
-        remoteHistory.operation = null;
-        remoteHistory.snapshotId = null;
-        remoteHistory.status = remoteHistory.liveStatus;
-        cancelChartHistoryRequests();
-        post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
-    }
-    Analysis.resume(analysis);
+    remoteHistory.operation = null;
+    remoteHistory.snapshotId = null;
+    remoteHistory.status = remoteHistory.liveStatus;
+    cancelChartHistoryRequests();
+    post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
     frozen = false;
-    invalidateSeries();
     syncTimeBounds();
     applyWindowPreset(windowPreset);
     renderVars();
@@ -3140,12 +3003,9 @@ function chartAction(action, value) {
         });
         if (item && !isCompositeItem(item) && TYPES.includes(value.type)) {
             item.type = value.type;
-            data[item.name] = [];
             latest[item.name] = null;
             latestText[item.name] = null;
             latestEnum[item.name] = null;
-            Analysis.remove(analysis, [item.name]);
-            invalidateSeries();
             updateValues();
             saveWatch();
         }
@@ -3235,113 +3095,59 @@ function chartOverviewOutside(arr, range, first, last) {
     return parts;
 }
 function chartData(range, width) {
-    if (CFG.backendHistory) {
-        requestChartViewport(range, width);
-        // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
-        // arrives, but only for curves whose type/address identity is unchanged.
-        var configKey = chartHistoryConfig().configKey,
-            view = remoteHistory.view,
-            overview = remoteHistory.overview,
-            cached = remoteHistory.composed;
-        if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
-            return cached.series;
-        var composed = [];
-        function identity(item) {
-            return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
-        }
-        function add(part, arr, detail, current) {
-            var idx = watch.findIndex(function (item) {
-                return item.name === part.name;
-            });
-            if (idx < 0 || hidden[part.name] || isCompositeItem(watch[idx]) || !arr.length) return;
-            if (!current && (!part.item || identity(part.item) !== identity(watch[idx]))) return;
-            composed.push({
-                item: part.item || watch[idx],
-                idx: idx,
-                arr: arr,
-                ...(detail ? { visibleCount: part.visibleCount } : {})
-            });
-        }
-        if (view)
-            view.series.forEach(function (part) {
-                add(part, part.arr, true, view.configKey === configKey);
-            });
-        var ends = new Map();
-        if (view)
-            view.series.forEach(function (part) {
-                if (!part.arr.length) return;
-                var end = ends.get(part.name);
-                if (!end) ends.set(part.name, { first: part.arr[0], last: part.arr[part.arr.length - 1] });
-                else end.last = part.arr[part.arr.length - 1];
-            });
-        if (overview)
-            overview.series.forEach(function (part) {
-                var end = ends.get(part.name),
-                    segments = view
-                        ? chartOverviewOutside(part.arr, view.range, end && end.first, end && end.last)
-                        : [part.arr];
-                segments.forEach(function (arr) {
-                    add(part, arr, false, overview.configKey === configKey);
-                });
-            });
-        remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
-        return composed;
+    requestChartViewport(range, width);
+    // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
+    // arrives, but only for curves whose type/address identity is unchanged.
+    var configKey = chartHistoryConfig().configKey,
+        view = remoteHistory.view,
+        overview = remoteHistory.overview,
+        cached = remoteHistory.composed;
+    if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
+        return cached.series;
+    var composed = [];
+    function identity(item) {
+        return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
     }
-    var key = JSON.stringify([
-        dataRevision,
-        !!analysis.snapshot,
-        watch.map(function (w) {
-            return w.name;
-        }),
-        hidden,
-        range,
-        width
-    ]);
-    if (seriesCache && seriesCache.key === key) return seriesCache.series;
-    var series = [];
-    watch.forEach(function (item, idx) {
-        if (hidden[item.name]) return;
-        var arr = plotBuffers()[item.name] || [],
-            segment = [];
-        if (range && width) {
-            Inspection.visibleSegments(arr, range, width).forEach(function (part) {
-                series.push({ item: item, idx: idx, arr: part.arr, visibleCount: part.visibleCount });
+    function add(part, arr, detail, current) {
+        var idx = watch.findIndex(function (item) {
+            return item.name === part.name;
+        });
+        if (idx < 0 || hidden[part.name] || isCompositeItem(watch[idx]) || !arr.length) return;
+        if (!current && (!part.item || identity(part.item) !== identity(watch[idx]))) return;
+        composed.push({
+            item: part.item || watch[idx],
+            idx: idx,
+            arr: arr,
+            ...(detail ? { visibleCount: part.visibleCount } : {})
+        });
+    }
+    if (view)
+        view.series.forEach(function (part) {
+            add(part, part.arr, true, view.configKey === configKey);
+        });
+    var ends = new Map();
+    if (view)
+        view.series.forEach(function (part) {
+            if (!part.arr.length) return;
+            var end = ends.get(part.name);
+            if (!end) ends.set(part.name, { first: part.arr[0], last: part.arr[part.arr.length - 1] });
+            else end.last = part.arr[part.arr.length - 1];
+        });
+    if (overview)
+        overview.series.forEach(function (part) {
+            var end = ends.get(part.name),
+                segments = view
+                    ? chartOverviewOutside(part.arr, view.range, end && end.first, end && end.last)
+                    : [part.arr];
+            segments.forEach(function (arr) {
+                add(part, arr, false, overview.configKey === configKey);
             });
-            return;
-        }
-        function flush() {
-            if (segment.length) {
-                series.push({ item: item, idx: idx, arr: segment });
-                segment = [];
-            }
-        }
-        for (var i = arr.retainedStart || 0; i < arr.length; i++) {
-            var point = arr[i];
-            if (point && Number.isFinite(point.v) && Number.isFinite(point.t)) segment.push(point);
-            else flush();
-        }
-        flush();
-    });
-    seriesCache = { key: key, series: series };
-    return series;
+        });
+    remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
+    return composed;
 }
 function retainedTimeBounds() {
-    if (CFG.backendHistory) return remoteHistory.status && remoteHistory.status.bounds;
-    if (boundsCache) return boundsCache;
-    var lo = Infinity,
-        hi = -Infinity;
-    watch.forEach(function (item) {
-        var arr = plotBuffers()[item.name] || [],
-            first = arr[arr.retainedStart || 0],
-            last = arr[arr.length - 1];
-        if (first && last) {
-            lo = Math.min(lo, first.t);
-            hi = Math.max(hi, last.t);
-        }
-    });
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
-    boundsCache = { min: lo, max: Math.max(lo + 1, hi) };
-    return boundsCache;
+    return remoteHistory.status && remoteHistory.status.bounds;
 }
 function minimumXSpan() {
     return chartState.bounds ? Math.min(VP.span(chartState.bounds), 1) : 1;
@@ -3539,7 +3345,6 @@ function draw(now) {
     updateChartEmpty(series, hasBounds);
     historyLoading.textContent = t("lw.historyLoading");
     historyLoading.hidden =
-        !CFG.backendHistory ||
         !watch.some(function (item) {
             return !hidden[item.name] && !isCompositeItem(item);
         }) ||
@@ -3806,7 +3611,6 @@ window.EmberProbeMessages.connect(window, {
         dirty = true;
     },
     watchList: function (m) {
-        invalidateSeries();
         var incoming = (m.items || []).slice();
         var removed = watch
             .filter(function (w) {
@@ -3817,7 +3621,6 @@ window.EmberProbeMessages.connect(window, {
             .map(function (w) {
                 return w.name;
             });
-        Analysis.remove(analysis, removed);
         if (removed.includes(analysis.focused))
             hidden = Analysis.restore(
                 analysis,
@@ -3825,8 +3628,10 @@ window.EmberProbeMessages.connect(window, {
                     return w.name;
                 })
             );
+        // Curve visibility is kept for watches missing from this list: a list sent while layouts are
+        // still resolving can omit them briefly, and they must come back as the user left them.
+        // Removing a watch here (removeVar) is what forgets its curve.
         removed.forEach(function (name) {
-            delete data[name];
             delete latest[name];
             delete latestText[name];
             delete latestEnum[name];
@@ -3852,12 +3657,6 @@ window.EmberProbeMessages.connect(window, {
                 delete latestPointer[item.name];
             });
         }
-        // Curve visibility is kept for watches missing from this list: a list sent while layouts are
-        // still resolving can omit them briefly, and they must come back as the user left them.
-        // Removing a watch here (removeVar) is what forgets its curve.
-        watch.forEach(function (w) {
-            ensureBuf(w.name);
-        });
         runtimeExpansionsLoaded = true;
         renderVars();
         dirty = true;
@@ -4002,9 +3801,6 @@ window.EmberProbeMessages.connect(window, {
         $("addName").focus();
         renderAutocomplete(m.candidates);
     },
-    liveSample: function (m) {
-        onSamples(m.samples || []);
-    },
     liveCompositeSample: function (m) {
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
         onCompositeSamples(m.samples || []);
@@ -4018,7 +3814,6 @@ window.EmberProbeMessages.connect(window, {
         if (typeof m.running === "boolean") {
             running = m.running;
             if (!running) {
-                sampleTimes = [];
                 $("rate").textContent = rateText(0, 0);
                 $("rate").title = "";
             }
@@ -4332,11 +4127,10 @@ window.EmberProbeMessages.connect(window, {
         if (historyClearPending) return;
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
-        archiveExportInfo = m;
         if (m.openExport) showArchiveExport(m);
     },
     chartValues: function (m) {
-        if (!CFG.backendHistory || historyClearPending) return;
+        if (historyClearPending) return;
         (m.samples || []).forEach(function (sample) {
             latest[sample.name] = sample.value;
             latestText[sample.name] =
@@ -4350,7 +4144,7 @@ window.EmberProbeMessages.connect(window, {
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
     },
     chartHistoryStatus: function (m) {
-        if (!CFG.backendHistory || historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
+        if (historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
         if (m.limited && !remoteHistory.liveStatus?.limited)
             setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
         remoteHistory.liveStatus = m;
@@ -4467,15 +4261,12 @@ window.EmberProbeMessages.connect(window, {
         $("pointerExpandedOnly").checked = m.expandedOnly === true;
     },
     liveUnlimited: function (m) {
-        if (unlimitedState.enabled !== (m.enabled === true)) sampleTimes = [];
         unlimitedState.enabled = m.enabled === true;
         if (!unlimitedState.enabled) unlimitedState.active = false;
         renderUnlimited(true);
     },
     liveFrequency: function (m) {
-        if (requestedFrequencyHz !== m.frequencyHz) sampleTimes = [];
         requestedFrequencyHz = m.frequencyHz;
-        MAXPTS = retainedSampleLimit(requestedFrequencyHz, m.intervalMs);
         renderUnlimited(true);
     }
 });

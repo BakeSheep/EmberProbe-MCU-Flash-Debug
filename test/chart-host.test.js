@@ -230,7 +230,6 @@ async function testShutdownFence(Provider) {
 
 (async () => {
     const panels = [],
-        writes = [],
         values = new Map([
             ["mcu.watchList.2", [{ name: "shared" }]],
             ["mcu.watchList", [{ name: "first" }, { name: "shared" }]]
@@ -246,7 +245,7 @@ async function testShutdownFence(Provider) {
         Uri: { joinPath: (_folder, name) => ({ fsPath: name }), file: (name) => ({ fsPath: name }) },
         workspace: {
             getConfiguration: () => ({ get: (_key, fallback) => fallback }),
-            fs: { writeFile: async (_uri, bytes) => writes.push(bytes.toString("utf8")) }
+            fs: {}
         },
         window: {
             createWebviewPanel() {
@@ -326,15 +325,14 @@ async function testShutdownFence(Provider) {
     assert.equal(panels[0].messages.at(-1).type, "liveError");
     await panels[0].receive({ type: "setSeriesStyle", name: "shared", style: { color: "invalid", line: "solid" } });
     assert.equal(panels[0].messages.at(-1).type, "liveError");
-    await panels[0].receive({
-        type: "exportCsv",
-        source: "snapshot",
-        names: ["shared"],
-        csv: "time,shared\r\nnow,42\r\n"
-    });
-    assert.equal(writes[0], "time,shared\r\nnow,42\r\n");
+    const exported = [];
+    p._samplingArchive.exportCsv = async (request) => {
+        exported.push(request);
+        return { seriesCount: 1, rows: 2 };
+    };
+    await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
     assert.equal(panels[0].messages.at(-1).ok, true);
-    assert.equal(panels[0].messages.at(-1).rowCount, 1);
+    assert.equal(panels[0].messages.at(-1).rowCount, 2);
     assert.match(saveOptions.at(-1).defaultUri.fsPath, /^emberprobe-live-\d{8}-\d{6}\.csv$/);
     for (const [fileName, expected] of [
         ["电源采样.csv", "电源采样.csv"],
@@ -349,18 +347,13 @@ async function testShutdownFence(Provider) {
         [7, null],
         [" ", null]
     ]) {
-        await panels[0].receive({ type: "exportCsv", source: "snapshot", csv: "time\r\n", fileName });
+        await panels[0].receive({ type: "exportCsv", names: ["shared"], fileName });
         const suggested = saveOptions.at(-1).defaultUri.fsPath;
         if (expected) assert.strictEqual(suggested, expected);
         else assert.match(suggested, /^emberprobe-live-\d{8}-\d{6}\.csv$/, "invalid file names use the default");
     }
-    await panels[0].receive({ type: "exportCsv", source: "retained", names: ["shared"], csv: 7 });
-    assert.equal(panels[0].messages.at(-1).ok, false);
-    const exported = [];
-    p._samplingArchive.exportCsv = async (request) => {
-        exported.push(request);
-        return { seriesCount: 1, rows: 2 };
-    };
+    exported.length = 0;
+    progress.titles.length = 0;
     await panels[0].receive({ type: "exportCsv", names: ["shared"], historyRevision: 0 });
     assert.equal(exported.length, 1);
     assert.equal(exported[0].scope, "mcu.watchList");

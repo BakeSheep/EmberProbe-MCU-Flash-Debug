@@ -211,16 +211,6 @@ async function main() {
     automatic.getSuccessfulConnection = () => ({ version: 1, probe: "jlink.cfg" });
     assert.strictEqual(await automatic.resolveProbe(), "jlink.cfg");
 
-    // Single preflight entry: driverService.requireWinUsb is not redundantly called after prepareConnection
-    let redundantChecks = 0;
-    automatic.driverService = {
-        requireWinUsb: () => {
-            redundantChecks++;
-        }
-    };
-    await automatic.prepare({});
-    assert.strictEqual(redundantChecks, 0, "prepareConnection is the single preflight entry point");
-
     let preflightCalls = 0;
     const switching = new ProbeConnectionService({
         getConfig: () => ({ debugger: "jlink.cfg" }),

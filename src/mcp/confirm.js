@@ -1,7 +1,8 @@
 "use strict";
-// Bridge 确认响应 → MCP elicitation。只提供 Bridge 给出的 choices 加 deny，默认 deny；
-// 确认 ID 只在服务器内部使用，不返回给 agent。客户端不支持 elicitation 时退回聊天确认：
-// 返回计划与确认 ID，由 agent 展示给用户并等待回答后重调。
+// Bridge confirmation response -> MCP elicitation. Offers only the Bridge's choices plus deny, defaulting to deny; the
+// confirmation ID stays inside the server and is never returned to the agent. Clients without elicitation fall back to
+// chat confirmation: the plan and confirmation ID are returned for the agent to show the user and call again after the
+// answer.
 
 // Plan fields as the Bridge returns them: flash plans, write plans (elf/connection), peripheral plans (svd)
 // and CubeMX plans (ioc/output/tool). File identities are { path, sha256 } objects.
@@ -155,9 +156,10 @@ function denied() {
 }
 
 /**
- * 请求用户确认。返回 { confirmationId, remember } 用于重调；拒绝、取消或关闭时抛出 CONFIRMATION_DENIED。
+ * Asks the user to confirm. Returns { confirmationId, remember } for the repeated call; throws CONFIRMATION_DENIED on
+ * deny, cancel or close.
  * @param {{ elicitInput: Function }} server
- * @param {Record<string, any>} result Bridge 的 confirmationRequired 响应
+ * @param {Record<string, any>} result the Bridge's confirmationRequired response
  */
 async function elicit(server, result, options) {
     const answer = await server.elicitInput(elicitationRequest(result), options);
@@ -166,7 +168,8 @@ async function elicit(server, result, options) {
     return { confirmationId: result.confirmationId, ...(decision === "workspace" ? { remember: true } : {}) };
 }
 
-// 不支持 elicitation 的客户端：返回计划和确认 ID，并写明 agent 必须先得到用户的明确回答。
+// Clients without elicitation: return the plan and confirmation ID, stating that the agent must get an explicit answer
+// from the user first.
 function pending(result, extra = {}) {
     return {
         ...result,

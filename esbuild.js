@@ -87,7 +87,7 @@ const debugBuild = esbuild.build({
     legalComments: "eof"
 });
 
-// MCP stdio 服务器：独立进程，内联 Bridge 定位模块、诊断表与 MCP SDK。
+// MCP stdio server: a separate process that inlines the Bridge locator, diagnostics table and MCP SDK.
 const mcpBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "mcp", "server.js")],
@@ -96,7 +96,7 @@ const mcpBuild = esbuild.build({
     platform: "node",
     format: "cjs",
     target: "node18",
-    // 主要体积来自 SDK 依赖的 zod/ajv；独立进程不需要可读的打包输出。
+    // Most of its size is the SDK's zod/ajv dependencies; a separate process needs no readable bundle.
     minify: true,
     legalComments: "eof"
 });

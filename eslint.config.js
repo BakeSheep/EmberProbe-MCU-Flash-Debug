@@ -42,7 +42,21 @@ module.exports = [
             "no-with": "error",
             "require-yield": "error",
             "use-isnan": "error",
-            "valid-typeof": "error"
+            "valid-typeof": "error",
+            "no-unused-vars": [
+                "error",
+                { vars: "all", args: "none", caughtErrors: "none", ignoreRestSiblings: true, varsIgnorePattern: "^_" }
+            ]
+        }
+    },
+    {
+        // Webview and mock scripts share one global scope per page, so only their locals can be checked.
+        files: ["src/webview/**/*.js", "mockup/**/*.js"],
+        rules: {
+            "no-unused-vars": [
+                "error",
+                { vars: "local", args: "none", caughtErrors: "none", ignoreRestSiblings: true, varsIgnorePattern: "^_" }
+            ]
         }
     }
 ];

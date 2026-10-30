@@ -5,16 +5,16 @@ const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 
-async function checkDisplay(html, listType, selector) {
+async function checkDisplay(html, listType, sampleType, selector) {
     const view = render(html);
     try {
         view.window.Date.now = () => 1000;
         view.send({ type: listType, items: [{ name: "counter", type: "u32", address: 536870912 }] });
-        view.send({ type: "liveSample", samples: [{ name: "counter", value: 9, valueText: "9", t: 1000 }] });
+        view.send({ type: sampleType, samples: [{ name: "counter", value: 9, valueText: "9", t: 1000 }] });
         const cell = view.document.querySelector(selector);
         assert.match(view.window.getComputedStyle(cell).fontFamily, /Consolas/);
         assert.strictEqual(cell.textContent, "9");
-        view.send({ type: "liveSample", samples: [{ name: "counter", value: 100000, valueText: "100000", t: 1005 }] });
+        view.send({ type: sampleType, samples: [{ name: "counter", value: 100000, valueText: "100000", t: 1005 }] });
         assert.strictEqual(cell.textContent, "9", "frequent samples should not repaint the value on every message");
         for (let attempt = 0; attempt < 25 && cell.textContent !== "100000"; attempt++) {
             await new Promise((resolve) => setTimeout(resolve, 20));
@@ -28,8 +28,8 @@ async function checkDisplay(html, listType, selector) {
 }
 
 (async () => {
-    await checkDisplay(getModernWebviewContent({}, "en"), "sidebarWatchList", ".value-number");
-    await checkDisplay(getLiveWatchContent({ maxSamples: 100, frequencyHz: 200 }, "en"), "watchList", ".var-value");
+    await checkDisplay(getModernWebviewContent({}, "en"), "sidebarWatchList", "liveSample", ".value-number");
+    await checkDisplay(getLiveWatchContent({ frequencyHz: 200 }, "en"), "watchList", "chartValues", ".var-value");
     console.log("Live value display tests passed");
 })().catch((error) => {
     console.error(error);

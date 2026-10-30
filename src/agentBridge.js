@@ -35,7 +35,8 @@ function decodeHeader(value, limit) {
     }
 }
 
-// 调用方标识只用于定位与审计，不构成鉴权：同一用户下的进程可以伪造这些请求头。
+// Caller identity only locates and audits callers and is not authentication: any process of the same user can forge
+// these headers.
 function requestMeta(headers) {
     const channel = String(headers["x-emberprobe-channel"] || "").toLowerCase();
     if (!CHANNELS.has(channel)) return undefined;
@@ -48,9 +49,10 @@ function requestMeta(headers) {
 }
 
 class AgentBridge {
-    // storageDir 为扩展 globalStorage 目录；提供时描述文件（含 token）写入用户目录而非工作区，
-    // 工作区只保留不含 token 的指针文件，避免令牌随 git 提交/云同步泄露。未提供时保持旧行为。
-    // options.legacyPointer=false 时不写旧版描述文件与工作区指针（新客户端走实例注册表）。
+    // storageDir is the extension's globalStorage directory. When given, the descriptor (with token) is written there
+    // instead of the workspace, which keeps only a token-free pointer so the token cannot leak through git or cloud
+    // sync. Without it the descriptor stays in the workspace. options.legacyPointer=false writes neither the legacy
+    // descriptor nor the workspace pointer (new clients use the instance registry).
     constructor(workspace, handler, storageDir, options = {}) {
         this.workspace = path.resolve(workspace);
         this.handler = handler;
@@ -92,7 +94,8 @@ class AgentBridge {
         this.startedAt = new Date().toISOString();
         const descriptor = this.descriptor();
         if (this.legacyPointer) await this._writeLegacyFiles(descriptor);
-        // 升级迁移：移除旧版项目根指针，并仅在旧目录已经为空时删除目录。
+        // Migration: remove the pointer older versions left in the project root, deleting the directory only if it is
+        // already empty.
         await fs.unlink(this.legacyPointerPath).catch(() => {});
         await fs.rmdir(path.dirname(this.legacyPointerPath)).catch(() => {});
         return descriptor;
@@ -111,7 +114,8 @@ class AgentBridge {
         }
     }
 
-    // 旧版脚本只认工作区指针；工作区装了 skills 时才写，卸载后撤回，Bridge 本身继续运行。
+    // Older scripts only know the workspace pointer; it is written only while workspace skills are installed and
+    // withdrawn on uninstall, while the Bridge keeps running.
     async setLegacyPointer(enabled) {
         this.legacyPointer = !!enabled;
         if (!this.server) return;
@@ -205,13 +209,15 @@ class AgentBridge {
             const current = JSON.parse(await fs.readFile(this.descriptorPath, "utf8"));
             if (current.token !== this.token) return;
             await fs.unlink(this.descriptorPath).catch(() => {});
-            // 指针文件只含路径不含令牌；仍指向本实例的描述文件时一并删除，避免留下悬空引用
+            // The pointer holds a path but no token; delete the descriptor too while it still points at this instance,
+            // so no dangling reference remains
             if (this.pointerPath !== this.descriptorPath) {
                 try {
                     const pointer = JSON.parse(await fs.readFile(this.pointerPath, "utf8"));
                     if (pointer.descriptorPath === this.descriptorPath) {
                         await fs.unlink(this.pointerPath);
-                        // 只删除已经为空的插件目录；若用户在其中放了其他文件，rmdir 会失败并安全保留。
+                        // Only delete the extension directory once it is empty; if the user put other files in it,
+                        // rmdir fails and they are kept.
                         await fs.rmdir(path.dirname(this.pointerPath)).catch(() => {});
                     }
                 } catch {

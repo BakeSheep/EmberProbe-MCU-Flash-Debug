@@ -23,44 +23,6 @@
     "elf-file.js",
     "tool-output.js"
   ],
-  "legacySkills": [
-    {
-      "name": "mcu-download",
-      "version": "2.0.1",
-      "files": {
-        "SKILL.md": "b59fc8ddf4eb5c7853880d81f6ea1e3d68b7be6cc980b116e001c7f9fbffbde5",
-        "agents/openai.yaml": "ce5dd2e4f37ffeb84e08171628ea85c72cb907e782047db218b413f79e89b28a",
-        "scripts/download.js": "6a88387760859fdd5539091d9af14443e14113a91cb580ddb07682017b5913ae"
-      }
-    },
-    {
-      "name": "mcu-flash-verify",
-      "version": "2.0.1",
-      "files": {
-        "SKILL.md": "eac84790bcfdf564bca9a399c530d36a83e8c990aae8a9e949870084953ee8fb",
-        "agents/openai.yaml": "0f2236ee4505fcc85aa5e1e5d088e4d7a71601b82e86257c61238d68c80d444f",
-        "scripts/verify.js": "de1e1e08aff4fddc9d756fc1fa894b84ec875dcd29e59d05d4c0988218159d9e"
-      }
-    },
-    {
-      "name": "mcu-live-watch",
-      "version": "1.7.0",
-      "files": {
-        "SKILL.md": "86de7bb9334b81681959bdd47ad65475b50f9eb50322e08ca2e74e4d7847a404",
-        "agents/openai.yaml": "39005f70e0238f03c5cdd91e56024779c46a2ffc1d62e691d78b558c8ac3a179",
-        "scripts/read-live.js": "4cfa5bb9f145952e0f339d586492922fc48a9bcbb40fca082d7886a528b4504d"
-      }
-    },
-    {
-      "name": "mcu-var-write",
-      "version": "1.2.0",
-      "files": {
-        "SKILL.md": "d7c126c50d0bca010f08e6609326321368305760ab729613288a933979d10083",
-        "agents/openai.yaml": "ed09ea4b24938175a710ab97d13b5c50a4b9e2ba940e5623131d376b40580c3b",
-        "scripts/write-var.js": "824b30b4f4eff066574221905eb135ed470866cf157769afee19b1c9055298e3"
-      }
-    }
-  ],
   "skills": [
     {
       "name": "mcu-flash",
@@ -93,31 +55,51 @@
       "name": "mcu-chip-info",
       "version": "1.2.2",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/read-chip.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/read-chip.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-config",
       "version": "1.2.1",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/config.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/config.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-fault-analyzer",
       "version": "1.0.2",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/analyze-fault.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/analyze-fault.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-elf-analyze",
       "version": "1.0.2",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/analyze-elf.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/analyze-elf.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-peripheral-debug",
       "version": "1.0.1",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/peripheral.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/peripheral.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-debug-control",
@@ -135,13 +117,21 @@
       "name": "mcu-rtos",
       "version": "1.0.0",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/rtos.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/rtos.js",
+        "agents/openai.yaml"
+      ]
     },
     {
       "name": "mcu-cubemx",
       "version": "1.0.0",
       "runtime": true,
-      "required": ["SKILL.md", "scripts/cubemx.js", "agents/openai.yaml"]
+      "required": [
+        "SKILL.md",
+        "scripts/cubemx.js",
+        "agents/openai.yaml"
+      ]
     }
   ]
 }

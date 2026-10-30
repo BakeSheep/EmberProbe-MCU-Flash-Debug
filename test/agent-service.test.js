@@ -9,7 +9,7 @@ const { AgentService } = require("../src/services/agentService");
 const { createFixture } = require("./helpers/service-fixture");
 (async () => {
     const fixture = createFixture();
-    const { temp, elf, state, settings, cacheKeys, context, vscode, store } = fixture;
+    const { temp } = fixture;
     try {
         class FakeBridge {
             constructor(workspace, handler, storageDir) {
@@ -42,7 +42,7 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.deepStrictEqual(await agent.call("config.get", { secret: "value" }, { channel: "mcp", client: "c/1" }), {
             ok: true
         });
-        // 审计只记录通道、客户端、方法与结果码，不记录参数值
+        // Auditing records only channel, client, method and result code, never parameter values
         assert.deepStrictEqual(audit, [{ channel: "mcp", client: "c/1", method: "config.get", code: "OK" }]);
         await assert.rejects(agent.call("missing"));
         assert.deepStrictEqual(audit[1], { channel: "", client: "", method: "missing", code: "METHOD_NOT_FOUND" });
@@ -56,7 +56,7 @@ const { createFixture } = require("./helpers/service-fixture");
             () => agent.call("missing"),
             (error) => error.code === "METHOD_NOT_FOUND"
         );
-        // onCall 钩子在每次调用前触发（capabilities 除外），供扩展侧做安全检查
+        // The onCall hook runs before every call except capabilities, so the extension can run its safety checks
         assert.deepStrictEqual(bridgeCalls, ["config.get", "chip.read"]);
         assert.deepStrictEqual(await agent.start(), { workspace: temp, storageDir: path.join(temp, "global-storage") });
         assert.strictEqual(agent.isStarted(), true);

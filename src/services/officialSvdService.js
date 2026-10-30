@@ -21,9 +21,6 @@ const MAX_CACHEABLE_PDSC_BYTES = 1024 * 1024;
 function asArray(value) {
     return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 }
-function attrs(value) {
-    return value && typeof value === "object" ? value : {};
-}
 function stableVersion(version) {
     return /^\d+(?:\.\d+){1,3}(?:\.\d+)?$/.test(String(version || ""));
 }
@@ -415,7 +412,7 @@ function extractPackEntry(packPath, wantedPath, maxBytes = MAX_XML_BYTES) {
                         );
                         return;
                     }
-                    // ZIP 目录条目（如 SVD/）是合法的 Pack 结构；它们不包含可提取数据。
+                    // ZIP directory entries (such as SVD/) are valid pack structure but contain no data to extract.
                     if (name.endsWith("/")) {
                         zip.readEntry();
                         return;

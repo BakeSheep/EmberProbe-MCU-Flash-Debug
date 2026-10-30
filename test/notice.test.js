@@ -217,7 +217,7 @@ assert.strictEqual(box("xss").querySelector("img, b"), null);
 assert.match(box("xss").querySelector(".notice-text").textContent, /<img/);
 
 // Both webviews ship the component and its styles.
-for (const html of [getModernWebviewContent({}, "en"), getLiveWatchContent({ maxSamples: 100 }, "en")]) {
+for (const html of [getModernWebviewContent({}, "en"), getLiveWatchContent({}, "en")]) {
     assert.match(html, /\.notice--warning/);
     const view = render(html);
     try {

@@ -197,7 +197,7 @@ const parsed = {
 
     for (const [html, watchMessage, sampleMessage] of [
         [getModernWebviewContent({}, "en"), "sidebarWatchList", "liveSample"],
-        [getLiveWatchContent({ panelId: 1, backendHistory: true }, "en"), "watchList", "chartValues"]
+        [getLiveWatchContent({ panelId: 1 }, "en"), "watchList", "chartValues"]
     ]) {
         const ui = render(html);
         const selector = watchMessage === "watchList" ? ".var-value" : "[data-value-name=state]";

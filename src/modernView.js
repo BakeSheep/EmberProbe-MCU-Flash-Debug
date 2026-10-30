@@ -4,7 +4,6 @@ const { loadWebviewAsset } = require("./webviewTemplate");
 const sidebarCss = loadWebviewAsset("", "notice.css") + loadWebviewAsset("sidebar", "app.css");
 const sidebarRenderer = loadWebviewAsset("sidebar", "renderer.js");
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function shiftSliderBounds(min,max,current,next){const lo=Number(min),hi=Number(max),from=Number(current),to=Number(next);if(![lo,hi,from,to].every(Number.isFinite)||hi<=lo||to>=lo&&to<=hi)return{min:lo,max:hi};const span=hi-lo,anchor=Math.min(hi,Math.max(lo,from)),offset=anchor-lo,newMin=to-offset;return{min:newMin,max:newMin+span}}
 const icon={svd:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h8"/>',cube:'<path d="m12 2 9 5v10l-9 5-9-5V7zM3 7l9 5 9-5M12 12v10"/>',ioc:'<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="10" cy="18" r="2"/>',scan:'<path d="M4 8V4h4m8 0h4v4m0 8v4h-4M8 20H4v-4M8 12h8m-4-4v8"/>',file:'<path d="M6 2h8l4 4v16H6zM14 2v5h5M9 12h6M9 16h6"/>',probe:'<rect x="5" y="7" width="14" height="10" rx="1"/><path d="M9 3v4m6-4v4M9 17v4m6-4v4M2 10h3m14 0h3M2 14h3m14 0h3"/>',chip:'<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/>',usb:'<path d="M12 3v13"/><circle cx="12" cy="19" r="2.5"/><path d="m9 6 3-3 3 3M12 13l-5-3V8M12 11l5-3V6"/><rect x="5.5" y="6" width="3" height="2"/><circle cx="17" cy="5" r="1.2"/>',info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',refresh:'<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',flash:'<path d="M13 2 5 14h7l-1 8 8-12h-7z"/>'};
 const githubIcon = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>';
 function svg(name){return `<svg viewBox="0 0 24 24" aria-hidden="true">${icon[name]}</svg>`;}
@@ -28,4 +27,4 @@ ${sidebarCss}
 <script>
 ${sidebarRenderer}
 </script></body></html>`;}
-module.exports={getModernWebviewContent,shiftSliderBounds};
+module.exports={getModernWebviewContent};

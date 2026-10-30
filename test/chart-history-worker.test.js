@@ -19,7 +19,7 @@ const {
 } = require("../src/services/chartHistoryStore");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
 const { SamplingArchive } = require("../src/services/samplingArchive");
-const { exportHistory, restoreHistory, run } = require("../src/chartHistoryWorker");
+const { restoreHistory, run } = require("../src/chartHistoryWorker");
 const { deserializeError } = require("../src/services/errorEnvelope");
 const { decodeViewport } = require("../src/webview/liveWatch/chartTransport");
 
@@ -305,11 +305,6 @@ const items = ["visible", "silent"].map((name) => ({ name, type: "u64", address:
     assert.strictEqual(worker.worker, null);
     const archive = new SamplingArchive({ rootDir: path.join(dir, "archive") });
     try {
-        const outputPath = path.join(dir, "retained.csv");
-        await exportHistory(store, { scope: "panel", names: ["silent"], outputPath });
-        const csv = await fs.readFile(outputPath, "utf8");
-        assert.ok(csv.includes(exact[1]));
-        assert.strictEqual(csv.split("\r\n").filter(Boolean).length, 6);
         archive.append([{ name: "silent [u64]", value: 1 }], 1000, "panel");
         archive.clear("panel");
         archive.append([{ name: "silent [u64]", value: Number(exact[1]), valueText: exact[1] }], 2000, "panel");

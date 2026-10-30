@@ -47,20 +47,21 @@ function cstr(buf, off) {
 }
 function readAddr(buf, cur, size) {
     const s = size || 4;
-    // 本解析器的 ELF 格式层只允许 ELF32；显式拒绝其他 DWARF 地址宽度，
-    // 防止未来放开 ELF64 头校验后静默截断 64 位地址。
+    // The ELF format layer only allows ELF32; other DWARF address sizes are rejected explicitly so 64-bit addresses are
+    // never truncated silently if ELF64 headers are ever accepted.
     if (s !== 4) throw new Error(`ELF32 DWARF address size must be 4, got ${s}`);
     const v = buf.readUIntLE(cur.p, s);
     cur.p += s;
     return v;
 }
-// 解析一个 zstd 帧头；contentSize 为 null 表示帧未声明输出大小。
-// 仅用于解码前拒绝声明超大窗口 / 内容大小的帧，避免 fzstd 按帧头预分配巨量内存。
+// Parses a zstd frame header; contentSize is null when the frame does not declare its output size. Used only to reject
+// frames that declare an oversized window or content size before decoding, so fzstd never preallocates a huge buffer
+// from the header.
 function zstdFrameHeader(dat) {
-    // Zstandard magic 0xFD2FB528，小端字节序为 28 B5 2F FD。
+    // Zstandard magic 0xFD2FB528 is 28 B5 2F FD in little-endian byte order.
     if (dat.length < 6 || dat[0] !== 0x28 || dat[1] !== 0xb5 || dat[2] !== 0x2f || dat[3] !== 0xfd) return null;
     const flags = dat[4];
-    if (flags & 0x08) return null; // 保留位必须为 0，否则帧非法。
+    if (flags & 0x08) return null; // Reserved bits must be zero or the frame is invalid.
     const singleSegment = (flags >> 5) & 1;
     const contentSizeFlag = flags >> 6;
     const dictFlag = flags & 3;
@@ -103,8 +104,9 @@ function zstdFrameEnd(input, start, header) {
     return end;
 }
 
-// 用流式 Decompress 逐块计数解码 zstd：输出累计超过 limit 立即中止，返回真实长度的 Buffer。
-// 绝不按 ch_size 预分配输出缓冲区——fzstd 会直接回传该缓冲区，使长度校验形同虚设。
+// Decodes zstd with the streaming Decompress, counting chunk by chunk: it aborts as soon as the output exceeds limit
+// and returns a Buffer of the real length. Never preallocate the output from ch_size, because fzstd returns that buffer
+// as is and the length check would be meaningless.
 function decompressZstdBounded(input, limit) {
     let total = 0;
     const chunks = [];
@@ -139,7 +141,8 @@ function decompressZstdBounded(input, limit) {
 function debugSectionData(buf, entry, name, budget) {
     if (entry.offset > buf.length || entry.size > buf.length - entry.offset)
         throw new Error(`DWARF section is outside the ELF: ${name}`);
-    // budget 为可选的跨节共享计数器 { decoded, max }；直接调用时退化为单节预算。
+    // budget is an optional counter { decoded, max } shared across sections; a direct call falls back to a
+    // single-section budget.
     const shared = budget || { decoded: 0, max: MAX_DWARF_SECTION_BYTES };
     let data = buf.subarray(entry.offset, entry.offset + entry.size);
     let decompressed = false;
@@ -152,7 +155,7 @@ function debugSectionData(buf, entry, name, budget) {
         if (compressionType === 1) {
             data = zlib.inflateSync(data.subarray(12), { maxOutputLength: MAX_DWARF_SECTION_BYTES });
         } else if (compressionType === 2) {
-            // ELFCOMPRESS_ZSTD。按真实解码字节计数，绝不把 ch_size 当作输出长度。
+            // ELFCOMPRESS_ZSTD. Counts real decoded bytes and never treats ch_size as the output length.
             data = decompressZstdBounded(data.subarray(12), MAX_DWARF_SECTION_BYTES);
         } else {
             throw new Error(`Unsupported DWARF compression type ${compressionType}: ${name}`);
@@ -170,7 +173,8 @@ function debugSectionData(buf, entry, name, budget) {
         decompressed = true;
     }
     if (decompressed) {
-        // §17.1：跨节共享预算，杜绝「每节各自 32MiB」被多个必需节放大成数百 MiB。
+        // The budget is shared across sections so several required sections cannot multiply a per-section 32 MiB into
+        // hundreds of MiB.
         shared.decoded += data.length;
         if (shared.decoded > shared.max) throw budgetExceeded("decompressed section");
     }
@@ -187,7 +191,7 @@ function readSections(buf, diagnostics = [], sharedBudget) {
         return map;
     }
     const names = elfFormat.readSectionNames(buf, entries, header.shstrndx);
-    // 解压预算在同一个 ELF 的所有调试节之间共享，而非每节独立。
+    // The decompression budget is shared by all debug sections of one ELF, not per section.
     const budget = sharedBudget || { decoded: 0, max: MAX_DWARF_SECTION_BYTES };
     for (let i = 0; i < entries.length; i++) {
         const originalName = names[i];
@@ -207,7 +211,8 @@ function readSections(buf, diagnostics = [], sharedBudget) {
                     : data;
             map.set(name, { data: combined, size: combined.length });
         } catch (error) {
-            // 解压预算耗尽属于内存安全问题，必须中止整个解析而非仅跳过单节。
+            // An exhausted decompression budget is a memory safety issue and must abort the whole parse, not just skip
+            // one section.
             if (error.code === "DWARF_BUDGET_EXCEEDED") throw error;
             appendDiagnostic(diagnostics, {
                 code: /unsupported/i.test(error.message) ? "DWARF_UNSUPPORTED" : "DWARF_SECTION_INVALID",
@@ -215,8 +220,8 @@ function readSections(buf, diagnostics = [], sharedBudget) {
                 section: originalName,
                 message: error.message
             });
-            // 单个调试节损坏或使用当前运行时不支持的压缩算法时，
-            // 保留其余健康节；主入口会在必需节缺失时安全降级。
+            // When one debug section is corrupt or uses a compression this runtime does not support, keep the other
+            // healthy sections; the main entry degrades safely when a required section is missing.
         }
     }
     return map;
@@ -224,9 +229,9 @@ function readSections(buf, diagnostics = [], sharedBudget) {
 function budgetExceeded(what) {
     return Object.assign(new Error(`DWARF ${what} budget exceeded`), { code: "DWARF_BUDGET_EXCEEDED" });
 }
-// budget 为可选的跨调用全局计数器 { abbrevs, attrs, maxAbbrevs, maxAttrs }。
-// §2：缩写表以文件可控的 abbrevOff 为键被重复解析，若每次调用独立计数，
-// N 个不同偏移就能让 N 份完整缩写表同时存活。传入共享 budget 后总量受控。
+// budget is an optional counter { abbrevs, attrs, maxAbbrevs, maxAttrs } shared across calls. Abbreviation tables are
+// keyed by the file-controlled abbrevOff, so with per-call counting N different offsets could keep N complete tables
+// alive at once; a shared budget bounds the total.
 function parseAbbrev(buf, start, budget) {
     const map = new Map();
     const cur = { p: start };

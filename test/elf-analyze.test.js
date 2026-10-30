@@ -10,8 +10,8 @@ assert.throws(
     "ELF64 fixtures must not relax the Cortex-M format guard"
 );
 
-// 程序化构造含命名节（shstrtab）、程序头与函数符号的最小 ELF32（小端，ARM）：
-// .text @0x08000000（ALLOC|EXECINSTR）、.data @0x20000000（ALLOC|WRITE，LMA 0x08000100）、.bss（NOBITS）
+// Builds a minimal ELF32 (little-endian, ARM) with named sections (shstrtab), program headers and function symbols:
+// .text @0x08000000 (ALLOC|EXECINSTR), .data @0x20000000 (ALLOC|WRITE, LMA 0x08000100), .bss (NOBITS)
 function buildElf() {
     const sectionOrder = [".shstrtab", ".strtab", ".symtab", ".text", ".data", ".bss"];
     const names = buildStringTable(sectionOrder).data;
@@ -47,7 +47,7 @@ function buildElf() {
 (() => {
     const elf = buildElf();
 
-    // —— parseElfSections：节名 / 加载地址 / 标志 / 程序头 ——
+    // parseElfSections: section names, load addresses, flags and program headers
     const { sections, programHeaders } = parseElfSections(elf);
     const byName = new Map(sections.map((s) => [s.name, s]));
     const text = byName.get(".text");
@@ -69,7 +69,7 @@ function buildElf() {
     assert.strictEqual(programHeaders[1].filesz, 0x10);
     assert.strictEqual(programHeaders[1].memsz, 0x30);
 
-    // —— Flash/RAM 汇总口径（与 extension._analyzeElf 相同规则）——
+    // Flash/RAM totals (same rules as extension._analyzeElf)
     const SHF_WRITE = 1,
         SHF_ALLOC = 2,
         SHT_NOBITS = 8;
@@ -79,7 +79,7 @@ function buildElf() {
     assert.strictEqual(flashTotal, 0x110, "flash = .text + .data load copy");
     assert.strictEqual(ramTotal, 0x30, "ram = .data + .bss");
 
-    // —— parseElfSymbols：函数符号收集（Thumb bit 清除、按地址升序）——
+    // parseElfSymbols: function symbols (Thumb bit cleared, sorted by address)
     const { symbols, functions } = parseElfSymbols(elf);
     assert.deepStrictEqual(
         symbols.map((s) => s.name),
@@ -94,7 +94,8 @@ function buildElf() {
     assert.strictEqual(functions[1].address, 0x08000040);
     assert.strictEqual(functions[2].address, 0x08000060);
 
-    // —— nearestFunction：函数内命中 / 越界 / 低于首函数（displayName 缺省回落原始名）——
+    // nearestFunction: inside a function, out of range, below the first function (displayName falls back to the raw
+    // name)
     assert.deepStrictEqual(nearestFunction(functions, 0x08000012), {
         name: "main",
         displayName: "main",

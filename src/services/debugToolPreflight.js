@@ -143,13 +143,6 @@ function findConfiguredOrPathTools(vscode, folder, state, launch) {
     return resolveDebugTools(options) || resolveDebugTools({ prefix: options.prefix });
 }
 
-// Synchronous, prompt-free lookup for callers that must not refresh the environment.
-function findDebugTools(vscode, folder, state, launch = {}, discover = findStDebugTools) {
-    return (
-        findConfiguredOrPathTools(vscode, folder, state, launch) || discover(debugToolOptions(vscode, folder, launch))
-    );
-}
-
 // Windows launch refreshes the system PATH before ST discovery. Warm the same executable even
 // when VS Code inherited PATH before a toolchain was installed; never prompt or run a login shell.
 async function findWarmupDebugTools(
@@ -223,7 +216,6 @@ async function ensureDebugTools(
 
 module.exports = {
     resolveDebugTools,
-    findDebugTools,
     findWarmupDebugTools,
     ensureDebugTools,
     findStDebugTools,

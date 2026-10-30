@@ -22,8 +22,6 @@ function codedError(code, message) {
     return Object.assign(new Error(message), { code });
 }
 
-// Keep these rules in step with buildCsv's esc() in src/liveWatchView.js, which is serialized into
-// the live-watch page and therefore cannot import from here.
 const NUMERIC_CELL = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 function quoteCsv(text) {
@@ -73,7 +71,7 @@ function cleanupStaleSamplingArchives(parentDir, currentPid = process.pid, isAli
             fs.rmSync(path.join(parentDir, name), { recursive: true, force: true });
             removed++;
         } catch {
-            // 清理失败不影响当前采样会话。
+            // A failed cleanup does not affect the current sampling session.
         }
     }
     return removed;

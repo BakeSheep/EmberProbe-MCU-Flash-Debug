@@ -2,7 +2,7 @@
 const assert = require("assert");
 const { readFaultInfo, decodeFaultRegisters, FAULT_REGS, CFSR_BITS, HFSR_BITS } = require("../src/faultInfo");
 
-// —— 寄存器地址表（SCB，ARMv7-M 架构手册）——
+// Register addresses (SCB, ARMv7-M Architecture Reference Manual)
 assert.strictEqual(FAULT_REGS.icsr, 0xe000ed04);
 assert.strictEqual(FAULT_REGS.shcsr, 0xe000ed24);
 assert.strictEqual(FAULT_REGS.cfsr, 0xe000ed28);
@@ -12,7 +12,7 @@ assert.strictEqual(FAULT_REGS.mmfar, 0xe000ed34);
 assert.strictEqual(FAULT_REGS.bfar, 0xe000ed38);
 assert.ok(CFSR_BITS.length >= 15 && HFSR_BITS.length === 3);
 
-// —— 场景 1：精确总线错误升级为 HardFault（PRECISERR + BFARVALID + FORCED）——
+// Scenario 1: precise bus fault escalated to HardFault (PRECISERR + BFARVALID + FORCED)
 const busFault = decodeFaultRegisters({
     cfsr: (1 << 9) | (1 << 15),
     hfsr: 1 << 30,
@@ -28,7 +28,7 @@ assert.ok(busFault.faults.some((f) => f.flag === "FORCED" && f.register === "HFS
 assert.strictEqual(busFault.exception.name, "HardFault");
 assert.strictEqual(busFault.exception.number, 3);
 
-// —— 场景 2：MPU 数据访问违例（DACCVIOL + MMARVALID）——
+// Scenario 2: MPU data access violation (DACCVIOL + MMARVALID)
 const memFault = decodeFaultRegisters({
     cfsr: (1 << 1) | (1 << 7),
     hfsr: 0,
@@ -41,31 +41,30 @@ const daccviol = memFault.faults.find((f) => f.flag === "DACCVIOL");
 assert.strictEqual(daccviol.faultAddress, "0x00000010", "MMFAR provides the fault address");
 assert.strictEqual(memFault.exception.name, "MemManage");
 
-// —— 场景 3：UsageFault 除零与未定义指令（无地址）——
+// Scenario 3: UsageFault divide by zero and undefined instruction (no address)
 const usageFault = decodeFaultRegisters({ cfsr: (1 << 25) | (1 << 16), hfsr: 0, icsr: 6 });
 assert.deepStrictEqual(usageFault.faults.map((f) => f.flag).sort(), ["DIVBYZERO", "UNDEFINSTR"]);
 assert.ok(usageFault.faults.every((f) => f.faultAddress === undefined));
 
-// —— 场景 4：无故障、线程模式正常运行 ——
+// Scenario 4: no fault, thread mode running normally
 const clean = decodeFaultRegisters({ cfsr: 0, hfsr: 0, dfsr: 0, icsr: 0 });
 assert.strictEqual(clean.faultDetected, false);
 assert.deepStrictEqual(clean.faults, []);
 assert.strictEqual(clean.exception.name, "Thread");
 
-// —— 场景 5：寄存器缺失（未读到）——
+// Scenario 5: missing registers (not read)
 const missing = decodeFaultRegisters({});
 assert.strictEqual(missing.faultDetected, false);
 assert.strictEqual(missing.exception, null);
 assert.strictEqual(decodeFaultRegisters(null).faultDetected, false);
 
-// —— 场景 6：外部中断号解码 ——
+// Scenario 6: external interrupt number decoding
 assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 16 + 37 }).exception.name, "IRQ37");
 assert.strictEqual(decodeFaultRegisters({ cfsr: 0, icsr: 15 }).exception.name, "SysTick");
 
-// —— 回归守护：CPU 寄存器读取必须以 echo [reg …] 形式发出 ——
-// OpenOCD 的 catch 会吞掉命令输出，裸 catch {reg pc} 的结果永远到不了解析器
-// （pc/sp/lr/xPSR 全空）。用假 OpenOCD 验证 Tcl 构造与输出解析的完整链路。
-// Windows 上 Node 以 shell:false spawn .sh 会失败，仅 Unix 执行。
+// CPU register reads must be issued as echo [reg ...]. OpenOCD's catch swallows command output, so a bare catch {reg
+// pc} never reaches the parser (pc/sp/lr/xPSR all empty). A fake OpenOCD checks the whole chain of Tcl construction and
+// output parsing. Node cannot spawn .sh with shell:false on Windows, so this runs on Unix only.
 (async () => {
     if (process.platform !== "win32") {
         const fs = require("fs");

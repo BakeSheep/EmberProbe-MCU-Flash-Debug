@@ -5,7 +5,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
 
 // The waveform panel shows archive CSV export progress and keeps the export button disabled until it finishes.
 for (const lang of ["en", "zh"]) {
-    const view = render(getLiveWatchContent({ backendHistory: true }, lang));
+    const view = render(getLiveWatchContent({}, lang));
     try {
         const doc = view.document,
             status = doc.getElementById("status"),

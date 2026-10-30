@@ -1,7 +1,6 @@
 "use strict";
 
 const assert = require("assert");
-const path = require("path");
 const c = require("../src/dwarf/constants");
 const { buildCompositeLayouts, createCompositeLayoutResolver, buildVariableTypes } = require("../src/dwarf/types");
 const {
@@ -321,7 +320,7 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
     // Both webviews' leaf collectors skip unobservable members, exercised on the rendered pages.
     for (const [view, fn] of [
         [render(getModernWebviewContent({}, "en")), "sbCollectLeaves"],
-        [render(getLiveWatchContent({ maxSamples: 100, autoMaxSamples: false }, "en")), "collectLeaves"]
+        [render(getLiveWatchContent({}, "en")), "collectLeaves"]
     ]) {
         try {
             const collect = view.window[fn];
