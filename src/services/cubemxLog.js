@@ -34,6 +34,9 @@ const isStackTraceLine = (text) =>
         text
     );
 
+// Only the last 1 MiB of output is kept in memory; the full log goes to options.logPath.
+const LOG_TAIL = 1024 * 1024;
+
 function createLogMonitor(options = {}) {
     let log = "";
     let pending = false;
@@ -108,7 +111,9 @@ function createLogMonitor(options = {}) {
         const decoder = createLineDecoder((text) => append(text), { maxPending: 65537, keepEnds: true });
         let buffer = "";
         const append = (text) => {
-            log = (log + text).slice(-1024 * 1024);
+            // Trim only after the tail doubles, so appending stays linear instead of copying 1 MiB per line.
+            log += text;
+            if (log.length > 2 * LOG_TAIL) log = log.slice(-LOG_TAIL);
             if (logFd !== null) {
                 try {
                     fs.writeSync(logFd, text);
@@ -153,6 +158,7 @@ function createLogMonitor(options = {}) {
                 }
                 logFd = null;
             }
+            log = log.slice(-LOG_TAIL);
             return {
                 log,
                 confirmed,
