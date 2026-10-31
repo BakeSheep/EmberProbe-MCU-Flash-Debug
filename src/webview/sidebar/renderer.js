@@ -1006,7 +1006,7 @@ function sbRenderPointee(host, item, label) {
     row.dataset.path = item.name;
     const nm = document.createElement("span");
     nm.className = "sb-mname";
-    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^./, "");
+    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^\./, "");
     nm.title = sbDisplayName(item);
     const ty = document.createElement("span");
     ty.className = "sb-mtype";
