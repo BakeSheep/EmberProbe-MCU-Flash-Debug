@@ -83,12 +83,9 @@ function setup(sidebar, lang, initialState = {}) {
         },
         collect(symbol, options) {
             return clone(
-                (sidebar ? view.window.sbCollectLeaves : view.window.collectLeaves)(
-                    symbol.compositeLayout,
-                    symbol.name,
-                    symbol.address,
-                    options
-                )
+                view.window
+                    .eval("valueTree")
+                    .collectLeaves(symbol.compositeLayout, symbol.name, symbol.address, options)
             );
         }
     };

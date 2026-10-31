@@ -318,13 +318,9 @@ for (const count of [70, MAX_TYPE_INFO_DEPTH + 20]) {
     assert.deepStrictEqual(buildActiveReadPlan([[symbol(array)]], elf), []);
     assert.strictEqual(elf.decodeComposite(Buffer.alloc(4), array).elements.length, 0);
     // Both webviews' leaf collectors skip unobservable members, exercised on the rendered pages.
-    for (const [view, fn] of [
-        [render(getModernWebviewContent({}, "en")), "sbCollectLeaves"],
-        [render(getLiveWatchContent({}, "en")), "collectLeaves"]
-    ]) {
+    for (const view of [render(getModernWebviewContent({}, "en")), render(getLiveWatchContent({}, "en"))]) {
         try {
-            const collect = view.window[fn];
-            assert.strictEqual(typeof collect, "function", fn);
+            const { collectLeaves: collect } = view.window.eval("valueTree");
             assert.deepStrictEqual(
                 JSON.parse(JSON.stringify(collect(layout, "root", 0x20000000))).map((entry) => entry.path),
                 ["root.good"]

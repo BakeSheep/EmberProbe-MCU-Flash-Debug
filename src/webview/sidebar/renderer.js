@@ -10,19 +10,7 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
-const { fmtNum } = EmberProbeValueTree;
-const valueTree = EmberProbeValueTree.create({
-    t: (key, params) => t(key, params),
-    symbol: (name) => availableByName.get(name),
-    layoutSymbol: (path) => sbLayoutSymbol(path),
-    reading: (name) => ({
-        value: latest[name],
-        valueText: latestText[name],
-        enumText: latestEnum[name],
-        pointer: latestPointer[name]
-    }),
-    lastPointers: () => sbShownLastPointers()
-});
+const { fmtNum, isComposite } = EmberProbeValueTree;
 // Notice boxes by area; the extension addresses them as { area, id } and the cards below own their slots.
 const NOTICE_SLOTS = {
     global: "noticeGlobal",
@@ -88,17 +76,9 @@ let sideWatch = [],
     lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
 let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
-    // Opened runtime paths last posted to the host (see sbSyncRuntimeExpansions).
-    sbRuntimeExpansionsLoaded = false,
-    sbSentRuntimeExpansions = null,
-    // Last sampled pointer targets by watch path; restored with the view so a reopened sidebar still names them.
-    // They belong to the ELF version they were sampled from and are shown only while it is loaded.
-    sbLastPointers = (uiState.sbLastPointersVersion && uiState.sbLastPointers) || Object.create(null),
-    sbLastPointersVersion = (uiState.sbLastPointers && uiState.sbLastPointersVersion) || "",
     sbRawMembers = uiState.sbRawMembers || Object.create(null),
     // Elements shown per static array path once "show more" was used.
     sbArrayShown = uiState.sbArrayShown || Object.create(null),
-    compCells = Object.create(null),
     avExpanded = Object.create(null),
     writeCells = Object.create(null),
     writeTimers = Object.create(null),
@@ -106,14 +86,58 @@ let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
     latestWriteSeq = Object.create(null),
     // Last value known to be on the target per write card; a failed write rolls back to it.
     writeConfirmed = Object.create(null),
-    writeSeq = 0,
-    runtimeBodies = Object.create(null),
-    // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
-    sbPlacedPointees = new Set(),
-    sbFallbackPointees = new Set();
+    writeSeq = 0;
+const valueTree = EmberProbeValueTree.create({
+    t: (key, params) => t(key, params),
+    classes: {
+        row: "sb-mrow",
+        name: "sb-mname",
+        type: "sb-mtype",
+        value: "sb-mval",
+        nest: "",
+        head: "sb-comp-head",
+        arrow: "sb-arrow",
+        headName: "sb-comp-name",
+        headType: "sb-comp-type",
+        members: "sb-members",
+        note: "sb-note"
+    },
+    symbol: (name) => availableByName.get(name),
+    watch: () => sideWatch,
+    reading: (name) => ({
+        value: latest[name],
+        valueText: latestText[name],
+        enumText: latestEnum[name],
+        pointer: latestPointer[name]
+    }),
+    version: () => availableVersion,
+    ui: () => ({ expanded: sbExpanded, rawMembers: sbRawMembers, arrayShown: sbArrayShown }),
+    savedPointers: { pointers: uiState.sbLastPointers, version: uiState.sbLastPointersVersion },
+    displayName: (path) => sbDisplayName({ name: path }),
+    save: () => saveSbUi(),
+    rerender: () => renderValues(),
+    rerenderPicker: () => renderAvailable(),
+    post: (message) => api?.postMessage(message),
+    copy: (text) => api?.postMessage({ type: "copyText", text }),
+    layoutExpansion: () => layoutExpansionUi,
+    requestPointerLayout: (name) => {
+        if (!api || !availableVersion || availableLayoutPending.has(name)) return;
+        availableLayoutPending.add(name);
+        sbPointerLayoutWaiters.add(name);
+        api.postMessage({ type: "resolveCompositeLayout", name, version: availableVersion });
+    },
+    togglePointee: (entry) => sbTogglePointee(entry),
+    decorateLeaf: (row, name) => name,
+    scalarCell: (cell, name) => {
+        cell.dataset.valueName = name;
+    }
+});
+const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
 // Members and pointees follow their card when it is dragged to a new place.
 function sbAttachedEntry(entry, name) {
-    return sbBaseNameOf(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name);
+    return (
+        EmberProbeRuntime.variableBaseName(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name)
+    );
 }
 const sbWatchReorder =
     liveBox &&
@@ -154,16 +178,11 @@ var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
     return window.EmberProbeRuntime.translate(I18N, LANG, k, p);
 }
-function sbLayoutSymbol(path) {
-    const name = EmberProbeRuntime.variableBaseName(path);
-    const symbol = availableByName.get(name);
-    return symbol?.compositeLayout ? symbol : sideWatch.find((item) => item.name === name) || symbol;
-}
 const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     post: (message) => api?.postMessage(message),
     version: () => availableVersion,
     generation: () => availableGeneration,
-    symbol: sbLayoutSymbol,
+    symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => sbDisplayName({ name: path }),
     changed: () => {
         for (const item of sideWatch) {
@@ -180,18 +199,6 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
         renderValues();
     }
 });
-function sbShowRawFor(path) {
-    return !!sbRawMembers[sbBaseNameOf(path)];
-}
-function sbRenderRawMembersUi(container, node, name) {
-    const base = sbBaseNameOf(name);
-    EmberProbeRuntime.renderMemberVisibility(container, node, name, sbShowRawFor(name), t, () => {
-        sbRawMembers[base] = !sbShowRawFor(name);
-        saveSbUi();
-        renderValues();
-        renderAvailable();
-    });
-}
 function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
@@ -663,28 +670,12 @@ function setLang(l, notify) {
     updateLangToggle();
     if (notify && api) api.postMessage({ type: "setLang", lang: LANG });
 }
-function setDisplayedValue(cell, value) {
-    EmberProbeRuntime.setValueCell(cell, value);
-}
 function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
-    sbSyncRuntimeExpansions();
-}
-// The sidebar's runtime cards read only their opened parts, like chart cards. Nothing is sent
-// before the host's watch list arrives, so a fresh view cannot clear them.
-function sbSyncRuntimeExpansions() {
-    if (!sbRuntimeExpansionsLoaded || !api) return;
-    const value = EmberProbeRuntime.runtimeExpansionPaths(sideWatch, sbExpanded, sbPlacedPointees);
-    const key = JSON.stringify(value);
-    if (key === sbSentRuntimeExpansions) return;
-    sbSentRuntimeExpansions = key;
-    api.postMessage({ type: "saveRuntimeExpansions", expansions: value });
+    valueTree.syncRuntimeExpansions();
 }
 function saveWriteList() {
     if (api) api.postMessage({ type: "saveSidebarWrite", items: writeList });
-}
-function sbBaseNameOf(n) {
-    return EmberProbeRuntime.variableBaseName(String(n));
 }
 function sbDisplayName(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
@@ -699,32 +690,10 @@ function sbDisplayName(item) {
         }
     });
 }
-function sbIsLeafChild(name) {
-    const b = sbBaseNameOf(name);
-    if (b === name) return false;
-    const parent = sideWatch.find((w) => w.name === b && sbIsComposite(w));
-    return (
-        !!parent &&
-        !!compCells[name] &&
-        !(parent.runtimeLayout && sideWatch.find((w) => w.name === name)?.layoutExpanded)
-    );
-}
-function sbCollectLeaves(layout, name, baseAddr, options = {}) {
-    return EmberProbeRuntime.displayLayoutLeaves(sbLayoutSymbol(name), layout, name, baseAddr, options);
-}
-function sbSelectionLeaves(symbol, runtime) {
-    const showRaw = sbShowRawFor(symbol.name);
-    const statics = sbCollectLeaves(symbol.compositeLayout, symbol.name, symbol.address, {
-        showRaw,
-        includePointers: true
-    });
-    const visibleRuntime = EmberProbeRuntime.displayRuntimeSelection(symbol, latest[symbol.name], showRaw);
-    return runtime ? (visibleRuntime?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded)) : statics;
-}
 const LEAF_W = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
 function sbRemove(name, isComp) {
     if (isComp) {
-        sideWatch = sideWatch.filter((w) => w.name !== name && sbBaseNameOf(w.name) !== name);
+        sideWatch = sideWatch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
         delete sbRawMembers[name];
         for (const state of [sbExpanded, sbArrayShown])
             Object.keys(state).forEach((key) => {
@@ -737,42 +706,8 @@ function sbRemove(name, isComp) {
     }
     sbForgetValues(name);
 }
-let sbPointerSaveTimer = null;
-// Snapshots sampled from another ELF never name targets in the loaded one.
-function sbShownLastPointers() {
-    return availableVersion && sbLastPointersVersion === availableVersion ? sbLastPointers : Object.create(null);
-}
-function sbResetLastPointers(version) {
-    sbLastPointers = Object.create(null);
-    sbLastPointersVersion = version || "";
-    uiState.sbLastPointers = sbLastPointers;
-    uiState.sbLastPointersVersion = sbLastPointersVersion;
-}
-function sbRememberPointers(entries) {
-    if (!availableVersion) return;
-    let changed = false;
-    if (sbLastPointersVersion !== availableVersion) {
-        sbResetLastPointers(availableVersion);
-        changed = true;
-    }
-    for (const [path, next] of Object.entries(entries)) {
-        if (JSON.stringify(sbLastPointers[path]) !== JSON.stringify(next)) {
-            sbLastPointers[path] = next;
-            changed = true;
-        }
-    }
-    if (!changed || sbPointerSaveTimer !== null) return;
-    sbPointerSaveTimer = setTimeout(() => {
-        sbPointerSaveTimer = null;
-        saveSbUi();
-    }, 2000);
-}
-function sbForgetPointers(name) {
-    for (const path of Object.keys(sbLastPointers))
-        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete sbLastPointers[path];
-}
 function sbForgetValues(name) {
-    sbForgetPointers(name);
+    valueTree.pointers.forget(name);
     delete latest[name];
     delete latestText[name];
     delete latestEnum[name];
@@ -791,22 +726,18 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
-    valueTree.resetDisplayInfos();
+    valueTree.reset();
     liveBox.textContent = "";
-    compCells = Object.create(null);
-    runtimeBodies = Object.create(null);
-    sbPlacedPointees = new Set();
-    sbFallbackPointees = new Set();
     // Expanded pointees render inside their pointer rows while composites and rows are built.
     const topLevel = sideWatch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
     const rows = new Map();
-    topLevel.filter(sbIsComposite).forEach((item) => {
+    topLevel.filter(isComposite).forEach((item) => {
         sbRenderComposite(item);
         rows.set(item.name, [liveBox.lastChild]);
     });
     liveBox.textContent = "";
     topLevel.forEach((item) => {
-        if (!sbIsComposite(item) && !sbIsLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
+        if (!isComposite(item) && !valueTree.isLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
     });
     if (!sideWatch.length) {
         document.getElementById("watchCount").textContent = "0";
@@ -827,16 +758,16 @@ function renderValues() {
         .filter(EmberProbeRuntime.isPointeeEntry)
         .sort((a, b) => a.name.length - b.name.length)
         .forEach((item) => {
-            if (sbPlacedPointees.has(item.name)) return;
-            sbFallbackPointees.add(item.name);
-            if (sbIsComposite(item)) sbRenderComposite(item);
+            if (valueTree.placed.has(item.name)) return;
+            valueTree.fallback.add(item.name);
+            if (isComposite(item)) sbRenderComposite(item);
             else liveBox.append(...sbRenderScalarRow(item));
         });
     document.getElementById("watchCount").textContent = String(
-        sideWatch.filter((it) => !sbIsLeafChild(it.name) && !sbPlacedPointees.has(it.name)).length
+        sideWatch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
     sbWatchReorder?.refresh();
-    sbSyncRuntimeExpansions();
+    valueTree.syncRuntimeExpansions();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
@@ -878,72 +809,11 @@ function sbRenderScalarRow(item) {
         item.name
     );
     // The pointee is part of the variable's card, on a second grid row below its value.
-    const host = info.isPointer && sbPointerPointee(row, item.name, sbDisplayName(item), info);
+    const host = info.isPointer && valueTree.pointerPointee(row, item.name, sbDisplayName(item), info);
     if (host) row.appendChild(host);
     row.appendChild(footer);
-    setDisplayedValue(val, valueTree.scalarDisplay(item));
+    EmberProbeRuntime.setValueCell(val, valueTree.scalarDisplay(item));
     return [row];
-}
-// Pointer rows expand in place. A pointee already present in the sampled tree toggles
-// locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
-function sbPointerPointee(row, path, label, node, renderInline) {
-    const host = document.createElement("div");
-    host.variableNoticeParent = row;
-    if (renderInline) {
-        const toggle = EmberProbeRuntime.renderPointerToggle(
-            row,
-            path,
-            !!sbExpanded[path],
-            t,
-            () => {
-                sbExpanded[path] = !sbExpanded[path];
-                host.classList.toggle("open", sbExpanded[path]);
-                toggle.classList.toggle("open", sbExpanded[path]);
-                toggle.setAttribute("aria-expanded", String(sbExpanded[path]));
-                saveSbUi();
-            },
-            sbDisplayName({ name: path })
-        );
-        host.className = "pointer-pointee" + (sbExpanded[path] ? " open" : "");
-        renderInline(host);
-        return host;
-    }
-    row.classList.add("pointer-row");
-    const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, sbPointerSymbol(path));
-    if (!entry) return null;
-    const item = sideWatch.find((w) => w.name === entry.name);
-    EmberProbeRuntime.renderPointerToggle(
-        row,
-        path,
-        !!item,
-        t,
-        () => sbTogglePointee(entry),
-        sbDisplayName({ name: path })
-    );
-    if (!item) return null;
-    host.className = "pointer-pointee open";
-    sbRenderPointee(host, item, label);
-    return host;
-}
-// Expansion needs the base symbol's runtime type graph. Composite watches load it with their
-// layout; a scalar pointer variable requests it once here and re-renders when it arrives.
-function sbPointerSymbol(path) {
-    const symbol = availableByName.get(sbBaseNameOf(path));
-    if (EmberProbeRuntime.runtimeGraph(symbol)) return symbol;
-    const fallback = sbLayoutSymbol(path);
-    if (
-        !EmberProbeRuntime.runtimeGraph(fallback) &&
-        symbol?.hasRuntimeLayout &&
-        !symbol.layoutError &&
-        api &&
-        availableVersion &&
-        !availableLayoutPending.has(symbol.name)
-    ) {
-        availableLayoutPending.add(symbol.name);
-        sbPointerLayoutWaiters.add(symbol.name);
-        api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: availableVersion });
-    }
-    return fallback;
 }
 function sbTogglePointee(entry) {
     if (sideWatch.some((item) => item.name === entry.name)) {
@@ -955,38 +825,6 @@ function sbTogglePointee(entry) {
     } else sideWatch.push(entry);
     renderValues();
     saveSideWatch();
-}
-function sbRenderPointee(host, item, label) {
-    sbPlacedPointees.add(item.name);
-    if (sbIsComposite(item)) {
-        runtimeBodies[item.name] = host;
-        sbRenderRuntimeBody(host, latest[item.name], item.name);
-        return;
-    }
-    // A scalar target (`int *`, `char *` string preview, pointer to pointer) is one row.
-    const row = document.createElement("div");
-    row.className = "sb-mrow";
-    row.dataset.path = item.name;
-    const nm = document.createElement("span");
-    nm.className = "sb-mname";
-    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^\./, "");
-    nm.title = sbDisplayName(item);
-    const ty = document.createElement("span");
-    ty.className = "sb-mtype";
-    ty.textContent = item.typeName || item.type || "";
-    ty.title = ty.textContent;
-    const val = document.createElement("span");
-    val.className = "sb-mval";
-    val.dataset.valueName = item.name;
-    val.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    row.append(nm, ty, val);
-    host.appendChild(row);
-    const nested = sbPointerPointee(row, item.name, nm.textContent, valueTree.displayInfo(item));
-    if (nested) host.appendChild(nested);
-    setDisplayedValue(val, valueTree.scalarDisplay(item));
 }
 const AVAILABLE_VARIABLE_LIMIT = 500;
 const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
@@ -1064,7 +902,7 @@ function renderAvailableContents(content) {
         if (!query || nameMatches(symbol)) return true;
         if (!symbol.isComposite) return false;
         const runtime = EmberProbeRuntime.runtimeSelection(symbol, latest[symbol.name]);
-        const leaves = sbSelectionLeaves(symbol, runtime);
+        const leaves = valueTree.selectionLeaves(symbol, runtime);
         const matches = leaves.filter(
             (leaf) =>
                 leaf.path.toLowerCase().includes(query) ||
@@ -1155,14 +993,18 @@ function renderAvailableContents(content) {
                 EmberProbeRuntime.resetVariableNotices(kids, t);
                 kids.textContent = "";
                 if (!sym.compositeLayout && !sym.runtimeLayout) {
-                    sbNote(kids, sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"), "warning");
+                    valueTree.note(
+                        kids,
+                        sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
+                        "warning"
+                    );
                     return;
                 }
-                sbRenderRawMembersUi(kids, latest[sym.name] || sym.compositeLayout, sym.name);
+                valueTree.renderRawMembersUi(kids, latest[sym.name] || sym.compositeLayout, sym.name);
                 const runtime = EmberProbeRuntime.runtimeSelection(sym, latest[sym.name]);
-                const leaves = memberMatches.get(sym.name) || sbSelectionLeaves(sym, runtime);
+                const leaves = memberMatches.get(sym.name) || valueTree.selectionLeaves(sym, runtime);
                 if (runtime)
-                    sbNote(
+                    valueTree.note(
                         kids,
                         t(
                             runtime.sampled
@@ -1172,15 +1014,16 @@ function renderAvailableContents(content) {
                                   : "lw.runtimeMembersHint"
                         )
                     );
-                if (runtime && leaves.some((leaf) => leaf.layoutExpanded)) sbNote(kids, t("lw.layoutStaticStorage"));
+                if (runtime && leaves.some((leaf) => leaf.layoutExpanded))
+                    valueTree.note(kids, t("lw.layoutStaticStorage"));
                 if (sym.compositeLayout?.truncated || sym.runtimeLayout?.truncated)
-                    sbNote(kids, t("lw.layoutPartial"), "warning");
+                    valueTree.note(kids, t("lw.layoutPartial"), "warning");
                 for (const entry of EmberProbeRuntime.displayUnavailableRows(
                     sym.compositeLayout,
                     sym.name,
                     64,
                     sym,
-                    sbShowRawFor(sym.name)
+                    valueTree.showRaw(sym.name)
                 ))
                     layoutExpansionUi.render(kids, entry, sym.name, t);
                 const shownLeaves = Math.min(leaves.length, Math.max(0, AVAILABLE_ROW_LIMIT - list.length - leafRows));
@@ -1235,7 +1078,7 @@ function renderAvailableContents(content) {
                 ownLeafRows = shownLeaves;
                 leafRows += shownLeaves;
                 if (leaves.length > shownLeaves) {
-                    sbNote(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
+                    valueTree.note(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
                 }
                 EmberProbeRuntime.finishVariableNotices(kids);
             };
@@ -1337,9 +1180,6 @@ function renderAvailableContents(content) {
         note.textContent = t("lw.showingFirst", { n: list.length });
         content.appendChild(note);
     }
-}
-function sbIsComposite(it) {
-    return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
 }
 // Write list: variables are added from the same ELF variable pane as the watch list; dragging writes continuously at up
 // to 10 Hz, and writeResult reports the outcome
@@ -2035,353 +1875,12 @@ function saveSbUi() {
     uiState.sbExpanded = sbExpanded;
     uiState.sbRawMembers = sbRawMembers;
     uiState.sbArrayShown = sbArrayShown;
-    uiState.sbLastPointers = sbLastPointers;
-    uiState.sbLastPointersVersion = sbLastPointersVersion;
+    uiState.sbLastPointers = valueTree.pointers.saved().pointers;
+    uiState.sbLastPointersVersion = valueTree.pointers.saved().version;
     if (api && api.setState) api.setState(uiState);
-    sbSyncRuntimeExpansions();
-}
-// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
-function sbWalkLeaves(node, path, cb, stale) {
-    if (!node) return;
-    stale = !!stale || !!node.stale;
-    cb(path, node, stale);
-    for (const member of node.members || [])
-        sbWalkLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
-    for (const element of node.elements || []) sbWalkLeaves(element, path + "[" + element.index + "]", cb, stale);
-}
-function sbUpdateComposite(name) {
-    const tree = latest[name];
-    if (!tree) return;
-    const nodes = new Map();
-    const held = new Set();
-    sbWalkLeaves(tree, name, (path, node, stale) => {
-        nodes.set(path, node);
-        if (stale) held.add(path);
-    });
-    nodes.forEach((node, path) => {
-        const cell = compCells[path];
-        if (!cell) return;
-        const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
-        setDisplayedValue(
-            cell,
-            valueTree.formatNode({
-                ...cell.displayNode,
-                ...node,
-                ...(summary ? { functionEmpty: summary.empty } : {})
-            })
-        );
-        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
-    });
-}
-function sbNote(container, text, level = "info") {
-    const node = EmberProbeRuntime.renderVariableNotice(
-        container,
-        typeof text === "string" ? { text, level } : text,
-        t
-    );
-    node.querySelector(".notice-text")?.classList.add("sb-note");
+    valueTree.syncRuntimeExpansions();
 }
 
-function sbRenderLeaf(container, label, typeName, path, watchType, node, renderInline) {
-    const row = document.createElement("div");
-    row.className = "sb-mrow";
-    const nm = document.createElement("span");
-    nm.className = "sb-mname";
-    nm.textContent = label;
-    nm.title = sbDisplayName({ name: node?.displayPath || path });
-    nm.setAttribute("aria-label", nm.title);
-    const ty = document.createElement("span");
-    ty.className = "sb-mtype";
-    ty.textContent = typeName || watchType;
-    const val = document.createElement("span");
-    val.className = "sb-mval";
-    val.displayNode = node;
-    val.summaryPath = node?.summaryPath;
-    val.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    compCells[path] = val;
-    row.dataset.path = path;
-    ty.title = ty.textContent;
-    row.append(nm, ty, val);
-    container.appendChild(row);
-    const host = node?.isPointer && sbPointerPointee(row, path, label, node, renderInline);
-    if (host) container.appendChild(host);
-    setDisplayedValue(val, valueTree.formatNode(sbWithLastPointer(node, path)));
-}
-// A static layout row has no value until sampled; a pointer in it shows its last known target.
-function sbWithLastPointer(node, path) {
-    const last = node?.isPointer && node.value == null && !node.stale && sbShownLastPointers()[path];
-    return last && latest[sbBaseNameOf(path)] === undefined ? { ...node, ...last, stale: true } : node;
-}
-function sbRenderLayout(container, layout, path, displayPath = path) {
-    if (!layout) return;
-    const promoted = !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(layout, path);
-    if (promoted) {
-        sbRenderSummary(container, promoted, path);
-        return;
-    }
-    if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
-        const ms = layout.members || [];
-        ms.forEach((original) => {
-            if (!EmberProbeRuntime.memberVisible(original, sbShowRawFor(path))) return;
-            const symbol = sbLayoutSymbol(path);
-            const m = EmberProbeRuntime.layoutBranch(
-                symbol,
-                original,
-                EmberProbeRuntime.layoutMemberPath(path, original)
-            );
-            const cp = EmberProbeRuntime.layoutMemberPath(path, m);
-            const summary = !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(m, cp);
-            if (summary) sbRenderSummary(container, summary, m.name, m.typeName);
-            else if (m.unobservable)
-                layoutExpansionUi.render(container, { ...m, path: cp }, EmberProbeRuntime.variableBaseName(path), t);
-            else if (m.compositeLayout && !m.name) sbRenderLayout(container, m.compositeLayout, cp, displayPath);
-            else if (m.compositeLayout)
-                sbRenderNest(
-                    container,
-                    m.compositeLayout,
-                    m.name,
-                    cp,
-                    EmberProbeRuntime.layoutMemberPath(displayPath, m)
-                );
-            else if (m.watchType)
-                sbRenderLeaf(container, m.name, m.typeName || m.watchType, cp, m.watchType, {
-                    ...m,
-                    ...(displayPath !== path ? { displayPath: EmberProbeRuntime.layoutMemberPath(displayPath, m) } : {})
-                });
-        });
-        if (!ms.length) sbNote(container, t("lw.compositeNoLayout"), "warning");
-    } else if (layout.kind === "array") {
-        const et = layout.elementType || {},
-            total = Number(layout.totalElements) || 0;
-        if (!et.watchType && !et.compositeLayout && !et.unobservable) {
-            sbNote(container, t("lw.compositeNoLayout"), "warning");
-            return;
-        }
-        const shown = EmberProbeRuntime.arrayShownCount(total, sbArrayShown[path]);
-        for (let i = 0; i < shown; i++) {
-            const p = path + "[" + i + "]";
-            const element = EmberProbeRuntime.layoutBranch(sbLayoutSymbol(path), et, p);
-            if (element.unobservable)
-                layoutExpansionUi.render(
-                    container,
-                    { ...element, path: p },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else if (element.compositeLayout)
-                sbRenderNest(container, element.compositeLayout, "[" + i + "]", p, displayPath + "[" + i + "]");
-            else
-                sbRenderLeaf(container, "[" + i + "]", et.typeName || et.watchType, p, et.watchType, {
-                    ...element,
-                    ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {})
-                });
-        }
-        if (total > shown)
-            EmberProbeRuntime.renderArrayMore(
-                container,
-                total - shown,
-                t,
-                (page) => {
-                    sbArrayShown[path] = shown + page;
-                    saveSbUi();
-                    renderValues();
-                },
-                path,
-                sbDisplayName({ name: displayPath })
-            );
-    }
-}
-function sbRenderSummary(container, summary, label, typeName) {
-    const node = {
-        ...summary.node,
-        displayPath: summary.displayPath,
-        summaryPath: summary.displayPath,
-        functionEmpty: summary.empty
-    };
-    const layout = node.compositeLayout || ((node.members || node.elements || node.kind === "array") && node);
-    if (node.unobservable)
-        layoutExpansionUi.render(container, { ...node, path: summary.path }, sbBaseNameOf(summary.path), t);
-    else if (layout) sbRenderNest(container, layout, label, summary.path, summary.displayPath);
-    else
-        sbRenderLeaf(
-            container,
-            label,
-            typeName || node.typeName || node.watchType,
-            summary.path,
-            node.watchType || node.type,
-            node
-        );
-}
-// Nested structs and array elements get a collapsible head, as in static layouts; base
-// classes, anonymous members and a pointer's own target stay flat.
-function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = false, nest = false) {
-    if (!tree) return;
-    const summary = !promoted && !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(tree, path);
-    if (summary) {
-        const target = { ...summary.node, displayPath: path, summaryPath: path, functionEmpty: summary.empty };
-        if (target.members || target.elements) {
-            const wrap = document.createElement("div");
-            const head = document.createElement("button");
-            head.type = "button";
-            head.className = "sb-comp-head summary-head";
-            head.textContent = label;
-            head.title = sbDisplayName({ name: path });
-            const body = document.createElement("div");
-            body.className = "sb-members" + (sbExpanded[path] ? " open" : "");
-            head.setAttribute("aria-expanded", String(!!sbExpanded[path]));
-            head.onclick = () => {
-                sbExpanded[path] = !sbExpanded[path];
-                body.classList.toggle("open", sbExpanded[path]);
-                head.setAttribute("aria-expanded", String(sbExpanded[path]));
-                saveSbUi();
-            };
-            sbRenderRuntimeTree(body, target, summary.path, label, true);
-            wrap.append(head, body);
-            container.appendChild(wrap);
-        } else sbRenderRuntimeTree(container, target, summary.path, label, true);
-        return;
-    }
-    const pointer = tree.isPointer || tree.valueText === "nullptr";
-    if (nest && !pointer && !Object.prototype.hasOwnProperty.call(tree, "value") && (tree.members || tree.elements)) {
-        const body = sbNestShell(container, label, tree.typeName, path, tree.displayPath || path);
-        sbRenderRuntimeTree(body, tree, path, label, promoted);
-        return;
-    }
-    const renderMembers = (target) =>
-        (tree.members || []).forEach((member) => {
-            if (!EmberProbeRuntime.memberVisible(member, sbShowRawFor(path))) return;
-            const childPath = EmberProbeRuntime.layoutMemberPath(path, member);
-            if (member.unobservable)
-                layoutExpansionUi.render(
-                    target,
-                    { ...member, path: childPath },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else
-                sbRenderRuntimeTree(
-                    target,
-                    {
-                        ...member,
-                        ...(tree.displayPath
-                            ? { displayPath: EmberProbeRuntime.layoutMemberPath(tree.displayPath, member) }
-                            : {})
-                    },
-                    childPath,
-                    pointer && member.name === "value" ? "*" + label : member.name || "value",
-                    false,
-                    !!member.name &&
-                        !member.isBase &&
-                        !/^@base\d+$/.test(member.name) &&
-                        !(pointer && member.name === "value")
-                );
-        });
-    // A closed pointer keeps its disclosure: opening it asks the host to read the target.
-    const inline =
-        pointer && (tree.members?.length || tree.collapsed)
-            ? (target) => {
-                  renderMembers(target);
-                  if (tree.collapsed) sbNote(target, t("lw.runtimeCollapsed"));
-              }
-            : null;
-    if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
-        sbRenderLeaf(
-            container,
-            label,
-            tree.typeName || tree.type || "",
-            path,
-            tree.type || (pointer ? "u32" : undefined),
-            { ...tree, ...(pointer ? { isPointer: true } : {}) },
-            inline
-        );
-    if (tree.members && !inline) renderMembers(container);
-    else if (tree.elements)
-        tree.elements.forEach((element) => {
-            sbRenderRuntimeTree(
-                container,
-                {
-                    ...element,
-                    ...(tree.displayPath ? { displayPath: tree.displayPath + "[" + element.index + "]" } : {})
-                },
-                path + "[" + element.index + "]",
-                "[" + element.index + "]",
-                false,
-                true
-            );
-        });
-    if (tree.collapsed && !inline) sbNote(container, t("lw.runtimeCollapsed"));
-    if (tree.unobservable)
-        layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
-    else if (tree.unavailable)
-        sbNote(container, { title: sbDisplayName({ name: path }), ...EmberProbeRuntime.unavailableNotice(tree, t) });
-}
-function sbRenderRuntimeBody(body, sampled, name) {
-    // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
-    const tree =
-        sampled ||
-        EmberProbeRuntime.placeholderRuntimeTree(
-            sideWatch.find((item) => item.name === name),
-            sbShownLastPointers()
-        );
-    const shape = JSON.stringify([sbShowRawFor(name), !sampled, EmberProbeRuntime.displayTreeShape(tree)]);
-    if (body.dataset.runtimeShape === shape) return;
-    for (const path of Object.keys(compCells)) {
-        if (body.contains(compCells[path])) delete compCells[path];
-    }
-    EmberProbeRuntime.resetVariableNotices(body, t, (text) => api?.postMessage({ type: "copyText", text }));
-    body.textContent = "";
-    body.dataset.runtimeShape = shape;
-    if (tree?.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
-    sbRenderRawMembersUi(body, sampled || sbLayoutSymbol(name)?.compositeLayout, name);
-    sbRenderRuntimeTree(body, tree, name);
-    const symbol = sbLayoutSymbol(name);
-    for (const entry of EmberProbeRuntime.displayUnavailableRows(
-        symbol?.compositeLayout,
-        name,
-        64,
-        symbol,
-        sbShowRawFor(name)
-    ))
-        layoutExpansionUi.render(body, entry, name, t);
-    if (!sampled) sbNote(body, t("lw.waitSamples"));
-    EmberProbeRuntime.finishVariableNotices(body);
-}
-function sbRenderNest(container, layout, fieldName, path, displayPath = path) {
-    sbRenderLayout(sbNestShell(container, fieldName, layout.typeName, path, displayPath), layout, path, displayPath);
-}
-// Collapsible head + body for a nested composite; returns the body to render into.
-function sbNestShell(container, fieldName, typeName, path, displayPath = path) {
-    const wrap = document.createElement("div");
-    const head = document.createElement("div");
-    head.className = "sb-comp-head";
-    const open = !!sbExpanded[path];
-    const arrow = document.createElement("span");
-    arrow.className = "sb-arrow" + (open ? " open" : "");
-    arrow.textContent = "\u25B6";
-    const nm = document.createElement("span");
-    nm.className = "sb-comp-name";
-    nm.textContent = fieldName;
-    nm.title = sbDisplayName({ name: displayPath });
-    const ty = document.createElement("span");
-    ty.className = "sb-comp-type";
-    ty.textContent = typeName || "";
-    head.append(arrow, nm, ty);
-    const body = document.createElement("div");
-    body.className = "sb-members" + (open ? " open" : "");
-    head.onclick = () => {
-        const nextOpen = !sbExpanded[path];
-        sbExpanded[path] = nextOpen;
-        body.classList.toggle("open", nextOpen);
-        arrow.classList.toggle("open", nextOpen);
-        saveSbUi();
-    };
-    wrap.append(head, body);
-    container.appendChild(wrap);
-    return body;
-}
 function sbRenderComposite(item) {
     const row = document.createElement("div");
     row.className = "value-row composite" + (sbExpanded[item.name] ? " open" : "");
@@ -2420,24 +1919,10 @@ function sbRenderComposite(item) {
         arrow.classList.toggle("open", sbExpanded[item.name]);
         saveSbUi();
     };
-    const footer = EmberProbeRuntime.createVariableNotices(
-        body,
-        t,
-        document.createElement("div"),
-        (text) => api?.postMessage({ type: "copyText", text }),
-        item.name
-    );
-    if (item.runtimeLayout) {
-        runtimeBodies[item.name] = body;
-        sbRenderRuntimeBody(body, latest[item.name], item.name);
-    } else {
-        sbRenderRawMembersUi(body, lay, item.name);
-        if (lay.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
-        sbRenderLayout(body, lay, item.name);
-    }
+    const footer = valueTree.renderCompositeBody(body, item);
     row.append(head, body, footer);
     liveBox.appendChild(row);
-    sbUpdateComposite(item.name);
+    valueTree.updateComposite(item.name);
 }
 function sbOnComposite(samples) {
     let refreshAvailable = false;
@@ -2451,66 +1936,34 @@ function sbOnComposite(samples) {
             )
                 refreshAvailable = true;
             latest[s.name] = s.tree;
-            sbRememberPointers(EmberProbeRuntime.pointerSnapshots(s.tree, s.name));
-            const body = runtimeBodies[s.name];
-            if (body) sbRenderRuntimeBody(body, s.tree, s.name);
+            valueTree.treeSampled(s.name, s.tree);
         }
     });
     if (refreshAvailable) renderAvailable();
     // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
-    if ([...sbFallbackPointees].some((name) => sbPlacedPointees.has(name))) renderValues();
-    scheduleValueRefresh();
+    if ([...valueTree.fallback].some((name) => valueTree.placed.has(name))) renderValues();
+    valueRefresh.schedule();
 }
 function updateValues(samples) {
     (samples || []).forEach((s) => {
         latest[s.name] = s.value;
         latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
         latestEnum[s.name] = s.enumText ?? null;
-        latestPointer[s.name] = {
-            ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
-            pointerText: s.pointerText,
-            pointerInfo: s.pointerInfo,
-            pointerString: s.pointerString
-        };
-        if ((s.isPointer || s.pointerText) && s.value != null && !s.diagnostic)
-            sbRememberPointers({
-                [s.name]: {
-                    value: s.value,
-                    ...(s.valueText != null ? { valueText: s.valueText } : {}),
-                    ...(s.pointerText ? { pointerText: s.pointerText } : {}),
-                    ...(s.pointerInfo ? { pointerInfo: s.pointerInfo } : {}),
-                    ...(s.pointerString ? { pointerString: s.pointerString } : {})
-                }
-            });
+        latestPointer[s.name] = EmberProbeValueTree.pointerReading(s);
+        valueTree.pointers.rememberSample(s);
     });
-    scheduleValueRefresh();
-}
-let valueRefreshTimer = null;
-let lastValueRefresh = 0;
-function scheduleValueRefresh() {
-    if (valueRefreshTimer !== null) return;
-    const elapsed = Date.now() - lastValueRefresh;
-    if (elapsed >= 100) {
-        lastValueRefresh = Date.now();
-        refreshDisplayedValues();
-        return;
-    }
-    valueRefreshTimer = setTimeout(() => {
-        valueRefreshTimer = null;
-        lastValueRefresh = Date.now();
-        refreshDisplayedValues();
-    }, 100 - elapsed);
+    valueRefresh.schedule();
 }
 function refreshDisplayedValues() {
     const items = new Map(sideWatch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
-        setDisplayedValue(
+        EmberProbeRuntime.setValueCell(
             el,
             valueTree.scalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName })
         );
     });
     sideWatch.forEach((it) => {
-        if (sbIsComposite(it)) sbUpdateComposite(it.name);
+        if (isComposite(it)) valueTree.updateComposite(it.name);
     });
     syncWriteValues();
 }
@@ -2966,10 +2419,10 @@ window.EmberProbeMessages.connect(window, {
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
         for (const item of sideWatch)
-            if (!incoming.some((next) => next.name === item.name)) sbForgetPointers(item.name);
+            if (!incoming.some((next) => next.name === item.name)) valueTree.pointers.forget(item.name);
         sideWatch = incoming;
         if (m.resetValues) {
-            sbResetLastPointers(sbLastPointersVersion);
+            valueTree.pointers.clear();
             sideWatch.forEach((item) => {
                 delete latest[item.name];
                 delete latestText[item.name];
@@ -2977,7 +2430,7 @@ window.EmberProbeMessages.connect(window, {
                 delete latestPointer[item.name];
             });
         }
-        sbRuntimeExpansionsLoaded = true;
+        valueTree.runtimeExpansionsReady();
         renderValues();
         updateAvailableSelections();
     },
@@ -3006,10 +2459,7 @@ window.EmberProbeMessages.connect(window, {
         variableWarnings = m.warnings || [];
         availableVersion = m.version || "";
         availableGeneration = m.generation ?? null;
-        if (availableVersion && sbLastPointersVersion && sbLastPointersVersion !== availableVersion) {
-            sbResetLastPointers(availableVersion);
-            saveSbUi();
-        }
+        if (valueTree.pointers.expire()) saveSbUi();
         layoutExpansionUi.reset();
         for (const item of sideWatch) {
             delete item.layoutExpansions;
@@ -3102,7 +2552,6 @@ window.EmberProbeMessages.connect(window, {
         latestText = Object.create(null);
         latestPointer = Object.create(null);
         latestEnum = Object.create(null);
-        compCells = Object.create(null);
         renderValues();
         renderWrites();
     },

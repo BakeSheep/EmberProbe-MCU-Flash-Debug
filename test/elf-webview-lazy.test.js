@@ -414,11 +414,15 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             kind: "struct",
             members: Array.from({ length: 1200 }, (_, i) => ({ name: "field" + i, watchType: "u32" }))
         };
-        assert.equal(lazy.window.collectLeaves(manyLeaves, "large", 0).length, 1000, "bound member-search traversal");
+        assert.equal(
+            lazy.window.eval("valueTree").collectLeaves(manyLeaves, "large", 0).length,
+            1000,
+            "bound member-search traversal"
+        );
         const cyclic = { kind: "struct", members: [] };
         cyclic.members.push({ name: "self", compositeLayout: cyclic }, { name: "value", watchType: "u32" });
         assert.ok(
-            lazy.window.collectLeaves(cyclic, "cycle", 0).length <= MAX_COMPOSITE_DEPTH + 1,
+            lazy.window.eval("valueTree").collectLeaves(cyclic, "cycle", 0).length <= MAX_COMPOSITE_DEPTH + 1,
             "bound recursion in malformed layouts"
         );
         lazy.assertHealthy();

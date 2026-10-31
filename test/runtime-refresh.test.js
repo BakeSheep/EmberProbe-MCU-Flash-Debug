@@ -87,7 +87,11 @@ for (const [label, html, listType, scalarType, selector] of [
         view.send(sample(array(element(48))));
         assert.strictEqual(view.document.querySelectorAll(selector).length, 1);
         assert.strictEqual(view.document.querySelector(selector).textContent, "48");
-        assert.strictEqual(view.window.eval("compCells['values[1]']"), undefined, "shrinking removes cached cells");
+        assert.strictEqual(
+            view.window.eval("valueTree.cells['values[1]']"),
+            undefined,
+            "shrinking removes cached cells"
+        );
 
         // Address changes must also rebuild handlers that add members to a chart.
         const beforeMove = view.document.querySelector(selector);
@@ -106,7 +110,7 @@ for (const [label, html, listType, scalarType, selector] of [
         view.send(sample({ kind: "class", members: [], unavailable: "Read budget exceeded" }));
         assert.strictEqual(view.document.querySelectorAll(selector).length, 0);
         assert.ok(view.document.body.textContent.includes("Read budget exceeded"));
-        assert.strictEqual(view.window.eval("compCells['values[0]']"), undefined);
+        assert.strictEqual(view.window.eval("valueTree.cells['values[0]']"), undefined);
         view.send(sample(array(element(50))));
         assert.strictEqual(view.document.querySelector(selector).textContent, "50", "valid samples recover directly");
         view.send(sample(array()));
@@ -123,7 +127,7 @@ for (const [label, html, listType, scalarType, selector] of [
             }
         };
         view.send({ type: listType, items: [staticItem] });
-        assert.deepStrictEqual(Object.keys(view.window.eval("runtimeBodies")), []);
+        assert.deepStrictEqual(Object.keys(view.window.eval("valueTree.bodies")), []);
         view.send(sample({ kind: "struct", members: [{ name: "count", value: 99 }] }));
         advance(100);
         assert.strictEqual(
@@ -132,7 +136,7 @@ for (const [label, html, listType, scalarType, selector] of [
             "static layout updates visible DOM"
         );
         view.send({ type: listType, items: [] });
-        assert.deepStrictEqual(Object.keys(view.window.eval("runtimeBodies")), []);
+        assert.deepStrictEqual(Object.keys(view.window.eval("valueTree.bodies")), []);
         view.send({ type: listType, items: [runtimeItem] });
         view.send(sample(array(element(100))));
         assert.strictEqual(view.document.querySelector(selector).textContent, "100", "re-added runtime watch updates");
@@ -261,6 +265,39 @@ scenario("runtime base classes stay flat on both pages", () => {
             assert.deepStrictEqual(
                 names.map((cell) => cell.textContent),
                 ["x", "y"]
+            );
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
+});
+
+scenario("collapsed runtime nodes share one expand notice on both pages", () => {
+    const collapsedNote = "Sampling starts when expanded";
+    const item = { name: "obj", isComposite: true, runtimeLayout: { root: 0, types: [] } };
+    const tree = {
+        kind: "class",
+        typeName: "Holder",
+        members: [
+            { name: "inner", kind: "class", typeName: "Inner", members: [], collapsed: true },
+            { name: "items", kind: "array", typeName: "int[4]", totalElements: 4, elements: [], collapsed: true },
+            { name: "ptr", kind: "pointer", isPointer: true, type: "u32", value: 0x20000100, collapsed: true }
+        ]
+    };
+    for (const sidebar of [true, false]) {
+        const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({ panelId: 1 }, "en"));
+        try {
+            view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [item] });
+            view.send({ type: "liveCompositeSample", samples: [{ name: "obj", tree }] });
+            const notes = [...view.document.querySelectorAll(sidebar ? ".sb-note" : ".comp-note")].filter(
+                (note) => note.textContent === collapsedNote
+            );
+            assert.strictEqual(notes.length, 1, `${sidebar ? "sidebar" : "chart"}: collapsed nodes share one notice`);
+            assert.strictEqual(
+                view.document.querySelectorAll(".pointer-row").length,
+                1,
+                "the closed pointer keeps its row"
             );
             view.assertHealthy();
         } finally {

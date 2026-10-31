@@ -212,15 +212,15 @@ const parsed = {
                 "rerender preserves enum names"
             );
             const unsafe = { ...negative, enumText: "<img src=x onerror=alert(1)> (-1)" };
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: sampleMessage, samples: [unsafe] });
             assert.strictEqual(ui.document.querySelector(selector).textContent, unsafe.enumText);
             assert.strictEqual(ui.document.querySelector(selector + " img"), null);
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: sampleMessage, samples: [{ ...negative, value: 7, enumText: null }] });
             assert.strictEqual(ui.document.querySelector(selector).textContent, "7");
             ui.send({ type: watchMessage, items: [packetSymbol] });
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: "liveCompositeSample", samples: [{ name: "packet", tree: packet }] });
             const memberSelector = watchMessage === "watchList" ? ".member-value" : ".sb-mval";
             assert.strictEqual(ui.document.querySelector(memberSelector).textContent, negative.enumText);

@@ -108,7 +108,10 @@ scenario("Share promoted anonymous paths and const write controls across views",
         sidebar.send({ type: "availableVariables", symbols: [symbol] });
         sidebar.document.querySelector(".available-row.comp .av-arrow").click();
         assert.strictEqual(sidebar.document.querySelector(".available-row.leaf .av-write").disabled, true);
-        assert.strictEqual(sidebar.window.sbCollectLeaves(root, "root", rootSymbol.address)[0].path, "root.value");
+        assert.strictEqual(
+            sidebar.window.eval("valueTree").collectLeaves(root, "root", rootSymbol.address)[0].path,
+            "root.value"
+        );
         sidebar.send({ type: "sidebarWatchList", items: [symbol] });
         assert.strictEqual(sidebar.document.querySelector(".sb-mname").title, "root.value");
         sidebar.assertHealthy();
@@ -119,7 +122,10 @@ scenario("Share promoted anonymous paths and const write controls across views",
     try {
         graph.send({ type: "watchList", items: [symbol] });
         assert.strictEqual(graph.document.querySelector(".member-name").title, "root.value");
-        assert.strictEqual(graph.window.collectLeaves(root, "root", rootSymbol.address)[0].path, "root.value");
+        assert.strictEqual(
+            graph.window.eval("valueTree").collectLeaves(root, "root", rootSymbol.address)[0].path,
+            "root.value"
+        );
         graph.assertHealthy();
     } finally {
         graph.close();

@@ -24,6 +24,11 @@
     - `release-consistency` 在版本达到 1.0.0 时报错。
     - `maxSamples` 已从 Agent 可写键和 `mcu-config` 文档中移除。
 - [ ] P1 Webview 渲染器
+    - [x] 交付路径统一：webview 只从 `src/webview` 读取，打包后 prelude 只执行一次（此前执行 2–3 次）。
+    - [x] 修复两个潜在显示问题：侧栏非限定指针名丢首字母；运行时基类被当作 `@base0` 嵌套显示。
+    - [x] 新增共享 prelude 模块 `src/webview/valueTree.js`，承载值显示、指针记忆、指针展开、叶子/嵌套/布局/运行时树渲染、复合值刷新和刷新节流；两页各传一个适配器。同名平行实现从 37 组降到 7 组（约 120 行，剩余为页面接线：`t`、`applyI18n`、`setLang`、`noticeArea`、`togglePointee`、`updateValues`、`isUserVariable`）。
+    - 两页统一后的行为：侧栏指针目标行补上 `aria-label`，嵌套类型补上 `title`，非指针的 collapsed 节点按波形页规则提示。
+    - [ ] 每页状态收拢为 `state` 对象，webview 改为 `sourceType: "script"` 的标准 lint。
 - [ ] P1 MainViewProvider
 - [ ] P2 ManagedOpenOcdSession
 - [ ] P2 测试结构
