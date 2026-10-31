@@ -4,6 +4,16 @@ const { render } = require("./helpers/render-webview");
 const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+// Each page evaluates every prelude module exactly once (the bundled extension serves the same script text).
+for (const [page, html] of [
+    ["sidebar", getModernWebviewContent({}, "en")],
+    ["live watch", getLiveWatchContent({ panelId: 1 }, "en")]
+]) {
+    const counts = {};
+    for (const [, name] of html.matchAll(/root\.(Ember\w+) = /g)) counts[name] = (counts[name] || 0) + 1;
+    assert.ok(Object.keys(counts).length >= 5, `${page} declares its prelude modules`);
+    for (const [name, count] of Object.entries(counts)) assert.strictEqual(count, 1, `${page} evaluates ${name} once`);
+}
 const sidebar = render(
     getModernWebviewContent({ elf: "<script>evil()</script>", debugger: "stlink.cfg", mcu: "stm32f4x.cfg" }, "en")
 );

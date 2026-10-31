@@ -1038,7 +1038,6 @@
     "dist/chartHistoryWorker.js",
     "dist/sampling-timer/**/*",
     "dist/elfWorker.js",
-    "dist/webview/**/*",
     "src/webview/**/*",
     "resources/**/*.tar.gz",
     "resources/driver-helper/win32-x64/*",

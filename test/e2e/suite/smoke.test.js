@@ -143,7 +143,12 @@ async function run() {
     }
     console.log("✓ missing chip configuration returns an error and releases ownership without hardware");
     // The connected-probe row lists whatever the read-only USB inventory finds, including nothing.
-    assert.ok(provider.getModernWebviewContent().includes('id="connectedProbeList"'));
+    const sidebarHtml = provider.getModernWebviewContent();
+    assert.ok(sidebarHtml.includes('id="connectedProbeList"'));
+    // The bundled extension serves src/webview as is: every prelude module is evaluated once.
+    const preludeModules = [...sidebarHtml.matchAll(/root\.(Ember\w+) = /g)].map((match) => match[1]);
+    assert.ok(preludeModules.length >= 5);
+    assert.strictEqual(new Set(preludeModules).size, preludeModules.length, "prelude modules are not repeated");
     const probes = await provider._refreshConnectedProbes();
     assert.ok(probes && typeof probes.state === "string" && Array.isArray(probes.devices));
     assert.strictEqual(probes.debugger, "");

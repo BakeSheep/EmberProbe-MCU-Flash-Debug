@@ -5,16 +5,15 @@ const path = require("path");
 
 const cache = new Map();
 
-// __dirname is src in development and dist when packaged; the published package keeps the src/webview assets.
+// Webview assets are served from src/webview, which the package ships as is, so tests, the mockup and the installed
+// extension run the same scripts. __dirname is src in development and dist when bundled; both resolve to src/webview.
+const WEBVIEW_ROOT = path.join(__dirname, "..", "src", "webview");
+
 function loadWebviewAsset(area, name) {
     const key = `${area}/${name}`;
     if (cache.has(key)) return cache.get(key);
-    const candidates = [
-        path.join(__dirname, "webview", area, name),
-        path.join(__dirname, "..", "src", "webview", area, name)
-    ];
-    const file = candidates.find((candidate) => fs.existsSync(candidate));
-    if (!file) throw new Error(`Missing webview asset: ${key}`);
+    const file = path.join(WEBVIEW_ROOT, area, name);
+    if (!fs.existsSync(file)) throw new Error(`Missing webview asset: ${key}`);
     const content = (name === "renderer.js" ? loadRendererPrelude(area) : "") + fs.readFileSync(file, "utf8");
     cache.set(key, content);
     return content;
