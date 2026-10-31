@@ -13,6 +13,21 @@
     - 修复 `cubemxLog` 每行复制 1 MiB 日志尾部的二次复杂度（这是产品代码问题，CubeMX 输出长时会占用扩展宿主 CPU）。
     - 耗时：全量 `npm test` 从 57.3 s 降到 53.4 s（4 进程）；`cubemx-generation-safety` 从 8.4 s 降到 1.0 s，`pointer-targets` 从 7.8 s 降到 2.2 s。
 
+## 执行进度（分支 `refactor/structure-accumulation`）
+
+- [x] P3 护栏
+    - `eslint.config.js` 加了尺寸棘轮：单文件上限 1500 行，非 webview 单函数上限 300 行。超限文件按现值单独设上限，只降不升。
+    - 新增 `i18n-keys.test.js`：动态前缀从源码中识别，扫描覆盖 skills。顺带删除 6 个死键，并修正 mockup 中已过时的 SVD 下载消息。
+    - 新增 `test-helper-reuse.test.js`：顺带让 `cpp-display-name` 改用共享的 `buildElf32`。
+- [x] P2 兼容层
+    - 新增登记表 `scripts/compat-layers.js`，由 `compat-layers.test.js` 检查。
+    - `release-consistency` 在版本达到 1.0.0 时报错。
+    - `maxSamples` 已从 Agent 可写键和 `mcu-config` 文档中移除。
+- [ ] P1 Webview 渲染器
+- [ ] P1 MainViewProvider
+- [ ] P2 ManagedOpenOcdSession
+- [ ] P2 测试结构
+
 ## P1：MainViewProvider 是上帝对象
 
 **现状**：`src/mainViewProvider.js` 共 7074 行，单个类 6854 行，包含：

@@ -22,7 +22,7 @@ npm run package                          # local validation VSIX in dist/
 npm run test:hil                         # DESTRUCTIVE real-board tests; only when explicitly asked, see test/hil/README.md
 ```
 
-- New `test/<feature>.test.js` files must be registered in `scripts/test-groups.js` (explicit membership; `ci-test-topology.test.js` guards this). `test/gdb/` (needs ARM GDB toolchain), `test/e2e/`, and `test/hil/` have their own entry points and are not in normal groups.
+- New `test/<feature>.test.js` files must be registered in `scripts/test-groups.js` (explicit membership enforced by `validateGroups`; `test-runner.test.js` also requires the `fast` list to stay alphabetical). `test/gdb/` (needs ARM GDB toolchain), `test/e2e/`, and `test/hil/` have their own entry points and are not in normal groups.
 - Normal tests must not need OpenOCD or a probe. Reports go to `test-results/`; never edit/commit `dist/`, `coverage/`, `test-results/`, `.vscode-test/`.
 - Don't touch `README.md` unless asked (docs go in `docs/` or skill docs).
 

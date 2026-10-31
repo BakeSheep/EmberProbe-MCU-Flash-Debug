@@ -40,6 +40,9 @@ const { createFixture } = require("./helpers/service-fixture");
         assert.strictEqual(store.snapshot().iocPath, selected.iocPath);
         for (const key of ["firmwarePackage", "firmwareVersion", "repository"])
             await assert.rejects(store.update({ [key]: "value" }), { code: "UNSUPPORTED_CONFIG" });
+        // The deprecated maxSamples setting no longer takes effect, so the Agent Bridge cannot write it either.
+        await assert.rejects(store.update({ maxSamples: 5000 }), { code: "UNSUPPORTED_CONFIG" });
+        assert.ok(!("maxSamples" in store.snapshot()));
         await assert.rejects(store.update({ iocPath: "firmware.elf" }), { code: "INVALID_FILE_TYPE" });
         fs.writeFileSync(path.join(outside, "outside.ioc"), "fixture");
         await assert.rejects(store.update({ iocPath: path.join(outside, "outside.ioc") }), {

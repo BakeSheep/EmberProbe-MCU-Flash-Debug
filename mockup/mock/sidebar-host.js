@@ -243,8 +243,8 @@
                         send({
                             type: "svdStatus",
                             state: "downloading",
-                            key: "svd.downloadingPercent",
-                            params: { percent: percent },
+                            key: "svd.downloading",
+                            percent: percent,
                             path: data.SVD_PATH
                         });
                     },

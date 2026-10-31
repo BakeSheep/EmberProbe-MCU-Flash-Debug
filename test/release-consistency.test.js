@@ -47,6 +47,15 @@ assert.ok(
     ".gitattributes must keep CI-formatted text files on LF across platforms"
 );
 
+// Compatibility layers must be removed before the release they are scheduled to leave in (scripts/compat-layers.js).
+const { COMPAT_LAYERS, reachedRemoval } = require("../scripts/compat-layers");
+const overdue = COMPAT_LAYERS.filter((layer) => reachedRemoval(pkg.version, layer.removeIn));
+assert.deepStrictEqual(
+    overdue.map((layer) => `${layer.id} (remove in ${layer.removeIn})`),
+    [],
+    `version ${pkg.version} still ships compatibility layers scheduled for removal`
+);
+
 for (const skill of manifest.skills) {
     assert.ok(readmeZh.includes(`\`${skill.name}\``), `Chinese README must document ${skill.name}`);
     assert.ok(readmeEn.includes(`\`${skill.name}\``), `English README must document ${skill.name}`);

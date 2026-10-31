@@ -563,7 +563,7 @@ try {
     graph.assertHealthy();
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
     assert.strictEqual(graph.window.__CFG__.frequencyHz, 200, "requested rates are clamped to the 200 Hz maximum");
-    assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
+    assert.strictEqual(graph.document.getElementById("frequencyLabel").textContent, "Sampling rate");
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
     graph.document.getElementById("importSidebar").click();
     assert.deepStrictEqual(graph.messages.at(-1), {

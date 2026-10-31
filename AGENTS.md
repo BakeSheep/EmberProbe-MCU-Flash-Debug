@@ -31,6 +31,8 @@ Generated outputs such as `dist/`, `coverage/`, `test-results/`, and `.vscode-te
 
 Use `require`/`module.exports`, four-space indentation, double quotes, semicolons, LF endings, and a 120-character print width. Prettier and ESLint are authoritative. Use `camelCase` for functions and variables, `PascalCase` for classes, and descriptive kebab-case skill directories.
 
+`eslint.config.js` caps files at 1500 lines and non-webview functions at 300 lines (blank lines and comments excluded); the few larger files and functions carry their current size as a ceiling. Ceilings only go down: lower the entry in the change that shrinks the code and delete it once the code is under the default. Split code instead of raising a ceiling.
+
 ## Hardware and Data Boundaries
 
 Keep hardware operations behind services and preserve Bridge authentication, input validation, and flash/write/CubeMX authorization. Respect `probeCoordinator` ownership and shared-group leases; preserve cleanup on failures. Bind debug handles and writes to the selected session and stop generation, invalidating stale results after execution or session changes. Preserve byte, traversal, paging, and time budgets for ELF/DWARF, SVD, and runtime objects, including read-only restrictions where type or address identity is uncertain.
@@ -39,7 +41,7 @@ Read supporting documents when relevant: `docs/RTOS-AWARENESS.md` and `docs/SHAR
 
 ## Testing Guidelines
 
-Tests are executable Node.js files using built-in `assert`. Name normal tests `test/<feature>.test.js` and register them in `scripts/test-groups.js`; add focused success, failure, and input-validation coverage. Normal tests must not require OpenOCD or a connected probe. The c8 minimums are 80% lines/statements, 75% functions, and 65% branches; `scripts/check-coordinator-coverage.js` also enforces individual service and safety-module gates.
+Tests are executable Node.js files using built-in `assert`. Name normal tests `test/<feature>.test.js` and register them in `scripts/test-groups.js`; add focused success, failure, and input-validation coverage. Add a fix or new behavior as a `scenario(...)` (`test/helpers/scenario.js`) in the module's existing test file; create a new test file only for a new module. Shared builders belong in `test/helpers/` (`elf-fixture`, `dwarf-tree`, `memory-fixture`, `render-webview`, `chart-history-host`, `fake-clock`, `fake-openocd-server`); `test-helper-reuse.test.js` rejects local copies of the binary builders. `i18n-keys.test.js` rejects unreferenced and undefined i18n keys, so delete a key in the change that stops using it. Normal tests must not require OpenOCD or a connected probe. The c8 minimums are 80% lines/statements, 75% functions, and 65% branches; `scripts/check-coordinator-coverage.js` also enforces individual service and safety-module gates.
 
 During implementation, run affected tests and broaden checks for changes to shared contracts. Normal tests use local fixtures and may be run and rerun without additional approval. Before submitting code changes, run `npm run check`, `npm run quality`, `npm run bundle`, and relevant E2E tests. For GDB/MI, STL, or image-transfer changes, also run the relevant `test/gdb/` entry points with the toolchain/environment shown in `.github/workflows/ci.yml`. Documentation-only changes need command/link consistency and diff checks.
 
@@ -58,3 +60,5 @@ Use short, imperative subjects, such as `Fix debug session routing`. Reserve `Re
 ## Release Process
 
 When preparing a requested release, follow `docs/RELEASING.md`. Start with a non-empty `CHANGELOG.md` Unreleased section; use `release:prepare` to synchronize the five version files and validate them before the release commit. Stable `vX.Y.Z` tags and prerelease `vX.Y.Z-alpha.N`/`-beta.N`/`-rc.N` tags trigger CI to build and publish the VSIX (prereleases as GitHub Pre-releases); never re-point a published tag or substitute a locally packaged release artifact. Preserve the bilingual release-note format documented in the release guide.
+
+Compatibility layers kept for upgrades are registered in `scripts/compat-layers.js` with the release that removes them. Register any new one; remove the code and its entry before that release, or the release consistency test fails.
