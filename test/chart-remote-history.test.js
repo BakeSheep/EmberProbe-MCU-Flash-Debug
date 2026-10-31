@@ -68,7 +68,7 @@ try {
     store.append("p", [{ name: "a", value: 4, t: 100000 }], 100000);
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
     assert.strictEqual(JSON.stringify(w.retainedTimeBounds()), bounds);
-    w.showExport();
+    w.eval("exportDialog").open();
     const exportInfo = page.messages.at(-1);
     page.send({
         type: "samplingArchiveInfo",
@@ -78,7 +78,7 @@ try {
         lastTimestampMs: 100000,
         historyRevision: 0
     });
-    w.applyExport();
+    w.eval("exportDialog").apply();
     const exported = page.messages.at(-1);
     assert.strictEqual(exportInfo.type, "samplingArchiveInfo");
     assert.deepStrictEqual(exported.names, ["a", "b"]);

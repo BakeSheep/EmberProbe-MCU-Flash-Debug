@@ -1416,8 +1416,7 @@ function clearHistory(clearArchive = true) {
     state.remoteHistory.status = state.remoteHistory.liveStatus = null;
     resetChartHistoryViews();
     state.remoteHistory.operation = state.remoteHistory.snapshotId = null;
-    exportCandidates = [];
-    hideExport();
+    exportDialog.clear();
     if (clearArchive) post({ type: "clearSamplingHistory", historyRevision: historyRevision });
     state.frozen = false;
     $("freeze").textContent = t("lw.freeze");
@@ -1832,10 +1831,6 @@ function importSelected() {
     }
     hideImport();
 }
-var exportCandidates = [],
-    exportOpenedAt = 0,
-    exportTimelineStart = 0,
-    exportTimelineEnd = 0;
 function formatElapsed(ms) {
     var total = Math.max(0, Math.round((Number(ms) || 0) / 1000)),
         seconds = Math.floor(total % 60),
@@ -1846,339 +1841,17 @@ function formatElapsed(ms) {
         };
     return hours ? two(hours) + ":" + two(minutes) + ":" + two(seconds) : two(minutes) + ":" + two(seconds);
 }
-function exportBounds(candidates) {
-    var from = Infinity,
-        to = -Infinity;
-    (candidates || []).forEach(function (c) {
-        (c.buffer || []).forEach(function (p) {
-            var time = Number(p && p.t);
-            if (Number.isFinite(time)) {
-                from = Math.min(from, time);
-                to = Math.max(to, time);
-            }
-        });
-    });
-    return { from: from, to: to };
-}
-function selectedExportCandidates() {
-    var picked = [];
-    $("exportSeries")
-        .querySelectorAll("input[type=checkbox]:checked")
-        .forEach(function (cb) {
-            var item = exportCandidates[Number(cb.dataset.index)];
-            if (item) picked.push(item);
-        });
-    return picked;
-}
-function setExportSeriesSelection(invert) {
-    if (!exportCandidates.length) return;
-    endExportSeriesDrag();
-    $("exportSeries")
-        .querySelectorAll("input[type=checkbox]")
-        .forEach(function (cb) {
-            if (cb.closest("tr").hidden) return;
-            cb.checked = invert ? !cb.checked : true;
-        });
-    setupExportTimeline(selectedExportCandidates());
-}
-function filterExportSeries() {
-    endExportSeriesDrag();
-    var query = $("exportSearch").value.trim().toLowerCase();
-    $("exportSeries")
-        .querySelectorAll("tbody tr")
-        .forEach(function (row) {
-            var item = exportCandidates[Number(row.querySelector("input").dataset.index)];
-            row.hidden = !item.displayName.toLowerCase().includes(query) && !item.name.toLowerCase().includes(query);
-        });
-    $("exportSeries").scrollTop = 0;
-}
-function updateExportTimeline(changed) {
-    var from = $("exportFromRange"),
-        to = $("exportToRange"),
-        a = Number(from.value),
-        b = Number(to.value),
-        span = Math.max(1, exportTimelineEnd - exportTimelineStart);
-    if (a > b) {
-        if (changed === "from") {
-            b = a;
-            to.value = String(b);
-        } else {
-            a = b;
-            from.value = String(a);
-        }
-    }
-    $("exportRangeFill").style.left = (a / span) * 100 + "%";
-    $("exportRangeFill").style.width = ((b - a) / span) * 100 + "%";
-    $("exportSelection").textContent = t("lw.exportSelectedRange", { from: formatElapsed(a), to: formatElapsed(b) });
-}
-function setupExportTimeline(candidates) {
-    var bounds = exportBounds(candidates);
-    exportTimelineStart = Number.isFinite(bounds.from) ? Math.min(bounds.from, exportOpenedAt) : exportOpenedAt;
-    exportTimelineEnd = Math.max(exportTimelineStart, exportOpenedAt);
-    var span = Math.max(1, Math.round(exportTimelineEnd - exportTimelineStart)),
-        from = $("exportFromRange"),
-        to = $("exportToRange");
-    from.min = to.min = "0";
-    from.max = to.max = String(span);
-    from.value = "0";
-    to.value = String(span);
-    $("exportAxisStart").textContent = "00:00";
-    $("exportAxisEnd").textContent = formatElapsed(span);
-    updateExportTimeline();
-}
-function exportOptions() {
-    var a = Number($("exportFromRange").value),
-        b = Number($("exportToRange").value),
-        from = exportTimelineStart + a,
-        to = exportTimelineStart + b;
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
-    if (a === 0 && b === Number($("exportToRange").max)) return {};
-    return { from: from, to: to };
-}
-var exportSeriesDrag = null;
-function endExportSeriesDrag(event) {
-    var drag = exportSeriesDrag;
-    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
-    exportSeriesDrag = null;
-    cancelAnimationFrame(drag.frame);
-    drag.marquee.remove();
-    if (drag.box.hasPointerCapture?.(drag.pointerId)) drag.box.releasePointerCapture(drag.pointerId);
-    if (event && event.type === "pointerup" && !drag.moved && drag.checkbox) {
-        drag.checkbox.checked = !drag.checkbox.checked;
-    }
-    setupExportTimeline(selectedExportCandidates());
-}
-function updateExportSeriesDrag() {
-    var drag = exportSeriesDrag;
-    if (!drag || !drag.moved) return;
-    var box = drag.box,
-        rect = box.getBoundingClientRect(),
-        left = rect.left + box.clientLeft,
-        top = rect.top + box.clientTop,
-        headerHeight = box.querySelector("thead").getBoundingClientRect().height,
-        x = Math.max(0, Math.min(box.clientWidth, drag.clientX - left)) + box.scrollLeft,
-        y = Math.max(headerHeight, Math.min(box.clientHeight, drag.clientY - top)) + box.scrollTop,
-        x1 = Math.min(drag.x, x),
-        x2 = Math.max(drag.x, x),
-        y1 = Math.min(drag.y, y),
-        y2 = Math.max(drag.y, y);
-    drag.marquee.hidden = false;
-    Object.assign(drag.marquee.style, {
-        left: x1 + "px",
-        top: y1 + "px",
-        width: x2 - x1 + "px",
-        height: y2 - y1 + "px"
-    });
-    drag.rows.forEach(function (row) {
-        var hit = row.left <= x2 && row.right >= x1 && row.top <= y2 && row.bottom >= y1;
-        row.checkbox.checked = hit ? !row.checked : row.checked;
-    });
-}
-function scrollExportSeriesDrag(now) {
-    var drag = exportSeriesDrag;
-    if (!drag || !drag.moved) return;
-    var box = drag.box,
-        rect = box.getBoundingClientRect(),
-        top = rect.top + box.clientTop + box.querySelector("thead").getBoundingClientRect().height,
-        bottom = rect.top + box.clientTop + box.clientHeight,
-        edge = Math.min(28, (bottom - top) / 3),
-        speed =
-            drag.clientY < top + edge
-                ? -Math.min(1, (top + edge - drag.clientY) / edge)
-                : drag.clientY > bottom - edge
-                  ? Math.min(1, (drag.clientY - bottom + edge) / edge)
-                  : 0;
-    box.scrollTop += speed * Math.min(32, now - drag.lastFrame) * 0.5;
-    drag.lastFrame = now;
-    updateExportSeriesDrag();
-    drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
-}
-function beginExportSeriesDrag(event) {
-    if (event.button !== 0 || exportSeriesDrag || !exportCandidates.length) return;
-    var box = $("exportSeries"),
-        rect = box.getBoundingClientRect(),
-        left = rect.left + box.clientLeft,
-        top = rect.top + box.clientTop;
-    if (
-        event.target.closest("thead") ||
-        event.clientX >= left + box.clientWidth ||
-        event.clientY >= top + box.clientHeight
-    )
-        return;
-    event.preventDefault();
-    var row = event.target.closest("tbody tr"),
-        marquee = document.createElement("div");
-    marquee.className = "export-marquee";
-    marquee.hidden = true;
-    box.appendChild(marquee);
-    exportSeriesDrag = {
-        box: box,
-        pointerId: event.pointerId,
-        pointerType: event.pointerType,
-        checkbox: row && row.querySelector("input"),
-        x: event.clientX - left + box.scrollLeft,
-        y: event.clientY - top + box.scrollTop,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        startX: event.clientX,
-        startY: event.clientY,
-        moved: false,
-        marquee: marquee,
-        frame: 0,
-        lastFrame: performance.now(),
-        rows: Array.from(box.querySelectorAll("tbody tr:not([hidden])"), function (entry) {
-            var bounds = entry.getBoundingClientRect(),
-                checkbox = entry.querySelector("input");
-            return {
-                checkbox: checkbox,
-                checked: checkbox.checked,
-                left: bounds.left - left + box.scrollLeft,
-                right: bounds.right - left + box.scrollLeft,
-                top: bounds.top - top + box.scrollTop,
-                bottom: bounds.bottom - top + box.scrollTop
-            };
-        })
-    };
-    box.setPointerCapture?.(event.pointerId);
-}
-function moveExportSeriesDrag(event) {
-    var drag = exportSeriesDrag;
-    if (!drag || !EmberProbeCardReorder.samePointer(event, drag)) return;
-    if (!(event.buttons & 1)) {
-        endExportSeriesDrag(event);
-        return;
-    }
-    drag.clientX = event.clientX;
-    drag.clientY = event.clientY;
-    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4) {
-        drag.moved = true;
-        drag.lastFrame = performance.now();
-        drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
-    }
-    updateExportSeriesDrag();
-}
-function hideExport() {
-    endExportSeriesDrag();
-    $("exportOverlay").classList.add("hidden");
-    exportNotice(null);
-}
-function showExport() {
-    if (historyClearPending) return;
-    post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
-}
-function showArchiveExport(info) {
-    endExportSeriesDrag();
-    var stamp = new Date(),
-        pad = function (n) {
-            return String(n).padStart(2, "0");
-        };
-    $("exportFileName").value = "";
-    $("exportFileName").placeholder =
-        "emberprobe-live-" +
-        stamp.getFullYear() +
-        pad(stamp.getMonth() + 1) +
-        pad(stamp.getDate()) +
-        "-" +
-        pad(stamp.getHours()) +
-        pad(stamp.getMinutes()) +
-        pad(stamp.getSeconds());
-    $("exportSearch").value = "";
-    var names = Array.isArray(info && info.variables) ? info.variables : [],
-        first = Number(info && info.firstTimestampMs),
-        last = Number(info && info.lastTimestampMs);
-    if (!names.length || !Number.isFinite(first) || !Number.isFinite(last)) {
-        exportCandidates = [];
-        $("exportSeries").textContent = "";
-        exportNotice("lw.noDataToExport");
-        $("exportOverlay").classList.remove("hidden");
-        return;
-    }
-    exportCandidates = names.map(function (name) {
-        // The host archives separate type interpretations as "name [type]". Keep that key for
-        // export, but present its variable name and sampled type in their own columns.
-        var archivedType = / \[([ui](?:8|16|32|64)|f32|f64)\]$/.exec(name),
-            variableName = archivedType ? name.slice(0, -archivedType[0].length) : name,
-            displayName =
-                info.displayNames &&
-                Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
-                typeof info.displayNames[name] === "string" &&
-                info.displayNames[name];
-        if (archivedType && displayName && displayName.endsWith(archivedType[0])) {
-            displayName = displayName.slice(0, -archivedType[0].length);
-        }
-        var item =
-            state.watch.find(function (entry) {
-                return entry.name === variableName;
-            }) || state.symbols.get(variableName);
-        return {
-            name: name,
-            displayName: displayName && displayName !== variableName ? displayName : curveDisplayName(variableName),
-            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType),
-            buffer: [{ t: first }, { t: last }]
-        };
-    });
-    exportOpenedAt = last;
-    var box = $("exportSeries"),
-        table = document.createElement("table"),
-        head = table.createTHead(),
-        header = head.insertRow(),
-        body = table.createTBody();
-    ["lw.exportVariableName", "lw.exportDataType"].forEach(function (key) {
-        var cell = document.createElement("th");
-        cell.scope = "col";
-        cell.dataset.i18n = key;
-        cell.textContent = t(key);
-        header.appendChild(cell);
-    });
-    box.replaceChildren(table);
-    box.scrollTop = 0;
-    exportCandidates.forEach(function (item, index) {
-        var row = body.insertRow(),
-            nameCell = row.insertCell(),
-            typeCell = row.insertCell(),
-            label = document.createElement("label"),
-            cb = document.createElement("input"),
-            name = document.createElement("span");
-        cb.type = "checkbox";
-        cb.checked = true;
-        cb.dataset.index = String(index);
-        cb.onchange = function () {
-            setupExportTimeline(selectedExportCandidates());
-        };
-        name.className = "export-series-name";
-        name.textContent = name.title = item.displayName;
-        typeCell.className = "export-series-type";
-        typeCell.textContent = typeCell.title = item.type || t("lw.unknownType");
-        label.append(cb, name);
-        nameCell.appendChild(label);
-    });
-    setupExportTimeline(exportCandidates);
-    exportNotice(info.limitReached ? "lw.archiveTruncated" : info.limited ? "lw.memoryHistoryLimited" : null);
-    $("exportOverlay").classList.remove("hidden");
-}
-function applyExport() {
-    var selected = selectedExportCandidates();
-    if (!selected.length) {
-        exportNotice("lw.exportNoSeries");
-        return;
-    }
-    var opts = exportOptions(selected);
-    if (!opts) {
-        exportNotice("lw.exportInvalidRange");
-        return;
-    }
-    post({
-        type: "exportCsv",
-        fileName: ($("exportFileName").value.trim() || $("exportFileName").placeholder).replace(/\.csv$/i, "") + ".csv",
-        historyRevision: historyRevision,
-        names: selected.map(function (c) {
-            return c.name;
-        }),
-        fromMs: opts.from,
-        toMs: opts.to
-    });
-    hideExport();
-}
+const exportDialog = EmberProbeExportDialog.create({
+    $,
+    t: (key, params) => t(key, params),
+    state,
+    post: (message) => post(message),
+    notice: (key) => exportNotice(key),
+    displayName: (name) => curveDisplayName(name),
+    formatElapsed: (ms) => formatElapsed(ms),
+    historyRevision: () => historyRevision,
+    clearPending: () => historyClearPending
+});
 var VP = window.EmberChartViewport,
     canvas = $("chart"),
     ctx = canvas.getContext("2d"),
@@ -3426,36 +3099,6 @@ $("pointerExpandedOnly").onchange = function () {
     post({ type: "setPointerExpandedOnly", enabled: this.checked });
 };
 $("timeWindow").value = windowPreset;
-$("export").onclick = showExport;
-$("exportCancel").onclick = hideExport;
-$("exportApply").onclick = applyExport;
-$("exportSearch").oninput = filterExportSeries;
-$("exportSelectAll").onclick = function () {
-    setExportSeriesSelection(false);
-};
-$("exportInvert").onclick = function () {
-    setExportSeriesSelection(true);
-};
-$("exportOverlay").onclick = function (e) {
-    if (e.target === $("exportOverlay")) hideExport();
-};
-$("exportSeries").addEventListener("pointerdown", beginExportSeriesDrag);
-$("exportSeries").addEventListener("pointermove", moveExportSeriesDrag);
-$("exportSeries").addEventListener("pointerup", endExportSeriesDrag);
-$("exportSeries").addEventListener("pointercancel", endExportSeriesDrag);
-$("exportSeries").addEventListener("lostpointercapture", endExportSeriesDrag);
-$("exportSeries").onclick = function (event) {
-    if (event.detail) event.preventDefault();
-};
-window.addEventListener("blur", function () {
-    endExportSeriesDrag();
-});
-$("exportFromRange").oninput = function () {
-    updateExportTimeline("from");
-};
-$("exportToRange").oninput = function () {
-    updateExportTimeline("to");
-};
 window.EmberProbeMessages.connect(window, {
     chartHistoryReady: function (m) {
         if (historyClearPending || !Number.isSafeInteger(m.historyRevision) || m.historyRevision < 0) return;
@@ -3468,7 +3111,7 @@ window.EmberProbeMessages.connect(window, {
         if (historyClearPending) return;
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
-        if (m.openExport) showArchiveExport(m);
+        if (m.openExport) exportDialog.show(m);
     },
     chartValues: function (m) {
         if (historyClearPending) return;

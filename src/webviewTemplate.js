@@ -33,7 +33,8 @@ function loadRendererPrelude(area) {
                       loadWebviewAsset("sidebar", "chipView.js"),
                       loadWebviewAsset("sidebar", "memoryView.js"),
                       loadWebviewAsset("sidebar", "peripherals.js"),
-                      loadWebviewAsset("sidebar", "rtos.js")
+                      loadWebviewAsset("sidebar", "rtos.js"),
+                      loadWebviewAsset("sidebar", "writeList.js")
                   ]
                 : [
                       "seriesStyles.js",
@@ -44,7 +45,8 @@ function loadRendererPrelude(area) {
                       "backgroundIcon.js",
                       "backgroundIconController.js",
                       "chart.js",
-                      "samplingRateMotion.js"
+                      "samplingRateMotion.js",
+                      "exportDialog.js"
                   ].map((name) => loadWebviewAsset("liveWatch", name)))
         ].join("\n") + "\n"
     );

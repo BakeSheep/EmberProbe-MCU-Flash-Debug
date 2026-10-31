@@ -209,7 +209,7 @@ const { chartHistoryHost } = require("./helpers/chart-history-host");
             3,
             "a frozen chart keeps drawing its snapshot"
         );
-        w.showExport();
+        w.eval("exportDialog").open();
         assert.equal(doc.getElementById("exportSource"), null);
         assert.equal(graph.messages.at(-1).type, "samplingArchiveInfo", "frozen charts export full history");
         graph.send({
@@ -220,7 +220,7 @@ const { chartHistoryHost } = require("./helpers/chart-history-host");
             firstTimestampMs: 1000,
             lastTimestampMs: 3104
         });
-        w.applyExport();
+        w.eval("exportDialog").apply();
         assert.equal(graph.messages.at(-1).type, "exportCsv");
         w.removeVar("a");
         assert.equal(w.colorFor("b"), oldColor);

@@ -24,7 +24,7 @@ try {
         [[0, 100, 70, -30], { min: -100, max: 0 }],
         [[0, 100, 30, 60], { min: 0, max: 100 }]
     ])
-        assert.deepStrictEqual({ ...sidebar.window.shiftSliderBounds(...input) }, expected);
+        assert.deepStrictEqual({ ...sidebar.window.EmberProbeWriteList.shiftSliderBounds(...input) }, expected);
     assert.ok(sidebar.messages.some((m) => m.type === "initCheck"));
     for (const id of [
         "liveValues",

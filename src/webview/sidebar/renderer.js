@@ -10,7 +10,7 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
-const { fmtNum, isComposite } = EmberProbeValueTree;
+const { isComposite } = EmberProbeValueTree;
 // Notice boxes by area; the extension addresses them as { area, id } and the cards below own their slots.
 const NOTICE_SLOTS = {
     global: "noticeGlobal",
@@ -54,9 +54,6 @@ let availableTypesReady = true,
     liveRunning = false,
     liveCanRead = false,
     liveCanWrite = false,
-    liveWriteUnavailableKey = "sb.writeNeedSampling",
-    liveHaltWrite = false,
-    liveTargetHalted = false,
     liveSnapshotReady = true,
     variableError = "",
     variableErrorKey = "",
@@ -65,13 +62,6 @@ let availableTypesReady = true,
     lastSkill = { state: "checking" },
     lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
-let writeCells = Object.create(null),
-    writeTimers = Object.create(null),
-    writeLastAt = Object.create(null),
-    latestWriteSeq = Object.create(null),
-    // Last value known to be on the target per write card; a failed write rolls back to it.
-    writeConfirmed = Object.create(null),
-    writeSeq = 0;
 // Watch and write lists, ELF symbols, readings and view expansion; the value tree reads them too.
 const state = {
     watch: [],
@@ -127,6 +117,20 @@ const valueTree = EmberProbeValueTree.create({
     }
 });
 const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
+const writes = EmberProbeWriteList.create({
+    box: writeBox,
+    count: document.getElementById("writeCount"),
+    state,
+    t: (key, params) => t(key, params),
+    displayName: (item) => sbDisplayName(item),
+    post: api && ((message) => api.postMessage(message)),
+    changed: () => updateAvailableSelections(),
+    notice: {
+        set: (notice) => setNotice("write", "write", notice),
+        clear: () => clearNotice("write", "write"),
+        level: () => notices.write?.get("write")?.level
+    }
+});
 // Members and pointees follow their card when it is dragged to a new place.
 function sbAttachedEntry(entry, name) {
     return (
@@ -144,29 +148,6 @@ const sbWatchReorder =
             saveSideWatch();
         }
     });
-const sbWriteReorder =
-    writeBox &&
-    EmberProbeCardReorder.attach(writeBox, {
-        onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(state.writeList, name, target, after);
-            if (next === state.writeList) return;
-            state.writeList = next;
-            renderWrites();
-            saveWriteList();
-        }
-    });
-function shiftSliderBounds(min, max, current, next) {
-    const lo = Number(min),
-        hi = Number(max),
-        from = Number(current),
-        to = Number(next);
-    if (![lo, hi, from, to].every(Number.isFinite) || hi <= lo || (to >= lo && to <= hi)) return { min: lo, max: hi };
-    const span = hi - lo,
-        anchor = Math.min(hi, Math.max(lo, from)),
-        offset = anchor - lo,
-        newMin = to - offset;
-    return { min: newMin, max: newMin + span };
-}
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
@@ -637,7 +618,7 @@ function updateLangToggle() {
 function rerenderDynamic() {
     if (variableErrorKey) variableError = t(variableErrorKey, variableErrorParams);
     renderValues();
-    renderWrites();
+    writes.render();
     renderAvailable();
     applyFolds();
     renderSkillStatus(lastSkill);
@@ -668,9 +649,6 @@ function saveSideWatch() {
     if (api) api.postMessage({ type: "saveSidebarWatch", items: state.watch });
     valueTree.syncRuntimeExpansions();
 }
-function saveWriteList() {
-    if (api) api.postMessage({ type: "saveSidebarWrite", items: state.writeList });
-}
 function sbDisplayName(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
         get: (name) => {
@@ -684,7 +662,6 @@ function sbDisplayName(item) {
         }
     });
 }
-const LEAF_W = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
 function sbRemove(name, isComp) {
     if (isComp) {
         state.watch = state.watch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
@@ -1030,7 +1007,7 @@ function renderAvailableContents(content) {
                         name: lf.path,
                         displayName: sbDisplayName({ name: lf.displayPath || lf.path, displayName: lf.displayName }),
                         address: lf.address,
-                        size: lf.size || LEAF_W[lf.type] || 4,
+                        size: lf.size || EmberProbeRuntime.typeByteLength(lf.type),
                         type: lf.type,
                         ...(lf.isPointer
                             ? { isPointer: true, typeName: lf.typeName, pointerTarget: lf.pointerTarget }
@@ -1175,156 +1152,6 @@ function renderAvailableContents(content) {
         content.appendChild(note);
     }
 }
-// Write list: variables are added from the same ELF variable pane as the watch list; dragging writes continuously at up
-// to 10 Hz, and writeResult reports the outcome
-const WRITE_INTERVAL_MS = 100;
-// While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger refresh
-// variables and RTOS views, so only the settled value is written
-const PAUSED_WRITE_SETTLE_MS = 300;
-const TYPE_RANGE = {
-    u8: [0, 255],
-    i8: [-128, 127],
-    u16: [0, 65535],
-    i16: [-32768, 32767],
-    u32: [0, 4294967295],
-    i32: [-2147483648, 2147483647]
-};
-function isWideInt(type) {
-    return type === "u64" || type === "i64";
-}
-function isFloat(type) {
-    return type === "f32" || type === "f64";
-}
-function defBounds(type) {
-    if (isWideInt(type)) return null;
-    if (isFloat(type)) return [-1, 1];
-    const r = TYPE_RANGE[type];
-    if (type === "u8" || type === "i8" || type === "u16" || type === "i16") return [r[0], r[1]];
-    return [0, 100];
-}
-// Widen the slider range when a sampled or read-back value falls outside it, so the slider can show the current value
-// (same rule as the initial range when added to the write list)
-function widenWriteBounds(item, v) {
-    let min = Number(item.min),
-        max = Number(item.max);
-    if (!Number.isFinite(v) || !Number.isFinite(min) || !Number.isFinite(max) || (v >= min && v <= max)) return false;
-    if (v > max) max = 2 * Math.abs(v);
-    if (v < min) min = -2 * Math.abs(v) || 0;
-    const range = TYPE_RANGE[item.type];
-    if (range) {
-        min = Math.max(range[0], min);
-        max = Math.min(range[1], max);
-    }
-    item.min = min;
-    item.max = max;
-    return true;
-}
-function typedWriteValueError(item, value) {
-    if (isFloat(item.type)) return "";
-    const type = item.isBoolean ? "bool" : item.type;
-    if (!Number.isInteger(value)) return t("sb.writeValueNotInteger", { type, value });
-    const [min, max] = item.isBoolean ? [0, 1] : TYPE_RANGE[item.type] || [value, value];
-    return value < min || value > max ? t("sb.writeValueOutOfRange", { type, value, min, max }) : "";
-}
-function clampToType(v, type) {
-    if (!Number.isFinite(v)) return 0;
-    const r = TYPE_RANGE[type];
-    if (!r) return v;
-    return Math.min(r[1], Math.max(r[0], Math.round(v)));
-}
-function normalizeWideInteger(raw, type) {
-    const text = String(raw).trim();
-    if (!/^[+-]?\d+$/.test(text)) return null;
-    try {
-        const value = BigInt(text),
-            min = type === "u64" ? 0n : -(1n << 63n),
-            max = type === "u64" ? (1n << 64n) - 1n : (1n << 63n) - 1n;
-        return value < min || value > max ? null : value.toString(10);
-    } catch {
-        return null;
-    }
-}
-function stepFor(item) {
-    if (isFloat(item.type)) {
-        const value = Math.abs(Number(item.value));
-        if (!Number.isFinite(value) || value < 1) return 0.001;
-        return Math.max(0.001, Math.pow(10, Math.floor(Math.log10(value)) - 2));
-    }
-    const v = Math.abs(Math.trunc(Number(item.value) || 0));
-    return v < 100 ? 1 : Math.pow(10, Math.floor(Math.log10(v)) - 1);
-}
-function addWriteStep(value, delta, type) {
-    const result = value + delta;
-    if (!Number.isFinite(result)) return value;
-    if (!isFloat(type)) return result;
-    const step = Math.abs(delta);
-    // Steps are decimal powers. Snap only representation noise near that decimal grid,
-    // including f32 values decoded into a JavaScript double, without erasing off-grid values.
-    const ticks = Math.round(result / step);
-    const snapped = Number(`${ticks}e${Math.round(Math.log10(step))}`);
-    const epsilon = type === "f32" ? 2 ** -23 : Number.EPSILON;
-    const tolerance = Math.min(step / 4, Math.max(Math.abs(value), step) * epsilon);
-    return Number.isFinite(snapped) && Math.abs(result - snapped) <= tolerance ? snapped : result;
-}
-function inWriteList(name) {
-    return state.writeList.some((w) => w.name === name);
-}
-// Aligned 32-bit variables can be written while the CPU runs; 8/16-bit, unaligned and 64-bit writes briefly halt for a
-// read-modify-write
-function writeRisk(item) {
-    return EmberProbeRuntime.writeHaltRisk(item.address, LEAF_W[item.type] || item.size);
-}
-function writeGateKey(item) {
-    if (!liveCanWrite) return liveWriteUnavailableKey;
-    return !liveHaltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
-}
-// The risk note is a custom overlay: a native title cannot limit its width and would stack with the name's title
-let writeRiskTip = null;
-function showWriteRiskTip(icon) {
-    if (!writeRiskTip) {
-        writeRiskTip = document.createElement("div");
-        writeRiskTip.className = "write-risk-tip";
-        writeRiskTip.id = "writeRiskTip";
-        writeRiskTip.setAttribute("role", "tooltip");
-        document.body.appendChild(writeRiskTip);
-    }
-    writeRiskTip.textContent = icon.dataset.tip;
-    writeRiskTip.hidden = false;
-    icon.setAttribute("aria-describedby", writeRiskTip.id);
-    const anchor = icon.getBoundingClientRect(),
-        width = writeRiskTip.offsetWidth,
-        height = writeRiskTip.offsetHeight,
-        viewWidth = document.documentElement.clientWidth || window.innerWidth,
-        viewHeight = document.documentElement.clientHeight || window.innerHeight;
-    const left = Math.max(4, Math.min(anchor.left, viewWidth - width - 4));
-    const below = anchor.bottom + 4;
-    writeRiskTip.style.left = left + "px";
-    writeRiskTip.style.top = (below + height > viewHeight - 4 ? Math.max(4, anchor.top - height - 4) : below) + "px";
-}
-function hideWriteRiskTip(icon) {
-    if (writeRiskTip) writeRiskTip.hidden = true;
-    icon?.removeAttribute("aria-describedby");
-}
-function writeRiskIcon(item) {
-    const risk = writeRisk(item);
-    if (!risk) return null;
-    const bytes = LEAF_W[item.type] || Number(item.size) || 0;
-    const icon = document.createElement("span");
-    icon.className = "write-risk";
-    icon.tabIndex = 0;
-    icon.setAttribute("role", "img");
-    icon.innerHTML = EmberProbeRuntime.warningIconSvg("write-risk-icon");
-    icon.dataset.tip = t("sb.writeRisk." + risk, {
-        bits: bytes * 8,
-        addr: "0x" + ((Number(item.address) || 0) >>> 0).toString(16).toUpperCase()
-    });
-    icon.setAttribute("aria-label", icon.dataset.tip);
-    icon.addEventListener("mouseenter", () => showWriteRiskTip(icon));
-    icon.addEventListener("focus", () => showWriteRiskTip(icon));
-    icon.addEventListener("mouseleave", () => hideWriteRiskTip(icon));
-    icon.addEventListener("blur", () => hideWriteRiskTip(icon));
-    return icon;
-}
 function mkAvBtn(cls, glyph, on, disabled, titleTxt, handler) {
     const b = document.createElement("button");
     b.type = "button";
@@ -1349,14 +1176,14 @@ function mkWriteBtn(entry, disabled, reason) {
         !!entry.isPointer ||
         !!entry.enumEncodingInferred ||
         Number.isInteger(entry.bitSize);
-    const on = !disabled && inWriteList(entry.name);
+    const on = !disabled && writes.has(entry.name);
     const button = mkAvBtn(
         "av-write",
         "\u270e",
         on,
         disabled,
         disabled ? reason || t("sb.writeUnsupported") : on ? t("sb.removeFromWrite") : t("sb.addToWrite"),
-        () => wToggle(entry)
+        () => writes.toggle(entry)
     );
     button.dataset.selectionName = entry.name;
     return button;
@@ -1393,457 +1220,6 @@ function updateAvailableSelections() {
             else row.title = on ? t("sb.removeFromWatch") : "";
         }
     });
-}
-function cancelPendingWrite(name) {
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
-    delete writeLastAt[name];
-    delete latestWriteSeq[name];
-}
-function removeWrite(name) {
-    cancelPendingWrite(name);
-    delete writeConfirmed[name];
-    state.writeList = state.writeList.filter((w) => w.name !== name);
-    renderWrites();
-    updateAvailableSelections();
-    saveWriteList();
-}
-function wToggle(entry) {
-    const i = state.writeList.findIndex((w) => w.name === entry.name);
-    if (i >= 0) removeWrite(entry.name);
-    else {
-        const type = entry.type || "u32",
-            nb = defBounds(type);
-        if (entry.isBoolean) {
-            state.writeList.push({
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type,
-                isBoolean: true,
-                min: 0,
-                max: 1,
-                value: Number(state.latest[entry.name]) ? 1 : 0
-            });
-        } else if (isWideInt(type)) {
-            const v = state.latestText[entry.name] || "0";
-            state.writeList.push({
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type,
-                value: v
-            });
-        } else {
-            let v = Number(state.latest[entry.name]);
-            if (!Number.isFinite(v)) v = 0;
-            const item = {
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type: type,
-                min: nb[0],
-                max: nb[1],
-                value: v
-            };
-            widenWriteBounds(item, v);
-            state.writeList.push(item);
-        }
-        renderWrites();
-        updateAvailableSelections();
-        saveWriteList();
-    }
-}
-function postWrite(item) {
-    if (!api || !inWriteList(item.name)) return;
-    const gate = writeGateKey(item);
-    if (gate) {
-        setWriteFeedback({ key: gate });
-        return;
-    }
-    const seq = ++writeSeq;
-    latestWriteSeq[item.name] = seq;
-    const cells = writeCells[item.name];
-    if (cells) cells.input.classList.add("pending");
-    api.postMessage({ type: "writeVariable", name: item.name, value: item.value, seq });
-}
-function sendWrite(item, immediate) {
-    const name = item.name;
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
-    const now = Date.now();
-    if (immediate) {
-        writeLastAt[name] = now;
-        postWrite(item);
-        return;
-    }
-    if (liveTargetHalted) {
-        writeTimers[name] = setTimeout(() => {
-            delete writeTimers[name];
-            writeLastAt[name] = Date.now();
-            postWrite(item);
-        }, PAUSED_WRITE_SETTLE_MS);
-        return;
-    }
-    const wait = WRITE_INTERVAL_MS - (now - (writeLastAt[name] || 0));
-    if (wait <= 0) {
-        writeLastAt[name] = now;
-        postWrite(item);
-        return;
-    }
-    writeTimers[name] = setTimeout(() => {
-        delete writeTimers[name];
-        writeLastAt[name] = Date.now();
-        postWrite(item);
-    }, wait);
-}
-function setBound(item, key, v) {
-    if (item.isBoolean) return;
-    if (!Number.isFinite(v)) return;
-    if (!isFloat(item.type)) v = Math.round(v);
-    if (key === "min") item.min = Math.min(v, Number(item.max));
-    else item.max = Math.max(v, Number(item.min));
-}
-function bindBound(el, item, key, sync) {
-    el.addEventListener(
-        "wheel",
-        (e) => {
-            e.preventDefault();
-            setBound(
-                item,
-                key,
-                addWriteStep(Number(item[key]) || 0, e.deltaY < 0 ? stepFor(item) : -stepFor(item), item.type)
-            );
-            sync();
-            saveWriteList();
-        },
-        { passive: false }
-    );
-    el.onclick = () => {
-        const inp = document.createElement("input");
-        inp.className = "bound-input";
-        inp.value = String(item[key]);
-        el.replaceWith(inp);
-        inp.focus();
-        inp.select();
-        let done = false;
-        const finish = (commit) => {
-            if (done) return;
-            done = true;
-            if (commit) setBound(item, key, Number(inp.value.trim()));
-            inp.replaceWith(el);
-            sync();
-            saveWriteList();
-        };
-        inp.onkeydown = (e) => {
-            if (e.key === "Enter") finish(true);
-            else if (e.key === "Escape") finish(false);
-        };
-        inp.onblur = () => finish(true);
-    };
-}
-function buildWriteCard(item, label) {
-    const wide = isWideInt(item.type),
-        row = document.createElement("div");
-    row.className = "write-row" + (wide ? " wide" : "");
-    const main = document.createElement("div");
-    main.className = "write-main";
-    const top = document.createElement("div");
-    top.className = "write-top";
-    const nm = document.createElement("span");
-    nm.className = "value-name";
-    const displayName = sbDisplayName(item);
-    nm.textContent = label || EmberProbeRuntime.shortVariableName(displayName);
-    nm.title = displayName;
-    nm.dataset.rawName = item.name;
-    nm.setAttribute("aria-label", displayName);
-    const dot = document.createElement("span");
-    dot.className = "write-dot";
-    const nmWrap = document.createElement("span");
-    nmWrap.className = "write-name-wrap";
-    const riskIcon = writeRiskIcon(item);
-    if (riskIcon) {
-        // The icon sits beside the name, not inside it, so the name's title never covers the risk tip.
-        const line = document.createElement("span");
-        line.className = "write-name-line";
-        line.append(riskIcon, nm);
-        nmWrap.append(dot, line);
-    } else nmWrap.append(dot, nm);
-    const ctl = document.createElement("span");
-    ctl.className = "write-ctl";
-    const minus = document.createElement("button");
-    minus.type = "button";
-    minus.className = "step-btn";
-    minus.textContent = "\u2212";
-    const input = document.createElement("input");
-    input.className = "write-input";
-    input.value = wide ? String(item.value ?? "0") : fmtNum(item.value);
-    const plus = document.createElement("button");
-    plus.type = "button";
-    plus.className = "step-btn";
-    plus.textContent = "+";
-    const bottom = document.createElement("div");
-    bottom.className = "write-bottom";
-    const ty = document.createElement("span");
-    ty.className = "value-type";
-    ty.textContent = item.isBoolean ? "bool" : item.type || "u32";
-    nmWrap.appendChild(ty);
-    ctl.append(minus, input, plus);
-    top.append(nmWrap, ctl);
-    const minL = document.createElement("span");
-    minL.className = "bound";
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.className = "write-slider";
-    const maxL = document.createElement("span");
-    maxL.className = "bound";
-    bottom.append(minL, slider, maxL);
-    main.append(top, bottom);
-    const rm = document.createElement("button");
-    rm.className = "watch-remove";
-    rm.textContent = "\u2715";
-    rm.title = t("sb.removeFromWrite");
-    rm.onclick = () => removeWrite(item.name);
-    row.append(main, rm);
-    if (!(item.name in writeConfirmed)) writeConfirmed[item.name] = item.value;
-    writeCells[item.name] = {
-        item,
-        row,
-        input,
-        slider,
-        dot,
-        controls: [minus, plus, input, slider],
-        setVal: (v) => {
-            if (item.isBoolean) v = Number(v) ? 1 : 0;
-            item.value = v;
-            input.value = wide ? String(v) : fmtNum(v);
-            if (wide) return;
-            if (!item.isBoolean && widenWriteBounds(item, Number(v))) {
-                writeCells[item.name].syncSlider();
-                saveWriteList();
-            } else slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), v)));
-        }
-    };
-    if (wide) {
-        minus.hidden = true;
-        plus.hidden = true;
-        bottom.remove();
-        const commitWide = () => {
-            const value = normalizeWideInteger(input.value, item.type);
-            if (value === null) {
-                input.value = String(item.value ?? "0");
-                setWriteFeedback({ key: "sb.invalidWriteValue" });
-                return;
-            }
-            if (value !== String(item.value)) {
-                item.value = value;
-                input.value = value;
-                saveWriteList();
-                sendWrite(item, true);
-            }
-        };
-        input.onkeydown = (e) => {
-            if (e.key === "Enter") commitWide();
-            else if (e.key === "Escape") input.value = String(item.value ?? "0");
-        };
-        input.onblur = commitWide;
-    } else {
-        const syncSlider = () => {
-            if (item.isBoolean) {
-                item.min = 0;
-                item.max = 1;
-            }
-            slider.min = String(item.min);
-            slider.max = String(item.max);
-            slider.step = isFloat(item.type) ? "any" : "1";
-            slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), Number(item.value) || 0)));
-            minL.textContent = fmtNum(item.min);
-            maxL.textContent = fmtNum(item.max);
-        };
-        syncSlider();
-        writeCells[item.name].syncSlider = syncSlider;
-        const setValue = (v, immediate) => {
-            v = item.isBoolean
-                ? Math.min(1, Math.max(0, Math.round(Number(v))))
-                : isFloat(item.type)
-                  ? Number(v)
-                  : clampToType(Number(v), item.type);
-            if (!Number.isFinite(v)) v = 0;
-            if (Object.is(v, -0)) v = 0;
-            item.value = v;
-            input.value = fmtNum(v);
-            syncSlider();
-            saveWriteList();
-            sendWrite(item, immediate);
-        };
-        const commitInput = () => {
-            const text = input.value.trim();
-            if (text === fmtNum(item.value)) return;
-            const raw = Number(text);
-            // An emptied box is not a request to write 0.
-            if (!text || !Number.isFinite(raw)) {
-                input.value = fmtNum(item.value);
-                return;
-            }
-            // Typed values are written exactly or not at all; never clamp or round them silently.
-            const invalid = typedWriteValueError(item, raw);
-            if (invalid) {
-                input.value = fmtNum(item.value);
-                setWriteFeedback({ text: invalid });
-                return;
-            }
-            const v = raw;
-            if (v !== item.value) {
-                const bounds = shiftSliderBounds(item.min, item.max, item.value, v);
-                item.min = bounds.min;
-                item.max = bounds.max;
-                setValue(v, true);
-            } else input.value = fmtNum(item.value);
-        };
-        input.onkeydown = (e) => {
-            if (e.key === "Enter") commitInput();
-            else if (e.key === "Escape") input.value = fmtNum(item.value);
-        };
-        input.onblur = commitInput;
-        input.addEventListener(
-            "wheel",
-            (e) => {
-                // Scrolling the panel across an unfocused value box must not write to the target.
-                if (writeGateKey(item) || document.activeElement !== input) return;
-                e.preventDefault();
-                const value = inputValue();
-                setValue(
-                    addWriteStep(
-                        value,
-                        e.deltaY < 0 ? stepFor({ ...item, value }) : -stepFor({ ...item, value }),
-                        item.type
-                    ),
-                    false
-                );
-            },
-            { passive: false }
-        );
-        const inputValue = () => {
-            const text = input.value.trim();
-            // Empty or unchanged display text keeps the full precision of the last known value.
-            if (!text || text === fmtNum(item.value)) return Number(item.value) || 0;
-            const value = Number(text);
-            return Number.isFinite(value) ? value : Number(item.value) || 0;
-        };
-        minus.onclick = () => {
-            const value = inputValue();
-            setValue(addWriteStep(value, -stepFor({ ...item, value }), item.type), true);
-        };
-        plus.onclick = () => {
-            const value = inputValue();
-            setValue(addWriteStep(value, stepFor({ ...item, value }), item.type), true);
-        };
-        slider.addEventListener("input", () => {
-            const v = item.isBoolean
-                ? Math.min(1, Math.max(0, Math.round(Number(slider.value))))
-                : isFloat(item.type)
-                  ? Number(slider.value)
-                  : clampToType(Number(slider.value), item.type);
-            item.value = v;
-            input.value = fmtNum(v);
-            sendWrite(item, false);
-        });
-        slider.addEventListener("change", () => setValue(Number(slider.value), true));
-        if (!item.isBoolean) {
-            bindBound(minL, item, "min", syncSlider);
-            bindBound(maxL, item, "max", syncSlider);
-        }
-    }
-    applyWriteGate(writeCells[item.name]);
-    return row;
-}
-function renderWrites() {
-    hideWriteRiskTip();
-    writeBox.textContent = "";
-    writeCells = Object.create(null);
-    document.getElementById("writeCount").textContent = String(state.writeList.length);
-    if (!state.writeList.length) {
-        const e = document.createElement("div");
-        e.className = "empty";
-        e.textContent = t("sb.writeEmpty");
-        writeBox.appendChild(e);
-        return;
-    }
-    const labels = EmberProbeRuntime.uniqueShortVariableNames(state.writeList.map((item) => sbDisplayName(item)));
-    state.writeList.forEach((item, index) => {
-        const card = buildWriteCard(item, labels[index]);
-        EmberProbeCardReorder.decorate(card, item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
-        writeBox.appendChild(card);
-    });
-    sbWriteReorder?.refresh();
-}
-function applyWriteGate(cells) {
-    const gate = writeGateKey(cells.item),
-        title = gate ? t(gate) : "";
-    cells.row.classList.toggle("gated", !!gate);
-    cells.controls.forEach((control) => {
-        control.disabled = !!gate;
-        control.title = title;
-    });
-}
-function updateWriteAvailability() {
-    Object.values(writeCells).forEach(applyWriteGate);
-}
-// Input checks fade on their own; a failed write stays until dismissed or the next write succeeds.
-function setWriteFeedback(notice) {
-    if (!notice) return clearNotice("write", "write");
-    setNotice("write", "write", notice.level === "error" ? notice : { level: "warning", timeoutMs: 5000, ...notice });
-}
-// Write result feedback: the dot before the variable name lights up and fades (green on success, red on failure);
-// failures also show the reason in the title area
-function knownWriteValue(item) {
-    if (isWideInt(item.type)) return state.latestText[item.name] ?? writeConfirmed[item.name];
-    const sampled = state.latest[item.name];
-    const value = sampled === null || sampled === undefined ? NaN : Number(sampled);
-    if (Number.isFinite(value)) return isFloat(item.type) ? value : Math.round(value);
-    return writeConfirmed[item.name];
-}
-function onWriteResult(m) {
-    if (m.seq !== latestWriteSeq[m.name]) return;
-    delete latestWriteSeq[m.name];
-    const cells = writeCells[m.name];
-    if (cells) {
-        cells.input.classList.remove("pending");
-        cells.dot.className = "write-dot " + (m.ok ? "ok" : "err");
-        void cells.dot.offsetWidth;
-        cells.dot.classList.add("flash");
-        if (m.ok) {
-            state.latest[m.name] = m.value;
-            state.latestText[m.name] = m.valueText ?? null;
-            state.latestEnum[m.name] = m.enumText ?? null;
-            cells.setVal(m.valueText ?? m.value);
-            writeConfirmed[m.name] = m.valueText ?? m.value;
-        } else {
-            // Show what the target still holds, not the rejected value, so steps start from it.
-            cancelPendingWrite(m.name);
-            const known = knownWriteValue(cells.item);
-            if (known !== undefined) {
-                cells.setVal(known);
-                saveWriteList();
-            }
-        }
-    }
-    if (m.ok) {
-        if (notices.write?.get("write")?.level === "error") setWriteFeedback(null);
-    } else
-        setWriteFeedback(
-            window.EmberProbeNotice.hostNotice({
-                error: m.key || m.message ? m : { key: "sb.commandFailed" },
-                title: { key: "sb.writeFailTitle", params: { name: sbDisplayName({ name: m.name }) } }
-            })
-        );
 }
 const EYE_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
@@ -1961,43 +1337,13 @@ function refreshDisplayedValues() {
     state.watch.forEach((it) => {
         if (isComposite(it)) valueTree.updateComposite(it.name);
     });
-    syncWriteValues();
+    if (liveCanRead) writes.sync();
 }
 // While sampling, write cards follow the current value; cards the user is editing (focused, write in flight or
 // debouncing) are not overwritten
-function syncWriteValues() {
-    if (!liveCanRead) return;
-    state.writeList.forEach((item) => {
-        const c = writeCells[item.name];
-        if (!c) return;
-        if (Date.now() - (writeLastAt[item.name] || 0) < 1000) return;
-        if (writeTimers[item.name]) return;
-        if (c.input.classList.contains("pending")) return;
-        const ae = document.activeElement;
-        if (ae === c.input || ae === c.slider) return;
-        if (isWideInt(item.type)) {
-            const text = state.latestText[item.name];
-            if (text != null) {
-                c.setVal(text);
-                writeConfirmed[item.name] = text;
-            }
-            return;
-        }
-        const sampled = state.latest[item.name];
-        if (sampled === null || sampled === undefined) return;
-        let v = Number(sampled);
-        if (!Number.isFinite(v)) return;
-        if (!isFloat(item.type)) v = Math.round(v);
-        c.setVal(v);
-        writeConfirmed[item.name] = v;
-    });
-}
 function liveStatus(m) {
     m = m || {};
     lastLive = m;
-    const wasWrite = liveCanWrite,
-        wasHaltWrite = liveHaltWrite,
-        wasWriteUnavailableKey = liveWriteUnavailableKey;
     const next = window.EmberProbeRuntime.liveState(
         { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
         m
@@ -2005,12 +1351,11 @@ function liveStatus(m) {
     liveRunning = next.running;
     liveCanRead = next.canRead;
     liveCanWrite = next.canWrite;
-    liveHaltWrite = next.haltWrite;
-    liveTargetHalted = m.source === "dap" && String(m.mode || "").startsWith("debug-paused");
-    liveWriteUnavailableKey = EmberProbeRuntime.writeUnavailableKey({
-        ...m,
-        running: liveRunning,
-        canWrite: liveCanWrite
+    writes.setAccess({
+        canWrite: liveCanWrite,
+        haltWrite: next.haltWrite,
+        halted: m.source === "dap" && String(m.mode || "").startsWith("debug-paused"),
+        unavailableKey: EmberProbeRuntime.writeUnavailableKey({ ...m, running: liveRunning, canWrite: liveCanWrite })
     });
     liveSnapshotReady = next.fresh;
     const debugRunning = m.mode === "debug-running-waiting",
@@ -2024,12 +1369,6 @@ function liveStatus(m) {
     // Errors go into the live notice box; the label keeps the sampling state.
     liveLabel.textContent = (!m.error && msgText(m)) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
-    if (
-        wasWrite !== liveCanWrite ||
-        wasHaltWrite !== liveHaltWrite ||
-        wasWriteUnavailableKey !== liveWriteUnavailableKey
-    )
-        updateWriteAvailability();
 }
 function openocdStatus(m) {
     m = m || {};
@@ -2431,13 +1770,11 @@ window.EmberProbeMessages.connect(window, {
         updateAvailableSelections();
     },
     sidebarWriteList: function (m) {
-        state.writeList = (m.items || []).slice();
-        writeConfirmed = Object.create(null);
-        renderWrites();
+        writes.load(m.items || []);
         updateAvailableSelections();
     },
     writeResult: function (m) {
-        onWriteResult(m);
+        writes.onResult(m);
     },
     availableVariables: function (m) {
         variableWarnings = m.warnings || [];
@@ -2449,7 +1786,7 @@ window.EmberProbeMessages.connect(window, {
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
         renderAvailable();
         renderValues();
-        renderWrites();
+        writes.render();
     },
     availableVariablesReset: function (m) {
         variableWarnings = m.warnings || [];
@@ -2502,7 +1839,7 @@ window.EmberProbeMessages.connect(window, {
         availableTypesReady = true;
         renderAvailable();
         renderValues();
-        renderWrites();
+        writes.render();
     },
     layoutExpansionResult: function (m) {
         layoutExpansionUi.receive(m);
@@ -2549,7 +1886,7 @@ window.EmberProbeMessages.connect(window, {
         state.latestPointer = Object.create(null);
         state.latestEnum = Object.create(null);
         renderValues();
-        renderWrites();
+        writes.render();
     },
     liveSample: function (m) {
         updateValues(m.samples);
