@@ -2,6 +2,7 @@
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { fmtExact } = require("../src/webview/valueTree");
 
 const html = getLiveWatchContent({}, "en");
 const graph = render(html);
@@ -55,11 +56,11 @@ try {
     assert.equal(value("wide"), "0xFFFFFFFFFFFFFFFF", "64-bit values retain exact digits");
     base(2);
     assert.equal(value("wide"), "0b" + "1".repeat(64));
-    assert.equal(w.fmtExact(-26, null, null, "a"), "-0x1A");
-    assert.equal(w.fmtExact(null, null, null, "a"), "—");
-    assert.equal(w.fmtExact(null, "unavailable", null, "a"), "unavailable");
-    assert.equal(w.fmtExact(NaN, null, null, "a"), "—");
-    assert.equal(w.fmtExact(26, null, "ENUM_LABEL", "a"), "0x1A");
+    assert.equal(fmtExact(-26, null, null, 16), "-0x1A");
+    assert.equal(fmtExact(null, null, null, 16), "—");
+    assert.equal(fmtExact(null, "unavailable", null, 16), "unavailable");
+    assert.equal(fmtExact(NaN, null, null, 16), "—");
+    assert.equal(fmtExact(26, null, "ENUM_LABEL", 16), "0x1A");
     const saved = graph.getState();
     for (const [name, radix] of [
         ["a", 8],

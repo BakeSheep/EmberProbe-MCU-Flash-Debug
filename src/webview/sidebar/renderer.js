@@ -10,6 +10,19 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
+const { fmtNum } = EmberProbeValueTree;
+const valueTree = EmberProbeValueTree.create({
+    t: (key, params) => t(key, params),
+    symbol: (name) => availableByName.get(name),
+    layoutSymbol: (path) => sbLayoutSymbol(path),
+    reading: (name) => ({
+        value: latest[name],
+        valueText: latestText[name],
+        enumText: latestEnum[name],
+        pointer: latestPointer[name]
+    }),
+    lastPointers: () => sbShownLastPointers()
+});
 // Notice boxes by area; the extension addresses them as { area, id } and the cards below own their slots.
 const NOTICE_SLOTS = {
     global: "noticeGlobal",
@@ -177,45 +190,6 @@ function sbRenderRawMembersUi(container, node, name) {
         saveSbUi();
         renderValues();
         renderAvailable();
-    });
-}
-function sbFmtDisplayNode(node) {
-    if (node?.functionEmpty) return t("lw.functionEmpty");
-    if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
-    return node ? fmtExact(node.value, node.valueText, node.enumText) : "—";
-}
-// Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
-let sbDisplayInfos = new WeakMap();
-function sbWatchDisplayInfo(item) {
-    if (!sbDisplayInfos.has(item)) sbDisplayInfos.set(item, sbResolveWatchDisplayInfo(item));
-    return sbDisplayInfos.get(item);
-}
-function sbResolveWatchDisplayInfo(item) {
-    if (item.isPointer) return item;
-    const direct = availableByName.get(item.name);
-    if (direct?.isPointer) return direct;
-    const symbol = sbLayoutSymbol(item.name);
-    return (
-        EmberProbeRuntime.displayLayoutLeaves(
-            symbol,
-            symbol?.compositeLayout,
-            sbBaseNameOf(item.name),
-            symbol?.address,
-            { showRaw: true, includePointers: true }
-        ).find((leaf) => leaf.path === item.name) || item
-    );
-}
-function sbScalarDisplay(item) {
-    const info = sbWatchDisplayInfo(item);
-    // Before the first sample a pointer shows the target it had when last sampled.
-    const last = info.isPointer && latest[item.name] === undefined && sbShownLastPointers()[item.name];
-    if (last) return sbFmtDisplayNode({ ...info, ...last, stale: true });
-    return sbFmtDisplayNode({
-        ...info,
-        ...latestPointer[item.name],
-        value: latest[item.name],
-        valueText: latestText[item.name],
-        enumText: latestEnum[item.name]
     });
 }
 function msgText(m) {
@@ -689,17 +663,6 @@ function setLang(l, notify) {
     updateLangToggle();
     if (notify && api) api.postMessage({ type: "setLang", lang: LANG });
 }
-function fmt(v) {
-    if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
-    v = Number(v);
-    if (Number.isInteger(v)) return String(v);
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
-}
-function fmtExact(value, valueText, enumText) {
-    if (enumText) return String(enumText);
-    return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
-}
 function setDisplayedValue(cell, value) {
     EmberProbeRuntime.setValueCell(cell, value);
 }
@@ -828,7 +791,7 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
-    sbDisplayInfos = new WeakMap();
+    valueTree.resetDisplayInfos();
     liveBox.textContent = "";
     compCells = Object.create(null);
     runtimeBodies = Object.create(null);
@@ -886,7 +849,7 @@ function sbRenderScalarRow(item) {
     val.dataset.valueName = item.name;
     const ty = document.createElement("span");
     ty.className = "value-type";
-    const info = sbWatchDisplayInfo(item);
+    const info = valueTree.displayInfo(item);
     ty.textContent = (info.isPointer ? info.typeName : item.type) || "u32";
     ty.title = ty.textContent;
     const nameWrap = document.createElement("span");
@@ -918,7 +881,7 @@ function sbRenderScalarRow(item) {
     const host = info.isPointer && sbPointerPointee(row, item.name, sbDisplayName(item), info);
     if (host) row.appendChild(host);
     row.appendChild(footer);
-    setDisplayedValue(val, sbScalarDisplay(item));
+    setDisplayedValue(val, valueTree.scalarDisplay(item));
     return [row];
 }
 // Pointer rows expand in place. A pointee already present in the sampled tree toggles
@@ -1021,9 +984,9 @@ function sbRenderPointee(host, item, label) {
     });
     row.append(nm, ty, val);
     host.appendChild(row);
-    const nested = sbPointerPointee(row, item.name, nm.textContent, sbWatchDisplayInfo(item));
+    const nested = sbPointerPointee(row, item.name, nm.textContent, valueTree.displayInfo(item));
     if (nested) host.appendChild(nested);
-    setDisplayedValue(val, sbScalarDisplay(item));
+    setDisplayedValue(val, valueTree.scalarDisplay(item));
 }
 const AVAILABLE_VARIABLE_LIMIT = 500;
 const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
@@ -1787,7 +1750,7 @@ function buildWriteCard(item, label) {
     minus.textContent = "\u2212";
     const input = document.createElement("input");
     input.className = "write-input";
-    input.value = wide ? String(item.value ?? "0") : fmt(item.value);
+    input.value = wide ? String(item.value ?? "0") : fmtNum(item.value);
     const plus = document.createElement("button");
     plus.type = "button";
     plus.className = "step-btn";
@@ -1826,7 +1789,7 @@ function buildWriteCard(item, label) {
         setVal: (v) => {
             if (item.isBoolean) v = Number(v) ? 1 : 0;
             item.value = v;
-            input.value = wide ? String(v) : fmt(v);
+            input.value = wide ? String(v) : fmtNum(v);
             if (wide) return;
             if (!item.isBoolean && widenWriteBounds(item, Number(v))) {
                 writeCells[item.name].syncSlider();
@@ -1867,8 +1830,8 @@ function buildWriteCard(item, label) {
             slider.max = String(item.max);
             slider.step = isFloat(item.type) ? "any" : "1";
             slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), Number(item.value) || 0)));
-            minL.textContent = fmt(item.min);
-            maxL.textContent = fmt(item.max);
+            minL.textContent = fmtNum(item.min);
+            maxL.textContent = fmtNum(item.max);
         };
         syncSlider();
         writeCells[item.name].syncSlider = syncSlider;
@@ -1881,24 +1844,24 @@ function buildWriteCard(item, label) {
             if (!Number.isFinite(v)) v = 0;
             if (Object.is(v, -0)) v = 0;
             item.value = v;
-            input.value = fmt(v);
+            input.value = fmtNum(v);
             syncSlider();
             saveWriteList();
             sendWrite(item, immediate);
         };
         const commitInput = () => {
             const text = input.value.trim();
-            if (text === fmt(item.value)) return;
+            if (text === fmtNum(item.value)) return;
             const raw = Number(text);
             // An emptied box is not a request to write 0.
             if (!text || !Number.isFinite(raw)) {
-                input.value = fmt(item.value);
+                input.value = fmtNum(item.value);
                 return;
             }
             // Typed values are written exactly or not at all; never clamp or round them silently.
             const invalid = typedWriteValueError(item, raw);
             if (invalid) {
-                input.value = fmt(item.value);
+                input.value = fmtNum(item.value);
                 setWriteFeedback({ text: invalid });
                 return;
             }
@@ -1908,11 +1871,11 @@ function buildWriteCard(item, label) {
                 item.min = bounds.min;
                 item.max = bounds.max;
                 setValue(v, true);
-            } else input.value = fmt(item.value);
+            } else input.value = fmtNum(item.value);
         };
         input.onkeydown = (e) => {
             if (e.key === "Enter") commitInput();
-            else if (e.key === "Escape") input.value = fmt(item.value);
+            else if (e.key === "Escape") input.value = fmtNum(item.value);
         };
         input.onblur = commitInput;
         input.addEventListener(
@@ -1936,7 +1899,7 @@ function buildWriteCard(item, label) {
         const inputValue = () => {
             const text = input.value.trim();
             // Empty or unchanged display text keeps the full precision of the last known value.
-            if (!text || text === fmt(item.value)) return Number(item.value) || 0;
+            if (!text || text === fmtNum(item.value)) return Number(item.value) || 0;
             const value = Number(text);
             return Number.isFinite(value) ? value : Number(item.value) || 0;
         };
@@ -1955,7 +1918,7 @@ function buildWriteCard(item, label) {
                   ? Number(slider.value)
                   : clampToType(Number(slider.value), item.type);
             item.value = v;
-            input.value = fmt(v);
+            input.value = fmtNum(v);
             sendWrite(item, false);
         });
         slider.addEventListener("change", () => setValue(Number(slider.value), true));
@@ -2101,7 +2064,7 @@ function sbUpdateComposite(name) {
         const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
         setDisplayedValue(
             cell,
-            sbFmtDisplayNode({
+            valueTree.formatNode({
                 ...cell.displayNode,
                 ...node,
                 ...(summary ? { functionEmpty: summary.empty } : {})
@@ -2145,7 +2108,7 @@ function sbRenderLeaf(container, label, typeName, path, watchType, node, renderI
     container.appendChild(row);
     const host = node?.isPointer && sbPointerPointee(row, path, label, node, renderInline);
     if (host) container.appendChild(host);
-    setDisplayedValue(val, sbFmtDisplayNode(sbWithLastPointer(node, path)));
+    setDisplayedValue(val, valueTree.formatNode(sbWithLastPointer(node, path)));
 }
 // A static layout row has no value until sampled; a pointer in it shows its last known target.
 function sbWithLastPointer(node, path) {
@@ -2541,7 +2504,10 @@ function scheduleValueRefresh() {
 function refreshDisplayedValues() {
     const items = new Map(sideWatch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
-        setDisplayedValue(el, sbScalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName }));
+        setDisplayedValue(
+            el,
+            valueTree.scalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName })
+        );
     });
     sideWatch.forEach((it) => {
         if (sbIsComposite(it)) sbUpdateComposite(it.name);

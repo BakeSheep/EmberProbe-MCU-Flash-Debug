@@ -1,5 +1,19 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
+const { fmtNum } = EmberProbeValueTree;
+const valueTree = EmberProbeValueTree.create({
+    t: (key, params) => t(key, params),
+    symbol: (name) => impSymbolByName.get(name),
+    layoutSymbol: (path) => layoutSymbol(path),
+    reading: (name) => ({
+        value: latest[name],
+        valueText: latestText[name],
+        enumText: latestEnum[name],
+        pointer: latestPointer[name]
+    }),
+    lastPointers: () => shownLastPointers(),
+    radix: (name) => numberBases[name] || 10
+});
 var remoteHistory = {
     // While following, render bounds advance with detail; liveStatus always tracks the latest event.
     status: null,
@@ -581,32 +595,6 @@ function toggleCurve(name) {
 function fmtAddr(a) {
     return "0x" + (Number(a) >>> 0).toString(16).toUpperCase();
 }
-function fmtNum(v) {
-    if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
-    v = Number(v);
-    if (Number.isInteger(v)) return String(v);
-    var a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
-}
-function fmtExact(v, valueText, enumText, name) {
-    var radix = numberBases[name] || 10;
-    if (radix !== 10) {
-        // Keep exact 64-bit readings out of Number; fractional values use numerical base conversion.
-        var number =
-            valueText != null && /^-?\d{1,20}$/.test(String(valueText))
-                ? BigInt(valueText)
-                : v != null && Number.isFinite(v)
-                  ? v
-                  : null;
-        if (number !== null) {
-            var negative = number < 0,
-                digits = (negative ? -number : number).toString(radix).toUpperCase();
-            return (negative ? "-" : "") + (radix === 16 ? "0x" : "0b") + digits;
-        }
-    }
-    if (enumText) return String(enumText);
-    return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
-}
 function setDisplayedValue(cell, value) {
     EmberProbeRuntime.setValueCell(cell, value);
 }
@@ -652,45 +640,6 @@ function renderRawMembersUi(container, node, name) {
         renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
     });
-}
-function fmtDisplayNode(node, name) {
-    if (node?.functionEmpty) return t("lw.functionEmpty");
-    if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
-    return node ? fmtExact(node.value, node.valueText, node.enumText, name) : "—";
-}
-// Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
-var displayInfos = new WeakMap();
-function watchDisplayInfo(item) {
-    if (!displayInfos.has(item)) displayInfos.set(item, resolveWatchDisplayInfo(item));
-    return displayInfos.get(item);
-}
-function resolveWatchDisplayInfo(item) {
-    if (item.isPointer) return item;
-    const direct = impSymbolByName.get(item.name);
-    if (direct?.isPointer) return direct;
-    const symbol = layoutSymbol(item.name);
-    return (
-        EmberProbeRuntime.displayLayoutLeaves(symbol, symbol?.compositeLayout, baseNameOf(item.name), symbol?.address, {
-            showRaw: true,
-            includePointers: true
-        }).find((leaf) => leaf.path === item.name) || item
-    );
-}
-function scalarDisplay(item) {
-    const info = watchDisplayInfo(item);
-    // Before the first sample a pointer shows the target it had when last sampled.
-    const last = info.isPointer && latest[item.name] === undefined && shownLastPointers()[item.name];
-    if (last) return fmtDisplayNode({ ...info, ...last, stale: true }, item.name);
-    return fmtDisplayNode(
-        {
-            ...info,
-            ...latestPointer[item.name],
-            value: latest[item.name],
-            valueText: latestText[item.name],
-            enumText: latestEnum[item.name]
-        },
-        item.name
-    );
 }
 function post(m) {
     if (api) {
@@ -1035,7 +984,7 @@ function createCurveToggle(swatch, content, onClick) {
     return button;
 }
 function renderVars() {
-    displayInfos = new WeakMap();
+    valueTree.resetDisplayInfos();
     dirty = true;
     if (analysis.focused)
         watch.forEach(function (w) {
@@ -1212,7 +1161,7 @@ function renderScalarCard(item) {
     });
     valueCells[item.name] = val;
     main.append(name);
-    const info = watchDisplayInfo(item);
+    const info = valueTree.displayInfo(item);
     if (info.isPointer) {
         const type = document.createElement("span");
         type.className = "member-type";
@@ -1244,14 +1193,14 @@ function renderScalarCard(item) {
     const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
     if (host) card.appendChild(host);
     card.appendChild(footer);
-    setDisplayedValue(val, scalarDisplay(item));
+    setDisplayedValue(val, valueTree.scalarDisplay(item));
     return [card];
 }
 function updateValues() {
     const items = new Map(watch.map((entry) => [entry.name, entry]));
     Object.keys(valueCells).forEach(function (n) {
         const item = items.get(n);
-        if (item) setDisplayedValue(valueCells[n], scalarDisplay(item));
+        if (item) setDisplayedValue(valueCells[n], valueTree.scalarDisplay(item));
     });
     watch.forEach(function (it) {
         if (isCompositeItem(it)) updateCompositeValues(it.name);
@@ -1328,7 +1277,7 @@ function updateCompositeValues(name) {
         const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
         setDisplayedValue(
             cell,
-            fmtDisplayNode(
+            valueTree.formatNode(
                 {
                     ...cell.displayNode,
                     ...node,
@@ -1450,9 +1399,9 @@ function renderPointee(host, item, label) {
     });
     row.append(toggle, ty, val);
     host.appendChild(row);
-    const nested = pointerPointee(row, item.name, nm.textContent, watchDisplayInfo(item));
+    const nested = pointerPointee(row, item.name, nm.textContent, valueTree.displayInfo(item));
     if (nested) host.appendChild(nested);
-    setDisplayedValue(val, scalarDisplay(item));
+    setDisplayedValue(val, valueTree.scalarDisplay(item));
 }
 function renderLeafInto(container, label, typeName, path, watchType, address, node, renderInline) {
     var row = document.createElement("div");
@@ -1499,7 +1448,7 @@ function renderLeafInto(container, label, typeName, path, watchType, address, no
     container.appendChild(row);
     const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
     if (host) container.appendChild(host);
-    setDisplayedValue(val, fmtDisplayNode(withLastPointer(node, path), path));
+    setDisplayedValue(val, valueTree.formatNode(withLastPointer(node, path), path));
 }
 // A static layout row has no value until sampled; a pointer in it shows its last known target.
 function withLastPointer(node, path) {
@@ -3030,7 +2979,9 @@ controls = window.EmberProbeChartControls.create({
     t: t,
     fmtNum: fmtNum,
     formatValue: function (name, point) {
-        return point ? fmtExact(point.v, point.valueText, null, name) : t("lw.noReading");
+        return point
+            ? EmberProbeValueTree.fmtExact(point.v, point.valueText, null, numberBases[name] || 10)
+            : t("lw.noReading");
     },
     displayName: curveDisplayName,
     tooltipName: function (name) {
