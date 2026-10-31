@@ -231,4 +231,42 @@ scenario("Render runtime members ahead of overlapping static layouts", () => {
     }
 });
 
+scenario("runtime base classes stay flat on both pages", () => {
+    // Runtime trees carry no isBase flag, so the @baseN member name is what keeps a base class inline.
+    const item = { name: "obj", isComposite: true, runtimeLayout: { root: 0, types: [] } };
+    const tree = {
+        kind: "class",
+        typeName: "Derived",
+        members: [
+            {
+                name: "@base0",
+                kind: "class",
+                typeName: "Base",
+                members: [{ name: "x", kind: "scalar", type: "i32", value: 1 }]
+            },
+            { name: "y", kind: "scalar", type: "i32", value: 2 }
+        ]
+    };
+    for (const sidebar of [true, false]) {
+        const view = render(sidebar ? getModernWebviewContent({}, "en") : getLiveWatchContent({ panelId: 1 }, "en"));
+        try {
+            view.send({ type: sidebar ? "sidebarWatchList" : "watchList", items: [item] });
+            view.send({ type: "liveCompositeSample", samples: [{ name: "obj", tree }] });
+            const heads = [...view.document.querySelectorAll(sidebar ? ".sb-comp-name" : ".comp-name")];
+            assert.deepStrictEqual(
+                heads.map((head) => head.textContent),
+                ["obj"]
+            );
+            const names = [...view.document.querySelectorAll(sidebar ? ".sb-mname" : ".member-name")];
+            assert.deepStrictEqual(
+                names.map((cell) => cell.textContent),
+                ["x", "y"]
+            );
+            view.assertHealthy();
+        } finally {
+            view.close();
+        }
+    }
+});
+
 console.log("Runtime sampling refresh, layout changes, focus retention and invalid write values passed");

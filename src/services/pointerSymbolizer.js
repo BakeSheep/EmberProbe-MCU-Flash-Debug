@@ -109,7 +109,7 @@ function layoutPathAt(layout, offset, depth = 0) {
         const start = Number(member.offset);
         const size = Number(member.byteSize || member.compositeLayout?.byteSize) || 0;
         if (!Number.isSafeInteger(start) || size <= 0 || offset < start || offset >= start + size) continue;
-        const name = !member.name || member.isBase || /^@based+$/.test(member.name) ? "" : "." + member.name;
+        const name = !member.name || member.isBase || /^@base\d+$/.test(member.name) ? "" : "." + member.name;
         const inner = member.compositeLayout && layoutPathAt(member.compositeLayout, offset - start, depth + 1);
         if (inner) return { path: name + inner.path, rest: inner.rest };
         return name ? { path: name, rest: offset - start } : null;

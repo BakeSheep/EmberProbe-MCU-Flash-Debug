@@ -2312,7 +2312,7 @@ function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = 
                     false,
                     !!member.name &&
                         !member.isBase &&
-                        !/^@based+$/.test(member.name) &&
+                        !/^@base\d+$/.test(member.name) &&
                         !(pointer && member.name === "value")
                 );
         });
