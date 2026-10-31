@@ -46,17 +46,17 @@ function scenario(run) {
     const sent = [];
     function draw(elapsed = 80) {
         now += elapsed;
-        w.dirty = true;
+        w.eval("state").dirty = true;
         w.chartState.fastDirty = true;
         w.draw(now);
-        const request = w.remoteHistory.inFlight;
+        const request = w.eval("state").remoteHistory.inFlight;
         if (request && !sent.includes(request)) {
-            request.sentAt = w.remoteHistory.lastRequest;
+            request.sentAt = w.eval("state").remoteHistory.lastRequest;
             sent.push(request);
         }
         return request;
     }
-    function answer(request = w.remoteHistory.inFlight, response) {
+    function answer(request = w.eval("state").remoteHistory.inFlight, response) {
         assert.ok(request, "a request is in flight");
         const reply = response || store.viewport("p", request.names, request.range, request.width, request.snapshotId);
         page.send({
@@ -111,11 +111,15 @@ scenario(({ w, draw, answer, settle, sent }) => {
         const request = draw(16);
         if (request && !queued) queued = { request, due: frame + 2 };
         if (queued && queued.due === frame) {
-            const previous = w.remoteHistory.view;
+            const previous = w.eval("state").remoteHistory.view;
             answer(queued.request);
             if (queued.request.purpose === "detail") {
-                assert.notStrictEqual(w.remoteHistory.view, previous, "moving range does not discard a reply");
-                assert.strictEqual(w.remoteHistory.view.range, queued.request.range);
+                assert.notStrictEqual(
+                    w.eval("state").remoteHistory.view,
+                    previous,
+                    "moving range does not discard a reply"
+                );
+                assert.strictEqual(w.eval("state").remoteHistory.view.range, queued.request.range);
                 accepted++;
             }
             queued = null;
@@ -125,7 +129,7 @@ scenario(({ w, draw, answer, settle, sent }) => {
     if (queued) answer(queued.request);
     w.chartState.drag = null;
     settle();
-    const { view } = w.remoteHistory;
+    const { view } = w.eval("state").remoteHistory;
     assert.ok(view.range.min <= w.chartState.x.min && view.range.max >= w.chartState.x.max);
     assert.ok(
         view.series.every((part) => part.arr[0].t <= w.chartState.x.min && part.arr.at(-1).t >= w.chartState.x.max)
@@ -139,8 +143,8 @@ scenario(({ w, draw, answer, settle, sent }) => {
 scenario(({ w, settle, draw, series, sent }) => {
     settle();
     const before = sent.filter((r) => r.purpose === "detail").length;
-    assert.deepStrictEqual({ ...w.remoteHistory.view.range }, { min: 31000, max: 61000 });
-    assert.strictEqual(w.remoteHistory.view.width, 2400);
+    assert.deepStrictEqual({ ...w.eval("state").remoteHistory.view.range }, { min: 31000, max: 61000 });
+    assert.strictEqual(w.eval("state").remoteHistory.view.width, 2400);
     w.chartState.x = { min: 49000, max: 59000 };
     draw();
     assert.strictEqual(sent.filter((r) => r.purpose === "detail").length, before, "small pans reuse overscan");
@@ -154,7 +158,7 @@ scenario(({ w, settle, draw, series, sent }) => {
 
 scenario(({ w, draw, answer, settle, series }) => {
     settle();
-    const oldView = w.remoteHistory.view;
+    const oldView = w.eval("state").remoteHistory.view;
     w.chartState.x = { min: 43500, max: 48500 };
     const zoom = draw();
     assert.strictEqual(zoom.purpose, "detail");
@@ -163,7 +167,7 @@ scenario(({ w, draw, answer, settle, series }) => {
     w.chartState.x = { min: 1000, max: 101000 };
     const out = draw();
     assert.strictEqual(out.purpose, "detail");
-    const current = w.remoteHistory.view,
+    const current = w.eval("state").remoteHistory.view,
         detail = current.series[0].arr,
         composed = series();
     assert.ok(
@@ -191,13 +195,17 @@ scenario(({ w, draw, answer, series, store }) => {
     w.chartState.x = { min: 71000, max: 81000 };
     draw(0);
     answer(overview);
-    assert.strictEqual(w.remoteHistory.overview.range, overview.range, "overview acceptance ignores view movement");
+    assert.strictEqual(
+        w.eval("state").remoteHistory.overview.range,
+        overview.range,
+        "overview acceptance ignores view movement"
+    );
     const parts = series().filter((part) => part.item.name === "a" && !("visibleCount" in part)),
-        range = w.remoteHistory.view.range,
-        source = w.remoteHistory.overview.series.find((s) => s.name === "a").arr,
+        range = w.eval("state").remoteHistory.view.range,
+        source = w.eval("state").remoteHistory.overview.series.find((s) => s.name === "a").arr,
         left = parts.find((part) => part.arr[0].t < range.min),
         right = parts.find((part) => part.arr.at(-1).t > range.max);
-    const ends = w.remoteHistory.view.series.filter((part) => part.name === "a");
+    const ends = w.eval("state").remoteHistory.view.series.filter((part) => part.name === "a");
     // The coarse line ends exactly on the detail curve's end points; no coarse point is drawn inside its range,
     // so the visible ends of the curve cannot jump when the overview or detail range changes.
     assert.strictEqual(left.arr.at(-1), ends[0].arr[0], "the left underlay joins the detail start");
@@ -215,9 +223,13 @@ scenario(({ w, draw, answer, advance }) => {
     advance(1101);
     w.chartState.x = { min: 71000, max: 81000 };
     draw(0);
-    assert.ok(w.remoteHistory.pending, "new detail waits behind the in-flight request");
+    assert.ok(w.eval("state").remoteHistory.pending, "new detail waits behind the in-flight request");
     answer(first);
-    assert.strictEqual(w.remoteHistory.inFlight.purpose, "overview", "overdue overview precedes pending detail");
+    assert.strictEqual(
+        w.eval("state").remoteHistory.inFlight.purpose,
+        "overview",
+        "overdue overview precedes pending detail"
+    );
     answer();
     assert.strictEqual(draw().purpose, "detail", "latest detail follows overview");
 });
@@ -235,8 +247,12 @@ scenario(({ w, draw, answer, settle, append, status, series, advance }) => {
     status();
     const request = draw();
     assert.strictEqual(w.chartState.x.max, before, "status cannot advance follow ahead of detail data");
-    assert.strictEqual(w.remoteHistory.liveStatus.bounds.max, 101100);
-    assert.strictEqual(request.revision, w.remoteHistory.liveStatus.revision, "requests use latest live revision");
+    assert.strictEqual(w.eval("state").remoteHistory.liveStatus.bounds.max, 101100);
+    assert.strictEqual(
+        request.revision,
+        w.eval("state").remoteHistory.liveStatus.revision,
+        "requests use latest live revision"
+    );
     append(101200);
     const reply = answer(request);
     draw(0);
@@ -267,7 +283,7 @@ scenario(({ w, draw, answer, settle, append, status, series, advance }) => {
 
 scenario(({ w, draw, answer, settle, append, status, sent }) => {
     settle();
-    const receivedAt = w.remoteHistory.view.receivedAt,
+    const receivedAt = w.eval("state").remoteHistory.view.receivedAt,
         count = sent.filter((r) => r.purpose === "detail").length;
     for (let i = 1; i <= 10; i++) {
         append(101000 + i * 100);
@@ -279,7 +295,7 @@ scenario(({ w, draw, answer, settle, append, status, sent }) => {
         count,
         "past views ignore subsecond revisions"
     );
-    assert.strictEqual(w.remoteHistory.view.receivedAt, receivedAt);
+    assert.strictEqual(w.eval("state").remoteHistory.view.receivedAt, receivedAt);
     const request = draw(200);
     assert.strictEqual(request.purpose, "detail");
     answer(request);
@@ -321,12 +337,12 @@ scenario(({ w, settle, draw }) => {
 });
 
 for (const change of [
-    (w) => (w.watch[0].type = "u32"),
-    (w) => w.watch[0].address++,
-    (w) => (w.watch[0].bitOffset = 1),
-    (w) => (w.watch[0].bitSize = 2),
-    (w) => (w.hidden.a = true),
-    (w) => (w.remoteHistory.snapshotId = "another-snapshot"),
+    (w) => (w.eval("state").watch[0].type = "u32"),
+    (w) => w.eval("state").watch[0].address++,
+    (w) => (w.eval("state").watch[0].bitOffset = 1),
+    (w) => (w.eval("state").watch[0].bitSize = 2),
+    (w) => (w.eval("state").hidden.a = true),
+    (w) => (w.eval("state").remoteHistory.snapshotId = "another-snapshot"),
     (w) => w.historyRevision++,
     (w) => w.clearHistory()
 ]) {
@@ -336,7 +352,11 @@ for (const change of [
         change(w);
         // Deliberately deliver before another draw: acceptance must check the actual current configuration.
         answer(request, response);
-        assert.strictEqual(w.remoteHistory.view, null, "changed configurations reject delayed detail replies");
+        assert.strictEqual(
+            w.eval("state").remoteHistory.view,
+            null,
+            "changed configurations reject delayed detail replies"
+        );
     });
     scenario(({ w, draw, answer, store }) => {
         answer(draw());
@@ -345,24 +365,28 @@ for (const change of [
         assert.strictEqual(request.purpose, "overview");
         change(w);
         answer(request, response);
-        assert.strictEqual(w.remoteHistory.overview, null, "changed configurations reject delayed overview replies");
+        assert.strictEqual(
+            w.eval("state").remoteHistory.overview,
+            null,
+            "changed configurations reject delayed overview replies"
+        );
     });
 }
 
 scenario(({ w, settle, series, draw }) => {
     settle();
-    w.hidden.a = w.hidden.b = true;
+    w.eval("state").hidden.a = w.eval("state").hidden.b = true;
     assert.strictEqual(series().length, 0);
-    assert.strictEqual(w.remoteHistory.view, null);
-    assert.strictEqual(w.remoteHistory.overview, null);
+    assert.strictEqual(w.eval("state").remoteHistory.view, null);
+    assert.strictEqual(w.eval("state").remoteHistory.overview, null);
     assert.strictEqual(draw(), null, "empty visible names need no request");
     assert.strictEqual(w.historyLoading.hidden, true);
 });
 
 scenario(({ w, draw, answer, series, settle }) => {
     settle();
-    w.remoteHistory.view = null;
-    const overview = w.remoteHistory.overview;
+    w.eval("state").remoteHistory.view = null;
+    const overview = w.eval("state").remoteHistory.overview;
     assert.ok(series().length);
     assert.ok(series().every((part) => overview.series.some((source) => source.arr === part.arr)));
     assert.ok(
@@ -374,7 +398,7 @@ scenario(({ w, draw, answer, series, settle }) => {
 
 scenario(({ w }) => {
     w.requestChartViewport(w.chartState.x, 4000);
-    const request = w.remoteHistory.inFlight;
+    const request = w.eval("state").remoteHistory.inFlight;
     assert.strictEqual(request.width, 8192);
     assert.ok(request.range.min > w.chartState.x.min - 10000, "overscan shrinks at the column limit");
     assert.strictEqual(w.chartState.x.min - request.range.min, request.range.max - w.chartState.x.max);
@@ -384,7 +408,7 @@ scenario(({ w }) => {
 scenario(({ w }) => {
     w.chartState.x = { min: 1000, max: 11000 };
     w.requestChartViewport(w.chartState.x, 4000);
-    const request = w.remoteHistory.inFlight;
+    const request = w.eval("state").remoteHistory.inFlight;
     assert.deepStrictEqual({ ...request.range }, { min: 1000, max: 21000 });
     assert.strictEqual(request.width, 8000, "clipping to bounds precedes the overscan column cap");
 });
@@ -399,34 +423,42 @@ scenario(({ w, draw }) => {
 scenario(({ w, draw, answer, settle, page, store, append, status, advance, series }) => {
     settle();
     w.freezeChart();
-    assert.strictEqual(w.dirty, true, "starting a freeze schedules its loading indicator");
-    const operation = w.remoteHistory.operation;
-    const liveView = w.remoteHistory.view;
+    assert.strictEqual(w.eval("state").dirty, true, "starting a freeze schedules its loading indicator");
+    const operation = w.eval("state").remoteHistory.operation;
+    const liveView = w.eval("state").remoteHistory.view;
     page.send({ type: "chartFreezeResult", ...store.freeze("p"), requestId: operation, historyRevision: 0 });
-    assert.strictEqual(w.remoteHistory.view, liveView, "freezing keeps the drawn view until the snapshot reply");
+    assert.strictEqual(
+        w.eval("state").remoteHistory.view,
+        liveView,
+        "freezing keeps the drawn view until the snapshot reply"
+    );
     assert.ok(series().length > 0, "curves stay visible while the snapshot view loads");
     settle();
-    assert.notStrictEqual(w.remoteHistory.view, liveView);
-    const snapshot = w.remoteHistory.status,
-        view = w.remoteHistory.view;
+    assert.notStrictEqual(w.eval("state").remoteHistory.view, liveView);
+    const snapshot = w.eval("state").remoteHistory.status,
+        view = w.eval("state").remoteHistory.view;
     append(102000);
     status();
     advance(2000);
     assert.strictEqual(draw(), null, "frozen data never refreshes for live revisions");
-    assert.strictEqual(w.remoteHistory.status, snapshot);
-    assert.strictEqual(w.remoteHistory.view, view);
+    assert.strictEqual(w.eval("state").remoteHistory.status, snapshot);
+    assert.strictEqual(w.eval("state").remoteHistory.view, view);
     w.resumeChart();
-    assert.strictEqual(w.remoteHistory.view, view, "resuming keeps the frozen view until live data arrives");
+    assert.strictEqual(
+        w.eval("state").remoteHistory.view,
+        view,
+        "resuming keeps the frozen view until live data arrives"
+    );
     assert.ok(series().length > 0);
     const request = draw();
     w.clearHistory();
     answer(request);
-    assert.strictEqual(w.remoteHistory.view, null);
-    assert.strictEqual(w.remoteHistory.pending, null);
-    assert.strictEqual(w.remoteHistory.inFlight, null);
+    assert.strictEqual(w.eval("state").remoteHistory.view, null);
+    assert.strictEqual(w.eval("state").remoteHistory.pending, null);
+    assert.strictEqual(w.eval("state").remoteHistory.inFlight, null);
     page.send({ type: "samplingHistoryCleared", historyRevision: w.historyRevision });
     page.send({ type: "chartHistoryReady", historyRevision: w.historyRevision });
-    assert.strictEqual(w.remoteHistory.status, null);
+    assert.strictEqual(w.eval("state").remoteHistory.status, null);
 });
 
 console.log("Chart drag, overscan, overview, atomic follow, revision throttling and memoization tests passed");
@@ -442,23 +474,30 @@ for (const [span, width] of [
         w.chartState.startPinned = span === 1800000;
         w.chartState.x = { min: 1000, max: 1000 + span };
         const bounds = { ...w.chartState.x };
-        w.remoteHistory.liveStatus = w.remoteHistory.status = { revision: 2, bounds };
-        w.remoteHistory.view = {
-            ...w.remoteHistory.view,
+        w.eval("state").remoteHistory.liveStatus = w.eval("state").remoteHistory.status = { revision: 2, bounds };
+        w.eval("state").remoteHistory.view = {
+            ...w.eval("state").remoteHistory.view,
             range: { ...bounds },
             width: Math.min(8192, width),
             revision: 1,
             receivedAt: w.performance.now()
         };
-        w.remoteHistory.overview = { ...w.remoteHistory.overview, revision: 2 };
+        w.eval("state").remoteHistory.overview = { ...w.eval("state").remoteHistory.overview, revision: 2 };
         const interval = Math.max(80, span / width);
         advance(interval - 1);
         w.requestChartViewport(w.chartState.x, width);
-        assert.strictEqual(w.remoteHistory.inFlight, null, "revision-only follow refresh waits for a pixel column");
+        assert.strictEqual(
+            w.eval("state").remoteHistory.inFlight,
+            null,
+            "revision-only follow refresh waits for a pixel column"
+        );
         advance(1);
         w.requestChartViewport(w.chartState.x, width);
-        assert.strictEqual(w.remoteHistory.inFlight.purpose, "detail");
-        assert.strictEqual(w.remoteHistory.lastRequest - w.remoteHistory.view.receivedAt, interval);
+        assert.strictEqual(w.eval("state").remoteHistory.inFlight.purpose, "detail");
+        assert.strictEqual(
+            w.eval("state").remoteHistory.lastRequest - w.eval("state").remoteHistory.view.receivedAt,
+            interval
+        );
     });
 }
 
@@ -482,13 +521,13 @@ scenario(({ w, settle, series, items }) => {
     settle();
     assert.ok(series().some((part) => part.item.name === "b"));
     // Hiding a curve keeps the other curve drawn from the previous reply until the new one arrives.
-    w.hidden.b = true;
+    w.eval("state").hidden.b = true;
     const shown = series();
     assert.ok(shown.length > 0 && shown.every((part) => part.item.name === "a"));
-    w.hidden.b = false;
+    w.eval("state").hidden.b = false;
     // A changed identity hides stale data for that curve only.
-    const index = w.watch.findIndex((item) => item.name === "a");
-    w.watch[index] = { ...w.watch[index], type: "u32" };
+    const index = w.eval("state").watch.findIndex((item) => item.name === "a");
+    w.eval("state").watch[index] = { ...w.eval("state").watch[index], type: "u32" };
     const changed = series();
     assert.ok(changed.every((part) => part.item.name === "b"));
     assert.ok(changed.length > 0);

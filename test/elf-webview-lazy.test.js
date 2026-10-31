@@ -302,7 +302,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             assert.equal(imported.address, 0x2000000c);
             assert.equal(imported.type, "f32");
             doc.getElementById("import").click();
-            page.window.impExpanded[symbol.name] = false;
+            page.window.eval("state").importExpanded[symbol.name] = false;
             page.send({
                 type: "variablesList",
                 symbols: [
@@ -342,7 +342,11 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             });
             assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".telemetry[2]");
             assert.ok(doc.querySelector(".imp-children.open"), "runtime shape changes update an active member search");
-            assert.equal(page.window.impExpanded[symbol.name], false, "runtime search does not persist auto-expansion");
+            assert.equal(
+                page.window.eval("state").importExpanded[symbol.name],
+                false,
+                "runtime search does not persist auto-expansion"
+            );
             page.assertHealthy();
         } finally {
             page.close();
@@ -445,7 +449,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             graph.document.querySelector("#impList input").click();
             p._syncGraphTarget(entry);
             assert.deepStrictEqual(
-                Array.from(graph.window.allSymbols, (s) => s.name),
+                Array.from(graph.window.eval("state").allSymbols, (s) => s.name),
                 ["old", "new"]
             );
             assert.ok(graph.document.getElementById("impList").textContent.includes("new"));

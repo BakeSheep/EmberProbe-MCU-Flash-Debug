@@ -10,8 +10,8 @@ for (const lang of ["zh", "en"]) {
         assert.strictEqual(doc.getElementById("exportSource"), null);
         assert.strictEqual(doc.querySelector(".export-history-note"), null);
         // Freezing or losing old in-memory points must not select a partial export source.
-        w.frozen = true;
-        w.remoteHistory.snapshotId = "snapshot";
+        w.eval("state").frozen = true;
+        w.eval("state").remoteHistory.snapshotId = "snapshot";
         w.showExport();
         assert.deepStrictEqual(page.messages.at(-1), {
             type: "samplingArchiveInfo",
@@ -143,7 +143,7 @@ for (const lang of ["zh", "en"]) {
             "_ZN3app5countE [u16]",
             "pwr.samples[3]"
         ];
-        w.watch = [
+        w.eval("state").watch = [
             { name: "pwr.bus_", type: "f32" },
             { name: "pwr.data_.bus_voltage_v", type: "f32", typeName: "float" },
             { name: "pwr.samples[3]", type: "i16" }
@@ -201,8 +201,8 @@ console.log("Typed archive names, historical types, removed watches and exact ex
 const page = render(getLiveWatchContent({}, "zh"));
 try {
     const { window: w, document: doc } = page;
-    w.watch = [{ name: "v0", type: "f32", typeName: "float" }];
-    w.impSymbolByName.set("v1", { name: "v1", watchType: "u32", typeName: "uint32_t" });
+    w.eval("state").watch = [{ name: "v0", type: "f32", typeName: "float" }];
+    w.eval("state").symbols.set("v1", { name: "v1", watchType: "u32", typeName: "uint32_t" });
     w.showArchiveExport({
         variables: Array.from({ length: 12 }, (_, i) => "v" + i),
         firstTimestampMs: 1000,

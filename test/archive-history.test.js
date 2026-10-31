@@ -807,21 +807,24 @@ async function main() {
                 page.document.getElementById("chartAxisEnd").textContent,
                 w.formatElapsed(live.status("p").bounds.max - 100)
             );
-            w.dirty = true;
+            w.eval("state").dirty = true;
             w.chartState.fastDirty = true;
             w.draw(10000);
-            const request = w.remoteHistory.inFlight;
+            const request = w.eval("state").remoteHistory.inFlight;
             assert.ok(request.range.min <= 100);
             assert.deepStrictEqual(
-                JSON.parse(JSON.stringify(w.remoteHistory.target.overviewRange)),
+                JSON.parse(JSON.stringify(w.eval("state").remoteHistory.target.overviewRange)),
                 live.status("p").bounds
             );
-            w.remoteHistory.inFlight = null;
-            w.remoteHistory.pending = null;
-            w.remoteHistory.lastRequest = -Infinity;
+            w.eval("state").remoteHistory.inFlight = null;
+            w.eval("state").remoteHistory.pending = null;
+            w.eval("state").remoteHistory.lastRequest = -Infinity;
             w.dispatchChartViewport();
-            assert.strictEqual(w.remoteHistory.inFlight.purpose, "overview");
-            assert.deepStrictEqual(JSON.parse(JSON.stringify(w.remoteHistory.inFlight.range)), live.status("p").bounds);
+            assert.strictEqual(w.eval("state").remoteHistory.inFlight.purpose, "overview");
+            assert.deepStrictEqual(
+                JSON.parse(JSON.stringify(w.eval("state").remoteHistory.inFlight.range)),
+                live.status("p").bounds
+            );
             page.assertHealthy();
         } finally {
             page.close();

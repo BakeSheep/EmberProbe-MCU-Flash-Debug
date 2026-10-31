@@ -8,7 +8,7 @@ const MAX_FUNCTION_LINES = 300;
 const FILE_LINE_CEILINGS = {
     "src/mainViewProvider.js": 6718,
     "src/webview/liveWatch/renderer.js": 3846,
-    "src/webview/sidebar/renderer.js": 2554,
+    "src/webview/sidebar/renderer.js": 2549,
     "src/liveWatch.js": 2155,
     "src/webview/runtime.js": 1543
 };
@@ -70,8 +70,14 @@ module.exports = [
         }
     },
     {
-        // Webview and mock scripts share one global scope per page, so only their locals can be checked.
-        files: ["src/webview/**/*.js", "mockup/**/*.js"],
+        // Webview pages are classic scripts: an unused top-level binding is dead code. Names only tests reach go in
+        // an `/* exported */` comment.
+        files: ["src/webview/**/*.js"],
+        languageOptions: { sourceType: "script" }
+    },
+    {
+        // Mock scripts share one global scope per page across files, so only their locals can be checked.
+        files: ["mockup/**/*.js"],
         rules: {
             "no-unused-vars": [
                 "error",

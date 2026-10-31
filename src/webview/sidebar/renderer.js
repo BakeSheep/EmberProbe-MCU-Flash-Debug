@@ -43,13 +43,7 @@ function setNotice(area, id, notice) {
 function clearNotice(area, id) {
     notices[area]?.clear(id);
 }
-let sideWatch = [],
-    writeList = [],
-    available = [],
-    availableByName = new Map(),
-    availableVersion = "",
-    availableGeneration = null,
-    availableTypesReady = true,
+let availableTypesReady = true,
     availableLayoutPending = new Set(),
     availableAddPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
@@ -57,10 +51,6 @@ let sideWatch = [],
     availableTypeChunks = 0,
     availableSearchTimer = null,
     availableSearchQuery = "",
-    latest = Object.create(null),
-    latestText = Object.create(null),
-    latestEnum = Object.create(null),
-    latestPointer = Object.create(null),
     liveRunning = false,
     liveCanRead = false,
     liveCanWrite = false,
@@ -75,18 +65,31 @@ let sideWatch = [],
     lastSkill = { state: "checking" },
     lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
-let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
-    sbRawMembers = uiState.sbRawMembers || Object.create(null),
-    // Elements shown per static array path once "show more" was used.
-    sbArrayShown = uiState.sbArrayShown || Object.create(null),
-    avExpanded = Object.create(null),
-    writeCells = Object.create(null),
+let writeCells = Object.create(null),
     writeTimers = Object.create(null),
     writeLastAt = Object.create(null),
     latestWriteSeq = Object.create(null),
     // Last value known to be on the target per write card; a failed write rolls back to it.
     writeConfirmed = Object.create(null),
     writeSeq = 0;
+// Watch and write lists, ELF symbols, readings and view expansion; the value tree reads them too.
+const state = {
+    watch: [],
+    writeList: [],
+    available: [],
+    symbols: new Map(),
+    version: "",
+    generation: null,
+    latest: Object.create(null),
+    latestText: Object.create(null),
+    latestEnum: Object.create(null),
+    latestPointer: Object.create(null),
+    expanded: (uiState && uiState.sbExpanded) || Object.create(null),
+    rawMembers: uiState.sbRawMembers || Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    arrayShown: uiState.sbArrayShown || Object.create(null),
+    availableExpanded: Object.create(null)
+};
 const valueTree = EmberProbeValueTree.create({
     t: (key, params) => t(key, params),
     classes: {
@@ -102,16 +105,7 @@ const valueTree = EmberProbeValueTree.create({
         members: "sb-members",
         note: "sb-note"
     },
-    symbol: (name) => availableByName.get(name),
-    watch: () => sideWatch,
-    reading: (name) => ({
-        value: latest[name],
-        valueText: latestText[name],
-        enumText: latestEnum[name],
-        pointer: latestPointer[name]
-    }),
-    version: () => availableVersion,
-    ui: () => ({ expanded: sbExpanded, rawMembers: sbRawMembers, arrayShown: sbArrayShown }),
+    state,
     savedPointers: { pointers: uiState.sbLastPointers, version: uiState.sbLastPointersVersion },
     displayName: (path) => sbDisplayName({ name: path }),
     save: () => saveSbUi(),
@@ -121,10 +115,10 @@ const valueTree = EmberProbeValueTree.create({
     copy: (text) => api?.postMessage({ type: "copyText", text }),
     layoutExpansion: () => layoutExpansionUi,
     requestPointerLayout: (name) => {
-        if (!api || !availableVersion || availableLayoutPending.has(name)) return;
+        if (!api || !state.version || availableLayoutPending.has(name)) return;
         availableLayoutPending.add(name);
         sbPointerLayoutWaiters.add(name);
-        api.postMessage({ type: "resolveCompositeLayout", name, version: availableVersion });
+        api.postMessage({ type: "resolveCompositeLayout", name, version: state.version });
     },
     togglePointee: (entry) => sbTogglePointee(entry),
     decorateLeaf: (row, name) => name,
@@ -143,9 +137,9 @@ const sbWatchReorder =
     liveBox &&
     EmberProbeCardReorder.attach(liveBox, {
         onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(sideWatch, name, target, after, sbAttachedEntry);
-            if (next === sideWatch) return;
-            sideWatch = next;
+            const next = EmberProbeCardReorder.moveBlock(state.watch, name, target, after, sbAttachedEntry);
+            if (next === state.watch) return;
+            state.watch = next;
             renderValues();
             saveSideWatch();
         }
@@ -154,9 +148,9 @@ const sbWriteReorder =
     writeBox &&
     EmberProbeCardReorder.attach(writeBox, {
         onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(writeList, name, target, after);
-            if (next === writeList) return;
-            writeList = next;
+            const next = EmberProbeCardReorder.moveBlock(state.writeList, name, target, after);
+            if (next === state.writeList) return;
+            state.writeList = next;
             renderWrites();
             saveWriteList();
         }
@@ -180,13 +174,13 @@ function t(k, p) {
 }
 const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     post: (message) => api?.postMessage(message),
-    version: () => availableVersion,
-    generation: () => availableGeneration,
+    version: () => state.version,
+    generation: () => state.generation,
     symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => sbDisplayName({ name: path }),
     changed: () => {
-        for (const item of sideWatch) {
-            const symbol = availableByName.get(item.name);
+        for (const item of state.watch) {
+            const symbol = state.symbols.get(item.name);
             if (
                 symbol?.compositeLayout &&
                 symbol.compositeLayout.expansionGeneration === item.compositeLayout?.expansionGeneration
@@ -671,20 +665,20 @@ function setLang(l, notify) {
     if (notify && api) api.postMessage({ type: "setLang", lang: LANG });
 }
 function saveSideWatch() {
-    if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
+    if (api) api.postMessage({ type: "saveSidebarWatch", items: state.watch });
     valueTree.syncRuntimeExpansions();
 }
 function saveWriteList() {
-    if (api) api.postMessage({ type: "saveSidebarWrite", items: writeList });
+    if (api) api.postMessage({ type: "saveSidebarWrite", items: state.writeList });
 }
 function sbDisplayName(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
         get: (name) => {
-            const symbol = availableByName.get(name);
+            const symbol = state.symbols.get(name);
             if (symbol?.displayName && symbol.displayName !== symbol.name) return symbol;
             return (
-                sideWatch.find((entry) => entry.name === name) ||
-                writeList.find((entry) => entry.name === name) ||
+                state.watch.find((entry) => entry.name === name) ||
+                state.writeList.find((entry) => entry.name === name) ||
                 symbol
             );
         }
@@ -693,32 +687,32 @@ function sbDisplayName(item) {
 const LEAF_W = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
 function sbRemove(name, isComp) {
     if (isComp) {
-        sideWatch = sideWatch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
-        delete sbRawMembers[name];
-        for (const state of [sbExpanded, sbArrayShown])
-            Object.keys(state).forEach((key) => {
-                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete state[key];
+        state.watch = state.watch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
+        delete state.rawMembers[name];
+        for (const paths of [state.expanded, state.arrayShown])
+            Object.keys(paths).forEach((key) => {
+                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete paths[key];
             });
     } else {
-        const removed = sideWatch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
-        sideWatch = sideWatch.filter((w) => w.name !== name && !removed.includes(w));
+        const removed = state.watch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
+        state.watch = state.watch.filter((w) => w.name !== name && !removed.includes(w));
         removed.forEach((w) => sbForgetValues(w.name));
     }
     sbForgetValues(name);
 }
 function sbForgetValues(name) {
     valueTree.pointers.forget(name);
-    delete latest[name];
-    delete latestText[name];
-    delete latestEnum[name];
-    delete latestPointer[name];
+    delete state.latest[name];
+    delete state.latestText[name];
+    delete state.latestEnum[name];
+    delete state.latestPointer[name];
 }
 function sbToggle(entry) {
-    if (sideWatch.some((w) => w.name === entry.name)) {
+    if (state.watch.some((w) => w.name === entry.name)) {
         sbRemove(entry.name, !!entry.isComposite);
     } else {
-        sideWatch.push(entry);
-        if (entry.isComposite) sbExpanded[entry.name] = true;
+        state.watch.push(entry);
+        if (entry.isComposite) state.expanded[entry.name] = true;
     }
     renderValues();
     updateAvailableSelections();
@@ -729,7 +723,7 @@ function renderValues() {
     valueTree.reset();
     liveBox.textContent = "";
     // Expanded pointees render inside their pointer rows while composites and rows are built.
-    const topLevel = sideWatch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
+    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
     const rows = new Map();
     topLevel.filter(isComposite).forEach((item) => {
         sbRenderComposite(item);
@@ -739,7 +733,7 @@ function renderValues() {
     topLevel.forEach((item) => {
         if (!isComposite(item) && !valueTree.isLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
     });
-    if (!sideWatch.length) {
+    if (!state.watch.length) {
         document.getElementById("watchCount").textContent = "0";
         const e = document.createElement("div");
         e.className = "empty";
@@ -754,7 +748,7 @@ function renderValues() {
         liveBox.append(...nodes);
     });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    sideWatch
+    state.watch
         .filter(EmberProbeRuntime.isPointeeEntry)
         .sort((a, b) => a.name.length - b.name.length)
         .forEach((item) => {
@@ -764,7 +758,7 @@ function renderValues() {
             else liveBox.append(...sbRenderScalarRow(item));
         });
     document.getElementById("watchCount").textContent = String(
-        sideWatch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
+        state.watch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
     sbWatchReorder?.refresh();
     valueTree.syncRuntimeExpansions();
@@ -816,13 +810,13 @@ function sbRenderScalarRow(item) {
     return [row];
 }
 function sbTogglePointee(entry) {
-    if (sideWatch.some((item) => item.name === entry.name)) {
-        const removed = sideWatch.filter(
+    if (state.watch.some((item) => item.name === entry.name)) {
+        const removed = state.watch.filter(
             (item) => item.name === entry.name || EmberProbeRuntime.isPointeeDescendant(item, entry.name)
         );
-        sideWatch = sideWatch.filter((item) => !removed.includes(item));
+        state.watch = state.watch.filter((item) => !removed.includes(item));
         removed.forEach((item) => sbForgetValues(item.name));
-    } else sideWatch.push(entry);
+    } else state.watch.push(entry);
     renderValues();
     saveSideWatch();
 }
@@ -834,7 +828,7 @@ function isUserVariable(symbol) {
     return !symbol.origin || symbol.origin === "user";
 }
 function visibleAvailable() {
-    return userVarsOnly ? available.filter(isUserVariable) : available;
+    return userVarsOnly ? state.available.filter(isUserVariable) : state.available;
 }
 function availableOriginTitle(symbol) {
     const lines = [];
@@ -865,7 +859,7 @@ function scheduleAvailableMemberSearch(query) {
             .slice(0, slots)
             .forEach((symbol) => {
                 availableLayoutPending.add(symbol.name);
-                api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: availableVersion });
+                api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: state.version });
             });
     }, 180);
 }
@@ -888,20 +882,20 @@ function renderAvailableContents(content) {
     );
     const pool = visibleAvailable();
     const allCount = document.getElementById("allCount");
-    allCount.textContent = userVarsOnly ? pool.length + "/" + available.length : String(available.length);
-    allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: available.length }) : "";
+    allCount.textContent = userVarsOnly ? pool.length + "/" + state.available.length : String(state.available.length);
+    allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: state.available.length }) : "";
     // The error is in the diagnostics notice above the list.
     if (variableError) return;
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
     scheduleAvailableMemberSearch(query);
-    const selected = new Set(sideWatch.map((w) => w.name));
+    const selected = new Set(state.watch.map((w) => w.name));
     const nameMatches = (symbol) =>
         symbol.name.toLowerCase().includes(query) || sbDisplayName(symbol).toLowerCase().includes(query);
     const memberMatches = new Map();
     const matching = pool.filter((symbol) => {
         if (!query || nameMatches(symbol)) return true;
         if (!symbol.isComposite) return false;
-        const runtime = EmberProbeRuntime.runtimeSelection(symbol, latest[symbol.name]);
+        const runtime = EmberProbeRuntime.runtimeSelection(symbol, state.latest[symbol.name]);
         const leaves = valueTree.selectionLeaves(symbol, runtime);
         const matches = leaves.filter(
             (leaf) =>
@@ -920,9 +914,9 @@ function renderAvailableContents(content) {
         e.textContent =
             query && (!availableTypesReady || pool.some(needsAvailableLayout))
                 ? t("sb.searchingMembers")
-                : !pool.length && available.length
-                  ? t("sb.noUserVars", { count: available.length })
-                  : available.length
+                : !pool.length && state.available.length
+                  ? t("sb.noUserVars", { count: state.available.length })
+                  : state.available.length
                     ? t("sb.noMatch")
                     : t("sb.noImportable");
         content.appendChild(e);
@@ -930,7 +924,7 @@ function renderAvailableContents(content) {
     }
     list.forEach((sym) => {
         if (sym.isComposite) {
-            let open = !!avExpanded[sym.name] || memberMatches.has(sym.name);
+            let open = !!state.availableExpanded[sym.name] || memberMatches.has(sym.name);
             const row = document.createElement("div");
             row.className = "available-row comp";
             const wrap = document.createElement("span");
@@ -961,7 +955,7 @@ function renderAvailableContents(content) {
                     sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
                     () => {
                         if (
-                            sideWatch.some((item) => item.name === sym.name) ||
+                            state.watch.some((item) => item.name === sym.name) ||
                             sym.compositeLayout ||
                             sym.runtimeLayout
                         ) {
@@ -972,7 +966,7 @@ function renderAvailableContents(content) {
                             api?.postMessage({
                                 type: "resolveCompositeLayout",
                                 name: sym.name,
-                                version: availableVersion
+                                version: state.version
                             });
                         }
                     }
@@ -1000,8 +994,8 @@ function renderAvailableContents(content) {
                     );
                     return;
                 }
-                valueTree.renderRawMembersUi(kids, latest[sym.name] || sym.compositeLayout, sym.name);
-                const runtime = EmberProbeRuntime.runtimeSelection(sym, latest[sym.name]);
+                valueTree.renderRawMembersUi(kids, state.latest[sym.name] || sym.compositeLayout, sym.name);
+                const runtime = EmberProbeRuntime.runtimeSelection(sym, state.latest[sym.name]);
                 const leaves = memberMatches.get(sym.name) || valueTree.selectionLeaves(sym, runtime);
                 if (runtime)
                     valueTree.note(
@@ -1088,7 +1082,7 @@ function renderAvailableContents(content) {
                 e.preventDefault();
                 e.stopPropagation();
                 open = !open;
-                avExpanded[sym.name] = open;
+                state.availableExpanded[sym.name] = open;
                 arrow.classList.toggle("open", open);
                 kids.classList.toggle("open", open);
                 if (open) {
@@ -1100,7 +1094,7 @@ function renderAvailableContents(content) {
                         !availableLayoutPending.has(sym.name)
                     ) {
                         availableLayoutPending.add(sym.name);
-                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: availableVersion });
+                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
                     }
                 } else {
                     leafRows -= ownLeafRows;
@@ -1273,7 +1267,7 @@ function addWriteStep(value, delta, type) {
     return Number.isFinite(snapped) && Math.abs(result - snapped) <= tolerance ? snapped : result;
 }
 function inWriteList(name) {
-    return writeList.some((w) => w.name === name);
+    return state.writeList.some((w) => w.name === name);
 }
 // Aligned 32-bit variables can be written while the CPU runs; 8/16-bit, unaligned and 64-bit writes briefly halt for a
 // read-modify-write
@@ -1368,7 +1362,7 @@ function mkWriteBtn(entry, disabled, reason) {
     return button;
 }
 function mkWatchBtn(name, disabled, reason, handler) {
-    const on = !disabled && sideWatch.some((w) => w.name === name);
+    const on = !disabled && state.watch.some((w) => w.name === name);
     const button = mkAvBtn(
         "av-watch",
         on ? "\u2713" : "+",
@@ -1381,8 +1375,8 @@ function mkWatchBtn(name, disabled, reason, handler) {
     return button;
 }
 function updateAvailableSelections() {
-    const watched = new Set(sideWatch.map((item) => item.name));
-    const written = new Set(writeList.map((item) => item.name));
+    const watched = new Set(state.watch.map((item) => item.name));
+    const written = new Set(state.writeList.map((item) => item.name));
     availableBox.querySelectorAll("[data-selection-name]").forEach((button) => {
         if (button.disabled) return;
         const isWrite = button.classList.contains("av-write");
@@ -1411,19 +1405,19 @@ function cancelPendingWrite(name) {
 function removeWrite(name) {
     cancelPendingWrite(name);
     delete writeConfirmed[name];
-    writeList = writeList.filter((w) => w.name !== name);
+    state.writeList = state.writeList.filter((w) => w.name !== name);
     renderWrites();
     updateAvailableSelections();
     saveWriteList();
 }
 function wToggle(entry) {
-    const i = writeList.findIndex((w) => w.name === entry.name);
+    const i = state.writeList.findIndex((w) => w.name === entry.name);
     if (i >= 0) removeWrite(entry.name);
     else {
         const type = entry.type || "u32",
             nb = defBounds(type);
         if (entry.isBoolean) {
-            writeList.push({
+            state.writeList.push({
                 name: entry.name,
                 displayName: sbDisplayName(entry),
                 address: entry.address,
@@ -1432,11 +1426,11 @@ function wToggle(entry) {
                 isBoolean: true,
                 min: 0,
                 max: 1,
-                value: Number(latest[entry.name]) ? 1 : 0
+                value: Number(state.latest[entry.name]) ? 1 : 0
             });
         } else if (isWideInt(type)) {
-            const v = latestText[entry.name] || "0";
-            writeList.push({
+            const v = state.latestText[entry.name] || "0";
+            state.writeList.push({
                 name: entry.name,
                 displayName: sbDisplayName(entry),
                 address: entry.address,
@@ -1445,7 +1439,7 @@ function wToggle(entry) {
                 value: v
             });
         } else {
-            let v = Number(latest[entry.name]);
+            let v = Number(state.latest[entry.name]);
             if (!Number.isFinite(v)) v = 0;
             const item = {
                 name: entry.name,
@@ -1458,7 +1452,7 @@ function wToggle(entry) {
                 value: v
             };
             widenWriteBounds(item, v);
-            writeList.push(item);
+            state.writeList.push(item);
         }
         renderWrites();
         updateAvailableSelections();
@@ -1774,16 +1768,16 @@ function renderWrites() {
     hideWriteRiskTip();
     writeBox.textContent = "";
     writeCells = Object.create(null);
-    document.getElementById("writeCount").textContent = String(writeList.length);
-    if (!writeList.length) {
+    document.getElementById("writeCount").textContent = String(state.writeList.length);
+    if (!state.writeList.length) {
         const e = document.createElement("div");
         e.className = "empty";
         e.textContent = t("sb.writeEmpty");
         writeBox.appendChild(e);
         return;
     }
-    const labels = EmberProbeRuntime.uniqueShortVariableNames(writeList.map((item) => sbDisplayName(item)));
-    writeList.forEach((item, index) => {
+    const labels = EmberProbeRuntime.uniqueShortVariableNames(state.writeList.map((item) => sbDisplayName(item)));
+    state.writeList.forEach((item, index) => {
         const card = buildWriteCard(item, labels[index]);
         EmberProbeCardReorder.decorate(card, item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
         writeBox.appendChild(card);
@@ -1810,8 +1804,8 @@ function setWriteFeedback(notice) {
 // Write result feedback: the dot before the variable name lights up and fades (green on success, red on failure);
 // failures also show the reason in the title area
 function knownWriteValue(item) {
-    if (isWideInt(item.type)) return latestText[item.name] ?? writeConfirmed[item.name];
-    const sampled = latest[item.name];
+    if (isWideInt(item.type)) return state.latestText[item.name] ?? writeConfirmed[item.name];
+    const sampled = state.latest[item.name];
     const value = sampled === null || sampled === undefined ? NaN : Number(sampled);
     if (Number.isFinite(value)) return isFloat(item.type) ? value : Math.round(value);
     return writeConfirmed[item.name];
@@ -1826,9 +1820,9 @@ function onWriteResult(m) {
         void cells.dot.offsetWidth;
         cells.dot.classList.add("flash");
         if (m.ok) {
-            latest[m.name] = m.value;
-            latestText[m.name] = m.valueText ?? null;
-            latestEnum[m.name] = m.enumText ?? null;
+            state.latest[m.name] = m.value;
+            state.latestText[m.name] = m.valueText ?? null;
+            state.latestEnum[m.name] = m.enumText ?? null;
             cells.setVal(m.valueText ?? m.value);
             writeConfirmed[m.name] = m.valueText ?? m.value;
         } else {
@@ -1872,9 +1866,9 @@ function applyFolds() {
     }
 }
 function saveSbUi() {
-    uiState.sbExpanded = sbExpanded;
-    uiState.sbRawMembers = sbRawMembers;
-    uiState.sbArrayShown = sbArrayShown;
+    uiState.sbExpanded = state.expanded;
+    uiState.sbRawMembers = state.rawMembers;
+    uiState.sbArrayShown = state.arrayShown;
     uiState.sbLastPointers = valueTree.pointers.saved().pointers;
     uiState.sbLastPointersVersion = valueTree.pointers.saved().version;
     if (api && api.setState) api.setState(uiState);
@@ -1883,11 +1877,11 @@ function saveSbUi() {
 
 function sbRenderComposite(item) {
     const row = document.createElement("div");
-    row.className = "value-row composite" + (sbExpanded[item.name] ? " open" : "");
+    row.className = "value-row composite" + (state.expanded[item.name] ? " open" : "");
     const head = document.createElement("div");
     head.className = "sb-comp-head";
     const arrow = document.createElement("span");
-    arrow.className = "sb-arrow" + (sbExpanded[item.name] ? " open" : "");
+    arrow.className = "sb-arrow" + (state.expanded[item.name] ? " open" : "");
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
@@ -1914,9 +1908,9 @@ function sbRenderComposite(item) {
     const body = document.createElement("div");
     body.className = "sb-body";
     head.onclick = () => {
-        sbExpanded[item.name] = !sbExpanded[item.name];
-        row.classList.toggle("open", sbExpanded[item.name]);
-        arrow.classList.toggle("open", sbExpanded[item.name]);
+        state.expanded[item.name] = !state.expanded[item.name];
+        row.classList.toggle("open", state.expanded[item.name]);
+        arrow.classList.toggle("open", state.expanded[item.name]);
         saveSbUi();
     };
     const footer = valueTree.renderCompositeBody(body, item);
@@ -1930,12 +1924,13 @@ function sbOnComposite(samples) {
     (samples || []).forEach((s) => {
         if (s && s.name) {
             if (
-                (avExpanded[s.name] || searching) &&
-                EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-                EmberProbeRuntime.runtimeSelection(availableByName.get(s.name), s.tree)
+                (state.availableExpanded[s.name] || searching) &&
+                EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !==
+                    EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+                EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
             )
                 refreshAvailable = true;
-            latest[s.name] = s.tree;
+            state.latest[s.name] = s.tree;
             valueTree.treeSampled(s.name, s.tree);
         }
     });
@@ -1946,23 +1941,24 @@ function sbOnComposite(samples) {
 }
 function updateValues(samples) {
     (samples || []).forEach((s) => {
-        latest[s.name] = s.value;
-        latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
-        latestEnum[s.name] = s.enumText ?? null;
-        latestPointer[s.name] = EmberProbeValueTree.pointerReading(s);
+        state.latest[s.name] = s.value;
+        state.latestText[s.name] =
+            s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
+        state.latestEnum[s.name] = s.enumText ?? null;
+        state.latestPointer[s.name] = EmberProbeValueTree.pointerReading(s);
         valueTree.pointers.rememberSample(s);
     });
     valueRefresh.schedule();
 }
 function refreshDisplayedValues() {
-    const items = new Map(sideWatch.map((item) => [item.name, item]));
+    const items = new Map(state.watch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
         EmberProbeRuntime.setValueCell(
             el,
             valueTree.scalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName })
         );
     });
-    sideWatch.forEach((it) => {
+    state.watch.forEach((it) => {
         if (isComposite(it)) valueTree.updateComposite(it.name);
     });
     syncWriteValues();
@@ -1971,7 +1967,7 @@ function refreshDisplayedValues() {
 // debouncing) are not overwritten
 function syncWriteValues() {
     if (!liveCanRead) return;
-    writeList.forEach((item) => {
+    state.writeList.forEach((item) => {
         const c = writeCells[item.name];
         if (!c) return;
         if (Date.now() - (writeLastAt[item.name] || 0) < 1000) return;
@@ -1980,14 +1976,14 @@ function syncWriteValues() {
         const ae = document.activeElement;
         if (ae === c.input || ae === c.slider) return;
         if (isWideInt(item.type)) {
-            const text = latestText[item.name];
+            const text = state.latestText[item.name];
             if (text != null) {
                 c.setVal(text);
                 writeConfirmed[item.name] = text;
             }
             return;
         }
-        const sampled = latest[item.name];
+        const sampled = state.latest[item.name];
         if (sampled === null || sampled === undefined) return;
         let v = Number(sampled);
         if (!Number.isFinite(v)) return;
@@ -2079,17 +2075,17 @@ function renderSkillStatus(m) {
 // messages.
 function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
-    const state = lastAgentAccess?.card || "";
-    if (!state) clearNotice("global", "agent-access");
+    const card = lastAgentAccess?.card || "";
+    if (!card) clearNotice("global", "agent-access");
     else
         setNotice("global", "agent-access", {
             level: "info",
-            text: { key: state === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
+            text: { key: card === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
             actions: [
                 {
-                    label: { key: state === "enabled" ? "agent.disable" : "agent.enable" },
-                    primary: state !== "enabled",
-                    command: state === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
+                    label: { key: card === "enabled" ? "agent.disable" : "agent.enable" },
+                    primary: card !== "enabled",
+                    command: card === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
                 }
             ],
             dismissible: false
@@ -2418,16 +2414,16 @@ window.EmberProbeMessages.connect(window, {
     },
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
-        for (const item of sideWatch)
+        for (const item of state.watch)
             if (!incoming.some((next) => next.name === item.name)) valueTree.pointers.forget(item.name);
-        sideWatch = incoming;
+        state.watch = incoming;
         if (m.resetValues) {
             valueTree.pointers.clear();
-            sideWatch.forEach((item) => {
-                delete latest[item.name];
-                delete latestText[item.name];
-                delete latestEnum[item.name];
-                delete latestPointer[item.name];
+            state.watch.forEach((item) => {
+                delete state.latest[item.name];
+                delete state.latestText[item.name];
+                delete state.latestEnum[item.name];
+                delete state.latestPointer[item.name];
             });
         }
         valueTree.runtimeExpansionsReady();
@@ -2435,7 +2431,7 @@ window.EmberProbeMessages.connect(window, {
         updateAvailableSelections();
     },
     sidebarWriteList: function (m) {
-        writeList = (m.items || []).slice();
+        state.writeList = (m.items || []).slice();
         writeConfirmed = Object.create(null);
         renderWrites();
         updateAvailableSelections();
@@ -2445,9 +2441,9 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariables: function (m) {
         variableWarnings = m.warnings || [];
-        available = (m.symbols || []).slice();
+        state.available = (m.symbols || []).slice();
         availableTypesReady = true;
-        availableByName = new Map(available.map((symbol) => [symbol.name, symbol]));
+        state.symbols = new Map(state.available.map((symbol) => [symbol.name, symbol]));
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
@@ -2457,17 +2453,17 @@ window.EmberProbeMessages.connect(window, {
     },
     availableVariablesReset: function (m) {
         variableWarnings = m.warnings || [];
-        availableVersion = m.version || "";
-        availableGeneration = m.generation ?? null;
+        state.version = m.version || "";
+        state.generation = m.generation ?? null;
         if (valueTree.pointers.expire()) saveSbUi();
         layoutExpansionUi.reset();
-        for (const item of sideWatch) {
+        for (const item of state.watch) {
             delete item.layoutExpansions;
             item.layoutExpansionGeneration = -1;
         }
         availableTypesReady = false;
-        available = [];
-        availableByName.clear();
+        state.available = [];
+        state.symbols.clear();
         renderValues();
         availableTypeChunks = 0;
         availableLayoutPending.clear();
@@ -2478,14 +2474,14 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     availableVariablesChunk: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         const symbols = m.symbols || [];
-        available.push(...symbols);
-        for (const symbol of symbols) availableByName.set(symbol.name, symbol);
-        if (available.length <= 1000 || available.length % 10000 < symbols.length) renderAvailable();
+        state.available.push(...symbols);
+        for (const symbol of symbols) state.symbols.set(symbol.name, symbol);
+        if (state.available.length <= 1000 || state.available.length % 10000 < symbols.length) renderAvailable();
     },
     availableVariablesDone: function (m) {
-        if (m.version && m.version !== availableVersion) return;
+        if (m.version && m.version !== state.version) return;
         if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
@@ -2493,15 +2489,15 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     availableVariableTypes: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         for (const update of m.symbols || []) {
-            const symbol = availableByName.get(update.name);
+            const symbol = state.symbols.get(update.name);
             if (symbol) Object.assign(symbol, update);
         }
         if (++availableTypeChunks % 10 === 0) renderAvailable();
     },
     availableTypesDone: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         availableTypesReady = true;
         renderAvailable();
@@ -2512,9 +2508,9 @@ window.EmberProbeMessages.connect(window, {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         availableLayoutPending.delete(m.name);
-        const symbol = availableByName.get(m.name);
+        const symbol = state.symbols.get(m.name);
         if (!symbol) return;
         const pointerWaiter = sbPointerLayoutWaiters.delete(m.name);
         if (pointerWaiter && !symbol.isComposite) {
@@ -2535,7 +2531,7 @@ window.EmberProbeMessages.connect(window, {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");
             symbol.unsupportedReason = symbol.layoutError;
         }
-        if (availableAddPending.delete(m.name) && m.layout && !sideWatch.some((item) => item.name === m.name))
+        if (availableAddPending.delete(m.name) && m.layout && !state.watch.some((item) => item.name === m.name))
             sbToggle({
                 name: symbol.name,
                 address: Number(symbol.address) || 0,
@@ -2548,10 +2544,10 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     debugSessionChanged: function () {
-        latest = Object.create(null);
-        latestText = Object.create(null);
-        latestPointer = Object.create(null);
-        latestEnum = Object.create(null);
+        state.latest = Object.create(null);
+        state.latestText = Object.create(null);
+        state.latestPointer = Object.create(null);
+        state.latestEnum = Object.create(null);
         renderValues();
         renderWrites();
     },

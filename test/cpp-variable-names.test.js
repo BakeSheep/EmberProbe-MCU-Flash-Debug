@@ -211,7 +211,11 @@ try {
     assert.strictEqual(nested.document.getElementById("curveTooltip").textContent, ".bus_voltage_v: 11.49");
     assert.strictEqual(nested.document.querySelector(".curve-hit").dataset.rawName, voltageName);
     nested.send({ type: "chartValues", samples: [{ name: voltageName, value: 11.4875, t: 1000 }], t: 1000 });
-    assert.strictEqual(nested.window.latest[voltageName], 11.4875, "display changes preserve the sampling identity");
+    assert.strictEqual(
+        nested.window.eval("state").latest[voltageName],
+        11.4875,
+        "display changes preserve the sampling identity"
+    );
     nested.window.showArchiveExport({ variables: [voltageName], firstTimestampMs: 1000, lastTimestampMs: 1000 });
     assert.strictEqual(nested.document.querySelector("#exportSeries span").textContent, "pwr.data_.bus_voltage_v");
     nested.window.applyExport();

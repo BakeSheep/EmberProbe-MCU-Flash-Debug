@@ -605,13 +605,13 @@ async function testFrozenChartTheme() {
             revision: 1,
             bounds: { min: 1000, max: 1000 }
         });
-        assert.equal(view.window.frozen, true);
-        view.window.dirty = false;
+        assert.equal(view.window.eval("state").frozen, true);
+        view.window.eval("state").dirty = false;
         view.document.body.classList.add("vscode-light");
         await Promise.resolve();
-        assert.equal(view.window.dirty, true, "changing themes repaints a frozen canvas");
-        assert.equal(view.window.frozen, true);
-        assert.equal(view.window.remoteHistory.snapshotId, 7, "theme changes keep the frozen snapshot");
+        assert.equal(view.window.eval("state").dirty, true, "changing themes repaints a frozen canvas");
+        assert.equal(view.window.eval("state").frozen, true);
+        assert.equal(view.window.eval("state").remoteHistory.snapshotId, 7, "theme changes keep the frozen snapshot");
         view.assertHealthy();
     } finally {
         view.close();

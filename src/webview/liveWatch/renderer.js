@@ -1,48 +1,34 @@
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
 const { fmtNum, isComposite } = EmberProbeValueTree;
-var remoteHistory = {
-    // While following, render bounds advance with detail; liveStatus always tracks the latest event.
-    status: null,
-    liveStatus: null,
-    view: null,
-    overview: null,
-    composed: null,
-    snapshotId: null,
-    nextId: 0,
-    inFlight: null,
-    pending: null,
-    target: null,
-    overviewDueAt: null,
-    lastOverviewRequest: -Infinity,
-    operation: null,
-    lastRequest: -Infinity
-};
+
 function chartHistoryConfig() {
-    var names = watch
+    var names = state.watch
         .filter(function (item) {
-            return !hidden[item.name] && !isComposite(item);
+            return !state.hidden[item.name] && !isComposite(item);
         })
         .map(function (item) {
             return item.name;
         });
     var configKey = JSON.stringify([
         historyRevision,
-        remoteHistory.snapshotId,
+        state.remoteHistory.snapshotId,
         names,
-        watch.map(function (item) {
+        state.watch.map(function (item) {
             return [item.name, item.type, item.address, item.bitOffset, item.bitSize];
         })
     ]);
     return { names: names, configKey: configKey };
 }
 function followingChartHistory() {
-    return !frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag;
+    return (
+        !state.frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag
+    );
 }
 function smoothFollowEnabled() {
     return (
         running &&
-        !remoteHistory.operation &&
+        !state.remoteHistory.operation &&
         followingChartHistory() &&
         !chartState.startPinned &&
         !!chartState.x &&
@@ -114,12 +100,16 @@ function advanceFollowClock(now) {
 // Freeze/resume keep the drawn views until replacements arrive; only outstanding requests are dropped.
 function cancelChartHistoryRequests() {
     resetFollowClock();
-    remoteHistory.inFlight = remoteHistory.pending = remoteHistory.target = remoteHistory.failed = null;
-    remoteHistory.overviewDueAt = null;
-    remoteHistory.lastOverviewRequest = -Infinity;
+    state.remoteHistory.inFlight =
+        state.remoteHistory.pending =
+        state.remoteHistory.target =
+        state.remoteHistory.failed =
+            null;
+    state.remoteHistory.overviewDueAt = null;
+    state.remoteHistory.lastOverviewRequest = -Infinity;
 }
 function resetChartHistoryViews() {
-    remoteHistory.view = remoteHistory.overview = remoteHistory.composed = null;
+    state.remoteHistory.view = state.remoteHistory.overview = state.remoteHistory.composed = null;
     cancelChartHistoryRequests();
 }
 function chartHistoryBoundsValid(bounds) {
@@ -129,13 +119,13 @@ function requestChartViewport(range, width) {
     if (historyClearPending) return;
     var config = chartHistoryConfig();
     if (!config.names.length) {
-        remoteHistory.view = remoteHistory.overview = null;
-        remoteHistory.pending = remoteHistory.target = null;
-        remoteHistory.overviewDueAt = null;
+        state.remoteHistory.view = state.remoteHistory.overview = null;
+        state.remoteHistory.pending = state.remoteHistory.target = null;
+        state.remoteHistory.overviewDueAt = null;
         return;
     }
-    var status = frozen ? remoteHistory.status : remoteHistory.liveStatus;
-    if (!range || !status || !remoteHistory.status) return;
+    var status = state.frozen ? state.remoteHistory.status : state.remoteHistory.liveStatus;
+    if (!range || !status || !state.remoteHistory.status) return;
     var now = performance.now(),
         bounds = status.bounds,
         span = Math.max(1, range.max - range.min),
@@ -167,14 +157,15 @@ function requestChartViewport(range, width) {
         width: Math.min(8192, Math.max(1, Math.round((columns * (fetchRange.max - fetchRange.min)) / span))),
         names: config.names,
         revision: status.revision,
-        snapshotId: remoteHistory.snapshotId
+        snapshotId: state.remoteHistory.snapshotId
     };
     target.key = JSON.stringify([target.configKey, target.revision, target.range, target.width]);
     target.overviewRange = chartHistoryBoundsValid(bounds) ? { ...bounds } : null;
     target.overviewWidth = Math.min(4096, Math.max(64, Math.round(width)));
-    if (remoteHistory.target && remoteHistory.target.configKey !== target.configKey) remoteHistory.overviewDueAt = null;
-    remoteHistory.target = target;
-    var view = remoteHistory.view,
+    if (state.remoteHistory.target && state.remoteHistory.target.configKey !== target.configKey)
+        state.remoteHistory.overviewDueAt = null;
+    state.remoteHistory.target = target;
+    var view = state.remoteHistory.view,
         msPerColumn = view ? Math.max(1, view.range.max - view.range.min) / view.width : Infinity,
         desiredResolution = span / columns,
         followRefreshInterval = Math.max(80, span / Math.max(1, width)),
@@ -186,63 +177,63 @@ function requestChartViewport(range, width) {
             visibleRange.max > view.range.max + epsilon ||
             msPerColumn > desiredResolution * 1.5 ||
             msPerColumn < desiredResolution / 3 ||
-            (!frozen &&
+            (!state.frozen &&
                 status.revision !== view.revision &&
                 now - view.receivedAt >= (following ? followRefreshInterval : 1000));
     // Only the latest detail is pending. Overview work is derived from target when the slot opens.
     // A failed request is not repeated for the same key; overview failures back off for 5 s.
-    var inFlight = remoteHistory.inFlight,
-        failed = remoteHistory.failed;
-    remoteHistory.pending =
+    var inFlight = state.remoteHistory.inFlight,
+        failed = state.remoteHistory.failed;
+    state.remoteHistory.pending =
         needsDetail &&
         !(inFlight && inFlight.purpose === "detail" && inFlight.key === target.key) &&
         !(failed && failed.purpose === "detail" && failed.key === target.key)
             ? { ...target, purpose: "detail" }
             : null;
-    var overview = remoteHistory.overview,
+    var overview = state.remoteHistory.overview,
         overviewInFlight = inFlight && inFlight.purpose === "overview" && inFlight.configKey === target.configKey,
         overviewFailed =
             failed && failed.purpose === "overview" && failed.configKey === target.configKey && now - failed.at < 5000,
         missingOverview = !overview || overview.configKey !== target.configKey,
-        staleOverview = !frozen && overview && overview.revision !== status.revision;
+        staleOverview = !state.frozen && overview && overview.revision !== status.revision;
     if (
         target.overviewRange &&
         !overviewInFlight &&
         !overviewFailed &&
-        (missingOverview || (staleOverview && now - remoteHistory.lastOverviewRequest >= 1000))
+        (missingOverview || (staleOverview && now - state.remoteHistory.lastOverviewRequest >= 1000))
     ) {
-        if (remoteHistory.overviewDueAt === null)
-            remoteHistory.overviewDueAt = missingOverview ? now : remoteHistory.lastOverviewRequest + 1000;
-    } else remoteHistory.overviewDueAt = null;
+        if (state.remoteHistory.overviewDueAt === null)
+            state.remoteHistory.overviewDueAt = missingOverview ? now : state.remoteHistory.lastOverviewRequest + 1000;
+    } else state.remoteHistory.overviewDueAt = null;
     dispatchChartViewport();
 }
 function dispatchChartViewport() {
-    if (historyClearPending || remoteHistory.inFlight || !remoteHistory.target) return;
+    if (historyClearPending || state.remoteHistory.inFlight || !state.remoteHistory.target) return;
     var now = performance.now(),
-        overviewDue = remoteHistory.overviewDueAt !== null;
-    if (!remoteHistory.pending && !overviewDue) return;
-    var elapsed = now - remoteHistory.lastRequest;
+        overviewDue = state.remoteHistory.overviewDueAt !== null;
+    if (!state.remoteHistory.pending && !overviewDue) return;
+    var elapsed = now - state.remoteHistory.lastRequest;
     if (elapsed < 80) {
-        dirty = true;
+        state.dirty = true;
         return;
     }
     var request;
-    if (overviewDue && (!remoteHistory.pending || now - remoteHistory.overviewDueAt > 1000)) {
+    if (overviewDue && (!state.remoteHistory.pending || now - state.remoteHistory.overviewDueAt > 1000)) {
         request = {
-            ...remoteHistory.target,
+            ...state.remoteHistory.target,
             purpose: "overview",
-            range: remoteHistory.target.overviewRange,
-            width: remoteHistory.target.overviewWidth
+            range: state.remoteHistory.target.overviewRange,
+            width: state.remoteHistory.target.overviewWidth
         };
-        remoteHistory.lastOverviewRequest = now;
-        remoteHistory.overviewDueAt = null;
+        state.remoteHistory.lastOverviewRequest = now;
+        state.remoteHistory.overviewDueAt = null;
     } else {
-        request = remoteHistory.pending;
-        remoteHistory.pending = null;
+        request = state.remoteHistory.pending;
+        state.remoteHistory.pending = null;
     }
-    request.requestId = ++remoteHistory.nextId;
-    remoteHistory.inFlight = request;
-    remoteHistory.lastRequest = now;
+    request.requestId = ++state.remoteHistory.nextId;
+    state.remoteHistory.inFlight = request;
+    state.remoteHistory.lastRequest = now;
     post({
         type: "chartViewport",
         names: request.names,
@@ -455,53 +446,73 @@ var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     analysis = Analysis.create(),
     axisModes = {},
     controls;
-var watch = [],
-    latest = Object.create(null),
-    latestText = Object.create(null),
-    latestEnum = Object.create(null),
-    latestPointer = Object.create(null),
-    valueCells = Object.create(null),
-    hidden = Object.create(null),
-    expanded = Object.create(null),
-    rawMembers = Object.create(null),
-    numberBases = Object.create(null),
-    dispSpec = Object.create(null),
-    // Elements shown per static array path once "show more" was used.
-    arrayShown = Object.create(null),
+var valueCells = Object.create(null),
     running = false,
     starting = false,
-    frozen = false,
     norm = false,
     jitterBands = true,
-    allSymbols = [],
     samplingOrigin = null,
-    dirty = true,
     lastDraw = 0;
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
-    impVersion = "",
-    impGeneration = null,
     impWarnings = [],
     impError = "",
     impTypesReady = true,
-    impExpanded = Object.create(null),
     // Checkbox changes made since the import dialog opened; other rows mirror the current watch list.
     impPicks = new Map(),
     impLayoutPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
     pointerLayoutWaiters = new Set(),
-    impSymbolByName = new Map(),
     impIndexByName = new Map(),
     impTypeChunks = 0,
     impSearchTimer = null,
     impSearchQuery = "";
+// Watch list, ELF symbols, readings, curve and view settings; the value tree reads them too.
+const state = {
+    remoteHistory: {
+        // While following, render bounds advance with detail; liveStatus always tracks the latest event.
+        status: null,
+        liveStatus: null,
+        view: null,
+        overview: null,
+        composed: null,
+        snapshotId: null,
+        nextId: 0,
+        inFlight: null,
+        pending: null,
+        target: null,
+        overviewDueAt: null,
+        lastOverviewRequest: -Infinity,
+        operation: null,
+        lastRequest: -Infinity
+    },
+    watch: [],
+    latest: Object.create(null),
+    latestText: Object.create(null),
+    latestEnum: Object.create(null),
+    latestPointer: Object.create(null),
+    hidden: Object.create(null),
+    expanded: Object.create(null),
+    rawMembers: Object.create(null),
+    numberBases: Object.create(null),
+    dispSpec: Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    arrayShown: Object.create(null),
+    frozen: false,
+    allSymbols: [],
+    dirty: true,
+    version: "",
+    generation: null,
+    importExpanded: Object.create(null),
+    symbols: new Map()
+};
 var PANEL_MARGIN = 8,
     PANEL_MIN_WIDTH = 220,
     PANEL_MIN_HEIGHT = 120,
     PANEL_COLUMNS_WIDTH = 480;
 // Saved floating-card geometry, or a default top-left card.
-function savedValuePanel(state) {
-    var p = state && state.valuePanel;
+function savedValuePanel(ui) {
+    var p = ui && ui.valuePanel;
     if (p && ["x", "y", "w"].every((key) => Number.isFinite(p[key])) && (p.h === null || Number.isFinite(p.h)))
         return { x: p.x, y: p.y, w: p.w, h: p.h, dockRight: p.dockRight === true, dockBottom: p.dockBottom === true };
     return { x: 12, y: 40, w: 300, h: null, dockRight: false, dockBottom: false };
@@ -517,17 +528,17 @@ var saved = api && api.getState ? api.getState() : null,
     sideCollapsed = !!(saved && saved.sideCollapsed),
     windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30",
     impUserOnly = !!(saved && saved.impUserVarsOnly);
-if (saved && saved.hidden) hidden = saved.hidden;
+if (saved && saved.hidden) state.hidden = saved.hidden;
 if (saved && typeof saved.norm === "boolean") norm = saved.norm;
 if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterBands;
-if (saved && saved.expanded) expanded = saved.expanded;
-if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
+if (saved && saved.expanded) state.expanded = saved.expanded;
+if (saved && saved.rawMembers) state.rawMembers = saved.rawMembers;
 if (saved && saved.numberBases)
     Object.entries(saved.numberBases).forEach(function ([name, radix]) {
-        if ([2, 16].includes(radix)) numberBases[name] = radix;
+        if ([2, 16].includes(radix)) state.numberBases[name] = radix;
     });
-if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
-if (saved && saved.arrayShown) arrayShown = saved.arrayShown;
+if (saved && saved.dispSpec) state.dispSpec = saved.dispSpec;
+if (saved && saved.arrayShown) state.arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
 var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
 const valueTree = EmberProbeValueTree.create({
@@ -545,17 +556,8 @@ const valueTree = EmberProbeValueTree.create({
         members: "comp-members",
         note: "comp-note"
     },
-    symbol: (name) => impSymbolByName.get(name),
-    watch: () => watch,
-    reading: (name) => ({
-        value: latest[name],
-        valueText: latestText[name],
-        enumText: latestEnum[name],
-        pointer: latestPointer[name]
-    }),
-    version: () => impVersion,
-    radix: (name) => numberBases[name] || 10,
-    ui: () => ({ expanded, rawMembers, arrayShown }),
+    state,
+    radix: (name) => state.numberBases[name] || 10,
     savedPointers: saved && { pointers: saved.lastPointers, version: saved.lastPointersVersion },
     displayName: (path) => displayNameFor({ name: path }),
     save: () => saveUi(),
@@ -567,24 +569,24 @@ const valueTree = EmberProbeValueTree.create({
     copy: (text) => api?.postMessage({ type: "copyText", text }),
     layoutExpansion: () => layoutExpansionUi,
     requestPointerLayout: (name) => {
-        if (!impVersion || impLayoutPending.has(name)) return;
+        if (!state.version || impLayoutPending.has(name)) return;
         impLayoutPending.add(name);
         pointerLayoutWaiters.add(name);
-        post({ type: "resolveCompositeLayout", name, version: impVersion });
+        post({ type: "resolveCompositeLayout", name, version: state.version });
     },
     togglePointee: (entry) => togglePointee(entry),
     // A member row's swatch adds the member to the chart or switches its curve.
     decorateLeaf: (row, name, leaf) => {
-        const index = watch.findIndex((item) => item.name === leaf.path);
+        const index = state.watch.findIndex((item) => item.name === leaf.path);
         const swatch = document.createElement("span");
-        swatch.className = "member-swatch" + (index < 0 || hidden[leaf.path] ? " off" : "");
+        swatch.className = "member-swatch" + (index < 0 || state.hidden[leaf.path] ? " off" : "");
         if (index >= 0) swatch.style.background = colorFor(index);
-        swatch.title = index >= 0 ? t(hidden[leaf.path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
+        swatch.title = index >= 0 ? t(state.hidden[leaf.path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
         if (controls && index >= 0) controls.decorate(row, leaf.path, swatch);
         return createCurveToggle(swatch, name, function () {
             // A placeholder row has no address yet: it can be added once samples arrive, but a curve
             // already in the chart can be switched off right away.
-            if (!leaf.node?.placeholder || watch.some((item) => item.name === leaf.path))
+            if (!leaf.node?.placeholder || state.watch.some((item) => item.name === leaf.path))
                 toggleLeafInChart(leaf.path, leaf.address, leaf.watchType, leaf.node);
         });
     },
@@ -609,7 +611,7 @@ function $(id) {
     return document.getElementById(id);
 }
 function colorFor(i) {
-    return styleFor(typeof i === "string" ? i : watch[i]?.name || String(i)).color;
+    return styleFor(typeof i === "string" ? i : state.watch[i]?.name || String(i)).color;
 }
 function styleFor(name) {
     if (!Object.prototype.hasOwnProperty.call(seriesStyles, name)) {
@@ -624,10 +626,10 @@ function styleFor(name) {
 function toggleCurve(name) {
     analysis.previousHidden = null;
     analysis.focused = null;
-    hidden[name] = !hidden[name];
+    state.hidden[name] = !state.hidden[name];
     saveUi();
     renderVars();
-    dirty = true;
+    state.dirty = true;
 }
 function fmtAddr(a) {
     return "0x" + (Number(a) >>> 0).toString(16).toUpperCase();
@@ -639,13 +641,13 @@ function defType(size) {
 }
 const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     post,
-    version: () => impVersion,
-    generation: () => impGeneration,
+    version: () => state.version,
+    generation: () => state.generation,
     symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => displayNameFor({ name: path }),
     changed: () => {
-        for (const item of watch) {
-            const symbol = impSymbolByName.get(item.name);
+        for (const item of state.watch) {
+            const symbol = state.symbols.get(item.name);
             if (
                 symbol?.compositeLayout &&
                 symbol.compositeLayout.expansionGeneration === item.compositeLayout?.expansionGeneration
@@ -666,14 +668,14 @@ function post(m) {
 }
 function saveWatch() {
     valueTree.syncRuntimeExpansions();
-    post({ type: "saveWatch", items: watch });
+    post({ type: "saveWatch", items: state.watch });
 }
 // The host keeps each chart's curve visibility so a panel reopened after a restart restores it.
 // Nothing is sent before the host's copy arrives, so a fresh view cannot overwrite it.
 var curveVisibilityLoaded = false,
     sentCurveVisibility = null;
 function saveUi() {
-    var curves = analysis.previousHidden || hidden;
+    var curves = analysis.previousHidden || state.hidden;
     if (curveVisibilityLoaded) {
         var key = JSON.stringify(curves);
         if (key !== sentCurveVisibility) {
@@ -686,11 +688,11 @@ function saveUi() {
             panelId: CFG.panelId,
             watchKey: CFG.watchKey,
             hidden: curves,
-            expanded: expanded,
-            rawMembers: rawMembers,
-            numberBases: numberBases,
-            dispSpec: dispSpec,
-            arrayShown: arrayShown,
+            expanded: state.expanded,
+            rawMembers: state.rawMembers,
+            numberBases: state.numberBases,
+            dispSpec: state.dispSpec,
+            arrayShown: state.arrayShown,
             lastPointers: valueTree.pointers.saved().pointers,
             lastPointersVersion: valueTree.pointers.saved().version,
             pointerCurveDefaults: true,
@@ -709,7 +711,7 @@ function saveUi() {
 }
 // Pointer curves carry little information; they start hidden unless the user switched them on.
 function hidePointerCurve(item) {
-    if (item && item.isPointer && hidden[item.name] === undefined) hidden[item.name] = true;
+    if (item && item.isPointer && state.hidden[item.name] === undefined) state.hidden[item.name] = true;
 }
 // Notices live in the import and export dialogs, plus the variable-source picker.
 var noticeAreas = {};
@@ -791,9 +793,9 @@ function rerenderLive() {
     if ($("acDrop").classList.contains("open")) renderAutocomplete(ambiguityChoices);
     updateRun();
     applySideLayout();
-    $("freeze").textContent = frozen ? t("lw.resume") : t("lw.freeze");
+    $("freeze").textContent = state.frozen ? t("lw.resume") : t("lw.freeze");
     renderStatus();
-    dirty = true;
+    state.dirty = true;
 }
 function setLang(l) {
     LANG = l === "en" ? "en" : "zh";
@@ -808,10 +810,10 @@ function updateRun() {
 function displayNameFor(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
         get: function (name) {
-            var symbol = impSymbolByName.get(name);
+            var symbol = state.symbols.get(name);
             if (symbol && symbol.displayName && symbol.displayName !== symbol.name) return symbol;
             return (
-                watch.find(function (entry) {
+                state.watch.find(function (entry) {
                     return entry.name === name;
                 }) || symbol
             );
@@ -820,7 +822,7 @@ function displayNameFor(item) {
 }
 function curveDisplayName(name) {
     return displayNameFor(
-        watch.find(function (item) {
+        state.watch.find(function (item) {
             return item.name === name;
         }) || { name: name }
     );
@@ -829,17 +831,17 @@ function addSymbol(sym, resolved = false) {
     if (
         !sym ||
         !sym.name ||
-        watch.some(function (w) {
+        state.watch.some(function (w) {
             return w.name === sym.name;
         })
     )
         return;
     if (
         !resolved &&
-        impVersion &&
+        state.version &&
         (!impTypesReady || (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout))
     ) {
-        post({ type: "resolveVariable", name: sym.name, version: impVersion });
+        post({ type: "resolveVariable", name: sym.name, version: state.version });
         return;
     }
     if (sym.isComposite) {
@@ -849,9 +851,9 @@ function addSymbol(sym, resolved = false) {
         }
         var lay = sym.compositeLayout;
         var addComp = function (disp) {
-            if (disp) dispSpec[sym.name] = disp;
-            else delete dispSpec[sym.name];
-            watch.push({
+            if (disp) state.dispSpec[sym.name] = disp;
+            else delete state.dispSpec[sym.name];
+            state.watch.push({
                 name: sym.name,
                 displayName: displayNameFor(sym),
                 address: Number(sym.address) || 0,
@@ -864,18 +866,18 @@ function addSymbol(sym, resolved = false) {
                 ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {}),
                 ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
             });
-            expanded[sym.name] = true;
+            state.expanded[sym.name] = true;
             renderVars();
             saveWatch();
             saveUi();
-            dirty = true;
+            state.dirty = true;
         };
         if (lay?.kind === "array" && (Number(lay.totalElements) || 0) > MAX_ARR_SHOWN)
             showArraySelectDialog(sym, addComp);
         else addComp(null);
         return;
     }
-    watch.push({
+    state.watch.push({
         name: sym.name,
         displayName: displayNameFor(sym),
         address: Number(sym.address) || 0,
@@ -895,17 +897,17 @@ function addSymbol(sym, resolved = false) {
     renderVars();
     saveWatch();
     saveUi();
-    dirty = true;
+    state.dirty = true;
 }
 function removeVar(name) {
-    var rmv = watch.filter(function (w) {
+    var rmv = state.watch.filter(function (w) {
         return (
             w.name === name ||
             EmberProbeRuntime.variableBaseName(w.name) === name ||
             EmberProbeRuntime.isPointeeDescendant(w, name)
         );
     });
-    watch = watch.filter(function (w) {
+    state.watch = state.watch.filter(function (w) {
         return rmv.indexOf(w) < 0;
     });
     if (
@@ -913,31 +915,31 @@ function removeVar(name) {
             return w.name === analysis.focused;
         })
     )
-        hidden = Analysis.restore(
+        state.hidden = Analysis.restore(
             analysis,
-            watch.map(function (w) {
+            state.watch.map(function (w) {
                 return w.name;
             })
         );
     rmv.forEach(function (w) {
-        delete latest[w.name];
-        delete latestText[w.name];
-        delete latestEnum[w.name];
-        delete latestPointer[w.name];
-        delete hidden[w.name];
+        delete state.latest[w.name];
+        delete state.latestText[w.name];
+        delete state.latestEnum[w.name];
+        delete state.latestPointer[w.name];
+        delete state.hidden[w.name];
     });
-    [expanded, arrayShown, numberBases].forEach(function (state) {
-        Object.keys(state).forEach(function (path) {
-            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete state[path];
+    [state.expanded, state.arrayShown, state.numberBases].forEach(function (paths) {
+        Object.keys(paths).forEach(function (path) {
+            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete paths[path];
         });
     });
-    delete dispSpec[name];
-    delete rawMembers[name];
+    delete state.dispSpec[name];
+    delete state.rawMembers[name];
     valueTree.pointers.forget(name);
     renderVars();
     saveWatch();
     saveUi();
-    dirty = true;
+    state.dirty = true;
 }
 function createCurveToggle(swatch, content, onClick) {
     var button = document.createElement("button");
@@ -959,10 +961,10 @@ function createCurveToggle(swatch, content, onClick) {
 }
 function renderVars() {
     valueTree.reset();
-    dirty = true;
+    state.dirty = true;
     if (analysis.focused)
-        watch.forEach(function (w) {
-            hidden[w.name] = w.name !== analysis.focused;
+        state.watch.forEach(function (w) {
+            state.hidden[w.name] = w.name !== analysis.focused;
         });
     var box = $("vars");
     box.textContent = "";
@@ -970,17 +972,17 @@ function renderVars() {
     box.classList.remove("independent-columns");
     valueCells = Object.create(null);
     // Expanded pointees render inside their pointer rows while cards are built.
-    const topLevel = watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
+    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
     const cards = new Map();
     topLevel.filter(isComposite).forEach(function (item) {
         const holder = document.createElement("div");
-        renderCompositeCard(item, watch.indexOf(item), holder);
+        renderCompositeCard(item, state.watch.indexOf(item), holder);
         cards.set(item.name, [...holder.childNodes]);
     });
     topLevel.forEach(function (item) {
         if (!isComposite(item) && !valueTree.isLeafChild(item.name)) cards.set(item.name, renderScalarCard(item));
     });
-    if (!watch.length) {
+    if (!state.watch.length) {
         $("count").textContent = "0";
         var empty = document.createElement("div");
         empty.className = "empty";
@@ -995,24 +997,24 @@ function renderVars() {
         box.append(...nodes);
     });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    watch
+    state.watch
         .filter(EmberProbeRuntime.isPointeeEntry)
         .sort((a, b) => a.name.length - b.name.length)
         .forEach(function (item) {
             if (valueTree.placed.has(item.name)) return;
             valueTree.fallback.add(item.name);
-            if (isComposite(item)) renderCompositeCard(item, watch.indexOf(item), box);
+            if (isComposite(item)) renderCompositeCard(item, state.watch.indexOf(item), box);
             else box.append(...renderScalarCard(item));
         });
     // A member card drawn before its pointee tree was rendered is shown by that tree instead.
     cards.forEach(function (nodes, name) {
-        const item = watch.find((w) => w.name === name);
+        const item = state.watch.find((w) => w.name === name);
         if (!item || isComposite(item) || !valueTree.isLeafChild(name)) return;
         nodes.forEach((node) => node.remove());
         if (valueCells[name]?.isConnected === false) delete valueCells[name];
     });
     $("count").textContent = String(
-        watch.filter(function (it) {
+        state.watch.filter(function (it) {
             return !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name);
         }).length
     );
@@ -1045,16 +1047,16 @@ var varReorder = EmberProbeCardReorder.attach($("vars"), {
         if (moved) cardColumns[name] = column;
         var next =
             target === null
-                ? watch
-                : EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
+                ? state.watch
+                : EmberProbeCardReorder.moveBlock(state.watch, name, target, after, function (w, base) {
                       return (
                           EmberProbeRuntime.variableBaseName(w.name) === base ||
                           EmberProbeRuntime.isPointeeDescendant(w, base)
                       );
                   });
-        if (next === watch && !moved) return;
-        var reordered = next !== watch;
-        watch = next;
+        if (next === state.watch && !moved) return;
+        var reordered = next !== state.watch;
+        state.watch = next;
         renderVars();
         if (reordered) saveWatch();
         saveUi();
@@ -1113,13 +1115,13 @@ function arrangeVariableCards(force) {
     box.scrollTop = scrollTop;
 }
 function renderScalarCard(item) {
-    var idx = watch.indexOf(item);
+    var idx = state.watch.indexOf(item);
     var card = document.createElement("div");
     card.className = "var-card";
     var sw = document.createElement("span");
-    sw.className = "swatch" + (hidden[item.name] ? " off" : "");
+    sw.className = "swatch" + (state.hidden[item.name] ? " off" : "");
     sw.style.background = colorFor(idx);
-    sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
+    sw.title = state.hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
     var main = document.createElement("span");
     main.className = "var-main";
     var name = document.createElement("span");
@@ -1170,12 +1172,12 @@ function renderScalarCard(item) {
     return [card];
 }
 function updateValues() {
-    const items = new Map(watch.map((entry) => [entry.name, entry]));
+    const items = new Map(state.watch.map((entry) => [entry.name, entry]));
     Object.keys(valueCells).forEach(function (n) {
         const item = items.get(n);
         if (item) EmberProbeRuntime.setValueCell(valueCells[n], valueTree.scalarDisplay(item));
     });
-    watch.forEach(function (it) {
+    state.watch.forEach(function (it) {
         if (isComposite(it)) valueTree.updateComposite(it.name);
     });
 }
@@ -1189,19 +1191,19 @@ function defW(ty) {
             : 4;
 }
 function togglePointee(entry) {
-    if (watch.some((item) => item.name === entry.name)) {
+    if (state.watch.some((item) => item.name === entry.name)) {
         removeVar(entry.name);
         return;
     }
     // Expanding inspects the target; a scalar target joins the chart only when its swatch is enabled.
-    if (!entry.isComposite) hidden[entry.name] = true;
+    if (!entry.isComposite) state.hidden[entry.name] = true;
     addSymbol(entry, true);
     saveUi();
 }
 
 function renderCompositeCard(item, idx, box) {
     var card = document.createElement("div");
-    card.className = "var-card composite" + (expanded[item.name] ? " open" : "");
+    card.className = "var-card composite" + (state.expanded[item.name] ? " open" : "");
     var rm = document.createElement("button");
     rm.className = "remove";
     rm.textContent = "×";
@@ -1216,7 +1218,7 @@ function renderCompositeCard(item, idx, box) {
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
-    arrow.className = "comp-arrow" + (expanded[item.name] ? " open" : "");
+    arrow.className = "comp-arrow" + (state.expanded[item.name] ? " open" : "");
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
@@ -1231,13 +1233,13 @@ function renderCompositeCard(item, idx, box) {
     var body = document.createElement("div");
     body.className = "comp-body";
     head.onclick = function () {
-        expanded[item.name] = !expanded[item.name];
-        card.classList.toggle("open", expanded[item.name]);
-        arrow.classList.toggle("open", expanded[item.name]);
+        state.expanded[item.name] = !state.expanded[item.name];
+        card.classList.toggle("open", state.expanded[item.name]);
+        arrow.classList.toggle("open", state.expanded[item.name]);
         saveUi();
-        dirty = true;
+        state.dirty = true;
     };
-    const footer = valueTree.renderCompositeBody(body, item, dispSpec[item.name]);
+    const footer = valueTree.renderCompositeBody(body, item, state.dispSpec[item.name]);
     if (controls) controls.decorate(card, item.name);
     content.append(head, body, footer);
     card.append(rm, content);
@@ -1246,12 +1248,12 @@ function renderCompositeCard(item, idx, box) {
 }
 function addLeafWatch(path, address, watchType, node) {
     if (
-        watch.some(function (w) {
+        state.watch.some(function (w) {
             return w.name === path;
         })
     )
         return false;
-    watch.push({
+    state.watch.push({
         name: path,
         address: Number(address) >>> 0,
         size: defW(watchType),
@@ -1264,7 +1266,7 @@ function addLeafWatch(path, address, watchType, node) {
     return true;
 }
 function toggleLeafInChart(path, address, watchType, node) {
-    var i = watch.findIndex(function (w) {
+    var i = state.watch.findIndex(function (w) {
         return w.name === path;
     });
     if (i >= 0) {
@@ -1275,7 +1277,7 @@ function toggleLeafInChart(path, address, watchType, node) {
     }
     renderVars();
     saveWatch();
-    dirty = true;
+    state.dirty = true;
 }
 function onCompositeSamples(samples) {
     if (historyClearPending) return;
@@ -1284,14 +1286,14 @@ function onCompositeSamples(samples) {
     (samples || []).forEach(function (s) {
         if (!s || !s.name) return;
         if (
-            (impExpanded[s.name] || searching) &&
+            (state.importExpanded[s.name] || searching) &&
             !$("overlay").classList.contains("hidden") &&
-            EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-            EmberProbeRuntime.runtimeSelection(impSymbolByName.get(s.name), s.tree)
+            EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+            EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
         )
             refreshImport = true;
         if (s && s.name) {
-            latest[s.name] = s.tree;
+            state.latest[s.name] = s.tree;
             valueTree.treeSampled(s.name, s.tree);
         }
     });
@@ -1300,13 +1302,13 @@ function onCompositeSamples(samples) {
     // A re-rendered tree can also now show members that still have their own chart card.
     if (
         [...valueTree.fallback].some((name) => valueTree.placed.has(name)) ||
-        watch.some(
+        state.watch.some(
             (it) => !isComposite(it) && valueCells[it.name]?.closest(".var-card") && valueTree.isLeafChild(it.name)
         )
     )
         renderVars();
     valueRefresh.schedule();
-    dirty = true;
+    state.dirty = true;
 }
 function showArraySelectDialog(sym, cb) {
     var lay = sym.compositeLayout || {},
@@ -1389,7 +1391,7 @@ function showArraySelectDialog(sym, cb) {
 }
 function start() {
     if (running || starting) return;
-    if (!watch.length) {
+    if (!state.watch.length) {
         setStatusKey("lw.needVar", null, "warning", "start");
         return;
     }
@@ -1399,7 +1401,7 @@ function start() {
     starting = true;
     updateRun();
     setStatusKey("lw.starting");
-    post({ type: "start", items: watch, frequencyHz: frequencyHz });
+    post({ type: "start", items: state.watch, frequencyHz: frequencyHz });
 }
 function stop() {
     if (!running && !starting) return;
@@ -1411,25 +1413,25 @@ function stop() {
 function clearHistory(clearArchive = true) {
     historyRevision++;
     historyClearPending = clearArchive;
-    remoteHistory.status = remoteHistory.liveStatus = null;
+    state.remoteHistory.status = state.remoteHistory.liveStatus = null;
     resetChartHistoryViews();
-    remoteHistory.operation = remoteHistory.snapshotId = null;
+    state.remoteHistory.operation = state.remoteHistory.snapshotId = null;
     exportCandidates = [];
     hideExport();
     if (clearArchive) post({ type: "clearSamplingHistory", historyRevision: historyRevision });
-    frozen = false;
+    state.frozen = false;
     $("freeze").textContent = t("lw.freeze");
-    Object.keys(latest).forEach(function (n) {
-        latest[n] = null;
-        latestText[n] = null;
-        latestEnum[n] = null;
-        delete latestPointer[n];
+    Object.keys(state.latest).forEach(function (n) {
+        state.latest[n] = null;
+        state.latestText[n] = null;
+        state.latestEnum[n] = null;
+        delete state.latestPointer[n];
     });
     samplingOrigin = null;
     $("rate").textContent = rateText(0, 0);
     updateValues();
     resetChartView();
-    dirty = true;
+    state.dirty = true;
 }
 const IMPORT_VARIABLE_LIMIT = 500;
 const IMPORT_ROW_LIMIT = IMPORT_VARIABLE_LIMIT * 2;
@@ -1440,7 +1442,7 @@ function isUserVariable(symbol) {
     return !symbol.origin || symbol.origin === "user";
 }
 function visibleImportSymbols() {
-    return impUserOnly ? allSymbols.filter(isUserVariable) : allSymbols;
+    return impUserOnly ? state.allSymbols.filter(isUserVariable) : state.allSymbols;
 }
 function applyImportUserOnly() {
     const button = $("impUserOnly");
@@ -1468,7 +1470,7 @@ function scheduleImportMemberSearch(query) {
             .slice(0, slots)
             .forEach(function (symbol) {
                 impLayoutPending.add(symbol.name);
-                post({ type: "resolveCompositeLayout", name: symbol.name, version: impVersion });
+                post({ type: "resolveCompositeLayout", name: symbol.name, version: state.version });
             });
     }, 180);
 }
@@ -1478,7 +1480,7 @@ function renderImport() {
         box = $("impList"),
         pool = visibleImportSymbols();
     var watchedNames = new Set(
-        watch.map(function (item) {
+        state.watch.map(function (item) {
             return item.name;
         })
     );
@@ -1493,7 +1495,7 @@ function renderImport() {
     var matched = pool.filter(function (s) {
             if (!f || s.name.toLowerCase().includes(f) || displayNameFor(s).toLowerCase().includes(f)) return true;
             if (!s.isComposite) return false;
-            var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
+            var runtime = EmberProbeRuntime.runtimeSelection(s, state.latest[s.name]);
             var leaves = valueTree.selectionLeaves(s, runtime);
             var matches = leaves.filter(function (leaf) {
                 return (
@@ -1509,7 +1511,7 @@ function renderImport() {
     shown.forEach(function (s) {
         var gi = impIndexByName.get(s.name);
         if (s.isComposite) {
-            var open = !!impExpanded[s.name] || memberMatches.has(s.name);
+            var open = !!state.importExpanded[s.name] || memberMatches.has(s.name);
             var row = document.createElement("div");
             row.className = "imp-row";
             var cb = document.createElement("input");
@@ -1552,8 +1554,8 @@ function renderImport() {
                     valueTree.note(kids, s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout"), "warning");
                     return;
                 }
-                valueTree.renderRawMembersUi(kids, latest[s.name] || s.compositeLayout, s.name);
-                var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
+                valueTree.renderRawMembersUi(kids, state.latest[s.name] || s.compositeLayout, s.name);
+                var runtime = EmberProbeRuntime.runtimeSelection(s, state.latest[s.name]);
                 var leaves = memberMatches.get(s.name) || valueTree.selectionLeaves(s, runtime);
                 if (runtime)
                     valueTree.note(
@@ -1618,7 +1620,7 @@ function renderImport() {
                 populate();
                 if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
                     impLayoutPending.add(s.name);
-                    post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
+                    post({ type: "resolveCompositeLayout", name: s.name, version: state.version });
                 }
             }
             box.appendChild(kids);
@@ -1627,12 +1629,12 @@ function renderImport() {
                 e.stopPropagation();
                 var open = kids.classList.toggle("open");
                 arrow.classList.toggle("open", open);
-                impExpanded[s.name] = open;
+                state.importExpanded[s.name] = open;
                 if (open) {
                     populate();
                     if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
                         impLayoutPending.add(s.name);
-                        post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
+                        post({ type: "resolveCompositeLayout", name: s.name, version: state.version });
                     }
                 } else {
                     leafRows -= ownLeafRows;
@@ -1676,17 +1678,17 @@ function renderImport() {
         empty.textContent =
             f && (!impTypesReady || pool.some(needsImportLayout))
                 ? t("sb.searchingMembers")
-                : !pool.length && allSymbols.length
-                  ? t("sb.noUserVars", { count: allSymbols.length })
-                  : allSymbols.length
+                : !pool.length && state.allSymbols.length
+                  ? t("sb.noUserVars", { count: state.allSymbols.length })
+                  : state.allSymbols.length
                     ? t("sb.noMatch")
                     : t("sb.noImportable");
         box.appendChild(empty);
     }
     $("impCount").textContent =
         (impUserOnly
-            ? t("sb.filteredCount", { shown: pool.length, total: allSymbols.length })
-            : t("lw.totalVars", { n: allSymbols.length })) +
+            ? t("sb.filteredCount", { shown: pool.length, total: state.allSymbols.length })
+            : t("lw.totalVars", { n: state.allSymbols.length })) +
         (matched.length > shown.length ? t("lw.showingFirst", { n: shown.length }) : "");
 }
 function openImport() {
@@ -1749,7 +1751,7 @@ function renderAutocomplete(candidates) {
     }
     var matches = Array.isArray(candidates)
         ? candidates
-        : allSymbols
+        : state.allSymbols
               .filter(function (s) {
                   return s.name.toLowerCase().indexOf(q) >= 0 || displayNameFor(s).toLowerCase().indexOf(q) >= 0;
               })
@@ -1786,7 +1788,7 @@ function renderAutocomplete(candidates) {
 function resolveTypedVariable(name) {
     hideAutocomplete();
     pendingVariableRequest = { id: ++variableRequestId, query: $("addName").value.trim(), name: name };
-    post({ type: "resolveVariable", name: name, version: impVersion, requestId: variableRequestId });
+    post({ type: "resolveVariable", name: name, version: state.version, requestId: variableRequestId });
 }
 function currentVariableReply(message) {
     return (
@@ -1794,7 +1796,7 @@ function currentVariableReply(message) {
         pendingVariableRequest.id === message.requestId &&
         pendingVariableRequest.name === message.requestedName &&
         pendingVariableRequest.query === $("addName").value.trim() &&
-        message.version === impVersion
+        message.version === state.version
     );
 }
 function importSelected() {
@@ -1805,7 +1807,7 @@ function importSelected() {
         .forEach(function (cb) {
             if (cb.dataset.leafPath) leafCbs.push(cb);
             else if (cb.dataset.idx) {
-                var s = allSymbols[parseInt(cb.dataset.idx, 10)];
+                var s = state.allSymbols[parseInt(cb.dataset.idx, 10)];
                 if (s) syms.push(s);
             }
         });
@@ -1826,7 +1828,7 @@ function importSelected() {
         renderVars();
         saveWatch();
         saveUi();
-        dirty = true;
+        state.dirty = true;
     }
     hideImport();
 }
@@ -2105,9 +2107,9 @@ function showArchiveExport(info) {
             displayName = displayName.slice(0, -archivedType[0].length);
         }
         var item =
-            watch.find(function (entry) {
+            state.watch.find(function (entry) {
                 return entry.name === variableName;
-            }) || impSymbolByName.get(variableName);
+            }) || state.symbols.get(variableName);
         return {
             name: name,
             displayName: displayName && displayName !== variableName ? displayName : curveDisplayName(variableName),
@@ -2223,41 +2225,41 @@ function resetChartView() {
 function freezeChart() {
     syncTimeBounds();
     resetFollowClock();
-    if (remoteHistory.operation || frozen) return;
-    remoteHistory.operation = ++remoteHistory.nextId;
-    dirty = true;
+    if (state.remoteHistory.operation || state.frozen) return;
+    state.remoteHistory.operation = ++state.remoteHistory.nextId;
+    state.dirty = true;
     chartState.fastDirty = true;
-    post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
+    post({ type: "chartFreeze", requestId: state.remoteHistory.operation, historyRevision: historyRevision });
 }
 function resumeChart() {
     resetFollowClock();
     $("freeze").textContent = t("lw.freeze");
-    remoteHistory.operation = null;
-    remoteHistory.snapshotId = null;
-    remoteHistory.status = remoteHistory.liveStatus;
+    state.remoteHistory.operation = null;
+    state.remoteHistory.snapshotId = null;
+    state.remoteHistory.status = state.remoteHistory.liveStatus;
     cancelChartHistoryRequests();
-    post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
-    frozen = false;
+    post({ type: "chartResume", requestId: ++state.remoteHistory.nextId, historyRevision: historyRevision });
+    state.frozen = false;
     syncTimeBounds();
     applyWindowPreset(windowPreset);
     renderVars();
-    dirty = true;
+    state.dirty = true;
     chartState.fastDirty = true;
 }
 function updateChartEmpty(series, hasBounds) {
     var empty = $("chartEmpty");
     if (empty.classList.contains("hidden")) return;
     empty.removeAttribute("data-i18n");
-    var key = !watch.length
+    var key = !state.watch.length
         ? "lw.varListEmpty"
-        : watch.every(isComposite)
+        : state.watch.every(isComposite)
           ? "lw.chooseMembers"
-          : watch.every(function (w) {
-                  return isComposite(w) || hidden[w.name];
+          : state.watch.every(function (w) {
+                  return isComposite(w) || state.hidden[w.name];
               })
             ? "lw.allHidden"
             : !hasBounds
-              ? frozen
+              ? state.frozen
                   ? "lw.frozenNew"
                   : "lw.waitSamples"
               : "lw.rangeEmpty";
@@ -2265,49 +2267,49 @@ function updateChartEmpty(series, hasBounds) {
     var button = document.createElement("button");
     button.type = "button";
     button.textContent = t(
-        !watch.length
+        !state.watch.length
             ? "lw.importVars"
             : key === "lw.chooseMembers"
               ? "lw.expandMembers"
               : key === "lw.allHidden"
                 ? "lw.showAll"
-                : frozen
+                : state.frozen
                   ? "lw.resume"
                   : hasBounds
                     ? "lw.fitTime"
                     : "lw.startSampling"
     );
-    button.disabled = !hasBounds && running && !frozen && key !== "lw.allHidden" && key !== "lw.chooseMembers";
+    button.disabled = !hasBounds && running && !state.frozen && key !== "lw.allHidden" && key !== "lw.chooseMembers";
     button.onclick = function () {
-        if (!watch.length) $("import").click();
+        if (!state.watch.length) $("import").click();
         else if (key === "lw.chooseMembers") {
-            watch.forEach(function (w) {
-                expanded[w.name] = true;
+            state.watch.forEach(function (w) {
+                state.expanded[w.name] = true;
             });
             sideCollapsed = false;
             applySideLayout();
             renderVars();
             saveUi();
         } else if (key === "lw.allHidden") chartAction("showAll");
-        else if (frozen) resumeChart();
+        else if (state.frozen) resumeChart();
         else if (hasBounds) {
             chartState.x = { ...chartState.bounds };
             chartState.follow = true;
-            dirty = true;
+            state.dirty = true;
         } else $("run").click();
     };
     empty.appendChild(button);
 }
 function chartAction(action, value) {
     if (action === "importSidebar") {
-        post({ type: "importSidebarWatch", items: watch });
+        post({ type: "importSidebarWatch", items: state.watch });
         return;
     }
-    var names = watch.map(function (w) {
+    var names = state.watch.map(function (w) {
         return w.name;
     });
     if (action === "showAll" || action === "hideAll") {
-        hidden = Object.fromEntries(
+        state.hidden = Object.fromEntries(
             names.map(function (name) {
                 return [name, action === "hideAll"];
             })
@@ -2318,12 +2320,12 @@ function chartAction(action, value) {
         saveUi();
     }
     if (action === "restore") {
-        hidden = Analysis.restore(analysis, names);
+        state.hidden = Analysis.restore(analysis, names);
         renderVars();
         saveUi();
     }
     if (action === "focus") {
-        hidden = Analysis.focus(analysis, hidden, names, value);
+        state.hidden = Analysis.focus(analysis, state.hidden, names, value);
         renderVars();
         saveUi();
     }
@@ -2338,32 +2340,32 @@ function chartAction(action, value) {
         renderVars();
     }
     if (action === "type") {
-        var item = watch.find(function (entry) {
+        var item = state.watch.find(function (entry) {
             return entry.name === value.name;
         });
         if (item && !isComposite(item) && TYPES.includes(value.type)) {
             item.type = value.type;
-            latest[item.name] = null;
-            latestText[item.name] = null;
-            latestEnum[item.name] = null;
+            state.latest[item.name] = null;
+            state.latestText[item.name] = null;
+            state.latestEnum[item.name] = null;
             updateValues();
             saveWatch();
         }
     }
     if (action === "radix") {
-        var selected = watch.find(function (entry) {
+        var selected = state.watch.find(function (entry) {
             return entry.name === value.name;
         });
         if (!selected || isComposite(selected) || ![2, 10, 16].includes(value.radix)) return;
-        if (value.radix === 10) delete numberBases[value.name];
-        else numberBases[value.name] = value.radix;
+        if (value.radix === 10) delete state.numberBases[value.name];
+        else state.numberBases[value.name] = value.radix;
         updateValues();
         saveUi();
     }
     if (action === "remove") removeVar(value);
     if (action === "autoY") chartState.autoY = !chartState.autoY;
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 controls = window.EmberProbeChartControls.create({
     document: document,
@@ -2371,7 +2373,7 @@ controls = window.EmberProbeChartControls.create({
     fmtNum: fmtNum,
     formatValue: function (name, point) {
         return point
-            ? EmberProbeValueTree.fmtExact(point.v, point.valueText, null, numberBases[name] || 10)
+            ? EmberProbeValueTree.fmtExact(point.v, point.valueText, null, state.numberBases[name] || 10)
             : t("lw.noReading");
     },
     displayName: curveDisplayName,
@@ -2385,14 +2387,14 @@ controls = window.EmberProbeChartControls.create({
         return {
             chart: chartState,
             analysis: analysis,
-            hidden: hidden,
-            frozen: frozen,
+            hidden: state.hidden,
+            frozen: state.frozen,
             running: running,
             style: styleFor,
-            watch: watch,
+            watch: state.watch,
             types: TYPES,
             radix: function (name) {
-                return numberBases[name] || 10;
+                return state.numberBases[name] || 10;
             },
             lang: LANG
         };
@@ -2441,9 +2443,9 @@ function chartData(range, width) {
     // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
     // arrives, but only for curves whose type/address identity is unchanged.
     var configKey = chartHistoryConfig().configKey,
-        view = remoteHistory.view,
-        overview = remoteHistory.overview,
-        cached = remoteHistory.composed;
+        view = state.remoteHistory.view,
+        overview = state.remoteHistory.overview,
+        cached = state.remoteHistory.composed;
     if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
         return cached.series;
     var composed = [];
@@ -2451,13 +2453,13 @@ function chartData(range, width) {
         return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
     }
     function add(part, arr, detail, current) {
-        var idx = watch.findIndex(function (item) {
+        var idx = state.watch.findIndex(function (item) {
             return item.name === part.name;
         });
-        if (idx < 0 || hidden[part.name] || isComposite(watch[idx]) || !arr.length) return;
-        if (!current && (!part.item || identity(part.item) !== identity(watch[idx]))) return;
+        if (idx < 0 || state.hidden[part.name] || isComposite(state.watch[idx]) || !arr.length) return;
+        if (!current && (!part.item || identity(part.item) !== identity(state.watch[idx]))) return;
         composed.push({
-            item: part.item || watch[idx],
+            item: part.item || state.watch[idx],
             idx: idx,
             arr: arr,
             ...(detail ? { visibleCount: part.visibleCount } : {})
@@ -2485,11 +2487,11 @@ function chartData(range, width) {
                 add(part, arr, false, overview.configKey === configKey);
             });
         });
-    remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
+    state.remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
     return composed;
 }
 function retainedTimeBounds() {
-    return remoteHistory.status && remoteHistory.status.bounds;
+    return state.remoteHistory.status && state.remoteHistory.status.bounds;
 }
 function minimumXSpan() {
     return chartState.bounds ? Math.min(VP.span(chartState.bounds), 1) : 1;
@@ -2519,7 +2521,7 @@ function applyWindowPreset(value) {
     chartState.follow = true;
     chartState.startPinned = windowPreset === "0";
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 function updateFollowFromView(snap) {
     if (!chartState.x || !chartState.bounds) return;
@@ -2642,21 +2644,21 @@ function refreshChartTimeline() {
 function draw(now) {
     var smooth = smoothFollowEnabled();
     if (!smooth) {
-        if (chartState.followClock && followingChartHistory() && !remoteHistory.operation && chartState.bounds) {
+        if (chartState.followClock && followingChartHistory() && !state.remoteHistory.operation && chartState.bounds) {
             chartState.x = VP.followEnd(chartState.x, chartState.bounds, chartState.bounds, minimumXSpan());
-            dirty = true;
+            state.dirty = true;
         }
         resetFollowClock();
     } else {
         advanceFollowClock(performance.now());
-        dirty = true;
+        state.dirty = true;
     }
-    if (!dirty) return;
+    if (!state.dirty) return;
     var interval = smooth ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
     if ((smooth || !chartState.fastDirty) && now - lastDraw < interval) return;
     var drawStarted = performance.now();
     lastDraw = now;
-    dirty = false;
+    state.dirty = false;
     chartState.fastDirty = false;
     if (!canvas.clientWidth || !canvas.clientHeight) return;
     var hasBounds = syncTimeBounds(),
@@ -2687,17 +2689,17 @@ function draw(now) {
     updateChartEmpty(series, hasBounds);
     historyLoading.textContent = t("lw.historyLoading");
     historyLoading.hidden =
-        !watch.some(function (item) {
-            return !hidden[item.name] && !isComposite(item);
+        !state.watch.some(function (item) {
+            return !state.hidden[item.name] && !isComposite(item);
         }) ||
         !(
-            remoteHistory.operation ||
-            ([remoteHistory.pending, remoteHistory.inFlight].some(function (request) {
+            state.remoteHistory.operation ||
+            ([state.remoteHistory.pending, state.remoteHistory.inFlight].some(function (request) {
                 return request && request.configKey === chartHistoryConfig().configKey;
             }) &&
-                watch.some(function (item) {
+                state.watch.some(function (item) {
                     return (
-                        !hidden[item.name] &&
+                        !state.hidden[item.name] &&
                         !isComposite(item) &&
                         !series.some(function (part) {
                             return part.item.name === item.name && part.arr.length;
@@ -2753,21 +2755,21 @@ canvas.addEventListener("pointermove", function (e) {
         updateFollowFromView(false);
         chartState.pointer = p;
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
         return;
     }
     var region = chartRegion(p.x, p.y);
     setCanvasCursor(region);
     chartState.pointer = region === "plot" ? p : null;
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 });
 canvas.addEventListener("pointerleave", function () {
     if (chartState.drag) return;
     chartState.pointer = null;
     canvas.style.cursor = "default";
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 });
 canvas.addEventListener("pointerdown", function (e) {
     var p = canvasPoint(e);
@@ -2795,7 +2797,7 @@ function endChartDrag(e) {
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     setCanvasCursor(chartState.pointer ? "plot" : "none");
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 canvas.addEventListener("pointerup", endChartDrag);
 canvas.addEventListener("pointercancel", endChartDrag);
@@ -2826,7 +2828,7 @@ canvas.addEventListener(
         }
         chartState.pointer = region === "plot" ? p : null;
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     },
     { passive: false }
 );
@@ -2849,7 +2851,7 @@ function updateTimelineEndpoint(edge) {
     chartState.follow = chartState.x.max === chartState.bounds.max;
     setWindowCustom();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 function beginTimelineEndpoint(edge, event) {
     if (!chartState.bounds || !chartState.x || (event && event.button !== 0)) return;
@@ -2866,7 +2868,7 @@ function endTimelineEndpoint() {
     chartState.endpointFollow = false;
     chartState.follow = !!(chartState.x && chartState.bounds && chartState.x.max === chartState.bounds.max);
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 $("chartFromRange").onpointerdown = function (event) {
     beginTimelineEndpoint("min", event);
@@ -2910,7 +2912,7 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
         snapDraggedRangeEdges();
         setWindowCustom();
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     };
     var end = function (ev) {
         if (ev.pointerId !== pointerId) return;
@@ -2950,11 +2952,11 @@ window.EmberProbeMessages.connect(window, {
         seriesStyles = Styles.clean(m.styles);
         styleRequests.clear();
         renderVars();
-        dirty = true;
+        state.dirty = true;
     },
     watchList: function (m) {
         var incoming = (m.items || []).slice();
-        var removed = watch
+        var removed = state.watch
             .filter(function (w) {
                 return !incoming.some(function (next) {
                     return next.name === w.name;
@@ -2964,7 +2966,7 @@ window.EmberProbeMessages.connect(window, {
                 return w.name;
             });
         if (removed.includes(analysis.focused))
-            hidden = Analysis.restore(
+            state.hidden = Analysis.restore(
                 analysis,
                 incoming.map(function (w) {
                     return w.name;
@@ -2974,43 +2976,43 @@ window.EmberProbeMessages.connect(window, {
         // still resolving can omit them briefly, and they must come back as the user left them.
         // Removing a watch here (removeVar) is what forgets its curve.
         removed.forEach(function (name) {
-            delete latest[name];
-            delete latestText[name];
-            delete latestEnum[name];
-            delete latestPointer[name];
+            delete state.latest[name];
+            delete state.latestText[name];
+            delete state.latestEnum[name];
+            delete state.latestPointer[name];
             valueTree.pointers.forget(name);
         });
         // A view saved before pointer curves started hidden keeps the pointer curves it showed.
         if (legacyPointerCurves) {
             incoming.forEach(function (item) {
-                if (item.isPointer && hidden[item.name] === undefined) hidden[item.name] = false;
+                if (item.isPointer && state.hidden[item.name] === undefined) state.hidden[item.name] = false;
             });
             legacyPointerCurves = false;
             saveUi();
         }
-        watch = incoming;
-        watch.forEach(hidePointerCurve);
+        state.watch = incoming;
+        state.watch.forEach(hidePointerCurve);
         if (m.resetValues) {
             valueTree.pointers.clear();
-            watch.forEach(function (item) {
-                delete latest[item.name];
-                delete latestText[item.name];
-                delete latestEnum[item.name];
-                delete latestPointer[item.name];
+            state.watch.forEach(function (item) {
+                delete state.latest[item.name];
+                delete state.latestText[item.name];
+                delete state.latestEnum[item.name];
+                delete state.latestPointer[item.name];
             });
         }
         valueTree.runtimeExpansionsReady();
         renderVars();
-        dirty = true;
+        state.dirty = true;
     },
     variablesList: function (m) {
         impWarnings = m.warnings || [];
         impError = m.error || "";
         renderElfDiagnostics();
-        allSymbols = m.symbols || [];
+        state.allSymbols = m.symbols || [];
         impTypesReady = true;
-        impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
-        impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
+        state.symbols = new Map(state.allSymbols.map((symbol) => [symbol.name, symbol]));
+        impIndexByName = new Map(state.allSymbols.map((symbol, index) => [symbol.name, index]));
         renderVars();
         if (wantImportOpen) {
             wantImportOpen = false;
@@ -3023,12 +3025,12 @@ window.EmberProbeMessages.connect(window, {
     curveVisibility: function (m) {
         // A panel VS Code restored keeps its own state; a newly opened one adopts the host's copy.
         if (!(saved && saved.hidden) && m.hidden && typeof m.hidden === "object") {
-            hidden = Object.create(null);
+            state.hidden = Object.create(null);
             Object.keys(m.hidden).forEach(function (name) {
-                hidden[name] = !!m.hidden[name];
+                state.hidden[name] = !!m.hidden[name];
             });
             renderVars();
-            dirty = true;
+            state.dirty = true;
         }
         curveVisibilityLoaded = true;
         saveUi();
@@ -3038,18 +3040,18 @@ window.EmberProbeMessages.connect(window, {
         impError = "";
         renderElfDiagnostics();
         cancelImportMemberSearch();
-        impVersion = m.version || "";
-        impGeneration = m.generation ?? null;
+        state.version = m.version || "";
+        state.generation = m.generation ?? null;
         if (valueTree.pointers.expire()) saveUi();
         layoutExpansionUi.reset();
-        for (const item of watch) {
+        for (const item of state.watch) {
             delete item.layoutExpansions;
             item.layoutExpansionGeneration = -1;
         }
         impTypesReady = false;
-        allSymbols = [];
+        state.allSymbols = [];
         hideAutocomplete();
-        impSymbolByName.clear();
+        state.symbols.clear();
         renderVars();
         impIndexByName.clear();
         impTypeChunks = 0;
@@ -3057,21 +3059,21 @@ window.EmberProbeMessages.connect(window, {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     variablesListChunk: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         const symbols = m.symbols || [];
         for (const symbol of symbols) {
-            impIndexByName.set(symbol.name, allSymbols.length);
-            allSymbols.push(symbol);
-            impSymbolByName.set(symbol.name, symbol);
+            impIndexByName.set(symbol.name, state.allSymbols.length);
+            state.allSymbols.push(symbol);
+            state.symbols.set(symbol.name, symbol);
         }
         if (
             !$("overlay").classList.contains("hidden") &&
-            (allSymbols.length <= 1000 || allSymbols.length % 10000 < symbols.length)
+            (state.allSymbols.length <= 1000 || state.allSymbols.length % 10000 < symbols.length)
         )
             renderImport();
     },
     variablesListDone: function (m) {
-        if (m.version && m.version !== impVersion) return;
+        if (m.version && m.version !== state.version) return;
         if (Array.isArray(m.warnings)) impWarnings = m.warnings;
         impError = m.error || "";
         renderElfDiagnostics();
@@ -3081,15 +3083,15 @@ window.EmberProbeMessages.connect(window, {
         } else if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     variableTypes: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         for (const update of m.symbols || []) {
-            const symbol = impSymbolByName.get(update.name);
+            const symbol = state.symbols.get(update.name);
             if (symbol) Object.assign(symbol, update);
         }
         if (++impTypeChunks % 10 === 0 && !$("overlay").classList.contains("hidden")) renderImport();
     },
     variableTypesDone: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         if (Array.isArray(m.warnings)) impWarnings = m.warnings;
         renderElfDiagnostics();
         impTypesReady = true;
@@ -3101,9 +3103,9 @@ window.EmberProbeMessages.connect(window, {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         impLayoutPending.delete(m.name);
-        const symbol = impSymbolByName.get(m.name);
+        const symbol = state.symbols.get(m.name);
         if (!symbol) return;
         const pointerWaiter = pointerLayoutWaiters.delete(m.name);
         if (pointerWaiter && !symbol.isComposite) {
@@ -3125,7 +3127,7 @@ window.EmberProbeMessages.connect(window, {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     addResolved: function (m) {
-        if (m.version && m.version !== impVersion) return;
+        if (m.version && m.version !== state.version) return;
         if (m.requestId !== undefined) {
             if (!currentVariableReply(m)) return;
             $("addName").value = "";
@@ -3226,12 +3228,12 @@ $("run").onclick = function () {
 };
 $("import").onclick = function () {
     wantImportOpen = true;
-    post({ type: "importVariables", version: impVersion });
+    post({ type: "importVariables", version: state.version });
 };
 function addByName() {
     var n = $("addName").value.trim();
     if (!n) return;
-    var sym = allSymbols.find(function (s) {
+    var sym = state.allSymbols.find(function (s) {
         return s.name === n;
     });
     if (!sym || sym.addressAmbiguous) {
@@ -3243,7 +3245,7 @@ function addByName() {
     hideAutocomplete();
 }
 $("addName").oninput = function () {
-    if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
+    if (!state.allSymbols.length) post({ type: "importVariables", version: state.version });
     renderAutocomplete();
 };
 $("addName").onblur = function () {
@@ -3299,7 +3301,7 @@ $("clear").onclick = function () {
     clearHistory();
 };
 $("freeze").onclick = function () {
-    if (frozen) resumeChart();
+    if (state.frozen) resumeChart();
     else freezeChart();
 };
 $("timeWindow").onchange = function () {
@@ -3382,7 +3384,7 @@ $("norm").onclick = function () {
     $("norm").classList.toggle("ghost", !norm);
     saveUi();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 };
 function setChartSettings(open) {
     $("chartSettingsPopup").hidden = !open;
@@ -3393,7 +3395,7 @@ var chartBackground = window.EmberProbeBackgroundIconController.create({
     post,
     changed: function () {
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     }
 });
 $("chartSettingsToggle").onclick = function () {
@@ -3417,7 +3419,7 @@ $("jitterBands").onchange = function () {
     jitterBands = this.checked;
     saveUi();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 };
 // Workspace setting kept by the host; the switch follows the host's reply.
 $("pointerExpandedOnly").onchange = function () {
@@ -3471,11 +3473,11 @@ window.EmberProbeMessages.connect(window, {
     chartValues: function (m) {
         if (historyClearPending) return;
         (m.samples || []).forEach(function (sample) {
-            latest[sample.name] = sample.value;
-            latestText[sample.name] =
+            state.latest[sample.name] = sample.value;
+            state.latestText[sample.name] =
                 sample.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (sample.valueText ?? null);
-            latestEnum[sample.name] = sample.enumText ?? null;
-            latestPointer[sample.name] = EmberProbeValueTree.pointerReading(sample);
+            state.latestEnum[sample.name] = sample.enumText ?? null;
+            state.latestPointer[sample.name] = EmberProbeValueTree.pointerReading(sample);
             valueTree.pointers.rememberSample(sample);
         });
         valueRefresh.schedule();
@@ -3485,15 +3487,15 @@ window.EmberProbeMessages.connect(window, {
     },
     chartHistoryStatus: function (m) {
         if (historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
-        if (m.limited && !remoteHistory.liveStatus?.limited)
+        if (m.limited && !state.remoteHistory.liveStatus?.limited)
             setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
-        remoteHistory.liveStatus = m;
-        if (!m.bounds && m.limited && !frozen) {
+        state.remoteHistory.liveStatus = m;
+        if (!m.bounds && m.limited && !state.frozen) {
             resetChartHistoryViews();
         }
-        if (!frozen) {
+        if (!state.frozen) {
             var config = chartHistoryConfig(),
-                view = remoteHistory.view;
+                view = state.remoteHistory.view;
             if (
                 !followingChartHistory() ||
                 !config.names.length ||
@@ -3501,31 +3503,31 @@ window.EmberProbeMessages.connect(window, {
                 view.configKey !== config.configKey ||
                 performance.now() - view.receivedAt > 1000
             )
-                remoteHistory.status = m;
-            dirty = true;
+                state.remoteHistory.status = m;
+            state.dirty = true;
         }
         if (samplingOrigin === null && m.bounds) samplingOrigin = m.bounds.min;
     },
     chartViewportResult: function (m) {
-        var request = remoteHistory.inFlight;
+        var request = state.remoteHistory.inFlight;
         if (!request || request.requestId !== m.requestId) return;
-        remoteHistory.inFlight = null;
+        state.remoteHistory.inFlight = null;
         if (
             m.historyRevision === historyRevision &&
             !historyClearPending &&
             request.configKey === chartHistoryConfig().configKey &&
-            (m.snapshotId || null) === remoteHistory.snapshotId
+            (m.snapshotId || null) === state.remoteHistory.snapshotId
         ) {
             if (m.error) {
                 setStatusMsg({ message: m.error }, "error", "history");
-                remoteHistory.failed = {
+                state.remoteHistory.failed = {
                     key: request.key,
                     configKey: request.configKey,
                     purpose: request.purpose,
                     at: performance.now()
                 };
             } else {
-                remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
+                state.remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
                     series: window.EmberProbeChartTransport.decodeViewport(m.series || []),
                     range: request.range,
                     width: request.width,
@@ -3535,10 +3537,10 @@ window.EmberProbeMessages.connect(window, {
                 };
                 if (
                     request.purpose === "detail" &&
-                    !frozen &&
-                    (followingChartHistory() || m.revision >= (remoteHistory.status?.revision ?? -Infinity))
+                    !state.frozen &&
+                    (followingChartHistory() || m.revision >= (state.remoteHistory.status?.revision ?? -Infinity))
                 ) {
-                    remoteHistory.status = {
+                    state.remoteHistory.status = {
                         revision: m.revision,
                         bounds: m.bounds,
                         variables: m.variables,
@@ -3550,24 +3552,24 @@ window.EmberProbeMessages.connect(window, {
                     syncTimeBounds();
                 }
             }
-            dirty = true;
+            state.dirty = true;
         }
         requestChartViewport(chartState.x, canvas.clientWidth);
     },
     chartFreezeResult: function (m) {
-        if (m.historyRevision !== historyRevision || m.requestId !== remoteHistory.operation) return;
-        remoteHistory.operation = null;
+        if (m.historyRevision !== historyRevision || m.requestId !== state.remoteHistory.operation) return;
+        state.remoteHistory.operation = null;
         if (m.error) {
             setStatusMsg({ message: m.error }, "error", "history");
             return;
         }
-        remoteHistory.snapshotId = m.snapshotId;
-        remoteHistory.status = m;
+        state.remoteHistory.snapshotId = m.snapshotId;
+        state.remoteHistory.status = m;
         cancelChartHistoryRequests();
-        frozen = true;
+        state.frozen = true;
         $("freeze").textContent = t("lw.resume");
         chartState.follow = false;
-        dirty = true;
+        state.dirty = true;
         chartState.fastDirty = true;
         renderVars();
     },
@@ -3749,7 +3751,7 @@ function applySideLayout() {
     applyPanelGeometry();
     updateSplitter();
     arrangeVariableCards();
-    dirty = true;
+    state.dirty = true;
 }
 function updateSplitter() {
     var stacked = window.innerWidth <= 760;
@@ -3778,7 +3780,7 @@ function resizeSide(size, stacked) {
         layout.style.setProperty("--side-width", size + "px");
     }
     updateSplitter();
-    dirty = true;
+    state.dirty = true;
 }
 sideToggle.onclick = function () {
     sideCollapsed = !sideCollapsed;
@@ -3910,11 +3912,11 @@ window.addEventListener("resize", function () {
     if (!$("frequencyPopup").hidden) positionFrequencyPopup();
 });
 new ResizeObserver(function () {
-    dirty = true;
+    state.dirty = true;
 }).observe($("chartWrap"));
 // VS Code updates body classes when its theme changes. Repaint frozen charts too.
 new MutationObserver(function () {
-    dirty = true;
+    state.dirty = true;
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
 updateRun();

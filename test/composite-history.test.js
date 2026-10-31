@@ -80,7 +80,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         w.chartState.x = { min: 1000, max: 1495 };
         const viewport = JSON.stringify(w.chartState.x);
         for (const leaf of leaves.slice(1)) w.toggleLeafInChart(leaf.name, leaf.address, leaf.type);
-        watches = Array.from(w.watch, (item) => ({ ...item }));
+        watches = Array.from(w.eval("state").watch, (item) => ({ ...item }));
         p._configureChartHistory(entry, 2000);
         assert.ok(
             entry.historyItems.every((item) => item.historyFromMs === 1000),

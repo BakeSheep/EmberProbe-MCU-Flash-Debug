@@ -157,13 +157,11 @@
     //   t(key, params)              translation
     //   classes                     CSS classes: row, name, type, value (member rows); nest, head, arrow,
     //                               headName, headType, members (nested composites); note
-    //   symbol(name)                the ELF symbol listed under `name`
-    //   watch()                     the current watch list
-    //   reading(name)               { value, valueText, enumText, pointer } last sampled for `name`;
-    //                               a runtime watch's value is its sampled tree
-    //   version()                   the loaded ELF version
+    //   state                       the page state; read here: watch (list), symbols (ELF symbols by name),
+    //                               version (loaded ELF), latest, latestText, latestEnum, latestPointer
+    //                               (readings by name; a runtime watch reads as its sampled tree), and
+    //                               expanded, rawMembers, arrayShown (saved with the view)
     //   radix(name)                 optional number base for `name`
-    //   ui()                        { expanded, rawMembers, arrayShown } saved with the view
     //   savedPointers               { pointers, version } restored with the view
     //   displayName(path)           readable name for a path
     //   save()                      saves the view state
@@ -177,12 +175,13 @@
     //   decorateLeaf(row, nameCell, { path, address, watchType, node }) → the row's first element
     //   scalarCell(cell, name)      registers the value cell of a scalar pointee watch
     function create(page) {
+        const state = page.state;
         const classes = page.classes;
         const t = (key, params) => page.t(key, params);
         const radix = page.radix || (() => 10);
-        const expanded = () => page.ui().expanded;
+
         const baseName = (path) => runtime.variableBaseName(String(path));
-        const pointers = createPointerMemory(page.version, page.save, page.savedPointers);
+        const pointers = createPointerMemory(() => state.version, page.save, page.savedPointers);
         // Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
         let displayInfos = new WeakMap();
         // Value cells of composite members by path, runtime bodies by watch name, and the pointee
@@ -211,11 +210,11 @@
         }
         function layoutSymbol(path) {
             const name = runtime.variableBaseName(path);
-            const symbol = page.symbol(name);
-            return symbol?.compositeLayout ? symbol : page.watch().find((item) => item.name === name) || symbol;
+            const symbol = state.symbols.get(name);
+            return symbol?.compositeLayout ? symbol : state.watch.find((item) => item.name === name) || symbol;
         }
         function showRaw(path) {
-            return !!page.ui().rawMembers[baseName(path)];
+            return !!state.rawMembers[baseName(path)];
         }
 
         function formatNode(node, name) {
@@ -225,7 +224,7 @@
         }
         function resolveDisplayInfo(item) {
             if (item.isPointer) return item;
-            const direct = page.symbol(item.name);
+            const direct = state.symbols.get(item.name);
             if (direct?.isPointer) return direct;
             const symbol = layoutSymbol(item.name);
             return (
@@ -243,17 +242,17 @@
         }
         function scalarDisplay(item) {
             const info = displayInfo(item);
-            const reading = page.reading(item.name);
+            const value = state.latest[item.name];
             // Before the first sample a pointer shows the target it had when last sampled.
-            const last = info.isPointer && reading.value === undefined && pointers.shown()[item.name];
+            const last = info.isPointer && value === undefined && pointers.shown()[item.name];
             if (last) return formatNode({ ...info, ...last, stale: true }, item.name);
             return formatNode(
                 {
                     ...info,
-                    ...reading.pointer,
-                    value: reading.value,
-                    valueText: reading.valueText,
-                    enumText: reading.enumText
+                    ...state.latestPointer[item.name],
+                    value,
+                    valueText: state.latestText[item.name],
+                    enumText: state.latestEnum[item.name]
                 },
                 item.name
             );
@@ -261,11 +260,11 @@
         // A static layout row has no value until sampled; a pointer in it shows its last known target.
         function withLastPointer(node, path) {
             const last = node?.isPointer && node.value == null && !node.stale && pointers.shown()[path];
-            return last && page.reading(baseName(path)).value === undefined ? { ...node, ...last, stale: true } : node;
+            return last && state.latest[baseName(path)] === undefined ? { ...node, ...last, stale: true } : node;
         }
         function renderRawMembersUi(container, node, name) {
             runtime.renderMemberVisibility(container, node, name, showRaw(name), t, () => {
-                page.ui().rawMembers[baseName(name)] = !showRaw(name);
+                state.rawMembers[baseName(name)] = !showRaw(name);
                 page.save();
                 page.rerender();
                 page.rerenderPicker();
@@ -275,7 +274,7 @@
         // Expansion needs the base symbol's runtime type graph. Composite watches load it with their
         // layout; a scalar pointer variable requests it once here and re-renders when it arrives.
         function pointerSymbol(path) {
-            const symbol = page.symbol(baseName(path));
+            const symbol = state.symbols.get(baseName(path));
             if (runtime.runtimeGraph(symbol)) return symbol;
             const layout = layoutSymbol(path);
             if (!runtime.runtimeGraph(layout) && symbol?.hasRuntimeLayout && !symbol.layoutError)
@@ -291,11 +290,11 @@
                 const toggle = runtime.renderPointerToggle(
                     row,
                     path,
-                    !!expanded()[path],
+                    !!state.expanded[path],
                     t,
                     () => {
-                        const open = !expanded()[path];
-                        expanded()[path] = open;
+                        const open = !state.expanded[path];
+                        state.expanded[path] = open;
                         host.classList.toggle("open", open);
                         toggle.classList.toggle("open", open);
                         toggle.setAttribute("aria-expanded", String(open));
@@ -303,14 +302,14 @@
                     },
                     page.displayName(path)
                 );
-                host.className = "pointer-pointee" + (expanded()[path] ? " open" : "");
+                host.className = "pointer-pointee" + (state.expanded[path] ? " open" : "");
                 renderInline(host);
                 return host;
             }
             row.classList.add("pointer-row");
             const entry = node?.isPointer && runtime.pointerDerefEntry(path, pointerSymbol(path));
             if (!entry) return null;
-            const item = page.watch().find((watched) => watched.name === entry.name);
+            const item = state.watch.find((watched) => watched.name === entry.name);
             runtime.renderPointerToggle(row, path, !!item, t, () => page.togglePointee(entry), page.displayName(path));
             if (!item) return null;
             host.className = "pointer-pointee open";
@@ -321,7 +320,7 @@
             placed.add(item.name);
             if (isComposite(item)) {
                 bodies[item.name] = host;
-                renderRuntimeBody(host, page.reading(item.name).value, item.name);
+                renderRuntimeBody(host, state.latest[item.name], item.name);
                 return;
             }
             // A scalar target (`int *`, `char *` string preview, pointer to pointer) is one row.
@@ -370,7 +369,7 @@
         function nestShell(container, fieldName, typeName, path, displayPath = path) {
             const wrap = element("div", classes.nest);
             const head = element("div", classes.head);
-            const open = !!expanded()[path];
+            const open = !!state.expanded[path];
             const arrow = element("span", classes.arrow + (open ? " open" : ""));
             arrow.textContent = "▶";
             const name = element("span", classes.headName);
@@ -382,8 +381,8 @@
             head.append(arrow, name, type);
             const body = element("div", classes.members + (open ? " open" : ""));
             head.onclick = () => {
-                const next = !expanded()[path];
-                expanded()[path] = next;
+                const next = !state.expanded[path];
+                state.expanded[path] = next;
                 body.classList.toggle("open", next);
                 arrow.classList.toggle("open", next);
                 page.save();
@@ -465,7 +464,7 @@
                 const total = Number(layout.totalElements) || 0;
                 const size = Number(elementType.byteSize) || 0;
                 let start = 0;
-                let end = runtime.arrayShownCount(total, page.ui().arrayShown[path]);
+                let end = runtime.arrayShownCount(total, state.arrayShown[path]);
                 if (range) {
                     start = Math.max(0, Number(range.start) || 0);
                     end = Math.min(total, Number.isNaN(Number(range.end)) ? total : Number(range.end));
@@ -515,7 +514,7 @@
                         total - end,
                         t,
                         (count) => {
-                            page.ui().arrayShown[path] = end + count;
+                            state.arrayShown[path] = end + count;
                             page.save();
                             page.rerender();
                         },
@@ -561,11 +560,11 @@
                     head.type = "button";
                     head.textContent = label;
                     head.title = page.displayName(path);
-                    const body = element("div", classes.members + (expanded()[path] ? " open" : ""));
-                    head.setAttribute("aria-expanded", String(!!expanded()[path]));
+                    const body = element("div", classes.members + (state.expanded[path] ? " open" : ""));
+                    head.setAttribute("aria-expanded", String(!!state.expanded[path]));
                     head.onclick = () => {
-                        const open = !expanded()[path];
-                        expanded()[path] = open;
+                        const open = !state.expanded[path];
+                        state.expanded[path] = open;
                         body.classList.toggle("open", open);
                         head.setAttribute("aria-expanded", String(open));
                         page.save();
@@ -652,7 +651,7 @@
             const tree =
                 sampled ||
                 runtime.placeholderRuntimeTree(
-                    page.watch().find((item) => item.name === name),
+                    state.watch.find((item) => item.name === name),
                     pointers.shown()
                 );
             const shape = JSON.stringify([showRaw(name), !sampled, runtime.displayTreeShape(tree)]);
@@ -681,7 +680,7 @@
             const footer = runtime.createVariableNotices(body, t, element("div"), page.copy, item.name);
             if (item.runtimeLayout) {
                 bodies[item.name] = body;
-                renderRuntimeBody(body, page.reading(item.name).value, item.name);
+                renderRuntimeBody(body, state.latest[item.name], item.name);
             } else {
                 const layout = item.compositeLayout || {};
                 renderRawMembersUi(body, layout, item.name);
@@ -691,7 +690,7 @@
             return footer;
         }
         function updateComposite(name) {
-            const tree = page.reading(name).value;
+            const tree = state.latest[name];
             if (!tree) return;
             const nodes = new Map();
             const held = new Set();
@@ -724,7 +723,7 @@
         function isLeafChild(name) {
             const rootName = baseName(name);
             if (rootName === name) return false;
-            const watch = page.watch();
+            const watch = state.watch;
             const parent = watch.find((item) => item.name === rootName && isComposite(item));
             if (parent)
                 return (
@@ -747,7 +746,7 @@
                 includePointers: true
             });
             if (!runtimeSelected) return statics;
-            const visible = runtime.displayRuntimeSelection(symbol, page.reading(symbol.name).value, showRawMembers);
+            const visible = runtime.displayRuntimeSelection(symbol, state.latest[symbol.name], showRawMembers);
             return (visible?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded));
         }
         // Opened paths of each runtime object (pointer target, STL container), relative to its watch
@@ -755,7 +754,7 @@
         // Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
         function syncRuntimeExpansions() {
             if (!runtimeExpansionsLoaded) return;
-            const value = runtime.runtimeExpansionPaths(page.watch(), expanded(), placed);
+            const value = runtime.runtimeExpansionPaths(state.watch, state.expanded, placed);
             const key = JSON.stringify(value);
             if (key === sentRuntimeExpansions) return;
             sentRuntimeExpansions = key;

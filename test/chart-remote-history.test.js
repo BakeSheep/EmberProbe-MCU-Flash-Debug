@@ -23,13 +23,13 @@ try {
             1000 + i * 5
         );
     page.send({ type: "watchList", items });
-    w.hidden.b = true;
+    w.eval("state").hidden.b = true;
     page.send({ type: "chartValues", samples: [{ name: "b", value: 10000, t: 51000 }] });
-    assert.strictEqual(w.latest.b, 10000);
+    assert.strictEqual(w.eval("state").latest.b, 10000);
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
     function request() {
-        w.remoteHistory.lastRequest = -Infinity;
-        w.dirty = true;
+        w.eval("state").remoteHistory.lastRequest = -Infinity;
+        w.eval("state").dirty = true;
         w.draw(100000);
         return page.messages.filter((message) => message.type === "chartViewport").at(-1);
     }
@@ -47,14 +47,14 @@ try {
     w.toggleCurve("b");
     const viewport = JSON.stringify(w.chartState.x);
     request();
-    assert.ok(w.remoteHistory.pending, "one latest pending request replaces intermediate views");
+    assert.ok(w.eval("state").remoteHistory.pending, "one latest pending request replaces intermediate views");
     answer(first);
-    assert.strictEqual(w.remoteHistory.view, null, "outdated visibility reply cannot restore curves");
+    assert.strictEqual(w.eval("state").remoteHistory.view, null, "outdated visibility reply cannot restore curves");
     const second = page.messages.filter((message) => message.type === "chartViewport").at(-1);
     assert.deepStrictEqual(second.names, ["a", "b"]);
     answer(second);
     assert.strictEqual(JSON.stringify(w.chartState.x), viewport);
-    assert.ok(w.remoteHistory.view.series.find((s) => s.name === "b").visibleCount > 5000);
+    assert.ok(w.eval("state").remoteHistory.view.series.find((s) => s.name === "b").visibleCount > 5000);
     w.freezeChart();
     const freezeRequest = page.messages.at(-1);
     page.send({
@@ -63,7 +63,7 @@ try {
         requestId: freezeRequest.requestId,
         historyRevision: 0
     });
-    assert.strictEqual(w.frozen, true);
+    assert.strictEqual(w.eval("state").frozen, true);
     const bounds = JSON.stringify(w.retainedTimeBounds());
     store.append("p", [{ name: "a", value: 4, t: 100000 }], 100000);
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
@@ -86,7 +86,7 @@ try {
     const stale = request();
     w.clearHistory();
     answer(stale);
-    assert.strictEqual(w.remoteHistory.view, null);
+    assert.strictEqual(w.eval("state").remoteHistory.view, null);
     page.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
     assert.strictEqual(w.retainedTimeBounds(), null);
     page.send({ type: "samplingHistoryCleared", historyRevision: 1 });
@@ -121,24 +121,24 @@ for (const follow of [false, true]) {
         w.chartState.follow = follow;
         w.draw(1000);
         for (let cycle = 0; cycle < 5; cycle++) {
-            if (w.remoteHistory.view) w.remoteHistory.view.receivedAt = -Infinity;
-            w.remoteHistory.lastRequest = -Infinity;
-            w.dirty = true;
+            if (w.eval("state").remoteHistory.view) w.eval("state").remoteHistory.view.receivedAt = -Infinity;
+            w.eval("state").remoteHistory.lastRequest = -Infinity;
+            w.eval("state").dirty = true;
             w.draw(2000 + cycle * 200);
             const request = delayed.messages.filter((message) => message.type === "chartViewport").at(-1);
-            const purpose = w.remoteHistory.inFlight.purpose;
+            const purpose = w.eval("state").remoteHistory.inFlight.purpose;
             const response = store.viewport("p", request.names, request.range, request.width);
             store.append("p", [{ name: "value", value: cycle + 3, t: 51000 + cycle * 1000 }], 51000 + cycle * 1000);
             delayed.send({ type: "chartHistoryStatus", ...store.status("p"), historyRevision: 0 });
             w.draw(2100 + cycle * 200);
-            assert.strictEqual(w.remoteHistory.inFlight.requestId, request.requestId);
+            assert.strictEqual(w.eval("state").remoteHistory.inFlight.requestId, request.requestId);
             delayed.send({
                 type: "chartViewportResult",
                 ...response,
                 requestId: request.requestId,
                 historyRevision: 0
             });
-            const accepted = w.remoteHistory[purpose === "overview" ? "overview" : "view"];
+            const accepted = w.eval("state").remoteHistory[purpose === "overview" ? "overview" : "view"];
             assert.strictEqual(accepted.revision, response.revision, "continuous sampling accepts a valid reply");
             assert.ok(accepted.series.length > 0);
         }
@@ -153,13 +153,13 @@ for (const [index, change] of [
         w.chartState.x = { min: 1200, max: 1800 };
     },
     (w) => {
-        w.watch[0].type = "f32";
+        w.eval("state").watch[0].type = "f32";
     },
     (w) => {
-        w.watch[0].address++;
+        w.eval("state").watch[0].address++;
     },
     (w) => {
-        w.hidden.value = true;
+        w.eval("state").hidden.value = true;
     }
 ].entries()) {
     const changed = render(getLiveWatchContent({}, "en"));
@@ -176,7 +176,7 @@ for (const [index, change] of [
         w.draw(1000);
         const request = changed.messages.filter((message) => message.type === "chartViewport").at(-1);
         change(w);
-        w.dirty = true;
+        w.eval("state").dirty = true;
         w.draw(1100);
         changed.send({
             type: "chartViewportResult",
@@ -187,10 +187,13 @@ for (const [index, change] of [
             series: [{ name: "value", arr: [{ t: 1500, v: 7 }] }]
         });
         if (index === 0) {
-            assert.ok(w.remoteHistory.view.series.length, "range changes accept and translate a delayed reply");
+            assert.ok(
+                w.eval("state").remoteHistory.view.series.length,
+                "range changes accept and translate a delayed reply"
+            );
             assert.strictEqual(w.chartState.x.min, 1200);
             assert.strictEqual(w.chartState.x.max, 1800);
-            w.dirty = true;
+            w.eval("state").dirty = true;
             w.draw(1200);
             const point = w.Inspection.pointAt(w.chartState.curveGeometry.value[0], 0),
                 geometry = w.chartState.geometry;
@@ -199,7 +202,12 @@ for (const [index, change] of [
                 Math.abs(point.x - geometry.padL - geometry.pw / 2) < 1e-9,
                 "reply is translated to the new viewport"
             );
-        } else assert.strictEqual(w.remoteHistory.view, null, "configuration changes invalidate a delayed reply");
+        } else
+            assert.strictEqual(
+                w.eval("state").remoteHistory.view,
+                null,
+                "configuration changes invalidate a delayed reply"
+            );
     } finally {
         changed.close();
     }
@@ -239,7 +247,7 @@ try {
         clientHeight: { value: 400 }
     });
     hiddenPage.send({ type: "watchList", items: [{ name: "value", type: "u32", address: 0x20000000 }] });
-    w.hidden.value = true;
+    w.eval("state").hidden.value = true;
     hiddenPage.send({ type: "liveStatus", running: true, actualHz: 0 });
     for (let cycle = 0; cycle < 5; cycle++) {
         hiddenPage.send({
@@ -253,7 +261,7 @@ try {
             historyRevision: 0,
             bounds: { min: 1000, max: 1100 + cycle * 33 }
         });
-        w.remoteHistory.lastRequest = -Infinity;
+        w.eval("state").remoteHistory.lastRequest = -Infinity;
         w.draw(1000 + cycle * 200);
         assert.ok(
             hiddenPage.document.getElementById("chartEmpty").textContent.includes("All curves are hidden"),
@@ -271,9 +279,9 @@ try {
         0,
         "all-hidden charts need no viewport transfer"
     );
-    assert.strictEqual(w.latest.value, 4, "hidden values still receive samples");
+    assert.strictEqual(w.eval("state").latest.value, 4, "hidden values still receive samples");
     w.toggleCurve("value");
-    w.remoteHistory.lastRequest = -Infinity;
+    w.eval("state").remoteHistory.lastRequest = -Infinity;
     w.draw(2100);
     assert.deepStrictEqual(hiddenPage.messages.at(-1).names, ["value"], "showing a curve resumes history requests");
     assert.strictEqual(hiddenPage.document.getElementById("chartEmpty").textContent, "Loading recorded history…");
@@ -354,12 +362,12 @@ try {
     const revision = w.historyRevision;
     assert.strictEqual(clearing.messages.at(-1).type, "clearSamplingHistory");
     clearing.send({ type: "chartValues", samples: [{ name: "tick", value: 99, t: 2000 }], t: 2000 });
-    assert.strictEqual(w.latest.tick, null, "values sent before the clear acknowledgement are discarded");
+    assert.strictEqual(w.eval("state").latest.tick, null, "values sent before the clear acknowledgement are discarded");
     clearing.send({ type: "samplingHistoryCleared", historyRevision: revision - 1 });
     assert.strictEqual(w.historyClearPending, true, "an older acknowledgement does not end the clear");
     clearing.send({ type: "samplingHistoryCleared", historyRevision: revision });
     clearing.send({ type: "chartValues", samples: [{ name: "tick", value: 7, t: 3000 }], t: 3000 });
-    assert.strictEqual(w.latest.tick, 7);
+    assert.strictEqual(w.eval("state").latest.tick, 7);
     w.clearHistory();
     clearing.send({ type: "debugSessionChanged" });
     assert.strictEqual(w.historyClearPending, false, "session changes clear the view without erasing the archive");
