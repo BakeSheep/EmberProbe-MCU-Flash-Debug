@@ -63,14 +63,14 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         stop: () => assert.fail("memory history must never stop sampling")
     });
     try {
-        p._configureChartHistory(entry, 1000);
+        p._historyFeed.configure(entry, 1000);
         for (let tick = 0; tick < 4; tick++) {
             const time = 1000 + tick * 20; // 50 Hz; disk archive remains independently authoritative.
             p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: time, bytes: Buffer.alloc(10000, tick) })),
                 time
             );
-            await p._flushPendingChartHistorySamples();
+            await p._historyFeed.flushPending();
         }
         assert.strictEqual(archivedBatches, 4);
         assert.strictEqual(store.status("p").limited, true);
@@ -87,7 +87,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             parents.map((parent) => ({ name: parent.name, t: 1100, bytes: Buffer.alloc(10000, 4) })),
             1100
         );
-        await p._flushPendingChartHistorySamples();
+        await p._historyFeed.flushPending();
         assert.strictEqual(archivedBatches, 5, "host queue pressure still appends the complete disk batch");
         assert.strictEqual(entry._historyBatch, null);
         assert.strictEqual(warnings.length, 0);
@@ -105,13 +105,13 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         // Genuine worker exit triggers automatic recovery while raw samples still reach the archive.
         const errors = [];
         p._postLive = (message) => errors.push(message);
-        p._resetChartHistoryWarnings();
+        p._historyFeed.resetWarnings();
         // Restart backoff (250 ms, 1 s, 3 s) is not under test here; skip the real waits.
-        p._chartHistoryRecoveryDelaysMs = [0, 0, 0];
+        p._historyFeed.recoveryDelaysMs = [0, 0, 0];
         let restarts = 0;
         let restores = 0;
         const recovering = new ChartHistoryService({
-            onError: (error) => p._handleChartHistoryError(error)
+            onError: (error) => p._historyFeed.handleError(error)
         });
         const restart = recovering.restart.bind(recovering);
         recovering.restart = async () => {
@@ -149,8 +149,8 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             await recovering.request("configure", ["p", entry.historyItems]);
             await recovering.worker.terminate();
             await sourceEntered;
-            const recovery = p._chartHistoryRecovery;
-            assert.strictEqual(p._recoverChartHistory(), recovery, "concurrent failures share one recovery");
+            const recovery = p._historyFeed.recovery;
+            assert.strictEqual(p._historyFeed.recover(), recovery, "concurrent failures share one recovery");
             p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: 1140, bytes: Buffer.alloc(10000, 6) })),
                 1140
@@ -168,7 +168,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
                 parents.map((parent) => ({ name: parent.name, t: 1160, bytes: Buffer.alloc(10000, 7) })),
                 1160
             );
-            await p._flushPendingChartHistorySamples();
+            await p._historyFeed.flushPending();
             assert.strictEqual(archivedBatches, 8);
             assert.ok((await recovering.request("status", ["p"])).bounds.max >= 1160);
 
@@ -176,14 +176,14 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             recovering.request = (method, args) =>
                 method === "restore" ? Promise.reject(new Error("restore unavailable")) : request(method, args);
             recovering.fail(new Error("worker failed again"));
-            await p._chartHistoryRecovery;
+            await p._historyFeed.recovery;
             assert.strictEqual(restarts, 3);
             assert.strictEqual(errors.length, 1);
             assert.strictEqual(errors[0].key, "lw.historyRecoveryFailed");
             assert.strictEqual(errors[0].message, t("en", "lw.historyRecoveryFailed"));
             assert.notStrictEqual(t("zh", "lw.historyRecoveryFailed"), errors[0].message);
-            p._handleChartHistoryError(new Error("duplicate failure"));
-            await p._chartHistoryRecovery;
+            p._historyFeed.handleError(new Error("duplicate failure"));
+            await p._historyFeed.recovery;
             assert.strictEqual(restarts, 3, "no restart storm after exhaustion");
             assert.strictEqual(errors.length, 1);
             p._sampling.handleRawSamples(
@@ -197,7 +197,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             await recovering.dispose();
         }
     } finally {
-        await p._flushPendingChartHistorySamples();
+        await p._historyFeed.flushPending();
         await archive.dispose();
         await fs.rm(dir, { recursive: true, force: true });
     }
@@ -263,18 +263,18 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
     Object.assign(resetProvider._sampling, { _start: async () => {} });
     Object.assign(resetProvider._sampling, { invalidateConsumerTypes() {} });
     resetProvider.openLiveWatchPanel();
-    resetProvider._warnChartHistoryLimited();
-    resetProvider._warnChartHistoryLimited();
+    resetProvider._historyFeed.warnLimited();
+    resetProvider._historyFeed.warnLimited();
     assert.strictEqual(limited.length, 1);
     assert.strictEqual(resetWarnings.length, 0, "the limit is a waveform notice, not a notification");
     await resetProvider._sampling.start([], 10);
-    resetProvider._warnChartHistoryLimited();
-    resetProvider._warnChartHistoryLimited();
+    resetProvider._historyFeed.warnLimited();
+    resetProvider._historyFeed.warnLimited();
     assert.strictEqual(limited.length, 2, "starting another run resets the warning");
     await receive({ type: "clearSamplingHistory", historyRevision: 1 });
     assert.strictEqual(clears, 1);
-    resetProvider._warnChartHistoryLimited();
-    resetProvider._warnChartHistoryLimited();
+    resetProvider._historyFeed.warnLimited();
+    resetProvider._historyFeed.warnLimited();
     assert.strictEqual(limited.length, 3, "clearing history resets the warning");
 
     // A newly plotted evicted curve goes through the real host viewport/restore dispatch.

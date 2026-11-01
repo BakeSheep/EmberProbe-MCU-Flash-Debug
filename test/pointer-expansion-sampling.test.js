@@ -270,16 +270,16 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
     p._sampling.pointerExpandedOnly = false;
     p._sampling.handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1020 }], 1020, consumers);
     assert.strictEqual(archive.at(-1).length, 7, "off records every parsed scalar");
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(store.scopes.get("w").series.get("g.node.value.a").count, 3);
     assert.strictEqual(entry.historyItems.find((item) => item.name === "g.node.value.arr[2]").historyFromMs, 1020);
     // Charting a recorded member keeps its history.
     panelWatches = watches;
-    p._configureChartHistory(entry, 2000);
+    p._historyFeed.configure(entry, 2000);
     assert.strictEqual(entry.historyItems.find((item) => item.name === "g.node.value.inner.x").historyFromMs, 1010);
     assert.strictEqual(store.scopes.get("w").series.get("g.node.value.inner.x").count, 2);
     panelWatches = [];
-    p._configureChartHistory(entry, 3000);
+    p._historyFeed.configure(entry, 3000);
     assert.strictEqual(entry.runtimeHistoryLeaves.size, 0, "removing the object releases its recorded leaves");
 
     // Workspace persistence of the switch and of each view's expansions.

@@ -75,13 +75,13 @@ function fixture(saved) {
         _renderWebview(webview, html) {
             webview.html = html;
         },
-        _configureChartHistory() {},
         readElfSymbols: () => ({ symbols: [] }),
         _syncSidebarTarget() {},
         _chartBackgroundState: () => ({ type: "chartBackgroundIcon", icon: null }),
         chartBackground: () => ({ ready() {} }),
         _t: (key, params) => t("zh", key, params)
     });
+    Object.assign(host._historyFeed, { configure() {} });
     Object.assign(host._sampling, { frequencyHz: 10, status: () => ({ running: false }), pruneSampleMap() {} });
     Object.assign(host._sampling, { invalidateConsumerTypes() {}, refreshSamplingPlan: async () => {} });
     host._watchLists = new WatchListStore({

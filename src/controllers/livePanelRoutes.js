@@ -39,7 +39,7 @@ async function ready({ host, entry, post, watchKey }) {
     if (host._chartHistory) {
         const scope = host._debugSamplingScope(watchKey);
         const revision = entry.historyRevision || 0;
-        host._flushChartHistoryAppend(entry);
+        host._historyFeed.flushAppend(entry);
         const status = await host._chartHistory.request("status", [scope]);
         if (scope === host._debugSamplingScope(watchKey) && revision === (entry.historyRevision || 0))
             post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
@@ -64,8 +64,8 @@ async function importSidebarWatch({ host, post, watchKey }, message) {
 }
 
 async function clearSamplingHistory({ host, entry, post, watchKey }, message) {
-    host._resetChartHistoryWarnings();
-    host._discardChartHistoryAppend(entry);
+    host._historyFeed.resetWarnings();
+    host._historyFeed.discardAppend(entry);
     entry.historyClearedAt = Date.now();
     entry.historyRevision = message.historyRevision;
     host._samplingArchive.clear(host._debugSamplingScope(watchKey));
@@ -95,7 +95,7 @@ async function chartHistoryRequest({ host, entry, post, watchKey }, message) {
     if ((message.historyRevision || 0) !== (entry.historyRevision || 0)) return;
     const scope = host._debugSamplingScope(watchKey);
     const revision = entry.historyRevision || 0;
-    host._flushChartHistoryAppend(entry);
+    host._historyFeed.flushAppend(entry);
     let result;
     if (message.type === "chartViewport") {
         const watched = new Set((entry.historyItems || host._scalarWatchList(watchKey)).map((item) => item.name));
@@ -110,8 +110,8 @@ async function chartHistoryRequest({ host, entry, post, watchKey }, message) {
             message.snapshotId
         ]);
         const restoreNames = (result.evictedNames || []).filter((name) => !previousNames.has(name));
-        if (!message.snapshotId && restoreNames.length && !host._chartHistoryRecovery) {
-            await host._restoreChartHistory(entry, restoreNames);
+        if (!message.snapshotId && restoreNames.length && !host._historyFeed.recovery) {
+            await host._historyFeed.restore(entry, restoreNames);
             result = await host._chartHistory.request("viewport", [scope, names, message.range, message.width]);
         }
     } else if (message.type === "chartFreeze") result = await host._chartHistory.request("freeze", [scope]);
@@ -266,7 +266,7 @@ function createLivePanelHandler(host, entry, vscode) {
             if (route) await route(page, message);
         } catch (error) {
             if (CHART_HISTORY_REQUESTS.has(message.type)) {
-                if (host._chartHistory?.failed || host._chartHistoryRecovery) return;
+                if (host._chartHistory?.failed || host._historyFeed.recovery) return;
                 page.post({
                     type: message.type + "Result",
                     requestId: message.requestId,

@@ -206,12 +206,12 @@ function createSamplingServices(host, context, vscode) {
         workerPath: path.join(__dirname, "chartHistoryWorker.js"),
         maxBytes: chartHistoryMiB * 1024 * 1024,
         onUpdated: (message) => {
-            if (message.limited) host._warnChartHistoryLimited();
+            if (message.limited) host._historyFeed.warnLimited();
             for (const entry of host._livePanels.values())
                 if (host._debugSamplingScope(entry.watchKey) === message.scope && entry.ready)
                     entry.post({ ...message, type: "chartHistoryStatus", historyRevision: entry.historyRevision || 0 });
         },
-        onError: (error) => host._handleChartHistoryError(error)
+        onError: (error) => host._historyFeed.handleError(error)
     });
     return { liveWatchService, watchLists, debugBridge, samplingArchive, chartHistory };
 }

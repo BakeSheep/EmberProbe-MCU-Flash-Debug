@@ -5,16 +5,16 @@ const { ChartHistoryStore } = require("../src/services/chartHistoryStore");
 const { MAX_BACKLOG_BYTES } = require("../src/services/chartHistoryService");
 async function testHistoryBatches(p, entry, panel, history, requests, values) {
     const other = p._livePanels.get(1);
-    p._configureChartHistory(other, 1);
+    p._historyFeed.configure(other, 1);
     history.clear(entry.watchKey);
     requests.length = 0;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 3, t: 15 }], 25);
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 5 }], 20);
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 2, t: 10 }], 15);
-    p._queueChartHistoryAppend(other, [{ name: "shared", value: 99, t: 8 }], 10);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 3, t: 15 }], 25);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 1, t: 5 }], 20);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 2, t: 10 }], 15);
+    p._historyFeed.queueAppend(other, [{ name: "shared", value: 99, t: 8 }], 10);
     assert.strictEqual(requests.filter((method) => method === "append").length, 0);
     await new Promise((resolve) => setTimeout(resolve, 70));
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(requests.filter((method) => method === "append").length, 2, "one batch per scope");
     assert.strictEqual(history._scope(entry.watchKey).tick, 25, "a batch uses its maximum tick");
     assert.deepStrictEqual(
@@ -27,7 +27,7 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
         "multi-tick samples stay in time order"
     );
     assert.strictEqual(history._scope(other.watchKey).series.get("shared").count, 1);
-    assert.strictEqual(p._queuedChartHistoryBytes, 0);
+    assert.strictEqual(p._historyFeed.queuedBytes, 0);
 
     const request = p._chartHistory.request;
     let finishAppend;
@@ -38,17 +38,17 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
             finishAppend = resolve;
         });
     };
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 4, t: 30 }], 30);
-    const inFlight = p._flushChartHistoryAppend(entry);
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 5, t: 35 }], 35);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 4, t: 30 }], 30);
+    const inFlight = p._historyFeed.flushAppend(entry);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 5, t: 35 }], 35);
     await panel.receive({ type: "clearSamplingHistory", panelId: 2, historyRevision: 2 });
     assert.strictEqual(entry._historyBatch, null, "clear drops old samples still waiting for a timer");
     assert.strictEqual(entry._historyBatchTimer, null);
     finishAppend();
     await inFlight;
     p._chartHistory.request = request;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 6, t: 40 }], 40);
-    await p._flushPendingChartHistorySamples();
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 6, t: 40 }], 40);
+    await p._historyFeed.flushPending();
     assert.deepStrictEqual(
         [...history.points(history._scope(entry.watchKey).series.get("shared"))].map((point) => [point.t, point.v]),
         [[40, 6]],
@@ -56,13 +56,13 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
     );
 
     requests.length = 0;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 7, t: 45 }], 45);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 7, t: 45 }], 45);
     await panel.receive({ type: "chartFreeze", historyRevision: 2, requestId: 1 });
     assert.deepStrictEqual(requests, ["append", "freeze"], "freeze fences the pending append before capturing history");
     const frozen = panel.messages.at(-1);
     assert.strictEqual(history._source(entry.watchKey, frozen.snapshotId).series.get("shared").count, 2);
     requests.length = 0;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 8, t: 50 }], 50);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 8, t: 50 }], 50);
     await panel.receive({
         type: "chartViewport",
         historyRevision: 2,
@@ -71,9 +71,9 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
         width: 100
     });
     assert.deepStrictEqual(requests, ["append", "viewport"]);
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 9, t: 55 }], 55);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 9, t: 55 }], 55);
     entry.historyRevision++;
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(
         history._scope(entry.watchKey).series.get("shared").count,
         3,
@@ -82,32 +82,32 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
 
     const previousItems = values.get(entry.watchKey);
     requests.length = 0;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 10, t: 60 }], 60);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 10, t: 60 }], 60);
     values.set(entry.watchKey, [{ name: "shared", type: "u8", address: 0x20000000 }]);
-    p._configureChartHistory(entry, 61);
-    await p._flushPendingChartHistorySamples();
+    p._historyFeed.configure(entry, 61);
+    await p._historyFeed.flushPending();
     assert.deepStrictEqual(requests, ["append", "configure"], "old samples reach the old type before reconfiguration");
     assert.strictEqual(history._scope(entry.watchKey).series.get("shared").count, 0);
     requests.length = 0;
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 11, t: 65 }], 65);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 11, t: 65 }], 65);
     p._debugSamplingScope = (key) => key + ":next-session";
-    p._configureChartHistory(entry, 66);
+    p._historyFeed.configure(entry, 66);
     assert.deepStrictEqual(requests, ["remove", "configure"], "a scope change discards the old pending batch");
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 12, t: 70 }], 70);
-    await p._flushPendingChartHistorySamples();
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 12, t: 70 }], 70);
+    await p._historyFeed.flushPending();
     assert.strictEqual(history._scope(entry.historyScope).series.get("shared").count, 1);
     p._debugSamplingScope = (key) => key;
     values.set(entry.watchKey, previousItems);
-    p._configureChartHistory(entry, 71);
-    await p._flushPendingChartHistorySamples();
+    p._historyFeed.configure(entry, 71);
+    await p._historyFeed.flushPending();
 
     requests.length = 0;
     p._sampling.consumers = new Set();
     p._debugBridge = { setIntent() {} };
     p._postConsumerStatuses = () => {};
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 13, t: 75 }], 75);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 13, t: 75 }], 75);
     p._sampling.stop();
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.deepStrictEqual(requests, ["append"], "stop flushes a batch without waiting for its timer");
     assert.strictEqual(entry._historyBatchTimer, null);
 
@@ -118,12 +118,12 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
     p.openLiveWatchPanel();
     const closing = p._livePanels.get(3);
     values.set(closing.watchKey, [{ name: "shared" }]);
-    p._configureChartHistory(closing, 1);
+    p._historyFeed.configure(closing, 1);
     requests.length = 0;
-    p._queueChartHistoryAppend(closing, [{ name: "shared", value: 1, t: 1 }], 1);
+    p._historyFeed.queueAppend(closing, [{ name: "shared", value: 1, t: 1 }], 1);
     closing._batchTimer = setTimeout(() => assert.fail("closed panel delivered a pending value"), 1000);
     closing.panel.dispose();
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.deepStrictEqual(requests, ["append", "remove"], "panel disposal flushes before removing its history scope");
     assert.strictEqual(closing._historyBatchTimer, null);
     assert.strictEqual(p._livePanels.has(3), false);
@@ -139,7 +139,7 @@ async function testHistoryFailures(Provider) {
     p._sampling.stop = () => stopped++;
     p._postLive = (message) => messages.push(message);
     p._t = (key) => key;
-    p._warnChartHistoryLimited = function () {
+    p._historyFeed.warnLimited = function () {
         if (this._chartHistoryLimitedWarned) return;
         this._chartHistoryLimitedWarned = true;
         messages.push({ key: "lw.memoryHistoryLimited" });
@@ -151,8 +151,8 @@ async function testHistoryFailures(Provider) {
         },
         fail: assert.fail
     };
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
-    await p._flushPendingChartHistorySamples();
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
+    await p._historyFeed.flushPending();
     assert.strictEqual(stopped, 0);
     assert.strictEqual(messages[0].key, "lw.memoryHistoryLimited");
     let failure, finishMarker;
@@ -170,11 +170,11 @@ async function testHistoryFailures(Provider) {
             failure = error;
         }
     };
-    for (let t = 2; t <= 20; t++) p._queueChartHistoryAppend(entry, [{ name: "shared", value: t, t }], t);
+    for (let t = 2; t <= 20; t++) p._historyFeed.queueAppend(entry, [{ name: "shared", value: t, t }], t);
     assert.strictEqual(markers, 1, "host queue pressure coalesces gap markers");
-    assert.strictEqual(p._pendingChartHistoryAppends.size, 1, "dropped batches do not accumulate tracking promises");
+    assert.strictEqual(p._historyFeed.pendingAppends.size, 1, "dropped batches do not accumulate tracking promises");
     finishMarker({ limited: true });
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(failure, undefined);
     assert.strictEqual(stopped, 0);
     assert.strictEqual(messages.length, 1, "memory limit warning is not repeated");
@@ -217,7 +217,7 @@ async function testShutdownFence(Provider) {
     Object.assign(p._agentOps, { stopReadIfRunning: () => null });
     Object.assign(p.debugLaunch, { clearStartupWatchdog() {}, stopManagedServer: async () => {} });
     Object.assign(p._sampling, { consumers: new Set() });
-    p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
+    p._historyFeed.queueAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
     const shuttingDown = p.shutdown();
     await writing;
     assert.strictEqual(disposed, false);
@@ -476,7 +476,7 @@ async function testShutdownFence(Provider) {
     p._syncGraphTarget = P.prototype._syncGraphTarget;
     p._sampling.status = () => ({ running: false });
     p.readElfSymbols = () => ({ symbols: [] });
-    p._configureChartHistory(entry);
+    p._historyFeed.configure(entry);
     history.append(entry.watchKey, [{ name: "shared", value: 7, t: 2000 }], 2000);
     await panels[1].receive({ type: "ready", panelId: 2 });
     const status = panels[1].messages.at(-1);

@@ -209,7 +209,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         ])
     });
     p._sampling.compositeMap = () => new Map();
-    p._configureChartHistory = () => {};
+    p._historyFeed.configure = () => {};
     p._liveWatchService = new LiveWatchService({ decodeValue: () => 42, decodeValueText: () => "42" });
     p._debugSamplingScope = (key) => key;
     p._samplingArchive = { append: (...args) => archives.push(args) };
@@ -229,7 +229,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     assert.strictEqual(sidebar[0][0].t, 100, "cached acquisition timestamps survive delivery");
     p._sampling.handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
     assert.strictEqual(histories.length, 0, "history ticks wait for the short host batch");
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(histories.length, 1);
     assert.deepStrictEqual(
         archives[1][0].map((entry) => entry.name),
@@ -245,7 +245,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         "late delivery acquired before clear cannot enter the new archive generation"
     );
     p._sampling.handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(histories.length, 2, "new acquisitions resume in the cleared panel");
     console.log("Layered consumer scheduling, timestamp and archive isolation tests passed");
 })().catch((error) => {

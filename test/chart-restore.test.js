@@ -65,9 +65,9 @@ const swatch = (view, name) =>
     const posted = [];
     Object.assign(host, {
         _elfService: { workerPath: "elfWorker.js", cache: { dwarfReady: false } },
-        _watchLists: { read: () => items, invalidate() {} },
-        _configureChartHistory() {}
+        _watchLists: { read: () => items, invalidate() {} }
     });
+    Object.assign(host._historyFeed, { configure() {} });
     Object.assign(host._sampling, { status: () => ({ running: false }) });
     const entry = { ready: true, watchKey: "mcu.watchList", latestSamples: new Map(), post: (m) => posted.push(m) };
     host._syncGraphTarget(entry, true);

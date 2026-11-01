@@ -248,7 +248,6 @@ async function incompleteActions() {
                     }
                 },
                 _postProbeOperationStatus() {},
-                _resetChartHistoryWarnings() {},
                 _resolveOpenOcdPath: async () => "openocd",
                 _postConsumerStatuses: (status, error) =>
                     f.messages.push({
@@ -258,6 +257,7 @@ async function incompleteActions() {
                         error
                     })
             });
+            Object.assign(f.provider._historyFeed, { resetWarnings() {} });
             Object.assign(f.provider.debugLaunch, { liveSession: () => null, clearStartupWatchdog() {} });
             f.provider._context.workspaceState.get = () => undefined;
             try {

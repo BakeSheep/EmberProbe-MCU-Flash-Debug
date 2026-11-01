@@ -33,18 +33,18 @@ const { DebugLaunch } = require("./services/debugLaunch");
 const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
 const { ConnectedProbes } = require("./services/connectedProbes");
+const { ChartHistoryFeed } = require("./services/chartHistoryFeed");
 const { createServices } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
 const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
-const { serializeError, toUiError } = require("./services/errorEnvelope");
+const { toUiError } = require("./services/errorEnvelope");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
-const { buildChartHistoryItems, selectFocusedPanel } = require("./services/liveWatchService");
+const { selectFocusedPanel } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
 const { LivePanelRegistry } = require("./services/livePanelRegistry");
 const { RtosViewService } = require("./services/rtosViewService");
-const { estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
 const { ensureDebugTools, findWarmupDebugTools } = require("./services/debugToolPreflight");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
@@ -58,8 +58,6 @@ const MCP_CONFIGURED_STATE_KEY = "emberprobe.mcpConfigured";
 // Curve visibility per chart watch list, so a chart reopened after a restart shows the same curves.
 const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
-// Backoff before each chart-history worker restart attempt (at most three per run/clear).
-const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
 // Builds the symbol name index: original names (stable identities) first, plus unique displayName aliases so C++
 // qualified names resolve. Resolved watch and write items still store the original symbol.name; displayName only serves
 // lookups.
@@ -95,13 +93,15 @@ function createDebugLaunch(host) {
     });
 }
 class MainViewProvider {
-    // Created by the `_notices`, `_elfView`, `debugLaunch`, `_writes`, `_agentOps` and `_connectedProbes` getters.
+    // Created by the `_notices`, `_elfView`, `debugLaunch`, `_writes`, `_agentOps`, `_connectedProbes` and
+    // `_historyFeed` getters.
     _noticeService = null;
     _elfViewController = null;
     _debugLaunchController = null;
     _writeExecution = null;
     _agentOperations = null;
     _connectedProbesController = null;
+    _historyFeedController = null;
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
         return (this._samplingController ??= createSamplingController(this));
@@ -124,11 +124,12 @@ class MainViewProvider {
     get _connectedProbes() {
         return (this._connectedProbesController ??= new ConnectedProbes(this, { vscode, listProbes }));
     }
+    get _historyFeed() {
+        return (this._historyFeedController ??= new ChartHistoryFeed(this));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
-        /** @type {readonly number[]} */
-        this._chartHistoryRecoveryDelaysMs = CHART_HISTORY_RECOVERY_DELAYS_MS;
         this._webviewAssetRootUri = vscode.Uri.joinPath(context.globalStorageUri, "webview-assets");
         // Language priority: an explicit user choice (globalState) > the VS Code display language (zh-* -> Chinese,
         // anything else -> English)
@@ -138,9 +139,6 @@ class MainViewProvider {
         this._livePanelRegistry = null;
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
         this._symbolNameIndexes = new WeakMap();
-        /** @type {Set<Promise<void>>} */
-        this._pendingChartHistoryAppends = new Set();
-        this._queuedChartHistoryBytes = 0;
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
         this._debugReadPlanKey = "";
@@ -494,10 +492,10 @@ class MainViewProvider {
             entry._batchTimer = null;
             entry._pendingScalars = [];
             entry._pendingComposites = [];
-            this._discardChartHistoryAppend(entry);
+            this._historyFeed.discardAppend(entry);
             entry.historyRevision = (entry.historyRevision || 0) + 1;
             entry.post({ type: "debugSessionChanged", sessionId });
-            this._configureChartHistory(entry);
+            this._historyFeed.configure(entry);
         }
     }
     // Agent and sidebar share one memory analysis backend.
@@ -779,7 +777,7 @@ class MainViewProvider {
             entry.disposed = true;
             backgroundFocus?.dispose();
             this._chartBackground?.cancel(entry);
-            this._flushChartHistoryAppend(entry);
+            this._historyFeed.flushAppend(entry);
             if (entry._batchTimer) clearTimeout(entry._batchTimer);
             this._chartHistory?.request("remove", [this._debugSamplingScope(watchKey)]).catch(() => {});
             this._webviewRenders?.delete(panelWebview);
@@ -986,7 +984,7 @@ class MainViewProvider {
         // A chart keeps its current watches until the real list can be resolved; the rebind after
         // DWARF loading sends it.
         if (this._watchListsReady()) post({ type: "watchList", items: this._scalarWatchList(entry.watchKey) });
-        this._configureChartHistory(entry);
+        this._historyFeed.configure(entry);
         post({
             type: "liveStatus",
             ...this._sampling.status()
@@ -1032,295 +1030,6 @@ class MainViewProvider {
             if (scalarSamples.length) post({ type: "liveSample", samples: scalarSamples });
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
-    }
-    _resetChartHistoryWarnings() {
-        this._chartHistoryLimitedWarned = false;
-        this._chartHistoryRecoveryErrorWarned = false;
-        this._chartHistoryRecoveryAttempts = 0;
-    }
-    _handleChartHistoryError(error) {
-        if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code)) {
-            this._warnChartHistoryLimited();
-            return;
-        }
-        // Sampling and the archive of record continue while the cache is unavailable.
-        for (const entry of this._livePanels.values()) {
-            entry._historyRecoveryReady = false;
-            this._discardChartHistoryAppend(entry);
-        }
-        void this._recoverChartHistory();
-    }
-    _warnChartHistoryLimited() {
-        if (this._chartHistoryLimitedWarned) return;
-        this._chartHistoryLimitedWarned = true;
-        // Shown once as a Live Watch notice where the chart is, not as a popup.
-        this._postLive({ type: "chartHistoryLimited" });
-    }
-    _limitChartHistory(entry, scope, tick) {
-        this._discardChartHistoryAppend(entry);
-        const revision = entry.historyRevision || 0;
-        const marker = entry._historyLimit;
-        if (marker?.scope === scope && marker.revision === revision) return marker.task;
-        const task = this._chartHistory.limit
-            ? this._chartHistory.limit(scope, tick)
-            : this._chartHistory.request("markLimited", [scope, tick]);
-        const pending = (this._pendingChartHistoryAppends ||= new Set());
-        const tracked = task
-            .then((status) => {
-                if (status?.limited) this._warnChartHistoryLimited();
-            })
-            .catch((error) => this._chartHistory.fail(error))
-            .finally(() => {
-                pending.delete(tracked);
-                if (entry._historyLimit?.task === tracked) entry._historyLimit = null;
-            });
-        entry._historyLimit = { scope, revision, task: tracked };
-        pending.add(tracked);
-        return tracked;
-    }
-    _discardChartHistoryAppend(entry) {
-        if (entry._historyBatchTimer) clearTimeout(entry._historyBatchTimer);
-        entry._historyBatchTimer = null;
-        this._queuedChartHistoryBytes = Math.max(
-            0,
-            (this._queuedChartHistoryBytes || 0) - (entry._historyBatch?.bytes || 0)
-        );
-        entry._historyBatch = null;
-    }
-    _queueChartHistoryAppend(entry, samples, tick) {
-        if (!this._chartHistory || !samples.length) return;
-        if (entry._historyRestoreTask || (this._chartHistoryRecovery && !entry._historyRecoveryReady)) {
-            entry._historyRestoreGapTick = tick;
-            return;
-        }
-        if (this._chartHistory.failed) return;
-        const scope = this._debugSamplingScope(entry.watchKey);
-        const revision = entry.historyRevision || 0;
-        if (entry._historyBatch && (entry._historyBatch.scope !== scope || entry._historyBatch.revision !== revision))
-            this._discardChartHistoryAppend(entry);
-        const bytes = estimateHistoryBytes([scope, samples, tick]);
-        const queuedBytes = (this._queuedChartHistoryBytes || 0) + bytes;
-        // Host batching and worker IPC share the existing backlog budget.
-        if (queuedBytes + (this._chartHistory.queuedBytes || 0) > MAX_BACKLOG_BYTES) {
-            this._limitChartHistory(entry, scope, tick);
-            return;
-        }
-        const batch = (entry._historyBatch ||= { scope, revision, samples: [], tick, bytes: 0 });
-        batch.tick = Math.max(batch.tick, tick);
-        batch.bytes += bytes;
-        this._queuedChartHistoryBytes = queuedBytes;
-        for (const sample of samples) batch.samples.push(sample.t == null ? { ...sample, t: tick } : sample);
-        if (batch.bytes >= 256 * 1024) this._flushChartHistoryAppend(entry);
-        else if (!entry._historyBatchTimer)
-            entry._historyBatchTimer = setTimeout(() => this._flushChartHistoryAppend(entry), 50);
-    }
-    _flushChartHistoryAppend(entry) {
-        const batch = entry._historyBatch;
-        this._discardChartHistoryAppend(entry);
-        if (
-            !batch ||
-            !this._chartHistory ||
-            this._chartHistory.failed ||
-            entry._historyRestoreTask ||
-            (this._chartHistoryRecovery && !entry._historyRecoveryReady) ||
-            batch.scope !== this._debugSamplingScope(entry.watchKey) ||
-            batch.revision !== (entry.historyRevision || 0)
-        )
-            return;
-        batch.samples.sort((a, b) => a.t - b.t);
-        const pending = (this._pendingChartHistoryAppends ||= new Set());
-        const task = this._chartHistory
-            .request("append", [batch.scope, batch.samples, batch.tick])
-            .then((status) => {
-                if (status?.limited) this._warnChartHistoryLimited();
-            })
-            .catch((error) => {
-                if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code))
-                    return this._limitChartHistory(entry, batch.scope, batch.tick);
-                this._chartHistory.fail(error);
-            })
-            .finally(() => pending.delete(task));
-        pending.add(task);
-        return task;
-    }
-    _flushPendingChartHistorySamples() {
-        for (const entry of this._livePanels?.values() || []) this._flushChartHistoryAppend(entry);
-        return Promise.all([...(this._pendingChartHistoryAppends || [])]);
-    }
-    _configureChartHistory(entry, acquisitionTime = Date.now()) {
-        if (!this._chartHistory) return;
-        const scope = this._debugSamplingScope(entry.watchKey);
-        const watched = this._scalarWatchList(entry.watchKey);
-        const owners = new Set(watched.map((item) => item.name));
-        for (const [name, leaf] of entry.runtimeHistoryLeaves || [])
-            if (!owners.has(leaf.runtimeOwner)) entry.runtimeHistoryLeaves.delete(name);
-        const items = buildChartHistoryItems(watched, elfSymbols, [...(entry.runtimeHistoryLeaves?.values() || [])]);
-        const identity = (item) => JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
-        const previous = new Map(
-            (entry.historyScope === scope ? entry.historyItems || [] : []).map((item) => [item.name, item])
-        );
-        if (entry.historyScope && entry.historyScope !== scope) {
-            this._discardChartHistoryAppend(entry);
-            this._chartHistory.request("remove", [entry.historyScope]).catch((error) => this._chartHistory.fail(error));
-        }
-        entry.historyScope = scope;
-        const signature = JSON.stringify([scope, items]);
-        if (entry.historySignature === signature) return;
-        this._flushChartHistoryAppend(entry);
-        entry.historySignature = signature;
-        entry.historyItems = items.map((item) => ({
-            ...item,
-            historyIdentity: identity(item),
-            historyFromMs:
-                previous.has(item.name) && previous.get(item.name).historyIdentity === identity(item)
-                    ? previous.get(item.name).historyFromMs
-                    : acquisitionTime
-        }));
-        entry.historyIdentities = new Map(entry.historyItems.map((item) => [item.name, item.historyIdentity]));
-        this._chartHistory
-            .request("configure", [scope, entry.historyItems, this._samplingArchive.generations?.get(scope) || 0])
-            .then((status) => {
-                if (entry.historySignature === signature && entry.ready)
-                    entry.post({ type: "chartHistoryStatus", ...status, historyRevision: entry.historyRevision || 0 });
-            })
-            .catch((error) => this._chartHistory.fail(error));
-    }
-    _restoreChartHistory(entry, names, recoveryToken) {
-        if (entry._historyRestoreTask) return entry._historyRestoreTask;
-        this._flushChartHistoryAppend(entry);
-        const scope = this._debugSamplingScope(entry.watchKey);
-        const revision = entry.historyRevision || 0;
-        const signature = entry.historySignature;
-        const current = () =>
-            (!recoveryToken || recoveryToken.active) &&
-            !this._chartHistory.disposed &&
-            !this._shutdownPromise &&
-            [...this._livePanels.values()].includes(entry) &&
-            scope === this._debugSamplingScope(entry.watchKey) &&
-            revision === (entry.historyRevision || 0) &&
-            signature === entry.historySignature;
-        let restoredThrough = -Infinity;
-        const task = (async () => {
-            await this._flushPendingChartHistorySamples();
-            if (!current()) return;
-            const source = await this._samplingArchive.historySource(scope);
-            if (!current()) return;
-            await this._chartHistory.request("restore", [{ ...source, names }]);
-            if (!current()) return;
-            // One bounded catch-up pass includes samples archived during the first scan.
-            const catchup = await this._samplingArchive.historySource(scope);
-            if (!current()) return;
-            if (catchup.generation !== source.generation) return;
-            if (catchup.cutoff > source.cutoff)
-                await this._chartHistory.request("restore", [{ ...catchup, names, fromOffset: source.cutoff }]);
-            if (!current()) return;
-            restoredThrough = catchup.lastTimestampMs;
-            const status = await this._chartHistory.request("status", [scope]);
-            if (current()) {
-                if (status.limited) this._warnChartHistoryLimited();
-                entry.post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
-            }
-        })()
-            .catch((error) => {
-                if (error.code !== "CHART_HISTORY_RESTORE_CANCELLED") throw error;
-            })
-            .finally(async () => {
-                if (entry._historyRestoreTask !== task) return;
-                entry._historyRestoreTask = null;
-                if (!current()) return;
-                entry._historyRecoveryReady = true;
-                const gapTick = entry._historyRestoreGapTick;
-                entry._historyRestoreGapTick = null;
-                // Partial restores also leave other channels' skipped samples missing.
-                if (Number.isFinite(gapTick) && (names || gapTick > restoredThrough)) {
-                    const status = await this._chartHistory.request("markLimited", [scope, gapTick]);
-                    if (current()) {
-                        if (status.limited) this._warnChartHistoryLimited();
-                        entry.post({ type: "chartHistoryStatus", ...status, historyRevision: revision });
-                    }
-                }
-            });
-        entry._historyRestoreTask = task;
-        entry._historyRestoreToken = recoveryToken;
-        return task;
-    }
-    _recoverChartHistory() {
-        if (this._chartHistoryRecovery) return this._chartHistoryRecovery;
-        if (!this._chartHistory?.failed || this._chartHistory.disposed || this._shutdownPromise)
-            return Promise.resolve();
-        const task = (async () => {
-            let error = this._chartHistory.failed;
-            // At most three restarts per run/clear, including recurring failures after a successful recovery.
-            while ((this._chartHistoryRecoveryAttempts || 0) < 3) {
-                const attempt = (this._chartHistoryRecoveryAttempts = (this._chartHistoryRecoveryAttempts || 0) + 1);
-                const delays = this._chartHistoryRecoveryDelaysMs || CHART_HISTORY_RECOVERY_DELAYS_MS;
-                await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1]));
-                if (this._chartHistory.disposed || this._shutdownPromise) return;
-                let timer;
-                const token = { active: true };
-                try {
-                    await Promise.race([
-                        (async () => {
-                            for (const entry of this._livePanels.values()) entry._historyRecoveryReady = false;
-                            await this._flushPendingChartHistorySamples();
-                            await this._chartHistory.restart();
-                            if (!token.active) return;
-                            for (const entry of this._livePanels.values()) {
-                                if (!token.active) return;
-                                entry.historyRevision = (entry.historyRevision || 0) + 1;
-                                entry.post({ type: "debugSessionChanged" });
-                                const scope = this._debugSamplingScope(entry.watchKey);
-                                await this._chartHistory.request("configure", [
-                                    scope,
-                                    entry.historyItems || this._scalarWatchList(entry.watchKey),
-                                    this._samplingArchive.generations?.get(scope) || 0
-                                ]);
-                                if (!token.active) return;
-                                if (entry.historyViewportNames?.length)
-                                    await this._chartHistory.request("touchViewport", [
-                                        scope,
-                                        entry.historyViewportNames
-                                    ]);
-                                if (!token.active) return;
-                                await this._restoreChartHistory(entry, undefined, token);
-                            }
-                            if (this._chartHistory.failed) throw this._chartHistory.failed;
-                        })(),
-                        new Promise((resolve, reject) => {
-                            timer = setTimeout(() => {
-                                token.active = false;
-                                reject(new Error("History recovery timed out"));
-                            }, 30000);
-                        })
-                    ]);
-                    return;
-                } catch (failure) {
-                    error = failure;
-                    token.active = false;
-                    for (const entry of this._livePanels.values())
-                        if (entry._historyRestoreToken === token) entry._historyRestoreTask = null;
-                    this._chartHistory.fail(failure);
-                } finally {
-                    clearTimeout(timer);
-                }
-            }
-            if (!this._chartHistoryRecoveryErrorWarned) {
-                this._chartHistoryRecoveryErrorWarned = true;
-                this._postLive({
-                    type: "liveError",
-                    ...toUiError(
-                        Object.assign(new Error(this._t("lw.historyRecoveryFailed")), {
-                            i18nKey: "lw.historyRecoveryFailed",
-                            details: { cause: serializeError(error) }
-                        })
-                    )
-                });
-            }
-        })().finally(() => {
-            if (this._chartHistoryRecovery === task) this._chartHistoryRecovery = null;
-        });
-        this._chartHistoryRecovery = task;
-        return task;
     }
     samplingFrequencyConfigurationChanged() {
         if (this._sampling.savingFrequency) return;
@@ -1443,7 +1152,7 @@ class MainViewProvider {
             await this.debugLaunch.stopManagedServer();
             const stopped = this._sampling.stop();
             if (stopped) await stopped;
-            await this._flushPendingChartHistorySamples();
+            await this._historyFeed.flushPending();
             await this._livePanelRegistry?.pending.catch(console.error);
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();

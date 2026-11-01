@@ -33,9 +33,9 @@ function shutdownFixture() {
         _samplingArchive: { dispose: async () => {} },
         _chartHistory: null,
         _stopJlinkDriverMonitor() {},
-        _flushPendingChartHistorySamples: async () => {},
         disposeDebugBridge: () => order.push("debug-bridge-disposed")
     });
+    Object.assign(p._historyFeed, { flushPending: async () => {} });
     Object.assign(p._agentOps, {
         stopReadIfRunning: () => {
             order.push("agent-read-stopped");

@@ -41,7 +41,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
     p._samplingArchive = { append: (samples) => archive.push(samples) };
     p._sampling._postWebviewBatch = (_entry, samples) => messages.push(samples);
     p._sampling._postSidebarBatch = () => {};
-    p._configureChartHistory(entry, 1000);
+    p._historyFeed.configure(entry, 1000);
     for (let i = 0; i < 100; i++) {
         const bytes = Buffer.alloc(12);
         bytes.writeFloatLE(i, 0);
@@ -64,7 +64,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         messages.every((samples) => samples.length === 1),
         "silent leaf points stay out of Webview messages"
     );
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     const frozen = store.freeze("p");
     const page = render(getLiveWatchContent({}, "en"));
     try {
@@ -81,7 +81,7 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         const viewport = JSON.stringify(w.chartState.x);
         for (const leaf of leaves.slice(1)) w.toggleLeafInChart(leaf.name, leaf.address, leaf.type);
         watches = Array.from(w.eval("state").watch, (item) => ({ ...item }));
-        p._configureChartHistory(entry, 2000);
+        p._historyFeed.configure(entry, 2000);
         assert.ok(
             entry.historyItems.every((item) => item.historyFromMs === 1000),
             "enabling preserves recording identity"
@@ -113,10 +113,10 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         p._sampling.handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 1495 }], 2100);
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 0));
         p._sampling.handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 2100 }], 2100);
-        await p._flushPendingChartHistorySamples();
+        await p._historyFeed.flushPending();
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 1));
         watches = [];
-        p._configureChartHistory(entry, 2200);
+        p._historyFeed.configure(entry, 2200);
         assert.strictEqual(store.scopes.get("p").series.size, 0, "parent removal releases implicit histories");
         page.assertHealthy();
     } finally {

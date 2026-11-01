@@ -300,7 +300,7 @@ async function testProviderWiring() {
         }
     };
     gap._debugSamplingScope = (key) => "scope:" + key;
-    gap._flushChartHistoryAppend = (entry) => calls.push(["flush", entry.watchKey]);
+    gap._historyFeed.flushAppend = (entry) => calls.push(["flush", entry.watchKey]);
     gap._livePanels = new Map([
         ["a", { watchKey: "a", historySignature: "x" }],
         ["b", { watchKey: "b" }],

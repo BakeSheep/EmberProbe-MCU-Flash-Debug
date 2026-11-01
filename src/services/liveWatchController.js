@@ -295,7 +295,7 @@ class LiveWatchController {
             this._runtimeHoldKey = holdKey;
             this.host._runtimeSampleHold?.reset();
         }
-        for (const entry of this.host._livePanels.values()) this.host._configureChartHistory(entry);
+        for (const entry of this.host._livePanels.values()) this.host._historyFeed.configure(entry);
         if (this.host._debugBridge.hasSession) {
             const planKey = debugReadPlanKey(active);
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, this.intent);
@@ -597,7 +597,7 @@ class LiveWatchController {
         const sidebarNames = consumers && new Set(consumers.sidebarNames);
         const graphSamples = graphNames ? samples.filter((sample) => graphNames.has(sample.name)) : samples;
         for (const entry of this.host._livePanels.values()) {
-            if (!entry.historySignature) this.host._configureChartHistory(entry, t);
+            if (!entry.historySignature) this.host._historyFeed.configure(entry, t);
             const currentSamples =
                 entry.historyClearedAt === undefined
                     ? graphSamples
@@ -621,7 +621,7 @@ class LiveWatchController {
                       (entry.runtimeHistoryLeaves ||= new Map())
                   )
                 : { samples: [], added: false };
-            if (runtimeLeaves.added) this.host._configureChartHistory(entry, t);
+            if (runtimeLeaves.added) this.host._historyFeed.configure(entry, t);
             // Keep every panel's decoding and type changes separate in exported history.
             const recorded = entry.historyItems
                 ? this.host._liveWatchService.decodeHistorySamples(
@@ -636,7 +636,7 @@ class LiveWatchController {
                     ? entry.historyItems.map((item) => [item.name, item.type])
                     : types.graphs.get(entry.watchKey)
             );
-            if (recorded.length && this.host._chartHistory) this.host._queueChartHistoryAppend(entry, recorded, t);
+            if (recorded.length && this.host._chartHistory) this.host._historyFeed.queueAppend(entry, recorded, t);
             this.host._samplingArchive.append(
                 recorded.map((sample) => {
                     const spec = graphTypes.get(sample.name);
@@ -669,7 +669,7 @@ class LiveWatchController {
         if (!this.host._chartHistory || this.host._chartHistory.failed) return;
         for (const entry of this.host._livePanels.values()) {
             if (!entry.historySignature || entry._historyRestoreTask) continue;
-            this.host._flushChartHistoryAppend(entry);
+            this.host._historyFeed.flushAppend(entry);
             const scope = this.host._debugSamplingScope(entry.watchKey);
             this.host._chartHistory.request("markGap", [scope]).catch((error) => this.host._chartHistory.fail(error));
         }
@@ -808,7 +808,7 @@ class LiveWatchController {
     start(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
         if (this.stopPromise || this._startPromise)
             return Promise.reject(Object.assign(new Error(this.host._t("live.starting")), { code: "PROBE_BUSY" }));
-        this.host._resetChartHistoryWarnings();
+        this.host._historyFeed.resetWarnings();
         const generation = (this._startGeneration = (this._startGeneration || 0) + 1);
         this._startPromise = this._start(items, intervalMs, consumer, interactive, generation).finally(() => {
             this._startPromise = null;
@@ -840,16 +840,16 @@ class LiveWatchController {
                 if (!this.host._chartHistory.failed) {
                     try {
                         const status = await this.host._chartHistory.request("setBudget", [maxBytes]);
-                        if (status?.limited) this.host._warnChartHistoryLimited();
+                        if (status?.limited) this.host._historyFeed.warnLimited();
                     } catch (error) {
                         if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code))
-                            this.host._warnChartHistoryLimited();
+                            this.host._historyFeed.warnLimited();
                         else throw error;
                     }
                 }
             }
         }
-        if (this.host._chartHistory?.failed) await this.host._recoverChartHistory();
+        if (this.host._chartHistory?.failed) await this.host._historyFeed.recover();
         if (this.host._downloadRunning)
             throw Object.assign(new Error(this.host._t("live.downloadRunning")), { i18nKey: "live.downloadRunning" });
         if (this.host._chipInfoRunning)
@@ -1062,7 +1062,7 @@ class LiveWatchController {
             this.host._pendingSidebarScalars = [];
             this.host._pendingSidebarComposites = [];
         }
-        const historyFlushed = this.host._flushPendingChartHistorySamples();
+        const historyFlushed = this.host._historyFeed.flushPending();
         this._flushPendingWebviewSamples();
         const preserveIntent = !!options.preserveIntent;
         this.consumers.clear();
