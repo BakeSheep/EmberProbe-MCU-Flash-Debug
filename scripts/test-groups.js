@@ -86,6 +86,7 @@ const TEST_GROUPS = Object.freeze({
         "openocd-status-service.test.js",
         "openocd-target-bundle.test.js",
         "paused-read-merge.test.js",
+        "peripheral-live-access.test.js",
         "pointer-symbolizer.test.js",
         "pretty-printing-modes.test.js",
         "probe-automatic.test.js",

@@ -523,6 +523,8 @@ class SvdPeripheralService {
         this.loadBoundSvd = options.loadBoundSvd;
         this.debugBridge = options.debugBridge;
         this.authorization = options.authorization;
+        this.accessProvider = options.accessProvider;
+        this.transport = null;
         this.cache = new Map();
         this.parser = options.workerPath
             ? new (require("./svdModelService").SvdModelService)({ workerPath: options.workerPath })
@@ -605,7 +607,107 @@ class SvdPeripheralService {
         return { svd: model.svd, peripherals };
     }
 
+    async _withAccess(method, args, write = false) {
+        const generation = this.accessProvider.status().generation;
+        const requested = method === "readForView" ? args[1] : args[0]?.accessGeneration;
+        if (requested !== undefined && requested !== generation)
+            throw Object.assign(new Error("Peripheral request target changed"), { code: "DEBUG_STATE_CHANGED" });
+        const model = await this.model();
+        const params = args[0] || {};
+        const targets = method === "readForView" ? params : write ? array(params.writes) : array(params.targets);
+        if (!Array.isArray(targets) || !targets.length || targets.length > 64)
+            throw Object.assign(new Error("Provide 1–64 peripheral targets"), { code: "NO_PERIPHERAL_TARGETS" });
+        const invalidTargets = [];
+        for (const input of targets) {
+            let resolved;
+            try {
+                resolved = resolveTarget(model, write ? input?.target : input);
+                if (method === "readForView") {
+                    assertReadable(resolved.register);
+                    if (resolved.field?.access === "write-only") continue;
+                }
+            } catch (error) {
+                if (method === "readForView") continue;
+                if (error.code !== "SVD_TARGET_NOT_FOUND") throw error;
+                invalidTargets.push(String(write ? input?.target : input));
+                continue;
+            }
+            const { register, field } = resolved;
+            if (write) {
+                assertWritable(register, field);
+                parseWriteValue(input?.value, field, field?.bitWidth || register.size);
+            } else {
+                if (field?.access === "write-only")
+                    throw Object.assign(new Error("Peripheral field is write-only"), {
+                        code: "PERIPHERAL_READ_NOT_ALLOWED"
+                    });
+                assertReadable(register);
+            }
+        }
+        if (invalidTargets.length)
+            throw Object.assign(new Error("SVD targets were not found: " + invalidTargets.join(", ")), {
+                code: "SVD_TARGET_NOT_FOUND",
+                details: { target: invalidTargets[0], invalidTargets }
+            });
+        return this.accessProvider.withAccess(
+            async (transport) => {
+                const scoped = Object.create(this);
+                scoped.accessProvider = null;
+                const checkModel = async () => {
+                    transport.guard();
+                    const current = await this.model();
+                    if (current.svd.sha256 !== model.svd.sha256 || current.svd.path !== model.svd.path)
+                        throw Object.assign(new Error("SVD changed during peripheral access"), {
+                            code: "DEBUG_STATE_CHANGED"
+                        });
+                    transport.guard();
+                };
+                scoped.model = async () => model;
+                scoped.transport = {
+                    ...transport,
+                    read: async (...params) => {
+                        await checkModel();
+                        const result = await transport.read(...params);
+                        await checkModel();
+                        return result;
+                    },
+                    write: async (...params) => {
+                        await checkModel();
+                        const result = await transport.write(...params);
+                        try {
+                            await checkModel();
+                        } catch (error) {
+                            error.details = { ...error.details, writeAcknowledged: true, resultUnknown: false };
+                            throw error;
+                        }
+                        return result;
+                    }
+                };
+                const result = await scoped[method](...args);
+                transport.guard();
+                if ((await this.model()).svd.sha256 !== model.svd.sha256)
+                    throw Object.assign(new Error("SVD changed during peripheral access"), {
+                        code: "DEBUG_STATE_CHANGED"
+                    });
+                transport.guard();
+                return result;
+            },
+            write,
+            generation
+        );
+    }
+
+    _readBytes(address, count, width, endian) {
+        return this.transport
+            ? this.transport.read(address, count, width, endian)
+            : this.debugBridge.readPausedMemory(address, count);
+    }
+
     _guard(write = false) {
+        if (this.transport) {
+            this.transport.guard();
+            return this.transport.guard;
+        }
         this.debugBridge.assertPausedAccess({ write });
         const session = this.debugBridge.activeSession;
         const before = this.debugBridge.agentStatus();
@@ -626,7 +728,7 @@ class SvdPeripheralService {
     async _readRegister(model, register, guard = this._guard()) {
         guard();
         assertReadable(register);
-        const bytes = await this.debugBridge.readPausedMemory(register.address, register.bytes);
+        const bytes = await this._readBytes(register.address, register.bytes, register.bytes, model.svd.endian);
         guard();
         if (bytes.length !== register.bytes) throw new Error("Incomplete peripheral register read");
         const value = decodeInteger(bytes, model.svd.endian);
@@ -671,7 +773,7 @@ class SvdPeripheralService {
             const expected = group[group.length - 1].address + group[group.length - 1].bytes - group[0].address;
             let bytes;
             try {
-                bytes = await this.debugBridge.readPausedMemory(group[0].address, expected);
+                bytes = await this._readBytes(group[0].address, expected, group[0].bytes, model.svd.endian);
                 guard();
                 if (bytes.length !== expected) throw new Error("Incomplete peripheral register read");
             } catch (error) {
@@ -712,7 +814,8 @@ class SvdPeripheralService {
         return values;
     }
 
-    async readForView(targets) {
+    async readForView(targets, generation) {
+        if (this.accessProvider) return this._withAccess("readForView", [targets, generation]);
         const model = await this.model();
         const guard = this._guard();
         const cached = new Map();
@@ -766,6 +869,7 @@ class SvdPeripheralService {
     }
 
     async read(params = {}) {
+        if (this.accessProvider) return this._withAccess("read", [params]);
         const model = await this.model();
         const guard = this._guard();
         const resolvedTargets = [];
@@ -805,7 +909,7 @@ class SvdPeripheralService {
     }
 
     async _writePlan(model, writes, guard = this._guard(true)) {
-        this.debugBridge.assertPausedAccess({ write: true });
+        guard();
         const grouped = new Map();
         const seenTargets = new Set();
         for (const input of array(writes)) {
@@ -861,7 +965,14 @@ class SvdPeripheralService {
                 bytes: encodeInteger(written, register.bytes, model.svd.endian)
             });
         }
-        return { svd: model.svd, session: this.debugBridge.agentStatus(), items };
+        return {
+            svd: model.svd,
+            session: this.debugBridge.agentStatus(),
+            ...(this.transport
+                ? { connection: this.transport.connection, accessMode: this.transport.access.mode }
+                : {}),
+            items
+        };
     }
 
     write(params = {}) {
@@ -877,6 +988,7 @@ class SvdPeripheralService {
     }
 
     async _write(params, fromUi = false) {
+        if (this.accessProvider) return this._withAccess("_write", [params, fromUi], true);
         const model = await this.model();
         const guard = this._guard(true);
         const plan = await this._writePlan(model, params.writes, guard);
@@ -887,15 +999,32 @@ class SvdPeripheralService {
         }
         const results = [];
         let attempted = null;
+        let acknowledged = false;
         try {
             for (const item of plan.items) {
+                acknowledged = false;
                 guard();
                 attempted = item.register;
-                await this.debugBridge.writePausedMemory(item.addressNumber, item.bytes);
-                guard();
                 const register = model.registersByPath.get(item.register.toLowerCase());
-                const readBack = await this._readRegister(model, register, guard);
-                if (readBack.value !== item.written)
+                const response = this.transport
+                    ? await this.transport.write(
+                          item.addressNumber,
+                          item.bytes,
+                          encodeInteger(BigInt(item.previous), register.bytes, model.svd.endian),
+                          model.svd.endian
+                      )
+                    : await this.debugBridge.writePausedMemory(item.addressNumber, item.bytes);
+                acknowledged = true;
+                guard();
+                const readBack = this.transport
+                    ? {
+                          value: response.readBack
+                              ? hex(decodeInteger(response.readBack, model.svd.endian), register.size)
+                              : null
+                      }
+                    : await this._readRegister(model, register, guard);
+                const verified = readBack.value === item.written;
+                if (!verified && !this.transport?.live)
                     throw Object.assign(new Error(`Peripheral write read-back mismatch for ${item.register}`), {
                         code: "PERIPHERAL_WRITE_VERIFY_FAILED",
                         details: { expected: item.written, readBack: readBack.value }
@@ -907,11 +1036,19 @@ class SvdPeripheralService {
                     previous: item.previous,
                     written: item.written,
                     readBack: readBack.value,
-                    verified: true
+                    verified,
+                    verification: verified ? "matched" : readBack.value === null ? "unavailable" : "different",
+                    ...(response?.readBackError ? { diagnostic: response.readBackError } : {})
                 });
             }
         } catch (error) {
-            error.details = { ...error.details, completed: results, attempted, resultUnknown: attempted !== null };
+            error.details = {
+                ...error.details,
+                completed: results,
+                attempted,
+                writeAcknowledged: error.details?.writeAcknowledged ?? acknowledged,
+                resultUnknown: error.details?.resultUnknown ?? (attempted !== null && !acknowledged)
+            };
             error.retryable = false;
             throw error;
         }

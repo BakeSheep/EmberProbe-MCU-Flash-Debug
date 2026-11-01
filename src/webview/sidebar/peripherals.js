@@ -75,6 +75,7 @@
             query: "",
             debug: { state: "none", epoch: 0, canRead: false, canWrite: false },
             error: "",
+            warning: "",
             svdPath: "",
             pending: new Set(),
             drafts: new Map()
@@ -92,7 +93,13 @@
             api?.setState?.(uiState);
         }
         function request(type, payload = {}) {
-            api?.postMessage({ type, ...payload });
+            api?.postMessage({
+                type,
+                ...payload,
+                ...(state.debug.generation === undefined
+                    ? {}
+                    : { accessGeneration: state.debug.generation, svdPath: state.svdPath })
+            });
         }
         // The card's one notice: an error until dismissed or cleared, otherwise a hint about what to do next.
         const notices = window.EmberProbeNotice.createNoticeArea(status, {
@@ -118,13 +125,22 @@
             for (let offset = 0; offset < targets.length; offset += 32)
                 request("peripheralReadRequest", { targets: targets.slice(offset, offset + 32) });
         }
+        function readableNow(register) {
+            return (
+                safeToRead(register) &&
+                (!state.debug.mode || state.debug.mode === "debug-paused" || register.size <= 32)
+            );
+        }
         function refreshExpanded() {
             if (!section.open || !state.debug.canRead) return;
             const targets = [];
             for (const [name, registers] of state.children) {
                 if (!state.expanded.has(name)) continue;
                 for (const register of registers) {
-                    if (safeToRead(register) && (targets.length < AUTO_READ_LIMIT || state.expanded.has(register.path)))
+                    if (
+                        readableNow(register) &&
+                        (targets.length < AUTO_READ_LIMIT || state.expanded.has(register.path))
+                    )
                         targets.push(register.path);
                 }
             }
@@ -146,7 +162,7 @@
             span.textContent = formatValue(value, bits, state.mode);
             row.appendChild(span);
         }
-        function renderWriteControls(row, target, bits, field, currentValue) {
+        function renderWriteControls(row, target, bits, field, currentValue, registerBits = bits) {
             let draft = state.drafts.get(target);
             if (!draft) {
                 draft = { value: "", bits, dirty: false, pending: false, awaitingRead: false };
@@ -221,7 +237,10 @@
             input.onblur = () => {
                 if (!rendering && draft.dirty && !draft.pending) commit();
             };
-            input.disabled = !state.debug.canWrite || draft.pending;
+            input.disabled =
+                !state.debug.canWrite ||
+                draft.pending ||
+                (state.debug.mode !== undefined && state.debug.mode !== "debug-paused" && registerBits > 32);
             validation();
             controls.append(minus, input, plus);
             row.appendChild(controls);
@@ -247,7 +266,8 @@
                 detail.title = value.enumDescription || value.enum;
                 row.appendChild(detail);
             }
-            if (safeToWrite(register, field)) renderWriteControls(row, field.path, field.bitWidth, field, value?.value);
+            if (safeToWrite(register, field))
+                renderWriteControls(row, field.path, field.bitWidth, field, value?.value, register.size);
             return row;
         }
         function renderRegister(register) {
@@ -265,13 +285,13 @@
                     else state.expanded.add(register.path);
                     save();
                     render();
-                    if (state.debug.canRead && safeToRead(register) && !reading) requestReads([register.path]);
+                    if (state.debug.canRead && readableNow(register) && !reading) requestReads([register.path]);
                 }
             );
             expand.disabled = !register.fields.length;
             row.appendChild(expand);
             const name = button("peripheral-name", register.name, t("peripheral.readRegister"), () => {
-                if (state.debug.canRead && safeToRead(register)) requestReads([register.path]);
+                if (state.debug.canRead && readableNow(register)) requestReads([register.path]);
             });
             row.appendChild(name);
             if (!safeToWrite(register)) addValue(row, reading?.value, register.size, !!reading?.changed);
@@ -335,6 +355,8 @@
                 }
                 if (state.error) note(state.error, "error");
                 else if (!state.catalog) note(t("peripheral.loading"), "info", true);
+                else if (state.warning) note(state.warning, "warning");
+                else if (!state.debug.canRead) note(t("peripheral.unavailable"));
                 else if (state.debug.state === "running") note(t("peripheral.running"));
                 else if (state.debug.state === "paused") note(t("peripheral.paused"));
                 else note(t("peripheral.noSession"));
@@ -368,7 +390,14 @@
                 rendering = false;
             }
         }
+        function currentResponse(message) {
+            return (
+                (message.requestGeneration === undefined || message.requestGeneration === state.debug.generation) &&
+                (!message.requestSvdPath || message.requestSvdPath === state.svdPath)
+            );
+        }
         function onCatalog(message) {
+            if (!currentResponse(message)) return;
             if (message.svd?.path !== state.svdPath) return;
             if (state.catalog?.svd?.sha256 !== message.svd?.sha256) {
                 state.children.clear();
@@ -382,18 +411,20 @@
             render();
         }
         function onRegisters(message) {
+            if (!currentResponse(message)) return;
             state.pending.delete(message.name);
             state.children.set(message.name, message.registers || []);
             render();
             if (section.open && state.expanded.has(message.name) && state.debug.canRead)
                 requestReads(
                     (message.registers || [])
-                        .filter(safeToRead)
+                        .filter(readableNow)
                         .slice(0, AUTO_READ_LIMIT)
                         .map((item) => item.path)
                 );
         }
         function onRead(message) {
+            if (!currentResponse(message)) return;
             if (message.session?.epoch !== undefined && message.session.epoch !== state.debug.epoch) return;
             for (const item of message.registers || []) {
                 const previous = state.readings.get(item.path);
@@ -415,12 +446,21 @@
             render();
         }
         function onWrite(message) {
+            if (!currentResponse(message)) return;
             const draft = state.drafts.get(message.target);
             if (draft) {
                 draft.pending = false;
                 draft.awaitingRead = true;
             }
             state.error = "";
+            const unverified = message.result?.results?.find((item) => item.verified === false);
+            state.warning = unverified
+                ? t(
+                      unverified.verification === "unavailable"
+                          ? "peripheral.readbackUnavailable"
+                          : "peripheral.readbackDifferent"
+                  )
+                : "";
             render();
             const register = message.result?.results?.[0]?.register;
             if (register) requestReads([register]);
@@ -428,13 +468,21 @@
         function onDebug(message) {
             const wasPaused = state.debug.canRead;
             const oldEpoch = state.debug.epoch;
+            const changed = oldEpoch !== message.epoch || state.debug.generation !== message.generation;
             state.debug = message;
-            if (oldEpoch !== message.epoch) state.drafts.clear();
+            if (changed) {
+                state.drafts.clear();
+                state.readings.clear();
+                state.pending.clear();
+                state.warning = "";
+            }
             render();
-            if (!message.canRead || oldEpoch !== message.epoch) clearTimeout(refreshTimer);
-            if (message.canRead && (!wasPaused || oldEpoch !== message.epoch)) deferRefresh();
+            if (!message.canRead || changed) clearTimeout(refreshTimer);
+            if (message.canRead && (!wasPaused || changed)) deferRefresh();
+            if (changed && !state.catalog && state.svdPath) requestCatalog();
         }
         function onError(message) {
+            if (!currentResponse(message)) return;
             if (message.operation === "peripheralRegistersRequest") state.pending.clear();
             if (message.operation === "peripheralWriteRequest") {
                 for (const [target, draft] of state.drafts) {

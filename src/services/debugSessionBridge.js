@@ -125,6 +125,7 @@ class DebugSessionBridge {
         this.replRequests = new Set();
         // Variables view / memory writes the UI sent; their success refreshes the paused snapshot.
         this.writeRequests = new Set();
+        this.peripheralBusy = false;
     }
 
     get replBusy() {
@@ -149,6 +150,7 @@ class DebugSessionBridge {
     get canRead() {
         return !!(
             this.intentEnabled &&
+            !this.peripheralBusy &&
             this.paused &&
             !this.transitionKind &&
             !this.replBusy &&
@@ -207,7 +209,7 @@ class DebugSessionBridge {
     }
 
     selectSession(selector = {}) {
-        if (this.controlInFlight || this.writing || this.replBusy)
+        if (this.controlInFlight || this.writing || this.peripheralBusy || this.replBusy)
             throw Object.assign(new Error("Wait for the current debug operation before selecting another session"), {
                 code: "DEBUG_CONTROL_BUSY"
             });
@@ -875,7 +877,7 @@ class DebugSessionBridge {
     }
 
     async control(action, requestedThreadId) {
-        if (this.controlInFlight || this.writing || this.replBusy)
+        if (this.controlInFlight || this.writing || this.peripheralBusy || this.replBusy)
             throw Object.assign(new Error("Another debug control action is still in progress"), {
                 code: "DEBUG_CONTROL_BUSY",
                 details: { action, activeAction: this.controlInFlight?.action || "write" }
@@ -1096,7 +1098,7 @@ class DebugSessionBridge {
     }
 
     async writeAndVerify(items) {
-        if (this.writing || this.controlInFlight || this.replBusy)
+        if (this.writing || this.peripheralBusy || this.controlInFlight || this.replBusy)
             throw Object.assign(new Error("Another debug operation is in progress"), { code: "DEBUG_CONTROL_BUSY" });
         const session = this.activeSession;
         if (!this.paused || !session || this.capabilities.write !== true)

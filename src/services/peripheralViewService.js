@@ -54,7 +54,7 @@ class PeripheralViewService {
         };
     }
 
-    async read(targets) {
+    async read(targets, generation) {
         if (
             !Array.isArray(targets) ||
             !targets.length ||
@@ -63,8 +63,8 @@ class PeripheralViewService {
         ) {
             throw new Error(`Provide 1–${MAX_READ_TARGETS} register paths`);
         }
-        this.debugBridge.assertPausedAccess();
-        return this.peripherals.readForView(targets);
+        if (!this.peripherals.accessProvider) this.debugBridge.assertPausedAccess();
+        return this.peripherals.readForView(targets, generation);
     }
 }
 

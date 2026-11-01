@@ -165,6 +165,16 @@ class OpenOcdDebugController {
         if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
         return this.runtime.readOnce(...args);
     }
+    peripheralTransaction(...args) {
+        if (!this.capabilities.runtimeRead)
+            return Promise.reject(
+                Object.assign(new Error("Pause the selected core for peripheral access"), {
+                    code: "PERIPHERAL_ACCESS_UNSUPPORTED"
+                })
+            );
+        if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));
+        return this.runtime.peripheralTransaction(...args);
+    }
     writeAndVerify(...args) {
         if (!this.capabilities.runtimeRead) return Promise.reject(runtimeWriteDisabledError());
         if (!this.ready) return Promise.reject(new Error("Debug controller is not ready"));

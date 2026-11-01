@@ -328,6 +328,84 @@ const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
         }
     });
 
+    for (const [state, mode] of [
+        ["none", "standalone"],
+        ["running", "debug-running"],
+        ["paused", "debug-paused"]
+    ]) {
+        const liveView = render(getModernWebviewContent({}, "en"));
+        try {
+            liveView.document.getElementById("peripheralSection").open = true;
+            liveView.send({
+                type: "peripheralDebugStatus",
+                state,
+                mode,
+                generation: 7,
+                epoch: 1,
+                canRead: true,
+                canWrite: true
+            });
+            liveView.send({ type: "svdStatus", state: "configured", path: "/device.svd" });
+            liveView.send({
+                type: "peripheralCatalog",
+                ...catalog,
+                requestGeneration: 7,
+                requestSvdPath: "/device.svd"
+            });
+            liveView.document.querySelector(".peripheral-group .peripheral-name").click();
+            liveView.send({
+                type: "peripheralRegisters",
+                name: "GPIOA",
+                registers: [register],
+                requestGeneration: 7,
+                requestSvdPath: "/device.svd"
+            });
+            const request = liveView.messages.findLast((item) => item.type === "peripheralReadRequest");
+            assert.strictEqual(request.accessGeneration, 7);
+            assert.strictEqual(request.svdPath, "/device.svd");
+            const result = {
+                type: "peripheralReadResult",
+                requestGeneration: 7,
+                requestSvdPath: "/device.svd",
+                registers: [{ path: "GPIOA.MODER", value: "0x00000002" }]
+            };
+            liveView.send(result);
+            const selector = ".peripheral-register .peripheral-editor-input";
+            assert.strictEqual(liveView.document.querySelector(selector).disabled, false);
+            liveView.send({
+                ...result,
+                requestGeneration: 6,
+                registers: [{ path: "GPIOA.MODER", value: "0x000000ff" }]
+            });
+            assert.strictEqual(liveView.document.querySelector(selector).value, "0x00000002");
+            const input = liveView.document.querySelector(selector);
+            input.value = "3";
+            input.dispatchEvent(new liveView.window.Event("input", { bubbles: true }));
+            liveView.send(result);
+            assert.strictEqual(liveView.document.querySelector(selector).value, "3", "refresh preserves edits");
+            liveView.send({
+                type: "peripheralWriteResult",
+                target: "GPIOA.MODER",
+                requestGeneration: 7,
+                result: { results: [{ register: "GPIOA.MODER", verified: false, verification: "different" }] }
+            });
+            assert(liveView.document.getElementById("peripheralStatus").textContent.includes("readback differs"));
+            liveView.send({
+                type: "peripheralDebugStatus",
+                state,
+                mode,
+                generation: 8,
+                epoch: 1,
+                canRead: true,
+                canWrite: true
+            });
+            liveView.send(result);
+            assert.strictEqual(liveView.document.querySelector(selector).value, "", "old generation is discarded");
+            liveView.assertHealthy();
+        } finally {
+            liveView.close();
+        }
+    }
     console.log("Native peripheral tree, DAP read guards and value controls passed");
 })().catch((error) => {
     console.error(error);

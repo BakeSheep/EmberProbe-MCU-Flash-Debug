@@ -93,6 +93,10 @@ evidence that hardware is disconnected.
 
 ## Cross-skill calls
 
+- Peripheral reads/writes reuse the current owner's supported connection, or obtain a temporary exclusive lease.
+  Managed single-core and standalone accesses never halt/reset/resume. Multicore/external-server access remains
+  paused-only. Bitfield writes are not atomic against firmware/hardware. A completed write with different or
+  unavailable readback does not prove that nothing was written; never automatically resend it.
 - The debug probe has a **single owner**. Do not start a second OpenOCD-backed operation
   (flash, chip info, fault read, sampling) while another is running; `PROBE_BUSY` means wait or
   let the user stop the current owner — the skill never implicitly pauses or preempts.

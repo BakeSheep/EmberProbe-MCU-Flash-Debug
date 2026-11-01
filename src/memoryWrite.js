@@ -3,7 +3,12 @@
 // variable's own bytes with read-back, the aligned 32-bit read-modify-write fallback, the write_memory command fallback,
 // and halting a running target around a transaction. The session keeps the exclusive arbiter and the read guards.
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
-const { MAX_DEBUG_READ_COMMANDS, bytesToElements, validateManagedReadPlan } = require("./liveWatchReadPlan");
+const {
+    MAX_DEBUG_READ_COMMANDS,
+    bytesToElements,
+    validateManagedReadPlan,
+    parseMemoryElements
+} = require("./liveWatchReadPlan");
 
 // Split a byte range into naturally aligned 8/16/32-bit accesses, merging equal widths.
 function naturalWriteChunks(address, bytes) {
@@ -142,4 +147,130 @@ class MemoryWriter {
     }
 }
 
-module.exports = { MemoryWriter, validateManagedWritePlan };
+// SVD transactions preserve access widths and never halt or retry a write.
+async function peripheralTransaction(session, request, timeoutMs = 5000) {
+    const reads = request?.reads || [];
+    const writes = request?.writes || [];
+    const endian = request?.endian || "little";
+    const valid = (item) =>
+        Number.isSafeInteger(item?.address) &&
+        item.address >= 0 &&
+        [1, 2, 4].includes(item.size) &&
+        item.address % item.size === 0 &&
+        item.address + item.size <= 0x100000000;
+    if (
+        !Array.isArray(reads) ||
+        !Array.isArray(writes) ||
+        reads.length > 64 ||
+        writes.length > 64 ||
+        !["little", "big"].includes(endian) ||
+        !reads.every(valid) ||
+        !writes.every(valid) ||
+        writes.some(
+            (item) =>
+                !Array.isArray(item.bytes) ||
+                item.bytes.length !== item.size ||
+                !Array.isArray(item.expected) ||
+                item.expected.length !== item.size ||
+                [...item.bytes, ...item.expected].some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+        )
+    )
+        throw Object.assign(new Error("Invalid or unsupported peripheral access width/range"), {
+            code: "PERIPHERAL_ACCESS_UNSUPPORTED"
+        });
+    const deadline = session.clock.now() + Math.min(Math.max(Number(timeoutMs) || 5000, 1), 5000);
+    const guard = { targetEpoch: session.targetEpoch, requireSampling: false, deadline };
+    await session._acquireExclusive(deadline);
+    let attempted = null;
+    let acknowledged = false;
+    const output = { reads: [], writes: [] };
+    const check = () => {
+        session._assertReadGuard(guard);
+        if (session.stopped || !session.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
+    };
+    const read = async (item) => {
+        check();
+        const response = await session.tcl.sendChecked(
+            session._peripheralReadCmd + " 0x" + item.address.toString(16) + " " + item.size * 8 + " 1"
+        );
+        check();
+        const values = parseMemoryElements(response, item.size * 8);
+        if (values.length !== 1) throw new Error("Incomplete peripheral register read");
+        const bytes = Buffer.alloc(item.size);
+        if (endian === "big") bytes.writeUIntBE(values[0], 0, item.size);
+        else bytes.writeUIntLE(values[0], 0, item.size);
+        return Array.from(bytes);
+    };
+    try {
+        check();
+        // xPack exposes read_memory/write_memory without the historical ocd_ aliases.
+        // Discover names before any register access, so a write is never retried to select an alias.
+        const command = async (operation) => {
+            const names = (await session.tcl.sendChecked("info commands *" + operation)).trim().split(/\s+/);
+            check();
+            const selected = names.includes("ocd_" + operation)
+                ? "ocd_" + operation
+                : names.includes(operation)
+                  ? operation
+                  : null;
+            if (!selected)
+                throw Object.assign(new Error("OpenOCD does not expose " + operation), {
+                    code: "PERIPHERAL_ACCESS_UNSUPPORTED"
+                });
+            return selected;
+        };
+        if ((reads.length || writes.length) && !session._peripheralReadCmd)
+            session._peripheralReadCmd = await command("read_memory");
+        if (writes.length && !session._peripheralWriteCmd) session._peripheralWriteCmd = await command("write_memory");
+        for (const item of reads) output.reads.push(await read(item));
+        for (const item of writes) {
+            const before = await read(item);
+            if (before.some((byte, index) => byte !== item.expected[index]))
+                throw Object.assign(new Error("Peripheral register changed before writing"), {
+                    code: "PERIPHERAL_VALUE_CHANGED"
+                });
+        }
+        for (const item of writes) {
+            check();
+            attempted = item.address;
+            acknowledged = false;
+            const bytes = Buffer.from(item.bytes);
+            const value = endian === "big" ? bytes.readUIntBE(0, item.size) : bytes.readUIntLE(0, item.size);
+            await session.tcl.sendChecked(
+                session._peripheralWriteCmd +
+                    " 0x" +
+                    item.address.toString(16) +
+                    " " +
+                    item.size * 8 +
+                    " {0x" +
+                    value.toString(16) +
+                    "}"
+            );
+            acknowledged = true;
+            const result = { bytesWritten: item.size };
+            output.writes.push(result);
+            check();
+            try {
+                result.readBack = await read(item);
+            } catch (error) {
+                check();
+                result.readBackError = String(error.message);
+            }
+        }
+        return output;
+    } catch (error) {
+        error.retryable = false;
+        error.details = {
+            ...error.details,
+            completed: output.writes,
+            attempted,
+            writeAcknowledged: acknowledged,
+            resultUnknown: attempted !== null && !acknowledged
+        };
+        throw error;
+    } finally {
+        session._releaseExclusive();
+    }
+}
+
+module.exports = { MemoryWriter, validateManagedWritePlan, peripheralTransaction };

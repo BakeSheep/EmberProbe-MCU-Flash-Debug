@@ -376,23 +376,25 @@ class AgentOperations {
                     throw Object.assign(new Error("Pause the selected core before reading multicore memory"), {
                         code: "DEBUG_RUNTIME_READ_UNSUPPORTED"
                     });
-                session = {
-                    readOnce: async (items) => {
-                        const plan = this.host._sampling.runtimeRamPlan(items, true);
-                        const epoch = this.host._debugBridge.stopEpoch;
-                        const samples = await managed.readOnce(plan.allowed);
-                        if (
-                            this.host._debugBridge.stopEpoch !== epoch ||
-                            this.host._debugBridge.agentStatus().state !== "running"
-                        ) {
-                            throw Object.assign(new Error("Debug target state changed during the runtime read"), {
-                                code: "DEBUG_STATE_CHANGED",
-                                retryable: true
-                            });
-                        }
-                        return samples;
-                    }
-                };
+                session = options.peripheralAccess
+                    ? managed
+                    : {
+                          readOnce: async (items) => {
+                              const plan = this.host._sampling.runtimeRamPlan(items, true);
+                              const epoch = this.host._debugBridge.stopEpoch;
+                              const samples = await managed.readOnce(plan.allowed);
+                              if (
+                                  this.host._debugBridge.stopEpoch !== epoch ||
+                                  this.host._debugBridge.agentStatus().state !== "running"
+                              ) {
+                                  throw Object.assign(new Error("Debug target state changed during the runtime read"), {
+                                      code: "DEBUG_STATE_CHANGED",
+                                      retryable: true
+                                  });
+                              }
+                              return samples;
+                          }
+                      };
                 source = "debug-running-openocd";
             }
         }

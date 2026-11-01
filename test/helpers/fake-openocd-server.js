@@ -122,6 +122,8 @@ class FakeOpenOcdServer {
 
     _execute(command) {
         this.commands.push(command);
+        if (command === "info commands *read_memory") return { ok: true, response: "ocd_read_memory read_memory" };
+        if (command === "info commands *write_memory") return { ok: true, response: "ocd_write_memory write_memory" };
         if (command === "emberprobe_read_scatter version") {
             return this.scatterVersion === null
                 ? { ok: false, response: 'invalid command name "emberprobe_read_scatter"' }

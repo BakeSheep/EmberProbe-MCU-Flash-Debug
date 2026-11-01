@@ -64,7 +64,7 @@ const { AgentService } = require("../src/services/agentService");
         if (method === "flash.execute") assert.strictEqual(calls.at(-1).args.length, 1);
         if (method === "config.set") assert.deepStrictEqual(calls.at(-1).args[0], { elf: "test.elf" });
         if (method.startsWith("sampling.")) assert.strictEqual(calls.at(-1).args[0], method.split(".")[1]);
-        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_writes.assertSessionCurrent");
+        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_svdPeripheralService.write");
         await bridge.call(method);
         if (method !== "config.set") await routes[method](null);
     }
@@ -104,8 +104,8 @@ const { AgentService } = require("../src/services/agentService");
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({
-        _writes: {
-            assertSessionCurrent() {
+        _svdPeripheralService: {
+            write() {
                 throw failure;
             }
         }

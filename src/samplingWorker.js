@@ -233,6 +233,7 @@ function run(
                     "invalidateTarget",
                     "readOnce",
                     "writeAndVerify",
+                    "peripheralTransaction",
                     "waitForIdle",
                     "waitForExit",
                     "stats"

@@ -39,6 +39,50 @@ const { createServices } = require("../src/composition");
         }
     });
 
+    await scenario("Wire peripheral access to the composed bridge and managed debug server", async () => {
+        const { provider, dispose } = createProvider();
+        const bridge = provider._debugBridge;
+        try {
+            const access = provider._peripheralAccessService;
+            assert.strictEqual(access.debugBridge, bridge);
+            assert.strictEqual(access.status().mode, "standalone");
+            bridge.sessions.set("selected", { id: "selected" });
+            bridge.agentStatus = () => ({ state: "running", epoch: 1, session: bridge.activeSession });
+            provider.debugLaunch.managedSessionId = "selected";
+            let reads = 0;
+            const server = {
+                capabilities: { runtimeRead: true },
+                peripheralTransaction: async (request) => {
+                    assert.deepStrictEqual(request.reads, [{ address: 0x40020000, size: 4 }]);
+                    reads++;
+                    return { reads: [[1, 2, 3, 4]] };
+                }
+            };
+            provider.debugLaunch.managedServer = server;
+            provider._probeConnectionService.assertCurrent = (session) => assert.strictEqual(session, server);
+            provider._sampling.runtimeRamPlan = () => {
+                throw new Error("SVD accesses must use their register widths");
+            };
+            const result = await access.withAccess(async (transport) => ({
+                bytes: Array.from(await transport.read(0x40020000, 4, 4, "little"))
+            }));
+            assert.deepStrictEqual(result.bytes, [1, 2, 3, 4]);
+            assert.strictEqual(reads, 1);
+            assert.strictEqual(result.access.source, "debug-running-openocd");
+            server.capabilities.runtimeRead = false;
+            await assert.rejects(
+                access.withAccess(() => {}),
+                { code: "PERIPHERAL_ACCESS_UNSUPPORTED" }
+            );
+            assert.strictEqual(bridge.peripheralBusy, false);
+        } finally {
+            provider.debugLaunch.managedServer = null;
+            provider.debugLaunch.managedSessionId = null;
+            bridge.sessions.clear();
+            await dispose();
+        }
+    });
+
     console.log("Provider construction tests passed");
 })().catch((error) => {
     console.error(error);

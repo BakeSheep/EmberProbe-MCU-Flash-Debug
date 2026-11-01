@@ -6,6 +6,23 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### 新增 / Added
+
+- APM32F407 + J-Link/WinUSB 实板通过外设三态读取及 6 次同值写入；修复 xPack OpenOCD 仅提供公开内存命令
+  时访问失败，以及后台发现 CubeMX 路径导致外设事务误失效的问题。仅验证 32 位同值写入，未测试实际改值。
+- Validate three-state peripheral reads and six same-value writes on APM32F407 + J-Link/WinUSB. Discover public
+  OpenOCD memory commands before access, and exclude unrelated CubeMX discovery from peripheral generations.
+  Hardware acceptance covers 32-bit same-value writes only, without deliberately changing register values.
+
+- 外设寄存器支持非调试、托管单核调试运行及调试暂停三种状态读写，访问本身不主动暂停、复位或恢复目标。
+  运行中按 SVD 的 8/16/32 位宽访问；保留逐次写入确认和特殊寄存器限制，回读变化与写命令完成分开报告。
+  64 位、多核共享组及外部服务器保留暂停访问；软件回归不代表实板验证。见 docs/PERIPHERAL-ACCESS.md。
+- Read/write SVD peripherals without a debug session, during managed single-core debugging or while paused,
+  without halting/resetting/resuming for access. Running transfers use natural 8/16/32-bit widths, retain one-time
+  write approval and special-register restrictions, and report readback separately from write completion.
+  64-bit, shared-group and external-server access remains paused-only; see the board-specific acceptance record.
+  See docs/PERIPHERAL-ACCESS.md.
+
 ## [0.9.0] - 2026-10-29
 
 ### 新增 / Added

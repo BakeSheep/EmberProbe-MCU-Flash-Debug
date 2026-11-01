@@ -395,7 +395,7 @@ const TOOLS = [
         toolset: "core",
         title: "Read peripheral registers",
         description:
-            "Read registers or fields by SVD path while the target is paused. Read-side-effect registers are refused.",
+            "Read SVD registers without halting in standalone or managed single-core debug mode; paused DAP is also supported. Read-side-effect registers are refused.",
         methods: ["peripherals.read"],
         hardware: true,
         inputSchema: object({ targets: strings("Paths such as GPIOA.ODR or RCC.CR.HSEON", { minItems: 1 }) }, [
@@ -408,7 +408,7 @@ const TOOLS = [
         toolset: "core",
         title: "Write peripheral registers",
         description:
-            "Write read-write registers or fields while paused, then read back. Always one-time approval of the returned plan.",
+            "Write ordinary SVD registers or fields without halting, then report readback separately. Running bitfield updates are not atomic. Always one-time approval of the returned plan.",
         methods: ["peripherals.write"],
         confirm: true,
         destructive: true,

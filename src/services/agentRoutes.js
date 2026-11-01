@@ -61,10 +61,7 @@ function createAgentRoutes(host, probes = listProbes) {
         "elf.analyze": (params) => host._analyzeElf(params || {}),
         "peripherals.list": (params) => host._svdPeripheralService.list(params || {}),
         "peripherals.read": (params) => host._svdPeripheralService.read(params || {}),
-        "peripherals.write": (params) => {
-            host._writes.assertSessionCurrent(host._debugBridge);
-            return host._svdPeripheralService.write(params || {});
-        },
+        "peripherals.write": (params) => host._svdPeripheralService.write(params || {}),
         "debug.status": () => host._debugControlService.status(),
         "debug.inspect": (params) => {
             inspection ||= new AgentDebugInspection(host._debugBridge);

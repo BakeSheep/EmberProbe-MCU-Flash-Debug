@@ -44,6 +44,9 @@ const { WatchListStore } = require("./services/watchListStore");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
+const { PeripheralAccessService, peripheralConfigurationKey } = require("./services/peripheralAccessService");
+const { assertWriteIdentity } = require("../skills/_emberprobe/probe-connection");
+const { observedTargetIdentity } = require("./chip/targetIdentity");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
 const { PeripheralViewService } = require("./services/peripheralViewService");
 const { RtosViewService } = require("./services/rtosViewService");
@@ -301,6 +304,7 @@ function createWorkspaceServices(host, context, vscode) {
             ),
         onStatus: (status) => {
             host._sampling.peripheralsChanged();
+            host._postPeripheralDebugStatus();
             host._webviewView?.webview.postMessage({ type: "svdStatus", ...status });
         }
     });
@@ -379,7 +383,49 @@ function createServices(host, context, { vscode }) {
     const { debugBridge } = sampling;
     const peripheralWriteAuthorization = new PeripheralWriteAuthorization();
     const flashAuthorization = new FlashAuthorization({ storage: context.workspaceState });
+    const peripheralAccessService = new PeripheralAccessService({
+        debugBridge,
+        configurationKey: () =>
+            peripheralConfigurationKey(
+                host._probeConnectionService.getConfig(),
+                host._commandContext().cwd,
+                host._probeConnectionService.getSuccessfulConnection()
+            ),
+        supportsRunning: () =>
+            !!(
+                host.debugLaunch.managedServer?.capabilities?.runtimeRead &&
+                host.debugLaunch.managedSessionId === host._debugBridge.activeSession?.id
+            ),
+        assertCurrent: (session, write) => {
+            if (session === host._debugBridge) {
+                if (write) host._writes.assertSessionCurrent(session);
+            } else {
+                host._probeConnectionService.assertCurrent(session);
+                if (write) assertWriteIdentity(session.options);
+            }
+        },
+        connectionIdentity: (session) => ({
+            workspace: host._commandContext().cwd,
+            ...host._writes.sessionConnection(session),
+            targetIdentity: observedTargetIdentity(
+                (session === host._debugBridge ? host.debugLaunch.managedServer : session)?.options?.targetCheck
+                    ?.checkId
+            )
+        }),
+        quiescePaused: async () => {
+            if (host.debugLaunch.managedServer && !(await host.debugLaunch.managedServer.waitForIdle(2000)))
+                throw Object.assign(new Error("OpenOCD access is still in progress"), {
+                    code: "DEBUG_CONTROL_BUSY"
+                });
+        },
+        withProbe: (handler) =>
+            host._agentOps.withProbe(handler, {
+                allowPausedDebugRead: true,
+                peripheralAccess: true
+            })
+    });
     const svdPeripheralService = new SvdPeripheralService({
+        accessProvider: peripheralAccessService,
         workerPath: path.join(__dirname, "svdWorker.js"),
         loadBoundSvd: () => host._svdManager.peekBound(host._commandContext().folder),
         debugBridge,
@@ -400,6 +446,7 @@ function createServices(host, context, { vscode }) {
         firmwareRecord,
         flashService: new FlashService(openocdRunner),
         faultService: new FaultService(faultInfo, elfSymbols),
+        peripheralAccessService,
         svdPeripheralService,
         peripheralViewService: new PeripheralViewService({ peripherals: svdPeripheralService, debugBridge }),
         debugControlService: new DebugControlService({

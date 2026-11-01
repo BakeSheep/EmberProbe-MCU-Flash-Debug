@@ -340,9 +340,15 @@ module.exports = Object.freeze({
     "peripheral.expand": "Expand or collapse",
     "peripheral.loading": "Loading SVD peripherals…",
     "peripheral.enableHint": "Choose an SVD under Other Configuration to browse registers.",
-    "peripheral.noSession": "Start a debug session to read values",
-    "peripheral.running": "Target running · values are from the last pause",
+    "peripheral.noSession": "Read registers without starting debugging",
+    "peripheral.running": "Target running · access without halting",
     "peripheral.paused": "Target paused · select a register to read it",
+    "peripheral.unavailable":
+        "Peripheral access unavailable · check the connection or pause an unsupported debug target",
+    "peripheral.readbackDifferent":
+        "Write command completed; readback differs. Firmware or hardware may have changed the register.",
+    "peripheral.readbackUnavailable":
+        "Write command completed; readback is unavailable. Do not repeat the write automatically.",
     "peripheral.noMatches": "No matching peripherals",
     "peripheral.readRegister": "Read register",
     "peripheral.readSideEffect": "SVD marks this register as unsafe to read",

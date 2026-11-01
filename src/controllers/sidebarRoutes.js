@@ -72,15 +72,15 @@ const PERIPHERAL_REQUESTS = {
     }),
     peripheralReadRequest: async (host, message) => ({
         type: "peripheralReadResult",
-        ...(await host._peripheralViewService.read(message.targets))
+        ...(await host._peripheralViewService.read(message.targets, message.accessGeneration))
     }),
     peripheralWriteRequest: async (host, message) => {
         if (typeof message.target !== "string" || !message.target.trim() || message.target.length > 256)
             throw new Error("Invalid peripheral target");
         if (typeof message.value !== "string" || !message.value.trim() || message.value.length > 128)
             throw new Error("Invalid peripheral value");
-        host._writes.assertSessionCurrent(host._debugBridge);
         const result = await host._svdPeripheralService.writeFromUi({
+            ...(message.accessGeneration === undefined ? {} : { accessGeneration: message.accessGeneration }),
             writes: [{ target: message.target, value: message.value.trim() }]
         });
         return { type: "peripheralWriteResult", target: message.target, result };
@@ -88,10 +88,20 @@ const PERIPHERAL_REQUESTS = {
 };
 
 // Any failure, including a missing SVD, goes back to the peripheral view as peripheralError.
-async function peripheralRequest({ host, post }, message) {
+async function peripheralRequest({ host, post: send }, message) {
+    const post = (payload) =>
+        send({ ...payload, requestGeneration: message.accessGeneration, requestSvdPath: message.svdPath });
     const operation = message.type;
+    if (host._peripheralAccessService) host._postPeripheralDebugStatus(send);
     try {
-        if (!(await host._svdManager.currentPath())) throw new Error(host._t("peripheral.configureSvdFirst"));
+        const svdPath = await host._svdManager.currentPath();
+        if (!svdPath) throw new Error(host._t("peripheral.configureSvdFirst"));
+        if (
+            (message.svdPath && message.svdPath !== svdPath) ||
+            (message.accessGeneration !== undefined &&
+                message.accessGeneration !== host._peripheralAccessService?.status().generation)
+        )
+            throw Object.assign(new Error("Peripheral request target changed"), { code: "DEBUG_STATE_CHANGED" });
         post(await PERIPHERAL_REQUESTS[operation](host, message));
     } catch (error) {
         post({

@@ -184,6 +184,7 @@ class MainViewProvider {
         this._skillStatusService = services.skillStatusService;
         this._chipInfoService = services.chipInfoService;
         this._svdManager = services.svdManager;
+        this._peripheralAccessService = services.peripheralAccessService;
         this._svdPeripheralService = services.svdPeripheralService;
         this._peripheralViewService = services.peripheralViewService;
         this._debugControlService = services.debugControlService;
@@ -266,8 +267,12 @@ class MainViewProvider {
             type: "peripheralDebugStatus",
             state: status.state,
             epoch: status.epoch,
-            canRead: status.paused && !this._debugBridge.replBusy && status.capabilities.read === true,
-            canWrite: status.paused && !this._debugBridge.replBusy && status.capabilities.write === true
+            ...(this._peripheralAccessService
+                ? this._peripheralAccessService.status()
+                : {
+                      canRead: status.paused && !this._debugBridge.replBusy && status.capabilities.read === true,
+                      canWrite: status.paused && !this._debugBridge.replBusy && status.capabilities.write === true
+                  })
         });
     }
     _postOpenOcdStatus(status) {

@@ -11,6 +11,7 @@ function stableIdentity(plan) {
             path: String(plan?.svd?.path || ""),
             sha256: String(plan?.svd?.sha256 || "")
         },
+        ...(plan?.connection ? { connection: plan.connection, accessMode: plan.accessMode } : {}),
         session: {
             id: String(plan?.session?.id || plan?.session?.session?.id || ""),
             epoch: Number(plan?.session?.epoch || 0)
@@ -63,9 +64,14 @@ class PeripheralWriteAuthorization {
             confirmationId,
             expiresAt,
             choices: ["once", "deny"],
-            question: "Allow this one-time MCU peripheral register write?",
+            question:
+                "Allow this one-time MCU peripheral register write?" +
+                (plan?.accessMode && plan.accessMode !== "debug-paused"
+                    ? " The target will not be halted. Bitfield updates are not atomic against firmware or hardware updates."
+                    : ""),
             svd: stableIdentity(plan).svd,
             session: stableIdentity(plan).session,
+            ...(plan?.connection ? { connection: plan.connection } : {}),
             items: (plan.items || []).map((item) => ({
                 target: item.target,
                 register: item.register,

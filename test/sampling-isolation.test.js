@@ -125,6 +125,12 @@ function testRuntimeAccounting() {
         await wait(60);
         assert.equal(ticks.length, stoppedAt);
         assert.deepEqual((await session.readOnce(plan))[0].bytes, [1, 2, 3, 4]);
+        const peripheral = await session.peripheralTransaction({
+            reads: [{ address: 0x40000000, size: 2 }],
+            writes: [{ address: 0x40000000, size: 2, expected: [0, 0], bytes: [0x34, 0x12] }]
+        });
+        assert.deepStrictEqual(peripheral.reads, [[0, 0]]);
+        assert.deepStrictEqual(peripheral.writes[0].readBack, [0x34, 0x12]);
         const transaction = await session.writeAndVerify([
             { name: "value", address: 0x20000000, bytes: [7, 8, 9, 10] }
         ]);
