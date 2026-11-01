@@ -107,22 +107,14 @@ function socketFixture() {
     }
 
     // After sleep or an event-loop stall, data can be dispatched before the overdue timer callback.
-    const overdue = new ManagedOpenOcdSession({}, {});
+    let now = Date.now();
+    const overdue = new ManagedOpenOcdSession({ clock: { now: () => now } }, {});
     overdue.socket = socketFixture();
     overdue._setupSocket();
-    const realNow = Date.now;
-    let now = realNow();
-    let pending;
-    let queued;
-    try {
-        Date.now = () => now;
-        pending = overdue._sendCommand("read_memory 0x20000000 32 1");
-        queued = overdue._sendCommand("read_memory 0x20000020 32 1");
-        now += 2001;
-        overdue.socket.emit("data", Buffer.from("EP_OK:0x12345678\x1aEP_OK:0x04030201\x1a"));
-    } finally {
-        Date.now = realNow;
-    }
+    const pending = overdue._sendCommand("read_memory 0x20000000 32 1");
+    const queued = overdue._sendCommand("read_memory 0x20000020 32 1");
+    now += 2001;
+    overdue.socket.emit("data", Buffer.from("EP_OK:0x12345678\x1aEP_OK:0x04030201\x1a"));
     await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
     await assert.rejects(queued, { code: "OPENOCD_RPC_TIMEOUT" });
     assert.strictEqual(overdue.stopped, true, "an overdue response invalidates the FIFO connection");

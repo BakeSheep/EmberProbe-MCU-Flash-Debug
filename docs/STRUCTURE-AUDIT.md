@@ -47,6 +47,7 @@
     - [x] Provider 计入覆盖率：此前把 `mainViewProvider.js` 移出 `.c8rc.json` 的排除列表不起作用，它仍不出现在报告里。原因有两个：`loadProvider` 用 `vm.runInThisContext` 在源码前拼接包装函数，偏移与磁盘文件对不上；文件末尾还残留旧 TypeScript 构建留下的 `//# sourceMappingURL=extension.js.map`，v8-to-istanbul 找不到这个 map，c8 便静默丢弃该文件。`loadProvider` 改用 `vm.compileFunction`，按文件 URL 编译未改动的源码（与 Node 加载模块的方式一致），并删除那行注释。Provider 现为 80.2% 行 / 69.5% 函数覆盖，全局行覆盖率 90.02% → 89.81%，仍高于 80% 门槛。
 - [ ] P2 ManagedOpenOcdSession
     - [x] 读取计划：每周期预算检查、按地址编译读取批次、8/16/32 位传输形状移到 `src/liveWatchReadPlan.js`，Provider 侧的采样控制器、`samplingSession` 和测试直接引用它。顺带删除只写不读的 `vscode`、`_compiledBatches`、`_variableDeadline` 字段，`ManagedOpenOcdSession` 和 `OpenOcdDebugController` 不再接收 `vscode` 参数，删除 `LiveWatchSession` 别名和没有外部使用者的导出。`liveWatch.js` 2155 → 1941 行。
+    - [x] 时钟注入：会话的墙上时间、单调毫秒、样本时间戳和所有定时器改走 `options.clock`（`now`、`monotonicMs`、`sampleNow`、`schedule`、`cancel`，缺省为系统时钟），取代原来的 `now`/`sampleNow` 选项。8 个测试不再替换全局 `Date.now` 或 `process.hrtime.bigint`；`unlimited-sampling` 推进时钟，不再真实等待 1 秒。
 - [ ] P2 测试结构
 
 ## P1：MainViewProvider 是上帝对象

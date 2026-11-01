@@ -95,7 +95,7 @@ async function wait(ms) {
         for (let i = 0; i < 32; i++) {
             session._recordCycle(4.5);
         }
-        session._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
+        session._lastAdaptiveEvalAt = session.clock.monotonicMs() - 1500;
         session._evaluateAdaptiveSchedule();
         assert.ok(session.effectiveIntervalMs > 5, "Must back off when mean duration > 85%");
         assert.strictEqual(session.effectiveIntervalMs, 10);
@@ -109,7 +109,7 @@ async function wait(ms) {
         for (let i = 0; i < 32; i++) {
             debugSession._recordCycle(4.5);
         }
-        debugSession._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
+        debugSession._lastAdaptiveEvalAt = debugSession.clock.monotonicMs() - 1500;
         debugSession._evaluateAdaptiveSchedule();
         assert.strictEqual(debugSession.effectiveIntervalMs, 15, "Debug mode must back off at 40% threshold");
     }

@@ -512,7 +512,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     const recoveryErrors = [];
     const recoverySamples = [];
     const recovering = new ManagedOpenOcdSession(
-        { now: () => recoveryNow },
+        { clock: { now: () => recoveryNow } },
         {
             onStatus: (status) => recoveryStatuses.push(status),
             onError: (error) => recoveryErrors.push(error),
@@ -575,7 +575,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             statuses = [],
             disconnected = [];
         const session = new ManagedOpenOcdSession(
-            { now: () => now },
+            { clock: { now: () => now } },
             {
                 onError: (error) => errors.push(error),
                 onStatus: (status) => statuses.push(status),
@@ -607,7 +607,10 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         let degraded = 0,
             killed = 0;
         now = 0;
-        const managed = new ManagedOpenOcdSession({ mode: "debug", now: () => now }, { onDegraded: () => degraded++ });
+        const managed = new ManagedOpenOcdSession(
+            { mode: "debug", clock: { now: () => now } },
+            { onDegraded: () => degraded++ }
+        );
         managed.child = { kill: () => killed++ };
         for (now of [0, 1000, 3100, 4000]) managed._handlePollingFailure(message);
         assert.strictEqual(degraded, 1);

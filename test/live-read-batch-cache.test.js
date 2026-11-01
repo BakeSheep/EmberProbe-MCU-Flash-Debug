@@ -96,9 +96,9 @@ function runtimeItem(name, address) {
     );
     assert.ok(plain.fake.commands.every((command) => command === plain.fake.commands[0]));
 
-    const originalNow = Date.now;
+    const originalNow = plain.session.clock.now;
     try {
-        Date.now = () => {
+        plain.session.clock.now = () => {
             throw new Error("Fixed reads must not allocate a runtime deadline");
         };
         assertFixedSamples(
@@ -108,7 +108,7 @@ function runtimeItem(name, address) {
             1
         );
     } finally {
-        Date.now = originalNow;
+        plain.session.clock.now = originalNow;
     }
 
     const renamed = { name: "renamed", address: BASE + 64, size: 2 };

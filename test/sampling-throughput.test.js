@@ -42,8 +42,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
         clockMs += 10;
         return response;
     };
-    const bigint = process.hrtime.bigint;
-    process.hrtime.bigint = () => BigInt(clockMs) * 1000000n;
+    session.clock.monotonicMs = () => clockMs;
     try {
         for (let i = 0; i < 100; i++) await session._sampleTick();
         assert.strictEqual(commands, 100, "measurement must not send additional commands");
@@ -90,7 +89,6 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
         await session._sampleTick();
         assert.strictEqual(session.stats().bytesPerSecond, 0, "stale target reads cannot repopulate statistics");
     } finally {
-        process.hrtime.bigint = bigint;
         session.socket = null;
     }
     console.log("Sampling throughput tests passed");

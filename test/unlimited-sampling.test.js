@@ -136,8 +136,9 @@ async function testSessionAndFairness() {
     const fake = new FakeOpenOcdServer();
     const samples = [],
         errors = [];
+    let skippedMs = 0;
     const session = new ManagedOpenOcdSession(
-        {},
+        { clock: { monotonicMs: () => Number(process.hrtime.bigint()) / 1e6 + skippedMs } },
         {
             onSample: (items, t, consumers) =>
                 samples.push({ items, t, consumers, interval: session.effectiveIntervalMs }),
@@ -209,11 +210,11 @@ async function testSessionAndFairness() {
         assert.strictEqual(fake.maxInFlight, 1);
         assert.deepStrictEqual(errors, []);
         session.setHostHold(true);
-        await wait(5);
+        skippedMs += 5;
         const held = session.stats().hostHoldMs;
         assert(held > 0);
         session.setHostHold(false);
-        await wait(1050);
+        skippedMs += 1050;
         assert.strictEqual(session.stats().hostHoldMs, 0, "hold time ages out of the one-second window");
         assert.strictEqual(session.stats().limitedBy, "probe");
         // Rate-only changes retain calibration, while discarding an old in-flight cycle.
