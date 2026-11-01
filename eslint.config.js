@@ -6,7 +6,7 @@
 const MAX_FILE_LINES = 1500;
 const MAX_FUNCTION_LINES = 300;
 const FILE_LINE_CEILINGS = {
-    "src/mainViewProvider.js": 1944,
+    "src/mainViewProvider.js": 1622,
     "src/webview/liveWatch/renderer.js": 2902,
     "src/webview/sidebar/renderer.js": 1756,
     "src/liveWatch.js": 2155,
@@ -15,7 +15,6 @@ const FILE_LINE_CEILINGS = {
 // Webview modules are excluded: their UMD factory function is the whole file.
 const FUNCTION_LINE_CEILINGS = {
     "src/dwarf/parser.js": 769,
-    "src/mainViewProvider.js": 348,
     "src/dwarf/runtimeTypes.js": 368
 };
 const sizeOptions = (max) => ({ max, skipBlankLines: true, skipComments: true });

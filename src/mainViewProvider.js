@@ -1,6 +1,5 @@
 "use strict";
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
-const { ExternalDebugService } = require("./services/externalDebugService");
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainViewProvider = void 0;
 const vscode = require("vscode");
@@ -10,36 +9,18 @@ const { versionLabel } = require("./buildInfo");
 const autoDetect = require("./autoDetect");
 const { ELF_FILE_GLOB } = require("../skills/_emberprobe/target-detection");
 const skillInstaller = require("./skillInstaller");
-const openocdRunner = require("./openocdRunner");
-const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
 const { withWriteAccessStatus } = require("./writeAccess");
 const liveWatchView = require("./liveWatchView");
 const { configuredFrequencyHz, intervalMsFromHz } = require("./samplingFrequency");
 const elfSymbols = require("./elfSymbols");
-const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
-const faultInfo = require("./faultInfo");
 const validation = require("./validation");
 const { variableDisplayName } = require("./webview/runtime");
 const { displayWarnings } = require("./webview/elfDiagnostics");
 const openocdScripts = require("./openocdScripts");
-const { AgentBridge } = require("./agentBridge");
-const { WriteAuthorization } = require("./writeAuthorization");
-const { CubeMxService } = require("./services/cubemxService");
-const { CubeMxConfiguration } = require("./services/cubemxConfiguration");
-const { CubeMxFirmware } = require("./services/cubemxFirmware");
-const { PeripheralWriteAuthorization } = require("./peripheralWriteAuthorization");
-const { FlashAuthorization } = require("./flashAuthorization");
-const { ProbeCoordinator } = require("./probeCoordinator");
-const { ConfigurationStore } = require("./services/configurationStore");
-const { FlashService } = require("./services/flashService");
 const { runDownload } = require("./services/flashCommand");
-const { FirmwareRecord } = require("./services/firmwareRecord");
-const { AgentFlashService } = require("./services/agentFlashService");
-const { FaultService } = require("./services/faultService");
-const { AgentService, agentAccessDecision } = require("./services/agentService");
-const { createAgentRoutes } = require("./services/agentRoutes");
+const { agentAccessDecision } = require("./services/agentService");
 const { createSidebarHandler } = require("./controllers/sidebarRoutes");
 const { createLivePanelHandler } = require("./controllers/livePanelRoutes");
 const {
@@ -52,44 +33,21 @@ const { DebugLaunch } = require("./services/debugLaunch");
 const { WriteExecution } = require("./services/writeExecution");
 const { AgentOperations } = require("./services/agentOperations");
 const { ConnectedProbes } = require("./services/connectedProbes");
-const { ElfService } = require("./services/elfService");
+const { createServices } = require("./composition");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
-const { OpenOcdStatusService } = require("./services/openocdStatusService");
-const { SkillStatusService, hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
-const { BridgeRegistry, cleanupStaleEntries } = require("./services/bridgeRegistry");
-const { McpRegistration } = require("./services/mcpRegistration");
+const { hasWorkspaceSkills, legacyGlobalSkills } = require("./services/skillStatusService");
 const { DEFAULT_TOOLSETS, TOOLSETS } = require("./mcp/tools");
-const { ChipInfoService } = require("./services/chipInfoService");
-const { ProbeConnectionService } = require("./services/probeConnectionService");
-const { ProbeDriverService } = require("./services/probeDriverService");
-const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
-const {
-    LiveWatchService,
-    buildChartHistoryItems,
-    selectFocusedPanel,
-    writableRamSectionRanges
-} = require("./services/liveWatchService");
+const { buildChartHistoryItems, selectFocusedPanel } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
-const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
-const { PointerSymbolizer } = require("./services/pointerSymbolizer");
-const { WatchListStore } = require("./services/watchListStore");
 const { LivePanelRegistry } = require("./services/livePanelRegistry");
-const { SamplingCoordinator } = require("./services/samplingCoordinator");
-const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
-const { SvdManager } = require("./services/svdManager");
-const { SvdPeripheralService } = require("./services/svdPeripheralService");
-const { PeripheralViewService } = require("./services/peripheralViewService");
 const { RtosViewService } = require("./services/rtosViewService");
-const { DebugControlService } = require("./services/debugControlService");
-const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
-const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
+const { estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
 const { ensureDebugTools, findWarmupDebugTools } = require("./services/debugToolPreflight");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
-const crypto = require("crypto");
 const i18n = require("./i18n");
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const { CACHE_KEYS } = require("./cacheKeys");
@@ -102,9 +60,6 @@ const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
-function cleanWindowsPath(rawPath) {
-    return validation.cleanWindowsPath(rawPath);
-}
 // Builds the symbol name index: original names (stable identities) first, plus unique displayName aliases so C++
 // qualified names resolve. Resolved watch and write items still store the original symbol.name; displayName only serves
 // lookups.
@@ -179,14 +134,6 @@ class MainViewProvider {
         // anything else -> English)
         const savedLang = context.globalState.get("emberprobe.lang");
         this._lang = i18n.SUPPORTED_LANGS.includes(savedLang) ? savedLang : i18n.matchVscodeLang(vscode.env.language);
-        this._probeCoordinator = new ProbeCoordinator(() => this._postProbeOperationStatus());
-        this._externalDebug = new ExternalDebugService({
-            state: context.workspaceState,
-            coordinator: this._probeCoordinator,
-            settings: (folder) => vscode.workspace.getConfiguration("emberprobe", vscode.Uri.file(folder))
-        });
-        void this._externalDebug.releaseIfDisabled().catch(console.error);
-        this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
         this._livePanelRegistry = null;
         /** @type {WeakMap<object[], { length: number, index: Map<string, any> }>} */
@@ -196,338 +143,53 @@ class MainViewProvider {
         this._queuedChartHistoryBytes = 0;
         this._webviewRenders = new WeakMap();
         this._livePanelFocusOrder = 0;
-        this._liveWatchService = new LiveWatchService(
-            elfSymbols,
-            // Pointer offsets into structs resolve to member paths once the target layout is loaded.
-            new PointerSymbolizer(null, { requestLayout: (name) => this._elfService?.layout(name) })
-        );
-        this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
-        this._samplingCoordinator = new SamplingCoordinator();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
+        /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
+        this._archiveRateSamples = [];
+        // VS Code started the EmberProbe MCP server in this window (the user accepted the MCP trust prompt).
+        this._mcpBridgeRequested = false;
         this._samplingController = createSamplingController(this, {
             frequencyHz: configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe")),
             unlimited: context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true,
             pointerExpandedOnly: context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false
         });
-        /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
-        this._archiveRateSamples = [];
-        this._watchLists = new WatchListStore({
-            state: context.workspaceState,
-            serialize: (items) => this._watchIdentities(items),
-            normalize: (items, symbols, key) => {
-                // Current name -> persisted name, for items whose CU-qualified identity changed.
-                const renamed = new Map();
-                const changes = this._elfView.watchNameChanges;
-                const normalized = validation.normalizeWatchList(items, symbols, {
-                    onRename: (from, to) => {
-                        renamed.set(to, from);
-                        changes?.renamed.set(from, to);
-                    },
-                    onAmbiguous: (name, candidates) => changes?.ambiguous.set(name, candidates)
-                });
-                if (key !== CACHE_KEYS.sidebarWriteList) return normalized;
-                const previous = new Map(items.map((item) => [item.name, item]));
-                return normalized.map((item) => {
-                    const { min, max, value } = previous.get(renamed.get(item.name) || item.name) || {};
-                    return { ...item, min, max, value };
-                });
-            },
-            symbols: () => this.readElfSymbols().symbols,
-            onChanged: () => this._sampling.invalidateConsumerTypes(),
-            onError: (error) => console.error("Watch list unavailable:", error.message)
-        });
-        // Running variables.sample loops, so cancellation can stop them during an interval wait.
-        this._debugBridge = new DebugSessionBridge({
-            getReadPlan: () => this._sampling.activeReadPlan(),
-            getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
-            getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._sampling.intervalMs),
-            onSamples: (samples, t) => this._sampling.handleRawSamples(samples, t),
-            onStatus: (status) => {
-                this._syncDebugSampleContext();
-                this._postProbeOperationStatus();
-                this._postConsumerStatuses(status, !!status.error);
-                this._postPeripheralDebugStatus();
-            },
-            onError: (error) =>
-                this._postLive({
-                    type: "liveError",
-                    ...toUiError(error)
-                }),
-            onTargetState: (event) => this.debugLaunch.handleTargetState(event),
-            beforePausedRead: () => this._writes.quiesceRuntimeRead()
-        });
-        this._rtosViewService = new RtosViewService(this._debugBridge);
-        const archiveLimitMiB = validation.clampInteger(
-            vscode.workspace.getConfiguration("emberprobe").get("samplingArchiveMaxMiB", 1024),
-            1024,
-            64,
-            102400
-        );
-        cleanupStaleSamplingArchives(context.globalStorageUri.fsPath);
-        this._samplingArchive = new SamplingArchive({
-            rootDir: path.join(
-                context.globalStorageUri.fsPath,
-                `sampling-history-${process.pid}-${crypto.randomBytes(6).toString("hex")}`
-            ),
-            maxBytes: archiveLimitMiB * 1024 * 1024,
-            onWritten: (bytes) =>
-                this._chartHistory?.archiveProgress({
-                    dataPath: this._samplingArchive.dataPath,
-                    bytes,
-                    limited: this._samplingArchive.limitReached || !!this._samplingArchive.failed
-                }),
-            onBackpressure: (paused) => this._sampling.setArchiveBackpressure(paused),
-            onError: (error) => {
-                this._chartHistory?.archiveProgress(
-                    {
-                        dataPath: this._samplingArchive.dataPath,
-                        bytes: this._samplingArchive.indexedBytes,
-                        limited: true
-                    },
-                    true
-                );
-                this._sampling.stop();
-                this._postLive({ type: "liveError", ...toUiError(error) });
-            }
-        });
-        this._chartHistory = new ChartHistoryService({
-            workerPath: path.join(__dirname, "chartHistoryWorker.js"),
-            maxBytes:
-                validation.clampInteger(
-                    vscode.workspace.getConfiguration("emberprobe").get("chartHistoryMaxMiB", 512),
-                    512,
-                    64,
-                    4096
-                ) *
-                1024 *
-                1024,
-            onUpdated: (message) => {
-                if (message.limited) this._warnChartHistoryLimited();
-                for (const entry of this._livePanels.values())
-                    if (this._debugSamplingScope(entry.watchKey) === message.scope && entry.ready)
-                        entry.post({
-                            ...message,
-                            type: "chartHistoryStatus",
-                            historyRevision: entry.historyRevision || 0
-                        });
-            },
-            onError: (error) => this._handleChartHistoryError(error)
-        });
-        this._writeAuthorization = new WriteAuthorization(context.workspaceState);
-        this._peripheralWriteAuthorization = new PeripheralWriteAuthorization();
-        this._flashAuthorization = new FlashAuthorization({ storage: context.workspaceState });
-        this._firmwareRecord = new FirmwareRecord(context.workspaceState);
-        this._configurationStore = new ConfigurationStore({
-            vscode,
-            context,
-            cacheKeys: CACHE_KEYS,
-            cleanPath: cleanWindowsPath,
-            isSafeCfg: openocdRunner.isSafeCfg,
-            beforeChange: (values) => this._assertConnectionEditable(values),
-            onChanged: async () => {
-                await this._elfView.refreshBindings();
-                this.updateView();
-                for (const entry of this._livePanels.values()) this._syncGraphTarget(entry);
-            }
-        });
-        this._probeDriverService = new ProbeDriverService({
-            extensionPath: context.extensionPath,
-            verifyReady: async (connection) => {
-                const configured = vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
-                const executable = await this._resolveOpenOcdPath(configured);
-                if (!executable)
-                    throw Object.assign(new Error("OpenOCD is required to verify that J-Link is ready"), {
-                        i18nKey: "notice.openocdRequired"
-                    });
-                await waitForJlinkReady(executable, connection.probeSerial);
-            },
-            onStatus: (status) => {
-                this._webviewView?.webview.postMessage({ type: "probeDriverStatus", ...status });
-                this._connectedProbes.notifyDriverStatus(status);
-            },
-            log: (message) => {
-                console.log(message);
-                if (this._chipOutput) this._chipOutput.appendLine(message);
-            }
-        });
-        this._probeConnectionService = new ProbeConnectionService({
-            getConfig: () => this._configurationStore.snapshot(),
-            getSuccessfulConnection: () => this._connectedProbes.selection().get(),
-            saveSuccessfulConnection: (value) =>
-                value === undefined
-                    ? this._connectedProbes.selection().clear()
-                    : this._connectedProbes.selection().set(value),
-            onResolved: (connection) => {
-                this._resolvedProbeConnection = connection;
-                this.updateView();
-            },
-            driverService: this._probeDriverService,
-            identifyTarget: (request) => this._probeConnectionService.readTargetIdentity(request),
-            onTargetStateChanged: () =>
-                this._connectedProbes
-                    .refresh()
-                    .catch((error) => console.error("Probe list refresh failed:", error.message)),
-            onDriverUnsupported: (error) => this._connectedProbes.showDriverWarning(error.details || {}),
-            beforePrepare: () => this._connectedProbes.assertDriverIdle(),
-            onSelectionRequired: () => this._connectedProbes.reveal()
-        });
-        this._cubemxFirmware = new CubeMxFirmware({
-            vscode,
-            context,
-            changed: () => this.updateView(),
-            t: (key) => this._t(key),
-            notify: (notice) =>
-                this._notices.notify(
-                    "config",
-                    "mcu-vscode.installCubeMxFirmware",
-                    notice.message ? { ...notice, key: undefined, titleKey: notice.key, text: notice.message } : notice
-                )
-        });
-        this._cubemxConfiguration = new CubeMxConfiguration({
-            vscode,
-            context,
-            changed: () => this.updateView(),
-            t: (key) => this._t(key)
-        });
-        this._cubemxService = new CubeMxService({
-            storage: context.workspaceState,
-            storageDir: context.globalStorageUri?.fsPath,
-            config: () => this._configurationStore.snapshot(),
-            roots: () => (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath)
-        });
-        this._flashService = new FlashService(openocdRunner);
-        this._faultService = new FaultService(faultInfo, elfSymbols);
-        this._elfService = new ElfService({
-            context,
-            cacheKey: CACHE_KEYS.elfPath,
-            fs,
-            crypto,
-            elfSymbols,
-            dwarf,
-            workerPath: path.join(__dirname, "elfWorker.js"),
-            onChange: (phase, result, entries) => {
-                this._liveWatchService.setElfResult(result, true);
-                return this._elfView.onElfChange(phase, result, entries);
-            },
-            cleanPath: cleanWindowsPath,
-            t: (key, params) => this._t(key, params)
-        });
-        this._openOcdStatusService = new OpenOcdStatusService({
-            vscode,
-            context,
-            checker: openocdChecker,
-            getLang: () => this._lang,
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "openocdStatus", ...status })
-        });
-        this._skillStatusService = new SkillStatusService({
-            vscode,
-            context,
-            installer: skillInstaller,
-            getLang: () => this._lang,
-            t: (key, params) => this._t(key, params),
-            notify: (notice) => this._notices.notify("global", "mcu-vscode.manageAgentSkills", notice),
-            onStatus: (status) => this._webviewView?.webview.postMessage({ type: "skillStatus", ...status })
-        });
-        this._chipInfoService = new ChipInfoService({
-            vscode,
-            context,
-            cacheKeys: CACHE_KEYS,
-            chipInfo,
-            coordinator: this._probeCoordinator,
-            t: (key, params) => this._t(key, params),
-            resolveExecutable: (executable) => this._resolveOpenOcdPath(executable),
-            prepareConnection: (options, interactive) => this._probeConnectionService.prepare(options, interactive),
-            resolveProbe: () => this._probeConnectionService.resolveProbe(),
-            recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
-            commandContext: () => this._commandContext(),
-            onPost: (message) => this._webviewView?.webview.postMessage(message),
-            onDiagnostics: (diag, info) => this._writeChipDiagnostics(diag, info),
-            isDebugActive: () => !!this.debugLaunch.liveSession()
-        });
-        this._svdManager = new SvdManager({
-            workerPath: path.join(__dirname, "svdWorker.js"),
-            vscode,
-            context,
-            cacheKeys: CACHE_KEYS,
-            t: (key, params) => this._t(key, params),
-            getChipInfo: () => this._chipInfoService.info,
-            notify: (notice) =>
-                this._notices.notify(
-                    "config",
-                    "svd",
-                    notice.error ? { level: "error", titleKey: "notice.svdFailed", error: notice.error } : notice
-                ),
-            onStatus: (status) => {
-                this._sampling.peripheralsChanged();
-                this._webviewView?.webview.postMessage({ type: "svdStatus", ...status });
-            }
-        });
-        this._svdPeripheralService = new SvdPeripheralService({
-            workerPath: path.join(__dirname, "svdWorker.js"),
-            loadBoundSvd: () => this._svdManager.peekBound(this._commandContext().folder),
-            debugBridge: this._debugBridge,
-            authorization: this._peripheralWriteAuthorization
-        });
-        this._peripheralViewService = new PeripheralViewService({
-            peripherals: this._svdPeripheralService,
-            debugBridge: this._debugBridge
-        });
-        this._debugControlService = new DebugControlService({
-            vscode,
-            debugBridge: this._debugBridge,
-            workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            startDebug: () => this.debugLaunch.start(undefined, undefined, false),
-            waitForRelease: (session) => this.debugLaunch.sessionReleased(session)
-        });
-        this._agentFlashService = new AgentFlashService({
-            getConfig: () => this._configurationStore.snapshot(),
-            coordinator: this._probeCoordinator,
-            authorization: this._flashAuthorization,
-            prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
-            recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
-            recordFlashed: (entry) => this._firmwareRecord.record(entry),
-            isDebugActive: () => this._debugBridge.hasAnySession || !!this.debugLaunch.liveSession()
-        });
-        // VS Code started the EmberProbe MCP server in this window (the user accepted the MCP trust prompt).
-        this._mcpBridgeRequested = false;
-        this._bridgeRegistry = null;
-        const storageDir = context.globalStorageUri?.fsPath;
-        if (storageDir) {
-            // One instance entry per window; startup also removes entries whose host process has exited.
-            this._bridgeRegistry = new BridgeRegistry({
-                storageDir,
-                hostApp: vscode.env?.appName || "",
-                extensionVersion: context.extension?.packageJSON?.version || ""
-            });
-            cleanupStaleEntries(storageDir).catch(() => {});
-        }
-        this._agentService = new AgentService({
-            Bridge: AgentBridge,
-            isTrusted: () => vscode.workspace.isTrusted,
-            workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            workspaceFoldersProvider: () =>
-                (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.fsPath),
-            // The Bridge descriptor (with token) goes to globalStorage and the workspace keeps only a pointer, so the
-            // token cannot leak through git or cloud sync
-            storageDirProvider: () => this._context.globalStorageUri.fsPath,
-            registry: this._bridgeRegistry,
-            onCall: (_method, _params, meta) => this._warnIfSkillsModified(meta),
-            onAudit: (entry) => this._auditAgentCall(entry),
-            handlers: createAgentRoutes(this)
-        });
-        this._mcpRegistration = new McpRegistration({
-            vscode,
-            context,
-            t: (key, params) => this._t(key, params),
-            isAvailable: () => this._mcpAvailable(),
-            isEnabled: () =>
-                this._mcpAvailable() && this._agentAccessDecision(this._skillStatusService.lastStatus).enabled,
-            instanceId: () => this._agentService.instanceId(),
-            toolsets: () => this._mcpToolsets(),
-            onResolve: () => this._requestMcpBridge(),
-            onConfigured: () => this._markMcpConfigured()
-        });
+        const services = createServices(this, context, { vscode });
+        this._probeCoordinator = services.probeCoordinator;
+        this._externalDebug = services.externalDebug;
+        this._runtimeSampleHold = services.runtimeSampleHold;
+        this._liveWatchService = services.liveWatchService;
+        this._samplingCoordinator = services.samplingCoordinator;
+        this._watchLists = services.watchLists;
+        this._debugBridge = services.debugBridge;
+        this._rtosViewService = services.rtosViewService;
+        this._samplingArchive = services.samplingArchive;
+        this._chartHistory = services.chartHistory;
+        this._writeAuthorization = services.writeAuthorization;
+        this._peripheralWriteAuthorization = services.peripheralWriteAuthorization;
+        this._flashAuthorization = services.flashAuthorization;
+        this._firmwareRecord = services.firmwareRecord;
+        this._configurationStore = services.configurationStore;
+        this._probeDriverService = services.probeDriverService;
+        this._probeConnectionService = services.probeConnectionService;
+        this._cubemxFirmware = services.cubemxFirmware;
+        this._cubemxConfiguration = services.cubemxConfiguration;
+        this._cubemxService = services.cubemxService;
+        this._flashService = services.flashService;
+        this._faultService = services.faultService;
+        this._elfService = services.elfService;
+        this._openOcdStatusService = services.openOcdStatusService;
+        this._skillStatusService = services.skillStatusService;
+        this._chipInfoService = services.chipInfoService;
+        this._svdManager = services.svdManager;
+        this._svdPeripheralService = services.svdPeripheralService;
+        this._peripheralViewService = services.peripheralViewService;
+        this._debugControlService = services.debugControlService;
+        this._agentFlashService = services.agentFlashService;
+        this._bridgeRegistry = services.bridgeRegistry;
+        this._agentService = services.agentService;
+        this._mcpRegistration = services.mcpRegistration;
+        this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this.registerCommandHandlers();
     }
     get _downloadRunning() {
@@ -540,6 +202,13 @@ class MainViewProvider {
     // persisted in global state
     _t(key, params) {
         return i18n.t(this._lang, key, params);
+    }
+    get language() {
+        return this._lang;
+    }
+    // Whether the sidebar and a chart panel have rendered; the extension-host smoke test waits for both.
+    viewState() {
+        return { sidebar: !!this._sidebarReady, graph: [...this._livePanels.values()].some((entry) => entry.ready) };
     }
     // Created on first use, so providers assembled without the constructor still report notices.
     get _notices() {
@@ -605,6 +274,10 @@ class MainViewProvider {
     async refreshOpenOcdStatus(showChecking = true) {
         return this._openOcdStatusService.refresh(showChecking);
     }
+    // Looks for STM32CubeMX again (at startup and when emberprobe.cubemxPath changes).
+    refreshCubeMxStatus() {
+        return this._cubemxConfiguration.detect();
+    }
     async _handleOpenOcdAction(action) {
         if (action === "select") this._assertConnectionEditable({ openocdPath: true });
         return this._openOcdStatusService.handleAction(action);
@@ -639,7 +312,7 @@ class MainViewProvider {
                     return false;
                 }
                 const items = elfFiles.map((file) => {
-                    const cleanPath = cleanWindowsPath(file.fsPath);
+                    const cleanPath = validation.cleanWindowsPath(file.fsPath);
                     return {
                         label: path.basename(cleanPath),
                         description: cleanPath
@@ -650,7 +323,7 @@ class MainViewProvider {
                     matchOnDescription: true
                 });
                 if (!selected) return null;
-                const finalPath = cleanWindowsPath(selected.description);
+                const finalPath = validation.cleanWindowsPath(selected.description);
                 await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
                 this.debugLaunch.scheduleGdbWarmup(0);
                 await this._elfView.refreshBindings();
@@ -1951,7 +1624,8 @@ class MainViewProvider {
                 writeDebugger = writeMcu = false;
             }
         }
-        if (writeElf) await this._context.workspaceState.update(CACHE_KEYS.elfPath, cleanWindowsPath(result.elf));
+        if (writeElf)
+            await this._context.workspaceState.update(CACHE_KEYS.elfPath, validation.cleanWindowsPath(result.elf));
         if (writeDebugger) await this._context.workspaceState.update(CACHE_KEYS.debugger, result.debugger);
         if (writeMcu) await this._context.workspaceState.update(CACHE_KEYS.mcuCore, result.mcu);
         if (writeElf) await this._elfView.refreshBindings();

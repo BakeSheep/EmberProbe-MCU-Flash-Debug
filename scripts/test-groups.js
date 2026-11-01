@@ -104,6 +104,7 @@ const TEST_GROUPS = Object.freeze({
         "probe-selection-store.test.js",
         "probe-selection.test.js",
         "probe-success-entrypoints.test.js",
+        "provider-construction.test.js",
         "provider-state.test.js",
         "release-script.test.js",
         "release-workflow.test.js",

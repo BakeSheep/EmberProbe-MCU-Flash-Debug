@@ -53,7 +53,7 @@ function activate(context) {
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
             if (["sampleFrequencyHz", "sampleIntervalMs"].some(key => event.affectsConfiguration("emberprobe." + key))) provider.samplingFrequencyConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.samplingArchiveMaxMiB")) provider.samplingArchiveConfigurationChanged();
-            if (event.affectsConfiguration("emberprobe.cubemxPath")) provider._cubemxConfiguration.detect().catch(console.error);
+            if (event.affectsConfiguration("emberprobe.cubemxPath")) provider.refreshCubeMxStatus().catch(console.error);
             if (event.affectsConfiguration("emberprobe.mcp.toolsets")) provider.mcpConfigurationChanged();
             if (event.affectsConfiguration("emberprobe.openocdPath")) {
                 openocdChecker.resetCache();
@@ -86,7 +86,7 @@ function activate(context) {
                         : await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated);
                 }
                 // The adapter reports its errors in the language chosen in the sidebar.
-                if (resolved && typeof resolved === "object") resolved.__emberprobeLanguage = provider._lang;
+                if (resolved && typeof resolved === "object") resolved.__emberprobeLanguage = provider.language;
                 return resolved || undefined;
             }
         }),
@@ -131,13 +131,13 @@ function activate(context) {
 
     provider.refreshOpenOcdStatus(false);
     provider.debugLaunch.scheduleGdbWarmup();
-    provider._cubemxConfiguration.detect().catch(console.error);
+    provider.refreshCubeMxStatus().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     // Hosts with the MCP API register a server definition provider; older hosts skip it quietly, and external clients
     // can still use the launcher.
     const mcpRegistered = provider.activateMcp();
     if (process.env.EMBERPROBE_E2E === "1") {
-        return { debugTestProvider: provider, mcpRegistered, viewState: () => ({ sidebar: !!provider._sidebarReady, graph: [...provider._livePanels.values()].some(entry => entry.ready) }) };
+        return { debugTestProvider: provider, mcpRegistered, viewState: () => provider.viewState() };
     }
 }
 
