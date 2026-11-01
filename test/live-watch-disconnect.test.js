@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("assert");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { isFatalProbeLog } = require("../src/openocdProcess");
 const i18n = require("../src/i18n");
 // A lost connection stops sampling once and rejects the whole FIFO, so late responses cannot leak into the next
 // request.
@@ -69,18 +70,17 @@ assert.strictEqual(session3.connectingSocket, null);
 
 // Probe unplugged while sampling: fatal logs such as USB read/write failures count as a disconnect, so sampling stops
 // automatically
-const probeGone = new ManagedOpenOcdSession({}, {});
 assert.ok(
-    probeGone._isFatalProbeLog("Error: error writing data: WriteFile: (0x0000048F)"),
+    isFatalProbeLog("Error: error writing data: WriteFile: (0x0000048F)"),
     "USB WriteFile failure must be treated as a debugger disconnect"
 );
 assert.ok(
-    probeGone._isFatalProbeLog("libusb_bulk_write LIBUSB_ERROR_NO_DEVICE"),
+    isFatalProbeLog("libusb_bulk_write LIBUSB_ERROR_NO_DEVICE"),
     "libusb no-device must be treated as a disconnect"
 );
-assert.ok(!probeGone._isFatalProbeLog("Info : clock speed 4000 kHz"), "benign info logs must not trigger auto-stop");
+assert.ok(!isFatalProbeLog("Info : clock speed 4000 kHz"), "benign info logs must not trigger auto-stop");
 assert.ok(
-    !probeGone._isFatalProbeLog("Error: timed out while waiting for target halted"),
+    !isFatalProbeLog("Error: timed out while waiting for target halted"),
     "non-link errors must not trigger auto-stop"
 );
 // Automatic language: the default UI language follows the VS Code display language (zh-* -> Chinese, anything else ->

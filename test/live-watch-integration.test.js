@@ -415,7 +415,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     let reconnectRequested = false;
     const debugTransportFailure = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debugTransportFailure._startCompleted = true;
-    debugTransportFailure.child = {
+    debugTransportFailure.server.child = {
         killed: false,
         kill() {
             this.killed = true;
@@ -432,7 +432,11 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     };
     debugTransportFailure._abortConnection(new Error("Tcl disconnected"));
     assert.strictEqual(debugTransportFailure.stopped, false, "a debug Tcl failure must not stop OpenOCD");
-    assert.strictEqual(debugTransportFailure.child.killed, false, "a debug Tcl failure must not kill GDB's server");
+    assert.strictEqual(
+        debugTransportFailure.server.child.killed,
+        false,
+        "a debug Tcl failure must not kill GDB's server"
+    );
     assert.strictEqual(reconnectRequested, true);
     await managed.stop();
     await debugFake.stop();
@@ -450,7 +454,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     };
     let shutdownFrame = "";
     const graceful = new ManagedOpenOcdSession({}, {});
-    graceful.child = child;
+    graceful.server.child = child;
     graceful.tcl.socket = {
         destroyed: false,
         write(data, callback) {
@@ -486,7 +490,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         return true;
     };
     const exitOnly = new ManagedOpenOcdSession({}, {});
-    exitOnly.child = lingering;
+    exitOnly.server.child = lingering;
     exitOnly.tcl.socket = {
         destroyed: false,
         write(data, callback) {
@@ -502,7 +506,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     };
     assert.strictEqual(await exitOnly.stop(100), true, "an exited OpenOCD confirms the stop without stdio close");
     assert.strictEqual(lingering.killed, undefined, "an exited OpenOCD must not be signalled");
-    assert.strictEqual(exitOnly.child, null);
+    assert.strictEqual(exitOnly.server.child, null);
 
     // Recovery needs a quiet interval and consecutive reads, not a single read.
     let recoveryNow = 0;
@@ -609,7 +613,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
             { mode: "debug", clock: { now: () => now } },
             { onDegraded: () => degraded++ }
         );
-        managed.child = { kill: () => killed++ };
+        managed.server.child = { kill: () => killed++ };
         for (now of [0, 1000, 3100, 4000]) managed._handlePollingFailure(message);
         assert.strictEqual(degraded, 1);
         assert.strictEqual(killed, 0, "sampling degradation must not kill GDB's OpenOCD server");

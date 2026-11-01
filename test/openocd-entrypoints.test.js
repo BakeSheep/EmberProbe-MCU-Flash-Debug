@@ -1,25 +1,11 @@
 "use strict";
 
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const shared = require("../src/openocdScripts");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
-
-// Execute the production modules with only process creation and path lookup replaced.
-function load(file, overrides) {
-    const filename = path.resolve(__dirname, "..", file);
-    const localRequire = createRequire(filename);
-    const mod = { exports: {} };
-    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
-        filename
-    })((name) => overrides[name] || localRequire(name), mod, mod.exports);
-    return mod.exports;
-}
+const { loadModule } = require("./helpers/load-module");
 
 (async () => {
     const captured = [];
@@ -55,11 +41,12 @@ function load(file, overrides) {
         });
         return child;
     };
-    const exec = load("src/services/openocdExec.js", { child_process: { spawn }, "../openocdScripts": scripts });
-    const chip = load("src/chipInfo.js", { "./services/openocdExec": exec });
-    const fault = load("src/faultInfo.js", { "./services/openocdExec": exec });
-    const runner = load("src/openocdRunner.js", { child_process: { spawn }, "./openocdScripts": scripts });
-    const live = load("src/liveWatch.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const exec = loadModule("src/services/openocdExec.js", { child_process: { spawn }, "../openocdScripts": scripts });
+    const chip = loadModule("src/chipInfo.js", { "./services/openocdExec": exec });
+    const fault = loadModule("src/faultInfo.js", { "./services/openocdExec": exec });
+    const runner = loadModule("src/openocdRunner.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const server = loadModule("src/openocdProcess.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const live = loadModule("src/liveWatch.js", { "./openocdProcess": server });
     const options = {
         executable: "fake",
         elf: "/固件/firmware.elf",
@@ -223,15 +210,15 @@ function load(file, overrides) {
         child.kill = () => {
             child.killed = true;
         };
-        const delayedExec = load("src/services/openocdExec.js", {
+        const delayedExec = loadModule("src/services/openocdExec.js", {
             child_process: { spawn: () => child },
             "../openocdScripts": scripts
         });
         const timedExec = {
             runOpenOcdOnce: (request) => delayedExec.runOpenOcdOnce({ ...request, timeoutMs: 10 })
         };
-        const timedChip = load("src/chipInfo.js", { "./services/openocdExec": timedExec });
-        const timedFault = load("src/faultInfo.js", { "./services/openocdExec": timedExec });
+        const timedChip = loadModule("src/chipInfo.js", { "./services/openocdExec": timedExec });
+        const timedFault = loadModule("src/faultInfo.js", { "./services/openocdExec": timedExec });
         const request =
             operation === "chip-read"
                 ? timedChip.readChipInfo(vscode, options)
@@ -287,19 +274,20 @@ function load(file, overrides) {
         });
         return child;
     };
-    const checkedExec = load("src/services/openocdExec.js", {
+    const checkedExec = loadModule("src/services/openocdExec.js", {
         child_process: { spawn: mismatchSpawn },
         "../openocdScripts": scripts
     });
-    const checkedChip = load("src/chipInfo.js", { "./services/openocdExec": checkedExec });
-    const checkedRunner = load("src/openocdRunner.js", {
+    const checkedChip = loadModule("src/chipInfo.js", { "./services/openocdExec": checkedExec });
+    const checkedRunner = loadModule("src/openocdRunner.js", {
         child_process: { spawn: mismatchSpawn },
         "./openocdScripts": scripts
     });
-    const checkedLive = load("src/liveWatch.js", {
+    const checkedServer = loadModule("src/openocdProcess.js", {
         child_process: { spawn: mismatchSpawn },
         "./openocdScripts": scripts
     });
+    const checkedLive = loadModule("src/liveWatch.js", { "./openocdProcess": checkedServer });
     const targetCheck = {
         checkId: "entrypoints",
         target: "stm32f4x.cfg",

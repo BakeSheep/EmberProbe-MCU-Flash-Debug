@@ -47,6 +47,7 @@ function testRuntimeAccounting() {
     const session = {
         samplingEnabled: true,
         stopped: false,
+        server: { child: { pid: 4321 } },
         stop() {},
         setSamplingEnabled(value) {
             this.samplingEnabled = value;
@@ -65,6 +66,11 @@ function testRuntimeAccounting() {
     assert.deepStrictEqual(pauses, [], "structural bytes drop the oldest backlog instead of pausing sampling");
     assert.strictEqual(events.at(-1).event, "onError");
     assert.strictEqual(events.at(-1).args[0].code, "SAMPLING_HOST_BACKLOG");
+    assert.strictEqual(
+        events.at(-1).state.childPid,
+        4321,
+        "the host learns the OpenOCD pid to end it if the Worker dies"
+    );
     handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], 18);
     assert.strictEqual(events.filter((event) => event.event === "onError").length, 1, "one notice per busy episode");
     port.emit("message", { ack: true });

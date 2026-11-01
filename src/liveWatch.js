@@ -1,15 +1,10 @@
 "use strict";
-const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs, buildOpenOcdTargetArgs } = require("./openocdScripts");
 // Manages a single OpenOCD server: standalone mode opens only Tcl, debug mode also opens GDB. Tcl-RPC samples RAM and
 // allows word writes without halting. An independent implementation inspired by MCUViewer (GPLv3) concepts, using none
 // of its code.
 const net = require("net");
 const { isDeepStrictEqual } = require("util");
-const { spawn } = require("child_process");
-const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
-const { normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
 const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
-const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
 const { SYSTEM_CLOCK, scheduleSamplingTick } = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
@@ -18,7 +13,8 @@ const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
 const { MultiRatePlan } = require("./services/multiRatePlan");
-const { withTargetCheck, targetCheckMonitor } = require("./chip/targetIdentity");
+const { targetCheckMonitor } = require("./chip/targetIdentity");
+const { OpenOcdProcess, managedServerLaunch, isFatalProbeLog } = require("./openocdProcess");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError } = require("./writeAccess");
 const {
     MAX_DEBUG_READ_COMMANDS,
@@ -49,27 +45,6 @@ function findFreePort() {
             const port = address && typeof address === "object" ? address.port : 0;
             server.close(() => resolve(port));
         });
-    });
-}
-
-// Resolves true on the first "exit" or "close": once the process has exited its USB handle is
-// released, while "close" also waits for stdio, which Windows can hold open past the stop budget.
-function waitForChildExit(child, timeoutMs, clock = SYSTEM_CLOCK) {
-    return new Promise((resolve) => {
-        let settled = false;
-        const finish = (exited) => {
-            if (settled) return;
-            settled = true;
-            clock.cancel(timer);
-            child.removeListener("exit", onExit);
-            child.removeListener("close", onExit);
-            resolve(exited);
-        };
-        const onExit = () => finish(true);
-        const timer = clock.schedule(() => finish(false), timeoutMs);
-        child.once("exit", onExit);
-        child.once("close", onExit);
-        if (child.exitCode !== null || child.signalCode != null) finish(true);
     });
 }
 
@@ -119,7 +94,7 @@ class ManagedOpenOcdSession {
         this.options = options || {};
         this.clock = { ...SYSTEM_CLOCK, ...this.options.clock };
         this.handlers = handlers || {};
-        this.child = null;
+        this.server = new OpenOcdProcess(this.clock);
         this.connectingSocket = null;
         this.timer = null;
         this.busy = false;
@@ -150,8 +125,6 @@ class ManagedOpenOcdSession {
         this.connectionError = null;
         // reject captured while start() runs, so connection failures are reported on one channel
         this._startReject = null;
-        this._openOcdLogTail = [];
-        this._openOcdRawTail = "";
         this._stopPromise = null;
         this.mode = this.options.mode === "debug" ? "debug" : "standalone";
         this.tcl = new TclTransport({
@@ -168,7 +141,6 @@ class ManagedOpenOcdSession {
         this.targetEpoch = 0;
         this._reconnectPromise = null;
         this._startCompleted = false;
-        this._tclListening = false;
         this.scatterReads = false;
         this._scatterFailures = 0;
         this.ramSectionRanges = [];
@@ -485,7 +457,7 @@ class ManagedOpenOcdSession {
         } else {
             this._releaseTimerResolution();
             this._pauseReason = this.stopped ? "stopped" : this.mode === "debug" ? "debug_paused" : "paused";
-            if (enabled && this.mode === "debug" && !this.stopped && this.child) {
+            if (enabled && this.mode === "debug" && !this.stopped && this.server.child) {
                 this._reconnectDebugTcl();
             }
         }
@@ -654,14 +626,6 @@ class ManagedOpenOcdSession {
             this.handlers.onDegraded?.(error);
         } else this._abortConnection(error);
     }
-    // Fatal log signatures of a probe unplugged while sampling (USB read/write failure, device lost), used to stop
-    // sampling automatically
-    _isFatalProbeLog(line) {
-        return /WriteFile|ReadFile|LIBUSB_ERROR_(?:NO_DEVICE|IO|PIPE)|error (?:writing|reading) data|target communication error/i.test(
-            String(line || "")
-        );
-    }
-
     async start() {
         if (!isSafeCfg(this.options.probe) || !isSafeCfg(this.options.target)) {
             throw new Error(`Invalid OpenOCD configuration：${this.options.probe} / ${this.options.target}`);
@@ -679,156 +643,15 @@ class ManagedOpenOcdSession {
                 }
             );
         }
-        const launch = resolveOpenOcdLaunch(
-            this.options.executable,
-            this.options.probe,
-            this.options.target,
-            this.options.transport
-        );
-        const args = [
-            ...buildOpenOcdConfigArgs(launch, this.options.transport, {
-                ...this.options,
-                adapterSpeedKhz:
-                    this.mode === "standalone"
-                        ? normalizeAdapterSpeed(this.options.samplingAdapterSpeedKhz) || this.options.adapterSpeedKhz
-                        : this.options.adapterSpeedKhz
-            }),
-            "-c",
-            "bindto 127.0.0.1",
-            "-c",
-            `tcl_port ${port}`,
-            "-c",
-            this.mode === "debug" ? `gdb_port ${gdbPort}` : "gdb_port disabled",
-            "-c",
-            "telnet_port disabled",
-            ...(this.mode === "debug" ? buildOpenOcdTargetArgs(this.options, this.options.gdbPorts) : []),
-            // RTOS awareness is configured only in debug mode: standalone sampling is non-intrusive polling, and
-            // letting OpenOCD walk kernel data structures would change it.
-            ...(this.mode === "debug" ? buildOpenOcdRtosArgs(this.options.rtos, !!this.options.serverGroup) : []),
-            ...(this.mode === "debug"
-                ? ["-c", "foreach _ep_target [target names] { $_ep_target configure -work-area-backup 1 }"]
-                : []),
-            // Initialize only, without halt or reset, to stay non-intrusive; automatic mode checks the target chip
-            // afterwards
-            ...withTargetCheck(["init"], this.options.targetCheck, this.options.target).flatMap((command) => [
-                "-c",
-                command
-            ]),
-            ...(this.mode === "standalone" && this.options.backendKind === "tcp"
-                ? ["-c", "if {[llength [info commands poll_interval]]} { poll_interval 500 }"]
-                : [])
-        ];
+        const launch = managedServerLaunch(this.options, this.mode, port, gdbPort);
         const targetCheck = targetCheckMonitor(this.options.targetCheck);
         this._status({ key: "lw.connecting" });
-        try {
-            this.child = spawn(launch.executable, args, { cwd: launch.cwd, windowsHide: true, shell: false });
-        } catch (error) {
-            const spawnError = /** @type {NodeJS.ErrnoException} */ (error);
-            throw spawnError.code === "ENOENT"
-                ? Object.assign(new Error(`OpenOCD not found：${this.options.executable}`), {
-                      i18nKey: "run.notFound",
-                      i18nParams: { path: this.options.executable }
-                  })
-                : new Error(spawnError.message);
-        }
-        this.child.on("error", (error) => {
-            const childError = /** @type {NodeJS.ErrnoException} */ (error);
-            const enoent = childError.code === "ENOENT";
-            const e = enoent
-                ? Object.assign(new Error(`OpenOCD not found：${this.options.executable}`), {
-                      i18nKey: "run.notFound",
-                      i18nParams: { path: this.options.executable }
-                  })
-                : new Error(childError.message);
-            this._abortConnection(e);
-        });
-        const readyPattern = new RegExp(`Listening on port\\s+${port}\\s+for tcl connections`, "i");
-        const onLog = (chunk) => {
-            const text = chunk.toString();
-            for (const line of text.split(/\r?\n/)) {
-                const clean = line.trim();
-                if (!clean) continue;
-                if (clean.startsWith("EP_OK:") || this.tcl.observeLog(clean)) continue;
-                if (targetCheck.line(clean)) {
-                    // A Worker forwards the observation to the extension host, which records it after success.
-                    if (targetCheck.observed && !targetCheck.mismatched)
-                        this.handlers.onTargetIdentity?.(this.options.targetCheck.checkId, targetCheck.observed);
-                    continue;
-                }
-                // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
-                if (targetCheck.mismatched) continue;
-                this._openOcdRawTail = (this._openOcdRawTail + clean + "\n").slice(-2000);
-                if (!this._tclListening && readyPattern.test(this._openOcdRawTail)) this._tclListening = true;
-                this._openOcdLogTail.push(clean.slice(0, 500));
-                if (this._openOcdLogTail.length > 4096) this._openOcdLogTail.shift();
-                // Probe unplugged while sampling: fatal signals such as USB read/write failures stop sampling
-                // automatically instead of repeating errors
-                if (this._isFatalProbeLog(clean)) {
-                    if (!this.stopped && !this.connectionFailed) {
-                        this._abortConnection(
-                            Object.assign(
-                                new Error("Debugger disconnected; live sampling stopped"),
-                                diagnoseOpenOcdFailure(this._openOcdLogTail, connectionDetails(this.options)),
-                                {
-                                    i18nKey: "live.probeDisconnected"
-                                }
-                            )
-                        );
-                    }
-                    return;
-                }
-                if (this.connectionFailed) continue;
-                if (/\bPolling failed\b/i.test(clean)) {
-                    this._handlePollingFailure(clean);
-                    continue;
-                }
-                // A GDB/telnet/Tcl client closing its socket (WSA 10054, connection reset) is not a target fault.
-                // OpenOCD prints it via LOG_ERROR, so the line arrives as "Error: Error on socket 'GDB': ...".
-                if (/^(?:Error\s*:\s*)?Error on socket '/i.test(clean)) continue;
-                // "Info : Unable to ..." may just be a normal hint such as a speed reduction; non-Info lines still
-                // detect common connection failures.
-                const isInfo = /\bInfo\s*:/i.test(clean);
-                if (
-                    /\bError\s*:/i.test(clean) ||
-                    (!isInfo && /failed|unable to|no device found|libusb|in use|denied|timed out/i.test(clean))
-                ) {
-                    this._error(clean.replace(/^.*?Error\s*:\s*/i, "") || clean);
-                }
-            }
-        };
-        const pendingLogs = { stdout: createLineDecoder(onLog), stderr: createLineDecoder(onLog) };
-        this.child.stdout.on("data", (chunk) => pendingLogs.stdout.write(chunk));
-        this.child.stderr.on("data", (chunk) => pendingLogs.stderr.write(chunk));
-        this.child.on("close", (code) => {
-            for (const stream of ["stdout", "stderr"]) pendingLogs[stream].end();
-            const expected = this.stopped;
-            this.child = null;
-            this._clearSamplingTimer();
-            this._releaseTimerResolution();
-            this.tcl.close();
-            this.stopped = true;
-            if (!expected) {
-                const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
-                    ...connectionDetails(this.options),
-                    exitCode: code,
-                    port
-                });
-                const error =
-                    targetCheck.error() ||
-                    Object.assign(new Error(diagnostic.message), diagnostic, {
-                        i18nKey: "live.serviceExited",
-                        i18nParams: { code, port }
-                    });
-                this.connectionFailed = true;
-                this.connectionError = error;
-                this.tcl.rejectAll(error);
-                if (this._startReject) {
-                    const reject = this._startReject;
-                    this._startReject = null;
-                    reject(error);
-                } else if (this.handlers.onDisconnect) this.handlers.onDisconnect(error);
-                else this._error(error.message);
-            }
+        this.server.start(launch, {
+            port,
+            executable: this.options.executable,
+            onLine: (line) => this._handleServerLog(line, targetCheck),
+            onError: (error) => this._abortConnection(error),
+            onClose: (code) => this._handleServerClose(code, targetCheck, port)
         });
 
         // If the child process exits while start() runs, _abortConnection rejects this promise through _startReject and
@@ -904,19 +727,96 @@ class ManagedOpenOcdSession {
         });
     }
 
+    // What an OpenOCD log line means for the session: probe loss ends it, repeated polling failures lock it, and errors
+    // are reported once. The no-echo probe's markers and target-check lines are not diagnostics.
+    _handleServerLog(clean, targetCheck) {
+        if (clean.startsWith("EP_OK:") || this.tcl.observeLog(clean)) return;
+        if (targetCheck.line(clean)) {
+            // A Worker forwards the observation to the extension host, which records it after success.
+            if (targetCheck.observed && !targetCheck.mismatched)
+                this.handlers.onTargetIdentity?.(this.options.targetCheck.checkId, targetCheck.observed);
+            return;
+        }
+        // OpenOCD's own error output after a failed check repeats it; the close handler reports it once.
+        if (targetCheck.mismatched) return;
+        this.server.record(clean);
+        // Probe unplugged while sampling: fatal signals such as USB read/write failures stop sampling
+        // automatically instead of repeating errors
+        if (isFatalProbeLog(clean)) {
+            if (!this.stopped && !this.connectionFailed) {
+                this._abortConnection(
+                    Object.assign(
+                        new Error("Debugger disconnected; live sampling stopped"),
+                        diagnoseOpenOcdFailure(this.server.logTail, connectionDetails(this.options)),
+                        {
+                            i18nKey: "live.probeDisconnected"
+                        }
+                    )
+                );
+            }
+            return;
+        }
+        if (this.connectionFailed) return;
+        if (/\bPolling failed\b/i.test(clean)) {
+            this._handlePollingFailure(clean);
+            return;
+        }
+        // A GDB/telnet/Tcl client closing its socket (WSA 10054, connection reset) is not a target fault.
+        // OpenOCD prints it via LOG_ERROR, so the line arrives as "Error: Error on socket 'GDB': ...".
+        if (/^(?:Error\s*:\s*)?Error on socket '/i.test(clean)) return;
+        // "Info : Unable to ..." may just be a normal hint such as a speed reduction; non-Info lines still
+        // detect common connection failures.
+        const isInfo = /\bInfo\s*:/i.test(clean);
+        if (
+            /\bError\s*:/i.test(clean) ||
+            (!isInfo && /failed|unable to|no device found|libusb|in use|denied|timed out/i.test(clean))
+        ) {
+            this._error(clean.replace(/^.*?Error\s*:\s*/i, "") || clean);
+        }
+    }
+
+    // OpenOCD exited. Unless the session was stopping, this is the one report of the failure: through start() while it
+    // runs, otherwise onDisconnect.
+    _handleServerClose(code, targetCheck, port) {
+        const expected = this.stopped;
+        this._clearSamplingTimer();
+        this._releaseTimerResolution();
+        this.tcl.close();
+        this.stopped = true;
+        if (expected) return;
+        const diagnostic = diagnoseOpenOcdFailure(this.server.logTail, {
+            ...connectionDetails(this.options),
+            exitCode: code,
+            port
+        });
+        const error =
+            targetCheck.error() ||
+            Object.assign(new Error(diagnostic.message), diagnostic, {
+                i18nKey: "live.serviceExited",
+                i18nParams: { code, port }
+            });
+        this.connectionFailed = true;
+        this.connectionError = error;
+        this.tcl.rejectAll(error);
+        if (this._startReject) {
+            const reject = this._startReject;
+            this._startReject = null;
+            reject(error);
+        } else if (this.handlers.onDisconnect) this.handlers.onDisconnect(error);
+        else this._error(error.message);
+    }
+
     // "exit" already proves the process released the probe; "close" can lag while stdio drains.
     waitForExit(timeoutMs = 1200) {
-        const child = this.child;
-        if (!child || child.exitCode !== null || child.signalCode != null) return Promise.resolve(true);
-        return waitForChildExit(child, Math.max(100, Number(timeoutMs) || 1200), this.clock);
+        return this.server.waitForExit(timeoutMs);
     }
 
     async _waitForTclListening(timeoutMs) {
         const deadline = this.clock.now() + timeoutMs;
-        while (!this._tclListening) {
+        while (!this.server.listening) {
             if (this.stopped) throw this.connectionError || new Error("OpenOCD service exited before Tcl was ready");
-            if (!this.child || this.clock.now() >= deadline) {
-                const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
+            if (!this.server.child || this.clock.now() >= deadline) {
+                const diagnostic = diagnoseOpenOcdFailure(this.server.logTail, {
                     ...connectionDetails(this.options),
                     port: clampInteger(this.options.port, 6666, 1, 65535)
                 });
@@ -957,7 +857,7 @@ class ManagedOpenOcdSession {
                     }
                     if (this.stopped) reject(this.connectionError || new Error("Stopped"));
                     else if (this.clock.now() > deadline) {
-                        const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
+                        const diagnostic = diagnoseOpenOcdFailure(this.server.logTail, {
                             ...connectionDetails(this.options),
                             port
                         });
@@ -978,10 +878,10 @@ class ManagedOpenOcdSession {
         this._reconnectPromise = (async () => {
             for (const delayMs of delays) {
                 await new Promise((resolve) => this.clock.schedule(resolve, delayMs));
-                if (this.stopped || !this.child) return false;
+                if (this.stopped || !this.server.child) return false;
                 try {
                     const socket = await this._connectWithRetry(port, 400);
-                    if (this.stopped || !this.child) {
+                    if (this.stopped || !this.server.child) {
                         try {
                             socket.destroy();
                         } catch {
@@ -1023,7 +923,7 @@ class ManagedOpenOcdSession {
         this._resetHostHold();
         if (
             this.mode === "debug" &&
-            this.child &&
+            this.server.child &&
             !this.stopped &&
             this._startCompleted &&
             err.i18nKey !== "live.probeDisconnected"
@@ -1062,13 +962,7 @@ class ManagedOpenOcdSession {
             }
         }
         this.connectingSocket = null;
-        if (this.child && !this.child.killed) {
-            try {
-                this.child.kill();
-            } catch (e) {
-                /* ignore */
-            }
-        }
+        this.server.kill();
         // While start() is still running, rejecting its promise is the only notification, so onDisconnect does not
         // report twice
         if (this._startReject) {
@@ -1732,7 +1626,7 @@ class ManagedOpenOcdSession {
 
     stop(timeoutMs = 1200) {
         if (this._stopPromise) return this._stopPromise;
-        const child = this.child;
+        const child = this.server.child;
         const socket = this.tcl.socket;
         const childExited = child ? this.waitForExit(timeoutMs) : Promise.resolve(true);
         this.stopped = true;
@@ -1758,35 +1652,8 @@ class ManagedOpenOcdSession {
         this.connectingSocket = null;
         const sendShutdown = this.tcl.shutdown();
         this._stopPromise = (async () => {
-            const childRunning = () => !!child && child.exitCode == null && child.signalCode == null;
-            const sent = await sendShutdown;
-            if (!sent && childRunning()) {
-                try {
-                    child.kill();
-                } catch (e) {
-                    /* ignore */
-                }
-            }
-            let closed = await childExited;
-            if (!closed && childRunning()) {
-                try {
-                    child.kill();
-                } catch (e) {
-                    /* ignore */
-                }
-                closed = await waitForChildExit(child, 400);
-            }
-            if (!closed && childRunning()) {
-                const forcedExit = this.waitForExit(400);
-                try {
-                    child.kill("SIGKILL");
-                } catch (e) {
-                    /* ignore */
-                }
-                closed = await forcedExit;
-            }
+            const closed = await this.server.terminate(child, await sendShutdown, childExited);
             this.tcl.close(socket);
-            if (this.child === child && (closed || child?.exitCode !== null)) this.child = null;
             await this.tcl.removeResponseFile();
             if (!closed) this._stopPromise = null;
             return closed;

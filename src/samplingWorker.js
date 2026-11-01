@@ -87,7 +87,7 @@ function run(
         samplingEnabled: session.samplingEnabled,
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
-        childPid: session.child?.pid,
+        childPid: session.server?.child?.pid,
         stats: stats()
     });
     const event = (name, args) =>

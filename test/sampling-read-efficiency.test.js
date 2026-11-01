@@ -1,9 +1,5 @@
 "use strict";
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
@@ -11,6 +7,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { MultiRatePlan } = require("../src/services/multiRatePlan");
 const { writableRamSectionRanges } = require("../src/services/liveWatchService");
 const { SamplingSession } = require("../src/samplingSession");
+const { loadModule } = require("./helpers/load-module");
 const { loadProvider } = require("./helpers/load-provider");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const item = (name, address = 0x20000000, size = 4) => ({ name, address, size });
@@ -64,31 +61,18 @@ function startupFixture(mode, branch) {
         sockets.push(socket);
         return socket;
     };
-    const filename = path.resolve(__dirname, "../src/liveWatch.js");
-    const localRequire = createRequire(filename);
-    const mod = { exports: {} };
     const scripts = require("../src/openocdScripts");
-    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
-        filename
-    })(
-        (name) =>
-            name === "child_process"
-                ? { spawn: () => child }
-                : name === "./openocdScripts"
-                  ? {
-                        ...scripts,
-                        resolveOpenOcdLaunch: () => ({
-                            executable: "fake",
-                            probePath: "jlink.cfg",
-                            targetPath: "stm32f4x.cfg"
-                        })
-                    }
-                  : localRequire(name),
-        mod,
-        mod.exports
-    );
+    // Only process creation and path lookup are replaced.
+    const server = loadModule("src/openocdProcess.js", {
+        child_process: { spawn: () => child },
+        "./openocdScripts": {
+            ...scripts,
+            resolveOpenOcdLaunch: () => ({ executable: "fake", probePath: "jlink.cfg", targetPath: "stm32f4x.cfg" })
+        }
+    });
+    const live = loadModule("src/liveWatch.js", { "./openocdProcess": server });
     const errors = [];
-    const session = new mod.exports.ManagedOpenOcdSession(
+    const session = new live.ManagedOpenOcdSession(
         { executable: "fake", probe: "jlink.cfg", target: "stm32f4x.cfg", port: 16666, gdbPort: 13333, mode },
         { onError: (message) => errors.push(message) }
     );
@@ -119,13 +103,13 @@ function startupFixture(mode, branch) {
                 `${mode}/${branch}`
             );
             assert.strictEqual(session.stopped, false, "detection must never fail startup");
-            assert.strictEqual(session._openOcdLogTail.length, 0, "capability markers stay out of diagnostics");
+            assert.strictEqual(session.server.logTail.length, 0, "capability markers stay out of diagnostics");
             assert.strictEqual(session.tcl.queue.length, 0);
             if (["mismatch", "sync-mismatch", "closed", "error", "timeout"].includes(branch)) {
                 assert.strictEqual(fixture.sockets.length, 2, "discard the ambiguous response stream");
             }
             child.stderr.write("EP_OK:Error: WriteFile Polling failed\n");
-            assert.strictEqual(session._openOcdLogTail.length, 0);
+            assert.strictEqual(session.server.logTail.length, 0);
             assert.strictEqual(session._pollFailureCount, 0);
             assert.strictEqual(fixture.errors.length, 0);
             // A GDB client disconnecting on Windows is logged with OpenOCD's "Error: " prefix; it is not a fault.
@@ -133,7 +117,7 @@ function startupFixture(mode, branch) {
             child.stderr.write(`${socketReset}\n`);
             assert.strictEqual(fixture.errors.length, 0);
             child.stderr.write("EP_ERR:read failed\nError: real failure\n");
-            assert.deepStrictEqual(session._openOcdLogTail, [socketReset, "EP_ERR:read failed", "Error: real failure"]);
+            assert.deepStrictEqual(session.server.logTail, [socketReset, "EP_ERR:read failed", "Error: real failure"]);
             assert.ok(fixture.errors.length);
             await session.stop(100);
         }
