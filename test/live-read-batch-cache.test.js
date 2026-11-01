@@ -26,7 +26,6 @@ async function countReadCompilations(operation) {
 function readerFixture() {
     const fixture = { fake: new FakeOpenOcdServer(), batches: new Set(), last: null };
     const session = new ManagedOpenOcdSession(
-        null,
         {},
         {
             onSample: (samples, t, due) => {

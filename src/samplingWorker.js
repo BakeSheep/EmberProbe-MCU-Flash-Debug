@@ -63,7 +63,7 @@ const sampleBytes = (sample) =>
 function run(
     port,
     options,
-    makeSession = (config, handlers) => new ManagedOpenOcdSession(null, config, handlers),
+    makeSession = (config, handlers) => new ManagedOpenOcdSession(config, handlers),
     now = () => performance.now()
 ) {
     let generation = 0,

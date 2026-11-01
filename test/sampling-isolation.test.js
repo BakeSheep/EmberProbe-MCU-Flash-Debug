@@ -148,7 +148,7 @@ function testRuntimeAccounting() {
         await session.stop();
     }
     await assert.rejects(session.readOnce(plan), /stopped/);
-    const local = new ManagedOpenOcdSession(null, {}, {});
+    const local = new ManagedOpenOcdSession({}, {});
     local.socket = { destroyed: false };
     local.setSamplingEnabled(true);
     const timer = local.timer,

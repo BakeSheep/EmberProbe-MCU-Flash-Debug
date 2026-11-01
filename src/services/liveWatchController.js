@@ -12,7 +12,12 @@ const { serializeError, toUiError } = require("./errorEnvelope");
 const { collectRuntimeHistoryLeaves } = require("./liveWatchService");
 const { RuntimeSampleHold } = require("./runtimeSampleHold");
 const { HostLoopDelay } = require("./hostLoopDelay");
-const liveWatch = require("../liveWatch");
+const {
+    validateManagedReadPlan,
+    partitionManagedReadPlan,
+    MAX_DEBUG_READ_BYTES,
+    MAX_DEBUG_READ_COMMANDS
+} = require("../liveWatchReadPlan");
 const elfSymbols = require("../elfSymbols");
 const validation = require("../validation");
 const {
@@ -36,19 +41,19 @@ function latestByName(pending, next) {
 
 // Live sampling for the sidebar and the chart panels: which variables each consumer reads, how the merged plan reaches
 // the sampling session or the debug server, and the decode types of each consumer; the sampling session's lifecycle
-// and how samples reach the views. host is the MainViewProvider; vscode and LiveWatchSession come from it so tests
+// and how samples reach the views. host is the MainViewProvider; vscode and ManagedOpenOcdSession come from it so tests
 // can replace them.
 class LiveWatchController {
     /**
      * @param {any} host
-     * @param {{ vscode?: any, LiveWatchSession?: any, frequencyHz?: number, unlimited?: boolean,
+     * @param {{ vscode?: any, ManagedOpenOcdSession?: any, frequencyHz?: number, unlimited?: boolean,
      *     pointerExpandedOnly?: boolean }} [settings]
      */
     constructor(
         host,
         {
             vscode,
-            LiveWatchSession,
+            ManagedOpenOcdSession,
             frequencyHz = DEFAULT_FREQUENCY_HZ,
             unlimited = false,
             pointerExpandedOnly = true
@@ -56,7 +61,7 @@ class LiveWatchController {
     ) {
         this.host = host;
         this._vscode = vscode;
-        this._LiveWatchSession = LiveWatchSession;
+        this._ManagedOpenOcdSession = ManagedOpenOcdSession;
         this.frequencyHz = frequencyHz;
         this.intervalMs = intervalMsFromHz(frequencyHz);
         this._unlimitedRequested = unlimited === true;
@@ -99,10 +104,10 @@ class LiveWatchController {
         // Explicit reads and writes must fit as a whole; continuous sampling drops only the items
         // that exceed the per-cycle budget so the rest keep running.
         if (strict) {
-            liveWatch.validateManagedReadPlan(result.allowed);
+            validateManagedReadPlan(result.allowed);
             return { ...result, overBudget: [] };
         }
-        const { allowed, overBudget } = liveWatch.partitionManagedReadPlan(result.allowed);
+        const { allowed, overBudget } = partitionManagedReadPlan(result.allowed);
         return { ...result, allowed, overBudget };
     }
     configureManagedRuntimeWatch() {
@@ -127,7 +132,7 @@ class LiveWatchController {
         // Re-mark rejected items on every configuration: a paused snapshot may have filled them meanwhile.
         if (plan.overBudget.length) {
             const t = Date.now();
-            const message = `Runtime read exceeds the per-cycle budget (${liveWatch.MAX_DEBUG_READ_BYTES} bytes / ${liveWatch.MAX_DEBUG_READ_COMMANDS} commands)`;
+            const message = `Runtime read exceeds the per-cycle budget (${MAX_DEBUG_READ_BYTES} bytes / ${MAX_DEBUG_READ_COMMANDS} commands)`;
             this.handleRawSamples(
                 plan.overBudget.map((item) => ({
                     name: item.name,
@@ -956,8 +961,7 @@ class LiveWatchController {
             const port = await this.host._resolveTclPort(cfg);
             if (startingLease.released || generation !== this._startGeneration) return;
             this.exitUnconfirmed = false;
-            session = new this._LiveWatchSession(
-                this._vscode,
+            session = new this._ManagedOpenOcdSession(
                 {
                     executable,
                     isolated: true,

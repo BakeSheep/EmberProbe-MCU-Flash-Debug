@@ -119,7 +119,7 @@ function testPlanAndClock() {
         }
         scheduleSamplingTick(0, () => {}, { platform: "linux" }).cancel();
         assert.deepStrictEqual(calls.at(-2).slice(0, 2), ["timeout", 0], "normal timing stays opt-in");
-        const local = new ManagedOpenOcdSession(null, {}, {});
+        const local = new ManagedOpenOcdSession({}, {});
         local.setSamplingPlan(plan());
         local.socket = { destroyed: false };
         local._scheduleNext(0);
@@ -137,7 +137,6 @@ async function testSessionAndFairness() {
     const samples = [],
         errors = [];
     const session = new ManagedOpenOcdSession(
-        null,
         {},
         {
             onSample: (items, t, consumers) =>
@@ -241,14 +240,14 @@ async function testSessionAndFairness() {
         await session.stop();
         await fake.stop();
     }
-    const debug = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const debug = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debug.setSamplingPlan(plan());
     assertStats(debug.stats(), true, false, "debug");
     assert.strictEqual(debug.effectiveIntervalMs, 100);
     for (let index = 0; index < 4; index++) debug._recordCycle(4);
     assert.strictEqual(debug.effectiveIntervalMs, 10, "debug retains its 40% adaptive threshold");
     await debug.stop();
-    const sidebarOnly = new ManagedOpenOcdSession(null, {}, {});
+    const sidebarOnly = new ManagedOpenOcdSession({}, {});
     sidebarOnly.setSamplingPlan({ ...plan(), graphItems: [] });
     assertStats(sidebarOnly.stats(), true, false);
     assert.strictEqual(sidebarOnly.effectiveIntervalMs, 100);
@@ -256,7 +255,7 @@ async function testSessionAndFairness() {
 }
 
 async function testArbiterFailures() {
-    const session = new ManagedOpenOcdSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     session.samplingEnabled = false;
     session.socket = {
         destroyed: false,
@@ -339,7 +338,7 @@ async function testArbiterFailures() {
     assert.strictEqual(session._exclusiveWaiters.length, 0);
     session._releaseExclusive();
     assert.strictEqual(session.busy, false);
-    const lost = new ManagedOpenOcdSession(null, {}, {});
+    const lost = new ManagedOpenOcdSession({}, {});
     assert(lost._tryAcquireExclusive());
     const loss = assert.rejects(lost._acquireExclusive(Date.now() + 10000), /socket lost/);
     lost._abortConnection(new Error("socket lost"));
@@ -361,7 +360,7 @@ async function testWorkerHold(byteLimit = false) {
         port,
         {},
         (options, handlers) => {
-            session = new ManagedOpenOcdSession(null, options, handlers);
+            session = new ManagedOpenOcdSession(options, handlers);
             session.socket = {
                 destroyed: false,
                 write: (_data, callback) => callback?.(),
@@ -441,7 +440,6 @@ async function testDeferredForegroundTick() {
         releaseWrite = resolve;
     });
     const session = new ManagedOpenOcdSession(
-        null,
         {},
         {
             onSample() {
@@ -497,7 +495,6 @@ async function testDeferredLifecycle() {
     for (const action of ["timeout", "reject", "pause", "hold", "plan", "watch", "stop", "disconnect"]) {
         let samples = 0;
         const session = new ManagedOpenOcdSession(
-            null,
             {},
             {
                 onSample() {
@@ -564,7 +561,7 @@ async function testDeferredLifecycle() {
         }
     }
     // Deferred sampling must remain asleep across the whole FIFO handoff, not only the first release.
-    const session = new ManagedOpenOcdSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     session.samplingEnabled = false;
     session.setSamplingPlan(plan());
     session.samplingEnabled = true;
@@ -590,7 +587,7 @@ async function testDeferredLifecycle() {
 
 async function testWaitersSurvivePlans() {
     for (const unlimited of [true, false]) {
-        const session = new ManagedOpenOcdSession(null, {}, {});
+        const session = new ManagedOpenOcdSession({}, {});
         session.samplingEnabled = false;
         session.socket = {
             destroyed: false,
@@ -641,7 +638,7 @@ async function testSetWatchPreservesBacklog() {
     let session, handlers;
     run(port, {}, (options, nextHandlers) => {
         handlers = nextHandlers;
-        session = new ManagedOpenOcdSession(null, options, handlers);
+        session = new ManagedOpenOcdSession(options, handlers);
         return session;
     });
     session.setSamplingPlan(plan());

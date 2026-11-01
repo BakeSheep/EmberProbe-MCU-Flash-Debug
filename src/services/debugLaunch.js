@@ -290,7 +290,6 @@ class DebugLaunch {
             const tclPort = fixedTcl ? fixedPort : allocated.shift();
             const gdbPort = allocated[selection.targetProcessor || 0];
             const server = new this._modules.OpenOcdDebugController(
-                this._vscode,
                 {
                     ...selection,
                     executable,

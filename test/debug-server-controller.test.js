@@ -35,7 +35,6 @@ function fixture(options = {}, overrides = {}) {
     };
     let created = 0;
     const controller = new OpenOcdDebugController(
-        null,
         { ...settings, ...options },
         {},
         {
@@ -43,7 +42,7 @@ function fixture(options = {}, overrides = {}) {
                 calls.push("preflight");
                 return { executable: "fake" };
             },
-            createRuntime: (_host, config) => {
+            createRuntime: (config) => {
                 created++;
                 assert.strictEqual(config.mode, "debug");
                 return runtime;
@@ -246,8 +245,8 @@ function fixture(options = {}, overrides = {}) {
                     return Array.from({ length: count }, (_, index) => 40000 + allocations.length * 10 + index);
                 },
                 OpenOcdDebugController: class extends OpenOcdDebugController {
-                    constructor(hostApi, config, handlers) {
-                        super(hostApi, config, handlers, {
+                    constructor(config, handlers) {
+                        super(config, handlers, {
                             resolveLaunch: () => ({}),
                             createRuntime: () => ({
                                 start: async () => {

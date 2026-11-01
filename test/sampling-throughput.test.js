@@ -1,7 +1,8 @@
 "use strict";
 const assert = require("assert");
 const { SamplingThroughput } = require("../src/samplingThroughput");
-const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches } = require("../src/liveWatchReadPlan");
 
 (async () => {
     const meter = new SamplingThroughput();
@@ -26,7 +27,7 @@ const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch"
     meter.reset();
     assert.strictEqual(meter.rate(6000), 0);
 
-    const session = new ManagedOpenOcdSession(null, { intervalMs: 10 }, {});
+    const session = new ManagedOpenOcdSession({ intervalMs: 10 }, {});
     session.socket = { destroyed: false };
     session.setWatch([
         { name: "a", address: 0x20000000, size: 4 },

@@ -35,7 +35,7 @@ async function fixture(scatterVersion = "1") {
     const fake = new FakeOpenOcdServer();
     fake.scatterVersion = scatterVersion;
     await fake.start();
-    const session = new ManagedOpenOcdSession(null, { mode: "standalone" }, {});
+    const session = new ManagedOpenOcdSession({ mode: "standalone" }, {});
     session._scheduleNext = () => {};
     session.socket = await fake.connect();
     session._setupSocket();

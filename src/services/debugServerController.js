@@ -33,7 +33,7 @@ async function allocateDebugPorts(count, excluded = []) {
 }
 
 class OpenOcdDebugController {
-    constructor(vscode, options, handlers = {}, dependencies = {}) {
+    constructor(options, handlers = {}, dependencies = {}) {
         if (options.servertype === "external")
             throw Object.assign(new Error("OpenOCD controller cannot manage an external GDB server"), {
                 code: "DEBUG_SERVER_UNSUPPORTED"
@@ -41,12 +41,10 @@ class OpenOcdDebugController {
         this.options = { ...options, ...normalizeDebugServerOptions(options), mode: "debug" };
         if (Array.isArray(this.options.gdbPorts)) this.options.gdbPorts = Object.freeze([...this.options.gdbPorts]);
         this.handlers = handlers;
-        this.vscode = vscode;
         this.resolveLaunch = dependencies.resolveLaunch || scripts.resolveOpenOcdLaunch;
         this.createRuntime =
             dependencies.createRuntime ||
-            ((host, settings, callbacks) =>
-                new (require("../liveWatch").ManagedOpenOcdSession)(host, settings, callbacks));
+            ((settings, callbacks) => new (require("../liveWatch").ManagedOpenOcdSession)(settings, callbacks));
         this.runtime = null;
         this.state = "new";
         this.connection = null;
@@ -88,7 +86,7 @@ class OpenOcdDebugController {
         this.state = "starting";
         this.starting = (async () => {
             try {
-                this.runtime = this.createRuntime(this.vscode, this.options, this.handlers);
+                this.runtime = this.createRuntime(this.options, this.handlers);
                 if (this.deliveryHold) this.runtime.setDeliveryHold?.(true);
                 const result = await this.runtime.start();
                 if (this.state !== "starting") throw new Error("Debug controller stopped during startup");

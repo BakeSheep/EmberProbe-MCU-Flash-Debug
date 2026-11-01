@@ -4,13 +4,12 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { EventEmitter } = require("events");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const {
-    LiveWatchSession,
-    ManagedOpenOcdSession,
     validateManagedReadPlan,
     partitionManagedReadPlan,
     MAX_DEBUG_READ_COMMANDS
-} = require("../src/liveWatch");
+} = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 
 (async () => {
@@ -18,7 +17,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     await fake.start();
     fake.seed(0x20000000, [1, 2, 3, 4, 5, 6]);
 
-    const session = new LiveWatchSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     session.socket = await fake.connect();
     session._setupSocket();
 
@@ -110,7 +109,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     const debugFake = new FakeOpenOcdServer();
     await debugFake.start();
     debugFake.seed(0x20000000, [9, 8, 7, 6]);
-    const managed = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const managed = new ManagedOpenOcdSession({ mode: "debug" }, {});
     managed.socket = await debugFake.connect();
     managed._setupSocket();
     assert.deepStrictEqual(
@@ -221,7 +220,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
                 ? ["queued", "before", "between", "after"]
                 : ["queued", "before"]) {
                 for (const change of ["interval", "consumers", "enable", "sampling-pause"]) {
-                    const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+                    const writing = new ManagedOpenOcdSession({ mode: "debug" }, {});
                     writing.socket = { destroyed: false };
                     writing._scheduleNext = () => {};
                     writing.setSamplingEnabled(true);
@@ -276,7 +275,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         for (const operation of ["read", "write"]) {
             for (const change of ["pause", "pause-resume", "disconnect", "stop"]) {
                 for (const phase of operation === "write" ? ["before", "between", "after"] : ["before"]) {
-                    const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+                    const writing = new ManagedOpenOcdSession({ mode: "debug" }, {});
                     writing.socket = { destroyed: false, destroy() {} };
                     writing._scheduleNext = () => {};
                     writing.setSamplingEnabled(true);
@@ -325,7 +324,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         }
     });
     await scenario("Managed writes cancel before hardware on queued state changes and between words", async () => {
-        const writing = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+        const writing = new ManagedOpenOcdSession({ mode: "debug" }, {});
         writing.socket = { destroyed: false };
         let writeCalls = 0;
         writing._writeMemoryBytes = async () => {
@@ -359,7 +358,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         await writing.stop();
     });
     let cancelledReadCalls = 0;
-    const cancelling = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const cancelling = new ManagedOpenOcdSession({ mode: "debug" }, {});
     cancelling.samplingEnabled = true;
     cancelling._readBatchBytes = async (batch) => {
         cancelledReadCalls++;
@@ -383,7 +382,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(await cancelling.waitForIdle(5), false, "quiesce timeout must be observable by the DAP bridge");
     cancelling._releaseExclusive();
     let queuedReadCalls = 0;
-    const queuedRead = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const queuedRead = new ManagedOpenOcdSession({ mode: "debug" }, {});
     queuedRead.socket = { destroyed: false };
     queuedRead._tryAcquireExclusive();
     queuedRead._readMemoryBytes = async () => {
@@ -398,7 +397,6 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.strictEqual(queuedReadCalls, 0, "a queued Agent read must not start after the target state changes");
     const lateSamples = [];
     const epochSession = new ManagedOpenOcdSession(
-        null,
         { mode: "debug", intervalMs: 100 },
         {
             onSample: (samples) => lateSamples.push(samples)
@@ -417,7 +415,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     assert.deepStrictEqual(lateSamples, [], "samples completed after a stop epoch must be discarded");
     if (epochSession.timer) clearInterval(epochSession.timer);
     let reconnectRequested = false;
-    const debugTransportFailure = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const debugTransportFailure = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debugTransportFailure._startCompleted = true;
     debugTransportFailure.child = {
         killed: false,
@@ -453,7 +451,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         return true;
     };
     let shutdownFrame = "";
-    const graceful = new LiveWatchSession(null, {}, {});
+    const graceful = new ManagedOpenOcdSession({}, {});
     graceful.child = child;
     graceful.socket = {
         destroyed: false,
@@ -489,7 +487,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         lingering.killed = true;
         return true;
     };
-    const exitOnly = new LiveWatchSession(null, {}, {});
+    const exitOnly = new ManagedOpenOcdSession({}, {});
     exitOnly.child = lingering;
     exitOnly.socket = {
         destroyed: false,
@@ -513,8 +511,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     const recoveryStatuses = [];
     const recoveryErrors = [];
     const recoverySamples = [];
-    const recovering = new LiveWatchSession(
-        null,
+    const recovering = new ManagedOpenOcdSession(
         { now: () => recoveryNow },
         {
             onStatus: (status) => recoveryStatuses.push(status),
@@ -546,7 +543,6 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     // schedules itself, so dropping a tick would freeze the watch list after one write.
     const busySamples = [];
     const busySession = new ManagedOpenOcdSession(
-        null,
         { intervalMs: 100 },
         {
             onSample: (samples) => busySamples.push(samples)
@@ -573,13 +569,12 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
     busySession._releaseTimerResolution();
 
     await scenario("Repeated H7 polling failures stop standalone sampling and degrade managed sampling", async () => {
-        const { LiveWatchSession, ManagedOpenOcdSession } = require("../src/liveWatch");
+        const { ManagedOpenOcdSession } = require("../src/liveWatch");
         let now = 0;
         const errors = [],
             statuses = [],
             disconnected = [];
-        const session = new LiveWatchSession(
-            null,
+        const session = new ManagedOpenOcdSession(
             { now: () => now },
             {
                 onError: (error) => errors.push(error),
@@ -612,11 +607,7 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
         let degraded = 0,
             killed = 0;
         now = 0;
-        const managed = new ManagedOpenOcdSession(
-            null,
-            { mode: "debug", now: () => now },
-            { onDegraded: () => degraded++ }
-        );
+        const managed = new ManagedOpenOcdSession({ mode: "debug", now: () => now }, { onDegraded: () => degraded++ });
         managed.child = { kill: () => killed++ };
         for (now of [0, 1000, 3100, 4000]) managed._handlePollingFailure(message);
         assert.strictEqual(degraded, 1);

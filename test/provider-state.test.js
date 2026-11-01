@@ -19,7 +19,7 @@ function deferred() {
 (async () => {
     const sessions = [];
     class Session {
-        constructor(_vscode, _options, events) {
+        constructor(_options, events) {
             this.events = events;
             this.stops = 0;
             sessions.push(this);
@@ -38,7 +38,7 @@ function deferred() {
     }
     const P = loadProvider(
         { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
-        { "./liveWatch": { LiveWatchSession: Session } }
+        { "./liveWatch": { ManagedOpenOcdSession: Session } }
     );
     const p = Object.create(P.prototype);
     p._probeCoordinator = new ProbeCoordinator();
@@ -122,7 +122,7 @@ function deferred() {
             const sessions = [],
                 statuses = [];
             class Session {
-                constructor(_vscode, _options, events) {
+                constructor(_options, events) {
                     this.events = events;
                     sessions.push(this);
                 }
@@ -139,7 +139,7 @@ function deferred() {
             }
             const P = loadProvider(
                 { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
-                { "./liveWatch": { LiveWatchSession: Session } }
+                { "./liveWatch": { ManagedOpenOcdSession: Session } }
             );
             const p = Object.create(P.prototype);
             Object.assign(p, {

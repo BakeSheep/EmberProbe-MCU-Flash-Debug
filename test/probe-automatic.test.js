@@ -154,7 +154,7 @@ async function main() {
     );
 
     let confirmations = 0;
-    const session = new ManagedOpenOcdSession(null, {}, { onConnectionConfirmed: () => confirmations++ });
+    const session = new ManagedOpenOcdSession({}, { onConnectionConfirmed: () => confirmations++ });
     session.stopped = false;
     session._readMemoryBytes = async () => null;
     const items = [{ name: "x", address: 0x20000000, size: 4 }];
@@ -164,7 +164,7 @@ async function main() {
     await session._readItems(items, 0);
     await session._readItems(items, 1);
     assert.strictEqual(confirmations, 1);
-    const cancelled = new ManagedOpenOcdSession(null, {}, { onConnectionConfirmed: () => confirmations++ });
+    const cancelled = new ManagedOpenOcdSession({}, { onConnectionConfirmed: () => confirmations++ });
     cancelled._readMemoryBytes = async () => {
         cancelled.sampleEpoch++;
         return [1, 2, 3, 4];

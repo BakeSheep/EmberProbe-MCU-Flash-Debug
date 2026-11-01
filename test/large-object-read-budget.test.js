@@ -2,7 +2,7 @@
 
 const assert = require("assert");
 const { DebugSessionBridge, MAX_PAUSED_ITEM_BYTES } = require("../src/services/debugSessionBridge");
-const { MAX_DEBUG_READ_BYTES } = require("../src/liveWatch");
+const { MAX_DEBUG_READ_BYTES } = require("../src/liveWatchReadPlan");
 const { RuntimeObjectReader } = require("../src/services/runtimeObjectReader");
 const { loadProvider } = require("./helpers/load-provider");
 

@@ -3,7 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { buildElf32 } = require("./helpers/elf-fixture");
 const benchmark = require("../scripts/measure-sampling-scatter");
@@ -17,7 +18,7 @@ async function fixture(mode = "standalone", version = "1") {
     const fake = new FakeOpenOcdServer();
     fake.scatterVersion = version;
     await fake.start();
-    const session = new ManagedOpenOcdSession(null, { mode }, {});
+    const session = new ManagedOpenOcdSession({ mode }, {});
     session._scheduleNext = () => {};
     session.socket = await fake.connect();
     session._setupSocket();

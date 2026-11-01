@@ -38,7 +38,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         assert.strictEqual(plan.items.find((entry) => entry.name === "shared").size, 8);
     }
     for (const nextInterval of [5, 1000]) {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         changing.setSamplingPlan({
             graphItems: [item("graph")],
             sidebarItems: [item("sidebar")],
@@ -75,7 +75,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // Switching rates must measure only new graph ticks, even when the sidebar keeps the base clock at 20 Hz.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         const plan = { graphItems: [item("graph")], sidebarItems: [item("sidebar")], graphIntervalMs: 5 };
         changing.setSamplingPlan({ ...plan, unlimited: true });
         for (let i = 0; i < 8; i++) changing._recordCycle(1, true, i);
@@ -112,7 +112,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // Reordering watch cards keeps the same reads, so the session neither restarts nor recalibrates.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         const plan = {
             graphItems: [item("a"), item("b", 2)],
             sidebarItems: [item("c"), item("d")],
@@ -135,7 +135,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // A rate change during a read must discard that cycle and rearm, even with an unchanged sidebar clock.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         changing.setSamplingPlan({
             graphItems: [item("graph")],
             sidebarItems: [item("sidebar")],
@@ -163,7 +163,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         await changing._sampleTick(true);
         assert.strictEqual(delivered.length, 1, "the new schedule continues delivering samples");
     }
-    const session = new ManagedOpenOcdSession(null, { intervalMs: 5 }, {});
+    const session = new ManagedOpenOcdSession({ intervalMs: 5 }, {});
     session.setSamplingPlan({ sidebarItems: [item("sidebar")], graphIntervalMs: 5 });
     session.setIntervalMs(10000);
     assert.strictEqual(session.targetIntervalMs, 50);

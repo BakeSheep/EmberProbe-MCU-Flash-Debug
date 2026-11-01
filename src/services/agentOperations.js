@@ -13,13 +13,13 @@ const { CACHE_KEYS } = require("../cacheKeys");
 class AgentOperations {
     /**
      * @param {any} host
-     * @param {{ vscode: any, LiveWatchSession: any }} modules Taken from the provider module, so tests can replace
+     * @param {{ vscode: any, ManagedOpenOcdSession: any }} modules Taken from the provider module, so tests can replace
      *     them through loadProvider.
      */
-    constructor(host, { vscode, LiveWatchSession }) {
+    constructor(host, { vscode, ManagedOpenOcdSession }) {
         this.host = host;
         this._vscode = vscode;
-        this._LiveWatchSession = LiveWatchSession;
+        this._ManagedOpenOcdSession = ManagedOpenOcdSession;
         this.readSession = null;
         this.readCancelled = false;
         this._sampleRuns = new Set();
@@ -465,8 +465,7 @@ class AgentOperations {
                 assertActive();
                 const port = await this.host._resolveTclPort(cfg);
                 assertActive();
-                session = new this._LiveWatchSession(
-                    this._vscode,
+                session = new this._ManagedOpenOcdSession(
                     {
                         executable,
                         isolated: true,

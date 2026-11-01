@@ -83,15 +83,11 @@ function load(file, overrides) {
     await assert.rejects(chip.readChipInfo(vscode, options), { code: "PROBE_NOT_FOUND" });
     await assert.rejects(fault.readFaultInfo(options), { code: "PROBE_NOT_FOUND" });
     for (const mode of ["standalone", "debug"]) {
-        const session = new live.ManagedOpenOcdSession(null, { ...options, mode, gdbPort: 13333 }, {});
+        const session = new live.ManagedOpenOcdSession({ ...options, mode, gdbPort: 13333 }, {});
         await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
     }
     for (const mode of ["debug", "standalone"]) {
-        const session = new live.ManagedOpenOcdSession(
-            null,
-            { ...options, mode, rtos: "FreeRTOS", gdbPort: 13334 },
-            {}
-        );
+        const session = new live.ManagedOpenOcdSession({ ...options, mode, rtos: "FreeRTOS", gdbPort: 13334 }, {});
         await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
     }
     assert.strictEqual(captured.length, 7, "Each failed operation starts exactly once");
@@ -107,16 +103,11 @@ function load(file, overrides) {
     assert(rtosArgs.indexOf(rtosCommand) < rtosArgs.indexOf("init"), "OpenOCD must see -rtos before init");
     assert(!samplingArgs.some((arg) => arg.includes("-rtos")), "sampling-only sessions never configure an RTOS");
     await assert.rejects(
-        new live.ManagedOpenOcdSession(
-            null,
-            { ...options, mode: "debug", rtos: "FreeRTOs", gdbPort: 13335 },
-            {}
-        ).start(),
+        new live.ManagedOpenOcdSession({ ...options, mode: "debug", rtos: "FreeRTOs", gdbPort: 13335 }, {}).start(),
         { code: "OPENOCD_RTOS_INVALID" }
     );
     assert.strictEqual(captured.length, 7, "An invalid RTOS name never reaches OpenOCD");
     const multi = new live.ManagedOpenOcdSession(
-        null,
         {
             ...options,
             mode: "debug",
@@ -143,12 +134,12 @@ function load(file, overrides) {
         "Select the core before configuring its RTOS"
     );
     for (const invalid of [{ targetProcessor: 2 }, { targetName: "cpu; shutdown" }, { gdbPorts: [13335, 13335] }]) {
-        await assert.rejects(new live.ManagedOpenOcdSession(null, { ...multi.options, ...invalid }, {}).start());
+        await assert.rejects(new live.ManagedOpenOcdSession({ ...multi.options, ...invalid }, {}).start());
     }
     assert.strictEqual(captured.length, 8, "Invalid core selection never spawns OpenOCD");
     successfulSpawn = true;
     for (const names of ["stm32h7x.cpu0 stm32h7x.cpu1", "stm32h7x.cpu0", "bad;shutdown stm32h7x.cpu1"]) {
-        const grouped = new live.ManagedOpenOcdSession(null, { ...multi.options, serverGroup: "dual" }, {});
+        const grouped = new live.ManagedOpenOcdSession({ ...multi.options, serverGroup: "dual" }, {});
         grouped._waitForTclListening = async () => {};
         grouped._detectNoEcho = async () => true;
         grouped._connectWithRetry = async () => {
@@ -191,7 +182,6 @@ function load(file, overrides) {
         for (const backendKind of ["tcp", "usb"]) {
             for (const samplingAdapterSpeedKhz of [0, 4000]) {
                 const session = new live.ManagedOpenOcdSession(
-                    null,
                     { ...options, mode, backendKind, samplingAdapterSpeedKhz, gdbPort: 13333 },
                     {}
                 );
@@ -323,7 +313,7 @@ function load(file, overrides) {
     await assert.rejects(checkedChip.readChipInfo(vscode, { ...options, targetCheck }), mismatch);
     for (const mode of ["standalone", "debug"])
         await assert.rejects(
-            new checkedLive.ManagedOpenOcdSession(null, { ...options, targetCheck, mode, gdbPort: 13337 }, {}).start(),
+            new checkedLive.ManagedOpenOcdSession({ ...options, targetCheck, mode, gdbPort: 13337 }, {}).start(),
             mismatch
         );
     const commandsOf = (args) => args.filter((_arg, index) => args[index - 1] === "-c");

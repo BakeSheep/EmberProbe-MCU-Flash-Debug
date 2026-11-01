@@ -4,7 +4,7 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { encodeValue, decodeValue, decodeValueText } = require("../src/elfSymbols");
-const { LiveWatchSession, validateManagedWritePlan } = require("../src/liveWatch");
+const { ManagedOpenOcdSession, validateManagedWritePlan } = require("../src/liveWatch");
 const { isNonHaltingWordWrite } = require("../src/writeAccess");
 const writeSkill = require("../skills/mcu-variables/scripts/write");
 
@@ -114,7 +114,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     // _writeMemoryBytes: write at natural width first, fall back to a 32-bit read-modify-write when narrow writes are
     // dropped, fall back from ocd_ to unprefixed commands, and throw on failure
-    const okSession = new LiveWatchSession(null, {}, {});
+    const okSession = new ManagedOpenOcdSession({}, {});
     const sent = [];
     okSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
     okSession._sendCheckedCommand = async (cmd) => {
@@ -129,7 +129,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     );
     assert.strictEqual(okSession.writeCmd, "ocd_write_memory", "keep the primary command on success");
 
-    const fallbackSession = new LiveWatchSession(null, {}, {});
+    const fallbackSession = new ManagedOpenOcdSession({}, {});
     const fallbackSent = [];
     fallbackSession._readMemoryBytes = async () => [0, 0, 0, 0];
     fallbackSession._sendCheckedCommand = async (cmd) => {
@@ -142,14 +142,14 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.ok(fallbackSent[1].startsWith("write_memory "), "fall back to write_memory");
     assert.strictEqual(fallbackSession.writeCmd, "write_memory", "lock the fallback command");
 
-    const failSession = new LiveWatchSession(null, {}, {});
+    const failSession = new ManagedOpenOcdSession({}, {});
     failSession._readMemoryBytes = async () => [0, 0, 0, 0];
     failSession._sendCheckedCommand = async () => {
         throw new Error("address out of bounds");
     };
     await assert.rejects(() => failSession._writeMemoryBytes(0x20000000, [1]), /Memory write failed/);
 
-    const alignedSession = new LiveWatchSession(null, {}, {});
+    const alignedSession = new ManagedOpenOcdSession({}, {});
     const alignedSent = [];
     alignedSession._readMemoryBytes = async () => {
         throw new Error("aligned word writes must not pre-read");
@@ -161,7 +161,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     await alignedSession._writeMemoryBytes(0x20000000, [0x78, 0x56, 0x34, 0x12]);
     assert.deepStrictEqual(alignedSent, ["ocd_write_memory 0x20000000 32 {0x12345678}"]);
 
-    const highAddressSession = new LiveWatchSession(null, {}, {});
+    const highAddressSession = new ManagedOpenOcdSession({}, {});
     const highAddressSent = [];
     highAddressSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
     highAddressSession._sendCheckedCommand = async (cmd) => {
@@ -177,7 +177,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     // Narrow writes that land never rewrite neighbouring bytes, so a DMA update made while the
     // target is halted survives; unaligned spans use naturally aligned 8/16-bit accesses.
-    const memorySession = new LiveWatchSession(null, {}, {});
+    const memorySession = new ManagedOpenOcdSession({}, {});
     const ram = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
     const memorySent = [];
     memorySession._readMemoryBytes = async (address, count) =>
@@ -200,10 +200,10 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.deepStrictEqual(ram, [0x99, 0xa1, 0xa2, 0xa3, 0xa4, 0x66, 0x77, 0x88], "neighbouring bytes are kept");
 
     // Every runtime write goes through writeAndVerify; no unverified write path remains.
-    assert.strictEqual(LiveWatchSession.prototype.writeOnce, undefined);
+    assert.strictEqual(ManagedOpenOcdSession.prototype.writeOnce, undefined);
 
     // Concurrent transactions must finish verification and resume before the next writer enters.
-    const concurrent = new LiveWatchSession(null, {}, {});
+    const concurrent = new ManagedOpenOcdSession({}, {});
     concurrent.socket = { destroyed: false };
     const operations = [];
     let releaseWrite;
@@ -250,7 +250,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     concurrent.busy = false;
 
     await scenario("Aligned transactions retain exclusive ownership without run control", async () => {
-        const session = new LiveWatchSession(null, {}, {});
+        const session = new ManagedOpenOcdSession({}, {});
         session.socket = { destroyed: false };
         const operations = [];
         let release;

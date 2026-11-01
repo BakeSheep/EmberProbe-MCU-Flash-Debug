@@ -4,7 +4,7 @@ const { run } = require("../../src/samplingWorker");
 const { ManagedOpenOcdSession } = require("../../src/liveWatch");
 const { FakeOpenOcdServer } = require("./fake-openocd-server");
 run(parentPort, { intervalMs: 20 }, (options, handlers) => {
-    const session = new ManagedOpenOcdSession(null, options, handlers);
+    const session = new ManagedOpenOcdSession(options, handlers);
     const server = new FakeOpenOcdServer();
     session.start = async () => {
         await server.start();

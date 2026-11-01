@@ -264,7 +264,7 @@ const { writePlan } = require("../src/services/agentPlans");
             const sessions = [],
                 statuses = [];
             class Session {
-                constructor(_vscode, _options, events) {
+                constructor(_options, events) {
                     this.events = events;
                     sessions.push(this);
                 }
@@ -281,7 +281,7 @@ const { writePlan } = require("../src/services/agentPlans");
             }
             const P = loadProvider(
                 { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
-                { "./liveWatch": { LiveWatchSession: Session } }
+                { "./liveWatch": { ManagedOpenOcdSession: Session } }
             );
             const p = Object.create(P.prototype);
             Object.assign(p, {

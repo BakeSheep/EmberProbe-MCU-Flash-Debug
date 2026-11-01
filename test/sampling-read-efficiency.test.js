@@ -6,7 +6,8 @@ const vm = require("vm");
 const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
-const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { MultiRatePlan } = require("../src/services/multiRatePlan");
 const { writableRamSectionRanges } = require("../src/services/liveWatchService");
 const { SamplingSession } = require("../src/samplingSession");
@@ -88,7 +89,6 @@ function startupFixture(mode, branch) {
     );
     const errors = [];
     const session = new mod.exports.ManagedOpenOcdSession(
-        null,
         { executable: "fake", probe: "jlink.cfg", target: "stm32f4x.cfg", port: 16666, gdbPort: 13333, mode },
         { onError: (message) => errors.push(message) }
     );
@@ -156,7 +156,7 @@ function startupFixture(mode, branch) {
         assert.strictEqual(fixture.scheduled.length, mode === "standalone" ? 1 : 0);
         await fixture.session.stop(100);
 
-        const session = new ManagedOpenOcdSession(null, { mode }, {});
+        const session = new ManagedOpenOcdSession({ mode }, {});
         for (const noEcho of [false, true]) {
             session.noEchoResponses = noEcho;
             let wrapped;
@@ -213,7 +213,7 @@ function startupFixture(mode, branch) {
         [1024, 1024, 4]
     );
     for (const mode of ["standalone", "debug"]) {
-        const session = new ManagedOpenOcdSession(null, { mode }, {});
+        const session = new ManagedOpenOcdSession({ mode }, {});
         session.setSamplingPlan({ graphItems: pair, ramSectionRanges: ranges });
         const fake = new FakeOpenOcdServer();
         fake.seed(
@@ -272,7 +272,7 @@ function startupFixture(mode, branch) {
     });
     provider._sampling.intervalMs = 10;
     for (const mode of ["standalone", "debug"]) {
-        const session = new ManagedOpenOcdSession(null, { mode }, {});
+        const session = new ManagedOpenOcdSession({ mode }, {});
         provider._sampling.applySamplingPlan(session, pair);
         assert.deepStrictEqual(session.ramSectionRanges, ranges);
     }
@@ -298,7 +298,7 @@ function startupFixture(mode, branch) {
     );
     assert.strictEqual(forwarded.length, 1);
 
-    const standalone = new ManagedOpenOcdSession(null, { intervalMs: 10 }, {});
+    const standalone = new ManagedOpenOcdSession({ intervalMs: 10 }, {});
     standalone._recentDurations = [...Array(28).fill(5), ...Array(4).fill(40)];
     standalone._consecutiveSuccesses = 4;
     standalone._evaluateAdaptiveSchedule();
@@ -315,7 +315,7 @@ function startupFixture(mode, branch) {
     standalone._recentDurations = [...Array(28).fill(5), ...Array(4).fill(80)];
     standalone._evaluateAdaptiveSchedule(10000);
     assert.strictEqual(standalone.effectiveIntervalMs, 85, "step-down also uses the mean");
-    const debug = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const debug = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debug._recentDurations = [...Array(28).fill(5), ...Array(4).fill(40)];
     debug._setClockInterval(10);
     assert.strictEqual(debug.effectiveIntervalMs, 100, "debug retains p95 / 0.4");

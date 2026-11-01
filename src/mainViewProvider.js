@@ -76,9 +76,13 @@ function buildSymbolNameIndex(symbols) {
     return byName;
 }
 
-// The sampling controller uses this module's vscode and LiveWatchSession, which tests replace through loadProvider.
+// The sampling controller uses this module's vscode and ManagedOpenOcdSession, which tests replace through loadProvider.
 function createSamplingController(host, settings = {}) {
-    return new LiveWatchController(host, { vscode, LiveWatchSession: liveWatch.LiveWatchSession, ...settings });
+    return new LiveWatchController(host, {
+        vscode,
+        ManagedOpenOcdSession: liveWatch.ManagedOpenOcdSession,
+        ...settings
+    });
 }
 // The debug launch controller uses this module's vscode, debug tool lookup, OpenOCD scripts and debug server
 // controller, which tests replace through loadProvider.
@@ -118,7 +122,7 @@ class MainViewProvider {
     get _agentOps() {
         return (this._agentOperations ??= new AgentOperations(this, {
             vscode,
-            LiveWatchSession: liveWatch.LiveWatchSession
+            ManagedOpenOcdSession: liveWatch.ManagedOpenOcdSession
         }));
     }
     get _connectedProbes() {

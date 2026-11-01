@@ -61,7 +61,7 @@ async function main({ scatter = false } = {}) {
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
     };
-    const session = new ManagedOpenOcdSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     try {
         await waitFor(() => (stdout + stderr).includes(`Listening on port ${port} for tcl connections`));
         session.socket = await new Promise((resolve, reject) => {

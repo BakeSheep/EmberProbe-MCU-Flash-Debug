@@ -265,7 +265,7 @@ function testHostLoopDelay() {
 }
 
 async function testResumeKeepsMeasuredCost() {
-    const session = new ManagedOpenOcdSession(null, { intervalMs: 10 }, {});
+    const session = new ManagedOpenOcdSession({ intervalMs: 10 }, {});
     session.socket = { destroyed: false };
     try {
         session.setSamplingEnabled(true);

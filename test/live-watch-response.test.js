@@ -1,7 +1,8 @@
 "use strict";
 const assert = require("assert");
 const { EventEmitter } = require("events");
-const { ManagedOpenOcdSession, parseMemoryElements } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { parseMemoryElements } = require("../src/liveWatchReadPlan");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
@@ -36,7 +37,7 @@ function socketFixture() {
         assert.deepStrictEqual(parseMemoryElements(text, width), [], "reject the entire malformed response");
     }
 
-    const reader = new ManagedOpenOcdSession(null, {}, {});
+    const reader = new ManagedOpenOcdSession({}, {});
     for (const [address, count, valid] of [
         [0x20000001, 3, "1 2 3"],
         [0x20000002, 4, "0x0201 0x0403"],
@@ -53,7 +54,7 @@ function socketFixture() {
     const fake = new FakeOpenOcdServer();
     await fake.start();
     const samples = [];
-    const session = new ManagedOpenOcdSession(null, {}, { onSample: (batch) => samples.push(...batch) });
+    const session = new ManagedOpenOcdSession({}, { onSample: (batch) => samples.push(...batch) });
     session.socket = await fake.connect();
     session._setupSocket();
     session.watch = [
@@ -106,7 +107,7 @@ function socketFixture() {
     }
 
     // After sleep or an event-loop stall, data can be dispatched before the overdue timer callback.
-    const overdue = new ManagedOpenOcdSession(null, {}, {});
+    const overdue = new ManagedOpenOcdSession({}, {});
     overdue.socket = socketFixture();
     overdue._setupSocket();
     const realNow = Date.now;
@@ -127,7 +128,7 @@ function socketFixture() {
     assert.strictEqual(overdue.stopped, true, "an overdue response invalidates the FIFO connection");
     assert.strictEqual(overdue.queue.length, 0);
 
-    const replaced = new ManagedOpenOcdSession(null, {}, {});
+    const replaced = new ManagedOpenOcdSession({}, {});
     const oldSocket = socketFixture();
     replaced.socket = oldSocket;
     replaced._setupSocket();

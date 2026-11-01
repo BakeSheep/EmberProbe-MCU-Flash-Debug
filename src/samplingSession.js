@@ -4,6 +4,7 @@ const { Worker } = require("worker_threads");
 const { clampInteger } = require("./validation");
 const { deserializeError } = require("./services/errorEnvelope");
 const { reportTargetIdentity, reportTargetMismatch } = require("./chip/targetIdentity");
+const { validateManagedReadPlan } = require("./liveWatchReadPlan");
 class SamplingSession {
     constructor(options, handlers = {}, workerPath = path.join(__dirname, "samplingWorker.js")) {
         this.options = options;
@@ -97,14 +98,14 @@ class SamplingSession {
         this.request(method, args).catch((error) => this.handlers.onError?.(error.message));
     }
     setWatch(items, ramSectionRanges = []) {
-        if (this.mode === "debug") require("./liveWatch").validateManagedReadPlan(items);
+        if (this.mode === "debug") validateManagedReadPlan(items);
         this._samplingPlan = null;
         this.notify("setWatch", [items, ramSectionRanges]);
     }
     setSamplingPlan(plan) {
         if (this.mode === "debug") {
             const { MultiRatePlan } = require("./services/multiRatePlan");
-            require("./liveWatch").validateManagedReadPlan(new MultiRatePlan(plan).items);
+            validateManagedReadPlan(new MultiRatePlan(plan).items);
         }
         this._samplingPlan = plan;
         this.generation++;

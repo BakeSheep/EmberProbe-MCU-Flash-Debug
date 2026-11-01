@@ -187,7 +187,6 @@ async function main(argv = process.argv.slice(2)) {
     let failure = null;
     let endMeasurement = () => {};
     const session = new ManagedOpenOcdSession(
-        null,
         {
             executable: options.openocd,
             probe: options.probe,
