@@ -163,7 +163,7 @@ try {
 (async () => {
     const provider = Object.create(loadProvider().prototype);
     for (const destination of ["write", "sidebarWrite", "invalid"])
-        await assert.rejects(provider._addAgentWatch({ variables: ["counter"], destination }), {
+        await assert.rejects(provider._agentOps.addWatch({ variables: ["counter"], destination }), {
             code: "INVALID_DESTINATION"
         });
     console.log("Write list identity, ELF scroll stability, gating and Agent destination audit passed");

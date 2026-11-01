@@ -28,7 +28,7 @@ function strBytes(s) {
     return b;
 }
 
-// DWARF v4 abbreviation table (same shape as test/dwarf-composite.test.js):
+// DWARF v4 abbreviation table (same shape as the composite section of test/dwarf-layout.test.js):
 // 1=compile_unit(children) 2=base_type(name,encoding,byte_size) 3=structure_type(name,byte_size,children)
 // 4=member(name,type ref4,data_member_location data1) 5=variable(name,type ref4,location exprloc)
 // 6=array_type(type ref4,byte_size,children) 7=subrange(upper_bound data1)

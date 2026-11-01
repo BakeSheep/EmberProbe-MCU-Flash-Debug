@@ -4,6 +4,8 @@ const { Worker } = require("worker_threads");
 const { clampInteger } = require("./validation");
 const { deserializeError } = require("./services/errorEnvelope");
 const { reportTargetIdentity, reportTargetMismatch } = require("./chip/targetIdentity");
+const { validateManagedReadPlan } = require("./liveWatchReadPlan");
+const { validateManagedWritePlan } = require("./memoryWrite");
 class SamplingSession {
     constructor(options, handlers = {}, workerPath = path.join(__dirname, "samplingWorker.js")) {
         this.options = options;
@@ -97,14 +99,14 @@ class SamplingSession {
         this.request(method, args).catch((error) => this.handlers.onError?.(error.message));
     }
     setWatch(items, ramSectionRanges = []) {
-        if (this.mode === "debug") require("./liveWatch").validateManagedReadPlan(items);
+        if (this.mode === "debug") validateManagedReadPlan(items);
         this._samplingPlan = null;
         this.notify("setWatch", [items, ramSectionRanges]);
     }
     setSamplingPlan(plan) {
         if (this.mode === "debug") {
             const { MultiRatePlan } = require("./services/multiRatePlan");
-            require("./liveWatch").validateManagedReadPlan(new MultiRatePlan(plan).items);
+            validateManagedReadPlan(new MultiRatePlan(plan).items);
         }
         this._samplingPlan = plan;
         this.generation++;
@@ -174,8 +176,7 @@ class SamplingSession {
         return (await this.request("readOnce", args)).result;
     }
     async writeAndVerify(...args) {
-        if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length)
-            require("./liveWatch").validateManagedWritePlan(args[0]);
+        if (this.mode === "debug" && Array.isArray(args[0]) && args[0].length) validateManagedWritePlan(args[0]);
         return (await this.request("writeAndVerify", args)).result;
     }
     async waitForIdle(...args) {

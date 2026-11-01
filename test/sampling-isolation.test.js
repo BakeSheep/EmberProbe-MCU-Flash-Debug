@@ -6,7 +6,7 @@ const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { EventEmitter } = require("events");
 const { run, estimateRuntimeBytes } = require("../src/samplingWorker");
 const { MAX_COMPOSITE_BYTES } = require("../src/dwarf/layoutLimits");
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { wait, waitFor } = require("./helpers/wait");
 function testRuntimeAccounting() {
     const tree = {
         kind: "class",
@@ -47,6 +47,7 @@ function testRuntimeAccounting() {
     const session = {
         samplingEnabled: true,
         stopped: false,
+        server: { child: { pid: 4321 } },
         stop() {},
         setSamplingEnabled(value) {
             this.samplingEnabled = value;
@@ -65,6 +66,11 @@ function testRuntimeAccounting() {
     assert.deepStrictEqual(pauses, [], "structural bytes drop the oldest backlog instead of pausing sampling");
     assert.strictEqual(events.at(-1).event, "onError");
     assert.strictEqual(events.at(-1).args[0].code, "SAMPLING_HOST_BACKLOG");
+    assert.strictEqual(
+        events.at(-1).state.childPid,
+        4321,
+        "the host learns the OpenOCD pid to end it if the Worker dies"
+    );
     handlers.onSample([{ name: "runtime", runtimeTree: pendingTree, diagnostic }], 18);
     assert.strictEqual(events.filter((event) => event.event === "onError").length, 1, "one notice per busy episode");
     port.emit("message", { ack: true });
@@ -99,15 +105,15 @@ function testRuntimeAccounting() {
         session.setPauseReason(null);
         // The worker accepts target invalidation without pausing the sampling clock.
         assert.strictEqual((await session.request("invalidateTarget", [])).result, undefined);
-        await wait(250);
-        assert.ok(ticks.length >= 2);
+        await waitFor(() => ticks.length >= 2, "the Worker starts sampling");
         const begin = Date.now();
         // Model a synchronous ELF parse/build extension blocking the extension host.
         while (Date.now() - begin < 600) {
             Math.sqrt(Date.now());
         }
         const end = Date.now();
-        await wait(150);
+        // Ticks acquired during the stall queue up behind it; the first later tick means they have all arrived.
+        await waitFor(() => ticks.some((tick) => tick.t > end), "the Worker delivers the stalled ticks");
         const during = ticks.filter((tick) => tick.t >= begin && tick.t <= end);
         assert.ok(during.length >= 5, `Sampling continued during host stall: ${during.length} ticks`);
         assert.deepEqual(during[0].samples[0].bytes, [1, 2, 3, 4]);
@@ -115,7 +121,8 @@ function testRuntimeAccounting() {
         await session.waitForIdle();
         await wait(50);
         const stoppedAt = ticks.length;
-        await wait(100);
+        // Three sampling intervals.
+        await wait(60);
         assert.equal(ticks.length, stoppedAt);
         assert.deepEqual((await session.readOnce(plan))[0].bytes, [1, 2, 3, 4]);
         const transaction = await session.writeAndVerify([
@@ -125,19 +132,18 @@ function testRuntimeAccounting() {
         assert.strictEqual(transaction.halted, false, "Worker result preserves the non-halting transaction indicator");
         session.setIntervalMs(40);
         session.setSamplingEnabled(true);
-        await wait(150);
-        assert.ok(ticks.length > stoppedAt);
+        await waitFor(() => ticks.length > stoppedAt, "sampling resumes at the new interval");
         const beforePlan = ticks.length;
         session.setSamplingPlan({
             graphItems: [{ ...plan[0], name: "graph" }],
             sidebarItems: plan,
             graphIntervalMs: 1000
         });
-        await wait(550);
-        const layered = ticks.slice(beforePlan).filter((tick) => tick.consumers);
-        assert.ok(layered.filter((tick) => tick.consumers.sidebarNames.includes("value")).length >= 5);
+        const layered = () => ticks.slice(beforePlan).filter((tick) => tick.consumers);
+        const sidebarTicks = () => layered().filter((tick) => tick.consumers.sidebarNames.includes("value"));
+        await waitFor(() => sidebarTicks().length >= 5, "sidebar ticks follow the layered plan");
         assert.strictEqual(
-            layered.filter((tick) => tick.consumers.graphNames.includes("graph")).length,
+            layered().filter((tick) => tick.consumers.graphNames.includes("graph")).length,
             1,
             "worker delivery preserves the plan generation and avoids graph points from sidebar ticks"
         );
@@ -148,8 +154,8 @@ function testRuntimeAccounting() {
         await session.stop();
     }
     await assert.rejects(session.readOnce(plan), /stopped/);
-    const local = new ManagedOpenOcdSession(null, {}, {});
-    local.socket = { destroyed: false };
+    const local = new ManagedOpenOcdSession({}, {});
+    local.tcl.socket = { destroyed: false };
     local.setSamplingEnabled(true);
     const timer = local.timer,
         epoch = local.sampleEpoch;
@@ -157,7 +163,7 @@ function testRuntimeAccounting() {
     assert.equal(local.timer, timer, "repeated enable must not restart the sampling clock");
     assert.equal(local.sampleEpoch, epoch, "repeated enable must not cancel an in-flight cycle");
     local.setSamplingEnabled(false);
-    local.socket = null;
+    local.tcl.socket = null;
     await local.stop();
 })().catch((error) => {
     console.error(error);

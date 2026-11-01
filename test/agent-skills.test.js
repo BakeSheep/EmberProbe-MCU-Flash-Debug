@@ -9,7 +9,7 @@ const { AgentBridge, stringifyJson } = require("../src/agentBridge");
 const { call, descriptor: descriptorOf, diagnosticForError } = require("../skills/_emberprobe/agent-client");
 const configSkill = require("../skills/mcu-config/scripts/config");
 const liveSkill = require("../skills/mcu-variables/scripts/read");
-const { LiveWatchSession } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const execFileAsync = promisify(execFile);
 
 (async () => {
@@ -196,8 +196,8 @@ const execFileAsync = promisify(execFile);
         "volatile"
     );
 
-    const session = new LiveWatchSession(null, {}, {});
-    session.socket = { destroyed: false };
+    const session = new ManagedOpenOcdSession({}, {});
+    session.tcl.socket = { destroyed: false };
     session._readMemoryBytes = async (address, count) =>
         address === 0x20000000 ? [0x2a, 0, 0, 0].slice(0, count) : null;
     const once = await session.readOnce([{ name: "Tick", address: 0x20000000, size: 4 }]);

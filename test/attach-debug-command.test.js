@@ -39,22 +39,24 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
         _postProbeOperationStatus() {},
         _svdManager: { currentPath: async () => "" },
         _resolveOpenOcdPath: async () => "openocd",
-        prepareProbeForDebug: async () => {},
-        _probeCoordinator: new ProbeCoordinator(),
-        _startManagedDebugServer: async (_executable, _probe, _target, _cfg, _interactive, _rtos, options, phase) => {
+        _probeCoordinator: new ProbeCoordinator()
+    });
+    Object.assign(host.debugLaunch, {
+        prepareProbe: async () => {},
+        startManagedServer: async (_executable, _probe, _target, _cfg, _interactive, _rtos, options, phase) => {
             serverRequests.push(options.request);
             phase?.("preflight");
             phase?.("server");
             return { gdbTarget: "127.0.0.1:3333" };
         },
-        _armDebugStartupWatchdog: () => new Promise(() => {}),
-        _clearDebugStartupWatchdog() {},
-        _stopManagedDebugServer: async () => {
+        armStartupWatchdog: () => new Promise(() => {}),
+        clearStartupWatchdog() {},
+        stopManagedServer: async () => {
             serverStops++;
-            host._debugServerLease?.release();
-            host._debugServerLease = null;
+            host.debugLaunch.serverLease?.release();
+            host.debugLaunch.serverLease = null;
         },
-        restoreSamplingAfterDebug: async () => {}
+        restoreSampling: async () => {}
     });
     host.commandHandlers = {};
     host.registerCommandHandlers();
@@ -78,7 +80,7 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     assert.strictEqual(resolved.__emberprobeStartupTrace, undefined, "only performanceTrace forwards startup phases");
 
     // performanceTrace forwards the extension-side phases before the adapter starts, as durations only.
-    await host._stopManagedDebugServer();
+    await host.debugLaunch.stopManagedServer();
     const traced = await host.commandHandlers["mcu-vscode.debug"](undefined, {
         request: "launch",
         performanceTrace: true
@@ -87,12 +89,12 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     assert(Number.isSafeInteger(startup.startedAt) && startup.startedAt <= Date.now());
     assert.deepStrictEqual(Object.keys(startup.phases), STARTUP_PHASES);
     assert(Object.values(startup.phases).every((duration) => Number.isInteger(duration) && duration >= 0));
-    await host._stopManagedDebugServer();
+    await host.debugLaunch.stopManagedServer();
     let releaseWarmup;
     let warmupStarted;
     const warming = new Promise((resolve) => (warmupStarted = resolve));
     const gate = new Promise((resolve) => (releaseWarmup = resolve));
-    host._gdbWarmup = {
+    host.debugLaunch.gdbWarmup = {
         warm: () => {
             warmupStarted();
             return gate;
@@ -100,7 +102,7 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
         snapshot: () => ({ state: "ready", durationMs: 5300 })
     };
     let prepared = false;
-    host.prepareProbeForDebug = async () => (prepared = true);
+    host.debugLaunch.prepareProbe = async () => (prepared = true);
     const waiting = host.commandHandlers["mcu-vscode.debug"](undefined, {
         request: "launch",
         performanceTrace: true
@@ -113,8 +115,8 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     const warmed = await waiting;
     assert(prepared);
     assert.deepStrictEqual(warmed.__emberprobeStartupTrace.gdbWarmup, { state: "ready", durationMs: 5300 });
-    await host._stopManagedDebugServer();
-    host._gdbWarmup = {
+    await host.debugLaunch.stopManagedServer();
+    host.debugLaunch.gdbWarmup = {
         warm: async () => false,
         snapshot: () => ({ state: "failed", durationMs: 30000 })
     };
@@ -124,7 +126,7 @@ const { STARTUP_PHASES } = require("../src/services/debugConfiguration");
     });
     assert.strictEqual(failedWarmup.request, "attach", "a failed optimization does not prevent normal startup");
     assert.strictEqual(failedWarmup.__emberprobeStartupTrace.gdbWarmup.state, "failed");
-    await host._stopManagedDebugServer();
+    await host.debugLaunch.stopManagedServer();
     console.log("attach-debug-command tests passed");
 })().catch((error) => {
     console.error(error);

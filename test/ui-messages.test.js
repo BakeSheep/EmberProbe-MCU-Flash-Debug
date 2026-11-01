@@ -56,13 +56,13 @@ function fixture() {
         commandHandlers: {},
         _assertConnectionEditable() {},
         _resolveOpenOcdPath: async () => null,
-        _refreshElfBindings: async () => {},
-        _refreshConnectedProbes: async () => {},
         updateView: async () => {},
         _renderWebview: async () => {},
         getModernWebviewContent: () => "",
         _t: (key, params) => i18n.t("en", key, params)
     });
+    Object.assign(provider._connectedProbes, { refresh: async () => {} });
+    Object.assign(provider._elfView, { refreshBindings: async () => {} });
     provider.registerCommandHandlers();
     let dispatch;
     provider.resolveWebviewView({
@@ -161,7 +161,7 @@ async function commands() {
         i18nKey: "live.elfTooLarge",
         i18nParams: params
     });
-    f.provider._refreshElfBindings = async () => {
+    f.provider._elfView.refreshBindings = async () => {
         throw error;
     };
     await f.dispatch({ type: "refreshVariables" });
@@ -247,10 +247,7 @@ async function incompleteActions() {
                         return "cmsis-dap.cfg";
                     }
                 },
-                _liveDebugSession: () => null,
                 _postProbeOperationStatus() {},
-                _resetChartHistoryWarnings() {},
-                _clearDebugStartupWatchdog() {},
                 _resolveOpenOcdPath: async () => "openocd",
                 _postConsumerStatuses: (status, error) =>
                     f.messages.push({
@@ -260,6 +257,8 @@ async function incompleteActions() {
                         error
                     })
             });
+            Object.assign(f.provider._historyFeed, { resetWarnings() {} });
+            Object.assign(f.provider.debugLaunch, { liveSession: () => null, clearStartupWatchdog() {} });
             f.provider._context.workspaceState.get = () => undefined;
             try {
                 if (action === "liveToggle") await f.dispatch({ type: action });
@@ -269,8 +268,8 @@ async function incompleteActions() {
                     await f.dispatch(sidebar.messages.at(-1));
                 }
                 assert.strictEqual(coordinator.anyActive(), false, `${action} releases its probe lease`);
-                assert(!f.provider._debugCommandPending, `${action} cannot leave a pending debug startup`);
-                assert(!f.provider._liveStartPromise, `${action} cannot leave a pending sampling startup`);
+                assert(!f.provider.debugLaunch.commandPending, `${action} cannot leave a pending debug startup`);
+                assert(!f.provider._sampling._startPromise, `${action} cannot leave a pending sampling startup`);
                 const reply = f.messages.findLast((message) => ["liveStatus", "commandError"].includes(message.type));
                 assert(reply, `${action} must acknowledge missing configuration`);
                 for (const message of f.messages) if (message.type === "notice") sidebar.send(message);
@@ -447,8 +446,7 @@ async function queuedWrites() {
     const f = fixture(),
         first = deferred(),
         calls = [];
-    Object.assign(f.provider, { _uiWritePromise: Promise.resolve(), _uiWriteTicket: 0, _uiWriteLatest: new Map() });
-    f.provider._writeUiVariable = async (name, value) => {
+    f.provider._writes.writeUiVariable = async (name, value) => {
         calls.push([name, value]);
         if (calls.length === 1) await first.promise;
         return { results: [{ readBack: value, readBackText: String(value) }] };
@@ -473,8 +471,8 @@ async function queuedWrites() {
         f.messages.filter((message) => message.type === "writeResult").map((message) => message.seq),
         [1, 3, 4]
     );
-    assert.strictEqual(f.provider._uiWriteLatest.size, 0, "completed writes release their coalescing slot");
-    f.provider._writeUiVariable = async () => {
+    assert.strictEqual(f.provider._writes._uiLatest.size, 0, "completed writes release their coalescing slot");
+    f.provider._writes.writeUiVariable = async () => {
         throw Object.assign(new Error("Writing pointer storage is not supported: _ZN3lab7pointerE"), {
             code: "WRITE_NOT_ALLOWED"
         });
@@ -487,12 +485,31 @@ async function queuedWrites() {
     assert(failure.diagnostic.message.includes("_ZN3lab7pointerE"), "raw symbols remain in diagnostic details");
 }
 
+// A sidebar message whose handler fails is logged; it must not reject the listener, where nothing would catch it.
+async function failedMessages() {
+    const f = fixture();
+    f.provider._saveWatchList = async () => {
+        throw new Error("workspace state is read-only");
+    };
+    const logged = [];
+    const consoleError = console.error;
+    console.error = (...args) => logged.push(args);
+    try {
+        await f.dispatch({ type: "saveSidebarWatch", items: [] });
+    } finally {
+        console.error = consoleError;
+    }
+    assert.strictEqual(logged.length, 1);
+    assert.match(logged[0][1].message, /read-only/);
+}
+
 (async () => {
     await chipPreflight();
     await incompleteActions();
     views(await commands());
     await diagnostics();
     await queuedWrites();
+    await failedMessages();
     console.log("UI error, cancellation, warning and stale snapshot regressions passed");
 })().catch((error) => {
     console.error(error);

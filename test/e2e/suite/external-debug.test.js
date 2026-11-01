@@ -23,10 +23,13 @@ async function run() {
     const objdump = path.join(temp, "arm-none-eabi-objdump" + suffix);
     fs.writeFileSync(objdump, "fixture");
     fs.chmodSync(objdump, 0o755);
-    const originals = new Map();
-    for (const name of ["_resolveOpenOcdPath", "_startManagedDebugServer"]) {
-        originals.set(name, provider[name]);
-        provider[name] = () => {
+    const originals = [];
+    for (const [owner, name] of [
+        [provider, "_resolveOpenOcdPath"],
+        [provider.debugLaunch, "startManagedServer"]
+    ]) {
+        originals.push([owner, name, owner[name]]);
+        owner[name] = () => {
             throw new Error("External attach entered the OpenOCD path");
         };
     }
@@ -68,7 +71,7 @@ async function run() {
         assert.strictEqual(session.configuration.gdbTarget, "localhost:3333");
         assert.strictEqual(session.configuration.__emberprobeExternalMode, "remote");
         assert.strictEqual(provider._debugBridge.capabilities.restart, false);
-        assert.strictEqual(provider._managedDebugServer, null);
+        assert.strictEqual(provider.debugLaunch.managedServer, null);
         assert.strictEqual((await session.customRequest("threads", {})).threads[0].id, 1);
         await vscode.debug.stopDebugging(session);
         await wait(() => !provider._externalDebug.active);
@@ -76,14 +79,14 @@ async function run() {
         assert(provider._externalDebug.marker.cleanupConfirmed);
         await cfg.update(keys[0], false, vscode.ConfigurationTarget.WorkspaceFolder);
         await wait(() => !provider._externalDebug.held);
-        assert.strictEqual(provider._liveSession, null);
+        assert.strictEqual(provider._sampling.session, null);
         console.log(
             "✓ external F5 attach resolves native settings, disables restart and retains ownership until disabled"
         );
     } finally {
         if (provider._externalDebug.active && session) await vscode.debug.stopDebugging(session);
         await cfg.update(keys[0], false, vscode.ConfigurationTarget.WorkspaceFolder);
-        await provider.externalDebugSettingsChanged();
+        await provider.debugLaunch.externalSettingsChanged();
         for (let i = 0; i < keys.length; i++)
             await cfg.update(keys[i], previous[i], vscode.ConfigurationTarget.WorkspaceFolder);
         if (settingsBefore) fs.writeFileSync(settingsFile, settingsBefore);
@@ -93,7 +96,7 @@ async function run() {
             if (fs.existsSync(settingsDir) && !fs.readdirSync(settingsDir).length) fs.rmdirSync(settingsDir);
         }
         descriptor.dispose();
-        for (const [name, value] of originals) provider[name] = value;
+        for (const [owner, name, value] of originals) owner[name] = value;
         fs.rmSync(temp, { recursive: true, force: true });
     }
 }

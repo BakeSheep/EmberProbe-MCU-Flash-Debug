@@ -6,7 +6,7 @@ const assert = require("assert");
 const { PeripheralViewService } = require("../src/services/peripheralViewService");
 const { getModernWebviewContent } = require("../src/modernView");
 const { render } = require("./helpers/render-webview");
-const { loadProvider } = require("./helpers/load-provider");
+const { createSidebarHandler } = require("../src/controllers/sidebarRoutes");
 
 (async () => {
     let epoch = 1;
@@ -225,44 +225,40 @@ const { loadProvider } = require("./helpers/load-provider");
         view.close();
     }
 
-    const Provider = loadProvider({
-        window: {
-            showInputBox: () => {
-                throw new Error("UI write must not open a VS Code input box");
+    const host = {
+        _svdManager: { currentPath: async () => "/device.svd" },
+        _debugBridge: {},
+        _writes: { assertSessionCurrent: () => {} },
+        _svdPeripheralService: {
+            write: () => {
+                throw new Error("UI write must not use the Agent Skill authorization path");
             },
-            showWarningMessage: () => {
-                throw new Error("UI write must not open a confirmation dialog");
+            writeFromUi: async (params) => {
+                assert.deepStrictEqual(params, { writes: [{ target: "GPIOA.MODER.MODE0", value: "0x1" }] });
+                return { results: [{ register: "GPIOA.MODER", verified: true }] };
+            }
+        },
+        _t: (key) => key
+    };
+    const posted = [];
+    const handleMessage = createSidebarHandler(
+        host,
+        { webview: { postMessage: (message) => posted.push(message) } },
+        {
+            window: {
+                showInputBox: () => {
+                    throw new Error("UI write must not open a VS Code input box");
+                },
+                showWarningMessage: () => {
+                    throw new Error("UI write must not open a confirmation dialog");
+                }
             }
         }
-    });
-    const provider = Object.create(Provider.prototype);
-    provider._svdManager = { currentPath: async () => "/device.svd" };
-    provider._debugBridge = {};
-    provider._assertWriteSessionCurrent = () => {};
-    provider._svdPeripheralService = {
-        write: () => {
-            throw new Error("UI write must not use the Agent Skill authorization path");
-        },
-        writeFromUi: async (params) => {
-            assert.deepStrictEqual(params, { writes: [{ target: "GPIOA.MODER.MODE0", value: "0x1" }] });
-            return { results: [{ register: "GPIOA.MODER", verified: true }] };
-        }
-    };
-    provider._t = (key) => key;
-    const posted = [];
-    const webview = { postMessage: (message) => posted.push(message) };
-    await provider._handlePeripheralViewRequest(webview, {
-        type: "peripheralWriteRequest",
-        target: "GPIOA.MODER.MODE0",
-        value: " 0x1 "
-    });
+    );
+    await handleMessage({ type: "peripheralWriteRequest", target: "GPIOA.MODER.MODE0", value: " 0x1 " });
     assert.strictEqual(posted[0].type, "peripheralWriteResult");
     assert.strictEqual(posted[0].result.results[0].verified, true);
-    await provider._handlePeripheralViewRequest(webview, {
-        type: "peripheralWriteRequest",
-        target: "GPIOA.MODER.MODE0",
-        value: ""
-    });
+    await handleMessage({ type: "peripheralWriteRequest", target: "GPIOA.MODER.MODE0", value: "" });
     assert.strictEqual(posted[1].type, "peripheralError");
 
     await scenario("Batch peripheral reads without reloading or hiding per-target failures", async () => {

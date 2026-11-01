@@ -253,55 +253,55 @@ const member = (tree, name) => tree.members.find((entry) => entry.name === name)
     p._latestSidebarSamples = new Map();
     p._chartHistory = { request: async (method, args) => store[method](...args), fail: assert.fail };
     p._samplingArchive = { append: (samples) => archive.push(samples.map((sample) => sample.name).sort()) };
-    p._postWebviewBatch = () => {};
-    p._postSidebarBatch = () => {};
-    p._pointerExpandedOnly = true;
+    p._sampling._postWebviewBatch = () => {};
+    p._sampling._postSidebarBatch = () => {};
+    p._sampling.pointerExpandedOnly = true;
     const consumers = { graphNames: ["g.node.value"], sidebarNames: [] };
-    p._handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1000 }], 1000, consumers);
+    p._sampling.handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1000 }], 1000, consumers);
     assert.deepStrictEqual(archive.at(-1), ["g.node.value.a [i32]", "g.node.value.next [u32]"]);
     state.set("liveWatch.runtimeExpansions", { w: { "g.node.value": ["", ".inner"] } });
-    p._handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1010 }], 1010, consumers);
+    p._sampling.handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1010 }], 1010, consumers);
     assert.deepStrictEqual(archive.at(-1), [
         "g.node.value.a [i32]",
         "g.node.value.inner.x [i32]",
         "g.node.value.inner.y [i32]",
         "g.node.value.next [u32]"
     ]);
-    p._pointerExpandedOnly = false;
-    p._handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1020 }], 1020, consumers);
+    p._sampling.pointerExpandedOnly = false;
+    p._sampling.handleRawSamples([{ name: "g.node.value", runtimeTree: full, t: 1020 }], 1020, consumers);
     assert.strictEqual(archive.at(-1).length, 7, "off records every parsed scalar");
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(store.scopes.get("w").series.get("g.node.value.a").count, 3);
     assert.strictEqual(entry.historyItems.find((item) => item.name === "g.node.value.arr[2]").historyFromMs, 1020);
     // Charting a recorded member keeps its history.
     panelWatches = watches;
-    p._configureChartHistory(entry, 2000);
+    p._historyFeed.configure(entry, 2000);
     assert.strictEqual(entry.historyItems.find((item) => item.name === "g.node.value.inner.x").historyFromMs, 1010);
     assert.strictEqual(store.scopes.get("w").series.get("g.node.value.inner.x").count, 2);
     panelWatches = [];
-    p._configureChartHistory(entry, 3000);
+    p._historyFeed.configure(entry, 3000);
     assert.strictEqual(entry.runtimeHistoryLeaves.size, 0, "removing the object releases its recorded leaves");
 
     // Workspace persistence of the switch and of each view's expansions.
     const posted = [];
     entry.post = (message) => posted.push(message);
     let refreshes = 0;
-    p._refreshSamplingPlan = async () => refreshes++;
-    await p._setPointerExpandedOnly(true);
+    p._sampling.refreshSamplingPlan = async () => refreshes++;
+    await p._sampling.setPointerExpandedOnly(true);
     assert.strictEqual(state.get("liveWatch.pointerExpandedOnly"), true);
     assert.deepStrictEqual(posted.at(-1), { type: "pointerSampling", expandedOnly: true });
     assert.strictEqual(refreshes, 1);
-    await p._setPointerExpandedOnly(true);
+    await p._sampling.setPointerExpandedOnly(true);
     assert.strictEqual(refreshes, 1, "an unchanged mode keeps the plan");
-    await assert.rejects(p._setPointerExpandedOnly("yes"), { code: "INVALID_PARAMS" });
+    await assert.rejects(p._sampling.setPointerExpandedOnly("yes"), { code: "INVALID_PARAMS" });
     await p._saveRuntimeExpansions("w", { "g.node.value": [".arr", ""] });
     assert.deepStrictEqual(state.get("liveWatch.runtimeExpansions").w, { "g.node.value": ["", ".arr"] });
     assert.strictEqual(refreshes, 2);
     await p._saveRuntimeExpansions("w", { "g.node.value": ["", ".arr"] });
     assert.strictEqual(refreshes, 2, "unchanged expansions keep the plan");
     await assert.rejects(p._saveRuntimeExpansions("w", { "g.node.value": ["arr"] }), { code: "INVALID_ARGUMENT" });
-    await p._setPointerExpandedOnly(false);
-    assert.deepStrictEqual(p._panelRuntimeExpansions("w"), null);
+    await p._sampling.setPointerExpandedOnly(false);
+    assert.deepStrictEqual(p._sampling.panelRuntimeExpansions("w"), null);
     await p._saveRuntimeExpansions("w", { "g.node.value": [""] });
     assert.strictEqual(refreshes, 3, "expansions only change reads while the switch is on");
     const restored = Object.create(Provider.prototype);

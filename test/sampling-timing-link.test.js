@@ -5,7 +5,8 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { EventEmitter } = require("events");
-const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { ProbeConnectionService } = require("../src/services/probeConnectionService");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 const { writeConnectionIdentity } = require("../src/writeAuthorization");
@@ -18,6 +19,7 @@ const { LiveWatchService } = require("../src/services/liveWatchService");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { loadProvider } = require("./helpers/load-provider");
+const { decodeSample } = require("../src/services/agentPlans");
 
 const base = 0x20000000;
 const ranges = [{ start: base, end: base + 65536 }];
@@ -25,9 +27,9 @@ const item = (name, offset, size = 4) => ({ name, address: base + offset, size }
 
 function timedSession() {
     let now = 1700000000000.125;
-    const session = new ManagedOpenOcdSession(null, { sampleNow: () => now }, {});
+    const session = new ManagedOpenOcdSession({ clock: { sampleNow: () => now } }, {});
     const fake = new FakeOpenOcdServer();
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         now += 1.25;
         return fake._execute(command).response;
     };
@@ -37,7 +39,7 @@ function timedSession() {
 async function timestamps() {
     const { session, time } = timedSession();
     const entries = [item("large", 0, 1536), item("later", 4096)];
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session._scheduleNext = () => {};
     session.setWatch(entries);
     const ticks = [];
@@ -63,11 +65,7 @@ async function timestamps() {
         new Map([["later", "u32"]])
     );
     assert.strictEqual(decoded.scalarSamples[0].t, fractional.t);
-    const provider = Object.create(loadProvider().prototype);
-    assert.strictEqual(
-        provider._decodeAgentSample([{ ...item("later", 4096), type: "u32" }], [fractional]).timestamp,
-        fractional.t
-    );
+    assert.strictEqual(decodeSample([{ ...item("later", 4096), type: "u32" }], [fractional]).timestamp, fractional.t);
 }
 
 async function widening() {
@@ -142,37 +140,30 @@ async function networkAndIdentity() {
         ["local", 2000],
         [undefined, 2000]
     ]) {
-        const session = new ManagedOpenOcdSession(null, { backendKind: kind }, {});
-        assert.strictEqual(session.rpcTimeoutMs, timeout);
+        let now = Date.now();
+        const session = new ManagedOpenOcdSession({ backendKind: kind, clock: { now: () => now } }, {});
+        assert.strictEqual(session.tcl.rpcTimeoutMs, timeout);
         const socket = new EventEmitter();
         socket.setNoDelay = () => {};
         socket.destroy = () => {
             socket.destroyed = true;
         };
         socket.write = () => {};
-        session.socket = socket;
-        session._setupSocket();
-        const originalNow = Date.now;
-        let now = originalNow();
-        try {
-            Date.now = () => now;
-            const pending = session._sendCommand("test");
-            now += 2500;
-            socket.emit("data", Buffer.from("ok\x1a"));
-            if (kind === "tcp") assert.strictEqual(await pending, "ok");
-            else await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
-            if (kind === "tcp") {
-                const overdue = session._sendCommand("test");
-                now += 5001;
-                socket.emit("data", Buffer.from("late\x1a"));
-                await assert.rejects(overdue, { code: "OPENOCD_RPC_TIMEOUT" });
-            }
-        } finally {
-            Date.now = originalNow;
+        session.tcl.attach(socket);
+        const pending = session.tcl.send("test");
+        now += 2500;
+        socket.emit("data", Buffer.from("ok\x1a"));
+        if (kind === "tcp") assert.strictEqual(await pending, "ok");
+        else await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
+        if (kind === "tcp") {
+            const overdue = session.tcl.send("test");
+            now += 5001;
+            socket.emit("data", Buffer.from("late\x1a"));
+            await assert.rejects(overdue, { code: "OPENOCD_RPC_TIMEOUT" });
         }
     }
     let now = 0;
-    const lock = new ManagedOpenOcdSession(null, { backendKind: "tcp", now: () => now }, {});
+    const lock = new ManagedOpenOcdSession({ backendKind: "tcp", clock: { now: () => now } }, {});
     for (now = 0; now <= 3000; now += 500) lock._handlePollingFailure("Polling failed");
     assert(lock.stopped, "500 ms target polling still locks after three seconds");
 
@@ -181,24 +172,26 @@ async function networkAndIdentity() {
         stopped = 0,
         restarted = 0;
     Object.assign(provider, {
-        _liveSession: { options: connection },
-        _samplingIntent: true,
-        _liveStartGeneration: 0,
         _probeConnectionService: {
             markConfigurationChanged: (sessions) => {
-                assert.deepStrictEqual(sessions, [provider._liveSession]);
+                assert.deepStrictEqual(sessions, [provider._sampling.session]);
                 marked++;
             }
         },
         _debugBridge: { activeSession: { id: "debug" } },
-        _refreshConnectedProbes: async () => {},
-        _postConsumerStatuses: () => {},
-        stopLiveWatch: (options) => {
+        _postConsumerStatuses: () => {}
+    });
+    Object.assign(provider._connectedProbes, { refresh: async () => {} });
+    Object.assign(provider._sampling, {
+        session: { options: connection },
+        intent: true,
+        _startGeneration: 0,
+        stop: (options) => {
             assert(options.preserveIntent);
             stopped++;
-            provider._liveStartGeneration++;
+            provider._sampling._startGeneration++;
         },
-        startLiveWatch: async () => {
+        start: async () => {
             restarted++;
         }
     });

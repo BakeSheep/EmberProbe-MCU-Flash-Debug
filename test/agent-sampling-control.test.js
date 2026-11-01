@@ -33,7 +33,7 @@ function fixture() {
         debug: {},
         workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) }
     };
-    const Provider = loadProvider(vscode, { "./liveWatch": { LiveWatchSession: Session } });
+    const Provider = loadProvider(vscode, { "./liveWatch": { ManagedOpenOcdSession: Session } });
     const provider = Object.create(Provider.prototype);
     const sidebar = [],
         chart = [];
@@ -50,12 +50,8 @@ function fixture() {
                 return { mode: "debug-running-waiting", canRead: false, source: "dap" };
             }
         },
-        _samplingIntent: false,
-        _liveIntervalMs: 100,
-        _liveConsumers: new Set(),
         _livePanels: new Map([["chart", { post: (message) => chart.push(message) }]]),
         _webviewView: { webview: { postMessage: (message) => sidebar.push(message) } },
-        _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
         _resolveOpenOcdPath: async () => "fake-openocd",
         _probeConnectionService: {
             prepare: async (_options, interactive) => {
@@ -67,6 +63,8 @@ function fixture() {
         _commandContext: () => ({}),
         _t: (key) => key
     });
+    Object.assign(provider._sampling, { intent: false, intervalMs: 100, consumers: new Set() });
+    Object.assign(provider._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
     return { provider, sidebar, chart };
 }
 
@@ -88,14 +86,14 @@ function fixture() {
     assert.deepStrictEqual(args(["--start", "--interval", "250"]).params, { intervalMs: 250 });
 
     const { provider: p, sidebar, chart } = fixture();
-    assert.strictEqual((await p._controlAgentSampling("status")).running, false);
+    assert.strictEqual((await p._agentOps.controlSampling("status")).running, false);
     assert.strictEqual(sidebar.length, 0, "status queries must not mutate UI state");
     for (const params of [null, [], "bad", { intervalMs: "100" }, { intervalMs: 0 }, { variables: [] }])
-        await assert.rejects(p._controlAgentSampling("start", params), { code: "INVALID_PARAMS" });
-    await assert.rejects(p._controlAgentSampling("stop", { intervalMs: 100 }), { code: "INVALID_PARAMS" });
-    assert.strictEqual(p._samplingIntent, false);
+        await assert.rejects(p._agentOps.controlSampling("start", params), { code: "INVALID_PARAMS" });
+    await assert.rejects(p._agentOps.controlSampling("stop", { intervalMs: 100 }), { code: "INVALID_PARAMS" });
+    assert.strictEqual(p._sampling.intent, false);
 
-    const started = await p._controlAgentSampling("start", { intervalMs: 250 });
+    const started = await p._agentOps.controlSampling("start", { intervalMs: 250 });
     assert.strictEqual(p.lastInteractive, false, "Agent sampling must not prompt");
     assert.strictEqual(started.running, true);
     assert.strictEqual(started.canRead, true);
@@ -107,21 +105,21 @@ function fixture() {
         "sidebar target is independent of the waveform target"
     );
     assert.strictEqual(chart.at(-1).frequencyHz, 4);
-    const session = p._liveSession;
-    await p._controlAgentSampling("start");
-    assert.strictEqual(p._liveSession, session, "repeated start reuses the connection");
+    const session = p._sampling.session;
+    await p._agentOps.controlSampling("start");
+    assert.strictEqual(p._sampling.session, session, "repeated start reuses the connection");
     assert.strictEqual(session.intervalMs, 250);
-    p._setSamplingArchiveBackpressure(true);
-    assert.strictEqual((await p._controlAgentSampling("status")).canRead, false);
-    p._setSamplingArchiveBackpressure(false);
+    p._sampling.setArchiveBackpressure(true);
+    assert.strictEqual((await p._agentOps.controlSampling("status")).canRead, false);
+    p._sampling.setArchiveBackpressure(false);
 
     // A user stop is reflected in Agent queries; an Agent stop is reflected in both UIs.
-    await p.stopLiveWatch();
-    assert.strictEqual((await p._controlAgentSampling("status")).running, false);
-    await p.startLiveWatch(undefined, 300, "sidebar");
-    assert.strictEqual((await p._controlAgentSampling("status")).intervalMs, 300);
-    const userSession = p._liveSession;
-    const stopped = await p._controlAgentSampling("stop");
+    await p._sampling.stop();
+    assert.strictEqual((await p._agentOps.controlSampling("status")).running, false);
+    await p._sampling.start(undefined, 300, "sidebar");
+    assert.strictEqual((await p._agentOps.controlSampling("status")).intervalMs, 300);
+    const userSession = p._sampling.session;
+    const stopped = await p._agentOps.controlSampling("stop");
     assert.strictEqual(userSession.stopped, true, "stop response waits for connection cleanup");
     assert.strictEqual(stopped.running, false);
     assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).running, false);
@@ -129,59 +127,59 @@ function fixture() {
         sidebar.filter((message) => message.type === "liveStatus").at(-1).intentEnabled,
         chart.at(-1).intentEnabled
     );
-    await p._controlAgentSampling("stop");
+    await p._agentOps.controlSampling("stop");
 
     const busy = p._probeCoordinator.acquire("download");
-    await assert.rejects(p._controlAgentSampling("start"), { i18nKey: "live.downloadRunning" });
-    assert.strictEqual(p._samplingIntent, false);
+    await assert.rejects(p._agentOps.controlSampling("start"), { i18nKey: "live.downloadRunning" });
+    assert.strictEqual(p._sampling.intent, false);
     busy.release();
     p._resolveOpenOcdPath = async () => null;
-    await assert.rejects(p._controlAgentSampling("start"), { i18nKey: "live.notReady" });
+    await assert.rejects(p._agentOps.controlSampling("start"), { i18nKey: "live.notReady" });
     assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).error, true);
-    assert.strictEqual(p._liveStarting, false);
-    await p._controlAgentSampling("stop");
+    assert.strictEqual(p._sampling.starting, false);
+    await p._agentOps.controlSampling("stop");
 
     // Stop during async startup must prevent the late continuation from reopening sampling.
     let resolveExecutable;
     p._resolveOpenOcdPath = () => new Promise((resolve) => (resolveExecutable = resolve));
-    const pending = p._controlAgentSampling("start");
-    assert.strictEqual((await p._controlAgentSampling("status")).starting, true);
-    const cancelling = p._controlAgentSampling("stop");
-    assert.strictEqual(p._liveStarting, true, "startup keeps its reservation until cancellation settles");
+    const pending = p._agentOps.controlSampling("start");
+    assert.strictEqual((await p._agentOps.controlSampling("status")).starting, true);
+    const cancelling = p._agentOps.controlSampling("stop");
+    assert.strictEqual(p._sampling.starting, true, "startup keeps its reservation until cancellation settles");
     resolveExecutable("fake-openocd");
     await cancelling;
     assert.strictEqual((await pending).running, false);
-    assert.strictEqual(p._liveWatchRunning, false);
+    assert.strictEqual(p._sampling.running, false);
 
     const { provider: q } = fixture();
-    q._activeReadPlan = () => [];
-    const empty = await q._controlAgentSampling("start");
+    q._sampling.activeReadPlan = () => [];
+    const empty = await q._agentOps.controlSampling("start");
     assert.strictEqual(empty.intentEnabled, true);
     assert.strictEqual(empty.canRead, false, "empty watch lists do not claim acquisition");
-    await q._controlAgentSampling("stop");
-    q._agentReadLease = q._probeCoordinator.acquire("agentRead");
-    const temporary = (q._agentReadSession = new Session());
-    q._postAgentSampling(true, "live.agentSampling");
-    await q._controlAgentSampling("stop");
+    await q._agentOps.controlSampling("stop");
+    q._agentOps._readLease = q._probeCoordinator.acquire("agentRead");
+    const temporary = (q._agentOps.readSession = new Session());
+    q._agentOps._postSampling(true, "live.agentSampling");
+    await q._agentOps.controlSampling("stop");
     assert.strictEqual(temporary.stopped, true);
-    assert.strictEqual(q._agentReadRunning, false);
-    assert.strictEqual(q._agentSamplingStatus, null);
+    assert.strictEqual(q._agentOps.readRunning, false);
+    assert.strictEqual(q._agentOps._samplingStatus, null);
 
     // Shared debugging stays alive while Agent disables acquisition and clears restart intent.
     q._debugBridge.hasSession = true;
-    q._managedDebugServer = {
+    q.debugLaunch.managedServer = {
         samplingEnabled: true,
         setSamplingEnabled(value) {
             this.samplingEnabled = value;
             return value;
         }
     };
-    await q._controlAgentSampling("start");
-    await q._controlAgentSampling("stop");
+    await q._agentOps.controlSampling("start");
+    await q._agentOps.controlSampling("stop");
     assert.strictEqual(q._debugBridge.hasSession, true);
     assert.strictEqual(q._debugBridge.intentEnabled, false);
-    assert.strictEqual(q._managedDebugServer.samplingEnabled, false);
-    assert.strictEqual((await q._controlAgentSampling("status")).running, false);
+    assert.strictEqual(q.debugLaunch.managedServer.samplingEnabled, false);
+    assert.strictEqual((await q._agentOps.controlSampling("status")).running, false);
 
     await scenario("Cancel Agent reads during connection preparation and port resolution", async () => {
         const { DebugLifecycle } = require("../src/services/debugLifecycle");
@@ -197,7 +195,7 @@ function fixture() {
             const sessions = [],
                 statuses = [];
             class Session {
-                constructor(_vscode, _options, events) {
+                constructor(_options, events) {
                     this.events = events;
                     sessions.push(this);
                 }
@@ -214,30 +212,32 @@ function fixture() {
             }
             const P = loadProvider(
                 { debug: {}, workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) } },
-                { "./liveWatch": { LiveWatchSession: Session } }
+                { "./liveWatch": { ManagedOpenOcdSession: Session } }
             );
             const p = Object.create(P.prototype);
             Object.assign(p, {
                 _probeCoordinator: new ProbeCoordinator(),
                 _samplingCoordinator: new SamplingCoordinator(),
-                _debugLifecycle: new DebugLifecycle(),
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
-                _liveConsumers: new Set(),
-                _activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }],
-                _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
                 _resolveTclPort: async () => 1234,
                 _resolveOpenOcdPath: async () => "fake",
                 _postConsumerStatuses: (status) => statuses.push(status),
-                _postLive() {},
-                _postAgentSampling() {},
-                _handleRawSamples: () => {
+                _postLive() {}
+            });
+            Object.assign(p._agentOps, { _postSampling() {} });
+            Object.assign(p.debugLaunch, { lifecycle: new DebugLifecycle() });
+            Object.assign(p._sampling, {
+                consumers: new Set(),
+                setIntervalMs() {},
+                handleRawSamples: () => {
                     throw Error("Late sample accepted");
                 }
             });
+            Object.assign(p._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
             return { p, sessions, statuses };
         }
         for (const phase of ["prepare", "port"]) {
@@ -245,12 +245,12 @@ function fixture() {
                 gate = deferred();
             if (phase === "prepare") fixture.p._probeConnectionService.prepare = () => gate.promise;
             else fixture.p._resolveTclPort = () => gate.promise;
-            const read = fixture.p._withAgentProbe(async () => {
+            const read = fixture.p._agentOps.withProbe(async () => {
                 throw Error("Cancelled handler ran");
             });
             const rejected = assert.rejects(read, { code: "AGENT_READ_CANCELLED" });
             await tick();
-            const cancelled = fixture.p.stopAgentReadIfRunning();
+            const cancelled = fixture.p._agentOps.stopReadIfRunning();
             gate.resolve(phase === "prepare" ? {} : 1234);
             await Promise.all([rejected, cancelled]);
             assert.strictEqual(fixture.sessions.length, 0);
@@ -315,8 +315,8 @@ function fixture() {
         const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve("hung"), ms).unref());
         // Two variables.sample calls sharing a live connection: the shorter wait used to clear the longer one's
         // timer and drop its resolver, leaving the second call pending forever.
-        const long = host._waitAgentInterval(40).then(() => "done");
-        const short = host._waitAgentInterval(5).then(() => "done");
+        const long = host._agentOps._waitInterval(40).then(() => "done");
+        const short = host._agentOps._waitInterval(5).then(() => "done");
         assert.strictEqual(await short, "done");
         assert.strictEqual(await Promise.race([long, timeout(1000)]), "done");
 
@@ -324,10 +324,10 @@ function fixture() {
         const started = Date.now();
         const temporaryRun = { temporary: true, cancelled: false, wake: null };
         const sharedRun = { temporary: false, cancelled: false, wake: null };
-        host._agentSampleRuns = new Set([temporaryRun, sharedRun]);
-        const temporary = host._waitAgentInterval(60000, temporaryRun).then(() => "woken");
-        const shared = host._waitAgentInterval(30, sharedRun).then(() => Date.now() - started);
-        host._wakeAgentReadDelays();
+        host._agentOps._sampleRuns = new Set([temporaryRun, sharedRun]);
+        const temporary = host._agentOps._waitInterval(60000, temporaryRun).then(() => "woken");
+        const shared = host._agentOps._waitInterval(30, sharedRun).then(() => Date.now() - started);
+        host._agentOps._wakeReadDelays();
         assert.strictEqual(await Promise.race([temporary, timeout(1000)]), "woken");
         assert.ok((await shared) >= 25, "a shared-connection wait keeps its interval");
         assert.strictEqual(sharedRun.cancelled, false);
@@ -340,38 +340,48 @@ function fixture() {
         let reads = 0;
         const stops = [];
         Object.assign(host, {
-            _prepareRequestedLayouts: async () => {},
-            _agentVariablePlan: () => ({ elfResult: { elf: {} }, plan: [], compositePlan: [], variableErrors: [] }),
-            _runtimeReadRanges: () => [],
-            _decodeAgentSample: () => ({ timestamp: reads }),
-            _firmwareConsistency: () => ({}),
+            readElfSymbols: () => ({
+                elf: {},
+                symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
+            })
             // A live-sampling (or debug server) connection is reused, not a temporary probe session.
-            _withAgentProbe: (handler) =>
+        });
+        Object.assign(host._agentOps, {
+            withProbe: (handler) =>
                 handler({
                     session: { readOnce: async () => (reads++, []) },
                     source: "live-sampling",
                     temporary: false
                 }),
-            stopAgentReadIfRunning: () => (stops.push("agent"), null),
-            stopLiveWatch: async () => stops.push("live"),
-            _samplingStatus: () => ({ running: false }),
-            _liveIntervalMs: 100
+            stopReadIfRunning: () => (stops.push("agent"), null)
         });
-        const sampling = host._sampleAgentVariables({ variables: [{ name: "tick" }], count: 1000, intervalMs: 60000 });
+        Object.assign(host._writes, { firmwareConsistency: () => ({}) });
+        Object.assign(host._elfView, { prepareLayouts: async () => {} });
+        Object.assign(host._sampling, {
+            stop: async () => stops.push("live"),
+            status: () => ({ running: false }),
+            intervalMs: 100
+        });
+        Object.assign(host._sampling, { runtimeReadRanges: () => [] });
+        const sampling = host._agentOps.sampleVariables({
+            variables: [{ name: "tick" }],
+            count: 1000,
+            intervalMs: 60000
+        });
         const outcome = sampling.then(
             () => "completed",
             (error) => error.code
         );
         await new Promise((resolve) => setImmediate(resolve));
         assert.strictEqual(reads, 1, "the first sample is read before the interval wait");
-        await host._controlAgentSampling("stop");
+        await host._agentOps.controlSampling("stop");
         assert.strictEqual(
             await Promise.race([outcome, new Promise((r) => setTimeout(() => r("hung"), 1000).unref())]),
             "AGENT_READ_CANCELLED"
         );
         assert.strictEqual(reads, 1, "no sample is read after the stop");
         assert.deepStrictEqual(stops, ["agent", "live"]);
-        assert.strictEqual(host._agentSampleRuns.size, 0);
+        assert.strictEqual(host._agentOps._sampleRuns.size, 0);
     });
 
     console.log("Agent sampling control and shared UI state tests passed");

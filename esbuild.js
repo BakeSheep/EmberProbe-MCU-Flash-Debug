@@ -19,26 +19,6 @@ const extensionBuild = esbuild.build({
     legalComments: "eof"
 });
 
-function webviewBuild(area) {
-    return esbuild.build({
-        absWorkingDir: __dirname,
-        entryPoints: [
-            path.join(__dirname, "src", "webview", area, "renderer.js"),
-            ...(area === "liveWatch" ? [path.join(__dirname, "src", "webview", area, "viewport.js")] : []),
-            path.join(__dirname, "src", "webview", area, "app.css")
-        ],
-        bundle: true,
-        outdir: path.join(__dirname, "dist", "webview", area),
-        platform: "browser",
-        banner: { js: require("./src/webviewTemplate").loadRendererPrelude(area) },
-        format: "iife",
-        target: "es2020",
-        minify: false,
-        sourcemap: false,
-        legalComments: "none"
-    });
-}
-
 const samplingBuild = esbuild.build({
     absWorkingDir: __dirname,
     entryPoints: [path.join(__dirname, "src", "samplingWorker.js")],
@@ -139,17 +119,7 @@ function writeBuildInfo() {
     );
 }
 
-Promise.all([
-    extensionBuild,
-    samplingBuild,
-    chartHistoryBuild,
-    elfBuild,
-    svdBuild,
-    debugBuild,
-    mcpBuild,
-    webviewBuild("sidebar"),
-    webviewBuild("liveWatch")
-])
+Promise.all([extensionBuild, samplingBuild, chartHistoryBuild, elfBuild, svdBuild, debugBuild, mcpBuild])
     .then(() => {
         stageSamplingTimer();
         writeBuildInfo();

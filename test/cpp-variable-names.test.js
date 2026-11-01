@@ -153,7 +153,7 @@ try {
     graph.document.querySelector(".imp-arrow").click();
     assert.strictEqual(graph.document.querySelector(".imp-leaf-name").title, readablePath);
     graph.document.getElementById("addName").value = "app::g_plant";
-    graph.window.renderAutocomplete();
+    graph.window.eval("variableEntry").render();
     assert.strictEqual(graph.document.querySelector(".ac-name").title, "app::g_plant");
     graph.window.showArraySelectDialog({ ...plant, compositeLayout: { kind: "array", totalElements: 2 } }, () => {});
     assert(graph.document.querySelector(".array-panel h4").textContent.includes("app::g_plant[2]"));
@@ -211,14 +211,20 @@ try {
     assert.strictEqual(nested.document.getElementById("curveTooltip").textContent, ".bus_voltage_v: 11.49");
     assert.strictEqual(nested.document.querySelector(".curve-hit").dataset.rawName, voltageName);
     nested.send({ type: "chartValues", samples: [{ name: voltageName, value: 11.4875, t: 1000 }], t: 1000 });
-    assert.strictEqual(nested.window.latest[voltageName], 11.4875, "display changes preserve the sampling identity");
-    nested.window.showArchiveExport({ variables: [voltageName], firstTimestampMs: 1000, lastTimestampMs: 1000 });
+    assert.strictEqual(
+        nested.window.eval("state").latest[voltageName],
+        11.4875,
+        "display changes preserve the sampling identity"
+    );
+    nested.window
+        .eval("exportDialog")
+        .show({ variables: [voltageName], firstTimestampMs: 1000, lastTimestampMs: 1000 });
     assert.strictEqual(nested.document.querySelector("#exportSeries span").textContent, "pwr.data_.bus_voltage_v");
-    nested.window.applyExport();
+    nested.window.eval("exportDialog").apply();
     let csv = nested.messages.findLast((message) => message.type === "exportCsv");
     assert.deepStrictEqual(Array.from(csv.names), [voltageName]);
     nested.window.freezeChart();
-    nested.window.showExport();
+    nested.window.eval("exportDialog").open();
     assert.strictEqual(nested.messages.at(-1).type, "samplingArchiveInfo");
     nested.send({
         type: "samplingArchiveInfo",
@@ -228,9 +234,9 @@ try {
         firstTimestampMs: 1000,
         lastTimestampMs: 1000
     });
-    nested.window.applyExport();
+    nested.window.eval("exportDialog").apply();
     assert.strictEqual(nested.messages.at(-1).type, "exportCsv", "frozen charts export from the archive too");
-    nested.window.showArchiveExport({
+    nested.window.eval("exportDialog").show({
         variables: [voltageName, "removed"],
         displayNames: { [voltageName]: "pwr.data_.bus_voltage_v", removed: "app::removed" },
         firstTimestampMs: 1000,
@@ -240,7 +246,7 @@ try {
         Array.from(nested.document.querySelectorAll("#exportSeries span"), (el) => el.textContent),
         ["pwr.data_.bus_voltage_v", "app::removed"]
     );
-    nested.window.applyExport();
+    nested.window.eval("exportDialog").apply();
     csv = nested.messages.findLast((message) => message.type === "exportCsv");
     assert.deepStrictEqual(Array.from(csv.names), [voltageName, "removed"], "export selects raw identities");
     nested.assertHealthy();

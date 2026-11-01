@@ -4,6 +4,16 @@ const { render } = require("./helpers/render-webview");
 const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+// Each page evaluates every prelude module exactly once (the bundled extension serves the same script text).
+for (const [page, html] of [
+    ["sidebar", getModernWebviewContent({}, "en")],
+    ["live watch", getLiveWatchContent({ panelId: 1 }, "en")]
+]) {
+    const counts = {};
+    for (const [, name] of html.matchAll(/root\.(Ember\w+) = /g)) counts[name] = (counts[name] || 0) + 1;
+    assert.ok(Object.keys(counts).length >= 5, `${page} declares its prelude modules`);
+    for (const [name, count] of Object.entries(counts)) assert.strictEqual(count, 1, `${page} evaluates ${name} once`);
+}
 const sidebar = render(
     getModernWebviewContent({ elf: "<script>evil()</script>", debugger: "stlink.cfg", mcu: "stm32f4x.cfg" }, "en")
 );
@@ -14,7 +24,7 @@ try {
         [[0, 100, 70, -30], { min: -100, max: 0 }],
         [[0, 100, 30, 60], { min: 0, max: 100 }]
     ])
-        assert.deepStrictEqual({ ...sidebar.window.shiftSliderBounds(...input) }, expected);
+        assert.deepStrictEqual({ ...sidebar.window.EmberProbeWriteList.shiftSliderBounds(...input) }, expected);
     assert.ok(sidebar.messages.some((m) => m.type === "initCheck"));
     for (const id of [
         "liveValues",
@@ -563,7 +573,7 @@ try {
     graph.assertHealthy();
     assert.ok(graph.messages.some((m) => m.type === "ready" && m.panelId === 2));
     assert.strictEqual(graph.window.__CFG__.frequencyHz, 200, "requested rates are clamped to the 200 Hz maximum");
-    assert.ok(graph.document.body.textContent.includes("Sampling frequency"));
+    assert.strictEqual(graph.document.getElementById("frequencyLabel").textContent, "Sampling rate");
     graph.send({ type: "watchList", items: [{ name: "tick", type: "u32", address: 536870912 }] });
     graph.document.getElementById("importSidebar").click();
     assert.deepStrictEqual(graph.messages.at(-1), {

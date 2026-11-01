@@ -29,12 +29,12 @@ function setup() {
     const coordinator = new ProbeCoordinator();
     p._probeCoordinator = coordinator;
     p._debugBridge = new DebugSessionBridge();
-    p._debugLifecycle = new DebugLifecycle();
-    p._terminatedDebugSessionIds = new Set();
-    p._debugSessionReleases = new Map();
+    p.debugLaunch.lifecycle = new DebugLifecycle();
+    p.debugLaunch.terminatedSessionIds = new Set();
+    p.debugLaunch.sessionReleases = new Map();
     p._t = (key) => key;
     let restored = 0;
-    p.restoreSamplingAfterDebug = async () => restored++;
+    p.debugLaunch.restoreSampling = async () => restored++;
     let finishStop;
     const server = {
         stops: 0,
@@ -46,22 +46,22 @@ function setup() {
             });
         }
     };
-    p._debugServerLease = coordinator.acquire("debugStart").transition("debugServer");
-    p._managedDebugServer = server;
-    p._managedDebugToken = "token";
-    p._managedDebugSessionId = "s1";
+    p.debugLaunch.serverLease = coordinator.acquire("debugStart").transition("debugServer");
+    p.debugLaunch.managedServer = server;
+    p.debugLaunch.managedToken = "token";
+    p.debugLaunch.managedSessionId = "s1";
     const session = { id: "s1", type: "emberprobe", configuration: { __emberprobeManagedToken: "token" } };
     p._debugBridge.attach(session);
     vscodeDebug.activeDebugSession = session;
     // The adapter-exit tracker runs the terminate handler without awaiting it, as extension.js does.
     const stopDebugging = (target) => {
-        vscodeDebug.terminating = p.handleDebugSessionTerminate(target);
+        vscodeDebug.terminating = p.debugLaunch.handleSessionTerminate(target);
         return Promise.resolve(true);
     };
     const service = new DebugControlService({
         vscode: { debug: { stopDebugging } },
         debugBridge: p._debugBridge,
-        waitForRelease: (target) => p._debugSessionReleased(target)
+        waitForRelease: (target) => p.debugLaunch.sessionReleased(target)
     });
     return {
         p,
@@ -96,29 +96,29 @@ function track(promise) {
         assert.strictEqual(state.settled, false, "debug.stop must not resolve while the probe lease is held");
         // VS Code has not cleared activeDebugSession yet, but the torn-down session no longer counts as busy.
         assert.strictEqual(vscodeDebug.activeDebugSession, session);
-        assert.strictEqual(p._liveDebugSession(), null);
+        assert.strictEqual(p.debugLaunch.liveSession(), null);
 
         finishStop().resolve(true);
         const result = await stopping;
         assert.strictEqual(result.status.state, "none");
         assert.deepStrictEqual(Object.values(coordinator.snapshot()).filter(Boolean), []);
-        assert.strictEqual(p._managedDebugServer, null);
+        assert.strictEqual(p.debugLaunch.managedServer, null);
         await vscodeDebug.terminating;
         assert.strictEqual(restored(), 1);
-        assert.strictEqual(p._debugSessionReleased(session), undefined);
+        assert.strictEqual(p.debugLaunch.sessionReleased(session), undefined);
 
         // The next Agent probe operation (attach.prepare reads a variable) proceeds past the
         // busy checks even though VS Code still reports the stopped session as active.
         p._context = { workspaceState: { get: () => undefined } };
         p._probeConnectionService = { resolveProbe: async () => null };
         await assert.rejects(
-            p._withAgentProbe(async () => "read"),
+            p._agentOps.withProbe(async () => "read"),
             (error) => error.code === "CONFIG_INCOMPLETE"
         );
         assert.strictEqual(coordinator.anyActive(), false, "the Agent read lease was released");
 
         // VS Code's own terminate event arrives afterwards and must not stop OpenOCD twice.
-        await p.handleDebugSessionTerminate(session);
+        await p.debugLaunch.handleSessionTerminate(session);
         assert.strictEqual(server.stops, 1);
         assert.strictEqual(restored(), 1);
     });
@@ -136,7 +136,7 @@ function track(promise) {
         await assert.rejects(stopping, (error) => error.code === "DEBUG_SERVER_STOP_FAILED");
         await assert.rejects(terminating, (error) => error.code === "DEBUG_SERVER_STOP_FAILED");
         assert.strictEqual(coordinator.isActive("debugServer"), true, "an unconfirmed exit keeps the probe owned");
-        assert.strictEqual(p._managedDebugServer, server, "the server stays reachable for a retry");
+        assert.strictEqual(p.debugLaunch.managedServer, server, "the server stays reachable for a retry");
         assert.strictEqual(restored(), 0);
         assert.strictEqual(service.controlInFlight, null);
     });
@@ -145,8 +145,8 @@ function track(promise) {
         "the next debug start retries an unconfirmed OpenOCD stop instead of reporting the probe busy",
         async () => {
             const { p, coordinator, server, service, vscodeDebug, finishStop } = setup();
-            p._assertProbeDriverIdle = () => {};
-            p.stopAgentReadIfRunning = () => null;
+            p._connectedProbes.assertDriverIdle = () => {};
+            p._agentOps.stopReadIfRunning = () => null;
             const stopping = service.control({ action: "stop" });
             await ticks();
             const terminating = vscodeDebug.terminating;
@@ -156,34 +156,34 @@ function track(promise) {
             await assert.rejects(terminating);
 
             // A retry that still cannot confirm the exit keeps the probe owned and reports why.
-            const failedRetry = p.prepareProbeForDebug({ uri: {} });
+            const failedRetry = p.debugLaunch.prepareProbe({ uri: {} });
             await ticks();
             finishStop().reject(Object.assign(new Error("unconfirmed"), { code: "DEBUG_SERVER_STOP_FAILED" }));
             await assert.rejects(failedRetry, (error) => error.code === "DEBUG_SERVER_STOP_FAILED");
-            assert.strictEqual(p._managedDebugServer, server);
+            assert.strictEqual(p.debugLaunch.managedServer, server);
             assert.strictEqual(coordinator.isActive("debugServer"), true);
 
-            const retry = p.prepareProbeForDebug({ uri: {} });
+            const retry = p.debugLaunch.prepareProbe({ uri: {} });
             await ticks();
             assert.strictEqual(server.stops, 3);
             finishStop().resolve(true);
             await retry;
-            assert.strictEqual(p._managedDebugServer, null);
+            assert.strictEqual(p.debugLaunch.managedServer, null);
             assert.strictEqual(coordinator.isActive("debugServer"), false, "the retried stop releases the probe lease");
         }
     );
 
     await scenario("a running managed debug server still blocks another debug start", async () => {
         const { p, server } = setup();
-        p._assertProbeDriverIdle = () => {};
+        p._connectedProbes.assertDriverIdle = () => {};
         server.state = "ready";
-        await assert.rejects(p.prepareProbeForDebug({ uri: {} }), (error) => error.code === "PROBE_BUSY");
+        await assert.rejects(p.debugLaunch.prepareProbe({ uri: {} }), (error) => error.code === "PROBE_BUSY");
         assert.strictEqual(server.stops, 0);
     });
 
     await scenario("debug.stop of a session without managed OpenOCD resolves once it is gone", async () => {
         const { p, coordinator, server, service } = setup();
-        p._managedDebugSessionId = "";
+        p.debugLaunch.managedSessionId = "";
         const result = await service.control({ action: "stop" });
         assert.strictEqual(result.status.state, "none");
         assert.strictEqual(server.stops, 0);
@@ -194,9 +194,9 @@ function track(promise) {
         const { p, vscodeDebug } = setup();
         const foreign = { id: "other", type: "python" };
         vscodeDebug.activeDebugSession = foreign;
-        assert.strictEqual(p._liveDebugSession(), foreign);
-        p._terminatedDebugSessionIds.add("s1");
-        assert.strictEqual(p._liveDebugSession(), foreign);
+        assert.strictEqual(p.debugLaunch.liveSession(), foreign);
+        p.debugLaunch.terminatedSessionIds.add("s1");
+        assert.strictEqual(p.debugLaunch.liveSession(), foreign);
     });
 
     console.log("debug stop release tests passed");

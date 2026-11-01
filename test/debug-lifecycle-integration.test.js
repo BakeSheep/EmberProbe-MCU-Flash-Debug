@@ -87,12 +87,11 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
     Object.assign(provider, {
         _samplingCoordinator: coordinator,
         _debugBridge: bridge,
-        _managedDebugServer: server,
-        _samplingIntent: true,
         _livePanels: new Map([["chart", { post: (message) => messages.push(message) }]]),
-        _webviewView: { webview: { postMessage: (message) => messages.push(message) } },
-        _unlimitedSamplingEnabled: () => false
+        _webviewView: { webview: { postMessage: (message) => messages.push(message) } }
     });
+    Object.assign(provider.debugLaunch, { managedServer: server });
+    Object.assign(provider._sampling, { intent: true, unlimitedEnabled: () => false });
     provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true });
     assert(
         messages.every((message) => message.type === "liveStatus" && message.canWrite && message.haltWrite === false)
@@ -105,16 +104,16 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
     provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true, haltWrite: true });
     assert.deepStrictEqual(access(messages.at(-1)), [false, false]);
     coordinator.setBackpressure(false);
-    provider._liveConnectionClosing = true;
-    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
-    provider._liveConnectionClosing = false;
+    provider._sampling.closing = true;
+    assert.deepStrictEqual(access(provider._sampling.status()), [false, false]);
+    provider._sampling.closing = false;
     server.options = { settingsIdentity: {} };
     provider._probeConnectionService = {
         assertCurrent() {
             throw Error("Connection settings changed");
         }
     };
-    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
+    assert.deepStrictEqual(access(provider._sampling.status()), [false, false]);
     delete server.options;
 
     // Scoped so these debug fixtures do not clash with the sampling fixtures above.
@@ -215,14 +214,14 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._probeCoordinator = new ProbeCoordinator();
         p._samplingCoordinator = new SamplingCoordinator();
         p._debugBridge = new DebugSessionBridge();
-        p._debugLifecycle = lifecycle;
-        p._samplingIntent = true;
-        p._agentSamplingStatus = null;
-        p._managedDebugToken = "token";
-        p._managedDebugSessionId = "";
-        p._terminatedDebugSessionIds = new Set();
-        p._activeReadPlan = () => [];
-        p._configureManagedRuntimeWatch = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+        p.debugLaunch.lifecycle = lifecycle;
+        p._sampling.intent = true;
+        p._agentOps._samplingStatus = null;
+        p.debugLaunch.managedToken = "token";
+        p.debugLaunch.managedSessionId = "";
+        p.debugLaunch.terminatedSessionIds = new Set();
+        p._sampling.activeReadPlan = () => [];
+        p._sampling.configureManagedRuntimeWatch = () => [{ name: "tick", address: 0x20000000, size: 4 }];
         p._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
         const server = {
             samplingEnabled: true,
@@ -236,7 +235,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 this.deliveryHold = held;
             }
         };
-        p._managedDebugServer = server;
+        p.debugLaunch.managedServer = server;
         const session = {
             id: "current",
             type: "emberprobe",
@@ -244,8 +243,8 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             workspaceFolder: { uri: { toString: () => "workspace" } }
         };
         try {
-            p.handleDebugSessionStart(session);
-            assert.strictEqual(p._managedDebugSessionId, "current");
+            p.debugLaunch.handleSessionStart(session);
+            assert.strictEqual(p.debugLaunch.managedSessionId, "current");
             assert.strictEqual(server.samplingEnabled, false);
             p._samplingCoordinator.setRuntimeEnabled(server, true, p._debugBridge);
             const messages = [];
@@ -257,24 +256,24 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             assert.deepStrictEqual([liveStatus.canWrite, liveStatus.haltWrite], [true, false]);
             p._livePanels = new Map();
             p._postConsumerStatuses = () => {};
-            p._setSamplingArchiveBackpressure(true);
-            await p._refreshSamplingPlan();
+            p._sampling.setArchiveBackpressure(true);
+            await p._sampling.refreshSamplingPlan();
             // Runtime sampling runs in the Worker: it keeps acquiring and only holds delivery.
             assert.strictEqual(server.samplingEnabled, true);
             assert.strictEqual(server.deliveryHold, true);
             assert.strictEqual(p._debugBridge.intentEnabled, false);
             let stopped = 0,
                 restored = 0;
-            p._stopManagedDebugServer = async () => {
+            p.debugLaunch.stopManagedServer = async () => {
                 stopped++;
-                p._managedDebugServer = null;
+                p.debugLaunch.managedServer = null;
             };
-            p.restoreSamplingAfterDebug = async () => restored++;
-            await p.handleDebugSessionTerminate(session);
+            p.debugLaunch.restoreSampling = async () => restored++;
+            await p.debugLaunch.handleSessionTerminate(session);
             assert.strictEqual(stopped, 1);
             assert.strictEqual(restored, 1);
-            await p.handleDebugSessionTerminate(session);
-            p.handleDebugSessionStart(session);
+            await p.debugLaunch.handleSessionTerminate(session);
+            p.debugLaunch.handleSessionStart(session);
             assert.strictEqual(p._debugBridge.hasAnySession, false);
             assert.strictEqual(stopped, 1);
         } finally {
@@ -287,11 +286,11 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         q._debugBridge = { setWorkspace: () => {} };
         q._commandContext = () => ({});
         q._probeCoordinator = new ProbeCoordinator();
-        q._liveSession = {};
+        q._sampling.session = {};
         q._postConsumerStatuses = () => {};
-        q.stopAgentReadIfRunning = () => Promise.resolve().then(() => events.push("agent-stopped"));
-        q.stopLiveWatch = () => Promise.resolve().then(() => events.push("live-stopped"));
-        await q.prepareProbeForDebug();
+        q._agentOps.stopReadIfRunning = () => Promise.resolve().then(() => events.push("agent-stopped"));
+        q._sampling.stop = () => Promise.resolve().then(() => events.push("live-stopped"));
+        await q.debugLaunch.prepareProbe();
         assert.deepStrictEqual(events, ["agent-stopped", "live-stopped"]);
 
         // Provider integration test: DAP initialized then launch failure triggers idempotent cleanup
@@ -301,25 +300,25 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._probeCoordinator = new ProbeCoordinator();
             prov._samplingCoordinator = new SamplingCoordinator();
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "test-token";
-            prov._terminatedDebugSessionIds = new Set();
-            prov._debugStartupErrorReported = false;
-            prov._debugStartupFailureCleanedUp = false;
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "test-token";
+            prov.debugLaunch.terminatedSessionIds = new Set();
+            prov.debugLaunch.startupErrorReported = false;
+            prov.debugLaunch.startupFailureCleanedUp = false;
             prov._t = (key) => key;
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
             prov._commandContext = () => ({ folder: null });
-            prov._managedDebugServer = { setSamplingEnabled: () => {} };
+            prov.debugLaunch.managedServer = { setSamplingEnabled: () => {} };
 
             const webviewMessages = [];
             prov._webviewView = { webview: { postMessage: (msg) => webviewMessages.push(msg) } };
 
             let stoppedServerCount = 0;
             let restoredSamplingCount = 0;
-            prov._stopManagedDebugServer = async () => {
+            prov.debugLaunch.stopManagedServer = async () => {
                 stoppedServerCount++;
             };
-            prov.restoreSamplingAfterDebug = async () => {
+            prov.debugLaunch.restoreSampling = async () => {
                 restoredSamplingCount++;
             };
 
@@ -329,18 +328,18 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
-            const gate = prov._armDebugStartupWatchdog();
-            prov.handleDebugSessionStart(sess);
-            assert.strictEqual(prov._managedDebugSessionId, sess.id);
+            const gate = prov.debugLaunch.armStartupWatchdog();
+            prov.debugLaunch.handleSessionStart(sess);
+            assert.strictEqual(prov.debugLaunch.managedSessionId, sess.id);
             stoppedSessions.length = 0;
 
             // Step 1: Initialized event arrives
-            prov.handleDebugAdapterMessage(sess, { type: "event", event: "initialized" });
-            assert.strictEqual(prov._debugLifecycle.pending, true);
+            prov.debugLaunch.handleAdapterMessage(sess, { type: "event", event: "initialized" });
+            assert.strictEqual(prov.debugLaunch.lifecycle.pending, true);
             assert.strictEqual(stoppedServerCount, 0);
 
             // Step 2: Launch failure response arrives
-            prov.handleDebugAdapterMessage(sess, {
+            prov.debugLaunch.handleAdapterMessage(sess, {
                 type: "response",
                 command: "launch",
                 success: false,
@@ -357,10 +356,10 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             );
             assert.strictEqual(errors.length, 1);
             assert.strictEqual(errors[0].notice.message, "Target voltage too low");
-            assert.strictEqual(prov._debugLifecycle.session, null);
+            assert.strictEqual(prov.debugLaunch.lifecycle.session, null);
 
             // The command observes the cleared lifecycle, so cleanup must recover the original session from the bridge.
-            await prov._handleDebugStartupFailure(prov._debugLifecycle.session, gateOutcome.message);
+            await prov.debugLaunch.handleStartupFailure(prov.debugLaunch.lifecycle.session, gateOutcome.message);
             assert.strictEqual(stoppedSessions.length, 1);
             assert.strictEqual(stoppedSessions[0], sess);
             assert.strictEqual(prov._debugBridge.hasAnySession, false);
@@ -368,7 +367,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             assert.strictEqual(restoredSamplingCount, 1);
 
             // Idempotent: repeated calls must NOT repeat cleanup
-            await prov._handleDebugStartupFailure(sess, gateOutcome.message);
+            await prov.debugLaunch.handleStartupFailure(sess, gateOutcome.message);
             assert.strictEqual(stoppedServerCount, 1);
             assert.strictEqual(restoredSamplingCount, 1);
 
@@ -383,12 +382,12 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             const coordinator = new ProbeCoordinator();
             prov._probeCoordinator = coordinator;
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "managed-token";
-            prov._managedDebugSessionId = "";
-            prov._terminatedDebugSessionIds = new Set();
-            prov._debugStartupErrorReported = false;
-            prov._debugStartupFailureCleanedUp = false;
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "managed-token";
+            prov.debugLaunch.managedSessionId = "";
+            prov.debugLaunch.terminatedSessionIds = new Set();
+            prov.debugLaunch.startupErrorReported = false;
+            prov.debugLaunch.startupFailureCleanedUp = false;
             prov._t = (key) => key;
             const unrelated = {
                 id: "other-session",
@@ -399,21 +398,21 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             activeDebugSession = unrelated;
             stoppedSessions.length = 0;
             let stoppedServer = false;
-            prov._debugServerLease = coordinator.acquire("debugServer");
-            prov._managedDebugServer = {
+            prov.debugLaunch.serverLease = coordinator.acquire("debugServer");
+            prov.debugLaunch.managedServer = {
                 setSamplingEnabled: () => {},
                 stop: async () => {
                     stoppedServer = true;
                 }
             };
-            prov.restoreSamplingAfterDebug = async () => {};
+            prov.debugLaunch.restoreSampling = async () => {};
             const gate = lc.arm(10);
 
-            await prov._handleDebugStartupFailure(null, "launch failed");
+            await prov.debugLaunch.handleStartupFailure(null, "launch failed");
             assert.strictEqual((await gate).kind, "failed");
             assert.strictEqual(stoppedSessions.length, 0);
             assert.strictEqual(prov._debugBridge.allSessions.get(unrelated.id), unrelated);
-            assert.strictEqual(prov._terminatedDebugSessionIds.has(unrelated.id), false);
+            assert.strictEqual(prov.debugLaunch.terminatedSessionIds.has(unrelated.id), false);
             assert.strictEqual(stoppedServer, true);
             assert.strictEqual(coordinator.isActive("debugServer"), false);
 
@@ -428,9 +427,9 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             const lc = new DebugLifecycle({ schedule: () => 1, cancel: () => {} });
             prov._probeCoordinator = new ProbeCoordinator();
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "test-token";
-            prov._terminatedDebugSessionIds = new Set();
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "test-token";
+            prov.debugLaunch.terminatedSessionIds = new Set();
             prov._t = (key) => key;
 
             let successRecorded = 0;
@@ -439,7 +438,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                     successRecorded++;
                 }
             };
-            prov._managedDebugServer = { options: { probe: "jlink.cfg" } };
+            prov.debugLaunch.managedServer = { options: { probe: "jlink.cfg" } };
 
             const sess = {
                 id: "sess-succ",
@@ -447,21 +446,21 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
-            const gate = prov._armDebugStartupWatchdog();
-            prov._debugLifecycle.session = sess;
+            const gate = prov.debugLaunch.armStartupWatchdog();
+            prov.debugLaunch.lifecycle.session = sess;
 
             // Launch response arrives first
-            prov.handleDebugAdapterMessage(sess, {
+            prov.debugLaunch.handleAdapterMessage(sess, {
                 type: "response",
                 command: "launch",
                 success: true
             });
             assert.strictEqual(successRecorded, 1);
-            assert.strictEqual(prov._debugLifecycle.pending, true);
+            assert.strictEqual(prov.debugLaunch.lifecycle.pending, true);
 
             // Initialized arrives second
-            prov.handleDebugAdapterMessage(sess, { type: "event", event: "initialized" });
-            assert.strictEqual(prov._debugLifecycle.pending, false);
+            prov.debugLaunch.handleAdapterMessage(sess, { type: "event", event: "initialized" });
+            assert.strictEqual(prov.debugLaunch.lifecycle.pending, false);
             const gateOutcome = await gate;
             assert.strictEqual(gateOutcome.kind, "ready");
 
@@ -484,19 +483,19 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._probeCoordinator = coordinator;
             prov._samplingCoordinator = new SamplingCoordinator();
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "test-token";
-            prov._terminatedDebugSessionIds = new Set();
-            prov._debugCommandPending = true;
-            prov._debugStartupErrorReported = false;
-            prov._debugStartupFailureCleanedUp = false;
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "test-token";
+            prov.debugLaunch.terminatedSessionIds = new Set();
+            prov.debugLaunch.commandPending = true;
+            prov.debugLaunch.startupErrorReported = false;
+            prov.debugLaunch.startupFailureCleanedUp = false;
             prov._t = (key) => key;
             prov._postConsumerStatuses = () => {};
             prov._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
 
             // P2 setup: Acquire debugServer lease
-            prov._debugServerLease = coordinator.acquire("debugServer");
+            prov.debugLaunch.serverLease = coordinator.acquire("debugServer");
             assert.strictEqual(coordinator.isActive("debugServer"), true);
 
             let serverStopped = false;
@@ -505,7 +504,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             let pendingHeldDuringStop = false;
             let blockedConcurrentAcquire = false;
 
-            prov._managedDebugServer = {
+            prov.debugLaunch.managedServer = {
                 samplingEnabled: true,
                 setSamplingEnabled(v) {
                     this.samplingEnabled = v;
@@ -513,7 +512,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 stop: async () => {
                     // P2 assertion: Lease and pending MUST still be active while OpenOCD is stopping!
                     leaseHeldDuringStop = coordinator.isActive("debugServer");
-                    pendingHeldDuringStop = prov._debugCommandPending;
+                    pendingHeldDuringStop = prov.debugLaunch.commandPending;
                     try {
                         coordinator.acquire("download");
                     } catch (err) {
@@ -523,7 +522,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                     serverStopped = true;
                 }
             };
-            prov.restoreSamplingAfterDebug = async () => {
+            prov.debugLaunch.restoreSampling = async () => {
                 // P1 assertion: Session must already be detached from bridge when restoring sampling!
                 assert.strictEqual(
                     prov._debugBridge.hasAnySession,
@@ -539,20 +538,20 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
-            const gate = prov._armDebugStartupWatchdog();
+            const gate = prov.debugLaunch.armStartupWatchdog();
 
             // Step 1: Session starts and attaches to bridge
-            prov.handleDebugSessionStart(sess);
+            prov.debugLaunch.handleSessionStart(sess);
             assert.strictEqual(prov._debugBridge.hasAnySession, true, "session must be attached to bridge");
-            assert.strictEqual(prov._managedDebugSessionId, sess.id);
-            assert.strictEqual(prov._debugLifecycle.pending, true);
+            assert.strictEqual(prov.debugLaunch.managedSessionId, sess.id);
+            assert.strictEqual(prov.debugLaunch.lifecycle.pending, true);
 
             // Step 2: Timeout occurs while waiting for startup gate
             assert.ok(scheduledTimeoutFn, "watchdog timeout must be scheduled");
             stoppedSessions.length = 0;
 
             // Trigger timeout recovery
-            await prov._recoverDebugStartupTimeout();
+            await prov.debugLaunch.recoverStartupTimeout();
 
             // P1 assertions:
             // 1. VS Code stopDebugging was called with the session
@@ -573,7 +572,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             // 3. Lease was released only AFTER server stop completed
             assert.strictEqual(coordinator.isActive("debugServer"), false);
             // 4. Pending was cleared only AFTER cleanup completed
-            assert.strictEqual(prov._debugCommandPending, false);
+            assert.strictEqual(prov.debugLaunch.commandPending, false);
 
             // 5. Subsequent probe operation can now acquire lease without conflict
             const newLease = coordinator.acquire("download");
@@ -596,20 +595,20 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             prov._probeCoordinator = coordinator;
             prov._samplingCoordinator = new SamplingCoordinator();
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "test-token-2";
-            prov._terminatedDebugSessionIds = new Set();
-            prov._debugCommandPending = true;
-            prov._debugStartupErrorReported = false;
-            prov._debugStartupFailureCleanedUp = false;
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "test-token-2";
+            prov.debugLaunch.terminatedSessionIds = new Set();
+            prov.debugLaunch.commandPending = true;
+            prov.debugLaunch.startupErrorReported = false;
+            prov.debugLaunch.startupFailureCleanedUp = false;
             prov._t = (key) => key;
             prov._postConsumerStatuses = () => {};
             prov._commandContext = () => ({ folder: { uri: { toString: () => "workspace" } } });
-            prov._activeReadPlan = () => [];
+            prov._sampling.activeReadPlan = () => [];
 
-            prov._debugServerLease = coordinator.acquire("debugServer");
+            prov.debugLaunch.serverLease = coordinator.acquire("debugServer");
             let serverStopped = false;
-            prov._managedDebugServer = {
+            prov.debugLaunch.managedServer = {
                 samplingEnabled: true,
                 setSamplingEnabled(v) {
                     this.samplingEnabled = v;
@@ -619,7 +618,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 }
             };
             let samplingRestored = false;
-            prov.restoreSamplingAfterDebug = async () => {
+            prov.debugLaunch.restoreSampling = async () => {
                 samplingRestored = true;
             };
 
@@ -629,8 +628,8 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 configuration: { __emberprobeManagedToken: "test-token-2" }
             };
 
-            const gate = prov._armDebugStartupWatchdog();
-            prov.handleDebugSessionStart(sess);
+            const gate = prov.debugLaunch.armStartupWatchdog();
+            prov.debugLaunch.handleSessionStart(sess);
             assert.strictEqual(prov._debugBridge.hasAnySession, true);
 
             // Startup gate clears with timeout outcome
@@ -640,18 +639,18 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             assert.strictEqual(gateOutcome.kind, "timeout");
 
             // MainViewProvider handles failure with session
-            await prov._handleDebugStartupFailure(sess, "debug start timeout");
+            await prov.debugLaunch.handleStartupFailure(sess, "debug start timeout");
 
             assert.strictEqual(stoppedSessions.length, 1);
             assert.strictEqual(stoppedSessions[0].id, sess.id);
             assert.strictEqual(prov._debugBridge.hasAnySession, false);
             assert.strictEqual(serverStopped, true);
             assert.strictEqual(coordinator.isActive("debugServer"), false);
-            assert.strictEqual(prov._debugCommandPending, false);
+            assert.strictEqual(prov.debugLaunch.commandPending, false);
             assert.strictEqual(samplingRestored, true);
 
             // Idempotent: second call (e.g. from _recoverDebugStartupTimeout) is a no-op
-            await prov._recoverDebugStartupTimeout();
+            await prov.debugLaunch.recoverStartupTimeout();
             assert.strictEqual(stoppedSessions.length, 1);
 
             prov._debugBridge.dispose();
@@ -664,18 +663,18 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             const lc = new DebugLifecycle({ schedule: () => 1, cancel: () => {} });
             prov._probeCoordinator = new ProbeCoordinator();
             prov._debugBridge = new DebugSessionBridge();
-            prov._debugLifecycle = lc;
-            prov._managedDebugToken = "test-token";
-            prov._managedDebugSessionId = "sess-term";
-            prov._terminatedDebugSessionIds = new Set();
+            prov.debugLaunch.lifecycle = lc;
+            prov.debugLaunch.managedToken = "test-token";
+            prov.debugLaunch.managedSessionId = "sess-term";
+            prov.debugLaunch.terminatedSessionIds = new Set();
             prov._t = (key) => key;
 
             let termStopped = 0;
             let termRestored = 0;
-            prov._stopManagedDebugServer = async () => {
+            prov.debugLaunch.stopManagedServer = async () => {
                 termStopped++;
             };
-            prov.restoreSamplingAfterDebug = async () => {
+            prov.debugLaunch.restoreSampling = async () => {
                 termRestored++;
             };
 
@@ -685,11 +684,11 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
                 configuration: { __emberprobeManagedToken: "test-token" }
             };
 
-            const gate = prov._armDebugStartupWatchdog();
-            prov._debugLifecycle.session = sess;
+            const gate = prov.debugLaunch.armStartupWatchdog();
+            prov.debugLaunch.lifecycle.session = sess;
 
-            assert.strictEqual(prov._debugLifecycle.pending, true);
-            await prov.handleDebugSessionTerminate(sess);
+            assert.strictEqual(prov.debugLaunch.lifecycle.pending, true);
+            await prov.debugLaunch.handleSessionTerminate(sess);
 
             const gateOutcome = await gate;
             assert.strictEqual(gateOutcome.kind, "terminated");

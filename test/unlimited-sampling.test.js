@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { wait, waitFor } = require("./helpers/wait");
 const path = require("path");
 const { EventEmitter } = require("events");
 const { MultiRatePlan } = require("../src/services/multiRatePlan");
@@ -12,14 +13,6 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const graph = { name: "graph", address: 0x20000000, size: 4 };
 const sidebar = { name: "sidebar", address: 0x20000010, size: 4 };
 const plan = (unlimited = true) => ({ graphItems: [graph], sidebarItems: [sidebar], graphIntervalMs: 5, unlimited });
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(predicate, message, timeoutMs = 2000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        assert(Date.now() < deadline, message);
-        await wait(2);
-    }
-}
 function assertStats(stats, requested, active, reason = null) {
     assert.strictEqual(stats.unlimited, requested);
     assert.strictEqual(stats.unlimitedActive, active);
@@ -119,9 +112,9 @@ function testPlanAndClock() {
         }
         scheduleSamplingTick(0, () => {}, { platform: "linux" }).cancel();
         assert.deepStrictEqual(calls.at(-2).slice(0, 2), ["timeout", 0], "normal timing stays opt-in");
-        const local = new ManagedOpenOcdSession(null, {}, {});
+        const local = new ManagedOpenOcdSession({}, {});
         local.setSamplingPlan(plan());
-        local.socket = { destroyed: false };
+        local.tcl.socket = { destroyed: false };
         local._scheduleNext(0);
         assert.strictEqual(calls.at(-1)[0], "immediate", "session opts into setImmediate");
         local.setSamplingEnabled(false);
@@ -136,9 +129,9 @@ async function testSessionAndFairness() {
     const fake = new FakeOpenOcdServer();
     const samples = [],
         errors = [];
+    let skippedMs = 0;
     const session = new ManagedOpenOcdSession(
-        null,
-        {},
+        { clock: { monotonicMs: () => Number(process.hrtime.bigint()) / 1e6 + skippedMs } },
         {
             onSample: (items, t, consumers) =>
                 samples.push({ items, t, consumers, interval: session.effectiveIntervalMs }),
@@ -150,8 +143,7 @@ async function testSessionAndFairness() {
         fake.seed(graph.address, [1, 2, 3, 4]);
         fake.seed(sidebar.address, [5, 6, 7, 8]);
         fake.readLatencyMs = 1;
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
         session.setSamplingPlan(plan());
         assertStats(session.stats(), true, true);
         assert.strictEqual(session.stats().limitedBy, "probe");
@@ -175,18 +167,18 @@ async function testSessionAndFairness() {
         await waitFor(() => session.busy, "a variable tick owns the socket");
         const order = [];
         const readItems = session._readItems.bind(session);
-        const writeBytes = session._writeMemoryBytes.bind(session);
-        const checked = session._sendCheckedCommand.bind(session);
+        const writeBytes = session.writer.writeBytes.bind(session.writer);
+        const checked = session.tcl.sendChecked.bind(session.tcl);
         session._readItems = async (...args) => {
             if (args[0][0]?.name === "once") order.push("read");
             if (args[0][0]?.name === "verify") order.push("verify-read");
             return readItems(...args);
         };
-        session._writeMemoryBytes = async (address, bytes) => {
+        session.writer.writeBytes = async (address, bytes) => {
             order.push("write:" + bytes[0]);
             return writeBytes(address, bytes);
         };
-        session._sendCheckedCommand = async (command) => {
+        session.tcl.sendChecked = async (command) => {
             if (command === "[target current] curstate")
                 assert.fail("aligned verification must not query target state");
             return checked(command);
@@ -210,11 +202,11 @@ async function testSessionAndFairness() {
         assert.strictEqual(fake.maxInFlight, 1);
         assert.deepStrictEqual(errors, []);
         session.setHostHold(true);
-        await wait(5);
+        skippedMs += 5;
         const held = session.stats().hostHoldMs;
         assert(held > 0);
         session.setHostHold(false);
-        await wait(1050);
+        skippedMs += 1050;
         assert.strictEqual(session.stats().hostHoldMs, 0, "hold time ages out of the one-second window");
         assert.strictEqual(session.stats().limitedBy, "probe");
         // Rate-only changes retain calibration, while discarding an old in-flight cycle.
@@ -241,14 +233,14 @@ async function testSessionAndFairness() {
         await session.stop();
         await fake.stop();
     }
-    const debug = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
+    const debug = new ManagedOpenOcdSession({ mode: "debug" }, {});
     debug.setSamplingPlan(plan());
     assertStats(debug.stats(), true, false, "debug");
     assert.strictEqual(debug.effectiveIntervalMs, 100);
     for (let index = 0; index < 4; index++) debug._recordCycle(4);
     assert.strictEqual(debug.effectiveIntervalMs, 10, "debug retains its 40% adaptive threshold");
     await debug.stop();
-    const sidebarOnly = new ManagedOpenOcdSession(null, {}, {});
+    const sidebarOnly = new ManagedOpenOcdSession({}, {});
     sidebarOnly.setSamplingPlan({ ...plan(), graphItems: [] });
     assertStats(sidebarOnly.stats(), true, false);
     assert.strictEqual(sidebarOnly.effectiveIntervalMs, 100);
@@ -256,9 +248,9 @@ async function testSessionAndFairness() {
 }
 
 async function testArbiterFailures() {
-    const session = new ManagedOpenOcdSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     session.samplingEnabled = false;
-    session.socket = {
+    session.tcl.socket = {
         destroyed: false,
         write: (_data, callback) => callback?.(),
         destroy() {
@@ -301,14 +293,14 @@ async function testArbiterFailures() {
     };
     await assert.rejects(session.readOnce([graph]), /read exception/);
     assert.strictEqual(session.busy, false);
-    session._writeMemoryBytes = async () => {
+    session.writer.writeBytes = async () => {
         throw new Error("write exception");
     };
     session._readItems = async (items) => ({ samples: items.map((item) => ({ name: item.name, bytes: [0] })), ok: 1 });
     await assert.rejects(session.writeAndVerify([{ ...graph, bytes: [1, 2, 3, 4] }]), /write exception/);
     assert.strictEqual(session.busy, false);
     const commands = [];
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         commands.push(command);
         return "running";
     };
@@ -339,7 +331,7 @@ async function testArbiterFailures() {
     assert.strictEqual(session._exclusiveWaiters.length, 0);
     session._releaseExclusive();
     assert.strictEqual(session.busy, false);
-    const lost = new ManagedOpenOcdSession(null, {}, {});
+    const lost = new ManagedOpenOcdSession({}, {});
     assert(lost._tryAcquireExclusive());
     const loss = assert.rejects(lost._acquireExclusive(Date.now() + 10000), /socket lost/);
     lost._abortConnection(new Error("socket lost"));
@@ -355,14 +347,15 @@ async function testWorkerHold(byteLimit = false) {
     port.postMessage = (message) => messages.push(message);
     let session,
         acquired = 0,
-        clock = 0;
+        clock = 0,
+        monotonic = 1000;
     const payload = [{ name: "graph", bytes: byteLimit ? Buffer.alloc(1024 * 1024) : [1, 2, 3, 4] }];
     run(
         port,
         {},
         (options, handlers) => {
-            session = new ManagedOpenOcdSession(null, options, handlers);
-            session.socket = {
+            session = new ManagedOpenOcdSession({ ...options, clock: { monotonicMs: () => monotonic } }, handlers);
+            session.tcl.socket = {
                 destroyed: false,
                 write: (_data, callback) => callback?.(),
                 destroy() {
@@ -396,12 +389,14 @@ async function testWorkerHold(byteLimit = false) {
         assert.strictEqual(session.sampleEpoch, epoch, "repeated enable preserves a held loop");
         assert.strictEqual(session._hostHold, true);
         const heldCount = acquired;
-        await wait(300);
+        // Unlimited ticks run on setImmediate, so a leaking hold would spin many times within 20 ms.
+        monotonic += 300;
+        await wait(20);
         assert.strictEqual(acquired, heldCount, "host hold prevents new variable ticks");
         const heldStats = (await operation(2, "stats", [])).result;
         assertStats(heldStats, true, true);
         assert.strictEqual(heldStats.limitedBy, "host");
-        assert(heldStats.hostHoldMs >= 250 && heldStats.hostHoldMs <= 1000);
+        assert.strictEqual(heldStats.hostHoldMs, 300);
         assert(
             !messages.some((message) => message.event === "onError"),
             "soft hold never reaches the hard error limit"
@@ -441,7 +436,6 @@ async function testDeferredForegroundTick() {
         releaseWrite = resolve;
     });
     const session = new ManagedOpenOcdSession(
-        null,
         {},
         {
             onSample() {
@@ -450,7 +444,7 @@ async function testDeferredForegroundTick() {
             }
         }
     );
-    session.socket = {
+    session.tcl.socket = {
         destroyed: false,
         write: (_data, callback) => callback?.(),
         destroy() {
@@ -461,8 +455,8 @@ async function testDeferredForegroundTick() {
         samples: items.map((item) => ({ name: item.name, bytes: [1] })),
         ok: items.length
     });
-    session._sendCheckedCommand = async () => "running";
-    session._writeMemoryBytes = async () => {
+    session.tcl.sendChecked = async () => "running";
+    session.writer.writeBytes = async () => {
         enteredWrite = true;
         await writeGate;
     };
@@ -497,7 +491,6 @@ async function testDeferredLifecycle() {
     for (const action of ["timeout", "reject", "pause", "hold", "plan", "watch", "stop", "disconnect"]) {
         let samples = 0;
         const session = new ManagedOpenOcdSession(
-            null,
             {},
             {
                 onSample() {
@@ -507,7 +500,7 @@ async function testDeferredLifecycle() {
             }
         );
         session.samplingEnabled = false;
-        session.socket = {
+        session.tcl.socket = {
             destroyed: false,
             write: (_data, callback) => callback?.(),
             destroy() {
@@ -564,11 +557,11 @@ async function testDeferredLifecycle() {
         }
     }
     // Deferred sampling must remain asleep across the whole FIFO handoff, not only the first release.
-    const session = new ManagedOpenOcdSession(null, {}, {});
+    const session = new ManagedOpenOcdSession({}, {});
     session.samplingEnabled = false;
     session.setSamplingPlan(plan());
     session.samplingEnabled = true;
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     assert(session._tryAcquireExclusive());
     const first = session._acquireExclusive(Date.now() + 1000);
     const second = session._acquireExclusive(Date.now() + 1000);
@@ -584,15 +577,15 @@ async function testDeferredLifecycle() {
     session.setSamplingEnabled(false);
     session._releaseExclusive();
     assert.strictEqual(session.timer, null);
-    session.socket = null;
+    session.tcl.socket = null;
     await session.stop();
 }
 
 async function testWaitersSurvivePlans() {
     for (const unlimited of [true, false]) {
-        const session = new ManagedOpenOcdSession(null, {}, {});
+        const session = new ManagedOpenOcdSession({}, {});
         session.samplingEnabled = false;
-        session.socket = {
+        session.tcl.socket = {
             destroyed: false,
             write: (_data, callback) => callback?.(),
             destroy() {
@@ -604,8 +597,8 @@ async function testWaitersSurvivePlans() {
             samples: items.map((item) => ({ name: item.name, bytes: [value] })),
             ok: items.length
         });
-        session._sendCheckedCommand = async () => "running";
-        session._writeMemoryBytes = async (_address, bytes) => {
+        session.tcl.sendChecked = async () => "running";
+        session.writer.writeBytes = async (_address, bytes) => {
             value = bytes[0];
         };
         assert(session._tryAcquireExclusive());
@@ -641,7 +634,7 @@ async function testSetWatchPreservesBacklog() {
     let session, handlers;
     run(port, {}, (options, nextHandlers) => {
         handlers = nextHandlers;
-        session = new ManagedOpenOcdSession(null, options, handlers);
+        session = new ManagedOpenOcdSession(options, handlers);
         return session;
     });
     session.setSamplingPlan(plan());

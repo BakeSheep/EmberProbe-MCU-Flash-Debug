@@ -32,16 +32,22 @@ function shutdownFixture() {
         _cubemxService: { cancel() {} },
         _samplingArchive: { dispose: async () => {} },
         _chartHistory: null,
-        _clearDebugStartupWatchdog() {},
         _stopJlinkDriverMonitor() {},
-        _flushPendingChartHistorySamples: async () => {},
-        disposeDebugBridge: () => order.push("debug-bridge-disposed"),
-        stopAgentReadIfRunning: () => {
+        disposeDebugBridge: () => order.push("debug-bridge-disposed")
+    });
+    Object.assign(p._historyFeed, { flushPending: async () => {} });
+    Object.assign(p._agentOps, {
+        stopReadIfRunning: () => {
             order.push("agent-read-stopped");
             return null;
-        },
-        _stopManagedDebugServer: async () => order.push("debug-server-stopped"),
-        stopLiveWatch: () => {
+        }
+    });
+    Object.assign(p.debugLaunch, {
+        clearStartupWatchdog() {},
+        stopManagedServer: async () => order.push("debug-server-stopped")
+    });
+    Object.assign(p._sampling, {
+        stop: () => {
             order.push("live-stopped");
             return null;
         }
@@ -71,7 +77,7 @@ function shutdownFixture() {
         const errors = [];
         const originalError = console.error;
         console.error = (...args) => errors.push(args);
-        p.stopAgentReadIfRunning = () => {
+        p._agentOps.stopReadIfRunning = () => {
             order.push("agent-read-stopped");
             return Promise.reject(Object.assign(new Error("unconfirmed"), { code: "PROBE_EXIT_UNCONFIRMED" }));
         };

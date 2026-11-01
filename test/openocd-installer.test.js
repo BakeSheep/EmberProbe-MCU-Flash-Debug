@@ -5,10 +5,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const tar = require("tar");
 const targetManifest = require("../resources/openocd-targets-manifest.json");
 const installer = require("../src/openocdInstaller");
 const { discoverTargetConfigs } = require("../src/openocdScripts");
-const { probeOpenOcd, probeDefaultOpenOcd, shouldUseBundledDefault } = require("../src/openocdChecker");
+const { probeDefaultOpenOcd, shouldUseBundledDefault } = require("../src/openocdChecker");
 const {
     platformKey,
     getBundledArchive,
@@ -67,6 +68,8 @@ const {
     assert.strictEqual(shouldUseBundledDefault("/custom/openocd", mockContext), false);
     assert.strictEqual(await probeDefaultOpenOcd("/custom/openocd", mockContext), undefined);
     assert.strictEqual(shouldUseBundledDefault("openocd", { asAbsolutePath: () => "/missing/archive.tar.gz" }), false);
+    // The default runtime is this run's one real extraction; its executable also loads the target configurations below.
+    let runtime = null;
     if (["linux", "win32"].includes(process.platform) && process.arch === "x64") {
         assert.strictEqual(shouldUseBundledDefault("openocd", mockContext), true);
         assert.strictEqual(shouldUseBundledDefault("", mockContext), true);
@@ -123,11 +126,14 @@ const {
         assert.ok((await probeDefaultOpenOcd("openocd", mockContext)).found);
 
         // A damaged cached runtime must fail without falling back to the affected system build.
-        fs.unlinkSync(bundled.path);
+        const aside = bundled.path + ".aside";
+        fs.renameSync(bundled.path, aside);
         const damaged = await probeDefaultOpenOcd("openocd", mockContext);
         assert.strictEqual(damaged.found, false);
         assert.strictEqual(damaged.errorKey, "oc.prepareFailed");
         assert.match(damaged.error, /缓存验证失败/);
+        fs.renameSync(aside, bundled.path);
+        runtime = bundled.path;
 
         const corrupt = path.join(tmpBase, "default-corrupt.tar.gz");
         fs.writeFileSync(corrupt, "not a tar archive");
@@ -157,24 +163,58 @@ const {
         "installDir contains the emberprobe/openocd subdirectory"
     );
 
-    // With a bundled archive, run one real extraction install and locate the executable (into a temporary directory,
-    // never the real global storage)
-    const archiveForInstall = archive;
-    if (archiveForInstall) {
+    // Installing and replacing run on a small archive with the same layout (into a temporary directory, never the real
+    // global storage); its executable is never started.
+    if (key) {
+        const fixture = path.join(tmpBase, "fixture");
+        fs.mkdirSync(path.join(fixture, "bin"), { recursive: true });
+        fs.writeFileSync(path.join(fixture, "bin", OPENOCD_BIN), "not an executable");
+        const smallArchive = path.join(tmpBase, "small.tar.gz");
+        await tar.c({ gzip: true, file: smallArchive, cwd: fixture }, ["bin"]);
+        const smallContext = { asAbsolutePath: () => smallArchive, globalStorageUri: { fsPath: tmpBase } };
         const progressCalls = [];
-        const result = await installBundledOpenOcd(null, mockContext, (p) => progressCalls.push(p));
+        const result = await installBundledOpenOcd(null, smallContext, (p) => progressCalls.push(p));
         assert.ok(result.ok, `install succeeds, got: ${result.error || JSON.stringify(result)}`);
         assert.ok(result.path, "a successful install returns the executable path");
         assert.ok(result.path.endsWith(OPENOCD_BIN), `path ends with ${OPENOCD_BIN}, got: ${result.path}`);
         assert.ok(fs.existsSync(result.path), "the extracted executable exists");
-        const probe = await probeOpenOcd(result.path);
-        assert.ok(probe.found, `bundled OpenOCD runs, got: ${probe.error || JSON.stringify(probe)}`);
         assert.ok(progressCalls.length > 0, "extraction reports progress");
         // locateOpenOcdBinary on its own
         const destRoot = installDir(mockContext);
-        const located = locateOpenOcdBinary(destRoot);
-        assert.ok(located, "locateOpenOcdBinary finds the executable in the extraction directory");
-        const targets = discoverTargetConfigs(located);
+        assert.strictEqual(
+            locateOpenOcdBinary(destRoot),
+            result.path,
+            "locateOpenOcdBinary finds the executable in the extraction directory"
+        );
+
+        // A corrupt new archive fails the install, leaving an already working old directory untouched.
+        const marker = path.join(destRoot, "existing-install.marker");
+        fs.writeFileSync(marker, "keep");
+        const rejected = await installBundledOpenOcd(null, smallContext, null, async () => ({
+            ok: false,
+            error: "simulated runtime failure"
+        }));
+        assert.strictEqual(rejected.ok, false, "a failed executable check aborts the install");
+        assert.ok(fs.existsSync(marker), "a failed executable check keeps the existing OpenOCD");
+
+        const corruptArchive = path.join(tmpBase, "corrupt.tar.gz");
+        fs.writeFileSync(corruptArchive, "not a tar archive");
+        const corruptContext = {
+            asAbsolutePath: () => corruptArchive,
+            globalStorageUri: { fsPath: tmpBase }
+        };
+        const failed = await installBundledOpenOcd(null, corruptContext);
+        assert.strictEqual(failed.ok, false, "a corrupt bundled archive fails to install");
+        assert.ok(fs.existsSync(marker), "a failed install keeps the existing OpenOCD");
+        try {
+            fs.rmSync(destRoot, { recursive: true, force: true });
+        } catch (e) {
+            /* ignore */
+        }
+    }
+
+    if (runtime) {
+        const targets = discoverTargetConfigs(runtime);
         assert.ok(targets.includes("geehy/apm32f0x.cfg"), "the bundled archive includes the APM32F0 target");
         assert.ok(targets.includes("geehy/apm32f1x.cfg"), "the bundled archive includes the APM32F1 target");
         assert.ok(targets.includes("geehy/apm32f4x.cfg"), "the bundled archive includes the APM32F4 target");
@@ -185,7 +225,7 @@ const {
             const rz = name === "renesas_rz_g2.cfg";
             const load = (config, options = {}) => {
                 const loaded = spawnSync(
-                    located,
+                    runtime,
                     [
                         "-f",
                         rz ? "interface/dummy.cfg" : "interface/cmsis-dap.cfg",
@@ -226,7 +266,7 @@ const {
         // STM32C5 declares an stldr bank, and every DEV_ID loader resolves inside the bundled scripts.
         assert.ok(targets.includes("stm32c5x.cfg") && targets.includes("stm32c0x.cfg"));
         const c5 = spawnSync(
-            located,
+            runtime,
             [
                 "-f",
                 "interface/cmsis-dap.cfg",
@@ -251,31 +291,6 @@ const {
         assert.match(c5Output, /EP_TARGETS=[\s\S]*stm32c5x\.cpu/);
         assert.match(c5Output, /EP_BANKS=[\s\S]*driver\s+stldr\s+base\s+0x08000000/);
         assert.deepStrictEqual(c5Output.match(/^EP_LOADER=.*$/gm), ["EP_LOADER=1", "EP_LOADER=1", "EP_LOADER=1"]);
-
-        // A corrupt new archive fails the install, leaving an already working old directory untouched.
-        const marker = path.join(destRoot, "existing-install.marker");
-        fs.writeFileSync(marker, "keep");
-        const rejected = await installBundledOpenOcd(null, mockContext, null, async () => ({
-            ok: false,
-            error: "simulated runtime failure"
-        }));
-        assert.strictEqual(rejected.ok, false, "a failed executable check aborts the install");
-        assert.ok(fs.existsSync(marker), "a failed executable check keeps the existing OpenOCD");
-
-        const corruptArchive = path.join(tmpBase, "corrupt.tar.gz");
-        fs.writeFileSync(corruptArchive, "not a tar archive");
-        const corruptContext = {
-            asAbsolutePath: () => corruptArchive,
-            globalStorageUri: { fsPath: tmpBase }
-        };
-        const failed = await installBundledOpenOcd(null, corruptContext);
-        assert.strictEqual(failed.ok, false, "a corrupt bundled archive fails to install");
-        assert.ok(fs.existsSync(marker), "a failed install keeps the existing OpenOCD");
-        try {
-            fs.rmSync(destRoot, { recursive: true, force: true });
-        } catch (e) {
-            /* ignore */
-        }
     }
 
     try {

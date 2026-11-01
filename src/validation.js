@@ -189,9 +189,15 @@ function normalizeWatchList(items, symbols, options = {}) {
     return result;
 }
 
+// Device instance IDs posted by the sidebar are opaque; anything else is not a connected probe.
+function connectedProbeId(value) {
+    return typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\0\r\n]/.test(value);
+}
+
 module.exports = {
     cleanWindowsPath,
     clampInteger,
+    connectedProbeId,
     normalizeWatchList,
     validateLayoutExpansionRequest,
     validateLayoutExpansionTarget

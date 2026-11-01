@@ -51,13 +51,13 @@ async function run() {
         output: ""
     };
     const resolveOpenOcd = provider._resolveOpenOcdPath;
-    const startServer = provider._startManagedDebugServer;
+    const startServer = provider.debugLaunch.startManagedServer;
     provider._resolveOpenOcdPath = async (...args) => {
         const executable = await resolveOpenOcd.apply(provider, args);
         report.openocd = executable;
         return executable;
     };
-    provider._startManagedDebugServer = async (...args) => {
+    provider.debugLaunch.startManagedServer = async (...args) => {
         try {
             return await startServer.apply(provider, args);
         } catch (error) {
@@ -197,7 +197,7 @@ async function run() {
         } finally {
             tracker.dispose();
             provider._resolveOpenOcdPath = resolveOpenOcd;
-            provider._startManagedDebugServer = startServer;
+            provider.debugLaunch.startManagedServer = startServer;
         }
     }
 }

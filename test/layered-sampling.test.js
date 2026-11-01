@@ -38,7 +38,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         assert.strictEqual(plan.items.find((entry) => entry.name === "shared").size, 8);
     }
     for (const nextInterval of [5, 1000]) {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         changing.setSamplingPlan({
             graphItems: [item("graph")],
             sidebarItems: [item("sidebar")],
@@ -75,7 +75,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // Switching rates must measure only new graph ticks, even when the sidebar keeps the base clock at 20 Hz.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         const plan = { graphItems: [item("graph")], sidebarItems: [item("sidebar")], graphIntervalMs: 5 };
         changing.setSamplingPlan({ ...plan, unlimited: true });
         for (let i = 0; i < 8; i++) changing._recordCycle(1, true, i);
@@ -112,7 +112,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // Reordering watch cards keeps the same reads, so the session neither restarts nor recalibrates.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         const plan = {
             graphItems: [item("a"), item("b", 2)],
             sidebarItems: [item("c"), item("d")],
@@ -135,14 +135,14 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     }
     // A rate change during a read must discard that cycle and rearm, even with an unchanged sidebar clock.
     {
-        const changing = new ManagedOpenOcdSession(null, {}, {});
+        const changing = new ManagedOpenOcdSession({}, {});
         changing.setSamplingPlan({
             graphItems: [item("graph")],
             sidebarItems: [item("sidebar")],
             graphIntervalMs: 10000
         });
         changing._recentDurations = [1, 1, 1, 1];
-        changing.socket = { destroyed: false };
+        changing.tcl.socket = { destroyed: false };
         const scheduled = [],
             delivered = [];
         changing._scheduleNext = (delay) => scheduled.push(delay);
@@ -163,12 +163,12 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         await changing._sampleTick(true);
         assert.strictEqual(delivered.length, 1, "the new schedule continues delivering samples");
     }
-    const session = new ManagedOpenOcdSession(null, { intervalMs: 5 }, {});
+    const session = new ManagedOpenOcdSession({ intervalMs: 5 }, {});
     session.setSamplingPlan({ sidebarItems: [item("sidebar")], graphIntervalMs: 5 });
     session.setIntervalMs(10000);
     assert.strictEqual(session.targetIntervalMs, 50);
     session._recentDurations = [1, 1, 1, 1];
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session.stopped = false;
     session.samplingEnabled = true;
     session._readItems = async (items, time) => ({
@@ -201,15 +201,15 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         messages = [],
         sidebar = [];
     p._livePanels = new Map([[1, { watchKey: "graph", latestSamples: new Map(), ready: true }]]);
-    p._getCachedConsumerTypes = () => ({
+    p._sampling.cachedConsumerTypes = () => ({
         graphs: new Map([["graph", new Map([["g", "u32"]])]]),
         sidebar: new Map([
             ["g", "u32"],
             ["s", "u32"]
         ])
     });
-    p._compositeMap = () => new Map();
-    p._configureChartHistory = () => {};
+    p._sampling.compositeMap = () => new Map();
+    p._historyFeed.configure = () => {};
     p._liveWatchService = new LiveWatchService({ decodeValue: () => 42, decodeValueText: () => "42" });
     p._debugSamplingScope = (key) => key;
     p._samplingArchive = { append: (...args) => archives.push(args) };
@@ -220,16 +220,16 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         }
     };
     p._latestSidebarSamples = new Map();
-    p._postWebviewBatch = (_entry, samples) => messages.push(samples);
-    p._postSidebarBatch = (samples) => sidebar.push(samples);
+    p._sampling._postWebviewBatch = (_entry, samples) => messages.push(samples);
+    p._sampling._postSidebarBatch = (samples) => sidebar.push(samples);
     const raw = ["g", "s"].map((name) => ({ name, bytes: Buffer.alloc(4), t: 100 }));
-    p._handleRawSamples(raw, 120, { graphNames: [], sidebarNames: ["g", "s"] });
+    p._sampling.handleRawSamples(raw, 120, { graphNames: [], sidebarNames: ["g", "s"] });
     assert.strictEqual(histories.length, 0);
     assert.strictEqual(archives[0][0].length, 0);
     assert.strictEqual(sidebar[0][0].t, 100, "cached acquisition timestamps survive delivery");
-    p._handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
+    p._sampling.handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
     assert.strictEqual(histories.length, 0, "history ticks wait for the short host batch");
-    await p._flushPendingChartHistorySamples();
+    await p._historyFeed.flushPending();
     assert.strictEqual(histories.length, 1);
     assert.deepStrictEqual(
         archives[1][0].map((entry) => entry.name),
@@ -238,14 +238,14 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     assert.strictEqual(messages[0].length, 1);
     const entry = p._livePanels.get(1);
     entry.historyClearedAt = 100;
-    p._handleRawSamples(raw, 300, { graphNames: ["g"], sidebarNames: [] });
+    p._sampling.handleRawSamples(raw, 300, { graphNames: ["g"], sidebarNames: [] });
     assert.strictEqual(
         histories.length,
         1,
         "late delivery acquired before clear cannot enter the new archive generation"
     );
-    p._handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
-    await p._flushPendingChartHistorySamples();
+    p._sampling.handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
+    await p._historyFeed.flushPending();
     assert.strictEqual(histories.length, 2, "new acquisitions resume in the cleared panel");
     console.log("Layered consumer scheduling, timestamp and archive isolation tests passed");
 })().catch((error) => {

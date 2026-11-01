@@ -1,25 +1,11 @@
 "use strict";
 
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const shared = require("../src/openocdScripts");
 const { ProbeCoordinator } = require("../src/probeCoordinator");
-
-// Execute the production modules with only process creation and path lookup replaced.
-function load(file, overrides) {
-    const filename = path.resolve(__dirname, "..", file);
-    const localRequire = createRequire(filename);
-    const mod = { exports: {} };
-    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
-        filename
-    })((name) => overrides[name] || localRequire(name), mod, mod.exports);
-    return mod.exports;
-}
+const { loadModule } = require("./helpers/load-module");
 
 (async () => {
     const captured = [];
@@ -55,11 +41,12 @@ function load(file, overrides) {
         });
         return child;
     };
-    const exec = load("src/services/openocdExec.js", { child_process: { spawn }, "../openocdScripts": scripts });
-    const chip = load("src/chipInfo.js", { "./services/openocdExec": exec });
-    const fault = load("src/faultInfo.js", { "./services/openocdExec": exec });
-    const runner = load("src/openocdRunner.js", { child_process: { spawn }, "./openocdScripts": scripts });
-    const live = load("src/liveWatch.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const exec = loadModule("src/services/openocdExec.js", { child_process: { spawn }, "../openocdScripts": scripts });
+    const chip = loadModule("src/chipInfo.js", { "./services/openocdExec": exec });
+    const fault = loadModule("src/faultInfo.js", { "./services/openocdExec": exec });
+    const runner = loadModule("src/openocdRunner.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const server = loadModule("src/openocdProcess.js", { child_process: { spawn }, "./openocdScripts": scripts });
+    const live = loadModule("src/liveWatch.js", { "./openocdProcess": server });
     const options = {
         executable: "fake",
         elf: "/固件/firmware.elf",
@@ -83,15 +70,11 @@ function load(file, overrides) {
     await assert.rejects(chip.readChipInfo(vscode, options), { code: "PROBE_NOT_FOUND" });
     await assert.rejects(fault.readFaultInfo(options), { code: "PROBE_NOT_FOUND" });
     for (const mode of ["standalone", "debug"]) {
-        const session = new live.ManagedOpenOcdSession(null, { ...options, mode, gdbPort: 13333 }, {});
+        const session = new live.ManagedOpenOcdSession({ ...options, mode, gdbPort: 13333 }, {});
         await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
     }
     for (const mode of ["debug", "standalone"]) {
-        const session = new live.ManagedOpenOcdSession(
-            null,
-            { ...options, mode, rtos: "FreeRTOS", gdbPort: 13334 },
-            {}
-        );
+        const session = new live.ManagedOpenOcdSession({ ...options, mode, rtos: "FreeRTOS", gdbPort: 13334 }, {});
         await assert.rejects(session.start(), { code: "PROBE_NOT_FOUND" });
     }
     assert.strictEqual(captured.length, 7, "Each failed operation starts exactly once");
@@ -107,16 +90,11 @@ function load(file, overrides) {
     assert(rtosArgs.indexOf(rtosCommand) < rtosArgs.indexOf("init"), "OpenOCD must see -rtos before init");
     assert(!samplingArgs.some((arg) => arg.includes("-rtos")), "sampling-only sessions never configure an RTOS");
     await assert.rejects(
-        new live.ManagedOpenOcdSession(
-            null,
-            { ...options, mode: "debug", rtos: "FreeRTOs", gdbPort: 13335 },
-            {}
-        ).start(),
+        new live.ManagedOpenOcdSession({ ...options, mode: "debug", rtos: "FreeRTOs", gdbPort: 13335 }, {}).start(),
         { code: "OPENOCD_RTOS_INVALID" }
     );
     assert.strictEqual(captured.length, 7, "An invalid RTOS name never reaches OpenOCD");
     const multi = new live.ManagedOpenOcdSession(
-        null,
         {
             ...options,
             mode: "debug",
@@ -143,14 +121,14 @@ function load(file, overrides) {
         "Select the core before configuring its RTOS"
     );
     for (const invalid of [{ targetProcessor: 2 }, { targetName: "cpu; shutdown" }, { gdbPorts: [13335, 13335] }]) {
-        await assert.rejects(new live.ManagedOpenOcdSession(null, { ...multi.options, ...invalid }, {}).start());
+        await assert.rejects(new live.ManagedOpenOcdSession({ ...multi.options, ...invalid }, {}).start());
     }
     assert.strictEqual(captured.length, 8, "Invalid core selection never spawns OpenOCD");
     successfulSpawn = true;
     for (const names of ["stm32h7x.cpu0 stm32h7x.cpu1", "stm32h7x.cpu0", "bad;shutdown stm32h7x.cpu1"]) {
-        const grouped = new live.ManagedOpenOcdSession(null, { ...multi.options, serverGroup: "dual" }, {});
+        const grouped = new live.ManagedOpenOcdSession({ ...multi.options, serverGroup: "dual" }, {});
         grouped._waitForTclListening = async () => {};
-        grouped._detectNoEcho = async () => true;
+        grouped.tcl.detectNoEcho = async () => true;
         grouped._connectWithRetry = async () => {
             const socket = new EventEmitter();
             socket.destroy = () => {
@@ -160,7 +138,7 @@ function load(file, overrides) {
             socket.setNoDelay = () => {};
             return socket;
         };
-        grouped._sendCheckedCommand = async (command) => {
+        grouped.tcl.sendChecked = async (command) => {
             assert.strictEqual(command, "target names");
             return names;
         };
@@ -191,7 +169,6 @@ function load(file, overrides) {
         for (const backendKind of ["tcp", "usb"]) {
             for (const samplingAdapterSpeedKhz of [0, 4000]) {
                 const session = new live.ManagedOpenOcdSession(
-                    null,
                     { ...options, mode, backendKind, samplingAdapterSpeedKhz, gdbPort: 13333 },
                     {}
                 );
@@ -233,15 +210,15 @@ function load(file, overrides) {
         child.kill = () => {
             child.killed = true;
         };
-        const delayedExec = load("src/services/openocdExec.js", {
+        const delayedExec = loadModule("src/services/openocdExec.js", {
             child_process: { spawn: () => child },
             "../openocdScripts": scripts
         });
         const timedExec = {
             runOpenOcdOnce: (request) => delayedExec.runOpenOcdOnce({ ...request, timeoutMs: 10 })
         };
-        const timedChip = load("src/chipInfo.js", { "./services/openocdExec": timedExec });
-        const timedFault = load("src/faultInfo.js", { "./services/openocdExec": timedExec });
+        const timedChip = loadModule("src/chipInfo.js", { "./services/openocdExec": timedExec });
+        const timedFault = loadModule("src/faultInfo.js", { "./services/openocdExec": timedExec });
         const request =
             operation === "chip-read"
                 ? timedChip.readChipInfo(vscode, options)
@@ -297,19 +274,20 @@ function load(file, overrides) {
         });
         return child;
     };
-    const checkedExec = load("src/services/openocdExec.js", {
+    const checkedExec = loadModule("src/services/openocdExec.js", {
         child_process: { spawn: mismatchSpawn },
         "../openocdScripts": scripts
     });
-    const checkedChip = load("src/chipInfo.js", { "./services/openocdExec": checkedExec });
-    const checkedRunner = load("src/openocdRunner.js", {
+    const checkedChip = loadModule("src/chipInfo.js", { "./services/openocdExec": checkedExec });
+    const checkedRunner = loadModule("src/openocdRunner.js", {
         child_process: { spawn: mismatchSpawn },
         "./openocdScripts": scripts
     });
-    const checkedLive = load("src/liveWatch.js", {
+    const checkedServer = loadModule("src/openocdProcess.js", {
         child_process: { spawn: mismatchSpawn },
         "./openocdScripts": scripts
     });
+    const checkedLive = loadModule("src/liveWatch.js", { "./openocdProcess": checkedServer });
     const targetCheck = {
         checkId: "entrypoints",
         target: "stm32f4x.cfg",
@@ -323,7 +301,7 @@ function load(file, overrides) {
     await assert.rejects(checkedChip.readChipInfo(vscode, { ...options, targetCheck }), mismatch);
     for (const mode of ["standalone", "debug"])
         await assert.rejects(
-            new checkedLive.ManagedOpenOcdSession(null, { ...options, targetCheck, mode, gdbPort: 13337 }, {}).start(),
+            new checkedLive.ManagedOpenOcdSession({ ...options, targetCheck, mode, gdbPort: 13337 }, {}).start(),
             mismatch
         );
     const commandsOf = (args) => args.filter((_arg, index) => args[index - 1] === "-c");

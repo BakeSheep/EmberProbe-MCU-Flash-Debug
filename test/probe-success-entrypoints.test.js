@@ -27,24 +27,24 @@ async function main() {
             recorded++;
         }
     };
-    provider._matchesManagedDebugSession = (session) => session.id === "managed";
-    provider._terminatedDebugSessionIds = new Set();
-    provider._managedDebugServer = { options: connection };
-    provider._markDebugStartupReady = () => {};
-    provider._clearDebugStartupWatchdog = (outcome) => {
+    provider.debugLaunch.matchesManagedSession = (session) => session.id === "managed";
+    provider.debugLaunch.terminatedSessionIds = new Set();
+    provider.debugLaunch.managedServer = { options: connection };
+    provider.debugLaunch.markStartupReady = () => {};
+    provider.debugLaunch.clearStartupWatchdog = (outcome) => {
         assert.strictEqual(outcome.kind, "failed");
     };
     provider._t = (key) => key;
     provider._debugBridge = { handleMessage: () => {} };
     const session = { id: "managed" };
-    provider.handleDebugAdapterMessage(session, { type: "event", event: "initialized" });
-    provider.handleDebugAdapterMessage(session, { type: "response", command: "launch", success: false });
-    provider.handleDebugAdapterMessage({ id: "other" }, { type: "response", command: "launch", success: true });
+    provider.debugLaunch.handleAdapterMessage(session, { type: "event", event: "initialized" });
+    provider.debugLaunch.handleAdapterMessage(session, { type: "response", command: "launch", success: false });
+    provider.debugLaunch.handleAdapterMessage({ id: "other" }, { type: "response", command: "launch", success: true });
     assert.strictEqual(recorded, 0);
-    provider.handleDebugAdapterMessage(session, { type: "response", command: "attach", success: true });
+    provider.debugLaunch.handleAdapterMessage(session, { type: "response", command: "attach", success: true });
     assert.strictEqual(recorded, 1);
-    provider._terminatedDebugSessionIds.add(session.id);
-    provider.handleDebugAdapterMessage(session, { type: "response", command: "launch", success: true });
+    provider.debugLaunch.terminatedSessionIds.add(session.id);
+    provider.debugLaunch.handleAdapterMessage(session, { type: "response", command: "launch", success: true });
     assert.strictEqual(recorded, 1);
 
     let readsFail = false,

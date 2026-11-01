@@ -63,7 +63,7 @@ const sampleBytes = (sample) =>
 function run(
     port,
     options,
-    makeSession = (config, handlers) => new ManagedOpenOcdSession(null, config, handlers),
+    makeSession = (config, handlers) => new ManagedOpenOcdSession(config, handlers),
     now = () => performance.now()
 ) {
     let generation = 0,
@@ -87,7 +87,7 @@ function run(
         samplingEnabled: session.samplingEnabled,
         pollingFailed: !!session._pollFailureLocked,
         stopped: session.stopped,
-        childPid: session.child?.pid,
+        childPid: session.server?.child?.pid,
         stats: stats()
     });
     const event = (name, args) =>

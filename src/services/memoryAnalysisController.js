@@ -2,12 +2,14 @@
 
 const path = require("path");
 const { MemoryAnalysisService } = require("./memoryAnalysisService");
+const { SYSTEM_CLOCK } = require("../samplingClock");
 
 // Own the sidebar lifecycle, while the Agent calls the same analysis service directly.
 class MemoryAnalysisController {
-    /** @param {any} options */
+    /** @param {any} options `clock` (schedule/cancel) replaces the timer that coalesces linker writes. */
     constructor(options) {
         this.options = options;
+        this.clock = options.clock || SYSTEM_CLOCK;
         this.sequence = 0;
         this.watchers = [];
         this.timer = null;
@@ -66,8 +68,8 @@ class MemoryAnalysisController {
             this.sequence++;
             this.service.invalidate();
             this.options.elfService.invalidate();
-            clearTimeout(this.timer);
-            this.timer = setTimeout(() => {
+            this.clock.cancel(this.timer);
+            this.timer = this.clock.schedule(() => {
                 this.timer = null;
                 this.refresh();
             }, 300);
@@ -107,7 +109,7 @@ class MemoryAnalysisController {
     dispose() {
         this.disposed = true;
         this.sequence++;
-        clearTimeout(this.timer);
+        this.clock.cancel(this.timer);
         this.service.invalidate();
         for (const watcher of this.watchers) watcher.dispose();
         this.watchers = [];

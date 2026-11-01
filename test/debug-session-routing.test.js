@@ -161,15 +161,15 @@ const { loadProvider } = require("./helpers/load-provider");
     const host = Object.create(Provider.prototype);
     let selected = path.resolve("core0.elf");
     Object.assign(host, {
-        _managedDebugGroup: {},
         _context: { workspaceState: { get: () => selected } },
         _debugBridge: { assertUniqueSession: () => a }
     });
-    host._assertGroupedReadElf();
+    Object.assign(host.debugLaunch, { managedGroup: {} });
+    host._writes.assertGroupedReadElf();
     selected = path.resolve("core1.elf");
-    assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
+    assert.throws(() => host._writes.assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
     selected = null;
-    assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
+    assert.throws(() => host._writes.assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
     const notices = [];
     const entry = {
         latestSamples: new Map([["value", 1]]),
@@ -177,13 +177,13 @@ const { loadProvider } = require("./helpers/load-provider");
         post: (message) => notices.push(message)
     };
     Object.assign(host, {
-        _managedDebugGroup: { id: "dual" },
         _debugBridge: { activeSession: a },
         _latestSidebarSamples: new Map([["value", 1]]),
         _livePanels: new Map([[1, entry]]),
         _webviewView: { webview: { postMessage: (message) => notices.push(message) } },
         _pendingSidebarScalars: [1]
     });
+    Object.assign(host.debugLaunch, { managedGroup: { id: "dual" } });
     const scope0 = host._debugSamplingScope("watch");
     host._syncDebugSampleContext();
     assert.strictEqual(host._latestSidebarSamples.size, 0);
@@ -197,7 +197,7 @@ const { loadProvider } = require("./helpers/load-provider");
     assert.notStrictEqual(host._debugSamplingScope("watch"), scope0, "CSV history is separated by session");
     host._syncDebugSampleContext();
     assert.strictEqual(notices.at(-1).sessionId, b.id);
-    host._managedDebugGroup = null;
+    host.debugLaunch.managedGroup = null;
     assert.strictEqual(host._debugSamplingScope("watch"), "watch");
     host._syncDebugSampleContext();
     console.log(

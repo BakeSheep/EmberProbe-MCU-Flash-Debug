@@ -265,8 +265,8 @@ function testHostLoopDelay() {
 }
 
 async function testResumeKeepsMeasuredCost() {
-    const session = new ManagedOpenOcdSession(null, { intervalMs: 10 }, {});
-    session.socket = { destroyed: false };
+    const session = new ManagedOpenOcdSession({ intervalMs: 10 }, {});
+    session.tcl.socket = { destroyed: false };
     try {
         session.setSamplingEnabled(true);
         session._recentDurations = [1, 1, 1, 1];
@@ -283,7 +283,7 @@ async function testResumeKeepsMeasuredCost() {
         assert.strictEqual(session._warmingUp, true);
     } finally {
         session.setSamplingEnabled(false);
-        session.socket = null;
+        session.tcl.socket = null;
         await session.stop();
     }
 }
@@ -300,13 +300,13 @@ async function testProviderWiring() {
         }
     };
     gap._debugSamplingScope = (key) => "scope:" + key;
-    gap._flushChartHistoryAppend = (entry) => calls.push(["flush", entry.watchKey]);
+    gap._historyFeed.flushAppend = (entry) => calls.push(["flush", entry.watchKey]);
     gap._livePanels = new Map([
         ["a", { watchKey: "a", historySignature: "x" }],
         ["b", { watchKey: "b" }],
         ["c", { watchKey: "c", historySignature: "y", _historyRestoreTask: {} }]
     ]);
-    gap._handleSampleGap();
+    gap._sampling.handleSampleGap();
     assert.deepStrictEqual(calls, [
         ["flush", "a"],
         ["markGap", "scope:a"]
@@ -317,17 +317,19 @@ async function testProviderWiring() {
         const rows = [];
         Object.assign(p, {
             _samplingCoordinator: new SamplingCoordinator(),
-            _samplingIntent: true,
-            _liveSession: session,
-            _managedDebugServer: null,
             _debugBridge: { setIntent() {} },
             _liveWatchService: {},
             _samplingArchive: {},
-            _activeReadPlan: () => [{ name: "v" }],
-            _handleRawSamples: (samples) => rows.push(samples),
-            _postConsumerStatuses() {},
-            _samplingStatus: () => ({})
+            _postConsumerStatuses() {}
         });
+        Object.assign(p.debugLaunch, { managedServer: null });
+        Object.assign(p._sampling, {
+            intent: true,
+            session: session,
+            handleRawSamples: (samples) => rows.push(samples),
+            status: () => ({})
+        });
+        Object.assign(p._sampling, { activeReadPlan: () => [{ name: "v" }] });
         return { p, rows };
     };
     const live = {
@@ -345,15 +347,15 @@ async function testProviderWiring() {
         }
     };
     const worker = make(live);
-    worker.p._setSamplingArchiveBackpressure(true);
-    worker.p._setSamplingArchiveBackpressure(false);
+    worker.p._sampling.setArchiveBackpressure(true);
+    worker.p._sampling.setArchiveBackpressure(false);
     assert.deepStrictEqual(live.enables, [], "archive backpressure leaves Worker sampling running");
     assert.deepStrictEqual(live.holds, [true, false]);
     assert.deepStrictEqual(live.reasons, ["archive_backpressure", null]);
     assert.deepStrictEqual(worker.rows, [], "held Worker samples need no empty gap row");
     const dap = make(null);
-    dap.p._setSamplingArchiveBackpressure(true);
-    dap.p._setSamplingArchiveBackpressure(false);
+    dap.p._sampling.setArchiveBackpressure(true);
+    dap.p._sampling.setArchiveBackpressure(false);
     assert.strictEqual(dap.rows.length, 1, "host-driven sampling still marks its paused interval");
     assert.strictEqual(dap.rows[0][0].bytes, null);
 }

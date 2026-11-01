@@ -26,7 +26,6 @@ async function countReadCompilations(operation) {
 function readerFixture() {
     const fixture = { fake: new FakeOpenOcdServer(), batches: new Set(), last: null };
     const session = new ManagedOpenOcdSession(
-        null,
         {},
         {
             onSample: (samples, t, due) => {
@@ -36,10 +35,10 @@ function readerFixture() {
     );
     fixture.session = session;
     // Exercise actual batch commands and parsing entirely in memory, without opening sockets or timers.
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session._scheduleNext = () => {};
     session._recordCycle = () => {};
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         const result = fixture.fake._execute(command);
         if (!result.ok) throw new Error(result.response);
         return result.response;
@@ -97,9 +96,9 @@ function runtimeItem(name, address) {
     );
     assert.ok(plain.fake.commands.every((command) => command === plain.fake.commands[0]));
 
-    const originalNow = Date.now;
+    const originalNow = plain.session.clock.now;
     try {
-        Date.now = () => {
+        plain.session.clock.now = () => {
             throw new Error("Fixed reads must not allocate a runtime deadline");
         };
         assertFixedSamples(
@@ -109,7 +108,7 @@ function runtimeItem(name, address) {
             1
         );
     } finally {
-        Date.now = originalNow;
+        plain.session.clock.now = originalNow;
     }
 
     const renamed = { name: "renamed", address: BASE + 64, size: 2 };

@@ -4,7 +4,8 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { encodeValue, decodeValue, decodeValueText } = require("../src/elfSymbols");
-const { LiveWatchSession, validateManagedWritePlan } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { validateManagedWritePlan } = require("../src/memoryWrite");
 const { isNonHaltingWordWrite } = require("../src/writeAccess");
 const writeSkill = require("../skills/mcu-variables/scripts/write");
 
@@ -112,63 +113,63 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.strictEqual(decodeValue(encodeValue("inf", "f64"), "f64"), Infinity);
     assert.strictEqual(decodeValue(encodeValue("-inf", "f64"), "f64"), -Infinity);
 
-    // _writeMemoryBytes: write at natural width first, fall back to a 32-bit read-modify-write when narrow writes are
+    // writeBytes: write at natural width first, fall back to a 32-bit read-modify-write when narrow writes are
     // dropped, fall back from ocd_ to unprefixed commands, and throw on failure
-    const okSession = new LiveWatchSession(null, {}, {});
+    const okSession = new ManagedOpenOcdSession({}, {});
     const sent = [];
     okSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
-    okSession._sendCheckedCommand = async (cmd) => {
+    okSession.tcl.sendChecked = async (cmd) => {
         sent.push(cmd);
         return "";
     };
-    await okSession._writeMemoryBytes(0x20000010, [0x2a, 0x00]);
+    await okSession.writer.writeBytes(0x20000010, [0x2a, 0x00]);
     assert.deepStrictEqual(
         sent,
         ["ocd_write_memory 0x20000010 16 {0x2a}", "ocd_write_memory 0x20000010 32 {0x4433002a}"],
         "a narrow write that did not land falls back to an aligned read-modify-write"
     );
-    assert.strictEqual(okSession.writeCmd, "ocd_write_memory", "keep the primary command on success");
+    assert.strictEqual(okSession.writer.writeCmd, "ocd_write_memory", "keep the primary command on success");
 
-    const fallbackSession = new LiveWatchSession(null, {}, {});
+    const fallbackSession = new ManagedOpenOcdSession({}, {});
     const fallbackSent = [];
     fallbackSession._readMemoryBytes = async () => [0, 0, 0, 0];
-    fallbackSession._sendCheckedCommand = async (cmd) => {
+    fallbackSession.tcl.sendChecked = async (cmd) => {
         fallbackSent.push(cmd);
         if (cmd.startsWith("ocd_")) throw new Error('invalid command name "ocd_write_memory"');
         return "";
     };
-    await fallbackSession._writeMemoryBytes(0x20000000, [1]);
+    await fallbackSession.writer.writeBytes(0x20000000, [1]);
     assert.strictEqual(fallbackSent.length, 3);
     assert.ok(fallbackSent[1].startsWith("write_memory "), "fall back to write_memory");
-    assert.strictEqual(fallbackSession.writeCmd, "write_memory", "lock the fallback command");
+    assert.strictEqual(fallbackSession.writer.writeCmd, "write_memory", "lock the fallback command");
 
-    const failSession = new LiveWatchSession(null, {}, {});
+    const failSession = new ManagedOpenOcdSession({}, {});
     failSession._readMemoryBytes = async () => [0, 0, 0, 0];
-    failSession._sendCheckedCommand = async () => {
+    failSession.tcl.sendChecked = async () => {
         throw new Error("address out of bounds");
     };
-    await assert.rejects(() => failSession._writeMemoryBytes(0x20000000, [1]), /Memory write failed/);
+    await assert.rejects(() => failSession.writer.writeBytes(0x20000000, [1]), /Memory write failed/);
 
-    const alignedSession = new LiveWatchSession(null, {}, {});
+    const alignedSession = new ManagedOpenOcdSession({}, {});
     const alignedSent = [];
     alignedSession._readMemoryBytes = async () => {
         throw new Error("aligned word writes must not pre-read");
     };
-    alignedSession._sendCheckedCommand = async (cmd) => {
+    alignedSession.tcl.sendChecked = async (cmd) => {
         alignedSent.push(cmd);
         return "";
     };
-    await alignedSession._writeMemoryBytes(0x20000000, [0x78, 0x56, 0x34, 0x12]);
+    await alignedSession.writer.writeBytes(0x20000000, [0x78, 0x56, 0x34, 0x12]);
     assert.deepStrictEqual(alignedSent, ["ocd_write_memory 0x20000000 32 {0x12345678}"]);
 
-    const highAddressSession = new LiveWatchSession(null, {}, {});
+    const highAddressSession = new ManagedOpenOcdSession({}, {});
     const highAddressSent = [];
     highAddressSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
-    highAddressSession._sendCheckedCommand = async (cmd) => {
+    highAddressSession.tcl.sendChecked = async (cmd) => {
         highAddressSent.push(cmd);
         return "";
     };
-    await highAddressSession._writeMemoryBytes(0x90000001, [0xaa]);
+    await highAddressSession.writer.writeBytes(0x90000001, [0xaa]);
     assert.deepStrictEqual(
         highAddressSent,
         ["ocd_write_memory 0x90000001 8 {0xaa}", "ocd_write_memory 0x90000000 32 {0x4433aa11}"],
@@ -177,12 +178,12 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     // Narrow writes that land never rewrite neighbouring bytes, so a DMA update made while the
     // target is halted survives; unaligned spans use naturally aligned 8/16-bit accesses.
-    const memorySession = new LiveWatchSession(null, {}, {});
+    const memorySession = new ManagedOpenOcdSession({}, {});
     const ram = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
     const memorySent = [];
     memorySession._readMemoryBytes = async (address, count) =>
         ram.slice(address - 0x20000000, address - 0x20000000 + count);
-    memorySession._sendCheckedCommand = async (cmd) => {
+    memorySession.tcl.sendChecked = async (cmd) => {
         memorySent.push(cmd);
         const [, address, width, data] = cmd.match(/^\S+ (0x[0-9a-f]+) (\d+) \{(.*)\}$/);
         let offset = Number(address) - 0x20000000;
@@ -191,7 +192,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         ram[0] = 0x99; // DMA updates a neighbouring byte while the target is halted
         return "";
     };
-    await memorySession._writeMemoryBytes(0x20000001, [0xa1, 0xa2, 0xa3, 0xa4]);
+    await memorySession.writer.writeBytes(0x20000001, [0xa1, 0xa2, 0xa3, 0xa4]);
     assert.deepStrictEqual(memorySent, [
         "ocd_write_memory 0x20000001 8 {0xa1}",
         "ocd_write_memory 0x20000002 16 {0xa3a2}",
@@ -200,22 +201,22 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     assert.deepStrictEqual(ram, [0x99, 0xa1, 0xa2, 0xa3, 0xa4, 0x66, 0x77, 0x88], "neighbouring bytes are kept");
 
     // Every runtime write goes through writeAndVerify; no unverified write path remains.
-    assert.strictEqual(LiveWatchSession.prototype.writeOnce, undefined);
+    assert.strictEqual(ManagedOpenOcdSession.prototype.writeOnce, undefined);
 
     // Concurrent transactions must finish verification and resume before the next writer enters.
-    const concurrent = new LiveWatchSession(null, {}, {});
-    concurrent.socket = { destroyed: false };
+    const concurrent = new ManagedOpenOcdSession({}, {});
+    concurrent.tcl.socket = { destroyed: false };
     const operations = [];
     let releaseWrite;
     const writeGate = new Promise((resolve) => {
         releaseWrite = resolve;
     });
-    concurrent._sendCheckedCommand = async (command) => {
+    concurrent.tcl.sendChecked = async (command) => {
         operations.push(command);
         return command.includes("curstate") ? "running" : "";
     };
     concurrent._readItems = async () => ({ samples: [] });
-    concurrent._writeMemoryBytes = async (_address, bytes) => {
+    concurrent.writer.writeBytes = async (_address, bytes) => {
         operations.push(`write:${bytes[0]}`);
         if (bytes[0] === 1) await writeGate;
     };
@@ -237,7 +238,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         "resume"
     ]);
     assert.strictEqual(concurrent.busy, false);
-    concurrent._writeMemoryBytes = async () => {
+    concurrent.writer.writeBytes = async () => {
         throw new Error("write failed");
     };
     await assert.rejects(concurrent.writeAndVerify([{ name: "x", address: 0x20000000, bytes: [3] }]), /write failed/);
@@ -250,19 +251,19 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     concurrent.busy = false;
 
     await scenario("Aligned transactions retain exclusive ownership without run control", async () => {
-        const session = new LiveWatchSession(null, {}, {});
-        session.socket = { destroyed: false };
+        const session = new ManagedOpenOcdSession({}, {});
+        session.tcl.socket = { destroyed: false };
         const operations = [];
         let release;
         const gate = new Promise((resolve) => {
             release = resolve;
         });
-        session._sendCheckedCommand = async () => assert.fail("word writes must not query or change target state");
+        session.tcl.sendChecked = async () => assert.fail("word writes must not query or change target state");
         session._readItems = async () => {
             operations.push("read");
             return { samples: [] };
         };
-        session._writeMemoryBytes = async (_address, bytes) => {
+        session.writer.writeBytes = async (_address, bytes) => {
             operations.push("write:" + bytes[0]);
             if (bytes[0] === 1) await gate;
         };
@@ -274,7 +275,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
         const results = await Promise.all([first, second]);
         assert(results.every((result) => result.halted === false));
         assert.deepStrictEqual(operations, ["read", "write:1", "read", "read", "write:2", "read"]);
-        session._writeMemoryBytes = async () => {
+        session.writer.writeBytes = async () => {
             throw Error("word write failed");
         };
         await assert.rejects(

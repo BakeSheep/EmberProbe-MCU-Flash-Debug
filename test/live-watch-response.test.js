@@ -1,7 +1,8 @@
 "use strict";
 const assert = require("assert");
 const { EventEmitter } = require("events");
-const { ManagedOpenOcdSession, parseMemoryElements } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { parseMemoryElements } = require("../src/liveWatchReadPlan");
 const { LiveWatchService } = require("../src/services/liveWatchService");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
@@ -36,16 +37,16 @@ function socketFixture() {
         assert.deepStrictEqual(parseMemoryElements(text, width), [], "reject the entire malformed response");
     }
 
-    const reader = new ManagedOpenOcdSession(null, {}, {});
+    const reader = new ManagedOpenOcdSession({}, {});
     for (const [address, count, valid] of [
         [0x20000001, 3, "1 2 3"],
         [0x20000002, 4, "0x0201 0x0403"],
         [0x20000000, 4, "0x04030201"]
     ]) {
-        reader._sendCheckedCommand = async () => valid;
+        reader.tcl.sendChecked = async () => valid;
         assert.deepStrictEqual(await reader._readMemoryBytes(address, count), [1, 2, 3, 4].slice(0, count));
         for (const invalid of ["", valid + " 0", valid + " invalid", "0x100000000 " + valid]) {
-            reader._sendCheckedCommand = async () => invalid;
+            reader.tcl.sendChecked = async () => invalid;
             assert.strictEqual(await reader._readMemoryBytes(address, count), null, "never truncate a bad read");
         }
     }
@@ -53,9 +54,8 @@ function socketFixture() {
     const fake = new FakeOpenOcdServer();
     await fake.start();
     const samples = [];
-    const session = new ManagedOpenOcdSession(null, {}, { onSample: (batch) => samples.push(...batch) });
-    session.socket = await fake.connect();
-    session._setupSocket();
+    const session = new ManagedOpenOcdSession({}, { onSample: (batch) => samples.push(...batch) });
+    session.tcl.attach(await fake.connect());
     session.watch = [
         { name: "pwr", address: 0x20000000, size: 8 },
         { name: "value", address: 0x20000020, size: 4 }
@@ -106,40 +106,29 @@ function socketFixture() {
     }
 
     // After sleep or an event-loop stall, data can be dispatched before the overdue timer callback.
-    const overdue = new ManagedOpenOcdSession(null, {}, {});
-    overdue.socket = socketFixture();
-    overdue._setupSocket();
-    const realNow = Date.now;
-    let now = realNow();
-    let pending;
-    let queued;
-    try {
-        Date.now = () => now;
-        pending = overdue._sendCommand("read_memory 0x20000000 32 1");
-        queued = overdue._sendCommand("read_memory 0x20000020 32 1");
-        now += 2001;
-        overdue.socket.emit("data", Buffer.from("EP_OK:0x12345678\x1aEP_OK:0x04030201\x1a"));
-    } finally {
-        Date.now = realNow;
-    }
+    let now = Date.now();
+    const overdue = new ManagedOpenOcdSession({ clock: { now: () => now } }, {});
+    overdue.tcl.attach(socketFixture());
+    const pending = overdue.tcl.send("read_memory 0x20000000 32 1");
+    const queued = overdue.tcl.send("read_memory 0x20000020 32 1");
+    now += 2001;
+    overdue.tcl.socket.emit("data", Buffer.from("EP_OK:0x12345678\x1aEP_OK:0x04030201\x1a"));
     await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
     await assert.rejects(queued, { code: "OPENOCD_RPC_TIMEOUT" });
     assert.strictEqual(overdue.stopped, true, "an overdue response invalidates the FIFO connection");
-    assert.strictEqual(overdue.queue.length, 0);
+    assert.strictEqual(overdue.tcl.queue.length, 0);
 
-    const replaced = new ManagedOpenOcdSession(null, {}, {});
+    const replaced = new ManagedOpenOcdSession({}, {});
     const oldSocket = socketFixture();
-    replaced.socket = oldSocket;
-    replaced._setupSocket();
-    replaced.socket = socketFixture();
-    replaced._setupSocket();
-    const current = replaced._sendCommand("read_memory 0x20000020 32 1");
+    replaced.tcl.attach(oldSocket);
+    replaced.tcl.attach(socketFixture());
+    const current = replaced.tcl.send("read_memory 0x20000020 32 1");
     oldSocket.emit("data", Buffer.from("EP_OK:0xdeadbeef\x1a"));
     oldSocket.emit("error", new Error("old socket error"));
     oldSocket.emit("close");
-    assert.strictEqual(replaced.queue.length, 1, "old socket events cannot consume the new request");
+    assert.strictEqual(replaced.tcl.queue.length, 1, "old socket events cannot consume the new request");
     assert.strictEqual(replaced.stopped, false);
-    replaced.socket.emit("data", Buffer.from("EP_OK:0x04030201\x1a"));
+    replaced.tcl.socket.emit("data", Buffer.from("EP_OK:0x04030201\x1a"));
     assert.strictEqual(await current, "EP_OK:0x04030201");
     console.log("Live watch response integrity and overdue transport tests passed");
 })().catch((error) => {

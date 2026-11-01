@@ -83,12 +83,9 @@ function setup(sidebar, lang, initialState = {}) {
         },
         collect(symbol, options) {
             return clone(
-                (sidebar ? view.window.sbCollectLeaves : view.window.collectLeaves)(
-                    symbol.compositeLayout,
-                    symbol.name,
-                    symbol.address,
-                    options
-                )
+                view.window
+                    .eval("valueTree")
+                    .collectLeaves(symbol.compositeLayout, symbol.name, symbol.address, options)
             );
         }
     };
@@ -288,6 +285,24 @@ for (const version of [4, 5]) {
                     restored.close();
                 }
             }
+        }
+    }
+
+    // An unqualified scalar pointer keeps its whole name on its expanded target row (*counterPtr, not *ounterPtr).
+    for (const sidebar of [false, true]) {
+        const view = setup(sidebar, "en");
+        try {
+            if (!sidebar) view.document.getElementById("import").click();
+            view.send({ type: sidebar ? "availableVariables" : "variablesList", symbols: [counter] });
+            view.watch([counter]);
+            view.scalar([{ name: counter.name, value: 0x2000000c }]);
+            view.document.querySelector('.pointer-toggle[data-path="counterPtr"]').click();
+            const target = view.row("counterPtr.value");
+            assert.ok(target, "expanding adds the target row");
+            assert.strictEqual(target.querySelector(view.nameSelector).textContent, "*counterPtr");
+            view.assertHealthy();
+        } finally {
+            view.close();
         }
     }
 }

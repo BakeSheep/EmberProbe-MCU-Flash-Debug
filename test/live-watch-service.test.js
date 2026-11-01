@@ -142,16 +142,16 @@ const { createFixture } = require("./helpers/service-fixture");
         const { loadProvider } = require("./helpers/load-provider");
         const Provider = loadProvider();
         const provider = Object.create(Provider.prototype);
-        provider._runtimeRamCache = null;
+        provider._sampling._runtimeRamCache = null;
         provider.readElfSymbols = () => {
             throw new Error("No ELF selected");
         };
         const emptyPlan = [];
         const scalarPlan = [{ name: "counter", address: 0x20000000, size: 4, type: "u32" }];
-        assert.strictEqual(provider._runtimeReadRanges(emptyPlan), emptyPlan);
-        assert.strictEqual(provider._runtimeReadRanges(scalarPlan), scalarPlan);
+        assert.strictEqual(provider._sampling.runtimeReadRanges(emptyPlan), emptyPlan);
+        assert.strictEqual(provider._sampling.runtimeReadRanges(scalarPlan), scalarPlan);
         assert.throws(
-            () => provider._runtimeReadRanges([{ name: "values", runtimeLayout: { root: 1 } }]),
+            () => provider._sampling.runtimeReadRanges([{ name: "values", runtimeLayout: { root: 1 } }]),
             /No ELF selected/,
             "runtime objects must still require verified ELF memory ranges"
         );
@@ -161,7 +161,7 @@ const { createFixture } = require("./helpers/service-fixture");
                 sections: [{ name: ".data", addr: 0x20000000, size: 0x100, flags: 3 }]
             }
         });
-        const ranged = provider._runtimeReadRanges([
+        const ranged = provider._sampling.runtimeReadRanges([
             { name: "values", address: 0x20000000, size: 12, runtimeLayout: { root: 1 } }
         ]);
         assert.deepStrictEqual(ranged[0].runtimeRanges, [{ start: 0x20000000, end: 0x20000100 }]);
@@ -219,7 +219,7 @@ const { createFixture } = require("./helpers/service-fixture");
         const host = Object.create(Provider.prototype);
         const pointee = { name: "p.value", isComposite: true, runtimeLayout: { root: 0, types: [] }, type: "u32" };
         host._scalarWatchList = () => [{ name: "p", type: "u32", isPointer: true }, pointee];
-        const composites = host._compositeMap("chart");
+        const composites = host._sampling.compositeMap("chart");
         assert.deepStrictEqual([...composites.keys()], ["p.value"]);
         const diagnostic = { code: "LIVE_READ_BUDGET_EXCEEDED", message: "Runtime object time budget exceeded" };
         const decoded = new LiveWatchService({}).decodeConsumerSamples(

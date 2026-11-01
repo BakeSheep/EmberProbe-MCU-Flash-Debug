@@ -1,3 +1,4 @@
+"use strict";
 const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     dot = document.getElementById("statusDot"),
     text = document.getElementById("statusText"),
@@ -10,6 +11,7 @@ const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     liveLabel = document.getElementById("liveLabel"),
     liveToggle = document.getElementById("liveToggle"),
     langToggle = document.getElementById("langToggle");
+const { isComposite } = EmberProbeValueTree;
 // Notice boxes by area; the extension addresses them as { area, id } and the cards below own their slots.
 const NOTICE_SLOTS = {
     global: "noticeGlobal",
@@ -42,30 +44,15 @@ function setNotice(area, id, notice) {
 function clearNotice(area, id) {
     notices[area]?.clear(id);
 }
-let sideWatch = [],
-    writeList = [],
-    available = [],
-    availableByName = new Map(),
-    availableVersion = "",
-    availableGeneration = null,
-    availableTypesReady = true,
+let availableTypesReady = true,
     availableLayoutPending = new Set(),
     availableAddPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
     sbPointerLayoutWaiters = new Set(),
     availableTypeChunks = 0,
-    availableSearchTimer = null,
-    availableSearchQuery = "",
-    latest = Object.create(null),
-    latestText = Object.create(null),
-    latestEnum = Object.create(null),
-    latestPointer = Object.create(null),
     liveRunning = false,
     liveCanRead = false,
     liveCanWrite = false,
-    liveWriteUnavailableKey = "sb.writeNeedSampling",
-    liveHaltWrite = false,
-    liveTargetHalted = false,
     liveSnapshotReady = true,
     variableError = "",
     variableErrorKey = "",
@@ -74,87 +61,106 @@ let sideWatch = [],
     lastSkill = { state: "checking" },
     lastAgentAccess = null,
     uiState = api && api.getState ? api.getState() || {} : {};
-let sbExpanded = (uiState && uiState.sbExpanded) || Object.create(null),
-    // Opened runtime paths last posted to the host (see sbSyncRuntimeExpansions).
-    sbRuntimeExpansionsLoaded = false,
-    sbSentRuntimeExpansions = null,
-    // Last sampled pointer targets by watch path; restored with the view so a reopened sidebar still names them.
-    // They belong to the ELF version they were sampled from and are shown only while it is loaded.
-    sbLastPointers = (uiState.sbLastPointersVersion && uiState.sbLastPointers) || Object.create(null),
-    sbLastPointersVersion = (uiState.sbLastPointers && uiState.sbLastPointersVersion) || "",
-    sbRawMembers = uiState.sbRawMembers || Object.create(null),
+// Watch and write lists, ELF symbols, readings and view expansion; the value tree reads them too.
+const state = {
+    watch: [],
+    writeList: [],
+    available: [],
+    symbols: new Map(),
+    version: "",
+    generation: null,
+    latest: Object.create(null),
+    latestText: Object.create(null),
+    latestEnum: Object.create(null),
+    latestPointer: Object.create(null),
+    expanded: (uiState && uiState.sbExpanded) || Object.create(null),
+    rawMembers: uiState.sbRawMembers || Object.create(null),
     // Elements shown per static array path once "show more" was used.
-    sbArrayShown = uiState.sbArrayShown || Object.create(null),
-    compCells = Object.create(null),
-    avExpanded = Object.create(null),
-    writeCells = Object.create(null),
-    writeTimers = Object.create(null),
-    writeLastAt = Object.create(null),
-    latestWriteSeq = Object.create(null),
-    // Last value known to be on the target per write card; a failed write rolls back to it.
-    writeConfirmed = Object.create(null),
-    writeSeq = 0,
-    runtimeBodies = Object.create(null),
-    // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
-    sbPlacedPointees = new Set(),
-    sbFallbackPointees = new Set();
+    arrayShown: uiState.sbArrayShown || Object.create(null),
+    availableExpanded: Object.create(null)
+};
+const valueTree = EmberProbeValueTree.create({
+    t: (key, params) => t(key, params),
+    classes: {
+        row: "sb-mrow",
+        name: "sb-mname",
+        type: "sb-mtype",
+        value: "sb-mval",
+        nest: "",
+        head: "sb-comp-head",
+        arrow: "sb-arrow",
+        headName: "sb-comp-name",
+        headType: "sb-comp-type",
+        members: "sb-members",
+        note: "sb-note"
+    },
+    state,
+    savedPointers: { pointers: uiState.sbLastPointers, version: uiState.sbLastPointersVersion },
+    displayName: (path) => sbDisplayName({ name: path }),
+    save: () => saveSbUi(),
+    rerender: () => renderValues(),
+    rerenderPicker: () => renderAvailable(),
+    post: (message) => api?.postMessage(message),
+    copy: (text) => api?.postMessage({ type: "copyText", text }),
+    layoutExpansion: () => layoutExpansionUi,
+    requestPointerLayout: (name) => {
+        if (!api || !state.version || availableLayoutPending.has(name)) return;
+        availableLayoutPending.add(name);
+        sbPointerLayoutWaiters.add(name);
+        api.postMessage({ type: "resolveCompositeLayout", name, version: state.version });
+    },
+    togglePointee: (entry) => sbTogglePointee(entry),
+    decorateLeaf: (row, name) => name,
+    scalarCell: (cell, name) => {
+        cell.dataset.valueName = name;
+    }
+});
+const valueRefresh = EmberProbeValueTree.createThrottle(100, () => refreshDisplayedValues());
+const writes = EmberProbeWriteList.create({
+    box: writeBox,
+    count: document.getElementById("writeCount"),
+    state,
+    t: (key, params) => t(key, params),
+    displayName: (item) => sbDisplayName(item),
+    post: api && ((message) => api.postMessage(message)),
+    changed: () => updateAvailableSelections(),
+    notice: {
+        set: (notice) => setNotice("write", "write", notice),
+        clear: () => clearNotice("write", "write"),
+        level: () => notices.write?.get("write")?.level
+    }
+});
 // Members and pointees follow their card when it is dragged to a new place.
 function sbAttachedEntry(entry, name) {
-    return sbBaseNameOf(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name);
+    return (
+        EmberProbeRuntime.variableBaseName(entry.name) === name || EmberProbeRuntime.isPointeeDescendant(entry, name)
+    );
 }
 const sbWatchReorder =
     liveBox &&
     EmberProbeCardReorder.attach(liveBox, {
         onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(sideWatch, name, target, after, sbAttachedEntry);
-            if (next === sideWatch) return;
-            sideWatch = next;
+            const next = EmberProbeCardReorder.moveBlock(state.watch, name, target, after, sbAttachedEntry);
+            if (next === state.watch) return;
+            state.watch = next;
             renderValues();
             saveSideWatch();
         }
     });
-const sbWriteReorder =
-    writeBox &&
-    EmberProbeCardReorder.attach(writeBox, {
-        onMove: (name, target, after) => {
-            const next = EmberProbeCardReorder.moveBlock(writeList, name, target, after);
-            if (next === writeList) return;
-            writeList = next;
-            renderWrites();
-            saveWriteList();
-        }
-    });
-function shiftSliderBounds(min, max, current, next) {
-    const lo = Number(min),
-        hi = Number(max),
-        from = Number(current),
-        to = Number(next);
-    if (![lo, hi, from, to].every(Number.isFinite) || hi <= lo || (to >= lo && to <= hi)) return { min: lo, max: hi };
-    const span = hi - lo,
-        anchor = Math.min(hi, Math.max(lo, from)),
-        offset = anchor - lo,
-        newMin = to - offset;
-    return { min: newMin, max: newMin + span };
-}
 var I18N = window.__I18N__ || { zh: {}, en: {} };
 var LANG = window.__LANG__ === "en" ? "en" : "zh";
 function t(k, p) {
     return window.EmberProbeRuntime.translate(I18N, LANG, k, p);
 }
-function sbLayoutSymbol(path) {
-    const name = EmberProbeRuntime.variableBaseName(path);
-    const symbol = availableByName.get(name);
-    return symbol?.compositeLayout ? symbol : sideWatch.find((item) => item.name === name) || symbol;
-}
 const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     post: (message) => api?.postMessage(message),
-    version: () => availableVersion,
-    generation: () => availableGeneration,
-    symbol: sbLayoutSymbol,
+    version: () => state.version,
+    generation: () => state.generation,
+    symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => sbDisplayName({ name: path }),
     changed: () => {
-        for (const item of sideWatch) {
-            const symbol = availableByName.get(item.name);
+        for (const item of state.watch) {
+            const symbol = state.symbols.get(item.name);
             if (
                 symbol?.compositeLayout &&
                 symbol.compositeLayout.expansionGeneration === item.compositeLayout?.expansionGeneration
@@ -167,57 +173,6 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
         renderValues();
     }
 });
-function sbShowRawFor(path) {
-    return !!sbRawMembers[sbBaseNameOf(path)];
-}
-function sbRenderRawMembersUi(container, node, name) {
-    const base = sbBaseNameOf(name);
-    EmberProbeRuntime.renderMemberVisibility(container, node, name, sbShowRawFor(name), t, () => {
-        sbRawMembers[base] = !sbShowRawFor(name);
-        saveSbUi();
-        renderValues();
-        renderAvailable();
-    });
-}
-function sbFmtDisplayNode(node) {
-    if (node?.functionEmpty) return t("lw.functionEmpty");
-    if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
-    return node ? fmtExact(node.value, node.valueText, node.enumText) : "—";
-}
-// Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
-let sbDisplayInfos = new WeakMap();
-function sbWatchDisplayInfo(item) {
-    if (!sbDisplayInfos.has(item)) sbDisplayInfos.set(item, sbResolveWatchDisplayInfo(item));
-    return sbDisplayInfos.get(item);
-}
-function sbResolveWatchDisplayInfo(item) {
-    if (item.isPointer) return item;
-    const direct = availableByName.get(item.name);
-    if (direct?.isPointer) return direct;
-    const symbol = sbLayoutSymbol(item.name);
-    return (
-        EmberProbeRuntime.displayLayoutLeaves(
-            symbol,
-            symbol?.compositeLayout,
-            sbBaseNameOf(item.name),
-            symbol?.address,
-            { showRaw: true, includePointers: true }
-        ).find((leaf) => leaf.path === item.name) || item
-    );
-}
-function sbScalarDisplay(item) {
-    const info = sbWatchDisplayInfo(item);
-    // Before the first sample a pointer shows the target it had when last sampled.
-    const last = info.isPointer && latest[item.name] === undefined && sbShownLastPointers()[item.name];
-    if (last) return sbFmtDisplayNode({ ...info, ...last, stale: true });
-    return sbFmtDisplayNode({
-        ...info,
-        ...latestPointer[item.name],
-        value: latest[item.name],
-        valueText: latestText[item.name],
-        enumText: latestEnum[item.name]
-    });
-}
 function msgText(m) {
     return m && m.key ? t(m.key, m.params) : m && m.message != null ? m.message : "";
 }
@@ -639,9 +594,6 @@ function setStat(cls, key, params, txt) {
     if (flashStatus) flashStatus.dataset.state = cls || "busy";
     lastStatus = { cls: cls, key: key || "", params: params || null, text: s };
 }
-function applyStatus() {
-    if (lastStatus) setStat(lastStatus.cls, lastStatus.key, lastStatus.params, lastStatus.text);
-}
 function applyI18n() {
     var i, els;
     els = document.querySelectorAll("[data-i18n]");
@@ -662,7 +614,7 @@ function updateLangToggle() {
 function rerenderDynamic() {
     if (variableErrorKey) variableError = t(variableErrorKey, variableErrorParams);
     renderValues();
-    renderWrites();
+    writes.render();
     renderAvailable();
     applyFolds();
     renderSkillStatus(lastSkill);
@@ -677,7 +629,7 @@ function rerenderDynamic() {
     memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     for (const area of Object.values(notices)) area.relocalize();
-    applyStatus();
+    if (lastStatus) setStat(lastStatus.cls, lastStatus.key, lastStatus.params, lastStatus.text);
 }
 function setLang(l, notify) {
     LANG = l === "en" ? "en" : "zh";
@@ -689,138 +641,51 @@ function setLang(l, notify) {
     updateLangToggle();
     if (notify && api) api.postMessage({ type: "setLang", lang: LANG });
 }
-function fmt(v) {
-    if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
-    v = Number(v);
-    if (Number.isInteger(v)) return String(v);
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
-}
-function fmtExact(value, valueText, enumText) {
-    if (enumText) return String(enumText);
-    return valueText !== null && valueText !== undefined ? String(valueText) : fmt(value);
-}
-function setDisplayedValue(cell, value) {
-    EmberProbeRuntime.setValueCell(cell, value);
-}
 function saveSideWatch() {
-    if (api) api.postMessage({ type: "saveSidebarWatch", items: sideWatch });
-    sbSyncRuntimeExpansions();
-}
-// The sidebar's runtime cards read only their opened parts, like chart cards. Nothing is sent
-// before the host's watch list arrives, so a fresh view cannot clear them.
-function sbSyncRuntimeExpansions() {
-    if (!sbRuntimeExpansionsLoaded || !api) return;
-    const value = EmberProbeRuntime.runtimeExpansionPaths(sideWatch, sbExpanded, sbPlacedPointees);
-    const key = JSON.stringify(value);
-    if (key === sbSentRuntimeExpansions) return;
-    sbSentRuntimeExpansions = key;
-    api.postMessage({ type: "saveRuntimeExpansions", expansions: value });
-}
-function saveWriteList() {
-    if (api) api.postMessage({ type: "saveSidebarWrite", items: writeList });
-}
-function sbBaseNameOf(n) {
-    return EmberProbeRuntime.variableBaseName(String(n));
+    if (api) api.postMessage({ type: "saveSidebarWatch", items: state.watch });
+    valueTree.syncRuntimeExpansions();
 }
 function sbDisplayName(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
         get: (name) => {
-            const symbol = availableByName.get(name);
+            const symbol = state.symbols.get(name);
             if (symbol?.displayName && symbol.displayName !== symbol.name) return symbol;
             return (
-                sideWatch.find((entry) => entry.name === name) ||
-                writeList.find((entry) => entry.name === name) ||
+                state.watch.find((entry) => entry.name === name) ||
+                state.writeList.find((entry) => entry.name === name) ||
                 symbol
             );
         }
     });
 }
-function sbIsLeafChild(name) {
-    const b = sbBaseNameOf(name);
-    if (b === name) return false;
-    const parent = sideWatch.find((w) => w.name === b && sbIsComposite(w));
-    return (
-        !!parent &&
-        !!compCells[name] &&
-        !(parent.runtimeLayout && sideWatch.find((w) => w.name === name)?.layoutExpanded)
-    );
-}
-function sbCollectLeaves(layout, name, baseAddr, options = {}) {
-    return EmberProbeRuntime.displayLayoutLeaves(sbLayoutSymbol(name), layout, name, baseAddr, options);
-}
-function sbSelectionLeaves(symbol, runtime) {
-    const showRaw = sbShowRawFor(symbol.name);
-    const statics = sbCollectLeaves(symbol.compositeLayout, symbol.name, symbol.address, {
-        showRaw,
-        includePointers: true
-    });
-    const visibleRuntime = EmberProbeRuntime.displayRuntimeSelection(symbol, latest[symbol.name], showRaw);
-    return runtime ? (visibleRuntime?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded)) : statics;
-}
-const LEAF_W = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4, u64: 8, i64: 8, f64: 8 };
 function sbRemove(name, isComp) {
     if (isComp) {
-        sideWatch = sideWatch.filter((w) => w.name !== name && sbBaseNameOf(w.name) !== name);
-        delete sbRawMembers[name];
-        for (const state of [sbExpanded, sbArrayShown])
-            Object.keys(state).forEach((key) => {
-                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete state[key];
+        state.watch = state.watch.filter((w) => w.name !== name && EmberProbeRuntime.variableBaseName(w.name) !== name);
+        delete state.rawMembers[name];
+        for (const paths of [state.expanded, state.arrayShown])
+            Object.keys(paths).forEach((key) => {
+                if (key === name || key.startsWith(name + ".") || key.startsWith(name + "[")) delete paths[key];
             });
     } else {
-        const removed = sideWatch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
-        sideWatch = sideWatch.filter((w) => w.name !== name && !removed.includes(w));
+        const removed = state.watch.filter((w) => EmberProbeRuntime.isPointeeDescendant(w, name));
+        state.watch = state.watch.filter((w) => w.name !== name && !removed.includes(w));
         removed.forEach((w) => sbForgetValues(w.name));
     }
     sbForgetValues(name);
 }
-let sbPointerSaveTimer = null;
-// Snapshots sampled from another ELF never name targets in the loaded one.
-function sbShownLastPointers() {
-    return availableVersion && sbLastPointersVersion === availableVersion ? sbLastPointers : Object.create(null);
-}
-function sbResetLastPointers(version) {
-    sbLastPointers = Object.create(null);
-    sbLastPointersVersion = version || "";
-    uiState.sbLastPointers = sbLastPointers;
-    uiState.sbLastPointersVersion = sbLastPointersVersion;
-}
-function sbRememberPointers(entries) {
-    if (!availableVersion) return;
-    let changed = false;
-    if (sbLastPointersVersion !== availableVersion) {
-        sbResetLastPointers(availableVersion);
-        changed = true;
-    }
-    for (const [path, next] of Object.entries(entries)) {
-        if (JSON.stringify(sbLastPointers[path]) !== JSON.stringify(next)) {
-            sbLastPointers[path] = next;
-            changed = true;
-        }
-    }
-    if (!changed || sbPointerSaveTimer !== null) return;
-    sbPointerSaveTimer = setTimeout(() => {
-        sbPointerSaveTimer = null;
-        saveSbUi();
-    }, 2000);
-}
-function sbForgetPointers(name) {
-    for (const path of Object.keys(sbLastPointers))
-        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete sbLastPointers[path];
-}
 function sbForgetValues(name) {
-    sbForgetPointers(name);
-    delete latest[name];
-    delete latestText[name];
-    delete latestEnum[name];
-    delete latestPointer[name];
+    valueTree.pointers.forget(name);
+    delete state.latest[name];
+    delete state.latestText[name];
+    delete state.latestEnum[name];
+    delete state.latestPointer[name];
 }
 function sbToggle(entry) {
-    if (sideWatch.some((w) => w.name === entry.name)) {
+    if (state.watch.some((w) => w.name === entry.name)) {
         sbRemove(entry.name, !!entry.isComposite);
     } else {
-        sideWatch.push(entry);
-        if (entry.isComposite) sbExpanded[entry.name] = true;
+        state.watch.push(entry);
+        if (entry.isComposite) state.expanded[entry.name] = true;
     }
     renderValues();
     updateAvailableSelections();
@@ -828,24 +693,20 @@ function sbToggle(entry) {
     saveSbUi();
 }
 function renderValues() {
-    sbDisplayInfos = new WeakMap();
+    valueTree.reset();
     liveBox.textContent = "";
-    compCells = Object.create(null);
-    runtimeBodies = Object.create(null);
-    sbPlacedPointees = new Set();
-    sbFallbackPointees = new Set();
     // Expanded pointees render inside their pointer rows while composites and rows are built.
-    const topLevel = sideWatch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
+    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
     const rows = new Map();
-    topLevel.filter(sbIsComposite).forEach((item) => {
+    topLevel.filter(isComposite).forEach((item) => {
         sbRenderComposite(item);
         rows.set(item.name, [liveBox.lastChild]);
     });
     liveBox.textContent = "";
     topLevel.forEach((item) => {
-        if (!sbIsComposite(item) && !sbIsLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
+        if (!isComposite(item) && !valueTree.isLeafChild(item.name)) rows.set(item.name, sbRenderScalarRow(item));
     });
-    if (!sideWatch.length) {
+    if (!state.watch.length) {
         document.getElementById("watchCount").textContent = "0";
         const e = document.createElement("div");
         e.className = "empty";
@@ -860,20 +721,20 @@ function renderValues() {
         liveBox.append(...nodes);
     });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    sideWatch
+    state.watch
         .filter(EmberProbeRuntime.isPointeeEntry)
         .sort((a, b) => a.name.length - b.name.length)
         .forEach((item) => {
-            if (sbPlacedPointees.has(item.name)) return;
-            sbFallbackPointees.add(item.name);
-            if (sbIsComposite(item)) sbRenderComposite(item);
+            if (valueTree.placed.has(item.name)) return;
+            valueTree.fallback.add(item.name);
+            if (isComposite(item)) sbRenderComposite(item);
             else liveBox.append(...sbRenderScalarRow(item));
         });
     document.getElementById("watchCount").textContent = String(
-        sideWatch.filter((it) => !sbIsLeafChild(it.name) && !sbPlacedPointees.has(it.name)).length
+        state.watch.filter((it) => !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name)).length
     );
     sbWatchReorder?.refresh();
-    sbSyncRuntimeExpansions();
+    valueTree.syncRuntimeExpansions();
 }
 function sbRenderScalarRow(item) {
     const row = document.createElement("div");
@@ -886,7 +747,7 @@ function sbRenderScalarRow(item) {
     val.dataset.valueName = item.name;
     const ty = document.createElement("span");
     ty.className = "value-type";
-    const info = sbWatchDisplayInfo(item);
+    const info = valueTree.displayInfo(item);
     ty.textContent = (info.isPointer ? info.typeName : item.type) || "u32";
     ty.title = ty.textContent;
     const nameWrap = document.createElement("span");
@@ -915,129 +776,42 @@ function sbRenderScalarRow(item) {
         item.name
     );
     // The pointee is part of the variable's card, on a second grid row below its value.
-    const host = info.isPointer && sbPointerPointee(row, item.name, sbDisplayName(item), info);
+    const host = info.isPointer && valueTree.pointerPointee(row, item.name, sbDisplayName(item), info);
     if (host) row.appendChild(host);
     row.appendChild(footer);
-    setDisplayedValue(val, sbScalarDisplay(item));
+    EmberProbeRuntime.setValueCell(val, valueTree.scalarDisplay(item));
     return [row];
 }
-// Pointer rows expand in place. A pointee already present in the sampled tree toggles
-// locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
-function sbPointerPointee(row, path, label, node, renderInline) {
-    const host = document.createElement("div");
-    host.variableNoticeParent = row;
-    if (renderInline) {
-        const toggle = EmberProbeRuntime.renderPointerToggle(
-            row,
-            path,
-            !!sbExpanded[path],
-            t,
-            () => {
-                sbExpanded[path] = !sbExpanded[path];
-                host.classList.toggle("open", sbExpanded[path]);
-                toggle.classList.toggle("open", sbExpanded[path]);
-                toggle.setAttribute("aria-expanded", String(sbExpanded[path]));
-                saveSbUi();
-            },
-            sbDisplayName({ name: path })
-        );
-        host.className = "pointer-pointee" + (sbExpanded[path] ? " open" : "");
-        renderInline(host);
-        return host;
-    }
-    row.classList.add("pointer-row");
-    const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, sbPointerSymbol(path));
-    if (!entry) return null;
-    const item = sideWatch.find((w) => w.name === entry.name);
-    EmberProbeRuntime.renderPointerToggle(
-        row,
-        path,
-        !!item,
-        t,
-        () => sbTogglePointee(entry),
-        sbDisplayName({ name: path })
-    );
-    if (!item) return null;
-    host.className = "pointer-pointee open";
-    sbRenderPointee(host, item, label);
-    return host;
-}
-// Expansion needs the base symbol's runtime type graph. Composite watches load it with their
-// layout; a scalar pointer variable requests it once here and re-renders when it arrives.
-function sbPointerSymbol(path) {
-    const symbol = availableByName.get(sbBaseNameOf(path));
-    if (EmberProbeRuntime.runtimeGraph(symbol)) return symbol;
-    const fallback = sbLayoutSymbol(path);
-    if (
-        !EmberProbeRuntime.runtimeGraph(fallback) &&
-        symbol?.hasRuntimeLayout &&
-        !symbol.layoutError &&
-        api &&
-        availableVersion &&
-        !availableLayoutPending.has(symbol.name)
-    ) {
-        availableLayoutPending.add(symbol.name);
-        sbPointerLayoutWaiters.add(symbol.name);
-        api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: availableVersion });
-    }
-    return fallback;
-}
 function sbTogglePointee(entry) {
-    if (sideWatch.some((item) => item.name === entry.name)) {
-        const removed = sideWatch.filter(
+    if (state.watch.some((item) => item.name === entry.name)) {
+        const removed = state.watch.filter(
             (item) => item.name === entry.name || EmberProbeRuntime.isPointeeDescendant(item, entry.name)
         );
-        sideWatch = sideWatch.filter((item) => !removed.includes(item));
+        state.watch = state.watch.filter((item) => !removed.includes(item));
         removed.forEach((item) => sbForgetValues(item.name));
-    } else sideWatch.push(entry);
+    } else state.watch.push(entry);
     renderValues();
     saveSideWatch();
 }
-function sbRenderPointee(host, item, label) {
-    sbPlacedPointees.add(item.name);
-    if (sbIsComposite(item)) {
-        runtimeBodies[item.name] = host;
-        sbRenderRuntimeBody(host, latest[item.name], item.name);
-        return;
-    }
-    // A scalar target (`int *`, `char *` string preview, pointer to pointer) is one row.
-    const row = document.createElement("div");
-    row.className = "sb-mrow";
-    row.dataset.path = item.name;
-    const nm = document.createElement("span");
-    nm.className = "sb-mname";
-    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^./, "");
-    nm.title = sbDisplayName(item);
-    const ty = document.createElement("span");
-    ty.className = "sb-mtype";
-    ty.textContent = item.typeName || item.type || "";
-    ty.title = ty.textContent;
-    const val = document.createElement("span");
-    val.className = "sb-mval";
-    val.dataset.valueName = item.name;
-    val.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    row.append(nm, ty, val);
-    host.appendChild(row);
-    const nested = sbPointerPointee(row, item.name, nm.textContent, sbWatchDisplayInfo(item));
-    if (nested) host.appendChild(nested);
-    setDisplayedValue(val, sbScalarDisplay(item));
-}
-const AVAILABLE_VARIABLE_LIMIT = 500;
-const AVAILABLE_ROW_LIMIT = AVAILABLE_VARIABLE_LIMIT * 2;
 // Heuristic origin filter; the extension classifies symbols from DWARF source paths, types and names.
 let userVarsOnly = uiState.sbUserVarsOnly === true;
-function isUserVariable(symbol) {
-    return !symbol.origin || symbol.origin === "user";
-}
-function visibleAvailable() {
-    return userVarsOnly ? available.filter(isUserVariable) : available;
-}
+const variablePicker = EmberProbeSymbolPicker.create({
+    t: (key, params) => t(key, params),
+    state,
+    valueTree,
+    layoutExpansion: () => layoutExpansionUi,
+    displayName: (item) => sbDisplayName(item),
+    symbols: () => state.available,
+    userOnly: () => userVarsOnly,
+    expanded: () => state.availableExpanded,
+    pending: availableLayoutPending,
+    typesReady: () => availableTypesReady,
+    post: api && ((message) => api.postMessage(message)),
+    childrenClass: "av-children"
+});
 function availableOriginTitle(symbol) {
     const lines = [];
-    if (!isUserVariable(symbol)) lines.push(t("sb.origin." + symbol.origin));
+    if (!EmberProbeSymbolPicker.isUserVariable(symbol)) lines.push(t("sb.origin." + symbol.origin));
     if (symbol.sourceFile) lines.push(t("sb.sourceFile", { file: symbol.sourceFile }));
     return lines.length ? "\n" + lines.join("\n") : "";
 }
@@ -1045,28 +819,6 @@ function applyUserVarsOnly() {
     const button = document.getElementById("varUserOnly");
     button.classList.toggle("primary", userVarsOnly);
     button.setAttribute("aria-pressed", String(userVarsOnly));
-}
-function needsAvailableLayout(symbol) {
-    return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
-}
-function scheduleAvailableMemberSearch(query) {
-    if (query !== availableSearchQuery || !query || !availableTypesReady) {
-        clearTimeout(availableSearchTimer);
-        availableSearchTimer = null;
-        availableSearchQuery = query;
-    }
-    if (!query || !availableTypesReady || !api || availableSearchTimer !== null) return;
-    availableSearchTimer = setTimeout(() => {
-        availableSearchTimer = null;
-        const slots = Math.max(0, 4 - availableLayoutPending.size);
-        visibleAvailable()
-            .filter((symbol) => needsAvailableLayout(symbol) && !availableLayoutPending.has(symbol.name))
-            .slice(0, slots)
-            .forEach((symbol) => {
-                availableLayoutPending.add(symbol.name);
-                api.postMessage({ type: "resolveCompositeLayout", name: symbol.name, version: availableVersion });
-            });
-    }, 180);
 }
 function renderAvailable() {
     const scrollTop = availableBox.scrollTop;
@@ -1077,6 +829,153 @@ function renderAvailable() {
     availableBox.scrollTop = scrollTop;
     availableBox.scrollLeft = scrollLeft;
 }
+// The watch entry that adds a composite symbol as a whole.
+function sbCompositeEntry(sym) {
+    return {
+        name: sym.name,
+        displayName: sbDisplayName(sym),
+        address: Number(sym.address) || 0,
+        size: Number(sym.size) || 4,
+        type: "",
+        isComposite: true,
+        compositeLayout: sym.compositeLayout || null,
+        ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
+    };
+}
+// The watch and write entry of one member row.
+function sbLeafEntry(lf) {
+    return {
+        name: lf.path,
+        displayName: sbDisplayName({ name: lf.displayPath || lf.path, displayName: lf.displayName }),
+        address: lf.address,
+        size: lf.size || EmberProbeRuntime.typeByteLength(lf.type),
+        type: lf.type,
+        ...(lf.isPointer ? { isPointer: true, typeName: lf.typeName, pointerTarget: lf.pointerTarget } : {}),
+        ...(lf.layoutExpanded ? { layoutExpanded: true, staticRuntimeStorage: lf.staticRuntimeStorage } : {}),
+        ...(lf.isBoolean ? { isBoolean: true } : {}),
+        ...(Number.isInteger(lf.bitSize) ? { bitSize: lf.bitSize, bitOffset: lf.bitOffset } : {}),
+        ...(lf.isConst ? { isConst: true } : {}),
+        ...(lf.isReference ? { isReference: true } : {}),
+        ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
+        ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
+        ...(lf.runtimeLayout
+            ? {
+                  runtimeLayout: lf.runtimeLayout,
+                  runtimeSegments: lf.runtimeSegments,
+                  ...(lf.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
+                  compositeLayout: lf.compositeLayout,
+                  isComposite: lf.isComposite
+              }
+            : {})
+    };
+}
+function sbCompositeRow(sym, open, toggle, on) {
+    const row = document.createElement("div");
+    row.className = "available-row comp";
+    const wrap = document.createElement("span");
+    wrap.className = "av-name-wrap";
+    const arrow = document.createElement("span");
+    arrow.className = "av-arrow" + (open ? " open" : "");
+    arrow.textContent = "\u25B6";
+    const nm = document.createElement("span");
+    nm.className = "available-name";
+    EmberProbeRuntime.renderSymbolName(nm, sbDisplayName(sym), sym);
+    nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole")) + availableOriginTitle(sym);
+    wrap.append(
+        arrow,
+        mkWatchBtn(
+            sym.name,
+            !availableTypesReady || !!sym.layoutError,
+            sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
+            () => {
+                if (state.watch.some((item) => item.name === sym.name) || sym.compositeLayout || sym.runtimeLayout) {
+                    sbToggle(sbCompositeEntry(sym));
+                } else {
+                    // The add waits for the layout, also when expanding the row already asked for it.
+                    availableAddPending.add(sym.name);
+                    if (!availableLayoutPending.has(sym.name)) {
+                        availableLayoutPending.add(sym.name);
+                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: state.version });
+                    }
+                }
+            }
+        ),
+        nm
+    );
+    const ty = document.createElement("span");
+    ty.className = "available-type";
+    ty.textContent = sym.typeName || t("lw.unknownType");
+    row.append(wrap, ty);
+    arrow.onclick = toggle;
+    nm.onclick = (event) => {
+        if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
+        sbToggle(sbCompositeEntry(sym));
+    };
+    return { row, arrow };
+}
+function sbLeafRow(lf) {
+    const lb = document.createElement("div");
+    lb.className = "available-row leaf";
+    const cell = document.createElement("span");
+    cell.className = "av-name-cell";
+    const leafEntry = sbLeafEntry(lf);
+    cell.appendChild(mkWriteBtn(leafEntry));
+    cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
+    const ln = document.createElement("span");
+    ln.className = "av-leaf-name";
+    ln.textContent = lf.label;
+    ln.title = leafEntry.displayName;
+    cell.appendChild(ln);
+    const lty = document.createElement("span");
+    lty.className = "available-type";
+    lty.textContent = (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "");
+    lb.append(cell, lty);
+    lb.onclick = () => sbToggle(leafEntry);
+    return lb;
+}
+function sbScalarRow(sym, already) {
+    const noLayout = sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout;
+    const b = document.createElement("div");
+    b.className = "available-row" + (noLayout ? " off" : "");
+    b.title = noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : already ? t("sb.removeFromWatch") : "";
+    const cell = document.createElement("span");
+    cell.className = "av-name-cell";
+    const entry = {
+        name: sym.name,
+        displayName: sbDisplayName(sym),
+        address: Number(sym.address) || 0,
+        size: Number(sym.size) || 4,
+        type: sym.watchType,
+        ...(sym.isPointer ? { isPointer: true, typeName: sym.typeName, pointerTarget: sym.pointerTarget } : {}),
+        ...(sym.isBoolean ? { isBoolean: true } : {})
+    };
+    cell.appendChild(
+        mkWriteBtn(
+            entry,
+            !availableTypesReady || noLayout || !sym.hasDwarfWriteType,
+            noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : t("sb.writeUnsupported")
+        )
+    );
+    cell.appendChild(
+        mkWatchBtn(
+            sym.name,
+            !availableTypesReady || noLayout,
+            sym.unsupportedReason || t("sb.compositeUnsupported"),
+            () => sbToggle(entry)
+        )
+    );
+    const n = document.createElement("span");
+    n.className = "available-name";
+    EmberProbeRuntime.renderSymbolName(n, sbDisplayName(sym), sym);
+    n.title += availableOriginTitle(sym);
+    cell.appendChild(n);
+    const ty = document.createElement("span");
+    ty.className = "available-type";
+    ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
+    b.append(cell, ty);
+    if (!noLayout) b.onclick = () => sbToggle(entry);
+    return b;
+}
 function renderAvailableContents(content) {
     EmberProbeRuntime.renderElfDiagnostics(
         document.getElementById("availableDiagnostics"),
@@ -1085,288 +984,18 @@ function renderAvailableContents(content) {
         t("common.diagnostics"),
         t
     );
-    const pool = visibleAvailable();
+    const pool = variablePicker.pool();
     const allCount = document.getElementById("allCount");
-    allCount.textContent = userVarsOnly ? pool.length + "/" + available.length : String(available.length);
-    allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: available.length }) : "";
+    allCount.textContent = userVarsOnly ? pool.length + "/" + state.available.length : String(state.available.length);
+    allCount.title = userVarsOnly ? t("sb.filteredCount", { shown: pool.length, total: state.available.length }) : "";
     // The error is in the diagnostics notice above the list.
     if (variableError) return;
     const query = document.getElementById("varSearch").value.trim().toLowerCase();
-    scheduleAvailableMemberSearch(query);
-    const selected = new Set(sideWatch.map((w) => w.name));
-    const nameMatches = (symbol) =>
-        symbol.name.toLowerCase().includes(query) || sbDisplayName(symbol).toLowerCase().includes(query);
-    const memberMatches = new Map();
-    const matching = pool.filter((symbol) => {
-        if (!query || nameMatches(symbol)) return true;
-        if (!symbol.isComposite) return false;
-        const runtime = EmberProbeRuntime.runtimeSelection(symbol, latest[symbol.name]);
-        const leaves = sbSelectionLeaves(symbol, runtime);
-        const matches = leaves.filter(
-            (leaf) =>
-                leaf.path.toLowerCase().includes(query) ||
-                sbDisplayName({ name: leaf.path }).toLowerCase().includes(query)
-        );
-        if (!matches.length) return false;
-        memberMatches.set(symbol.name, matches);
-        return true;
-    });
-    const list = matching.slice(0, AVAILABLE_VARIABLE_LIMIT);
-    let leafRows = 0;
-    if (!list.length) {
-        const e = document.createElement("div");
-        e.className = "empty";
-        e.textContent =
-            query && (!availableTypesReady || pool.some(needsAvailableLayout))
-                ? t("sb.searchingMembers")
-                : !pool.length && available.length
-                  ? t("sb.noUserVars", { count: available.length })
-                  : available.length
-                    ? t("sb.noMatch")
-                    : t("sb.noImportable");
-        content.appendChild(e);
-        return;
-    }
-    list.forEach((sym) => {
-        if (sym.isComposite) {
-            let open = !!avExpanded[sym.name] || memberMatches.has(sym.name);
-            const row = document.createElement("div");
-            row.className = "available-row comp";
-            const wrap = document.createElement("span");
-            wrap.className = "av-name-wrap";
-            const arrow = document.createElement("span");
-            arrow.className = "av-arrow" + (open ? " open" : "");
-            arrow.textContent = "\u25B6";
-            const nm = document.createElement("span");
-            nm.className = "available-name";
-            const on = selected.has(sym.name);
-            EmberProbeRuntime.renderSymbolName(nm, sbDisplayName(sym), sym);
-            nm.title += "\n" + (on ? t("sb.removeFromWatch") : t("sb.compositeAddWhole")) + availableOriginTitle(sym);
-            const compEntry = {
-                name: sym.name,
-                displayName: sbDisplayName(sym),
-                address: Number(sym.address) || 0,
-                size: Number(sym.size) || 4,
-                type: "",
-                isComposite: true,
-                compositeLayout: sym.compositeLayout || null,
-                ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
-            };
-            wrap.append(
-                arrow,
-                mkWatchBtn(
-                    sym.name,
-                    !availableTypesReady || !!sym.layoutError,
-                    sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"),
-                    () => {
-                        if (
-                            sideWatch.some((item) => item.name === sym.name) ||
-                            sym.compositeLayout ||
-                            sym.runtimeLayout
-                        ) {
-                            sbToggle(compEntry);
-                        } else if (!availableLayoutPending.has(sym.name)) {
-                            availableAddPending.add(sym.name);
-                            availableLayoutPending.add(sym.name);
-                            api?.postMessage({
-                                type: "resolveCompositeLayout",
-                                name: sym.name,
-                                version: availableVersion
-                            });
-                        }
-                    }
-                ),
-                nm
-            );
-            const ty = document.createElement("span");
-            ty.className = "available-type";
-            ty.textContent = sym.typeName || t("lw.unknownType");
-            row.append(wrap, ty);
-            content.appendChild(row);
-            const kids = document.createElement("div");
-            kids.className = "av-children" + (open ? " open" : "");
-            let ownLeafRows = 0;
-            const populate = () => {
-                leafRows -= ownLeafRows;
-                ownLeafRows = 0;
-                EmberProbeRuntime.resetVariableNotices(kids, t);
-                kids.textContent = "";
-                if (!sym.compositeLayout && !sym.runtimeLayout) {
-                    sbNote(kids, sym.layoutError || sym.unsupportedReason || t("lw.compositeNoLayout"), "warning");
-                    return;
-                }
-                sbRenderRawMembersUi(kids, latest[sym.name] || sym.compositeLayout, sym.name);
-                const runtime = EmberProbeRuntime.runtimeSelection(sym, latest[sym.name]);
-                const leaves = memberMatches.get(sym.name) || sbSelectionLeaves(sym, runtime);
-                if (runtime)
-                    sbNote(
-                        kids,
-                        t(
-                            runtime.sampled
-                                ? "lw.runtimeMembersReadOnly"
-                                : runtime.entries.length
-                                  ? "lw.runtimeMembersSelectable"
-                                  : "lw.runtimeMembersHint"
-                        )
-                    );
-                if (runtime && leaves.some((leaf) => leaf.layoutExpanded)) sbNote(kids, t("lw.layoutStaticStorage"));
-                if (sym.compositeLayout?.truncated || sym.runtimeLayout?.truncated)
-                    sbNote(kids, t("lw.layoutPartial"), "warning");
-                for (const entry of EmberProbeRuntime.displayUnavailableRows(
-                    sym.compositeLayout,
-                    sym.name,
-                    64,
-                    sym,
-                    sbShowRawFor(sym.name)
-                ))
-                    layoutExpansionUi.render(kids, entry, sym.name, t);
-                const shownLeaves = Math.min(leaves.length, Math.max(0, AVAILABLE_ROW_LIMIT - list.length - leafRows));
-                leaves.slice(0, shownLeaves).forEach((lf) => {
-                    const lb = document.createElement("div");
-                    lb.className = "available-row leaf";
-                    const cell = document.createElement("span");
-                    cell.className = "av-name-cell";
-                    const leafEntry = {
-                        name: lf.path,
-                        displayName: sbDisplayName({ name: lf.displayPath || lf.path, displayName: lf.displayName }),
-                        address: lf.address,
-                        size: lf.size || LEAF_W[lf.type] || 4,
-                        type: lf.type,
-                        ...(lf.isPointer
-                            ? { isPointer: true, typeName: lf.typeName, pointerTarget: lf.pointerTarget }
-                            : {}),
-                        ...(lf.layoutExpanded
-                            ? { layoutExpanded: true, staticRuntimeStorage: lf.staticRuntimeStorage }
-                            : {}),
-                        ...(lf.isBoolean ? { isBoolean: true } : {}),
-                        ...(Number.isInteger(lf.bitSize) ? { bitSize: lf.bitSize, bitOffset: lf.bitOffset } : {}),
-                        ...(lf.isConst ? { isConst: true } : {}),
-                        ...(lf.isReference ? { isReference: true } : {}),
-                        ...(lf.isMemberPointer ? { isMemberPointer: true } : {}),
-                        ...(lf.enumEncodingInferred ? { enumEncodingInferred: true } : {}),
-                        ...(lf.runtimeLayout
-                            ? {
-                                  runtimeLayout: lf.runtimeLayout,
-                                  runtimeSegments: lf.runtimeSegments,
-                                  ...(lf.runtimeStaticPointers ? { runtimeStaticPointers: true } : {}),
-                                  compositeLayout: lf.compositeLayout,
-                                  isComposite: lf.isComposite
-                              }
-                            : {})
-                    };
-                    cell.appendChild(mkWriteBtn(leafEntry));
-                    cell.appendChild(mkWatchBtn(lf.path, false, "", () => sbToggle(leafEntry)));
-                    const ln = document.createElement("span");
-                    ln.className = "av-leaf-name";
-                    ln.textContent = lf.label;
-                    ln.title = leafEntry.displayName;
-                    cell.appendChild(ln);
-                    const lty = document.createElement("span");
-                    lty.className = "available-type";
-                    lty.textContent =
-                        (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "");
-                    lb.append(cell, lty);
-                    lb.onclick = () => sbToggle(leafEntry);
-                    kids.appendChild(lb);
-                });
-                ownLeafRows = shownLeaves;
-                leafRows += shownLeaves;
-                if (leaves.length > shownLeaves) {
-                    sbNote(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
-                }
-                EmberProbeRuntime.finishVariableNotices(kids);
-            };
-            if (open) populate();
-            content.appendChild(kids);
-            const toggle = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                open = !open;
-                avExpanded[sym.name] = open;
-                arrow.classList.toggle("open", open);
-                kids.classList.toggle("open", open);
-                if (open) {
-                    populate();
-                    if (
-                        !sym.compositeLayout &&
-                        !sym.runtimeLayout &&
-                        !sym.layoutError &&
-                        !availableLayoutPending.has(sym.name)
-                    ) {
-                        availableLayoutPending.add(sym.name);
-                        api?.postMessage({ type: "resolveCompositeLayout", name: sym.name, version: availableVersion });
-                    }
-                } else {
-                    leafRows -= ownLeafRows;
-                    ownLeafRows = 0;
-                    EmberProbeRuntime.resetVariableNotices(kids, t);
-                    kids.textContent = "";
-                }
-            };
-            arrow.onclick = toggle;
-            nm.onclick = (event) => {
-                if (!sym.compositeLayout && !sym.runtimeLayout) return toggle(event);
-                sbToggle({
-                    name: sym.name,
-                    displayName: sbDisplayName(sym),
-                    address: Number(sym.address) || 0,
-                    size: Number(sym.size) || 4,
-                    type: "",
-                    isComposite: true,
-                    compositeLayout: sym.compositeLayout || null,
-                    ...(EmberProbeRuntime.runtimeGraph(sym)
-                        ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) }
-                        : {})
-                });
-            };
-        } else {
-            const noLayout = sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout;
-            const b = document.createElement("div");
-            b.className = "available-row" + (noLayout ? " off" : "");
-            const already = selected.has(sym.name);
-            b.title = noLayout
-                ? sym.unsupportedReason || t("sb.compositeUnsupported")
-                : already
-                  ? t("sb.removeFromWatch")
-                  : "";
-            const cell = document.createElement("span");
-            cell.className = "av-name-cell";
-            const entry = {
-                name: sym.name,
-                displayName: sbDisplayName(sym),
-                address: Number(sym.address) || 0,
-                size: Number(sym.size) || 4,
-                type: sym.watchType,
-                ...(sym.isPointer ? { isPointer: true, typeName: sym.typeName, pointerTarget: sym.pointerTarget } : {}),
-                ...(sym.isBoolean ? { isBoolean: true } : {})
-            };
-            cell.appendChild(
-                mkWriteBtn(
-                    entry,
-                    !availableTypesReady || noLayout || !sym.hasDwarfWriteType,
-                    noLayout ? sym.unsupportedReason || t("sb.compositeUnsupported") : t("sb.writeUnsupported")
-                )
-            );
-            cell.appendChild(
-                mkWatchBtn(
-                    sym.name,
-                    !availableTypesReady || noLayout,
-                    sym.unsupportedReason || t("sb.compositeUnsupported"),
-                    () => sbToggle(entry)
-                )
-            );
-            const n = document.createElement("span");
-            n.className = "available-name";
-            EmberProbeRuntime.renderSymbolName(n, sbDisplayName(sym), sym);
-            n.title += availableOriginTitle(sym);
-            cell.appendChild(n);
-            const ty = document.createElement("span");
-            ty.className = "available-type";
-            ty.textContent = sym.typeName || sym.watchType || t("sb.composite");
-            b.append(cell, ty);
-            if (!noLayout) b.onclick = () => sbToggle(entry);
-            content.appendChild(b);
-        }
+    const selected = new Set(state.watch.map((w) => w.name));
+    const { matching, list } = variablePicker.render(content, query, {
+        composite: (sym, open, toggle) => sbCompositeRow(sym, open, toggle, selected.has(sym.name)),
+        leaf: (lf) => sbLeafRow(lf),
+        scalar: (sym) => sbScalarRow(sym, selected.has(sym.name))
     });
     if (matching.length > list.length) {
         const note = document.createElement("div");
@@ -1374,159 +1003,6 @@ function renderAvailableContents(content) {
         note.textContent = t("lw.showingFirst", { n: list.length });
         content.appendChild(note);
     }
-}
-function sbIsComposite(it) {
-    return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
-}
-// Write list: variables are added from the same ELF variable pane as the watch list; dragging writes continuously at up
-// to 10 Hz, and writeResult reports the outcome
-const WRITE_INTERVAL_MS = 100;
-// While the debugger is paused the CPU never sees intermediate drag values, yet every write makes the debugger refresh
-// variables and RTOS views, so only the settled value is written
-const PAUSED_WRITE_SETTLE_MS = 300;
-const TYPE_RANGE = {
-    u8: [0, 255],
-    i8: [-128, 127],
-    u16: [0, 65535],
-    i16: [-32768, 32767],
-    u32: [0, 4294967295],
-    i32: [-2147483648, 2147483647]
-};
-function isWideInt(type) {
-    return type === "u64" || type === "i64";
-}
-function isFloat(type) {
-    return type === "f32" || type === "f64";
-}
-function defBounds(type) {
-    if (isWideInt(type)) return null;
-    if (isFloat(type)) return [-1, 1];
-    const r = TYPE_RANGE[type];
-    if (type === "u8" || type === "i8" || type === "u16" || type === "i16") return [r[0], r[1]];
-    return [0, 100];
-}
-// Widen the slider range when a sampled or read-back value falls outside it, so the slider can show the current value
-// (same rule as the initial range when added to the write list)
-function widenWriteBounds(item, v) {
-    let min = Number(item.min),
-        max = Number(item.max);
-    if (!Number.isFinite(v) || !Number.isFinite(min) || !Number.isFinite(max) || (v >= min && v <= max)) return false;
-    if (v > max) max = 2 * Math.abs(v);
-    if (v < min) min = -2 * Math.abs(v) || 0;
-    const range = TYPE_RANGE[item.type];
-    if (range) {
-        min = Math.max(range[0], min);
-        max = Math.min(range[1], max);
-    }
-    item.min = min;
-    item.max = max;
-    return true;
-}
-function typedWriteValueError(item, value) {
-    if (isFloat(item.type)) return "";
-    const type = item.isBoolean ? "bool" : item.type;
-    if (!Number.isInteger(value)) return t("sb.writeValueNotInteger", { type, value });
-    const [min, max] = item.isBoolean ? [0, 1] : TYPE_RANGE[item.type] || [value, value];
-    return value < min || value > max ? t("sb.writeValueOutOfRange", { type, value, min, max }) : "";
-}
-function clampToType(v, type) {
-    if (!Number.isFinite(v)) return 0;
-    const r = TYPE_RANGE[type];
-    if (!r) return v;
-    return Math.min(r[1], Math.max(r[0], Math.round(v)));
-}
-function normalizeWideInteger(raw, type) {
-    const text = String(raw).trim();
-    if (!/^[+-]?\d+$/.test(text)) return null;
-    try {
-        const value = BigInt(text),
-            min = type === "u64" ? 0n : -(1n << 63n),
-            max = type === "u64" ? (1n << 64n) - 1n : (1n << 63n) - 1n;
-        return value < min || value > max ? null : value.toString(10);
-    } catch {
-        return null;
-    }
-}
-function stepFor(item) {
-    if (isFloat(item.type)) {
-        const value = Math.abs(Number(item.value));
-        if (!Number.isFinite(value) || value < 1) return 0.001;
-        return Math.max(0.001, Math.pow(10, Math.floor(Math.log10(value)) - 2));
-    }
-    const v = Math.abs(Math.trunc(Number(item.value) || 0));
-    return v < 100 ? 1 : Math.pow(10, Math.floor(Math.log10(v)) - 1);
-}
-function addWriteStep(value, delta, type) {
-    const result = value + delta;
-    if (!Number.isFinite(result)) return value;
-    if (!isFloat(type)) return result;
-    const step = Math.abs(delta);
-    // Steps are decimal powers. Snap only representation noise near that decimal grid,
-    // including f32 values decoded into a JavaScript double, without erasing off-grid values.
-    const ticks = Math.round(result / step);
-    const snapped = Number(`${ticks}e${Math.round(Math.log10(step))}`);
-    const epsilon = type === "f32" ? 2 ** -23 : Number.EPSILON;
-    const tolerance = Math.min(step / 4, Math.max(Math.abs(value), step) * epsilon);
-    return Number.isFinite(snapped) && Math.abs(result - snapped) <= tolerance ? snapped : result;
-}
-function inWriteList(name) {
-    return writeList.some((w) => w.name === name);
-}
-// Aligned 32-bit variables can be written while the CPU runs; 8/16-bit, unaligned and 64-bit writes briefly halt for a
-// read-modify-write
-function writeRisk(item) {
-    return EmberProbeRuntime.writeHaltRisk(item.address, LEAF_W[item.type] || item.size);
-}
-function writeGateKey(item) {
-    if (!liveCanWrite) return liveWriteUnavailableKey;
-    return !liveHaltWrite && writeRisk(item) ? "sb.writeNeedHalt" : "";
-}
-// The risk note is a custom overlay: a native title cannot limit its width and would stack with the name's title
-let writeRiskTip = null;
-function showWriteRiskTip(icon) {
-    if (!writeRiskTip) {
-        writeRiskTip = document.createElement("div");
-        writeRiskTip.className = "write-risk-tip";
-        writeRiskTip.id = "writeRiskTip";
-        writeRiskTip.setAttribute("role", "tooltip");
-        document.body.appendChild(writeRiskTip);
-    }
-    writeRiskTip.textContent = icon.dataset.tip;
-    writeRiskTip.hidden = false;
-    icon.setAttribute("aria-describedby", writeRiskTip.id);
-    const anchor = icon.getBoundingClientRect(),
-        width = writeRiskTip.offsetWidth,
-        height = writeRiskTip.offsetHeight,
-        viewWidth = document.documentElement.clientWidth || window.innerWidth,
-        viewHeight = document.documentElement.clientHeight || window.innerHeight;
-    const left = Math.max(4, Math.min(anchor.left, viewWidth - width - 4));
-    const below = anchor.bottom + 4;
-    writeRiskTip.style.left = left + "px";
-    writeRiskTip.style.top = (below + height > viewHeight - 4 ? Math.max(4, anchor.top - height - 4) : below) + "px";
-}
-function hideWriteRiskTip(icon) {
-    if (writeRiskTip) writeRiskTip.hidden = true;
-    icon?.removeAttribute("aria-describedby");
-}
-function writeRiskIcon(item) {
-    const risk = writeRisk(item);
-    if (!risk) return null;
-    const bytes = LEAF_W[item.type] || Number(item.size) || 0;
-    const icon = document.createElement("span");
-    icon.className = "write-risk";
-    icon.tabIndex = 0;
-    icon.setAttribute("role", "img");
-    icon.innerHTML = EmberProbeRuntime.warningIconSvg("write-risk-icon");
-    icon.dataset.tip = t("sb.writeRisk." + risk, {
-        bits: bytes * 8,
-        addr: "0x" + ((Number(item.address) || 0) >>> 0).toString(16).toUpperCase()
-    });
-    icon.setAttribute("aria-label", icon.dataset.tip);
-    icon.addEventListener("mouseenter", () => showWriteRiskTip(icon));
-    icon.addEventListener("focus", () => showWriteRiskTip(icon));
-    icon.addEventListener("mouseleave", () => hideWriteRiskTip(icon));
-    icon.addEventListener("blur", () => hideWriteRiskTip(icon));
-    return icon;
 }
 function mkAvBtn(cls, glyph, on, disabled, titleTxt, handler) {
     const b = document.createElement("button");
@@ -1552,20 +1028,20 @@ function mkWriteBtn(entry, disabled, reason) {
         !!entry.isPointer ||
         !!entry.enumEncodingInferred ||
         Number.isInteger(entry.bitSize);
-    const on = !disabled && inWriteList(entry.name);
+    const on = !disabled && writes.has(entry.name);
     const button = mkAvBtn(
         "av-write",
         "\u270e",
         on,
         disabled,
         disabled ? reason || t("sb.writeUnsupported") : on ? t("sb.removeFromWrite") : t("sb.addToWrite"),
-        () => wToggle(entry)
+        () => writes.toggle(entry)
     );
     button.dataset.selectionName = entry.name;
     return button;
 }
 function mkWatchBtn(name, disabled, reason, handler) {
-    const on = !disabled && sideWatch.some((w) => w.name === name);
+    const on = !disabled && state.watch.some((w) => w.name === name);
     const button = mkAvBtn(
         "av-watch",
         on ? "\u2713" : "+",
@@ -1578,8 +1054,8 @@ function mkWatchBtn(name, disabled, reason, handler) {
     return button;
 }
 function updateAvailableSelections() {
-    const watched = new Set(sideWatch.map((item) => item.name));
-    const written = new Set(writeList.map((item) => item.name));
+    const watched = new Set(state.watch.map((item) => item.name));
+    const written = new Set(state.writeList.map((item) => item.name));
     availableBox.querySelectorAll("[data-selection-name]").forEach((button) => {
         if (button.disabled) return;
         const isWrite = button.classList.contains("av-write");
@@ -1596,457 +1072,6 @@ function updateAvailableSelections() {
             else row.title = on ? t("sb.removeFromWatch") : "";
         }
     });
-}
-function cancelPendingWrite(name) {
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
-    delete writeLastAt[name];
-    delete latestWriteSeq[name];
-}
-function removeWrite(name) {
-    cancelPendingWrite(name);
-    delete writeConfirmed[name];
-    writeList = writeList.filter((w) => w.name !== name);
-    renderWrites();
-    updateAvailableSelections();
-    saveWriteList();
-}
-function wToggle(entry) {
-    const i = writeList.findIndex((w) => w.name === entry.name);
-    if (i >= 0) removeWrite(entry.name);
-    else {
-        const type = entry.type || "u32",
-            nb = defBounds(type);
-        if (entry.isBoolean) {
-            writeList.push({
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type,
-                isBoolean: true,
-                min: 0,
-                max: 1,
-                value: Number(latest[entry.name]) ? 1 : 0
-            });
-        } else if (isWideInt(type)) {
-            const v = latestText[entry.name] || "0";
-            writeList.push({
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type,
-                value: v
-            });
-        } else {
-            let v = Number(latest[entry.name]);
-            if (!Number.isFinite(v)) v = 0;
-            const item = {
-                name: entry.name,
-                displayName: sbDisplayName(entry),
-                address: entry.address,
-                size: entry.size,
-                type: type,
-                min: nb[0],
-                max: nb[1],
-                value: v
-            };
-            widenWriteBounds(item, v);
-            writeList.push(item);
-        }
-        renderWrites();
-        updateAvailableSelections();
-        saveWriteList();
-    }
-}
-function postWrite(item) {
-    if (!api || !inWriteList(item.name)) return;
-    const gate = writeGateKey(item);
-    if (gate) {
-        setWriteFeedback({ key: gate });
-        return;
-    }
-    const seq = ++writeSeq;
-    latestWriteSeq[item.name] = seq;
-    const cells = writeCells[item.name];
-    if (cells) cells.input.classList.add("pending");
-    api.postMessage({ type: "writeVariable", name: item.name, value: item.value, seq });
-}
-function sendWrite(item, immediate) {
-    const name = item.name;
-    if (writeTimers[name]) {
-        clearTimeout(writeTimers[name]);
-        delete writeTimers[name];
-    }
-    const now = Date.now();
-    if (immediate) {
-        writeLastAt[name] = now;
-        postWrite(item);
-        return;
-    }
-    if (liveTargetHalted) {
-        writeTimers[name] = setTimeout(() => {
-            delete writeTimers[name];
-            writeLastAt[name] = Date.now();
-            postWrite(item);
-        }, PAUSED_WRITE_SETTLE_MS);
-        return;
-    }
-    const wait = WRITE_INTERVAL_MS - (now - (writeLastAt[name] || 0));
-    if (wait <= 0) {
-        writeLastAt[name] = now;
-        postWrite(item);
-        return;
-    }
-    writeTimers[name] = setTimeout(() => {
-        delete writeTimers[name];
-        writeLastAt[name] = Date.now();
-        postWrite(item);
-    }, wait);
-}
-function setBound(item, key, v) {
-    if (item.isBoolean) return;
-    if (!Number.isFinite(v)) return;
-    if (!isFloat(item.type)) v = Math.round(v);
-    if (key === "min") item.min = Math.min(v, Number(item.max));
-    else item.max = Math.max(v, Number(item.min));
-}
-function bindBound(el, item, key, sync) {
-    el.addEventListener(
-        "wheel",
-        (e) => {
-            e.preventDefault();
-            setBound(
-                item,
-                key,
-                addWriteStep(Number(item[key]) || 0, e.deltaY < 0 ? stepFor(item) : -stepFor(item), item.type)
-            );
-            sync();
-            saveWriteList();
-        },
-        { passive: false }
-    );
-    el.onclick = () => {
-        const inp = document.createElement("input");
-        inp.className = "bound-input";
-        inp.value = String(item[key]);
-        el.replaceWith(inp);
-        inp.focus();
-        inp.select();
-        let done = false;
-        const finish = (commit) => {
-            if (done) return;
-            done = true;
-            if (commit) setBound(item, key, Number(inp.value.trim()));
-            inp.replaceWith(el);
-            sync();
-            saveWriteList();
-        };
-        inp.onkeydown = (e) => {
-            if (e.key === "Enter") finish(true);
-            else if (e.key === "Escape") finish(false);
-        };
-        inp.onblur = () => finish(true);
-    };
-}
-function buildWriteCard(item, label) {
-    const wide = isWideInt(item.type),
-        row = document.createElement("div");
-    row.className = "write-row" + (wide ? " wide" : "");
-    const main = document.createElement("div");
-    main.className = "write-main";
-    const top = document.createElement("div");
-    top.className = "write-top";
-    const nm = document.createElement("span");
-    nm.className = "value-name";
-    const displayName = sbDisplayName(item);
-    nm.textContent = label || EmberProbeRuntime.shortVariableName(displayName);
-    nm.title = displayName;
-    nm.dataset.rawName = item.name;
-    nm.setAttribute("aria-label", displayName);
-    const dot = document.createElement("span");
-    dot.className = "write-dot";
-    const nmWrap = document.createElement("span");
-    nmWrap.className = "write-name-wrap";
-    const riskIcon = writeRiskIcon(item);
-    if (riskIcon) {
-        // The icon sits beside the name, not inside it, so the name's title never covers the risk tip.
-        const line = document.createElement("span");
-        line.className = "write-name-line";
-        line.append(riskIcon, nm);
-        nmWrap.append(dot, line);
-    } else nmWrap.append(dot, nm);
-    const ctl = document.createElement("span");
-    ctl.className = "write-ctl";
-    const minus = document.createElement("button");
-    minus.type = "button";
-    minus.className = "step-btn";
-    minus.textContent = "\u2212";
-    const input = document.createElement("input");
-    input.className = "write-input";
-    input.value = wide ? String(item.value ?? "0") : fmt(item.value);
-    const plus = document.createElement("button");
-    plus.type = "button";
-    plus.className = "step-btn";
-    plus.textContent = "+";
-    const bottom = document.createElement("div");
-    bottom.className = "write-bottom";
-    const ty = document.createElement("span");
-    ty.className = "value-type";
-    ty.textContent = item.isBoolean ? "bool" : item.type || "u32";
-    nmWrap.appendChild(ty);
-    ctl.append(minus, input, plus);
-    top.append(nmWrap, ctl);
-    const minL = document.createElement("span");
-    minL.className = "bound";
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.className = "write-slider";
-    const maxL = document.createElement("span");
-    maxL.className = "bound";
-    bottom.append(minL, slider, maxL);
-    main.append(top, bottom);
-    const rm = document.createElement("button");
-    rm.className = "watch-remove";
-    rm.textContent = "\u2715";
-    rm.title = t("sb.removeFromWrite");
-    rm.onclick = () => removeWrite(item.name);
-    row.append(main, rm);
-    if (!(item.name in writeConfirmed)) writeConfirmed[item.name] = item.value;
-    writeCells[item.name] = {
-        item,
-        row,
-        input,
-        slider,
-        dot,
-        controls: [minus, plus, input, slider],
-        setVal: (v) => {
-            if (item.isBoolean) v = Number(v) ? 1 : 0;
-            item.value = v;
-            input.value = wide ? String(v) : fmt(v);
-            if (wide) return;
-            if (!item.isBoolean && widenWriteBounds(item, Number(v))) {
-                writeCells[item.name].syncSlider();
-                saveWriteList();
-            } else slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), v)));
-        }
-    };
-    if (wide) {
-        minus.hidden = true;
-        plus.hidden = true;
-        bottom.remove();
-        const commitWide = () => {
-            const value = normalizeWideInteger(input.value, item.type);
-            if (value === null) {
-                input.value = String(item.value ?? "0");
-                setWriteFeedback({ key: "sb.invalidWriteValue" });
-                return;
-            }
-            if (value !== String(item.value)) {
-                item.value = value;
-                input.value = value;
-                saveWriteList();
-                sendWrite(item, true);
-            }
-        };
-        input.onkeydown = (e) => {
-            if (e.key === "Enter") commitWide();
-            else if (e.key === "Escape") input.value = String(item.value ?? "0");
-        };
-        input.onblur = commitWide;
-    } else {
-        const syncSlider = () => {
-            if (item.isBoolean) {
-                item.min = 0;
-                item.max = 1;
-            }
-            slider.min = String(item.min);
-            slider.max = String(item.max);
-            slider.step = isFloat(item.type) ? "any" : "1";
-            slider.value = String(Math.min(Number(item.max), Math.max(Number(item.min), Number(item.value) || 0)));
-            minL.textContent = fmt(item.min);
-            maxL.textContent = fmt(item.max);
-        };
-        syncSlider();
-        writeCells[item.name].syncSlider = syncSlider;
-        const setValue = (v, immediate) => {
-            v = item.isBoolean
-                ? Math.min(1, Math.max(0, Math.round(Number(v))))
-                : isFloat(item.type)
-                  ? Number(v)
-                  : clampToType(Number(v), item.type);
-            if (!Number.isFinite(v)) v = 0;
-            if (Object.is(v, -0)) v = 0;
-            item.value = v;
-            input.value = fmt(v);
-            syncSlider();
-            saveWriteList();
-            sendWrite(item, immediate);
-        };
-        const commitInput = () => {
-            const text = input.value.trim();
-            if (text === fmt(item.value)) return;
-            const raw = Number(text);
-            // An emptied box is not a request to write 0.
-            if (!text || !Number.isFinite(raw)) {
-                input.value = fmt(item.value);
-                return;
-            }
-            // Typed values are written exactly or not at all; never clamp or round them silently.
-            const invalid = typedWriteValueError(item, raw);
-            if (invalid) {
-                input.value = fmt(item.value);
-                setWriteFeedback({ text: invalid });
-                return;
-            }
-            const v = raw;
-            if (v !== item.value) {
-                const bounds = shiftSliderBounds(item.min, item.max, item.value, v);
-                item.min = bounds.min;
-                item.max = bounds.max;
-                setValue(v, true);
-            } else input.value = fmt(item.value);
-        };
-        input.onkeydown = (e) => {
-            if (e.key === "Enter") commitInput();
-            else if (e.key === "Escape") input.value = fmt(item.value);
-        };
-        input.onblur = commitInput;
-        input.addEventListener(
-            "wheel",
-            (e) => {
-                // Scrolling the panel across an unfocused value box must not write to the target.
-                if (writeGateKey(item) || document.activeElement !== input) return;
-                e.preventDefault();
-                const value = inputValue();
-                setValue(
-                    addWriteStep(
-                        value,
-                        e.deltaY < 0 ? stepFor({ ...item, value }) : -stepFor({ ...item, value }),
-                        item.type
-                    ),
-                    false
-                );
-            },
-            { passive: false }
-        );
-        const inputValue = () => {
-            const text = input.value.trim();
-            // Empty or unchanged display text keeps the full precision of the last known value.
-            if (!text || text === fmt(item.value)) return Number(item.value) || 0;
-            const value = Number(text);
-            return Number.isFinite(value) ? value : Number(item.value) || 0;
-        };
-        minus.onclick = () => {
-            const value = inputValue();
-            setValue(addWriteStep(value, -stepFor({ ...item, value }), item.type), true);
-        };
-        plus.onclick = () => {
-            const value = inputValue();
-            setValue(addWriteStep(value, stepFor({ ...item, value }), item.type), true);
-        };
-        slider.addEventListener("input", () => {
-            const v = item.isBoolean
-                ? Math.min(1, Math.max(0, Math.round(Number(slider.value))))
-                : isFloat(item.type)
-                  ? Number(slider.value)
-                  : clampToType(Number(slider.value), item.type);
-            item.value = v;
-            input.value = fmt(v);
-            sendWrite(item, false);
-        });
-        slider.addEventListener("change", () => setValue(Number(slider.value), true));
-        if (!item.isBoolean) {
-            bindBound(minL, item, "min", syncSlider);
-            bindBound(maxL, item, "max", syncSlider);
-        }
-    }
-    applyWriteGate(writeCells[item.name]);
-    return row;
-}
-function renderWrites() {
-    hideWriteRiskTip();
-    writeBox.textContent = "";
-    writeCells = Object.create(null);
-    document.getElementById("writeCount").textContent = String(writeList.length);
-    if (!writeList.length) {
-        const e = document.createElement("div");
-        e.className = "empty";
-        e.textContent = t("sb.writeEmpty");
-        writeBox.appendChild(e);
-        return;
-    }
-    const labels = EmberProbeRuntime.uniqueShortVariableNames(writeList.map((item) => sbDisplayName(item)));
-    writeList.forEach((item, index) => {
-        const card = buildWriteCard(item, labels[index]);
-        EmberProbeCardReorder.decorate(card, item.name, t("sb.dragToReorder", { name: sbDisplayName(item) }));
-        writeBox.appendChild(card);
-    });
-    sbWriteReorder?.refresh();
-}
-function applyWriteGate(cells) {
-    const gate = writeGateKey(cells.item),
-        title = gate ? t(gate) : "";
-    cells.row.classList.toggle("gated", !!gate);
-    cells.controls.forEach((control) => {
-        control.disabled = !!gate;
-        control.title = title;
-    });
-}
-function updateWriteAvailability() {
-    Object.values(writeCells).forEach(applyWriteGate);
-}
-// Input checks fade on their own; a failed write stays until dismissed or the next write succeeds.
-function setWriteFeedback(notice) {
-    if (!notice) return clearNotice("write", "write");
-    setNotice("write", "write", notice.level === "error" ? notice : { level: "warning", timeoutMs: 5000, ...notice });
-}
-// Write result feedback: the dot before the variable name lights up and fades (green on success, red on failure);
-// failures also show the reason in the title area
-function knownWriteValue(item) {
-    if (isWideInt(item.type)) return latestText[item.name] ?? writeConfirmed[item.name];
-    const sampled = latest[item.name];
-    const value = sampled === null || sampled === undefined ? NaN : Number(sampled);
-    if (Number.isFinite(value)) return isFloat(item.type) ? value : Math.round(value);
-    return writeConfirmed[item.name];
-}
-function onWriteResult(m) {
-    if (m.seq !== latestWriteSeq[m.name]) return;
-    delete latestWriteSeq[m.name];
-    const cells = writeCells[m.name];
-    if (cells) {
-        cells.input.classList.remove("pending");
-        cells.dot.className = "write-dot " + (m.ok ? "ok" : "err");
-        void cells.dot.offsetWidth;
-        cells.dot.classList.add("flash");
-        if (m.ok) {
-            latest[m.name] = m.value;
-            latestText[m.name] = m.valueText ?? null;
-            latestEnum[m.name] = m.enumText ?? null;
-            cells.setVal(m.valueText ?? m.value);
-            writeConfirmed[m.name] = m.valueText ?? m.value;
-        } else {
-            // Show what the target still holds, not the rejected value, so steps start from it.
-            cancelPendingWrite(m.name);
-            const known = knownWriteValue(cells.item);
-            if (known !== undefined) {
-                cells.setVal(known);
-                saveWriteList();
-            }
-        }
-    }
-    if (m.ok) {
-        if (notices.write?.get("write")?.level === "error") setWriteFeedback(null);
-    } else
-        setWriteFeedback(
-            window.EmberProbeNotice.hostNotice({
-                error: m.key || m.message ? m : { key: "sb.commandFailed" },
-                title: { key: "sb.writeFailTitle", params: { name: sbDisplayName({ name: m.name }) } }
-            })
-        );
 }
 const EYE_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.7"/></svg>';
@@ -2069,363 +1094,22 @@ function applyFolds() {
     }
 }
 function saveSbUi() {
-    uiState.sbExpanded = sbExpanded;
-    uiState.sbRawMembers = sbRawMembers;
-    uiState.sbArrayShown = sbArrayShown;
-    uiState.sbLastPointers = sbLastPointers;
-    uiState.sbLastPointersVersion = sbLastPointersVersion;
+    uiState.sbExpanded = state.expanded;
+    uiState.sbRawMembers = state.rawMembers;
+    uiState.sbArrayShown = state.arrayShown;
+    uiState.sbLastPointers = valueTree.pointers.saved().pointers;
+    uiState.sbLastPointersVersion = valueTree.pointers.saved().version;
     if (api && api.setState) api.setState(uiState);
-    sbSyncRuntimeExpansions();
-}
-// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
-function sbWalkLeaves(node, path, cb, stale) {
-    if (!node) return;
-    stale = !!stale || !!node.stale;
-    cb(path, node, stale);
-    for (const member of node.members || [])
-        sbWalkLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
-    for (const element of node.elements || []) sbWalkLeaves(element, path + "[" + element.index + "]", cb, stale);
-}
-function sbUpdateComposite(name) {
-    const tree = latest[name];
-    if (!tree) return;
-    const nodes = new Map();
-    const held = new Set();
-    sbWalkLeaves(tree, name, (path, node, stale) => {
-        nodes.set(path, node);
-        if (stale) held.add(path);
-    });
-    nodes.forEach((node, path) => {
-        const cell = compCells[path];
-        if (!cell) return;
-        const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
-        setDisplayedValue(
-            cell,
-            sbFmtDisplayNode({
-                ...cell.displayNode,
-                ...node,
-                ...(summary ? { functionEmpty: summary.empty } : {})
-            })
-        );
-        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
-    });
-}
-function sbNote(container, text, level = "info") {
-    const node = EmberProbeRuntime.renderVariableNotice(
-        container,
-        typeof text === "string" ? { text, level } : text,
-        t
-    );
-    node.querySelector(".notice-text")?.classList.add("sb-note");
+    valueTree.syncRuntimeExpansions();
 }
 
-function sbRenderLeaf(container, label, typeName, path, watchType, node, renderInline) {
-    const row = document.createElement("div");
-    row.className = "sb-mrow";
-    const nm = document.createElement("span");
-    nm.className = "sb-mname";
-    nm.textContent = label;
-    nm.title = sbDisplayName({ name: node?.displayPath || path });
-    nm.setAttribute("aria-label", nm.title);
-    const ty = document.createElement("span");
-    ty.className = "sb-mtype";
-    ty.textContent = typeName || watchType;
-    const val = document.createElement("span");
-    val.className = "sb-mval";
-    val.displayNode = node;
-    val.summaryPath = node?.summaryPath;
-    val.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    compCells[path] = val;
-    row.dataset.path = path;
-    ty.title = ty.textContent;
-    row.append(nm, ty, val);
-    container.appendChild(row);
-    const host = node?.isPointer && sbPointerPointee(row, path, label, node, renderInline);
-    if (host) container.appendChild(host);
-    setDisplayedValue(val, sbFmtDisplayNode(sbWithLastPointer(node, path)));
-}
-// A static layout row has no value until sampled; a pointer in it shows its last known target.
-function sbWithLastPointer(node, path) {
-    const last = node?.isPointer && node.value == null && !node.stale && sbShownLastPointers()[path];
-    return last && latest[sbBaseNameOf(path)] === undefined ? { ...node, ...last, stale: true } : node;
-}
-function sbRenderLayout(container, layout, path, displayPath = path) {
-    if (!layout) return;
-    const promoted = !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(layout, path);
-    if (promoted) {
-        sbRenderSummary(container, promoted, path);
-        return;
-    }
-    if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
-        const ms = layout.members || [];
-        ms.forEach((original) => {
-            if (!EmberProbeRuntime.memberVisible(original, sbShowRawFor(path))) return;
-            const symbol = sbLayoutSymbol(path);
-            const m = EmberProbeRuntime.layoutBranch(
-                symbol,
-                original,
-                EmberProbeRuntime.layoutMemberPath(path, original)
-            );
-            const cp = EmberProbeRuntime.layoutMemberPath(path, m);
-            const summary = !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(m, cp);
-            if (summary) sbRenderSummary(container, summary, m.name, m.typeName);
-            else if (m.unobservable)
-                layoutExpansionUi.render(container, { ...m, path: cp }, EmberProbeRuntime.variableBaseName(path), t);
-            else if (m.compositeLayout && !m.name) sbRenderLayout(container, m.compositeLayout, cp, displayPath);
-            else if (m.compositeLayout)
-                sbRenderNest(
-                    container,
-                    m.compositeLayout,
-                    m.name,
-                    cp,
-                    EmberProbeRuntime.layoutMemberPath(displayPath, m)
-                );
-            else if (m.watchType)
-                sbRenderLeaf(container, m.name, m.typeName || m.watchType, cp, m.watchType, {
-                    ...m,
-                    ...(displayPath !== path ? { displayPath: EmberProbeRuntime.layoutMemberPath(displayPath, m) } : {})
-                });
-        });
-        if (!ms.length) sbNote(container, t("lw.compositeNoLayout"), "warning");
-    } else if (layout.kind === "array") {
-        const et = layout.elementType || {},
-            total = Number(layout.totalElements) || 0;
-        if (!et.watchType && !et.compositeLayout && !et.unobservable) {
-            sbNote(container, t("lw.compositeNoLayout"), "warning");
-            return;
-        }
-        const shown = EmberProbeRuntime.arrayShownCount(total, sbArrayShown[path]);
-        for (let i = 0; i < shown; i++) {
-            const p = path + "[" + i + "]";
-            const element = EmberProbeRuntime.layoutBranch(sbLayoutSymbol(path), et, p);
-            if (element.unobservable)
-                layoutExpansionUi.render(
-                    container,
-                    { ...element, path: p },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else if (element.compositeLayout)
-                sbRenderNest(container, element.compositeLayout, "[" + i + "]", p, displayPath + "[" + i + "]");
-            else
-                sbRenderLeaf(container, "[" + i + "]", et.typeName || et.watchType, p, et.watchType, {
-                    ...element,
-                    ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {})
-                });
-        }
-        if (total > shown)
-            EmberProbeRuntime.renderArrayMore(
-                container,
-                total - shown,
-                t,
-                (page) => {
-                    sbArrayShown[path] = shown + page;
-                    saveSbUi();
-                    renderValues();
-                },
-                path,
-                sbDisplayName({ name: displayPath })
-            );
-    }
-}
-function sbRenderSummary(container, summary, label, typeName) {
-    const node = {
-        ...summary.node,
-        displayPath: summary.displayPath,
-        summaryPath: summary.displayPath,
-        functionEmpty: summary.empty
-    };
-    const layout = node.compositeLayout || ((node.members || node.elements || node.kind === "array") && node);
-    if (node.unobservable)
-        layoutExpansionUi.render(container, { ...node, path: summary.path }, sbBaseNameOf(summary.path), t);
-    else if (layout) sbRenderNest(container, layout, label, summary.path, summary.displayPath);
-    else
-        sbRenderLeaf(
-            container,
-            label,
-            typeName || node.typeName || node.watchType,
-            summary.path,
-            node.watchType || node.type,
-            node
-        );
-}
-// Nested structs and array elements get a collapsible head, as in static layouts; base
-// classes, anonymous members and a pointer's own target stay flat.
-function sbRenderRuntimeTree(container, tree, path, label = "value", promoted = false, nest = false) {
-    if (!tree) return;
-    const summary = !promoted && !sbShowRawFor(path) && EmberProbeRuntime.summaryRow(tree, path);
-    if (summary) {
-        const target = { ...summary.node, displayPath: path, summaryPath: path, functionEmpty: summary.empty };
-        if (target.members || target.elements) {
-            const wrap = document.createElement("div");
-            const head = document.createElement("button");
-            head.type = "button";
-            head.className = "sb-comp-head summary-head";
-            head.textContent = label;
-            head.title = sbDisplayName({ name: path });
-            const body = document.createElement("div");
-            body.className = "sb-members" + (sbExpanded[path] ? " open" : "");
-            head.setAttribute("aria-expanded", String(!!sbExpanded[path]));
-            head.onclick = () => {
-                sbExpanded[path] = !sbExpanded[path];
-                body.classList.toggle("open", sbExpanded[path]);
-                head.setAttribute("aria-expanded", String(sbExpanded[path]));
-                saveSbUi();
-            };
-            sbRenderRuntimeTree(body, target, summary.path, label, true);
-            wrap.append(head, body);
-            container.appendChild(wrap);
-        } else sbRenderRuntimeTree(container, target, summary.path, label, true);
-        return;
-    }
-    const pointer = tree.isPointer || tree.valueText === "nullptr";
-    if (nest && !pointer && !Object.prototype.hasOwnProperty.call(tree, "value") && (tree.members || tree.elements)) {
-        const body = sbNestShell(container, label, tree.typeName, path, tree.displayPath || path);
-        sbRenderRuntimeTree(body, tree, path, label, promoted);
-        return;
-    }
-    const renderMembers = (target) =>
-        (tree.members || []).forEach((member) => {
-            if (!EmberProbeRuntime.memberVisible(member, sbShowRawFor(path))) return;
-            const childPath = EmberProbeRuntime.layoutMemberPath(path, member);
-            if (member.unobservable)
-                layoutExpansionUi.render(
-                    target,
-                    { ...member, path: childPath },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else
-                sbRenderRuntimeTree(
-                    target,
-                    {
-                        ...member,
-                        ...(tree.displayPath
-                            ? { displayPath: EmberProbeRuntime.layoutMemberPath(tree.displayPath, member) }
-                            : {})
-                    },
-                    childPath,
-                    pointer && member.name === "value" ? "*" + label : member.name || "value",
-                    false,
-                    !!member.name &&
-                        !member.isBase &&
-                        !/^@based+$/.test(member.name) &&
-                        !(pointer && member.name === "value")
-                );
-        });
-    // A closed pointer keeps its disclosure: opening it asks the host to read the target.
-    const inline =
-        pointer && (tree.members?.length || tree.collapsed)
-            ? (target) => {
-                  renderMembers(target);
-                  if (tree.collapsed) sbNote(target, t("lw.runtimeCollapsed"));
-              }
-            : null;
-    if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
-        sbRenderLeaf(
-            container,
-            label,
-            tree.typeName || tree.type || "",
-            path,
-            tree.type || (pointer ? "u32" : undefined),
-            { ...tree, ...(pointer ? { isPointer: true } : {}) },
-            inline
-        );
-    if (tree.members && !inline) renderMembers(container);
-    else if (tree.elements)
-        tree.elements.forEach((element) => {
-            sbRenderRuntimeTree(
-                container,
-                {
-                    ...element,
-                    ...(tree.displayPath ? { displayPath: tree.displayPath + "[" + element.index + "]" } : {})
-                },
-                path + "[" + element.index + "]",
-                "[" + element.index + "]",
-                false,
-                true
-            );
-        });
-    if (tree.collapsed && !inline) sbNote(container, t("lw.runtimeCollapsed"));
-    if (tree.unobservable)
-        layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
-    else if (tree.unavailable)
-        sbNote(container, { title: sbDisplayName({ name: path }), ...EmberProbeRuntime.unavailableNotice(tree, t) });
-}
-function sbRenderRuntimeBody(body, sampled, name) {
-    // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
-    const tree =
-        sampled ||
-        EmberProbeRuntime.placeholderRuntimeTree(
-            sideWatch.find((item) => item.name === name),
-            sbShownLastPointers()
-        );
-    const shape = JSON.stringify([sbShowRawFor(name), !sampled, EmberProbeRuntime.displayTreeShape(tree)]);
-    if (body.dataset.runtimeShape === shape) return;
-    for (const path of Object.keys(compCells)) {
-        if (body.contains(compCells[path])) delete compCells[path];
-    }
-    EmberProbeRuntime.resetVariableNotices(body, t, (text) => api?.postMessage({ type: "copyText", text }));
-    body.textContent = "";
-    body.dataset.runtimeShape = shape;
-    if (tree?.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
-    sbRenderRawMembersUi(body, sampled || sbLayoutSymbol(name)?.compositeLayout, name);
-    sbRenderRuntimeTree(body, tree, name);
-    const symbol = sbLayoutSymbol(name);
-    for (const entry of EmberProbeRuntime.displayUnavailableRows(
-        symbol?.compositeLayout,
-        name,
-        64,
-        symbol,
-        sbShowRawFor(name)
-    ))
-        layoutExpansionUi.render(body, entry, name, t);
-    if (!sampled) sbNote(body, t("lw.waitSamples"));
-    EmberProbeRuntime.finishVariableNotices(body);
-}
-function sbRenderNest(container, layout, fieldName, path, displayPath = path) {
-    sbRenderLayout(sbNestShell(container, fieldName, layout.typeName, path, displayPath), layout, path, displayPath);
-}
-// Collapsible head + body for a nested composite; returns the body to render into.
-function sbNestShell(container, fieldName, typeName, path, displayPath = path) {
-    const wrap = document.createElement("div");
-    const head = document.createElement("div");
-    head.className = "sb-comp-head";
-    const open = !!sbExpanded[path];
-    const arrow = document.createElement("span");
-    arrow.className = "sb-arrow" + (open ? " open" : "");
-    arrow.textContent = "\u25B6";
-    const nm = document.createElement("span");
-    nm.className = "sb-comp-name";
-    nm.textContent = fieldName;
-    nm.title = sbDisplayName({ name: displayPath });
-    const ty = document.createElement("span");
-    ty.className = "sb-comp-type";
-    ty.textContent = typeName || "";
-    head.append(arrow, nm, ty);
-    const body = document.createElement("div");
-    body.className = "sb-members" + (open ? " open" : "");
-    head.onclick = () => {
-        const nextOpen = !sbExpanded[path];
-        sbExpanded[path] = nextOpen;
-        body.classList.toggle("open", nextOpen);
-        arrow.classList.toggle("open", nextOpen);
-        saveSbUi();
-    };
-    wrap.append(head, body);
-    container.appendChild(wrap);
-    return body;
-}
 function sbRenderComposite(item) {
     const row = document.createElement("div");
-    row.className = "value-row composite" + (sbExpanded[item.name] ? " open" : "");
+    row.className = "value-row composite" + (state.expanded[item.name] ? " open" : "");
     const head = document.createElement("div");
     head.className = "sb-comp-head";
     const arrow = document.createElement("span");
-    arrow.className = "sb-arrow" + (sbExpanded[item.name] ? " open" : "");
+    arrow.className = "sb-arrow" + (state.expanded[item.name] ? " open" : "");
     arrow.textContent = "\u25B6";
     const nm = document.createElement("span");
     nm.className = "sb-comp-name";
@@ -2452,29 +1136,15 @@ function sbRenderComposite(item) {
     const body = document.createElement("div");
     body.className = "sb-body";
     head.onclick = () => {
-        sbExpanded[item.name] = !sbExpanded[item.name];
-        row.classList.toggle("open", sbExpanded[item.name]);
-        arrow.classList.toggle("open", sbExpanded[item.name]);
+        state.expanded[item.name] = !state.expanded[item.name];
+        row.classList.toggle("open", state.expanded[item.name]);
+        arrow.classList.toggle("open", state.expanded[item.name]);
         saveSbUi();
     };
-    const footer = EmberProbeRuntime.createVariableNotices(
-        body,
-        t,
-        document.createElement("div"),
-        (text) => api?.postMessage({ type: "copyText", text }),
-        item.name
-    );
-    if (item.runtimeLayout) {
-        runtimeBodies[item.name] = body;
-        sbRenderRuntimeBody(body, latest[item.name], item.name);
-    } else {
-        sbRenderRawMembersUi(body, lay, item.name);
-        if (lay.truncated) sbNote(body, t("lw.layoutPartial"), "warning");
-        sbRenderLayout(body, lay, item.name);
-    }
+    const footer = valueTree.renderCompositeBody(body, item);
     row.append(head, body, footer);
     liveBox.appendChild(row);
-    sbUpdateComposite(item.name);
+    valueTree.updateComposite(item.name);
 }
 function sbOnComposite(samples) {
     let refreshAvailable = false;
@@ -2482,107 +1152,50 @@ function sbOnComposite(samples) {
     (samples || []).forEach((s) => {
         if (s && s.name) {
             if (
-                (avExpanded[s.name] || searching) &&
-                EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-                EmberProbeRuntime.runtimeSelection(availableByName.get(s.name), s.tree)
+                (state.availableExpanded[s.name] || searching) &&
+                EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !==
+                    EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+                EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
             )
                 refreshAvailable = true;
-            latest[s.name] = s.tree;
-            sbRememberPointers(EmberProbeRuntime.pointerSnapshots(s.tree, s.name));
-            const body = runtimeBodies[s.name];
-            if (body) sbRenderRuntimeBody(body, s.tree, s.name);
+            state.latest[s.name] = s.tree;
+            valueTree.treeSampled(s.name, s.tree);
         }
     });
     if (refreshAvailable) renderAvailable();
     // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
-    if ([...sbFallbackPointees].some((name) => sbPlacedPointees.has(name))) renderValues();
-    scheduleValueRefresh();
+    if ([...valueTree.fallback].some((name) => valueTree.placed.has(name))) renderValues();
+    valueRefresh.schedule();
 }
 function updateValues(samples) {
     (samples || []).forEach((s) => {
-        latest[s.name] = s.value;
-        latestText[s.name] = s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
-        latestEnum[s.name] = s.enumText ?? null;
-        latestPointer[s.name] = {
-            ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
-            pointerText: s.pointerText,
-            pointerInfo: s.pointerInfo,
-            pointerString: s.pointerString
-        };
-        if ((s.isPointer || s.pointerText) && s.value != null && !s.diagnostic)
-            sbRememberPointers({
-                [s.name]: {
-                    value: s.value,
-                    ...(s.valueText != null ? { valueText: s.valueText } : {}),
-                    ...(s.pointerText ? { pointerText: s.pointerText } : {}),
-                    ...(s.pointerInfo ? { pointerInfo: s.pointerInfo } : {}),
-                    ...(s.pointerString ? { pointerString: s.pointerString } : {})
-                }
-            });
+        state.latest[s.name] = s.value;
+        state.latestText[s.name] =
+            s.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (s.valueText ?? null);
+        state.latestEnum[s.name] = s.enumText ?? null;
+        state.latestPointer[s.name] = EmberProbeValueTree.pointerReading(s);
+        valueTree.pointers.rememberSample(s);
     });
-    scheduleValueRefresh();
-}
-let valueRefreshTimer = null;
-let lastValueRefresh = 0;
-function scheduleValueRefresh() {
-    if (valueRefreshTimer !== null) return;
-    const elapsed = Date.now() - lastValueRefresh;
-    if (elapsed >= 100) {
-        lastValueRefresh = Date.now();
-        refreshDisplayedValues();
-        return;
-    }
-    valueRefreshTimer = setTimeout(() => {
-        valueRefreshTimer = null;
-        lastValueRefresh = Date.now();
-        refreshDisplayedValues();
-    }, 100 - elapsed);
+    valueRefresh.schedule();
 }
 function refreshDisplayedValues() {
-    const items = new Map(sideWatch.map((item) => [item.name, item]));
+    const items = new Map(state.watch.map((item) => [item.name, item]));
     document.querySelectorAll("[data-value-name]").forEach((el) => {
-        setDisplayedValue(el, sbScalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName }));
+        EmberProbeRuntime.setValueCell(
+            el,
+            valueTree.scalarDisplay(items.get(el.dataset.valueName) || { name: el.dataset.valueName })
+        );
     });
-    sideWatch.forEach((it) => {
-        if (sbIsComposite(it)) sbUpdateComposite(it.name);
+    state.watch.forEach((it) => {
+        if (isComposite(it)) valueTree.updateComposite(it.name);
     });
-    syncWriteValues();
+    if (liveCanRead) writes.sync();
 }
 // While sampling, write cards follow the current value; cards the user is editing (focused, write in flight or
 // debouncing) are not overwritten
-function syncWriteValues() {
-    if (!liveCanRead) return;
-    writeList.forEach((item) => {
-        const c = writeCells[item.name];
-        if (!c) return;
-        if (Date.now() - (writeLastAt[item.name] || 0) < 1000) return;
-        if (writeTimers[item.name]) return;
-        if (c.input.classList.contains("pending")) return;
-        const ae = document.activeElement;
-        if (ae === c.input || ae === c.slider) return;
-        if (isWideInt(item.type)) {
-            const text = latestText[item.name];
-            if (text != null) {
-                c.setVal(text);
-                writeConfirmed[item.name] = text;
-            }
-            return;
-        }
-        const sampled = latest[item.name];
-        if (sampled === null || sampled === undefined) return;
-        let v = Number(sampled);
-        if (!Number.isFinite(v)) return;
-        if (!isFloat(item.type)) v = Math.round(v);
-        c.setVal(v);
-        writeConfirmed[item.name] = v;
-    });
-}
 function liveStatus(m) {
     m = m || {};
     lastLive = m;
-    const wasWrite = liveCanWrite,
-        wasHaltWrite = liveHaltWrite,
-        wasWriteUnavailableKey = liveWriteUnavailableKey;
     const next = window.EmberProbeRuntime.liveState(
         { running: liveRunning, canRead: liveCanRead, canWrite: liveCanWrite },
         m
@@ -2590,12 +1203,11 @@ function liveStatus(m) {
     liveRunning = next.running;
     liveCanRead = next.canRead;
     liveCanWrite = next.canWrite;
-    liveHaltWrite = next.haltWrite;
-    liveTargetHalted = m.source === "dap" && String(m.mode || "").startsWith("debug-paused");
-    liveWriteUnavailableKey = EmberProbeRuntime.writeUnavailableKey({
-        ...m,
-        running: liveRunning,
-        canWrite: liveCanWrite
+    writes.setAccess({
+        canWrite: liveCanWrite,
+        haltWrite: next.haltWrite,
+        halted: m.source === "dap" && String(m.mode || "").startsWith("debug-paused"),
+        unavailableKey: EmberProbeRuntime.writeUnavailableKey({ ...m, running: liveRunning, canWrite: liveCanWrite })
     });
     liveSnapshotReady = next.fresh;
     const debugRunning = m.mode === "debug-running-waiting",
@@ -2609,12 +1221,6 @@ function liveStatus(m) {
     // Errors go into the live notice box; the label keeps the sampling state.
     liveLabel.textContent = (!m.error && msgText(m)) || (liveRunning ? t("sb.sampling") : t("sb.stopped"));
     liveLabel.title = t("sb.samplingRate", { hz: Number(m.actualHz || 0).toFixed(1) });
-    if (
-        wasWrite !== liveCanWrite ||
-        wasHaltWrite !== liveHaltWrite ||
-        wasWriteUnavailableKey !== liveWriteUnavailableKey
-    )
-        updateWriteAvailability();
 }
 function openocdStatus(m) {
     m = m || {};
@@ -2660,17 +1266,17 @@ function renderSkillStatus(m) {
 // messages.
 function renderAgentAccess(m) {
     lastAgentAccess = m || lastAgentAccess;
-    const state = lastAgentAccess?.card || "";
-    if (!state) clearNotice("global", "agent-access");
+    const card = lastAgentAccess?.card || "";
+    if (!card) clearNotice("global", "agent-access");
     else
         setNotice("global", "agent-access", {
             level: "info",
-            text: { key: state === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
+            text: { key: card === "enabled" ? "agent.accessEnabled" : "agent.accessDisabled" },
             actions: [
                 {
-                    label: { key: state === "enabled" ? "agent.disable" : "agent.enable" },
-                    primary: state !== "enabled",
-                    command: state === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
+                    label: { key: card === "enabled" ? "agent.disable" : "agent.enable" },
+                    primary: card !== "enabled",
+                    command: card === "enabled" ? "mcu-vscode.disableAgentAccess" : "mcu-vscode.enableAgentAccess"
                 }
             ],
             dismissible: false
@@ -2999,59 +1605,54 @@ window.EmberProbeMessages.connect(window, {
     },
     sidebarWatchList: function (m) {
         const incoming = (m.items || []).slice();
-        for (const item of sideWatch)
-            if (!incoming.some((next) => next.name === item.name)) sbForgetPointers(item.name);
-        sideWatch = incoming;
+        for (const item of state.watch)
+            if (!incoming.some((next) => next.name === item.name)) valueTree.pointers.forget(item.name);
+        state.watch = incoming;
         if (m.resetValues) {
-            sbResetLastPointers(sbLastPointersVersion);
-            sideWatch.forEach((item) => {
-                delete latest[item.name];
-                delete latestText[item.name];
-                delete latestEnum[item.name];
-                delete latestPointer[item.name];
+            valueTree.pointers.clear();
+            state.watch.forEach((item) => {
+                delete state.latest[item.name];
+                delete state.latestText[item.name];
+                delete state.latestEnum[item.name];
+                delete state.latestPointer[item.name];
             });
         }
-        sbRuntimeExpansionsLoaded = true;
+        valueTree.runtimeExpansionsReady();
         renderValues();
         updateAvailableSelections();
     },
     sidebarWriteList: function (m) {
-        writeList = (m.items || []).slice();
-        writeConfirmed = Object.create(null);
-        renderWrites();
+        writes.load(m.items || []);
         updateAvailableSelections();
     },
     writeResult: function (m) {
-        onWriteResult(m);
+        writes.onResult(m);
     },
     availableVariables: function (m) {
         variableWarnings = m.warnings || [];
-        available = (m.symbols || []).slice();
+        state.available = (m.symbols || []).slice();
         availableTypesReady = true;
-        availableByName = new Map(available.map((symbol) => [symbol.name, symbol]));
+        state.symbols = new Map(state.available.map((symbol) => [symbol.name, symbol]));
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
         variableError = m.errorKey ? t(m.errorKey, m.params) : m.error || "";
         renderAvailable();
         renderValues();
-        renderWrites();
+        writes.render();
     },
     availableVariablesReset: function (m) {
         variableWarnings = m.warnings || [];
-        availableVersion = m.version || "";
-        availableGeneration = m.generation ?? null;
-        if (availableVersion && sbLastPointersVersion && sbLastPointersVersion !== availableVersion) {
-            sbResetLastPointers(availableVersion);
-            saveSbUi();
-        }
+        state.version = m.version || "";
+        state.generation = m.generation ?? null;
+        if (valueTree.pointers.expire()) saveSbUi();
         layoutExpansionUi.reset();
-        for (const item of sideWatch) {
+        for (const item of state.watch) {
             delete item.layoutExpansions;
             item.layoutExpansionGeneration = -1;
         }
         availableTypesReady = false;
-        available = [];
-        availableByName.clear();
+        state.available = [];
+        state.symbols.clear();
         renderValues();
         availableTypeChunks = 0;
         availableLayoutPending.clear();
@@ -3062,14 +1663,14 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     availableVariablesChunk: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         const symbols = m.symbols || [];
-        available.push(...symbols);
-        for (const symbol of symbols) availableByName.set(symbol.name, symbol);
-        if (available.length <= 1000 || available.length % 10000 < symbols.length) renderAvailable();
+        state.available.push(...symbols);
+        for (const symbol of symbols) state.symbols.set(symbol.name, symbol);
+        if (state.available.length <= 1000 || state.available.length % 10000 < symbols.length) renderAvailable();
     },
     availableVariablesDone: function (m) {
-        if (m.version && m.version !== availableVersion) return;
+        if (m.version && m.version !== state.version) return;
         if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         variableErrorKey = m.errorKey || "";
         variableErrorParams = m.params || null;
@@ -3077,28 +1678,28 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     availableVariableTypes: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         for (const update of m.symbols || []) {
-            const symbol = availableByName.get(update.name);
+            const symbol = state.symbols.get(update.name);
             if (symbol) Object.assign(symbol, update);
         }
         if (++availableTypeChunks % 10 === 0) renderAvailable();
     },
     availableTypesDone: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         if (Array.isArray(m.warnings)) variableWarnings = m.warnings;
         availableTypesReady = true;
         renderAvailable();
         renderValues();
-        renderWrites();
+        writes.render();
     },
     layoutExpansionResult: function (m) {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== availableVersion) return;
+        if (m.version !== state.version) return;
         availableLayoutPending.delete(m.name);
-        const symbol = availableByName.get(m.name);
+        const symbol = state.symbols.get(m.name);
         if (!symbol) return;
         const pointerWaiter = sbPointerLayoutWaiters.delete(m.name);
         if (pointerWaiter && !symbol.isComposite) {
@@ -3119,7 +1720,7 @@ window.EmberProbeMessages.connect(window, {
             symbol.layoutError = m.error || t("lw.compositeNoLayout");
             symbol.unsupportedReason = symbol.layoutError;
         }
-        if (availableAddPending.delete(m.name) && m.layout && !sideWatch.some((item) => item.name === m.name))
+        if (availableAddPending.delete(m.name) && m.layout && !state.watch.some((item) => item.name === m.name))
             sbToggle({
                 name: symbol.name,
                 address: Number(symbol.address) || 0,
@@ -3132,13 +1733,12 @@ window.EmberProbeMessages.connect(window, {
         renderAvailable();
     },
     debugSessionChanged: function () {
-        latest = Object.create(null);
-        latestText = Object.create(null);
-        latestPointer = Object.create(null);
-        latestEnum = Object.create(null);
-        compCells = Object.create(null);
+        state.latest = Object.create(null);
+        state.latestText = Object.create(null);
+        state.latestPointer = Object.create(null);
+        state.latestEnum = Object.create(null);
         renderValues();
-        renderWrites();
+        writes.render();
     },
     liveSample: function (m) {
         updateValues(m.samples);

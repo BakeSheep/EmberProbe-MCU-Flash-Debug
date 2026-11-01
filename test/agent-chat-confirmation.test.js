@@ -20,46 +20,52 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         probeSerial: "1234"
     };
     Object.assign(provider, {
-        _prepareRequestedLayouts: async () => {},
-        _prepareWriteConnection: async () => connection,
         _debugBridge: { agentStatus: () => ({ state: "none" }) },
         _writeAuthorization: new WriteAuthorization({
             get: (key) => state.get(key),
             update: async (key, value) => state.set(key, value)
         }),
-        _agentWritePlan: (values) => ({
-            elfResult: { elf: { path: "firmware.elf", sha256: "firmware" } },
-            items: values.map(({ name, value }) => ({ name, value, address: 0x20000000, type: "u32", bytes: [value] }))
-        }),
-        _withAgentProbe: (handler) => handler({ session: {}, source: "test" }),
-        _executeWritePlan: async () => {
+        readElfSymbols: () => ({
+            elf: { path: "firmware.elf", sha256: "firmware" },
+            symbols: [{ name: "word", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],
+            memory: { sections: [{ addr: 0x20000000, size: 0x1000, flags: 3 }] }
+        })
+    });
+    Object.assign(provider._agentOps, { withProbe: (handler) => handler({ session: {}, source: "test" }) });
+    Object.assign(provider._writes, {
+        prepareConnection: async () => connection,
+        execute: async () => {
             writes++;
             return { results: [{ verified: true }] };
         }
     });
+    Object.assign(provider._elfView, { prepareLayouts: async () => {} });
     const values = [{ name: "word", value: 32 }];
-    const plan = await provider._writeAgentVariables({ values });
+    const plan = await provider._writes.writeAgentVariables({ values });
     assert(plan.confirmationRequired);
     assert.strictEqual(writes, 0);
-    await assert.rejects(provider._writeAgentVariables({ values, confirmationId: "unknown" }), {
+    await assert.rejects(provider._writes.writeAgentVariables({ values, confirmationId: "unknown" }), {
         code: "WRITE_CONFIRMATION_INVALID"
     });
     await assert.rejects(
-        provider._writeAgentVariables({ values: [{ name: "word", value: 33 }], confirmationId: plan.confirmationId }),
+        provider._writes.writeAgentVariables({
+            values: [{ name: "word", value: 33 }],
+            confirmationId: plan.confirmationId
+        }),
         { code: "WRITE_CONFIRMATION_INVALID" }
     );
     assert.strictEqual(writes, 0);
-    const once = await provider._writeAgentVariables({ values });
-    const result = await provider._writeAgentVariables({ values, confirmationId: once.confirmationId });
+    const once = await provider._writes.writeAgentVariables({ values });
+    const result = await provider._writes.writeAgentVariables({ values, confirmationId: once.confirmationId });
     assert(result.results[0].verified);
     assert.strictEqual(result.permission.mode, "once");
     assert.strictEqual(result.permission.trusted, false);
-    await assert.rejects(provider._writeAgentVariables({ values, confirmationId: once.confirmationId }), {
+    await assert.rejects(provider._writes.writeAgentVariables({ values, confirmationId: once.confirmationId }), {
         code: "WRITE_CONFIRMATION_INVALID"
     });
-    const remembered = await provider._writeAgentVariables({ values });
-    await provider._writeAgentVariables({ values, confirmationId: remembered.confirmationId, remember: true });
-    const trusted = await provider._writeAgentVariables({ values: [{ name: "word", value: 34 }] });
+    const remembered = await provider._writes.writeAgentVariables({ values });
+    await provider._writes.writeAgentVariables({ values, confirmationId: remembered.confirmationId, remember: true });
+    const trusted = await provider._writes.writeAgentVariables({ values: [{ name: "word", value: 34 }] });
     assert.strictEqual(trusted.permission.trusted, true);
     assert.strictEqual(trusted.firmwareConsistency.status, "unknown");
     assert.strictEqual(writes, 3);
@@ -70,14 +76,14 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
         update: async (key, value) => state.set(key, value)
     });
     await provider._firmwareRecord.record({ elf: "firmware.elf", sha256: "a".repeat(64) });
-    const mismatched = await provider._writeAgentVariables({ values });
+    const mismatched = await provider._writes.writeAgentVariables({ values });
     assert(mismatched.confirmationRequired, "remembered trust must not apply to a mismatched firmware");
     assert.strictEqual(mismatched.firmwareConsistency.status, "mismatch");
     assert.strictEqual(mismatched.warnings[0].code, "ELF_TARGET_MISMATCH");
     assert.strictEqual(writes, 3);
     delete provider._firmwareRecord;
     await provider._writeAuthorization.reset();
-    assert((await provider._writeAgentVariables({ values })).confirmationRequired);
+    assert((await provider._writes.writeAgentVariables({ values })).confirmationRequired);
     assert.strictEqual(writes, 3);
 
     const flash = new FlashAuthorization();

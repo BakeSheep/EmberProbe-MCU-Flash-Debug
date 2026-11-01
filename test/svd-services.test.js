@@ -6,6 +6,7 @@ const path = require("path");
 const os = require("os");
 const http = require("http");
 const yazl = require("yazl");
+const { scenario } = require("./helpers/scenario");
 const {
     DeviceIdentityService,
     extractProjectParts,
@@ -328,14 +329,18 @@ function zipBuffer(entries) {
         await assert.rejects(requestFile(baseUrl + "/truncated", truncatedPath, { allowHttpLocalhost: true }));
         await fs.promises.rm(truncatedPath, { force: true });
         await assert.rejects(requestFile(baseUrl + "/slow", storage, { allowHttpLocalhost: true }));
-        await assert.rejects(
-            requestFile(baseUrl + "/slow", path.join(storage, "overflow.pack"), {
-                allowHttpLocalhost: true,
-                maxBytes: 1025
-            }),
-            (error) => error.code === "DOWNLOAD_TOO_LARGE"
-        );
-        await fs.promises.rm(path.join(storage, "overflow.pack"));
+        await scenario("streamed download enforces its byte limit regardless of output file creation", async () => {
+            const overflowPath = path.join(storage, "overflow.pack");
+            await assert.rejects(
+                requestFile(baseUrl + "/slow", overflowPath, {
+                    allowHttpLocalhost: true,
+                    maxBytes: 1025
+                }),
+                (error) => error.code === "DOWNLOAD_TOO_LARGE"
+            );
+            // The pipeline can reject before the output stream opens its file, especially on Windows/Node 20.
+            await fs.promises.rm(overflowPath, { force: true });
+        });
 
         const packPath = path.join(storage, "test.pack");
         await fs.promises.writeFile(packPath, pack);

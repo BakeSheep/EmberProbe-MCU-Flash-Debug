@@ -6,6 +6,7 @@ const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
 const { FirmwareRecord } = require("../src/services/firmwareRecord");
+const { writePlan } = require("../src/services/agentPlans");
 
 (async () => {
     const Provider = loadProvider();
@@ -32,32 +33,32 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
         items: [],
         connection: writeConnectionIdentity(session.options)
     };
-    await provider._executeWritePlan(session, "test", plan);
+    await provider._writes.execute(session, "test", plan);
     assert.strictEqual(writes, 1);
-    provider._managedDebugServer = session;
-    assert.deepStrictEqual(provider._sessionWriteConnection(provider._debugBridge), plan.connection);
+    provider.debugLaunch.managedServer = session;
+    assert.deepStrictEqual(provider._writes.sessionConnection(provider._debugBridge), plan.connection);
     assert.deepStrictEqual(
-        await provider._prepareWriteConnection(),
+        await provider._writes.prepareConnection(),
         plan.connection,
         "Agent write confirmation must bind to the managed debug server while DAP is between stop events"
     );
-    provider._managedDebugServer = null;
+    provider.debugLaunch.managedServer = null;
     const unverified = { options: { selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" } } };
-    assert.throws(() => provider._assertWriteSessionCurrent(unverified), { code: "PROBE_IDENTITY_UNVERIFIED" });
-    provider._managedDebugServer = unverified;
-    assert.throws(() => provider._assertWriteSessionCurrent(provider._debugBridge), {
+    assert.throws(() => provider._writes.assertSessionCurrent(unverified), { code: "PROBE_IDENTITY_UNVERIFIED" });
+    provider.debugLaunch.managedServer = unverified;
+    assert.throws(() => provider._writes.assertSessionCurrent(provider._debugBridge), {
         code: "PROBE_IDENTITY_UNVERIFIED"
     });
-    provider._managedDebugServer = null;
+    provider.debugLaunch.managedServer = null;
     await assert.rejects(
-        provider._executeWritePlan(session, "test", {
+        provider._writes.execute(session, "test", {
             ...plan,
             connection: { ...plan.connection, probeSerial: "5678" }
         }),
         { code: "WRITE_CONNECTION_CHANGED" }
     );
     config = { ...config, adapterSpeedKhz: 200 };
-    await assert.rejects(provider._executeWritePlan(session, "test", plan), { code: "PROBE_SESSION_STALE" });
+    await assert.rejects(provider._writes.execute(session, "test", plan), { code: "PROBE_SESSION_STALE" });
     assert.strictEqual(writes, 1, "no write reaches hardware after identity or settings change");
     const storage = new Map();
     const auth = new WriteAuthorization({
@@ -82,7 +83,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     assert.throws(() => auth.authorize({ ...plan, connection: null }), { code: "WRITE_CONNECTION_REQUIRED" });
     const verifyProvider = Object.create(Provider.prototype);
     const verifyConnection = writeConnectionIdentity({ kind: "dap", sessionId: "verify", workspace: "workspace" });
-    verifyProvider._sessionWriteConnection = () => verifyConnection;
+    verifyProvider._writes.sessionConnection = () => verifyConnection;
     const verifyItem = {
         requestedName: "value",
         name: "value",
@@ -102,12 +103,12 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
                 halted
             })
         };
-        const success = await verifyProvider._executeWritePlan(verifySession, "test", verifyPlan);
+        const success = await verifyProvider._writes.execute(verifySession, "test", verifyPlan);
         assert.strictEqual(success.halted, halted);
         assert.strictEqual(success.results[0].verified, true);
         readBack = [41, 0, 0, 0];
         await assert.rejects(
-            verifyProvider._executeWritePlan(verifySession, "test", verifyPlan),
+            verifyProvider._writes.execute(verifySession, "test", verifyPlan),
             (error) =>
                 error.code === "WRITE_VERIFY_FAILED" &&
                 error.details.targetHaltedDuringWrite === halted &&
@@ -127,7 +128,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
         })
     };
     await assert.rejects(
-        verifyProvider._executeWritePlan(unreadableSession, "test", verifyPlan),
+        verifyProvider._writes.execute(unreadableSession, "test", verifyPlan),
         (error) =>
             error.code === "WRITE_READBACK_FAILED" &&
             error.i18nKey === "sb.writeReadBackFailed" &&
@@ -149,7 +150,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
             after: [{ name: namedItem.name, bytes: null, diagnostic: { message: "incomplete data" } }]
         })
     };
-    await assert.rejects(verifyProvider._executeWritePlan(namedUnreadable, "test", namedPlan), (error) => {
+    await assert.rejects(verifyProvider._writes.execute(namedUnreadable, "test", namedPlan), (error) => {
         assert.strictEqual(error.i18nParams.msg, "lab::value: incomplete data");
         assert.strictEqual(error.details.results[0].resolvedName, namedItem.name);
         return error.code === "WRITE_READBACK_FAILED";
@@ -193,34 +194,37 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     };
     Object.assign(runtimeProvider, {
         _samplingCoordinator: new SamplingCoordinator(),
-        _samplingIntent: true,
         _debugBridge: debugBridge,
-        _managedDebugServer: runtime,
         _livePanels: new Map(),
-        _unlimitedSamplingEnabled: () => false,
         _elfService: { invalidate() {} },
         readElfSymbols: () => runtimeElf,
-        _prepareRequestedLayouts: async () => {},
-        _sessionWriteConnection: () => verifyConnection,
-        _prepareWriteConnection: async () => verifyConnection,
-        _t: (key) => key,
-        _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
+        _t: (key) => key
     });
-    const uiWord = await runtimeProvider._writeUiVariable("word", 42);
+    Object.assign(runtimeProvider._agentOps, {
+        withProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
+    });
+    Object.assign(runtimeProvider._writes, {
+        sessionConnection: () => verifyConnection,
+        prepareConnection: async () => verifyConnection
+    });
+    Object.assign(runtimeProvider.debugLaunch, { managedServer: runtime });
+    Object.assign(runtimeProvider._elfView, { prepareLayouts: async () => {} });
+    Object.assign(runtimeProvider._sampling, { intent: true, unlimitedEnabled: () => false });
+    const uiWord = await runtimeProvider._writes.writeUiVariable("word", 42);
     assert.strictEqual(uiWord.source, "debug-running-openocd");
     assert.strictEqual(uiWord.halted, false);
     assert.strictEqual(writeCalls.length, 1);
-    await assert.rejects(runtimeProvider._writeUiVariable("byte", 42), { code: "RUNTIME_WRITE_DISABLED" });
+    await assert.rejects(runtimeProvider._writes.writeUiVariable("byte", 42), { code: "RUNTIME_WRITE_DISABLED" });
     assert.strictEqual(writeCalls.length, 1, "halting UI requests are refused before touching hardware");
-    const runtimePlan = runtimeProvider._agentWritePlan([{ name: "word", value: 43 }], { refreshSymbols: false });
+    const runtimePlan = writePlan([{ name: "word", value: 43 }], () => runtimeProvider.readElfSymbols());
     runtimePlan.connection = verifyConnection;
     runtimeProvider._samplingCoordinator.setBackpressure(true);
-    await assert.rejects(runtimeProvider._executeWritePlan(runtime, "test", runtimePlan), {
+    await assert.rejects(runtimeProvider._writes.execute(runtime, "test", runtimePlan), {
         code: "RUNTIME_WRITE_DISABLED"
     });
     runtimeProvider._samplingCoordinator.setBackpressure(false);
     await assert.rejects(
-        runtimeProvider._executeWritePlan(runtime, "test", {
+        runtimeProvider._writes.execute(runtime, "test", {
             ...runtimePlan,
             items: [{ ...runtimePlan.items[0], address: 0x20000100 }]
         }),
@@ -230,10 +234,10 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
 
     runtimeProvider._writeAuthorization = new WriteAuthorization({ get: () => undefined, update: async () => {} });
     const values = [{ name: "word", value: 44 }];
-    const requestWrite = await runtimeProvider._writeAgentVariables({ values });
+    const requestWrite = await runtimeProvider._writes.writeAgentVariables({ values });
     assert.strictEqual(requestWrite.confirmationRequired, true);
     assert.strictEqual(writeCalls.length, 1);
-    const agentWord = await runtimeProvider._writeAgentVariables({
+    const agentWord = await runtimeProvider._writes.writeAgentVariables({
         values,
         confirmationId: requestWrite.confirmationId
     });
@@ -241,9 +245,9 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     assert.strictEqual(agentWord.halted, false);
     assert.strictEqual(writeCalls.length, 2);
     const byteValues = [{ name: "byte", value: 1 }];
-    const requestByte = await runtimeProvider._writeAgentVariables({ values: byteValues });
+    const requestByte = await runtimeProvider._writes.writeAgentVariables({ values: byteValues });
     await assert.rejects(
-        runtimeProvider._writeAgentVariables({ values: byteValues, confirmationId: requestByte.confirmationId }),
+        runtimeProvider._writes.writeAgentVariables({ values: byteValues, confirmationId: requestByte.confirmationId }),
         { code: "RUNTIME_WRITE_DISABLED" }
     );
     assert.strictEqual(writeCalls.length, 2);
@@ -255,11 +259,11 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
             const result = await normalWrite(items);
             if (change === "epoch") debugBridge.stopEpoch++;
             else if (change === "selected-session") debugBridge.activeSession = { ...active, id: "other" };
-            else runtimeProvider._managedDebugServer = null;
+            else runtimeProvider.debugLaunch.managedServer = null;
             return result;
         };
         await assert.rejects(
-            runtimeProvider._executeWritePlan(runtime, "test", runtimePlan),
+            runtimeProvider._writes.execute(runtime, "test", runtimePlan),
             (error) =>
                 error.code === "DEBUG_STATE_CHANGED" &&
                 error.i18nKey === "sb.writeTargetChanged.verified" &&
@@ -268,7 +272,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
                 error.details.results.length === runtimePlan.items.length
         );
         debugBridge.activeSession = active;
-        runtimeProvider._managedDebugServer = runtime;
+        runtimeProvider.debugLaunch.managedServer = runtime;
     }
     for (const writtenItems of [0, 1]) {
         runtime.writeAndVerify = async () => {
@@ -278,7 +282,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
             });
         };
         await assert.rejects(
-            runtimeProvider._executeWritePlan(runtime, "test", runtimePlan),
+            runtimeProvider._writes.execute(runtime, "test", runtimePlan),
             (error) =>
                 error.code === "DEBUG_STATE_CHANGED" &&
                 error.i18nKey === `sb.writeTargetChanged.${writtenItems ? "unverified" : "notWritten"}` &&
@@ -295,7 +299,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     debugBridge.writeAndVerify = async (items) => ({ ...(await normalWrite(items)), halted: true });
     const postedStatuses = [];
     runtimeProvider._postConsumerStatuses = (status) => postedStatuses.push(status);
-    const pausedWrite = await runtimeProvider._writeUiVariable("byte", 2);
+    const pausedWrite = await runtimeProvider._writes.writeUiVariable("byte", 2);
     assert.strictEqual(pausedWrite.source, "debug-dap");
     assert.strictEqual(pausedWrite.halted, true);
     assert.deepStrictEqual(postedStatuses, [], "a paused UI write never gates the write controls mid-drag");
@@ -314,8 +318,8 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
         [{ intentEnabled: true, pauseReason: "archive_backpressure" }, "sb.writeArchiveBusy"],
         [{ intentEnabled: true }, "sb.writeUnavailable"]
     ]) {
-        blockedProvider._samplingStatus = () => ({ canWrite: false, ...status });
-        await assert.rejects(blockedProvider._writeUiVariable("word", 42), { i18nKey: key, message: key });
+        blockedProvider._sampling.status = () => ({ canWrite: false, ...status });
+        await assert.rejects(blockedProvider._writes.writeUiVariable("word", 42), { i18nKey: key, message: key });
     }
     assert.strictEqual(writeCalls.length, blockedWriteCount, "reporting a blocked reason never performs a write");
 
@@ -331,11 +335,17 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
         }
     });
     const flashed = (sha256) => new FirmwareRecord({ get: () => ({ sha256 }) });
+    // Its own write controller, so the prompt comes from this provider's vscode.
     const prompting = Object.assign(Object.create(PromptProvider.prototype), runtimeProvider, {
-        _firmwareRecord: flashed("flashed")
+        _firmwareRecord: flashed("flashed"),
+        _writeExecution: null
+    });
+    Object.assign(prompting._writes, {
+        sessionConnection: () => verifyConnection,
+        prepareConnection: async () => verifyConnection
     });
     const mismatchWrites = writeCalls.length;
-    await assert.rejects(prompting._writeUiVariable("word", 7, { requestedAt: Date.now() }), {
+    await assert.rejects(prompting._writes.writeUiVariable("word", 7, { requestedAt: Date.now() }), {
         code: "ELF_TARGET_MISMATCH",
         i18nKey: "sb.writeFirmwareMismatchDeclined"
     });
@@ -343,22 +353,24 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     assert.strictEqual(prompts[0].options.modal, true);
     assert.deepStrictEqual(prompts[0].choices, ["sb.writeFirmwareMismatchAnyway"]);
     assert.strictEqual(writeCalls.length, mismatchWrites, "a declined mismatch never writes");
-    await assert.rejects(prompting._writeUiVariable("word", 7, { requestedAt: 0 }), { code: "ELF_TARGET_MISMATCH" });
+    await assert.rejects(prompting._writes.writeUiVariable("word", 7, { requestedAt: 0 }), {
+        code: "ELF_TARGET_MISMATCH"
+    });
     assert.strictEqual(prompts.length, 1, "writes queued while declining are not prompted again");
     answer = "sb.writeFirmwareMismatchAnyway";
-    await prompting._writeUiVariable("word", 7, { requestedAt: Date.now() + 1 });
+    await prompting._writes.writeUiVariable("word", 7, { requestedAt: Date.now() + 1 });
     assert.strictEqual(prompts.length, 2);
     assert.strictEqual(writeCalls.length, mismatchWrites + 1);
-    await prompting._writeUiVariable("word", 8);
+    await prompting._writes.writeUiVariable("word", 8);
     assert.strictEqual(prompts.length, 2, "the choice covers later writes with the same ELF digest");
     runtimeElf.elf.sha256 = "rebuilt";
     answer = undefined;
-    await assert.rejects(prompting._writeUiVariable("word", 9, { requestedAt: Date.now() + 2 }), {
+    await assert.rejects(prompting._writes.writeUiVariable("word", 9, { requestedAt: Date.now() + 2 }), {
         code: "ELF_TARGET_MISMATCH"
     });
     assert.strictEqual(prompts.length, 3, "a different ELF digest asks again");
     prompting._firmwareRecord = flashed("rebuilt");
-    await prompting._writeUiVariable("word", 9);
+    await prompting._writes.writeUiVariable("word", 9);
     assert.strictEqual(prompts.length, 3, "matching firmware writes without a prompt");
     runtimeElf.elf.sha256 = "runtime";
     console.log("Write connection binding, verification, managed routing and approval tests passed");

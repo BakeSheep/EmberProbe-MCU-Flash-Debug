@@ -1,10 +1,8 @@
 "use strict";
 
 const assert = require("assert");
-const fs = require("fs");
+const { loadModule } = require("./helpers/load-module");
 const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const { spawnSync } = require("child_process");
@@ -365,12 +363,9 @@ function unlistedCmsisDap() {
 }
 
 async function processLifetime() {
-    const filename = path.resolve(__dirname, "../src/openocdRunner.js");
-    const localRequire = createRequire(filename);
-    const mod = { exports: {} };
     let child;
     const overrides = {
-        "./openocdScripts": { ...localRequire("./openocdScripts"), resolveOpenOcdLaunch: () => launch },
+        "./openocdScripts": { ...require("../src/openocdScripts"), resolveOpenOcdLaunch: () => launch },
         child_process: {
             spawn: () => {
                 child = new EventEmitter();
@@ -385,9 +380,7 @@ async function processLifetime() {
             }
         }
     };
-    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
-        filename
-    })((name) => overrides[name] || localRequire(name), mod, mod.exports);
+    const runner = loadModule("src/openocdRunner.js", overrides);
     const vscode = {
         EventEmitter: class {
             fire() {}
@@ -406,7 +399,7 @@ async function processLifetime() {
             probeSerial: serial,
             timeoutMs: mode === "timeout" ? 10 : 1000
         };
-        const pending = mod.exports
+        const pending = runner
             .runOpenOcd(vscode, options, () => {})
             .finally(() => {
                 settled = true;
@@ -427,7 +420,7 @@ async function processLifetime() {
         assert.strictEqual(child.killed, true);
         assert.throws(() => coordinator.acquire("debugStart"), { code: "PROBE_BUSY" });
         await assert.rejects(
-            mod.exports.runOpenOcd(vscode, options, () => {}),
+            runner.runOpenOcd(vscode, options, () => {}),
             { code: "PROBE_BUSY" }
         );
         child.exitCode = 1;

@@ -10,9 +10,9 @@ for (const lang of ["zh", "en"]) {
         assert.strictEqual(doc.getElementById("exportSource"), null);
         assert.strictEqual(doc.querySelector(".export-history-note"), null);
         // Freezing or losing old in-memory points must not select a partial export source.
-        w.frozen = true;
-        w.remoteHistory.snapshotId = "snapshot";
-        w.showExport();
+        w.eval("state").frozen = true;
+        w.eval("state").remoteHistory.snapshotId = "snapshot";
+        w.eval("exportDialog").open();
         assert.deepStrictEqual(page.messages.at(-1), {
             type: "samplingArchiveInfo",
             openExport: true,
@@ -52,14 +52,14 @@ for (const lang of ["zh", "en"]) {
         );
         doc.getElementById("exportInvert").click();
         assert.deepStrictEqual(
-            Array.from(w.selectedExportCandidates(), (item) => item.name),
+            Array.from(w.eval("exportDialog").selected(), (item) => item.name),
             ["old"],
             "filtering and inverting preserve hidden selections"
         );
         doc.getElementById("exportSelectAll").click();
         filter("no match");
         doc.getElementById("exportInvert").click();
-        assert.strictEqual(w.selectedExportCandidates().length, 2, "empty results leave selections intact");
+        assert.strictEqual(w.eval("exportDialog").selected().length, 2, "empty results leave selections intact");
         filter("");
         assert.ok(Array.from(series.querySelectorAll("tbody tr")).every((row) => !row.hidden));
         assert.strictEqual(doc.querySelector('input[name="exportRange"]'), null);
@@ -68,7 +68,7 @@ for (const lang of ["zh", "en"]) {
         assert.strictEqual(doc.getElementById("exportToRange").value, doc.getElementById("exportToRange").max);
         const selectAll = doc.getElementById("exportSelectAll");
         const invert = doc.getElementById("exportInvert");
-        const selectedNames = () => Array.from(w.selectedExportCandidates(), (item) => item.name);
+        const selectedNames = () => Array.from(w.eval("exportDialog").selected(), (item) => item.name);
         assert.strictEqual(selectAll.textContent, lang === "zh" ? "全选" : "Select all");
         assert.strictEqual(invert.textContent, lang === "zh" ? "反选" : "Invert");
         doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
@@ -84,30 +84,34 @@ for (const lang of ["zh", "en"]) {
         invert.click();
         assert.deepStrictEqual(selectedNames(), ["old", "chosen"], "invert supports selecting all rows");
         doc.querySelector('#exportSeries input[data-index="0"]').checked = false;
-        w.applyExport();
+        w.eval("exportDialog").apply();
         const exported = page.messages.at(-1);
         assert.deepStrictEqual(exported.names, ["chosen"]);
         assert.strictEqual(exported.historyRevision, 0);
         assert.strictEqual(exported.fileName, fileName.placeholder + ".csv");
         for (const field of ["fromMs", "toMs"]) assert.strictEqual(exported[field], undefined, field);
-        w.showExport();
+        w.eval("exportDialog").open();
         page.send(info);
         fileName.value = "  电源采样.CSV  ";
         doc.getElementById("exportFromRange").value = String(info.lastTimestampMs - info.firstTimestampMs - 10000);
-        w.updateExportTimeline("from");
-        w.applyExport();
+        doc.getElementById("exportFromRange").dispatchEvent(new w.Event("input"));
+        w.eval("exportDialog").apply();
         assert.strictEqual(page.messages.at(-1).fileName, "电源采样.csv", "custom names get one CSV extension");
         assert.strictEqual(page.messages.at(-1).fromMs, info.lastTimestampMs - 10000);
         assert.strictEqual(page.messages.at(-1).toMs, info.lastTimestampMs);
         w.clearHistory();
         const revision = w.historyRevision;
         page.send(info);
-        assert.strictEqual(w.exportCandidates.length, 0, "late archive replies cannot resurrect cleared history");
+        assert.strictEqual(
+            w.eval("exportDialog").candidates.length,
+            0,
+            "late archive replies cannot resurrect cleared history"
+        );
         const count = page.messages.length;
-        w.showExport();
+        w.eval("exportDialog").open();
         assert.strictEqual(page.messages.length, count, "wait for history clear acknowledgement");
         page.send({ type: "samplingHistoryCleared", historyRevision: revision });
-        w.showExport();
+        w.eval("exportDialog").open();
         page.send({
             ...info,
             historyRevision: revision,
@@ -117,9 +121,15 @@ for (const lang of ["zh", "en"]) {
         });
         assert.strictEqual(fileName.value, "", "reopening restores the suggested name");
         assert.strictEqual(search.value, "", "reopening clears the series filter");
-        w.applyExport();
+        doc.getElementById("exportFromRange").value = "5";
+        doc.getElementById("exportFromRange").dispatchEvent(new w.Event("input"));
+        w.eval("exportDialog").apply();
         assert.strictEqual(page.messages.at(-1).historyRevision, revision);
-        assert.strictEqual(w.exportTimelineStart, info.lastTimestampMs + 10);
+        assert.strictEqual(
+            page.messages.at(-1).fromMs,
+            info.lastTimestampMs + 15,
+            "the timeline starts at the new archive"
+        );
         page.assertHealthy();
     } finally {
         page.close();
@@ -143,12 +153,12 @@ for (const lang of ["zh", "en"]) {
             "_ZN3app5countE [u16]",
             "pwr.samples[3]"
         ];
-        w.watch = [
+        w.eval("state").watch = [
             { name: "pwr.bus_", type: "f32" },
             { name: "pwr.data_.bus_voltage_v", type: "f32", typeName: "float" },
             { name: "pwr.samples[3]", type: "i16" }
         ];
-        w.showArchiveExport({
+        w.eval("exportDialog").show({
             variables: names,
             displayNames: {
                 "pwr.data_.bus_voltage_v [f32]": "pwr.data_.bus_voltage_v [f32]",
@@ -185,7 +195,7 @@ for (const lang of ["zh", "en"]) {
             ["app::count"],
             "search also matches the original archive name"
         );
-        w.applyExport();
+        w.eval("exportDialog").apply();
         assert.deepStrictEqual(
             page.messages.at(-1).names,
             names.filter((_, index) => index !== 5),
@@ -201,9 +211,9 @@ console.log("Typed archive names, historical types, removed watches and exact ex
 const page = render(getLiveWatchContent({}, "zh"));
 try {
     const { window: w, document: doc } = page;
-    w.watch = [{ name: "v0", type: "f32", typeName: "float" }];
-    w.impSymbolByName.set("v1", { name: "v1", watchType: "u32", typeName: "uint32_t" });
-    w.showArchiveExport({
+    w.eval("state").watch = [{ name: "v0", type: "f32", typeName: "float" }];
+    w.eval("state").symbols.set("v1", { name: "v1", watchType: "u32", typeName: "uint32_t" });
+    w.eval("exportDialog").show({
         variables: Array.from({ length: 12 }, (_, i) => "v" + i),
         firstTimestampMs: 1000,
         lastTimestampMs: 10000
@@ -270,7 +280,7 @@ try {
     }
     const checked = () => inputs.map((input) => input.checked);
     pointer("pointerdown", rows[0], 50, 35, 2);
-    assert.strictEqual(w.exportSeriesDrag, null, "right button does not start selection");
+    assert.strictEqual(w.eval("exportDialog").drag, null, "right button does not start selection");
     pointer("pointerdown", rows[0], 50, 35);
     pointer("pointerup", box, 50, 35);
     assert.strictEqual(inputs[0].checked, false, "a row click toggles once");
@@ -302,10 +312,10 @@ try {
     pointer("pointerdown", rows[0], 50, 35);
     pointer("pointermove", box, 160, 230);
     for (let i = 0; i < 10; i++) {
-        const id = w.exportSeriesDrag.frame;
+        const id = w.eval("exportDialog").drag.frame;
         const callback = frames.get(id);
         frames.delete(id);
-        callback(w.exportSeriesDrag.lastFrame + 32);
+        callback(w.eval("exportDialog").drag.lastFrame + 32);
     }
     assert.strictEqual(scrollTop, 144, "scroll down while the pointer stays below the list");
     assert.ok(
@@ -316,10 +326,10 @@ try {
     pointer("pointerdown", rows[11], 180, 160);
     pointer("pointermove", box, 40, -30);
     for (let i = 0; i < 10; i++) {
-        const id = w.exportSeriesDrag.frame;
+        const id = w.eval("exportDialog").drag.frame;
         const callback = frames.get(id);
         frames.delete(id);
-        callback(w.exportSeriesDrag.lastFrame + 32);
+        callback(w.eval("exportDialog").drag.lastFrame + 32);
     }
     assert.strictEqual(scrollTop, 0, "scroll up while the pointer stays above the list");
     assert.ok(
@@ -327,18 +337,18 @@ try {
         "upward selection inverts the full range"
     );
     pointer("pointercancel", box, 40, -30);
-    assert.strictEqual(w.exportSeriesDrag, null);
+    assert.strictEqual(w.eval("exportDialog").drag, null);
     pointer("pointerdown", rows[0], 50, 35);
     pointer("pointermove", box, 160, 80);
-    w.hideExport();
-    assert.strictEqual(w.exportSeriesDrag, null, "closing releases an active drag");
+    w.eval("exportDialog").hide();
+    assert.strictEqual(w.eval("exportDialog").drag, null, "closing releases an active drag");
     assert.strictEqual(captured, false);
     assert.strictEqual(box.querySelector(".export-marquee"), null);
-    w.showArchiveExport({ variables: [] });
+    w.eval("exportDialog").show({ variables: [] });
     doc.getElementById("exportSelectAll").click();
     doc.getElementById("exportInvert").click();
     pointer("pointerdown", box, 50, 35);
-    assert.strictEqual(w.exportSeriesDrag, null, "empty lists do not start selection");
+    assert.strictEqual(w.eval("exportDialog").drag, null, "empty lists do not start selection");
     page.assertHealthy();
 } finally {
     page.close();

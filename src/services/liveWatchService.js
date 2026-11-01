@@ -282,6 +282,15 @@ function filterRuntimeRamPlan(items, sections, regions = []) {
     return { allowed, denied, ranges };
 }
 
+// Reordering watch cards keeps the same reads; only a changed set refreshes the paused snapshot.
+// Session start and plan refreshes must build the key the same way, or the first refresh of a
+// session (e.g. saving a write-list value) looks like a plan change and aborts an in-flight write.
+function debugReadPlanKey(items) {
+    return items
+        .map((item) => `${item.name}:${item.address}:${item.size}:${item.runtimeExpanded?.join(",") ?? "*"}`)
+        .sort()
+        .join("|");
+}
 function nextLivePanelId(entries) {
     const used = entries instanceof Map ? entries : new Map((entries || []).map((id) => [Number(id), true]));
     let id = 1;
@@ -543,6 +552,7 @@ module.exports = {
     LiveWatchService,
     buildActiveReadPlan,
     buildChartHistoryItems,
+    debugReadPlanKey,
     collectRuntimeHistoryLeaves,
     nextLivePanelId,
     selectFocusedPanel,

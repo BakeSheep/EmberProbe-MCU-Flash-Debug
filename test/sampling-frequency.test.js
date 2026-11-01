@@ -49,29 +49,33 @@ assert.strictEqual(
     const provider = Object.create(Provider.prototype);
     const messages = [];
     const intervals = [];
-    provider._liveFrequencyHz = 30;
-    provider._liveIntervalMs = 33;
-    provider._liveSession = { setIntervalMs: (interval) => intervals.push(interval) };
+    provider._sampling.frequencyHz = 30;
+    provider._sampling.intervalMs = 33;
+    provider._sampling.session = { setIntervalMs: (interval) => intervals.push(interval) };
     provider._livePanels = new Map([[1, { post: (message) => messages.push(message) }]]);
 
-    assert.strictEqual(await provider._saveLiveFrequency(60), 60);
+    assert.strictEqual(await provider._sampling.saveFrequency(60), 60);
     assert.strictEqual(settings.get("sampleFrequencyHz"), 60);
     assert.deepStrictEqual(targets, [vscode.ConfigurationTarget.Workspace]);
     assert.deepStrictEqual(intervals, [17]);
     assert.strictEqual(messages.at(-1).frequencyHz, 60);
     assert.strictEqual(configuredFrequencyHz(config), 60, "Reopening this workspace should restore the chosen rate");
 
-    provider._setLiveInterval(17);
-    assert.strictEqual(provider._liveFrequencyHz, 60, "Matching internal interval must preserve the requested rate");
-    await assert.rejects(provider._saveLiveFrequency(0), { code: "INVALID_SAMPLE_FREQUENCY" });
+    provider._sampling.setIntervalMs(17);
+    assert.strictEqual(
+        provider._sampling.frequencyHz,
+        60,
+        "Matching internal interval must preserve the requested rate"
+    );
+    await assert.rejects(provider._sampling.saveFrequency(0), { code: "INVALID_SAMPLE_FREQUENCY" });
     assert.strictEqual(settings.get("sampleFrequencyHz"), 60);
     settings.set("sampleFrequencyHz", 45);
     provider.samplingFrequencyConfigurationChanged();
-    assert.strictEqual(provider._liveFrequencyHz, 45);
-    assert.strictEqual(provider._liveIntervalMs, 22);
+    assert.strictEqual(provider._sampling.frequencyHz, 45);
+    assert.strictEqual(provider._sampling.intervalMs, 22);
     let finishSave;
     config.update = () => new Promise((resolve) => (finishSave = resolve));
-    const saving = provider._saveLiveFrequency(200);
+    const saving = provider._sampling.saveFrequency(200);
     assert.strictEqual(intervals.at(-1), 5, "apply the runtime rate before workspace persistence finishes");
     finishSave();
     await saving;

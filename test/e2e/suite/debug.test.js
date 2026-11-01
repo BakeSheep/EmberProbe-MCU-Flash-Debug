@@ -27,10 +27,10 @@ async function run() {
         fs.writeFileSync(path.join(temp, name + suffix), "fixture");
         fs.chmodSync(path.join(temp, name + suffix), 0o755);
     }
-    const originals = new Map();
-    const replace = (name, value) => {
-        originals.set(name, provider[name]);
-        provider[name] = value;
+    const originals = [];
+    const replace = (owner, name, value) => {
+        originals.push([owner, name, owner[name]]);
+        owner[name] = value;
     };
     const keys = ["mcu.debugger", "mcu.mcuCore"];
     const saved = keys.map((key) => provider._context.workspaceState.get(key));
@@ -49,9 +49,9 @@ async function run() {
     try {
         await provider._context.workspaceState.update(keys[0], "stlink.cfg");
         await provider._context.workspaceState.update(keys[1], "stm32f1x.cfg");
-        replace("_resolveOpenOcdPath", async () => fakeOpenOcd);
-        replace("_startManagedDebugServer", async () => {
-            provider._managedDebugServer = {
+        replace(provider, "_resolveOpenOcdPath", async () => fakeOpenOcd);
+        replace(provider.debugLaunch, "startManagedServer", async () => {
+            provider.debugLaunch.managedServer = {
                 setSamplingEnabled() {},
                 stop: async () => serverStops++,
                 waitForIdle: async () => true
@@ -103,7 +103,7 @@ async function run() {
         assert(started);
         await wait(() => session && stopped > 0);
         await wait(() => provider._debugBridge.paused);
-        const inspect = (params) => provider._handleAgentCall("debug.inspect", params);
+        const inspect = (params) => provider._agentService.call("debug.inspect", params);
         const agentThreads = await inspect({ action: "threads" });
         const agentStack = await inspect({ action: "stack", threadId: agentThreads.threads[0].id });
         const agentScopes = await inspect({ action: "scopes", frame: agentStack.stackFrames[0].frame });
@@ -196,12 +196,12 @@ async function run() {
         await assert.rejects(session.customRequest("variables", { variablesReference: nextPage }));
         await vscode.debug.stopDebugging(session);
         await wait(() => !session && serverStops === 1);
-        assert(!provider._managedDebugServer);
+        assert(!provider.debugLaunch.managedServer);
         console.log("✓ independent EmberProbe F5 over real DAP: dynamic C++ paging, writes and stale handles");
     } finally {
         if (session) await vscode.debug.stopDebugging(session);
         for (const disposable of disposables) disposable.dispose();
-        for (const [name, value] of originals) provider[name] = value;
+        for (const [owner, name, value] of originals) owner[name] = value;
         for (let i = 0; i < keys.length; i++) await provider._context.workspaceState.update(keys[i], saved[i]);
         fs.rmSync(temp, { recursive: true, force: true });
     }

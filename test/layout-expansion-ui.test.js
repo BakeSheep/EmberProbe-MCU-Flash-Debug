@@ -200,7 +200,7 @@ for (const sidebar of [true, false]) {
         bytes.writeFloatLE(3.5, 52);
         const tree = decodeComposite(bytes, f.layout, f.symbol);
         page.send({ type: "liveCompositeSample", samples: [{ name: "axes", tree }] });
-        const update = sidebar ? page.window.sbUpdateComposite : page.window.updateCompositeValues;
+        const update = page.window.eval("valueTree").updateComposite;
         update("axes");
         const leaf = [...page.document.querySelectorAll(sidebar ? ".sb-mrow" : ".member-row")].find((row) =>
             row.textContent.includes("gain")

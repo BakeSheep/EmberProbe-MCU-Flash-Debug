@@ -36,6 +36,18 @@ const CHIP_GROUPS = Object.freeze({
     runtime: ["targetState", "haltReason", "pc", "sp", "lr"]
 });
 
+// Agent access for a workspace. An untrusted workspace never has it and the explicit per-workspace switch wins;
+// without a switch, installed workspace skills (compatibility) or an MCP client's request enable it.
+/** @param {{ trusted: boolean, access?: string, skills: boolean, mcpRequested: boolean }} inputs */
+function agentAccessDecision({ trusted, access, skills, mcpRequested }) {
+    if (!trusted) return { enabled: false, state: "untrusted" };
+    if (access === "disabled") return { enabled: false, state: "disabled" };
+    if (access === "enabled") return { enabled: true, reason: "access" };
+    if (skills) return { enabled: true, reason: "skills" };
+    if (mcpRequested) return { enabled: true, reason: "mcp" };
+    return { enabled: false, state: "disabled" };
+}
+
 class AgentService {
     constructor(options) {
         this.Bridge = options.Bridge;
@@ -141,6 +153,13 @@ class AgentService {
         );
     }
 
+    // Starts or stops the Bridge to match an agentAccessDecision; a stopped Bridge publishes why access is off.
+    sync(decision, options = {}) {
+        if (decision.enabled) return this.start(options);
+        this.accessState = decision.state;
+        return this.stop();
+    }
+
     // options.legacyPointer: whether to write the workspace pointer for older scripts (true while workspace skills are
     // installed).
     start(options = {}) {
@@ -239,4 +258,4 @@ class AgentService {
     }
 }
 
-module.exports = { AgentService, CHIP_GROUPS };
+module.exports = { AgentService, CHIP_GROUPS, agentAccessDecision };

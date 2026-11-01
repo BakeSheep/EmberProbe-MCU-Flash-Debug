@@ -1,47 +1,35 @@
+"use strict";
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
-var remoteHistory = {
-    // While following, render bounds advance with detail; liveStatus always tracks the latest event.
-    status: null,
-    liveStatus: null,
-    view: null,
-    overview: null,
-    composed: null,
-    snapshotId: null,
-    nextId: 0,
-    inFlight: null,
-    pending: null,
-    target: null,
-    overviewDueAt: null,
-    lastOverviewRequest: -Infinity,
-    operation: null,
-    lastRequest: -Infinity
-};
+const { fmtNum, isComposite } = EmberProbeValueTree;
+
 function chartHistoryConfig() {
-    var names = watch
+    var names = state.watch
         .filter(function (item) {
-            return !hidden[item.name] && !isCompositeItem(item);
+            return !state.hidden[item.name] && !isComposite(item);
         })
         .map(function (item) {
             return item.name;
         });
     var configKey = JSON.stringify([
         historyRevision,
-        remoteHistory.snapshotId,
+        state.remoteHistory.snapshotId,
         names,
-        watch.map(function (item) {
+        state.watch.map(function (item) {
             return [item.name, item.type, item.address, item.bitOffset, item.bitSize];
         })
     ]);
     return { names: names, configKey: configKey };
 }
 function followingChartHistory() {
-    return !frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag;
+    return (
+        !state.frozen && chartState.follow && !chartState.drag && !chartState.endpointDrag && !chartState.timelineDrag
+    );
 }
 function smoothFollowEnabled() {
     return (
         running &&
-        !remoteHistory.operation &&
+        !state.remoteHistory.operation &&
         followingChartHistory() &&
         !chartState.startPinned &&
         !!chartState.x &&
@@ -113,12 +101,16 @@ function advanceFollowClock(now) {
 // Freeze/resume keep the drawn views until replacements arrive; only outstanding requests are dropped.
 function cancelChartHistoryRequests() {
     resetFollowClock();
-    remoteHistory.inFlight = remoteHistory.pending = remoteHistory.target = remoteHistory.failed = null;
-    remoteHistory.overviewDueAt = null;
-    remoteHistory.lastOverviewRequest = -Infinity;
+    state.remoteHistory.inFlight =
+        state.remoteHistory.pending =
+        state.remoteHistory.target =
+        state.remoteHistory.failed =
+            null;
+    state.remoteHistory.overviewDueAt = null;
+    state.remoteHistory.lastOverviewRequest = -Infinity;
 }
 function resetChartHistoryViews() {
-    remoteHistory.view = remoteHistory.overview = remoteHistory.composed = null;
+    state.remoteHistory.view = state.remoteHistory.overview = state.remoteHistory.composed = null;
     cancelChartHistoryRequests();
 }
 function chartHistoryBoundsValid(bounds) {
@@ -128,13 +120,13 @@ function requestChartViewport(range, width) {
     if (historyClearPending) return;
     var config = chartHistoryConfig();
     if (!config.names.length) {
-        remoteHistory.view = remoteHistory.overview = null;
-        remoteHistory.pending = remoteHistory.target = null;
-        remoteHistory.overviewDueAt = null;
+        state.remoteHistory.view = state.remoteHistory.overview = null;
+        state.remoteHistory.pending = state.remoteHistory.target = null;
+        state.remoteHistory.overviewDueAt = null;
         return;
     }
-    var status = frozen ? remoteHistory.status : remoteHistory.liveStatus;
-    if (!range || !status || !remoteHistory.status) return;
+    var status = state.frozen ? state.remoteHistory.status : state.remoteHistory.liveStatus;
+    if (!range || !status || !state.remoteHistory.status) return;
     var now = performance.now(),
         bounds = status.bounds,
         span = Math.max(1, range.max - range.min),
@@ -166,14 +158,15 @@ function requestChartViewport(range, width) {
         width: Math.min(8192, Math.max(1, Math.round((columns * (fetchRange.max - fetchRange.min)) / span))),
         names: config.names,
         revision: status.revision,
-        snapshotId: remoteHistory.snapshotId
+        snapshotId: state.remoteHistory.snapshotId
     };
     target.key = JSON.stringify([target.configKey, target.revision, target.range, target.width]);
     target.overviewRange = chartHistoryBoundsValid(bounds) ? { ...bounds } : null;
     target.overviewWidth = Math.min(4096, Math.max(64, Math.round(width)));
-    if (remoteHistory.target && remoteHistory.target.configKey !== target.configKey) remoteHistory.overviewDueAt = null;
-    remoteHistory.target = target;
-    var view = remoteHistory.view,
+    if (state.remoteHistory.target && state.remoteHistory.target.configKey !== target.configKey)
+        state.remoteHistory.overviewDueAt = null;
+    state.remoteHistory.target = target;
+    var view = state.remoteHistory.view,
         msPerColumn = view ? Math.max(1, view.range.max - view.range.min) / view.width : Infinity,
         desiredResolution = span / columns,
         followRefreshInterval = Math.max(80, span / Math.max(1, width)),
@@ -185,63 +178,63 @@ function requestChartViewport(range, width) {
             visibleRange.max > view.range.max + epsilon ||
             msPerColumn > desiredResolution * 1.5 ||
             msPerColumn < desiredResolution / 3 ||
-            (!frozen &&
+            (!state.frozen &&
                 status.revision !== view.revision &&
                 now - view.receivedAt >= (following ? followRefreshInterval : 1000));
     // Only the latest detail is pending. Overview work is derived from target when the slot opens.
     // A failed request is not repeated for the same key; overview failures back off for 5 s.
-    var inFlight = remoteHistory.inFlight,
-        failed = remoteHistory.failed;
-    remoteHistory.pending =
+    var inFlight = state.remoteHistory.inFlight,
+        failed = state.remoteHistory.failed;
+    state.remoteHistory.pending =
         needsDetail &&
         !(inFlight && inFlight.purpose === "detail" && inFlight.key === target.key) &&
         !(failed && failed.purpose === "detail" && failed.key === target.key)
             ? { ...target, purpose: "detail" }
             : null;
-    var overview = remoteHistory.overview,
+    var overview = state.remoteHistory.overview,
         overviewInFlight = inFlight && inFlight.purpose === "overview" && inFlight.configKey === target.configKey,
         overviewFailed =
             failed && failed.purpose === "overview" && failed.configKey === target.configKey && now - failed.at < 5000,
         missingOverview = !overview || overview.configKey !== target.configKey,
-        staleOverview = !frozen && overview && overview.revision !== status.revision;
+        staleOverview = !state.frozen && overview && overview.revision !== status.revision;
     if (
         target.overviewRange &&
         !overviewInFlight &&
         !overviewFailed &&
-        (missingOverview || (staleOverview && now - remoteHistory.lastOverviewRequest >= 1000))
+        (missingOverview || (staleOverview && now - state.remoteHistory.lastOverviewRequest >= 1000))
     ) {
-        if (remoteHistory.overviewDueAt === null)
-            remoteHistory.overviewDueAt = missingOverview ? now : remoteHistory.lastOverviewRequest + 1000;
-    } else remoteHistory.overviewDueAt = null;
+        if (state.remoteHistory.overviewDueAt === null)
+            state.remoteHistory.overviewDueAt = missingOverview ? now : state.remoteHistory.lastOverviewRequest + 1000;
+    } else state.remoteHistory.overviewDueAt = null;
     dispatchChartViewport();
 }
 function dispatchChartViewport() {
-    if (historyClearPending || remoteHistory.inFlight || !remoteHistory.target) return;
+    if (historyClearPending || state.remoteHistory.inFlight || !state.remoteHistory.target) return;
     var now = performance.now(),
-        overviewDue = remoteHistory.overviewDueAt !== null;
-    if (!remoteHistory.pending && !overviewDue) return;
-    var elapsed = now - remoteHistory.lastRequest;
+        overviewDue = state.remoteHistory.overviewDueAt !== null;
+    if (!state.remoteHistory.pending && !overviewDue) return;
+    var elapsed = now - state.remoteHistory.lastRequest;
     if (elapsed < 80) {
-        dirty = true;
+        state.dirty = true;
         return;
     }
     var request;
-    if (overviewDue && (!remoteHistory.pending || now - remoteHistory.overviewDueAt > 1000)) {
+    if (overviewDue && (!state.remoteHistory.pending || now - state.remoteHistory.overviewDueAt > 1000)) {
         request = {
-            ...remoteHistory.target,
+            ...state.remoteHistory.target,
             purpose: "overview",
-            range: remoteHistory.target.overviewRange,
-            width: remoteHistory.target.overviewWidth
+            range: state.remoteHistory.target.overviewRange,
+            width: state.remoteHistory.target.overviewWidth
         };
-        remoteHistory.lastOverviewRequest = now;
-        remoteHistory.overviewDueAt = null;
+        state.remoteHistory.lastOverviewRequest = now;
+        state.remoteHistory.overviewDueAt = null;
     } else {
-        request = remoteHistory.pending;
-        remoteHistory.pending = null;
+        request = state.remoteHistory.pending;
+        state.remoteHistory.pending = null;
     }
-    request.requestId = ++remoteHistory.nextId;
-    remoteHistory.inFlight = request;
-    remoteHistory.lastRequest = now;
+    request.requestId = ++state.remoteHistory.nextId;
+    state.remoteHistory.inFlight = request;
+    state.remoteHistory.lastRequest = now;
     post({
         type: "chartViewport",
         names: request.names,
@@ -454,94 +447,148 @@ var TYPES = window.EmberProbeRuntime.SUPPORTED_TYPES,
     analysis = Analysis.create(),
     axisModes = {},
     controls;
-var watch = [],
-    latest = Object.create(null),
-    latestText = Object.create(null),
-    latestEnum = Object.create(null),
-    latestPointer = Object.create(null),
-    // Last sampled pointer targets by watch path; restored with the view so a reopened panel still names them.
-    // They belong to the ELF version they were sampled from and are shown only while it is loaded.
-    lastPointers = Object.create(null),
-    lastPointersVersion = "",
-    valueCells = Object.create(null),
-    hidden = Object.create(null),
-    expanded = Object.create(null),
-    rawMembers = Object.create(null),
-    numberBases = Object.create(null),
-    compCells = Object.create(null),
-    dispSpec = Object.create(null),
-    // Elements shown per static array path once "show more" was used.
-    arrayShown = Object.create(null),
+var valueCells = Object.create(null),
     running = false,
     starting = false,
-    frozen = false,
     norm = false,
     jitterBands = true,
-    allSymbols = [],
     samplingOrigin = null,
-    dirty = true,
-    lastDraw = 0,
-    runtimeBodies = Object.create(null),
-    // Expanded pointee entries rendered inside their pointer rows / as stand-alone cards.
-    placedPointees = new Set(),
-    fallbackPointees = new Set();
+    lastDraw = 0;
 var MAX_ARR_SHOWN = 16;
 var wantImportOpen = false,
-    impVersion = "",
-    impGeneration = null,
     impWarnings = [],
     impError = "",
     impTypesReady = true,
-    impExpanded = Object.create(null),
     // Checkbox changes made since the import dialog opened; other rows mirror the current watch list.
     impPicks = new Map(),
     impLayoutPending = new Set(),
     // Scalar pointer symbols whose runtime type graph was requested to offer expansion.
     pointerLayoutWaiters = new Set(),
-    impSymbolByName = new Map(),
     impIndexByName = new Map(),
-    impTypeChunks = 0,
-    impSearchTimer = null,
-    impSearchQuery = "";
-var PANEL_MARGIN = 8,
-    PANEL_MIN_WIDTH = 220,
-    PANEL_MIN_HEIGHT = 120,
-    PANEL_COLUMNS_WIDTH = 480;
-// Saved floating-card geometry, or a default top-left card.
-function savedValuePanel(state) {
-    var p = state && state.valuePanel;
-    if (p && ["x", "y", "w"].every((key) => Number.isFinite(p[key])) && (p.h === null || Number.isFinite(p.h)))
-        return { x: p.x, y: p.y, w: p.w, h: p.h, dockRight: p.dockRight === true, dockBottom: p.dockBottom === true };
-    return { x: 12, y: 40, w: 300, h: null, dockRight: false, dockBottom: false };
-}
+    impTypeChunks = 0;
+// Watch list, ELF symbols, readings, curve and view settings; the value tree reads them too.
+const state = {
+    remoteHistory: {
+        // While following, render bounds advance with detail; liveStatus always tracks the latest event.
+        status: null,
+        liveStatus: null,
+        view: null,
+        overview: null,
+        composed: null,
+        snapshotId: null,
+        nextId: 0,
+        inFlight: null,
+        pending: null,
+        target: null,
+        overviewDueAt: null,
+        lastOverviewRequest: -Infinity,
+        operation: null,
+        lastRequest: -Infinity
+    },
+    watch: [],
+    latest: Object.create(null),
+    latestText: Object.create(null),
+    latestEnum: Object.create(null),
+    latestPointer: Object.create(null),
+    hidden: Object.create(null),
+    expanded: Object.create(null),
+    rawMembers: Object.create(null),
+    numberBases: Object.create(null),
+    dispSpec: Object.create(null),
+    // Elements shown per static array path once "show more" was used.
+    arrayShown: Object.create(null),
+    frozen: false,
+    allSymbols: [],
+    dirty: true,
+    version: "",
+    generation: null,
+    importExpanded: Object.create(null),
+    symbols: new Map()
+};
+// The value panel shows its cards in two columns from this width on.
+var PANEL_COLUMNS_WIDTH = 480;
 var saved = api && api.getState ? api.getState() : null,
-    sideWidth = (saved && Number(saved.sideWidth)) || 260,
-    sideHeight = saved && Number.isFinite(saved.sideHeight) ? Math.max(100, saved.sideHeight) : null,
-    // The value panel is a docked sidebar by default, or a card floating over the chart.
-    panelMode = saved && saved.panelMode === "floating" ? "floating" : "docked",
-    valuePanel = savedValuePanel(saved),
     // Two-column layout: each top-level card keeps the column it was placed in (0 or 1).
     cardColumns = Object.assign(Object.create(null), saved && saved.cardColumns),
-    sideCollapsed = !!(saved && saved.sideCollapsed),
     windowPreset = saved && saved.timeWindow && saved.timeWindow !== "custom" ? String(saved.timeWindow) : "30",
     impUserOnly = !!(saved && saved.impUserVarsOnly);
-if (saved && saved.hidden) hidden = saved.hidden;
+if (saved && saved.hidden) state.hidden = saved.hidden;
+const panelLayout = EmberProbePanelLayout.create({
+    $,
+    t: (key, params) => t(key, params),
+    saved,
+    save: () => saveUi(),
+    arrange: () => arrangeVariableCards(),
+    changed: () => {
+        state.dirty = true;
+    }
+});
 if (saved && typeof saved.norm === "boolean") norm = saved.norm;
 if (saved && typeof saved.jitterBands === "boolean") jitterBands = saved.jitterBands;
-if (saved && saved.expanded) expanded = saved.expanded;
-if (saved && saved.rawMembers) rawMembers = saved.rawMembers;
+if (saved && saved.expanded) state.expanded = saved.expanded;
+if (saved && saved.rawMembers) state.rawMembers = saved.rawMembers;
 if (saved && saved.numberBases)
     Object.entries(saved.numberBases).forEach(function ([name, radix]) {
-        if ([2, 16].includes(radix)) numberBases[name] = radix;
+        if ([2, 16].includes(radix)) state.numberBases[name] = radix;
     });
-if (saved && saved.dispSpec) dispSpec = saved.dispSpec;
-if (saved && saved.arrayShown) arrayShown = saved.arrayShown;
+if (saved && saved.dispSpec) state.dispSpec = saved.dispSpec;
+if (saved && saved.arrayShown) state.arrayShown = saved.arrayShown;
 // State saved before pointer curves defaulted to hidden lacks the marker written by saveUi.
 var legacyPointerCurves = !!(saved && saved.hidden) && !saved.pointerCurveDefaults;
-if (saved && saved.lastPointers && saved.lastPointersVersion) {
-    lastPointers = saved.lastPointers;
-    lastPointersVersion = String(saved.lastPointersVersion);
-}
+const valueTree = EmberProbeValueTree.create({
+    t: (key, params) => t(key, params),
+    classes: {
+        row: "member-row",
+        name: "member-name",
+        type: "member-type",
+        value: "member-value",
+        nest: "comp-nest",
+        head: "comp-head",
+        arrow: "comp-arrow",
+        headName: "comp-name",
+        headType: "comp-type",
+        members: "comp-members",
+        note: "comp-note"
+    },
+    state,
+    radix: (name) => state.numberBases[name] || 10,
+    savedPointers: saved && { pointers: saved.lastPointers, version: saved.lastPointersVersion },
+    displayName: (path) => displayNameFor({ name: path }),
+    save: () => saveUi(),
+    rerender: () => renderVars(),
+    rerenderPicker: () => {
+        if (!$("overlay").classList.contains("hidden")) renderImport();
+    },
+    post: (message) => post(message),
+    copy: (text) => api?.postMessage({ type: "copyText", text }),
+    layoutExpansion: () => layoutExpansionUi,
+    requestPointerLayout: (name) => {
+        if (!state.version || impLayoutPending.has(name)) return;
+        impLayoutPending.add(name);
+        pointerLayoutWaiters.add(name);
+        post({ type: "resolveCompositeLayout", name, version: state.version });
+    },
+    togglePointee: (entry) => togglePointee(entry),
+    // A member row's swatch adds the member to the chart or switches its curve.
+    decorateLeaf: (row, name, leaf) => {
+        const index = state.watch.findIndex((item) => item.name === leaf.path);
+        const swatch = document.createElement("span");
+        swatch.className = "member-swatch" + (index < 0 || state.hidden[leaf.path] ? " off" : "");
+        if (index >= 0) swatch.style.background = colorFor(index);
+        swatch.title = index >= 0 ? t(state.hidden[leaf.path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
+        if (controls && index >= 0) controls.decorate(row, leaf.path, swatch);
+        return createCurveToggle(swatch, name, function () {
+            // A placeholder row has no address yet: it can be added once samples arrive, but a curve
+            // already in the chart can be switched off right away.
+            if (!leaf.node?.placeholder || state.watch.some((item) => item.name === leaf.path))
+                toggleLeafInChart(leaf.path, leaf.address, leaf.watchType, leaf.node);
+        });
+    },
+    scalarCell: (cell, name) => {
+        valueCells[name] = cell;
+    }
+});
+const valueRefresh = EmberProbeValueTree.createThrottle(50, () => updateValues());
 var impHead = document.createElement("div");
 impHead.className = "imp-head";
 impHead.setAttribute("aria-hidden", "true");
@@ -558,7 +605,7 @@ function $(id) {
     return document.getElementById(id);
 }
 function colorFor(i) {
-    return styleFor(typeof i === "string" ? i : watch[i]?.name || String(i)).color;
+    return styleFor(typeof i === "string" ? i : state.watch[i]?.name || String(i)).color;
 }
 function styleFor(name) {
     if (!Object.prototype.hasOwnProperty.call(seriesStyles, name)) {
@@ -573,62 +620,28 @@ function styleFor(name) {
 function toggleCurve(name) {
     analysis.previousHidden = null;
     analysis.focused = null;
-    hidden[name] = !hidden[name];
+    state.hidden[name] = !state.hidden[name];
     saveUi();
     renderVars();
-    dirty = true;
+    state.dirty = true;
 }
 function fmtAddr(a) {
     return "0x" + (Number(a) >>> 0).toString(16).toUpperCase();
-}
-function fmtNum(v) {
-    if (v === null || v === undefined || !Number.isFinite(Number(v))) return "—";
-    v = Number(v);
-    if (Number.isInteger(v)) return String(v);
-    var a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(Number(v.toFixed(5)));
-}
-function fmtExact(v, valueText, enumText, name) {
-    var radix = numberBases[name] || 10;
-    if (radix !== 10) {
-        // Keep exact 64-bit readings out of Number; fractional values use numerical base conversion.
-        var number =
-            valueText != null && /^-?\d{1,20}$/.test(String(valueText))
-                ? BigInt(valueText)
-                : v != null && Number.isFinite(v)
-                  ? v
-                  : null;
-        if (number !== null) {
-            var negative = number < 0,
-                digits = (negative ? -number : number).toString(radix).toUpperCase();
-            return (negative ? "-" : "") + (radix === 16 ? "0x" : "0b") + digits;
-        }
-    }
-    if (enumText) return String(enumText);
-    return valueText !== null && valueText !== undefined ? String(valueText) : fmtNum(v);
-}
-function setDisplayedValue(cell, value) {
-    EmberProbeRuntime.setValueCell(cell, value);
 }
 var historyRevision = 0,
     historyClearPending = false;
 function defType(size) {
     return window.EmberProbeRuntime.defaultType(size);
 }
-function layoutSymbol(path) {
-    const name = EmberProbeRuntime.variableBaseName(path);
-    const symbol = impSymbolByName.get(name);
-    return symbol?.compositeLayout ? symbol : watch.find((item) => item.name === name) || symbol;
-}
 const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
     post,
-    version: () => impVersion,
-    generation: () => impGeneration,
-    symbol: layoutSymbol,
+    version: () => state.version,
+    generation: () => state.generation,
+    symbol: (path) => valueTree.layoutSymbol(path),
     displayName: (path) => displayNameFor({ name: path }),
     changed: () => {
-        for (const item of watch) {
-            const symbol = impSymbolByName.get(item.name);
+        for (const item of state.watch) {
+            const symbol = state.symbols.get(item.name);
             if (
                 symbol?.compositeLayout &&
                 symbol.compositeLayout.expansionGeneration === item.compositeLayout?.expansionGeneration
@@ -641,57 +654,6 @@ const layoutExpansionUi = EmberProbeRuntime.createLayoutExpansionUi({
         renderVars();
     }
 });
-function showRawFor(path) {
-    return !!rawMembers[baseNameOf(path)];
-}
-function renderRawMembersUi(container, node, name) {
-    const base = baseNameOf(name);
-    EmberProbeRuntime.renderMemberVisibility(container, node, name, showRawFor(name), t, function () {
-        rawMembers[base] = !showRawFor(name);
-        saveUi();
-        renderVars();
-        if (!$("overlay").classList.contains("hidden")) renderImport();
-    });
-}
-function fmtDisplayNode(node, name) {
-    if (node?.functionEmpty) return t("lw.functionEmpty");
-    if (node?.isPointer) return EmberProbeRuntime.pointerLabel(node, t);
-    return node ? fmtExact(node.value, node.valueText, node.enumText, name) : "—";
-}
-// Pointer metadata for a scalar watch; the layout walk runs once per render, not per refresh.
-var displayInfos = new WeakMap();
-function watchDisplayInfo(item) {
-    if (!displayInfos.has(item)) displayInfos.set(item, resolveWatchDisplayInfo(item));
-    return displayInfos.get(item);
-}
-function resolveWatchDisplayInfo(item) {
-    if (item.isPointer) return item;
-    const direct = impSymbolByName.get(item.name);
-    if (direct?.isPointer) return direct;
-    const symbol = layoutSymbol(item.name);
-    return (
-        EmberProbeRuntime.displayLayoutLeaves(symbol, symbol?.compositeLayout, baseNameOf(item.name), symbol?.address, {
-            showRaw: true,
-            includePointers: true
-        }).find((leaf) => leaf.path === item.name) || item
-    );
-}
-function scalarDisplay(item) {
-    const info = watchDisplayInfo(item);
-    // Before the first sample a pointer shows the target it had when last sampled.
-    const last = info.isPointer && latest[item.name] === undefined && shownLastPointers()[item.name];
-    if (last) return fmtDisplayNode({ ...info, ...last, stale: true }, item.name);
-    return fmtDisplayNode(
-        {
-            ...info,
-            ...latestPointer[item.name],
-            value: latest[item.name],
-            valueText: latestText[item.name],
-            enumText: latestEnum[item.name]
-        },
-        item.name
-    );
-}
 function post(m) {
     if (api) {
         m.panelId = CFG.panelId;
@@ -699,28 +661,15 @@ function post(m) {
     }
 }
 function saveWatch() {
-    syncRuntimeExpansions();
-    post({ type: "saveWatch", items: watch });
-}
-// Opened paths of each runtime object (pointer target, STL container), relative to its watch
-// name. While "sample expanded pointer parts only" is on, the host reads just these parts.
-// Nothing is sent before the host's watch list arrives, so a fresh view cannot clear them.
-var runtimeExpansionsLoaded = false,
-    sentRuntimeExpansions = null;
-function syncRuntimeExpansions() {
-    if (!runtimeExpansionsLoaded) return;
-    var value = EmberProbeRuntime.runtimeExpansionPaths(watch, expanded, placedPointees),
-        key = JSON.stringify(value);
-    if (key === sentRuntimeExpansions) return;
-    sentRuntimeExpansions = key;
-    post({ type: "saveRuntimeExpansions", expansions: value });
+    valueTree.syncRuntimeExpansions();
+    post({ type: "saveWatch", items: state.watch });
 }
 // The host keeps each chart's curve visibility so a panel reopened after a restart restores it.
 // Nothing is sent before the host's copy arrives, so a fresh view cannot overwrite it.
 var curveVisibilityLoaded = false,
     sentCurveVisibility = null;
 function saveUi() {
-    var curves = analysis.previousHidden || hidden;
+    var curves = analysis.previousHidden || state.hidden;
     if (curveVisibilityLoaded) {
         var key = JSON.stringify(curves);
         if (key !== sentCurveVisibility) {
@@ -733,64 +682,26 @@ function saveUi() {
             panelId: CFG.panelId,
             watchKey: CFG.watchKey,
             hidden: curves,
-            expanded: expanded,
-            rawMembers: rawMembers,
-            numberBases: numberBases,
-            dispSpec: dispSpec,
-            arrayShown: arrayShown,
-            lastPointers: lastPointers,
-            lastPointersVersion: lastPointersVersion,
+            expanded: state.expanded,
+            rawMembers: state.rawMembers,
+            numberBases: state.numberBases,
+            dispSpec: state.dispSpec,
+            arrayShown: state.arrayShown,
+            lastPointers: valueTree.pointers.saved().pointers,
+            lastPointersVersion: valueTree.pointers.saved().version,
             pointerCurveDefaults: true,
             timeWindow: windowPreset,
-            sideWidth: sideWidth,
-            sideHeight: sideHeight,
-            panelMode: panelMode,
-            valuePanel: valuePanel,
+            ...panelLayout.saved(),
             cardColumns: cardColumns,
-            sideCollapsed: sideCollapsed,
             impUserVarsOnly: impUserOnly,
             norm: norm,
             jitterBands: jitterBands
         });
-    syncRuntimeExpansions();
-}
-var pointerSaveTimer = null;
-// Snapshots sampled from another ELF never name targets in the loaded one.
-function shownLastPointers() {
-    return impVersion && lastPointersVersion === impVersion ? lastPointers : Object.create(null);
-}
-function resetLastPointers(version) {
-    lastPointers = Object.create(null);
-    lastPointersVersion = version || "";
-}
-function rememberPointers(entries) {
-    if (!impVersion) return;
-    var changed = false;
-    if (lastPointersVersion !== impVersion) {
-        resetLastPointers(impVersion);
-        changed = true;
-    }
-    Object.keys(entries).forEach(function (path) {
-        var next = entries[path];
-        if (JSON.stringify(lastPointers[path]) !== JSON.stringify(next)) {
-            lastPointers[path] = next;
-            changed = true;
-        }
-    });
-    if (!changed || pointerSaveTimer !== null) return;
-    pointerSaveTimer = setTimeout(function () {
-        pointerSaveTimer = null;
-        saveUi();
-    }, 2000);
-}
-function forgetPointers(name) {
-    Object.keys(lastPointers).forEach(function (path) {
-        if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete lastPointers[path];
-    });
+    valueTree.syncRuntimeExpansions();
 }
 // Pointer curves carry little information; they start hidden unless the user switched them on.
 function hidePointerCurve(item) {
-    if (item && item.isPointer && hidden[item.name] === undefined) hidden[item.name] = true;
+    if (item && item.isPointer && state.hidden[item.name] === undefined) state.hidden[item.name] = true;
 }
 // Notices live in the import and export dialogs, plus the variable-source picker.
 var noticeAreas = {};
@@ -853,14 +764,6 @@ function applyI18n() {
     for (i = 0; i < els.length; i++) els[i].setAttribute("aria-label", t(els[i].getAttribute("data-i18n-aria")));
     renderUnlimited();
 }
-// Several ELF variables match the typed name; an info notice asks which one to add.
-function choiceHint(show) {
-    var area = noticeArea("acChoiceHint");
-    if (area)
-        show
-            ? area.set("choice", { level: "info", compact: true, text: { key: "lw.chooseVariableSource" } })
-            : area.clear("choice");
-}
 function rerenderLive() {
     applyI18n();
     Object.keys(noticeAreas).forEach(function (id) {
@@ -869,12 +772,12 @@ function rerenderLive() {
     renderElfDiagnostics();
     renderVars();
     if (!$("overlay").classList.contains("hidden")) renderImport();
-    if ($("acDrop").classList.contains("open")) renderAutocomplete(ambiguityChoices);
+    variableEntry.refresh();
     updateRun();
-    applySideLayout();
-    $("freeze").textContent = frozen ? t("lw.resume") : t("lw.freeze");
+    panelLayout.apply();
+    $("freeze").textContent = state.frozen ? t("lw.resume") : t("lw.freeze");
     renderStatus();
-    dirty = true;
+    state.dirty = true;
 }
 function setLang(l) {
     LANG = l === "en" ? "en" : "zh";
@@ -889,10 +792,10 @@ function updateRun() {
 function displayNameFor(item) {
     return EmberProbeRuntime.variableDisplayName(item, {
         get: function (name) {
-            var symbol = impSymbolByName.get(name);
+            var symbol = state.symbols.get(name);
             if (symbol && symbol.displayName && symbol.displayName !== symbol.name) return symbol;
             return (
-                watch.find(function (entry) {
+                state.watch.find(function (entry) {
                     return entry.name === name;
                 }) || symbol
             );
@@ -901,7 +804,7 @@ function displayNameFor(item) {
 }
 function curveDisplayName(name) {
     return displayNameFor(
-        watch.find(function (item) {
+        state.watch.find(function (item) {
             return item.name === name;
         }) || { name: name }
     );
@@ -910,17 +813,17 @@ function addSymbol(sym, resolved = false) {
     if (
         !sym ||
         !sym.name ||
-        watch.some(function (w) {
+        state.watch.some(function (w) {
             return w.name === sym.name;
         })
     )
         return;
     if (
         !resolved &&
-        impVersion &&
+        state.version &&
         (!impTypesReady || (sym.isComposite && !sym.compositeLayout && !sym.runtimeLayout))
     ) {
-        post({ type: "resolveVariable", name: sym.name, version: impVersion });
+        post({ type: "resolveVariable", name: sym.name, version: state.version });
         return;
     }
     if (sym.isComposite) {
@@ -930,9 +833,9 @@ function addSymbol(sym, resolved = false) {
         }
         var lay = sym.compositeLayout;
         var addComp = function (disp) {
-            if (disp) dispSpec[sym.name] = disp;
-            else delete dispSpec[sym.name];
-            watch.push({
+            if (disp) state.dispSpec[sym.name] = disp;
+            else delete state.dispSpec[sym.name];
+            state.watch.push({
                 name: sym.name,
                 displayName: displayNameFor(sym),
                 address: Number(sym.address) || 0,
@@ -945,18 +848,18 @@ function addSymbol(sym, resolved = false) {
                 ...(sym.derefPath ? { derefPath: true, typeName: sym.typeName } : {}),
                 ...(EmberProbeRuntime.runtimeGraph(sym) ? { runtimeLayout: EmberProbeRuntime.runtimeGraph(sym) } : {})
             });
-            expanded[sym.name] = true;
+            state.expanded[sym.name] = true;
             renderVars();
             saveWatch();
             saveUi();
-            dirty = true;
+            state.dirty = true;
         };
         if (lay?.kind === "array" && (Number(lay.totalElements) || 0) > MAX_ARR_SHOWN)
             showArraySelectDialog(sym, addComp);
         else addComp(null);
         return;
     }
-    watch.push({
+    state.watch.push({
         name: sym.name,
         displayName: displayNameFor(sym),
         address: Number(sym.address) || 0,
@@ -976,13 +879,17 @@ function addSymbol(sym, resolved = false) {
     renderVars();
     saveWatch();
     saveUi();
-    dirty = true;
+    state.dirty = true;
 }
 function removeVar(name) {
-    var rmv = watch.filter(function (w) {
-        return w.name === name || baseNameOf(w.name) === name || EmberProbeRuntime.isPointeeDescendant(w, name);
+    var rmv = state.watch.filter(function (w) {
+        return (
+            w.name === name ||
+            EmberProbeRuntime.variableBaseName(w.name) === name ||
+            EmberProbeRuntime.isPointeeDescendant(w, name)
+        );
     });
-    watch = watch.filter(function (w) {
+    state.watch = state.watch.filter(function (w) {
         return rmv.indexOf(w) < 0;
     });
     if (
@@ -990,31 +897,31 @@ function removeVar(name) {
             return w.name === analysis.focused;
         })
     )
-        hidden = Analysis.restore(
+        state.hidden = Analysis.restore(
             analysis,
-            watch.map(function (w) {
+            state.watch.map(function (w) {
                 return w.name;
             })
         );
     rmv.forEach(function (w) {
-        delete latest[w.name];
-        delete latestText[w.name];
-        delete latestEnum[w.name];
-        delete latestPointer[w.name];
-        delete hidden[w.name];
+        delete state.latest[w.name];
+        delete state.latestText[w.name];
+        delete state.latestEnum[w.name];
+        delete state.latestPointer[w.name];
+        delete state.hidden[w.name];
     });
-    [expanded, arrayShown, numberBases].forEach(function (state) {
-        Object.keys(state).forEach(function (path) {
-            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete state[path];
+    [state.expanded, state.arrayShown, state.numberBases].forEach(function (paths) {
+        Object.keys(paths).forEach(function (path) {
+            if (path === name || path.startsWith(name + ".") || path.startsWith(name + "[")) delete paths[path];
         });
     });
-    delete dispSpec[name];
-    delete rawMembers[name];
-    forgetPointers(name);
+    delete state.dispSpec[name];
+    delete state.rawMembers[name];
+    valueTree.pointers.forget(name);
     renderVars();
     saveWatch();
     saveUi();
-    dirty = true;
+    state.dirty = true;
 }
 function createCurveToggle(swatch, content, onClick) {
     var button = document.createElement("button");
@@ -1035,33 +942,29 @@ function createCurveToggle(swatch, content, onClick) {
     return button;
 }
 function renderVars() {
-    displayInfos = new WeakMap();
-    dirty = true;
+    valueTree.reset();
+    state.dirty = true;
     if (analysis.focused)
-        watch.forEach(function (w) {
-            hidden[w.name] = w.name !== analysis.focused;
+        state.watch.forEach(function (w) {
+            state.hidden[w.name] = w.name !== analysis.focused;
         });
     var box = $("vars");
     box.textContent = "";
     variableCards = [];
     box.classList.remove("independent-columns");
     valueCells = Object.create(null);
-    compCells = Object.create(null);
-    runtimeBodies = Object.create(null);
-    placedPointees = new Set();
-    fallbackPointees = new Set();
     // Expanded pointees render inside their pointer rows while cards are built.
-    const topLevel = watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
+    const topLevel = state.watch.filter((item) => !EmberProbeRuntime.isPointeeEntry(item));
     const cards = new Map();
-    topLevel.filter(isCompositeItem).forEach(function (item) {
+    topLevel.filter(isComposite).forEach(function (item) {
         const holder = document.createElement("div");
-        renderCompositeCard(item, watch.indexOf(item), holder);
+        renderCompositeCard(item, state.watch.indexOf(item), holder);
         cards.set(item.name, [...holder.childNodes]);
     });
     topLevel.forEach(function (item) {
-        if (!isCompositeItem(item) && !isLeafChild(item.name)) cards.set(item.name, renderScalarCard(item));
+        if (!isComposite(item) && !valueTree.isLeafChild(item.name)) cards.set(item.name, renderScalarCard(item));
     });
-    if (!watch.length) {
+    if (!state.watch.length) {
         $("count").textContent = "0";
         var empty = document.createElement("div");
         empty.className = "empty";
@@ -1076,31 +979,31 @@ function renderVars() {
         box.append(...nodes);
     });
     // Pointees whose pointer row is not shown (typed paths, older saved lists) stay cards; parents first.
-    watch
+    state.watch
         .filter(EmberProbeRuntime.isPointeeEntry)
         .sort((a, b) => a.name.length - b.name.length)
         .forEach(function (item) {
-            if (placedPointees.has(item.name)) return;
-            fallbackPointees.add(item.name);
-            if (isCompositeItem(item)) renderCompositeCard(item, watch.indexOf(item), box);
+            if (valueTree.placed.has(item.name)) return;
+            valueTree.fallback.add(item.name);
+            if (isComposite(item)) renderCompositeCard(item, state.watch.indexOf(item), box);
             else box.append(...renderScalarCard(item));
         });
     // A member card drawn before its pointee tree was rendered is shown by that tree instead.
     cards.forEach(function (nodes, name) {
-        const item = watch.find((w) => w.name === name);
-        if (!item || isCompositeItem(item) || !isLeafChild(name)) return;
+        const item = state.watch.find((w) => w.name === name);
+        if (!item || isComposite(item) || !valueTree.isLeafChild(name)) return;
         nodes.forEach((node) => node.remove());
         if (valueCells[name]?.isConnected === false) delete valueCells[name];
     });
     $("count").textContent = String(
-        watch.filter(function (it) {
-            return !isLeafChild(it.name) && !placedPointees.has(it.name);
+        state.watch.filter(function (it) {
+            return !valueTree.isLeafChild(it.name) && !valueTree.placed.has(it.name);
         }).length
     );
     variableCards = Array.from(box.children);
     arrangeVariableCards(true);
     if (varReorder) varReorder.refresh();
-    syncRuntimeExpansions();
+    valueTree.syncRuntimeExpansions();
 }
 var variableCards = [];
 function inColumns() {
@@ -1126,13 +1029,16 @@ var varReorder = EmberProbeCardReorder.attach($("vars"), {
         if (moved) cardColumns[name] = column;
         var next =
             target === null
-                ? watch
-                : EmberProbeCardReorder.moveBlock(watch, name, target, after, function (w, base) {
-                      return baseNameOf(w.name) === base || EmberProbeRuntime.isPointeeDescendant(w, base);
+                ? state.watch
+                : EmberProbeCardReorder.moveBlock(state.watch, name, target, after, function (w, base) {
+                      return (
+                          EmberProbeRuntime.variableBaseName(w.name) === base ||
+                          EmberProbeRuntime.isPointeeDescendant(w, base)
+                      );
                   });
-        if (next === watch && !moved) return;
-        var reordered = next !== watch;
-        watch = next;
+        if (next === state.watch && !moved) return;
+        var reordered = next !== state.watch;
+        state.watch = next;
         renderVars();
         if (reordered) saveWatch();
         saveUi();
@@ -1158,7 +1064,7 @@ function arrangeVariableCards(force) {
     if (!variableCards.length) return;
     var box = $("vars");
     // A collapsed card has no width; keep its columns until it is shown again.
-    var columns = sideCollapsed
+    var columns = panelLayout.collapsed
         ? box.classList.contains("independent-columns")
         : $("valuePane").getBoundingClientRect().width >= PANEL_COLUMNS_WIDTH;
     if (!force && columns === box.classList.contains("independent-columns")) return;
@@ -1191,13 +1097,13 @@ function arrangeVariableCards(force) {
     box.scrollTop = scrollTop;
 }
 function renderScalarCard(item) {
-    var idx = watch.indexOf(item);
+    var idx = state.watch.indexOf(item);
     var card = document.createElement("div");
     card.className = "var-card";
     var sw = document.createElement("span");
-    sw.className = "swatch" + (hidden[item.name] ? " off" : "");
+    sw.className = "swatch" + (state.hidden[item.name] ? " off" : "");
     sw.style.background = colorFor(idx);
-    sw.title = hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
+    sw.title = state.hidden[item.name] ? t("lw.showCurve") : t("lw.hideCurve");
     var main = document.createElement("span");
     main.className = "var-main";
     var name = document.createElement("span");
@@ -1212,7 +1118,7 @@ function renderScalarCard(item) {
     });
     valueCells[item.name] = val;
     main.append(name);
-    const info = watchDisplayInfo(item);
+    const info = valueTree.displayInfo(item);
     if (info.isPointer) {
         const type = document.createElement("span");
         type.className = "member-type";
@@ -1241,590 +1147,36 @@ function renderScalarCard(item) {
         item.name
     );
     // The pointee is part of the variable's card, on a grid row below its value.
-    const host = info.isPointer && pointerPointee(card, item.name, displayNameFor(item), info);
+    const host = info.isPointer && valueTree.pointerPointee(card, item.name, displayNameFor(item), info);
     if (host) card.appendChild(host);
     card.appendChild(footer);
-    setDisplayedValue(val, scalarDisplay(item));
+    EmberProbeRuntime.setValueCell(val, valueTree.scalarDisplay(item));
     return [card];
 }
 function updateValues() {
-    const items = new Map(watch.map((entry) => [entry.name, entry]));
+    const items = new Map(state.watch.map((entry) => [entry.name, entry]));
     Object.keys(valueCells).forEach(function (n) {
         const item = items.get(n);
-        if (item) setDisplayedValue(valueCells[n], scalarDisplay(item));
+        if (item) EmberProbeRuntime.setValueCell(valueCells[n], valueTree.scalarDisplay(item));
     });
-    watch.forEach(function (it) {
-        if (isCompositeItem(it)) updateCompositeValues(it.name);
+    state.watch.forEach(function (it) {
+        if (isComposite(it)) valueTree.updateComposite(it.name);
     });
-}
-var valueRefreshTimer = null;
-var lastValueRefresh = 0;
-function scheduleValueRefresh() {
-    if (valueRefreshTimer !== null) return;
-    var interval = 50;
-    var elapsed = Date.now() - lastValueRefresh;
-    if (elapsed >= interval) {
-        lastValueRefresh = Date.now();
-        updateValues();
-        return;
-    }
-    valueRefreshTimer = setTimeout(function () {
-        valueRefreshTimer = null;
-        lastValueRefresh = Date.now();
-        updateValues();
-    }, interval - elapsed);
-}
-function recordPointerSample(s) {
-    latestPointer[s.name] = {
-        ...(s.isPointer || s.pointerText ? { isPointer: true } : {}),
-        pointerText: s.pointerText,
-        pointerInfo: s.pointerInfo,
-        pointerString: s.pointerString
-    };
-    if ((s.isPointer || s.pointerText) && s.value != null && !s.diagnostic)
-        rememberPointers({
-            [s.name]: {
-                value: s.value,
-                ...(s.valueText != null ? { valueText: s.valueText } : {}),
-                ...(s.pointerText ? { pointerText: s.pointerText } : {}),
-                ...(s.pointerInfo ? { pointerInfo: s.pointerInfo } : {}),
-                ...(s.pointerString ? { pointerString: s.pointerString } : {})
-            }
-        });
-}
-function isCompositeItem(it) {
-    return !!(it && it.isComposite && (it.compositeLayout || it.runtimeLayout));
-}
-function defW(ty) {
-    return ty === "u8" || ty === "i8"
-        ? 1
-        : ty === "u16" || ty === "i16"
-          ? 2
-          : ty === "u64" || ty === "i64" || ty === "f64"
-            ? 8
-            : 4;
-}
-// `stale` is true below a node the host held from an earlier sample (see runtimeSampleHold.js).
-function walkTreeLeaves(node, path, cb, stale) {
-    if (!node) return;
-    stale = !!stale || !!node.stale;
-    cb(path, node, stale);
-    for (const member of node.members || [])
-        walkTreeLeaves(member, EmberProbeRuntime.layoutMemberPath(path, member), cb, stale);
-    for (const element of node.elements || []) walkTreeLeaves(element, path + "[" + element.index + "]", cb, stale);
-}
-function updateCompositeValues(name) {
-    var tree = latest[name];
-    if (!tree) return;
-    const nodes = new Map();
-    const held = new Set();
-    walkTreeLeaves(tree, name, (path, node, stale) => {
-        nodes.set(path, node);
-        if (stale) held.add(path);
-    });
-    nodes.forEach(function (node, path) {
-        const cell = compCells[path];
-        if (!cell) return;
-        const summary = cell.summaryPath && EmberProbeRuntime.summaryRow(nodes.get(cell.summaryPath), cell.summaryPath);
-        setDisplayedValue(
-            cell,
-            fmtDisplayNode(
-                {
-                    ...cell.displayNode,
-                    ...node,
-                    ...(summary ? { functionEmpty: summary.empty } : {})
-                },
-                path
-            )
-        );
-        if (held.has(path)) EmberProbeRuntime.markValueHeld(cell, t);
-    });
-}
-// Pointer rows expand in place. A pointee already present in the sampled tree toggles
-// locally; otherwise opening adds the read-only `<path>.value` watch, nested here.
-function pointerPointee(row, path, label, node, renderInline) {
-    const host = document.createElement("div");
-    host.variableNoticeParent = row;
-    if (renderInline) {
-        const toggle = EmberProbeRuntime.renderPointerToggle(
-            row,
-            path,
-            !!expanded[path],
-            t,
-            function () {
-                expanded[path] = !expanded[path];
-                host.classList.toggle("open", expanded[path]);
-                toggle.classList.toggle("open", expanded[path]);
-                toggle.setAttribute("aria-expanded", String(expanded[path]));
-                saveUi();
-            },
-            displayNameFor({ name: path })
-        );
-        host.className = "pointer-pointee" + (expanded[path] ? " open" : "");
-        renderInline(host);
-        return host;
-    }
-    row.classList.add("pointer-row");
-    const entry = node?.isPointer && EmberProbeRuntime.pointerDerefEntry(path, pointerSymbol(path));
-    if (!entry) return null;
-    const item = watch.find((w) => w.name === entry.name);
-    EmberProbeRuntime.renderPointerToggle(
-        row,
-        path,
-        !!item,
-        t,
-        function () {
-            togglePointee(entry);
-        },
-        displayNameFor({ name: path })
-    );
-    if (!item) return null;
-    host.className = "pointer-pointee open";
-    renderPointee(host, item, label);
-    return host;
-}
-// Expansion needs the base symbol's runtime type graph. Composite watches load it with their
-// layout; a scalar pointer variable requests it once here and re-renders when it arrives.
-function pointerSymbol(path) {
-    const symbol = impSymbolByName.get(baseNameOf(path));
-    if (EmberProbeRuntime.runtimeGraph(symbol)) return symbol;
-    const fallback = layoutSymbol(path);
-    if (
-        !EmberProbeRuntime.runtimeGraph(fallback) &&
-        symbol?.hasRuntimeLayout &&
-        !symbol.layoutError &&
-        impVersion &&
-        !impLayoutPending.has(symbol.name)
-    ) {
-        impLayoutPending.add(symbol.name);
-        pointerLayoutWaiters.add(symbol.name);
-        post({ type: "resolveCompositeLayout", name: symbol.name, version: impVersion });
-    }
-    return fallback;
 }
 function togglePointee(entry) {
-    if (watch.some((item) => item.name === entry.name)) {
+    if (state.watch.some((item) => item.name === entry.name)) {
         removeVar(entry.name);
         return;
     }
     // Expanding inspects the target; a scalar target joins the chart only when its swatch is enabled.
-    if (!entry.isComposite) hidden[entry.name] = true;
+    if (!entry.isComposite) state.hidden[entry.name] = true;
     addSymbol(entry, true);
     saveUi();
-}
-function renderPointee(host, item, label) {
-    placedPointees.add(item.name);
-    if (isCompositeItem(item)) {
-        runtimeBodies[item.name] = host;
-        renderRuntimeBody(host, latest[item.name], item.name);
-        return;
-    }
-    // A scalar target (`int *`, `char *` string preview, pointer to pointer) is one chart row.
-    const idx = watch.indexOf(item);
-    const row = document.createElement("div");
-    row.className = "member-row";
-    row.dataset.path = item.name;
-    const sw = document.createElement("span");
-    sw.className = "member-swatch" + (hidden[item.name] ? " off" : "");
-    sw.style.background = colorFor(idx);
-    sw.title = t(hidden[item.name] ? "lw.showCurve" : "lw.hideCurve");
-    if (controls) controls.decorate(row, item.name, sw);
-    const nm = document.createElement("span");
-    nm.className = "member-name";
-    nm.textContent = "*" + EmberProbeRuntime.shortVariableName(label).replace(/^\./, "");
-    nm.title = displayNameFor(item);
-    nm.setAttribute("aria-label", nm.title);
-    const ty = document.createElement("span");
-    ty.className = "member-type";
-    ty.textContent = item.typeName || item.type || "";
-    ty.title = ty.textContent;
-    const val = document.createElement("span");
-    val.className = "member-value";
-    val.addEventListener("click", function (event) {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    valueCells[item.name] = val;
-    const toggle = createCurveToggle(sw, nm, function () {
-        toggleCurve(item.name);
-    });
-    row.append(toggle, ty, val);
-    host.appendChild(row);
-    const nested = pointerPointee(row, item.name, nm.textContent, watchDisplayInfo(item));
-    if (nested) host.appendChild(nested);
-    setDisplayedValue(val, scalarDisplay(item));
-}
-function renderLeafInto(container, label, typeName, path, watchType, address, node, renderInline) {
-    var row = document.createElement("div");
-    row.className = "member-row";
-    var wi = watch.findIndex(function (w) {
-        return w.name === path;
-    });
-    var sw = document.createElement("span");
-    sw.className = "member-swatch" + (wi < 0 || hidden[path] ? " off" : "");
-    if (wi >= 0) sw.style.background = colorFor(wi);
-    sw.title = wi >= 0 ? t(hidden[path] ? "lw.showCurve" : "lw.hideCurve") : t("lw.addToChart");
-    if (controls && wi >= 0) controls.decorate(row, path, sw);
-    var nm = document.createElement("span");
-    nm.className = "member-name";
-    nm.textContent = label;
-    nm.title = node?.displayPath ? displayNameFor({ name: node.displayPath }) : curveDisplayName(path);
-    nm.setAttribute("aria-label", nm.title);
-    var val = document.createElement("span");
-    val.className = "member-value";
-    val.displayNode = node;
-    val.summaryPath = node?.summaryPath;
-    val.addEventListener("click", function (event) {
-        event.stopPropagation();
-        if (api && val.textContent) api.postMessage({ type: "copyText", text: EmberProbeRuntime.copyValueText(val) });
-    });
-    compCells[path] = val;
-    var toggle = createCurveToggle(sw, nm, function () {
-        // A placeholder row has no address yet: it can be added once samples arrive, but a curve
-        // already in the chart can be switched off right away.
-        if (
-            !node?.placeholder ||
-            watch.some(function (w) {
-                return w.name === path;
-            })
-        )
-            toggleLeafInChart(path, address, watchType, node);
-    });
-    const ty = document.createElement("span");
-    ty.className = "member-type";
-    ty.textContent = typeName || watchType || "";
-    ty.title = ty.textContent;
-    row.dataset.path = path;
-    row.append(toggle, ty, val);
-    container.appendChild(row);
-    const host = node?.isPointer && pointerPointee(row, path, label, node, renderInline);
-    if (host) container.appendChild(host);
-    setDisplayedValue(val, fmtDisplayNode(withLastPointer(node, path), path));
-}
-// A static layout row has no value until sampled; a pointer in it shows its last known target.
-function withLastPointer(node, path) {
-    const last = node?.isPointer && node.value == null && !node.stale && shownLastPointers()[path];
-    return last && latest[baseNameOf(path)] === undefined ? { ...node, ...last, stale: true } : node;
-}
-function renderNestInto(container, layout, fieldName, path, baseAddr, offset, displayPath = path) {
-    renderLayoutInto(
-        nestShell(container, fieldName, layout.typeName, path, displayPath),
-        layout,
-        path,
-        baseAddr,
-        offset,
-        null,
-        displayPath
-    );
-}
-// Collapsible head + body for a nested composite, laid out like the sidebar; returns the body.
-function nestShell(container, fieldName, typeName, path, displayPath = path) {
-    var wrap = document.createElement("div");
-    wrap.className = "comp-nest";
-    var head = document.createElement("div");
-    head.className = "comp-head";
-    var arrow = document.createElement("span");
-    arrow.className = "comp-arrow" + (expanded[path] ? " open" : "");
-    arrow.textContent = "\u25B6";
-    var nm = document.createElement("span");
-    nm.className = "comp-name";
-    nm.textContent = fieldName;
-    nm.title = displayNameFor({ name: displayPath });
-    var ty = document.createElement("span");
-    ty.className = "comp-type";
-    ty.textContent = typeName || "";
-    ty.title = ty.textContent;
-    head.append(arrow, nm, ty);
-    var body = document.createElement("div");
-    body.className = "comp-members" + (expanded[path] ? " open" : "");
-    head.onclick = function () {
-        var open = !expanded[path];
-        expanded[path] = open;
-        body.classList.toggle("open", open);
-        arrow.classList.toggle("open", open);
-        saveUi();
-    };
-    wrap.append(head, body);
-    container.appendChild(wrap);
-    return body;
-}
-function renderLayoutInto(container, layout, path, baseAddr, offset, disp, displayPath = path) {
-    if (!layout) return;
-    const promoted = !showRawFor(path) && EmberProbeRuntime.summaryRow(layout, path, offset);
-    if (promoted) {
-        renderSummaryInto(container, promoted, baseAddr, path);
-        return;
-    }
-    if (layout.kind === "struct" || layout.kind === "union" || layout.kind === "class") {
-        var ms = layout.members || [];
-        ms.forEach(function (original) {
-            if (!EmberProbeRuntime.memberVisible(original, showRawFor(path))) return;
-            const m = EmberProbeRuntime.layoutBranch(
-                layoutSymbol(path),
-                original,
-                EmberProbeRuntime.layoutMemberPath(path, original)
-            );
-            var cp = EmberProbeRuntime.layoutMemberPath(path, m),
-                off = offset + (Number(m.offset) || 0);
-            const summary = !showRawFor(path) && EmberProbeRuntime.summaryRow(m, cp, off);
-            if (summary) renderSummaryInto(container, summary, baseAddr, m.name, m.typeName);
-            else if (m.unobservable)
-                layoutExpansionUi.render(container, { ...m, path: cp }, EmberProbeRuntime.variableBaseName(path), t);
-            else if (m.compositeLayout && !m.name)
-                renderLayoutInto(container, m.compositeLayout, cp, baseAddr, off, null, displayPath);
-            else if (m.compositeLayout)
-                renderNestInto(
-                    container,
-                    m.compositeLayout,
-                    m.name,
-                    cp,
-                    baseAddr,
-                    off,
-                    EmberProbeRuntime.layoutMemberPath(displayPath, m)
-                );
-            else if (m.watchType)
-                renderLeafInto(container, m.name, m.typeName || m.watchType, cp, m.watchType, baseAddr + off, {
-                    ...m,
-                    ...(displayPath !== path ? { displayPath: EmberProbeRuntime.layoutMemberPath(displayPath, m) } : {})
-                });
-        });
-        if (!ms.length) appendNote(container, t("lw.compositeNoLayout"), "warning");
-    } else if (layout.kind === "array") {
-        var et = layout.elementType || {},
-            total = Number(layout.totalElements) || 0,
-            es = Number(et.byteSize) || 0;
-        var start = 0,
-            end = EmberProbeRuntime.arrayShownCount(total, arrayShown[path]);
-        if (disp) {
-            start = Math.max(0, Number(disp.start) || 0);
-            end = Math.min(total, isNaN(Number(disp.end)) ? total : Number(disp.end));
-            end = Math.min(end, start + 256);
-        }
-        if (!et.watchType && !et.compositeLayout && !et.unobservable) {
-            appendNote(container, t("lw.compositeNoLayout"), "warning");
-            return;
-        }
-        for (var i = start; i < end; i++) {
-            var cp = path + "[" + i + "]",
-                off = offset + i * es;
-            const element = EmberProbeRuntime.layoutBranch(layoutSymbol(path), et, cp);
-            if (element.unobservable)
-                layoutExpansionUi.render(
-                    container,
-                    { ...element, path: cp },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else if (element.compositeLayout)
-                renderNestInto(
-                    container,
-                    element.compositeLayout,
-                    "[" + i + "]",
-                    cp,
-                    baseAddr,
-                    off,
-                    displayPath + "[" + i + "]"
-                );
-            else
-                renderLeafInto(
-                    container,
-                    "[" + i + "]",
-                    et.typeName || et.watchType,
-                    cp,
-                    et.watchType,
-                    baseAddr + off,
-                    { ...element, ...(displayPath !== path ? { displayPath: displayPath + "[" + i + "]" } : {}) }
-                );
-        }
-        // A chosen range stays as chosen; the default first page can grow.
-        if (total > end && disp) appendNote(container, t("lw.arrayMore", { n: total - end }));
-        else if (total > end)
-            EmberProbeRuntime.renderArrayMore(
-                container,
-                total - end,
-                t,
-                function (page) {
-                    arrayShown[path] = end + page;
-                    saveUi();
-                    renderVars();
-                },
-                path,
-                displayNameFor({ name: displayPath })
-            );
-    }
-}
-function renderSummaryInto(container, summary, baseAddr, label, typeName) {
-    const node = {
-        ...summary.node,
-        displayPath: summary.displayPath,
-        summaryPath: summary.displayPath,
-        functionEmpty: summary.empty
-    };
-    const layout = node.compositeLayout || ((node.members || node.elements || node.kind === "array") && node);
-    if (node.unobservable)
-        layoutExpansionUi.render(container, { ...node, path: summary.path }, baseNameOf(summary.path), t);
-    else if (layout)
-        renderNestInto(container, layout, label, summary.path, baseAddr, summary.offset, summary.displayPath);
-    else
-        renderLeafInto(
-            container,
-            label,
-            typeName || node.typeName || node.watchType,
-            summary.path,
-            node.watchType || node.type,
-            node.address ?? baseAddr + summary.offset,
-            node
-        );
-}
-// Nested structs and array elements get a collapsible head, as in static layouts; base
-// classes, anonymous members and a pointer's own target stay flat.
-function renderRuntimeTreeInto(container, tree, path, label = "value", promoted = false, nest = false) {
-    if (!tree) return;
-    const summary = !promoted && !showRawFor(path) && EmberProbeRuntime.summaryRow(tree, path);
-    if (summary) {
-        const target = { ...summary.node, displayPath: path, summaryPath: path, functionEmpty: summary.empty };
-        if (target.members || target.elements) {
-            const wrap = document.createElement("div");
-            wrap.className = "comp-nest";
-            const head = document.createElement("button");
-            head.type = "button";
-            head.className = "comp-head summary-head";
-            head.textContent = label;
-            head.title = displayNameFor({ name: path });
-            const body = document.createElement("div");
-            body.className = "comp-members" + (expanded[path] ? " open" : "");
-            head.setAttribute("aria-expanded", String(!!expanded[path]));
-            head.onclick = () => {
-                expanded[path] = !expanded[path];
-                body.classList.toggle("open", expanded[path]);
-                head.setAttribute("aria-expanded", String(expanded[path]));
-                saveUi();
-            };
-            renderRuntimeTreeInto(body, target, summary.path, label, true);
-            wrap.append(head, body);
-            container.appendChild(wrap);
-        } else renderRuntimeTreeInto(container, target, summary.path, label, true);
-        return;
-    }
-    const pointer = tree.isPointer || tree.valueText === "nullptr";
-    if (nest && !pointer && !Object.prototype.hasOwnProperty.call(tree, "value") && (tree.members || tree.elements)) {
-        const body = nestShell(container, label, tree.typeName, path, tree.displayPath || path);
-        renderRuntimeTreeInto(body, tree, path, label, promoted);
-        return;
-    }
-    const renderMembers = function (target) {
-        (tree.members || []).forEach(function (member) {
-            if (!EmberProbeRuntime.memberVisible(member, showRawFor(path))) return;
-            var childPath = EmberProbeRuntime.layoutMemberPath(path, member);
-            if (member.unobservable)
-                layoutExpansionUi.render(
-                    target,
-                    { ...member, path: childPath },
-                    EmberProbeRuntime.variableBaseName(path),
-                    t
-                );
-            else
-                renderRuntimeTreeInto(
-                    target,
-                    {
-                        ...member,
-                        ...(tree.displayPath
-                            ? { displayPath: EmberProbeRuntime.layoutMemberPath(tree.displayPath, member) }
-                            : {})
-                    },
-                    childPath,
-                    pointer && member.name === "value" ? "*" + label : member.name || "value",
-                    false,
-                    !!member.name &&
-                        !member.isBase &&
-                        !/^@based+$/.test(member.name) &&
-                        !(pointer && member.name === "value")
-                );
-        });
-        if (tree.collapsed) appendNote(target, t("lw.runtimeCollapsed"));
-    };
-    // A closed pointer keeps its disclosure: opening it asks the host to read the target.
-    const inline = pointer && (tree.members?.length || tree.collapsed) ? renderMembers : null;
-    if (pointer || Object.prototype.hasOwnProperty.call(tree, "value"))
-        renderLeafInto(
-            container,
-            label,
-            tree.typeName || tree.type || "",
-            path,
-            tree.type || (pointer ? "u32" : undefined),
-            tree.address,
-            { ...tree, ...(pointer ? { isPointer: true } : {}) },
-            inline
-        );
-    if (tree.members && !inline) renderMembers(container);
-    else if (tree.elements)
-        tree.elements.forEach(function (element) {
-            renderRuntimeTreeInto(
-                container,
-                {
-                    ...element,
-                    ...(tree.displayPath ? { displayPath: tree.displayPath + "[" + element.index + "]" } : {})
-                },
-                path + "[" + element.index + "]",
-                "[" + element.index + "]",
-                false,
-                true
-            );
-        });
-    if (tree.elements && tree.collapsed) appendNote(container, t("lw.runtimeCollapsed"));
-    if (tree.unobservable)
-        layoutExpansionUi.render(container, { ...tree, path }, EmberProbeRuntime.variableBaseName(path), t);
-    else if (tree.unavailable)
-        appendNote(container, {
-            title: displayNameFor({ name: path }),
-            ...EmberProbeRuntime.unavailableNotice(tree, t)
-        });
-}
-function renderRuntimeBody(body, sampled, name) {
-    // Without a sample the type graph still yields the rows, so pointer rows keep their pointees.
-    var tree =
-        sampled ||
-        EmberProbeRuntime.placeholderRuntimeTree(
-            watch.find(function (item) {
-                return item.name === name;
-            }),
-            shownLastPointers()
-        );
-    var shape = JSON.stringify([showRawFor(name), !sampled, EmberProbeRuntime.displayTreeShape(tree)]);
-    if (body.dataset.runtimeShape === shape) return;
-    Object.keys(compCells).forEach(function (path) {
-        if (body.contains(compCells[path])) delete compCells[path];
-    });
-    EmberProbeRuntime.resetVariableNotices(body, t, (text) => api?.postMessage({ type: "copyText", text }));
-    body.textContent = "";
-    body.dataset.runtimeShape = shape;
-    if (tree?.truncated) appendNote(body, t("lw.layoutPartial"), "warning");
-    renderRawMembersUi(body, sampled || layoutSymbol(name)?.compositeLayout, name);
-    renderRuntimeTreeInto(body, tree, name);
-    const symbol = layoutSymbol(name);
-    for (const entry of EmberProbeRuntime.displayUnavailableRows(
-        symbol?.compositeLayout,
-        name,
-        64,
-        symbol,
-        showRawFor(name)
-    ))
-        layoutExpansionUi.render(body, entry, name, t);
-    if (!sampled) appendNote(body, t("lw.waitSamples"));
-    EmberProbeRuntime.finishVariableNotices(body);
-}
-function appendNote(container, text, level = "info") {
-    const node = EmberProbeRuntime.renderVariableNotice(
-        container,
-        typeof text === "string" ? { text, level } : text,
-        t
-    );
-    node.querySelector(".notice-text")?.classList.add("comp-note");
 }
 
 function renderCompositeCard(item, idx, box) {
     var card = document.createElement("div");
-    card.className = "var-card composite" + (expanded[item.name] ? " open" : "");
+    card.className = "var-card composite" + (state.expanded[item.name] ? " open" : "");
     var rm = document.createElement("button");
     rm.className = "remove";
     rm.textContent = "×";
@@ -1839,7 +1191,7 @@ function renderCompositeCard(item, idx, box) {
     var head = document.createElement("div");
     head.className = "comp-head";
     var arrow = document.createElement("span");
-    arrow.className = "comp-arrow" + (expanded[item.name] ? " open" : "");
+    arrow.className = "comp-arrow" + (state.expanded[item.name] ? " open" : "");
     arrow.textContent = "\u25B6";
     var nm = document.createElement("span");
     nm.className = "comp-name";
@@ -1854,59 +1206,30 @@ function renderCompositeCard(item, idx, box) {
     var body = document.createElement("div");
     body.className = "comp-body";
     head.onclick = function () {
-        expanded[item.name] = !expanded[item.name];
-        card.classList.toggle("open", expanded[item.name]);
-        arrow.classList.toggle("open", expanded[item.name]);
+        state.expanded[item.name] = !state.expanded[item.name];
+        card.classList.toggle("open", state.expanded[item.name]);
+        arrow.classList.toggle("open", state.expanded[item.name]);
         saveUi();
-        dirty = true;
+        state.dirty = true;
     };
-    const footer = EmberProbeRuntime.createVariableNotices(
-        body,
-        t,
-        document.createElement("div"),
-        (text) => api?.postMessage({ type: "copyText", text }),
-        item.name
-    );
-    if (item.runtimeLayout) {
-        runtimeBodies[item.name] = body;
-        renderRuntimeBody(body, latest[item.name], item.name);
-    } else {
-        renderRawMembersUi(body, lay, item.name);
-        if (lay.truncated) appendNote(body, t("lw.layoutPartial"), "warning");
-        renderLayoutInto(body, lay, item.name, Number(item.address) >>> 0, 0, dispSpec[item.name] || null);
-    }
+    const footer = valueTree.renderCompositeBody(body, item, state.dispSpec[item.name]);
     if (controls) controls.decorate(card, item.name);
     content.append(head, body, footer);
     card.append(rm, content);
     box.appendChild(card);
-    updateCompositeValues(item.name);
-}
-function baseNameOf(n) {
-    return EmberProbeRuntime.variableBaseName(String(n));
-}
-function isLeafChild(name) {
-    var b = baseNameOf(name);
-    if (b === name) return false;
-    const parent = watch.find((w) => w.name === b && isCompositeItem(w));
-    if (parent)
-        return !!compCells[name] && !(parent.runtimeLayout && watch.find((w) => w.name === name)?.layoutExpanded);
-    // Members of an expanded pointee are charted from its tree, which already shows them.
-    return (
-        !!compCells[name] &&
-        watch.some((w) => w.runtimeLayout && isCompositeItem(w) && EmberProbeRuntime.runtimeMemberRoute(name, w.name))
-    );
+    valueTree.updateComposite(item.name);
 }
 function addLeafWatch(path, address, watchType, node) {
     if (
-        watch.some(function (w) {
+        state.watch.some(function (w) {
             return w.name === path;
         })
     )
         return false;
-    watch.push({
+    state.watch.push({
         name: path,
         address: Number(address) >>> 0,
-        size: defW(watchType),
+        size: EmberProbeRuntime.typeByteLength(watchType),
         type: watchType,
         ...(node?.isPointer ? { isPointer: true, typeName: node.typeName, pointerTarget: node.pointerTarget } : {}),
         ...(node?.displayPath ? { displayName: node.displayPath } : {}),
@@ -1916,7 +1239,7 @@ function addLeafWatch(path, address, watchType, node) {
     return true;
 }
 function toggleLeafInChart(path, address, watchType, node) {
-    var i = watch.findIndex(function (w) {
+    var i = state.watch.findIndex(function (w) {
         return w.name === path;
     });
     if (i >= 0) {
@@ -1927,19 +1250,7 @@ function toggleLeafInChart(path, address, watchType, node) {
     }
     renderVars();
     saveWatch();
-    dirty = true;
-}
-function collectLeaves(layout, name, baseAddr, options = {}) {
-    return EmberProbeRuntime.displayLayoutLeaves(layoutSymbol(name), layout, name, baseAddr, options);
-}
-function selectionLeaves(symbol, runtime) {
-    const showRaw = showRawFor(symbol.name);
-    const statics = collectLeaves(symbol.compositeLayout, symbol.name, symbol.address, {
-        showRaw,
-        includePointers: true
-    });
-    const visibleRuntime = EmberProbeRuntime.displayRuntimeSelection(symbol, latest[symbol.name], showRaw);
-    return runtime ? (visibleRuntime?.entries || []).concat(statics.filter((leaf) => leaf.layoutExpanded)) : statics;
+    state.dirty = true;
 }
 function onCompositeSamples(samples) {
     if (historyClearPending) return;
@@ -1948,29 +1259,29 @@ function onCompositeSamples(samples) {
     (samples || []).forEach(function (s) {
         if (!s || !s.name) return;
         if (
-            (impExpanded[s.name] || searching) &&
+            (state.importExpanded[s.name] || searching) &&
             !$("overlay").classList.contains("hidden") &&
-            EmberProbeRuntime.runtimeTreeShape(latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
-            EmberProbeRuntime.runtimeSelection(impSymbolByName.get(s.name), s.tree)
+            EmberProbeRuntime.runtimeTreeShape(state.latest[s.name]) !== EmberProbeRuntime.runtimeTreeShape(s.tree) &&
+            EmberProbeRuntime.runtimeSelection(state.symbols.get(s.name), s.tree)
         )
             refreshImport = true;
         if (s && s.name) {
-            latest[s.name] = s.tree;
-            rememberPointers(EmberProbeRuntime.pointerSnapshots(s.tree, s.name));
-            var body = runtimeBodies[s.name];
-            if (body) renderRuntimeBody(body, s.tree, s.name);
+            state.latest[s.name] = s.tree;
+            valueTree.treeSampled(s.name, s.tree);
         }
     });
     if (refreshImport && !$("overlay").classList.contains("hidden")) renderImport();
     // A re-rendered tree can now show the pointer row of a pointee drawn as a stand-alone card.
     // A re-rendered tree can also now show members that still have their own chart card.
     if (
-        [...fallbackPointees].some((name) => placedPointees.has(name)) ||
-        watch.some((it) => !isCompositeItem(it) && valueCells[it.name]?.closest(".var-card") && isLeafChild(it.name))
+        [...valueTree.fallback].some((name) => valueTree.placed.has(name)) ||
+        state.watch.some(
+            (it) => !isComposite(it) && valueCells[it.name]?.closest(".var-card") && valueTree.isLeafChild(it.name)
+        )
     )
         renderVars();
-    scheduleValueRefresh();
-    dirty = true;
+    valueRefresh.schedule();
+    state.dirty = true;
 }
 function showArraySelectDialog(sym, cb) {
     var lay = sym.compositeLayout || {},
@@ -2053,7 +1364,7 @@ function showArraySelectDialog(sym, cb) {
 }
 function start() {
     if (running || starting) return;
-    if (!watch.length) {
+    if (!state.watch.length) {
         setStatusKey("lw.needVar", null, "warning", "start");
         return;
     }
@@ -2063,7 +1374,7 @@ function start() {
     starting = true;
     updateRun();
     setStatusKey("lw.starting");
-    post({ type: "start", items: watch, frequencyHz: frequencyHz });
+    post({ type: "start", items: state.watch, frequencyHz: frequencyHz });
 }
 function stop() {
     if (!running && !starting) return;
@@ -2075,279 +1386,151 @@ function stop() {
 function clearHistory(clearArchive = true) {
     historyRevision++;
     historyClearPending = clearArchive;
-    remoteHistory.status = remoteHistory.liveStatus = null;
+    state.remoteHistory.status = state.remoteHistory.liveStatus = null;
     resetChartHistoryViews();
-    remoteHistory.operation = remoteHistory.snapshotId = null;
-    exportCandidates = [];
-    hideExport();
+    state.remoteHistory.operation = state.remoteHistory.snapshotId = null;
+    exportDialog.clear();
     if (clearArchive) post({ type: "clearSamplingHistory", historyRevision: historyRevision });
-    frozen = false;
+    state.frozen = false;
     $("freeze").textContent = t("lw.freeze");
-    Object.keys(latest).forEach(function (n) {
-        latest[n] = null;
-        latestText[n] = null;
-        latestEnum[n] = null;
-        delete latestPointer[n];
+    Object.keys(state.latest).forEach(function (n) {
+        state.latest[n] = null;
+        state.latestText[n] = null;
+        state.latestEnum[n] = null;
+        delete state.latestPointer[n];
     });
     samplingOrigin = null;
     $("rate").textContent = rateText(0, 0);
     updateValues();
     resetChartView();
-    dirty = true;
+    state.dirty = true;
 }
-const IMPORT_VARIABLE_LIMIT = 500;
-const IMPORT_ROW_LIMIT = IMPORT_VARIABLE_LIMIT * 2;
-function needsImportLayout(symbol) {
-    return symbol.isComposite && !symbol.compositeLayout && !symbol.runtimeLayout && !symbol.layoutError;
-}
-function isUserVariable(symbol) {
-    return !symbol.origin || symbol.origin === "user";
-}
-function visibleImportSymbols() {
-    return impUserOnly ? allSymbols.filter(isUserVariable) : allSymbols;
-}
+const importPicker = EmberProbeSymbolPicker.create({
+    t: (key, params) => t(key, params),
+    state,
+    valueTree,
+    layoutExpansion: () => layoutExpansionUi,
+    displayName: (item) => displayNameFor(item),
+    symbols: () => state.allSymbols,
+    userOnly: () => impUserOnly,
+    expanded: () => state.importExpanded,
+    pending: impLayoutPending,
+    typesReady: () => impTypesReady,
+    post: api && ((message) => post(message)),
+    active: () => !$("overlay").classList.contains("hidden"),
+    childrenClass: "imp-children"
+});
 function applyImportUserOnly() {
     const button = $("impUserOnly");
     button.classList.toggle("secondary", !impUserOnly);
     button.setAttribute("aria-pressed", String(impUserOnly));
 }
-function cancelImportMemberSearch() {
-    clearTimeout(impSearchTimer);
-    impSearchTimer = null;
+function importCell(className, text) {
+    var cell = document.createElement("span");
+    cell.className = className;
+    cell.textContent = text;
+    return cell;
 }
-function scheduleImportMemberSearch(query) {
-    if (query !== impSearchQuery || !query || !impTypesReady) {
-        cancelImportMemberSearch();
-        impSearchQuery = query;
-    }
-    if (!query || !impTypesReady || !api || impSearchTimer !== null) return;
-    impSearchTimer = setTimeout(function () {
-        impSearchTimer = null;
-        if ($("overlay").classList.contains("hidden")) return;
-        var slots = Math.max(0, 4 - impLayoutPending.size);
-        visibleImportSymbols()
-            .filter(function (symbol) {
-                return needsImportLayout(symbol) && !impLayoutPending.has(symbol.name);
-            })
-            .slice(0, slots)
-            .forEach(function (symbol) {
-                impLayoutPending.add(symbol.name);
-                post({ type: "resolveCompositeLayout", name: symbol.name, version: impVersion });
-            });
-    }, 180);
+function importCheckbox(name, checked) {
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.idx = String(impIndexByName.get(name));
+    cb.dataset.symbolName = name;
+    cb.checked = checked;
+    return cb;
+}
+function importCompositeRow(s, open, toggle, checked) {
+    var row = document.createElement("div");
+    row.className = "imp-row";
+    var cb = importCheckbox(s.name, checked);
+    cb.title = t("lw.compositeExpandable");
+    var nmWrap = document.createElement("span");
+    nmWrap.className = "imp-name-wrap";
+    var arrow = importCell("imp-arrow", "\u25B6");
+    if (open) arrow.classList.add("open");
+    var nm = importCell("imp-name", "");
+    EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
+    nmWrap.append(arrow, nm);
+    row.append(
+        cb,
+        nmWrap,
+        importCell("ty", s.typeName || t("lw.unknownType")),
+        importCell("address", fmtAddr(s.address)),
+        importCell("size", s.size + "B")
+    );
+    arrow.onclick = toggle;
+    nm.onclick = toggle;
+    return { row: row, arrow: arrow };
+}
+function importLeafRow(lf, checked) {
+    var lr = document.createElement("label");
+    lr.className = "imp-row leaf";
+    var lcb = document.createElement("input");
+    lcb.type = "checkbox";
+    lcb.dataset.leafPath = lf.path;
+    lcb.checked = checked;
+    lcb.dataset.leafAddr = String(lf.address);
+    lcb.dataset.leafType = lf.type;
+    if (lf.runtimeLayout) lcb.runtimeEntry = lf;
+    else lcb.leafEntry = lf;
+    var ln = importCell("imp-leaf-name", lf.label);
+    ln.title = displayNameFor(lf.runtimeLayout ? lf : { name: lf.displayPath || lf.path });
+    lr.append(
+        lcb,
+        ln,
+        importCell("ty", (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "")),
+        importCell("address", fmtAddr(lf.address)),
+        importCell("size", "")
+    );
+    return lr;
+}
+function importScalarRow(s, checked) {
+    var noLayout = !!(s.isComposite && !s.compositeLayout && !s.runtimeLayout);
+    var row = document.createElement("label");
+    row.className = "imp-row";
+    if (noLayout) row.title = s.unsupportedReason || t("lw.compositeNoLayout");
+    var cb = importCheckbox(s.name, checked);
+    cb.disabled = noLayout;
+    var nm = importCell("imp-name", "");
+    EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
+    row.append(
+        cb,
+        nm,
+        importCell("ty", s.typeName || s.watchType || defType(s.size)),
+        importCell("address", fmtAddr(s.address)),
+        importCell("size", s.size + "B")
+    );
+    return row;
 }
 function renderImport() {
     renderElfDiagnostics();
     var f = ($("impFilter").value || "").trim().toLowerCase(),
-        box = $("impList"),
-        pool = visibleImportSymbols();
+        box = $("impList");
     var watchedNames = new Set(
-        watch.map(function (item) {
+        state.watch.map(function (item) {
             return item.name;
         })
     );
-    var checkedNames = {
-        has: function (name) {
-            return impPicks.has(name) ? impPicks.get(name) : watchedNames.has(name);
-        }
+    var checked = function (name) {
+        return impPicks.has(name) ? impPicks.get(name) : watchedNames.has(name);
     };
     box.textContent = "";
-    scheduleImportMemberSearch(f);
-    var memberMatches = new Map();
-    var matched = pool.filter(function (s) {
-            if (!f || s.name.toLowerCase().includes(f) || displayNameFor(s).toLowerCase().includes(f)) return true;
-            if (!s.isComposite) return false;
-            var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
-            var leaves = selectionLeaves(s, runtime);
-            var matches = leaves.filter(function (leaf) {
-                return (
-                    leaf.path.toLowerCase().includes(f) || displayNameFor({ name: leaf.path }).toLowerCase().includes(f)
-                );
-            });
-            if (!matches.length) return false;
-            memberMatches.set(s.name, matches);
-            return true;
-        }),
-        shown = matched.slice(0, IMPORT_VARIABLE_LIMIT),
-        leafRows = 0;
-    shown.forEach(function (s) {
-        var gi = impIndexByName.get(s.name);
-        if (s.isComposite) {
-            var open = !!impExpanded[s.name] || memberMatches.has(s.name);
-            var row = document.createElement("div");
-            row.className = "imp-row";
-            var cb = document.createElement("input");
-            cb.type = "checkbox";
-            cb.dataset.idx = String(gi);
-            cb.dataset.symbolName = s.name;
-            cb.checked = checkedNames.has(s.name);
-            cb.title = t("lw.compositeExpandable");
-            var nmWrap = document.createElement("span");
-            nmWrap.className = "imp-name-wrap";
-            var arrow = document.createElement("span");
-            arrow.className = "imp-arrow";
-            arrow.textContent = "\u25B6";
-            if (open) arrow.classList.add("open");
-            var nm = document.createElement("span");
-            nm.className = "imp-name";
-            EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
-            nmWrap.append(arrow, nm);
-            var ty = document.createElement("span");
-            ty.className = "ty";
-            ty.textContent = s.typeName || t("lw.unknownType");
-            var a = document.createElement("span");
-            a.className = "address";
-            a.textContent = fmtAddr(s.address);
-            var z = document.createElement("span");
-            z.className = "size";
-            z.textContent = s.size + "B";
-            row.append(cb, nmWrap, ty, a, z);
-            box.appendChild(row);
-            var kids = document.createElement("div");
-            kids.className = "imp-children";
-            if (open) kids.classList.add("open");
-            var ownLeafRows = 0;
-            var populate = function () {
-                leafRows -= ownLeafRows;
-                ownLeafRows = 0;
-                EmberProbeRuntime.resetVariableNotices(kids, t);
-                kids.textContent = "";
-                if (!s.compositeLayout && !s.runtimeLayout) {
-                    appendNote(kids, s.layoutError || s.unsupportedReason || t("lw.compositeNoLayout"), "warning");
-                    return;
-                }
-                renderRawMembersUi(kids, latest[s.name] || s.compositeLayout, s.name);
-                var runtime = EmberProbeRuntime.runtimeSelection(s, latest[s.name]);
-                var leaves = memberMatches.get(s.name) || selectionLeaves(s, runtime);
-                if (runtime)
-                    appendNote(
-                        kids,
-                        t(
-                            runtime.sampled
-                                ? "lw.runtimeMembersReadOnly"
-                                : runtime.entries.length
-                                  ? "lw.runtimeMembersSelectable"
-                                  : "lw.runtimeMembersHint"
-                        )
-                    );
-                if (runtime && leaves.some((leaf) => leaf.layoutExpanded))
-                    appendNote(kids, t("lw.layoutStaticStorage"));
-                if (s.compositeLayout?.truncated || s.runtimeLayout?.truncated)
-                    appendNote(kids, t("lw.layoutPartial"), "warning");
-                EmberProbeRuntime.displayUnavailableRows(s.compositeLayout, s.name, 64, s, showRawFor(s.name)).forEach(
-                    function (entry) {
-                        layoutExpansionUi.render(kids, entry, s.name, t);
-                    }
-                );
-                var shownLeaves = Math.min(leaves.length, Math.max(0, IMPORT_ROW_LIMIT - shown.length - leafRows));
-                leaves.slice(0, shownLeaves).forEach(function (lf) {
-                    var lr = document.createElement("label");
-                    lr.className = "imp-row leaf";
-                    var lcb = document.createElement("input");
-                    lcb.type = "checkbox";
-                    lcb.dataset.leafPath = lf.path;
-                    lcb.checked = checkedNames.has(lf.path);
-                    lcb.dataset.leafAddr = String(lf.address);
-                    lcb.dataset.leafType = lf.type;
-                    if (lf.runtimeLayout) lcb.runtimeEntry = lf;
-                    else lcb.leafEntry = lf;
-                    var ln = document.createElement("span");
-                    ln.className = "imp-leaf-name";
-                    ln.textContent = lf.label;
-                    ln.title = displayNameFor(lf.runtimeLayout ? lf : { name: lf.displayPath || lf.path });
-                    var lty = document.createElement("span");
-                    lty.className = "ty";
-                    lty.textContent =
-                        (lf.isPointer ? lf.typeName : lf.type) || (lf.isComposite ? t("lw.compositeType") : "");
-                    var la = document.createElement("span");
-                    la.className = "address";
-                    la.textContent = fmtAddr(lf.address);
-                    var lz = document.createElement("span");
-                    lz.className = "size";
-                    lr.append(lcb, ln, lty, la, lz);
-                    kids.appendChild(lr);
-                });
-                ownLeafRows = shownLeaves;
-                leafRows += shownLeaves;
-                if (leaves.length > shownLeaves) {
-                    appendNote(kids, t("lw.arrayMore", { n: leaves.length - shownLeaves }));
-                }
-                EmberProbeRuntime.finishVariableNotices(kids);
-            };
-            if (open) {
-                populate();
-                if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
-                    impLayoutPending.add(s.name);
-                    post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
-                }
-            }
-            box.appendChild(kids);
-            var toggle = function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                var open = kids.classList.toggle("open");
-                arrow.classList.toggle("open", open);
-                impExpanded[s.name] = open;
-                if (open) {
-                    populate();
-                    if (!s.compositeLayout && !s.runtimeLayout && !s.layoutError && !impLayoutPending.has(s.name)) {
-                        impLayoutPending.add(s.name);
-                        post({ type: "resolveCompositeLayout", name: s.name, version: impVersion });
-                    }
-                } else {
-                    leafRows -= ownLeafRows;
-                    ownLeafRows = 0;
-                    EmberProbeRuntime.resetVariableNotices(kids, t);
-                    kids.textContent = "";
-                }
-            };
-            arrow.onclick = toggle;
-            nm.onclick = toggle;
-        } else {
-            var row2 = document.createElement("label");
-            row2.className = "imp-row";
-            if (s.isComposite && !s.compositeLayout && !s.runtimeLayout)
-                row2.title = s.unsupportedReason || t("lw.compositeNoLayout");
-            var cb2 = document.createElement("input");
-            cb2.type = "checkbox";
-            cb2.disabled = !!(s.isComposite && !s.compositeLayout && !s.runtimeLayout);
-            cb2.dataset.idx = String(gi);
-            cb2.dataset.symbolName = s.name;
-            cb2.checked = checkedNames.has(s.name);
-            var nm2 = document.createElement("span");
-            nm2.className = "imp-name";
-            EmberProbeRuntime.renderSymbolName(nm2, displayNameFor(s), s);
-            var ty2 = document.createElement("span");
-            ty2.className = "ty";
-            ty2.textContent = s.typeName || s.watchType || defType(s.size);
-            var a2 = document.createElement("span");
-            a2.className = "address";
-            a2.textContent = fmtAddr(s.address);
-            var z2 = document.createElement("span");
-            z2.className = "size";
-            z2.textContent = s.size + "B";
-            row2.append(cb2, nm2, ty2, a2, z2);
-            box.appendChild(row2);
+    var result = importPicker.render(box, f, {
+        composite: function (s, open, toggle) {
+            return importCompositeRow(s, open, toggle, checked(s.name));
+        },
+        leaf: function (lf) {
+            return importLeafRow(lf, checked(lf.path));
+        },
+        scalar: function (s) {
+            return importScalarRow(s, checked(s.name));
         }
     });
-    if (!shown.length) {
-        var empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent =
-            f && (!impTypesReady || pool.some(needsImportLayout))
-                ? t("sb.searchingMembers")
-                : !pool.length && allSymbols.length
-                  ? t("sb.noUserVars", { count: allSymbols.length })
-                  : allSymbols.length
-                    ? t("sb.noMatch")
-                    : t("sb.noImportable");
-        box.appendChild(empty);
-    }
     $("impCount").textContent =
         (impUserOnly
-            ? t("sb.filteredCount", { shown: pool.length, total: allSymbols.length })
-            : t("lw.totalVars", { n: allSymbols.length })) +
-        (matched.length > shown.length ? t("lw.showingFirst", { n: shown.length }) : "");
+            ? t("sb.filteredCount", { shown: result.pool.length, total: state.allSymbols.length })
+            : t("lw.totalVars", { n: state.allSymbols.length })) +
+        (result.matching.length > result.list.length ? t("lw.showingFirst", { n: result.list.length }) : "");
 }
 function openImport() {
     impPicks.clear();
@@ -2357,106 +1540,17 @@ function openImport() {
 }
 function hideImport() {
     $("overlay").classList.add("hidden");
-    cancelImportMemberSearch();
+    importPicker.cancelSearch();
 }
-var autocompleteMatches = [],
-    autocompleteIndex = -1,
-    ambiguityChoices = null,
-    variableRequestId = 0,
-    pendingVariableRequest = null;
-function hideAutocomplete() {
-    $("acDrop").classList.remove("open");
-    $("addName").setAttribute("aria-expanded", "false");
-    $("addName").removeAttribute("aria-activedescendant");
-    autocompleteMatches = [];
-    autocompleteIndex = -1;
-    ambiguityChoices = null;
-    pendingVariableRequest = null;
-    choiceHint(false);
-}
-function selectAutocomplete(index) {
-    autocompleteIndex = index;
-    var rows = $("acResults").children;
-    for (var i = 0; i < rows.length; i++) {
-        rows[i].classList.toggle("active", i === index);
-        rows[i].setAttribute("aria-selected", String(i === index));
-    }
-    var row = rows[index];
-    if (row) {
-        $("addName").setAttribute("aria-activedescendant", row.id);
-        if (row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
-    }
-}
-function acceptAutocomplete(symbol) {
-    if (ambiguityChoices || symbol.addressAmbiguous) {
-        resolveTypedVariable(symbol.name);
-        return;
-    }
-    addSymbol(symbol);
-    $("addName").value = "";
-    hideAutocomplete();
-}
-function renderAutocomplete(candidates) {
-    var drop = $("acDrop");
-    if (!drop) return;
-    var q = ($("addName").value || "").trim().toLowerCase();
-    hideAutocomplete();
-    var results = $("acResults");
-    results.textContent = "";
-    if (!q) {
-        drop.classList.remove("open");
-        return;
-    }
-    var matches = Array.isArray(candidates)
-        ? candidates
-        : allSymbols
-              .filter(function (s) {
-                  return s.name.toLowerCase().indexOf(q) >= 0 || displayNameFor(s).toLowerCase().indexOf(q) >= 0;
-              })
-              .slice(0, 12);
-    if (!matches.length) {
-        drop.classList.remove("open");
-        return;
-    }
-    autocompleteMatches = matches;
-    ambiguityChoices = Array.isArray(candidates) ? matches : null;
-    choiceHint(!!ambiguityChoices);
-    matches.forEach(function (s, index) {
-        var it = document.createElement("div");
-        it.className = "ac-item";
-        it.id = "ac-option-" + index;
-        it.setAttribute("role", "option");
-        it.setAttribute("aria-selected", "false");
-        var nm = document.createElement("span");
-        nm.className = "ac-name";
-        EmberProbeRuntime.renderSymbolName(nm, displayNameFor(s), s);
-        var ty = document.createElement("span");
-        ty.className = "ac-type";
-        ty.textContent = ty.title = s.typeName || s.watchType || (ambiguityChoices ? s.address : defType(s.size));
-        it.append(nm, ty);
-        it.onmousedown = function (e) {
-            e.preventDefault();
-            acceptAutocomplete(s);
-        };
-        results.appendChild(it);
-    });
-    drop.classList.add("open");
-    $("addName").setAttribute("aria-expanded", "true");
-}
-function resolveTypedVariable(name) {
-    hideAutocomplete();
-    pendingVariableRequest = { id: ++variableRequestId, query: $("addName").value.trim(), name: name };
-    post({ type: "resolveVariable", name: name, version: impVersion, requestId: variableRequestId });
-}
-function currentVariableReply(message) {
-    return (
-        pendingVariableRequest &&
-        pendingVariableRequest.id === message.requestId &&
-        pendingVariableRequest.name === message.requestedName &&
-        pendingVariableRequest.query === $("addName").value.trim() &&
-        message.version === impVersion
-    );
-}
+const variableEntry = EmberProbeVariableEntry.create({
+    $,
+    state,
+    post: (message) => post(message),
+    add: (symbol) => addSymbol(symbol),
+    displayName: (symbol) => displayNameFor(symbol),
+    defType: (size) => defType(size),
+    noticeArea: (id) => noticeArea(id)
+});
 function importSelected() {
     var leafCbs = [],
         syms = [];
@@ -2465,7 +1559,7 @@ function importSelected() {
         .forEach(function (cb) {
             if (cb.dataset.leafPath) leafCbs.push(cb);
             else if (cb.dataset.idx) {
-                var s = allSymbols[parseInt(cb.dataset.idx, 10)];
+                var s = state.allSymbols[parseInt(cb.dataset.idx, 10)];
                 if (s) syms.push(s);
             }
         });
@@ -2486,14 +1580,10 @@ function importSelected() {
         renderVars();
         saveWatch();
         saveUi();
-        dirty = true;
+        state.dirty = true;
     }
     hideImport();
 }
-var exportCandidates = [],
-    exportOpenedAt = 0,
-    exportTimelineStart = 0,
-    exportTimelineEnd = 0;
 function formatElapsed(ms) {
     var total = Math.max(0, Math.round((Number(ms) || 0) / 1000)),
         seconds = Math.floor(total % 60),
@@ -2504,339 +1594,17 @@ function formatElapsed(ms) {
         };
     return hours ? two(hours) + ":" + two(minutes) + ":" + two(seconds) : two(minutes) + ":" + two(seconds);
 }
-function exportBounds(candidates) {
-    var from = Infinity,
-        to = -Infinity;
-    (candidates || []).forEach(function (c) {
-        (c.buffer || []).forEach(function (p) {
-            var time = Number(p && p.t);
-            if (Number.isFinite(time)) {
-                from = Math.min(from, time);
-                to = Math.max(to, time);
-            }
-        });
-    });
-    return { from: from, to: to };
-}
-function selectedExportCandidates() {
-    var picked = [];
-    $("exportSeries")
-        .querySelectorAll("input[type=checkbox]:checked")
-        .forEach(function (cb) {
-            var item = exportCandidates[Number(cb.dataset.index)];
-            if (item) picked.push(item);
-        });
-    return picked;
-}
-function setExportSeriesSelection(invert) {
-    if (!exportCandidates.length) return;
-    endExportSeriesDrag();
-    $("exportSeries")
-        .querySelectorAll("input[type=checkbox]")
-        .forEach(function (cb) {
-            if (cb.closest("tr").hidden) return;
-            cb.checked = invert ? !cb.checked : true;
-        });
-    setupExportTimeline(selectedExportCandidates());
-}
-function filterExportSeries() {
-    endExportSeriesDrag();
-    var query = $("exportSearch").value.trim().toLowerCase();
-    $("exportSeries")
-        .querySelectorAll("tbody tr")
-        .forEach(function (row) {
-            var item = exportCandidates[Number(row.querySelector("input").dataset.index)];
-            row.hidden = !item.displayName.toLowerCase().includes(query) && !item.name.toLowerCase().includes(query);
-        });
-    $("exportSeries").scrollTop = 0;
-}
-function updateExportTimeline(changed) {
-    var from = $("exportFromRange"),
-        to = $("exportToRange"),
-        a = Number(from.value),
-        b = Number(to.value),
-        span = Math.max(1, exportTimelineEnd - exportTimelineStart);
-    if (a > b) {
-        if (changed === "from") {
-            b = a;
-            to.value = String(b);
-        } else {
-            a = b;
-            from.value = String(a);
-        }
-    }
-    $("exportRangeFill").style.left = (a / span) * 100 + "%";
-    $("exportRangeFill").style.width = ((b - a) / span) * 100 + "%";
-    $("exportSelection").textContent = t("lw.exportSelectedRange", { from: formatElapsed(a), to: formatElapsed(b) });
-}
-function setupExportTimeline(candidates) {
-    var bounds = exportBounds(candidates);
-    exportTimelineStart = Number.isFinite(bounds.from) ? Math.min(bounds.from, exportOpenedAt) : exportOpenedAt;
-    exportTimelineEnd = Math.max(exportTimelineStart, exportOpenedAt);
-    var span = Math.max(1, Math.round(exportTimelineEnd - exportTimelineStart)),
-        from = $("exportFromRange"),
-        to = $("exportToRange");
-    from.min = to.min = "0";
-    from.max = to.max = String(span);
-    from.value = "0";
-    to.value = String(span);
-    $("exportAxisStart").textContent = "00:00";
-    $("exportAxisEnd").textContent = formatElapsed(span);
-    updateExportTimeline();
-}
-function exportOptions() {
-    var a = Number($("exportFromRange").value),
-        b = Number($("exportToRange").value),
-        from = exportTimelineStart + a,
-        to = exportTimelineStart + b;
-    if (!Number.isFinite(from) || !Number.isFinite(to) || from > to) return null;
-    if (a === 0 && b === Number($("exportToRange").max)) return {};
-    return { from: from, to: to };
-}
-var exportSeriesDrag = null;
-function endExportSeriesDrag(event) {
-    var drag = exportSeriesDrag;
-    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
-    exportSeriesDrag = null;
-    cancelAnimationFrame(drag.frame);
-    drag.marquee.remove();
-    if (drag.box.hasPointerCapture?.(drag.pointerId)) drag.box.releasePointerCapture(drag.pointerId);
-    if (event && event.type === "pointerup" && !drag.moved && drag.checkbox) {
-        drag.checkbox.checked = !drag.checkbox.checked;
-    }
-    setupExportTimeline(selectedExportCandidates());
-}
-function updateExportSeriesDrag() {
-    var drag = exportSeriesDrag;
-    if (!drag || !drag.moved) return;
-    var box = drag.box,
-        rect = box.getBoundingClientRect(),
-        left = rect.left + box.clientLeft,
-        top = rect.top + box.clientTop,
-        headerHeight = box.querySelector("thead").getBoundingClientRect().height,
-        x = Math.max(0, Math.min(box.clientWidth, drag.clientX - left)) + box.scrollLeft,
-        y = Math.max(headerHeight, Math.min(box.clientHeight, drag.clientY - top)) + box.scrollTop,
-        x1 = Math.min(drag.x, x),
-        x2 = Math.max(drag.x, x),
-        y1 = Math.min(drag.y, y),
-        y2 = Math.max(drag.y, y);
-    drag.marquee.hidden = false;
-    Object.assign(drag.marquee.style, {
-        left: x1 + "px",
-        top: y1 + "px",
-        width: x2 - x1 + "px",
-        height: y2 - y1 + "px"
-    });
-    drag.rows.forEach(function (row) {
-        var hit = row.left <= x2 && row.right >= x1 && row.top <= y2 && row.bottom >= y1;
-        row.checkbox.checked = hit ? !row.checked : row.checked;
-    });
-}
-function scrollExportSeriesDrag(now) {
-    var drag = exportSeriesDrag;
-    if (!drag || !drag.moved) return;
-    var box = drag.box,
-        rect = box.getBoundingClientRect(),
-        top = rect.top + box.clientTop + box.querySelector("thead").getBoundingClientRect().height,
-        bottom = rect.top + box.clientTop + box.clientHeight,
-        edge = Math.min(28, (bottom - top) / 3),
-        speed =
-            drag.clientY < top + edge
-                ? -Math.min(1, (top + edge - drag.clientY) / edge)
-                : drag.clientY > bottom - edge
-                  ? Math.min(1, (drag.clientY - bottom + edge) / edge)
-                  : 0;
-    box.scrollTop += speed * Math.min(32, now - drag.lastFrame) * 0.5;
-    drag.lastFrame = now;
-    updateExportSeriesDrag();
-    drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
-}
-function beginExportSeriesDrag(event) {
-    if (event.button !== 0 || exportSeriesDrag || !exportCandidates.length) return;
-    var box = $("exportSeries"),
-        rect = box.getBoundingClientRect(),
-        left = rect.left + box.clientLeft,
-        top = rect.top + box.clientTop;
-    if (
-        event.target.closest("thead") ||
-        event.clientX >= left + box.clientWidth ||
-        event.clientY >= top + box.clientHeight
-    )
-        return;
-    event.preventDefault();
-    var row = event.target.closest("tbody tr"),
-        marquee = document.createElement("div");
-    marquee.className = "export-marquee";
-    marquee.hidden = true;
-    box.appendChild(marquee);
-    exportSeriesDrag = {
-        box: box,
-        pointerId: event.pointerId,
-        pointerType: event.pointerType,
-        checkbox: row && row.querySelector("input"),
-        x: event.clientX - left + box.scrollLeft,
-        y: event.clientY - top + box.scrollTop,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        startX: event.clientX,
-        startY: event.clientY,
-        moved: false,
-        marquee: marquee,
-        frame: 0,
-        lastFrame: performance.now(),
-        rows: Array.from(box.querySelectorAll("tbody tr:not([hidden])"), function (entry) {
-            var bounds = entry.getBoundingClientRect(),
-                checkbox = entry.querySelector("input");
-            return {
-                checkbox: checkbox,
-                checked: checkbox.checked,
-                left: bounds.left - left + box.scrollLeft,
-                right: bounds.right - left + box.scrollLeft,
-                top: bounds.top - top + box.scrollTop,
-                bottom: bounds.bottom - top + box.scrollTop
-            };
-        })
-    };
-    box.setPointerCapture?.(event.pointerId);
-}
-function moveExportSeriesDrag(event) {
-    var drag = exportSeriesDrag;
-    if (!drag || !EmberProbeCardReorder.samePointer(event, drag)) return;
-    if (!(event.buttons & 1)) {
-        endExportSeriesDrag(event);
-        return;
-    }
-    drag.clientX = event.clientX;
-    drag.clientY = event.clientY;
-    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4) {
-        drag.moved = true;
-        drag.lastFrame = performance.now();
-        drag.frame = requestAnimationFrame(scrollExportSeriesDrag);
-    }
-    updateExportSeriesDrag();
-}
-function hideExport() {
-    endExportSeriesDrag();
-    $("exportOverlay").classList.add("hidden");
-    exportNotice(null);
-}
-function showExport() {
-    if (historyClearPending) return;
-    post({ type: "samplingArchiveInfo", openExport: true, historyRevision: historyRevision });
-}
-function showArchiveExport(info) {
-    endExportSeriesDrag();
-    var stamp = new Date(),
-        pad = function (n) {
-            return String(n).padStart(2, "0");
-        };
-    $("exportFileName").value = "";
-    $("exportFileName").placeholder =
-        "emberprobe-live-" +
-        stamp.getFullYear() +
-        pad(stamp.getMonth() + 1) +
-        pad(stamp.getDate()) +
-        "-" +
-        pad(stamp.getHours()) +
-        pad(stamp.getMinutes()) +
-        pad(stamp.getSeconds());
-    $("exportSearch").value = "";
-    var names = Array.isArray(info && info.variables) ? info.variables : [],
-        first = Number(info && info.firstTimestampMs),
-        last = Number(info && info.lastTimestampMs);
-    if (!names.length || !Number.isFinite(first) || !Number.isFinite(last)) {
-        exportCandidates = [];
-        $("exportSeries").textContent = "";
-        exportNotice("lw.noDataToExport");
-        $("exportOverlay").classList.remove("hidden");
-        return;
-    }
-    exportCandidates = names.map(function (name) {
-        // The host archives separate type interpretations as "name [type]". Keep that key for
-        // export, but present its variable name and sampled type in their own columns.
-        var archivedType = / \[([ui](?:8|16|32|64)|f32|f64)\]$/.exec(name),
-            variableName = archivedType ? name.slice(0, -archivedType[0].length) : name,
-            displayName =
-                info.displayNames &&
-                Object.prototype.hasOwnProperty.call(info.displayNames, name) &&
-                typeof info.displayNames[name] === "string" &&
-                info.displayNames[name];
-        if (archivedType && displayName && displayName.endsWith(archivedType[0])) {
-            displayName = displayName.slice(0, -archivedType[0].length);
-        }
-        var item =
-            watch.find(function (entry) {
-                return entry.name === variableName;
-            }) || impSymbolByName.get(variableName);
-        return {
-            name: name,
-            displayName: displayName && displayName !== variableName ? displayName : curveDisplayName(variableName),
-            type: archivedType ? archivedType[1] : item && (item.typeName || item.type || item.watchType),
-            buffer: [{ t: first }, { t: last }]
-        };
-    });
-    exportOpenedAt = last;
-    var box = $("exportSeries"),
-        table = document.createElement("table"),
-        head = table.createTHead(),
-        header = head.insertRow(),
-        body = table.createTBody();
-    ["lw.exportVariableName", "lw.exportDataType"].forEach(function (key) {
-        var cell = document.createElement("th");
-        cell.scope = "col";
-        cell.dataset.i18n = key;
-        cell.textContent = t(key);
-        header.appendChild(cell);
-    });
-    box.replaceChildren(table);
-    box.scrollTop = 0;
-    exportCandidates.forEach(function (item, index) {
-        var row = body.insertRow(),
-            nameCell = row.insertCell(),
-            typeCell = row.insertCell(),
-            label = document.createElement("label"),
-            cb = document.createElement("input"),
-            name = document.createElement("span");
-        cb.type = "checkbox";
-        cb.checked = true;
-        cb.dataset.index = String(index);
-        cb.onchange = function () {
-            setupExportTimeline(selectedExportCandidates());
-        };
-        name.className = "export-series-name";
-        name.textContent = name.title = item.displayName;
-        typeCell.className = "export-series-type";
-        typeCell.textContent = typeCell.title = item.type || t("lw.unknownType");
-        label.append(cb, name);
-        nameCell.appendChild(label);
-    });
-    setupExportTimeline(exportCandidates);
-    exportNotice(info.limitReached ? "lw.archiveTruncated" : info.limited ? "lw.memoryHistoryLimited" : null);
-    $("exportOverlay").classList.remove("hidden");
-}
-function applyExport() {
-    var selected = selectedExportCandidates();
-    if (!selected.length) {
-        exportNotice("lw.exportNoSeries");
-        return;
-    }
-    var opts = exportOptions(selected);
-    if (!opts) {
-        exportNotice("lw.exportInvalidRange");
-        return;
-    }
-    post({
-        type: "exportCsv",
-        fileName: ($("exportFileName").value.trim() || $("exportFileName").placeholder).replace(/\.csv$/i, "") + ".csv",
-        historyRevision: historyRevision,
-        names: selected.map(function (c) {
-            return c.name;
-        }),
-        fromMs: opts.from,
-        toMs: opts.to
-    });
-    hideExport();
-}
+const exportDialog = EmberProbeExportDialog.create({
+    $,
+    t: (key, params) => t(key, params),
+    state,
+    post: (message) => post(message),
+    notice: (key) => exportNotice(key),
+    displayName: (name) => curveDisplayName(name),
+    formatElapsed: (ms) => formatElapsed(ms),
+    historyRevision: () => historyRevision,
+    clearPending: () => historyClearPending
+});
 var VP = window.EmberChartViewport,
     canvas = $("chart"),
     ctx = canvas.getContext("2d"),
@@ -2883,41 +1651,41 @@ function resetChartView() {
 function freezeChart() {
     syncTimeBounds();
     resetFollowClock();
-    if (remoteHistory.operation || frozen) return;
-    remoteHistory.operation = ++remoteHistory.nextId;
-    dirty = true;
+    if (state.remoteHistory.operation || state.frozen) return;
+    state.remoteHistory.operation = ++state.remoteHistory.nextId;
+    state.dirty = true;
     chartState.fastDirty = true;
-    post({ type: "chartFreeze", requestId: remoteHistory.operation, historyRevision: historyRevision });
+    post({ type: "chartFreeze", requestId: state.remoteHistory.operation, historyRevision: historyRevision });
 }
 function resumeChart() {
     resetFollowClock();
     $("freeze").textContent = t("lw.freeze");
-    remoteHistory.operation = null;
-    remoteHistory.snapshotId = null;
-    remoteHistory.status = remoteHistory.liveStatus;
+    state.remoteHistory.operation = null;
+    state.remoteHistory.snapshotId = null;
+    state.remoteHistory.status = state.remoteHistory.liveStatus;
     cancelChartHistoryRequests();
-    post({ type: "chartResume", requestId: ++remoteHistory.nextId, historyRevision: historyRevision });
-    frozen = false;
+    post({ type: "chartResume", requestId: ++state.remoteHistory.nextId, historyRevision: historyRevision });
+    state.frozen = false;
     syncTimeBounds();
     applyWindowPreset(windowPreset);
     renderVars();
-    dirty = true;
+    state.dirty = true;
     chartState.fastDirty = true;
 }
 function updateChartEmpty(series, hasBounds) {
     var empty = $("chartEmpty");
     if (empty.classList.contains("hidden")) return;
     empty.removeAttribute("data-i18n");
-    var key = !watch.length
+    var key = !state.watch.length
         ? "lw.varListEmpty"
-        : watch.every(isCompositeItem)
+        : state.watch.every(isComposite)
           ? "lw.chooseMembers"
-          : watch.every(function (w) {
-                  return isCompositeItem(w) || hidden[w.name];
+          : state.watch.every(function (w) {
+                  return isComposite(w) || state.hidden[w.name];
               })
             ? "lw.allHidden"
             : !hasBounds
-              ? frozen
+              ? state.frozen
                   ? "lw.frozenNew"
                   : "lw.waitSamples"
               : "lw.rangeEmpty";
@@ -2925,49 +1693,48 @@ function updateChartEmpty(series, hasBounds) {
     var button = document.createElement("button");
     button.type = "button";
     button.textContent = t(
-        !watch.length
+        !state.watch.length
             ? "lw.importVars"
             : key === "lw.chooseMembers"
               ? "lw.expandMembers"
               : key === "lw.allHidden"
                 ? "lw.showAll"
-                : frozen
+                : state.frozen
                   ? "lw.resume"
                   : hasBounds
                     ? "lw.fitTime"
                     : "lw.startSampling"
     );
-    button.disabled = !hasBounds && running && !frozen && key !== "lw.allHidden" && key !== "lw.chooseMembers";
+    button.disabled = !hasBounds && running && !state.frozen && key !== "lw.allHidden" && key !== "lw.chooseMembers";
     button.onclick = function () {
-        if (!watch.length) $("import").click();
+        if (!state.watch.length) $("import").click();
         else if (key === "lw.chooseMembers") {
-            watch.forEach(function (w) {
-                expanded[w.name] = true;
+            state.watch.forEach(function (w) {
+                state.expanded[w.name] = true;
             });
-            sideCollapsed = false;
-            applySideLayout();
+            panelLayout.expand();
             renderVars();
             saveUi();
         } else if (key === "lw.allHidden") chartAction("showAll");
-        else if (frozen) resumeChart();
+        else if (state.frozen) resumeChart();
         else if (hasBounds) {
             chartState.x = { ...chartState.bounds };
             chartState.follow = true;
-            dirty = true;
+            state.dirty = true;
         } else $("run").click();
     };
     empty.appendChild(button);
 }
 function chartAction(action, value) {
     if (action === "importSidebar") {
-        post({ type: "importSidebarWatch", items: watch });
+        post({ type: "importSidebarWatch", items: state.watch });
         return;
     }
-    var names = watch.map(function (w) {
+    var names = state.watch.map(function (w) {
         return w.name;
     });
     if (action === "showAll" || action === "hideAll") {
-        hidden = Object.fromEntries(
+        state.hidden = Object.fromEntries(
             names.map(function (name) {
                 return [name, action === "hideAll"];
             })
@@ -2978,12 +1745,12 @@ function chartAction(action, value) {
         saveUi();
     }
     if (action === "restore") {
-        hidden = Analysis.restore(analysis, names);
+        state.hidden = Analysis.restore(analysis, names);
         renderVars();
         saveUi();
     }
     if (action === "focus") {
-        hidden = Analysis.focus(analysis, hidden, names, value);
+        state.hidden = Analysis.focus(analysis, state.hidden, names, value);
         renderVars();
         saveUi();
     }
@@ -2998,39 +1765,41 @@ function chartAction(action, value) {
         renderVars();
     }
     if (action === "type") {
-        var item = watch.find(function (entry) {
+        var item = state.watch.find(function (entry) {
             return entry.name === value.name;
         });
-        if (item && !isCompositeItem(item) && TYPES.includes(value.type)) {
+        if (item && !isComposite(item) && TYPES.includes(value.type)) {
             item.type = value.type;
-            latest[item.name] = null;
-            latestText[item.name] = null;
-            latestEnum[item.name] = null;
+            state.latest[item.name] = null;
+            state.latestText[item.name] = null;
+            state.latestEnum[item.name] = null;
             updateValues();
             saveWatch();
         }
     }
     if (action === "radix") {
-        var selected = watch.find(function (entry) {
+        var selected = state.watch.find(function (entry) {
             return entry.name === value.name;
         });
-        if (!selected || isCompositeItem(selected) || ![2, 10, 16].includes(value.radix)) return;
-        if (value.radix === 10) delete numberBases[value.name];
-        else numberBases[value.name] = value.radix;
+        if (!selected || isComposite(selected) || ![2, 10, 16].includes(value.radix)) return;
+        if (value.radix === 10) delete state.numberBases[value.name];
+        else state.numberBases[value.name] = value.radix;
         updateValues();
         saveUi();
     }
     if (action === "remove") removeVar(value);
     if (action === "autoY") chartState.autoY = !chartState.autoY;
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 controls = window.EmberProbeChartControls.create({
     document: document,
     t: t,
     fmtNum: fmtNum,
     formatValue: function (name, point) {
-        return point ? fmtExact(point.v, point.valueText, null, name) : t("lw.noReading");
+        return point
+            ? EmberProbeValueTree.fmtExact(point.v, point.valueText, null, state.numberBases[name] || 10)
+            : t("lw.noReading");
     },
     displayName: curveDisplayName,
     tooltipName: function (name) {
@@ -3043,14 +1812,14 @@ controls = window.EmberProbeChartControls.create({
         return {
             chart: chartState,
             analysis: analysis,
-            hidden: hidden,
-            frozen: frozen,
+            hidden: state.hidden,
+            frozen: state.frozen,
             running: running,
             style: styleFor,
-            watch: watch,
+            watch: state.watch,
             types: TYPES,
             radix: function (name) {
-                return numberBases[name] || 10;
+                return state.numberBases[name] || 10;
             },
             lang: LANG
         };
@@ -3099,9 +1868,9 @@ function chartData(range, width) {
     // Views from an earlier configuration (visibility, freeze/resume) stay drawn until their replacement
     // arrives, but only for curves whose type/address identity is unchanged.
     var configKey = chartHistoryConfig().configKey,
-        view = remoteHistory.view,
-        overview = remoteHistory.overview,
-        cached = remoteHistory.composed;
+        view = state.remoteHistory.view,
+        overview = state.remoteHistory.overview,
+        cached = state.remoteHistory.composed;
     if (cached && cached.view === view && cached.overview === overview && cached.configKey === configKey)
         return cached.series;
     var composed = [];
@@ -3109,13 +1878,13 @@ function chartData(range, width) {
         return JSON.stringify([item.type, item.address, item.bitOffset, item.bitSize]);
     }
     function add(part, arr, detail, current) {
-        var idx = watch.findIndex(function (item) {
+        var idx = state.watch.findIndex(function (item) {
             return item.name === part.name;
         });
-        if (idx < 0 || hidden[part.name] || isCompositeItem(watch[idx]) || !arr.length) return;
-        if (!current && (!part.item || identity(part.item) !== identity(watch[idx]))) return;
+        if (idx < 0 || state.hidden[part.name] || isComposite(state.watch[idx]) || !arr.length) return;
+        if (!current && (!part.item || identity(part.item) !== identity(state.watch[idx]))) return;
         composed.push({
-            item: part.item || watch[idx],
+            item: part.item || state.watch[idx],
             idx: idx,
             arr: arr,
             ...(detail ? { visibleCount: part.visibleCount } : {})
@@ -3143,11 +1912,11 @@ function chartData(range, width) {
                 add(part, arr, false, overview.configKey === configKey);
             });
         });
-    remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
+    state.remoteHistory.composed = { view: view, overview: overview, configKey: configKey, series: composed };
     return composed;
 }
 function retainedTimeBounds() {
-    return remoteHistory.status && remoteHistory.status.bounds;
+    return state.remoteHistory.status && state.remoteHistory.status.bounds;
 }
 function minimumXSpan() {
     return chartState.bounds ? Math.min(VP.span(chartState.bounds), 1) : 1;
@@ -3177,7 +1946,7 @@ function applyWindowPreset(value) {
     chartState.follow = true;
     chartState.startPinned = windowPreset === "0";
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 function updateFollowFromView(snap) {
     if (!chartState.x || !chartState.bounds) return;
@@ -3300,21 +2069,21 @@ function refreshChartTimeline() {
 function draw(now) {
     var smooth = smoothFollowEnabled();
     if (!smooth) {
-        if (chartState.followClock && followingChartHistory() && !remoteHistory.operation && chartState.bounds) {
+        if (chartState.followClock && followingChartHistory() && !state.remoteHistory.operation && chartState.bounds) {
             chartState.x = VP.followEnd(chartState.x, chartState.bounds, chartState.bounds, minimumXSpan());
-            dirty = true;
+            state.dirty = true;
         }
         resetFollowClock();
     } else {
         advanceFollowClock(performance.now());
-        dirty = true;
+        state.dirty = true;
     }
-    if (!dirty) return;
+    if (!state.dirty) return;
     var interval = smooth ? Math.max(16, Math.min(80, 2 * (chartState.drawDuration || 0))) : 80;
     if ((smooth || !chartState.fastDirty) && now - lastDraw < interval) return;
     var drawStarted = performance.now();
     lastDraw = now;
-    dirty = false;
+    state.dirty = false;
     chartState.fastDirty = false;
     if (!canvas.clientWidth || !canvas.clientHeight) return;
     var hasBounds = syncTimeBounds(),
@@ -3345,18 +2114,18 @@ function draw(now) {
     updateChartEmpty(series, hasBounds);
     historyLoading.textContent = t("lw.historyLoading");
     historyLoading.hidden =
-        !watch.some(function (item) {
-            return !hidden[item.name] && !isCompositeItem(item);
+        !state.watch.some(function (item) {
+            return !state.hidden[item.name] && !isComposite(item);
         }) ||
         !(
-            remoteHistory.operation ||
-            ([remoteHistory.pending, remoteHistory.inFlight].some(function (request) {
+            state.remoteHistory.operation ||
+            ([state.remoteHistory.pending, state.remoteHistory.inFlight].some(function (request) {
                 return request && request.configKey === chartHistoryConfig().configKey;
             }) &&
-                watch.some(function (item) {
+                state.watch.some(function (item) {
                     return (
-                        !hidden[item.name] &&
-                        !isCompositeItem(item) &&
+                        !state.hidden[item.name] &&
+                        !isComposite(item) &&
                         !series.some(function (part) {
                             return part.item.name === item.name && part.arr.length;
                         })
@@ -3411,21 +2180,21 @@ canvas.addEventListener("pointermove", function (e) {
         updateFollowFromView(false);
         chartState.pointer = p;
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
         return;
     }
     var region = chartRegion(p.x, p.y);
     setCanvasCursor(region);
     chartState.pointer = region === "plot" ? p : null;
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 });
 canvas.addEventListener("pointerleave", function () {
     if (chartState.drag) return;
     chartState.pointer = null;
     canvas.style.cursor = "default";
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 });
 canvas.addEventListener("pointerdown", function (e) {
     var p = canvasPoint(e);
@@ -3453,7 +2222,7 @@ function endChartDrag(e) {
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
     setCanvasCursor(chartState.pointer ? "plot" : "none");
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 canvas.addEventListener("pointerup", endChartDrag);
 canvas.addEventListener("pointercancel", endChartDrag);
@@ -3484,7 +2253,7 @@ canvas.addEventListener(
         }
         chartState.pointer = region === "plot" ? p : null;
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     },
     { passive: false }
 );
@@ -3507,7 +2276,7 @@ function updateTimelineEndpoint(edge) {
     chartState.follow = chartState.x.max === chartState.bounds.max;
     setWindowCustom();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 function beginTimelineEndpoint(edge, event) {
     if (!chartState.bounds || !chartState.x || (event && event.button !== 0)) return;
@@ -3524,7 +2293,7 @@ function endTimelineEndpoint() {
     chartState.endpointFollow = false;
     chartState.follow = !!(chartState.x && chartState.bounds && chartState.x.max === chartState.bounds.max);
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 }
 $("chartFromRange").onpointerdown = function (event) {
     beginTimelineEndpoint("min", event);
@@ -3568,7 +2337,7 @@ $("chartRangeFill").addEventListener("pointerdown", function (e) {
         snapDraggedRangeEdges();
         setWindowCustom();
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     };
     var end = function (ev) {
         if (ev.pointerId !== pointerId) return;
@@ -3608,11 +2377,11 @@ window.EmberProbeMessages.connect(window, {
         seriesStyles = Styles.clean(m.styles);
         styleRequests.clear();
         renderVars();
-        dirty = true;
+        state.dirty = true;
     },
     watchList: function (m) {
         var incoming = (m.items || []).slice();
-        var removed = watch
+        var removed = state.watch
             .filter(function (w) {
                 return !incoming.some(function (next) {
                     return next.name === w.name;
@@ -3622,7 +2391,7 @@ window.EmberProbeMessages.connect(window, {
                 return w.name;
             });
         if (removed.includes(analysis.focused))
-            hidden = Analysis.restore(
+            state.hidden = Analysis.restore(
                 analysis,
                 incoming.map(function (w) {
                     return w.name;
@@ -3632,61 +2401,61 @@ window.EmberProbeMessages.connect(window, {
         // still resolving can omit them briefly, and they must come back as the user left them.
         // Removing a watch here (removeVar) is what forgets its curve.
         removed.forEach(function (name) {
-            delete latest[name];
-            delete latestText[name];
-            delete latestEnum[name];
-            delete latestPointer[name];
-            forgetPointers(name);
+            delete state.latest[name];
+            delete state.latestText[name];
+            delete state.latestEnum[name];
+            delete state.latestPointer[name];
+            valueTree.pointers.forget(name);
         });
         // A view saved before pointer curves started hidden keeps the pointer curves it showed.
         if (legacyPointerCurves) {
             incoming.forEach(function (item) {
-                if (item.isPointer && hidden[item.name] === undefined) hidden[item.name] = false;
+                if (item.isPointer && state.hidden[item.name] === undefined) state.hidden[item.name] = false;
             });
             legacyPointerCurves = false;
             saveUi();
         }
-        watch = incoming;
-        watch.forEach(hidePointerCurve);
+        state.watch = incoming;
+        state.watch.forEach(hidePointerCurve);
         if (m.resetValues) {
-            resetLastPointers(lastPointersVersion);
-            watch.forEach(function (item) {
-                delete latest[item.name];
-                delete latestText[item.name];
-                delete latestEnum[item.name];
-                delete latestPointer[item.name];
+            valueTree.pointers.clear();
+            state.watch.forEach(function (item) {
+                delete state.latest[item.name];
+                delete state.latestText[item.name];
+                delete state.latestEnum[item.name];
+                delete state.latestPointer[item.name];
             });
         }
-        runtimeExpansionsLoaded = true;
+        valueTree.runtimeExpansionsReady();
         renderVars();
-        dirty = true;
+        state.dirty = true;
     },
     variablesList: function (m) {
         impWarnings = m.warnings || [];
         impError = m.error || "";
         renderElfDiagnostics();
-        allSymbols = m.symbols || [];
+        state.allSymbols = m.symbols || [];
         impTypesReady = true;
-        impSymbolByName = new Map(allSymbols.map((symbol) => [symbol.name, symbol]));
-        impIndexByName = new Map(allSymbols.map((symbol, index) => [symbol.name, index]));
+        state.symbols = new Map(state.allSymbols.map((symbol) => [symbol.name, symbol]));
+        impIndexByName = new Map(state.allSymbols.map((symbol, index) => [symbol.name, index]));
         renderVars();
         if (wantImportOpen) {
             wantImportOpen = false;
             openImport();
         } else {
             if (!$("overlay").classList.contains("hidden")) renderImport();
-            renderAutocomplete();
+            variableEntry.render();
         }
     },
     curveVisibility: function (m) {
         // A panel VS Code restored keeps its own state; a newly opened one adopts the host's copy.
         if (!(saved && saved.hidden) && m.hidden && typeof m.hidden === "object") {
-            hidden = Object.create(null);
+            state.hidden = Object.create(null);
             Object.keys(m.hidden).forEach(function (name) {
-                hidden[name] = !!m.hidden[name];
+                state.hidden[name] = !!m.hidden[name];
             });
             renderVars();
-            dirty = true;
+            state.dirty = true;
         }
         curveVisibilityLoaded = true;
         saveUi();
@@ -3695,22 +2464,19 @@ window.EmberProbeMessages.connect(window, {
         impWarnings = m.warnings || [];
         impError = "";
         renderElfDiagnostics();
-        cancelImportMemberSearch();
-        impVersion = m.version || "";
-        impGeneration = m.generation ?? null;
-        if (impVersion && lastPointersVersion && lastPointersVersion !== impVersion) {
-            resetLastPointers(impVersion);
-            saveUi();
-        }
+        importPicker.cancelSearch();
+        state.version = m.version || "";
+        state.generation = m.generation ?? null;
+        if (valueTree.pointers.expire()) saveUi();
         layoutExpansionUi.reset();
-        for (const item of watch) {
+        for (const item of state.watch) {
             delete item.layoutExpansions;
             item.layoutExpansionGeneration = -1;
         }
         impTypesReady = false;
-        allSymbols = [];
-        hideAutocomplete();
-        impSymbolByName.clear();
+        state.allSymbols = [];
+        variableEntry.hide();
+        state.symbols.clear();
         renderVars();
         impIndexByName.clear();
         impTypeChunks = 0;
@@ -3718,21 +2484,21 @@ window.EmberProbeMessages.connect(window, {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     variablesListChunk: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         const symbols = m.symbols || [];
         for (const symbol of symbols) {
-            impIndexByName.set(symbol.name, allSymbols.length);
-            allSymbols.push(symbol);
-            impSymbolByName.set(symbol.name, symbol);
+            impIndexByName.set(symbol.name, state.allSymbols.length);
+            state.allSymbols.push(symbol);
+            state.symbols.set(symbol.name, symbol);
         }
         if (
             !$("overlay").classList.contains("hidden") &&
-            (allSymbols.length <= 1000 || allSymbols.length % 10000 < symbols.length)
+            (state.allSymbols.length <= 1000 || state.allSymbols.length % 10000 < symbols.length)
         )
             renderImport();
     },
     variablesListDone: function (m) {
-        if (m.version && m.version !== impVersion) return;
+        if (m.version && m.version !== state.version) return;
         if (Array.isArray(m.warnings)) impWarnings = m.warnings;
         impError = m.error || "";
         renderElfDiagnostics();
@@ -3742,29 +2508,29 @@ window.EmberProbeMessages.connect(window, {
         } else if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     variableTypes: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         for (const update of m.symbols || []) {
-            const symbol = impSymbolByName.get(update.name);
+            const symbol = state.symbols.get(update.name);
             if (symbol) Object.assign(symbol, update);
         }
         if (++impTypeChunks % 10 === 0 && !$("overlay").classList.contains("hidden")) renderImport();
     },
     variableTypesDone: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         if (Array.isArray(m.warnings)) impWarnings = m.warnings;
         renderElfDiagnostics();
         impTypesReady = true;
         renderVars();
         if (!$("overlay").classList.contains("hidden")) renderImport();
-        if ($("acDrop").classList.contains("open")) renderAutocomplete(ambiguityChoices);
+        variableEntry.refresh();
     },
     layoutExpansionResult: function (m) {
         layoutExpansionUi.receive(m);
     },
     compositeLayoutResult: function (m) {
-        if (m.version !== impVersion) return;
+        if (m.version !== state.version) return;
         impLayoutPending.delete(m.name);
-        const symbol = impSymbolByName.get(m.name);
+        const symbol = state.symbols.get(m.name);
         if (!symbol) return;
         const pointerWaiter = pointerLayoutWaiters.delete(m.name);
         if (pointerWaiter && !symbol.isComposite) {
@@ -3786,20 +2552,11 @@ window.EmberProbeMessages.connect(window, {
         if (!$("overlay").classList.contains("hidden")) renderImport();
     },
     addResolved: function (m) {
-        if (m.version && m.version !== impVersion) return;
-        if (m.requestId !== undefined) {
-            if (!currentVariableReply(m)) return;
-            $("addName").value = "";
-            hideAutocomplete();
-        }
-        addSymbol(m.symbol, true);
+        if (m.version && m.version !== state.version) return;
+        if (variableEntry.onResolved(m)) addSymbol(m.symbol, true);
     },
     variableChoices: function (m) {
-        if (!currentVariableReply(m)) return;
-        // A reply must not steal focus back after the user has moved to another control.
-        if (document.activeElement !== $("addName")) return;
-        $("addName").focus();
-        renderAutocomplete(m.candidates);
+        variableEntry.onChoices(m);
     },
     liveCompositeSample: function (m) {
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
@@ -3866,10 +2623,7 @@ window.EmberProbeMessages.connect(window, {
             : setStatusKey(running ? "sb.sampling" : "sb.stopped");
     },
     liveError: function (m) {
-        if (m.requestId !== undefined) {
-            if (!currentVariableReply(m)) return;
-            pendingVariableRequest = null;
-        }
+        if (!variableEntry.onError(m)) return;
         if (!m.key && !m.message) return setStatusMsg({ key: "lw.error" }, "error", "live");
         // A raw OpenOCD line cannot be translated, so a localized title says what it is.
         var raw = !m.key && !(m.diagnostic && m.diagnostic.code);
@@ -3887,54 +2641,7 @@ $("run").onclick = function () {
 };
 $("import").onclick = function () {
     wantImportOpen = true;
-    post({ type: "importVariables", version: impVersion });
-};
-function addByName() {
-    var n = $("addName").value.trim();
-    if (!n) return;
-    var sym = allSymbols.find(function (s) {
-        return s.name === n;
-    });
-    if (!sym || sym.addressAmbiguous) {
-        resolveTypedVariable(n);
-        return;
-    }
-    addSymbol(sym);
-    $("addName").value = "";
-    hideAutocomplete();
-}
-$("addName").oninput = function () {
-    if (!allSymbols.length) post({ type: "importVariables", version: impVersion });
-    renderAutocomplete();
-};
-$("addName").onblur = function () {
-    setTimeout(function () {
-        if (document.activeElement !== $("addName")) hideAutocomplete();
-    }, 150);
-};
-$("addName").onkeydown = function (e) {
-    if (e.isComposing || e.keyCode === 229) return;
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        if (!$("acDrop").classList.contains("open")) renderAutocomplete();
-        if (!autocompleteMatches.length) return;
-        e.preventDefault();
-        var length = autocompleteMatches.length;
-        selectAutocomplete(
-            autocompleteIndex < 0
-                ? e.key === "ArrowDown"
-                    ? 0
-                    : length - 1
-                : (autocompleteIndex + (e.key === "ArrowDown" ? 1 : -1) + length) % length
-        );
-    } else if (e.key === "Enter") {
-        e.preventDefault();
-        if (autocompleteIndex >= 0 && $("acDrop").classList.contains("open"))
-            acceptAutocomplete(autocompleteMatches[autocompleteIndex]);
-        else addByName();
-    } else if (e.key === "Escape") {
-        e.preventDefault();
-        hideAutocomplete();
-    }
+    post({ type: "importVariables", version: state.version });
 };
 applyImportUserOnly();
 $("impFilter").oninput = renderImport;
@@ -3960,7 +2667,7 @@ $("clear").onclick = function () {
     clearHistory();
 };
 $("freeze").onclick = function () {
-    if (frozen) resumeChart();
+    if (state.frozen) resumeChart();
     else freezeChart();
 };
 $("timeWindow").onchange = function () {
@@ -4043,7 +2750,7 @@ $("norm").onclick = function () {
     $("norm").classList.toggle("ghost", !norm);
     saveUi();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 };
 function setChartSettings(open) {
     $("chartSettingsPopup").hidden = !open;
@@ -4054,7 +2761,7 @@ var chartBackground = window.EmberProbeBackgroundIconController.create({
     post,
     changed: function () {
         chartState.fastDirty = true;
-        dirty = true;
+        state.dirty = true;
     }
 });
 $("chartSettingsToggle").onclick = function () {
@@ -4078,43 +2785,13 @@ $("jitterBands").onchange = function () {
     jitterBands = this.checked;
     saveUi();
     chartState.fastDirty = true;
-    dirty = true;
+    state.dirty = true;
 };
 // Workspace setting kept by the host; the switch follows the host's reply.
 $("pointerExpandedOnly").onchange = function () {
     post({ type: "setPointerExpandedOnly", enabled: this.checked });
 };
 $("timeWindow").value = windowPreset;
-$("export").onclick = showExport;
-$("exportCancel").onclick = hideExport;
-$("exportApply").onclick = applyExport;
-$("exportSearch").oninput = filterExportSeries;
-$("exportSelectAll").onclick = function () {
-    setExportSeriesSelection(false);
-};
-$("exportInvert").onclick = function () {
-    setExportSeriesSelection(true);
-};
-$("exportOverlay").onclick = function (e) {
-    if (e.target === $("exportOverlay")) hideExport();
-};
-$("exportSeries").addEventListener("pointerdown", beginExportSeriesDrag);
-$("exportSeries").addEventListener("pointermove", moveExportSeriesDrag);
-$("exportSeries").addEventListener("pointerup", endExportSeriesDrag);
-$("exportSeries").addEventListener("pointercancel", endExportSeriesDrag);
-$("exportSeries").addEventListener("lostpointercapture", endExportSeriesDrag);
-$("exportSeries").onclick = function (event) {
-    if (event.detail) event.preventDefault();
-};
-window.addEventListener("blur", function () {
-    endExportSeriesDrag();
-});
-$("exportFromRange").oninput = function () {
-    updateExportTimeline("from");
-};
-$("exportToRange").oninput = function () {
-    updateExportTimeline("to");
-};
 window.EmberProbeMessages.connect(window, {
     chartHistoryReady: function (m) {
         if (historyClearPending || !Number.isSafeInteger(m.historyRevision) || m.historyRevision < 0) return;
@@ -4127,33 +2804,34 @@ window.EmberProbeMessages.connect(window, {
         if (historyClearPending) return;
         var first = Number(m.firstTimestampMs);
         if (Number(m.rows) > 0 && Number.isFinite(first)) samplingOrigin = first;
-        if (m.openExport) showArchiveExport(m);
+        if (m.openExport) exportDialog.show(m);
     },
     chartValues: function (m) {
         if (historyClearPending) return;
         (m.samples || []).forEach(function (sample) {
-            latest[sample.name] = sample.value;
-            latestText[sample.name] =
+            state.latest[sample.name] = sample.value;
+            state.latestText[sample.name] =
                 sample.diagnostic?.code === "LIVE_NULL_POINTER" ? t("lw.pointeeNull") : (sample.valueText ?? null);
-            latestEnum[sample.name] = sample.enumText ?? null;
-            recordPointerSample(sample);
+            state.latestEnum[sample.name] = sample.enumText ?? null;
+            state.latestPointer[sample.name] = EmberProbeValueTree.pointerReading(sample);
+            valueTree.pointers.rememberSample(sample);
         });
-        scheduleValueRefresh();
+        valueRefresh.schedule();
         applyUnlimitedStatus(m);
         applyArchiveBudget(m.archive);
         if (running && Number.isFinite(m.actualHz)) $("rate").textContent = rateText(m.actualHz, m.bytesPerSecond);
     },
     chartHistoryStatus: function (m) {
         if (historyClearPending || (m.historyRevision ?? 0) !== historyRevision) return;
-        if (m.limited && !remoteHistory.liveStatus?.limited)
+        if (m.limited && !state.remoteHistory.liveStatus?.limited)
             setStatusKey("lw.memoryHistoryLimited", null, "warning", "history-limited");
-        remoteHistory.liveStatus = m;
-        if (!m.bounds && m.limited && !frozen) {
+        state.remoteHistory.liveStatus = m;
+        if (!m.bounds && m.limited && !state.frozen) {
             resetChartHistoryViews();
         }
-        if (!frozen) {
+        if (!state.frozen) {
             var config = chartHistoryConfig(),
-                view = remoteHistory.view;
+                view = state.remoteHistory.view;
             if (
                 !followingChartHistory() ||
                 !config.names.length ||
@@ -4161,31 +2839,31 @@ window.EmberProbeMessages.connect(window, {
                 view.configKey !== config.configKey ||
                 performance.now() - view.receivedAt > 1000
             )
-                remoteHistory.status = m;
-            dirty = true;
+                state.remoteHistory.status = m;
+            state.dirty = true;
         }
         if (samplingOrigin === null && m.bounds) samplingOrigin = m.bounds.min;
     },
     chartViewportResult: function (m) {
-        var request = remoteHistory.inFlight;
+        var request = state.remoteHistory.inFlight;
         if (!request || request.requestId !== m.requestId) return;
-        remoteHistory.inFlight = null;
+        state.remoteHistory.inFlight = null;
         if (
             m.historyRevision === historyRevision &&
             !historyClearPending &&
             request.configKey === chartHistoryConfig().configKey &&
-            (m.snapshotId || null) === remoteHistory.snapshotId
+            (m.snapshotId || null) === state.remoteHistory.snapshotId
         ) {
             if (m.error) {
                 setStatusMsg({ message: m.error }, "error", "history");
-                remoteHistory.failed = {
+                state.remoteHistory.failed = {
                     key: request.key,
                     configKey: request.configKey,
                     purpose: request.purpose,
                     at: performance.now()
                 };
             } else {
-                remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
+                state.remoteHistory[request.purpose === "overview" ? "overview" : "view"] = {
                     series: window.EmberProbeChartTransport.decodeViewport(m.series || []),
                     range: request.range,
                     width: request.width,
@@ -4195,10 +2873,10 @@ window.EmberProbeMessages.connect(window, {
                 };
                 if (
                     request.purpose === "detail" &&
-                    !frozen &&
-                    (followingChartHistory() || m.revision >= (remoteHistory.status?.revision ?? -Infinity))
+                    !state.frozen &&
+                    (followingChartHistory() || m.revision >= (state.remoteHistory.status?.revision ?? -Infinity))
                 ) {
-                    remoteHistory.status = {
+                    state.remoteHistory.status = {
                         revision: m.revision,
                         bounds: m.bounds,
                         variables: m.variables,
@@ -4210,24 +2888,24 @@ window.EmberProbeMessages.connect(window, {
                     syncTimeBounds();
                 }
             }
-            dirty = true;
+            state.dirty = true;
         }
         requestChartViewport(chartState.x, canvas.clientWidth);
     },
     chartFreezeResult: function (m) {
-        if (m.historyRevision !== historyRevision || m.requestId !== remoteHistory.operation) return;
-        remoteHistory.operation = null;
+        if (m.historyRevision !== historyRevision || m.requestId !== state.remoteHistory.operation) return;
+        state.remoteHistory.operation = null;
         if (m.error) {
             setStatusMsg({ message: m.error }, "error", "history");
             return;
         }
-        remoteHistory.snapshotId = m.snapshotId;
-        remoteHistory.status = m;
+        state.remoteHistory.snapshotId = m.snapshotId;
+        state.remoteHistory.status = m;
         cancelChartHistoryRequests();
-        frozen = true;
+        state.frozen = true;
         $("freeze").textContent = t("lw.resume");
         chartState.follow = false;
-        dirty = true;
+        state.dirty = true;
         chartState.fastDirty = true;
         renderVars();
     },
@@ -4270,311 +2948,16 @@ window.EmberProbeMessages.connect(window, {
         renderUnlimited(true);
     }
 });
-var layout = $("layout"),
-    valuePane = $("valuePane"),
-    sideSplitter = $("sideSplitter"),
-    sideToggle = $("sideToggle"),
-    panelHandle = $("panelHandle");
-function panelFloating() {
-    return panelMode === "floating";
-}
-function clampNumber(value, min, max) {
-    return Math.min(Math.max(value, min), Math.max(min, max));
-}
-function px(value) {
-    return parseFloat(value) || 0;
-}
-// The card stays wide enough for its title bar and curve buttons on one line each; their localized
-// labels set the width. The sample rate truncates with an ellipsis instead of widening the card.
-// Conditionally hidden buttons (restore) are measured too, so the card does not widen when they appear.
-function panelMinWidth() {
-    var rows = [panelHandle, valuePane.querySelector(".side-curve-tools")].filter(Boolean),
-        hiddenChildren = rows.flatMap(function (row) {
-            return Array.from(row.children).filter(function (child) {
-                return child.hidden;
-            });
-        });
-    hiddenChildren.forEach(function (child) {
-        child.hidden = false;
-    });
-    var content = rows.reduce(function (widest, row) {
-        var style = getComputedStyle(row),
-            children = Array.from(row.children).filter(function (child) {
-                return child.id !== "rate" && child.getBoundingClientRect().width > 0;
-            });
-        var width =
-            px(style.paddingLeft) + px(style.paddingRight) + px(style.columnGap) * Math.max(0, children.length - 1);
-        children.forEach(function (child) {
-            var childStyle = getComputedStyle(child);
-            width += child.getBoundingClientRect().width + px(childStyle.marginLeft) + px(childStyle.marginRight);
-        });
-        return Math.max(widest, width);
-    }, 0);
-    hiddenChildren.forEach(function (child) {
-        child.hidden = true;
-    });
-    var pane = getComputedStyle(valuePane);
-    return Math.max(PANEL_MIN_WIDTH, Math.ceil(content + px(pane.borderLeftWidth) + px(pane.borderRightWidth)));
-}
-// The card keeps its preferred geometry; smaller views shrink and shift it without losing that preference.
-function panelGeometry(bounds) {
-    var height = valuePanel.h === null ? Math.min(Math.round(bounds.height * 0.6), 460) : valuePanel.h;
-    var w = clampNumber(valuePanel.w, panelMinWidth(), bounds.width - 2 * PANEL_MARGIN);
-    var h = clampNumber(height, PANEL_MIN_HEIGHT, bounds.height - 2 * PANEL_MARGIN);
-    var x = valuePanel.dockRight ? bounds.width - PANEL_MARGIN - w : valuePanel.x;
-    var y = valuePanel.dockBottom ? bounds.height - PANEL_MARGIN - h : valuePanel.y;
-    return {
-        x: Math.round(clampNumber(x, PANEL_MARGIN, bounds.width - PANEL_MARGIN - w)),
-        y: Math.round(clampNumber(y, PANEL_MARGIN, bounds.height - PANEL_MARGIN - h)),
-        w: Math.round(w),
-        h: Math.round(h)
-    };
-}
-// Inline geometry only applies to the floating card; the docked sidebar is sized by the grid.
-function applyPanelGeometry() {
-    if (!panelFloating()) {
-        ["left", "top", "width", "height"].forEach(function (name) {
-            valuePane.style.removeProperty(name);
-        });
-        return;
-    }
-    var bounds = layout.getBoundingClientRect();
-    if (!bounds.width || !bounds.height) return;
-    var g = panelGeometry(bounds);
-    valuePane.style.left = g.x + "px";
-    valuePane.style.top = g.y + "px";
-    valuePane.style.width = g.w + "px";
-    valuePane.style.height = g.h + "px";
-}
-// Cards moved against the right or bottom edge stay docked there when the view is resized.
-function setPanelGeometry(g, bounds) {
-    var x = Math.round(clampNumber(g.x, PANEL_MARGIN, bounds.width - PANEL_MARGIN - g.w)),
-        y = Math.round(clampNumber(g.y, PANEL_MARGIN, bounds.height - PANEL_MARGIN - g.h)),
-        right = bounds.width - PANEL_MARGIN - x - g.w,
-        bottom = bounds.height - PANEL_MARGIN - y - g.h;
-    valuePanel = {
-        x: x,
-        y: y,
-        w: Math.round(g.w),
-        h: Math.round(g.h),
-        dockRight: right <= 1 && x > PANEL_MARGIN + 1,
-        dockBottom: bottom <= 1 && y > PANEL_MARGIN + 1
-    };
-    applyPanelGeometry();
-    arrangeVariableCards();
-}
-function movedPanel(start, dx, dy) {
-    return { x: start.x + dx, y: start.y + dy, w: start.w, h: start.h };
-}
-// Dragging a north or west edge keeps the opposite edge where it was.
-function resizedPanel(start, edge, dx, dy, bounds) {
-    var g = { x: start.x, y: start.y, w: start.w, h: start.h },
-        minWidth = panelMinWidth();
-    if (edge.indexOf("e") >= 0) g.w = clampNumber(start.w + dx, minWidth, bounds.width - PANEL_MARGIN - start.x);
-    if (edge.indexOf("s") >= 0)
-        g.h = clampNumber(start.h + dy, PANEL_MIN_HEIGHT, bounds.height - PANEL_MARGIN - start.y);
-    if (edge.indexOf("w") >= 0) {
-        g.w = clampNumber(start.w - dx, minWidth, start.x + start.w - PANEL_MARGIN);
-        g.x = start.x + start.w - g.w;
-    }
-    if (edge.indexOf("n") >= 0) {
-        g.h = clampNumber(start.h - dy, PANEL_MIN_HEIGHT, start.y + start.h - PANEL_MARGIN);
-        g.y = start.y + start.h - g.h;
-    }
-    return g;
-}
-function applySideLayout() {
-    var floating = panelFloating();
-    layout.style.setProperty("--side-width", sideWidth + "px");
-    if (sideHeight !== null) layout.style.setProperty("--side-height", sideHeight + "px");
-    layout.classList.toggle("side-collapsed", sideCollapsed);
-    layout.classList.toggle("panel-floating", floating);
-    sideToggle.setAttribute("aria-expanded", String(!sideCollapsed));
-    sideToggle.setAttribute("aria-controls", "vars");
-    sideToggle.setAttribute("aria-label", sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane"));
-    sideToggle.textContent = (sideCollapsed ? "› " : "‹ ") + t("lw.valuePane");
-    sideToggle.title = sideCollapsed ? t("lw.expandPane") : t("lw.collapsePane");
-    var mode = $("panelMode");
-    mode.title = t(floating ? "lw.panelDock" : "lw.panelFloat");
-    mode.setAttribute("aria-label", mode.title);
-    mode.setAttribute("aria-pressed", String(floating));
-    $("panelClose").title = t("lw.panelClose");
-    $("panelClose").setAttribute("aria-label", t("lw.panelClose"));
-    // Only the floating card is moved by its title bar.
-    panelHandle.tabIndex = floating ? 0 : -1;
-    panelHandle.title = floating ? t("lw.panelMoveHint") : "";
-    if (floating) panelHandle.setAttribute("aria-label", t("lw.panelMoveHint"));
-    else panelHandle.removeAttribute("aria-label");
-    $("panelResize").setAttribute("aria-label", t("lw.panelResizeHint"));
-    applyPanelGeometry();
-    updateSplitter();
-    arrangeVariableCards();
-    dirty = true;
-}
-function updateSplitter() {
-    var stacked = window.innerWidth <= 760;
-    var bounds = layout.getBoundingClientRect();
-    var pane = valuePane.getBoundingClientRect();
-    sideSplitter.setAttribute("aria-label", t("lw.splitterHint"));
-    sideSplitter.setAttribute("aria-orientation", stacked ? "horizontal" : "vertical");
-    sideSplitter.setAttribute("aria-valuemin", stacked ? "100" : "220");
-    sideSplitter.setAttribute(
-        "aria-valuemax",
-        String(Math.round(Math.max(stacked ? 100 : 220, stacked ? bounds.height - 169 : bounds.width - 300)))
-    );
-    sideSplitter.setAttribute("aria-valuenow", String(Math.round(stacked ? pane.height : pane.width)));
-    sideSplitter.tabIndex = sideCollapsed || panelFloating() ? -1 : 0;
-}
-function resizeSide(size, stacked) {
-    var bounds = layout.getBoundingClientRect();
-    var min = stacked ? 100 : 220;
-    var max = Math.max(min, stacked ? bounds.height - 169 : bounds.width - 300);
-    size = Math.round(Math.min(max, Math.max(min, size)));
-    if (stacked) {
-        sideHeight = size;
-        layout.style.setProperty("--side-height", size + "px");
-    } else {
-        sideWidth = size;
-        layout.style.setProperty("--side-width", size + "px");
-    }
-    updateSplitter();
-    dirty = true;
-}
-sideToggle.onclick = function () {
-    sideCollapsed = !sideCollapsed;
-    applySideLayout();
-    saveUi();
-};
-$("panelMode").onclick = function () {
-    panelMode = panelFloating() ? "docked" : "floating";
-    applySideLayout();
-    saveUi();
-};
-// Closing hides the panel like the toolbar toggle, which then takes focus so it can reopen it.
-$("panelClose").onclick = function () {
-    sideCollapsed = true;
-    applySideLayout();
-    saveUi();
-    sideToggle.focus();
-};
-sideSplitter.addEventListener("pointerdown", function (e) {
-    if (e.button !== 0) return;
-    var stacked = window.innerWidth <= 760;
-    e.preventDefault();
-    if (sideCollapsed) {
-        sideCollapsed = false;
-        applySideLayout();
-    }
-    var start = stacked ? e.clientY : e.clientX,
-        bounds = valuePane.getBoundingClientRect(),
-        startSize = stacked ? bounds.height : bounds.width;
-    sideSplitter.classList.add("dragging");
-    sideSplitter.setPointerCapture(e.pointerId);
-    var move = function (ev) {
-        if (!EmberProbeCardReorder.samePointer(ev, e)) return;
-        resizeSide(startSize + (stacked ? ev.clientY : ev.clientX) - start, stacked);
-    };
-    var end = function (ev) {
-        if (ev.pointerId !== e.pointerId) return;
-        sideSplitter.classList.remove("dragging");
-        sideSplitter.removeEventListener("pointermove", move);
-        sideSplitter.removeEventListener("pointerup", end);
-        sideSplitter.removeEventListener("pointercancel", end);
-        sideSplitter.removeEventListener("lostpointercapture", end);
-        if (sideSplitter.hasPointerCapture(ev.pointerId)) sideSplitter.releasePointerCapture(ev.pointerId);
-        saveUi();
-    };
-    sideSplitter.addEventListener("pointermove", move);
-    sideSplitter.addEventListener("pointerup", end);
-    sideSplitter.addEventListener("pointercancel", end);
-    sideSplitter.addEventListener("lostpointercapture", end);
-});
-sideSplitter.addEventListener("keydown", function (e) {
-    var stacked = window.innerWidth <= 760;
-    var direction = stacked ? { ArrowUp: -1, ArrowDown: 1 }[e.key] : { ArrowLeft: -1, ArrowRight: 1 }[e.key];
-    if (!direction) return;
-    e.preventDefault();
-    var bounds = valuePane.getBoundingClientRect();
-    resizeSide((stacked ? bounds.height : bounds.width) + direction * (e.shiftKey ? 50 : 10), stacked);
-    saveUi();
-});
-function trackPanelPointer(target, e, update) {
-    if (e.button !== 0 || !panelFloating()) return;
-    e.preventDefault();
-    var bounds = layout.getBoundingClientRect(),
-        start = panelGeometry(bounds),
-        startX = e.clientX,
-        startY = e.clientY;
-    valuePane.classList.add("dragging");
-    target.classList.add("active");
-    target.setPointerCapture(e.pointerId);
-    var move = function (ev) {
-        if (!EmberProbeCardReorder.samePointer(ev, e)) return;
-        setPanelGeometry(update(start, ev.clientX - startX, ev.clientY - startY, bounds), bounds);
-    };
-    var end = function (ev) {
-        if (ev.pointerId !== e.pointerId) return;
-        valuePane.classList.remove("dragging");
-        target.classList.remove("active");
-        target.removeEventListener("pointermove", move);
-        target.removeEventListener("pointerup", end);
-        target.removeEventListener("pointercancel", end);
-        target.removeEventListener("lostpointercapture", end);
-        if (target.hasPointerCapture(ev.pointerId)) target.releasePointerCapture(ev.pointerId);
-        saveUi();
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", end);
-    target.addEventListener("pointercancel", end);
-    target.addEventListener("lostpointercapture", end);
-}
-function nudgePanel(e, update) {
-    var step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
-    if (!step || !panelFloating()) return;
-    e.preventDefault();
-    var bounds = layout.getBoundingClientRect(),
-        size = e.shiftKey ? 50 : 10;
-    setPanelGeometry(update(panelGeometry(bounds), step[0] * size, step[1] * size, bounds), bounds);
-    saveUi();
-}
-// The title bar buttons keep their own clicks and keys.
-panelHandle.addEventListener("pointerdown", function (e) {
-    if (!e.target.closest("button")) trackPanelPointer(panelHandle, e, movedPanel);
-});
-panelHandle.addEventListener("keydown", function (e) {
-    if (e.target === panelHandle) nudgePanel(e, movedPanel);
-});
-valuePane.querySelectorAll(".float-resize").forEach(function (handle) {
-    var resize = function (start, dx, dy, bounds) {
-        return resizedPanel(start, handle.dataset.edge, dx, dy, bounds);
-    };
-    handle.addEventListener("pointerdown", function (e) {
-        trackPanelPointer(handle, e, resize);
-    });
-    handle.addEventListener("keydown", function (e) {
-        nudgePanel(e, resize);
-    });
-});
-applySideLayout();
-new ResizeObserver(function () {
-    updateSplitter();
-    applyPanelGeometry();
-    arrangeVariableCards();
-}).observe(layout);
-new ResizeObserver(function () {
-    arrangeVariableCards();
-}).observe(valuePane);
+panelLayout.apply();
 window.addEventListener("resize", function () {
-    applyPanelGeometry();
-    arrangeVariableCards();
     if (!$("frequencyPopup").hidden) positionFrequencyPopup();
 });
 new ResizeObserver(function () {
-    dirty = true;
+    state.dirty = true;
 }).observe($("chartWrap"));
 // VS Code updates body classes when its theme changes. Repaint frozen charts too.
 new MutationObserver(function () {
-    dirty = true;
+    state.dirty = true;
 }).observe(document.body, { attributes: true, attributeFilter: ["class", "style"] });
 renderUnlimited(true);
 updateRun();

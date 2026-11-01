@@ -394,11 +394,11 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
         workspaceState: { get: (key) => workspace.get(key) || "", update: async (k, v) => workspace.set(k, v) }
     };
     provider._debugBridge = { hasAnySession: false };
-    provider._liveSession = { active: true };
-    provider._assertProbeDriverIdle = () => {};
+    provider._sampling.session = { active: true };
+    provider._connectedProbes.assertDriverIdle = () => {};
     provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
-    provider._refreshElfBindings = async () => refreshed++;
-    provider._refreshConnectedProbes = async () => null;
+    provider._elfView.refreshBindings = async () => refreshed++;
+    provider._connectedProbes.refresh = async () => null;
     provider.updateView = async () => {};
     provider._t = (key) => key;
     await provider.runAutoDetect(false);
@@ -407,7 +407,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     assert(!workspace.has("mcu.debugger") && !workspace.has("mcu.mcuCore"), "busy sessions keep connection settings");
     assert.strictEqual(detectOptions.ioc, "");
     await assert.rejects(provider.runAutoDetect(true), { code: "PROBE_CONFIGURATION_BUSY" });
-    provider._liveSession = null;
+    provider._sampling.session = null;
     await provider.runAutoDetect(true);
     assert.strictEqual(detectOptions.ioc, "/w/app/app.ioc", "the selected .ioc decides the target");
     assert.deepStrictEqual(picks.at(-1), ["stm32f0x.cfg", "stm32f4x.cfg"]);
@@ -417,7 +417,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     // Several probe types: nothing prompts for one; a forced detection opens the connected probe list, where
     // picking a device also sets its interface script.
     let reveals = 0;
-    provider._revealConnectedProbes = () => reveals++;
+    provider._connectedProbes.reveal = () => reveals++;
     detectedProbe = { debugger: "", probeCandidates: ["stlink.cfg", "jlink.cfg"] };
     workspace.delete("mcu.debugger");
     const picksBefore = picks.length;

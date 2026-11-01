@@ -9,6 +9,7 @@ const { loadProvider } = require("./helpers/load-provider");
 const { createAgentRoutes } = require("../src/services/agentRoutes");
 const { getModernWebviewContent } = require("../src/modernView");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
 const { buildMemoryElf, snapshot, memoryMap, h750Regions } = require("./helpers/memory-fixture");
 const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
 
@@ -80,7 +81,21 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
                 invalidations++;
             }
         };
-        const controller = new MemoryAnalysisController({ vscode, context, elfService, post: (m) => posted.push(m) });
+        const clock = new FakeClock();
+        const controller = new MemoryAnalysisController({
+            vscode,
+            context,
+            elfService,
+            clock,
+            post: (m) => posted.push(m)
+        });
+        const refreshes = [];
+        const runRefresh = controller.refresh.bind(controller);
+        controller.refresh = () => {
+            const request = runRefresh();
+            refreshes.push(request);
+            return request;
+        };
         controllers.push(controller);
         await controller.refresh();
         const sidebar = posted.at(-1).result;
@@ -106,7 +121,12 @@ const { args } = require("../skills/mcu-elf-analyze/scripts/analyze-elf");
         activeWatchers[0].callbacks.create();
         activeWatchers[0].callbacks.delete();
         assert.strictEqual(invalidations, 3);
-        await new Promise((resolve) => setTimeout(resolve, 350));
+        const refreshCount = refreshes.length;
+        await clock.advance(299);
+        assert.strictEqual(refreshes.length, refreshCount, "linker writes are coalesced before refreshing");
+        await clock.advance(1);
+        assert.strictEqual(refreshes.length, refreshCount + 1, "one refresh follows a burst of linker writes");
+        await refreshes.at(-1);
         assert.strictEqual(posted.at(-1).state, "ready");
         let resolveOld;
         const stale = new MemoryAnalysisController({

@@ -3,7 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { ManagedOpenOcdSession, compileReadBatches } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches } = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { buildElf32 } = require("./helpers/elf-fixture");
 const benchmark = require("../scripts/measure-sampling-scatter");
@@ -17,11 +18,10 @@ async function fixture(mode = "standalone", version = "1") {
     const fake = new FakeOpenOcdServer();
     fake.scatterVersion = version;
     await fake.start();
-    const session = new ManagedOpenOcdSession(null, { mode }, {});
+    const session = new ManagedOpenOcdSession({ mode }, {});
     session._scheduleNext = () => {};
-    session.socket = await fake.connect();
-    session._setupSocket();
-    session.noEchoResponses = true;
+    session.tcl.attach(await fake.connect());
+    session.tcl.noEchoResponses = true;
     await session._detectScatter();
     return { fake, session };
 }
@@ -174,7 +174,7 @@ async function close({ fake, session }) {
             "a later failed scatter call re-reads every group of the cycle"
         );
         assert.strictEqual(session._memoryReadBytes, 4096 + 5120, "count valid scatter bytes plus fallback transfers");
-        session._sendCheckedCommand = async () => {
+        session.tcl.sendChecked = async () => {
             throw new Error("unexpected scatter failure");
         };
         session._readBatchBytes = async (batch) => batch.map((unit) => new Array(unit.byteCount).fill(0));
@@ -319,15 +319,15 @@ async function close({ fake, session }) {
         await assert.rejects(session.readOnce([item("big", 0x20000000, 4097)]), { code: "LIVE_READ_BUDGET_EXCEEDED" });
         assert.strictEqual(scatterCommands(fake).length, 0, "budgets checked before any scatter RPC");
         const guard = { targetEpoch: session.targetEpoch, deadline: Date.now() + 1000 };
-        const checked = session._sendCheckedCommand.bind(session);
-        session._sendCheckedCommand = async (cmd) => {
+        const checked = session.tcl.sendChecked.bind(session.tcl);
+        session.tcl.sendChecked = async (cmd) => {
             const result = await checked(cmd);
             session.targetEpoch++;
             return result;
         };
         await assert.rejects(session._readItems(many(2), 0, guard), { code: "LIVE_READ_CANCELLED" });
         assert.strictEqual(scatterCommands(fake).length, 1, "cancellation never falls back");
-        session._sendCheckedCommand = checked;
+        session.tcl.sendChecked = checked;
         await assert.rejects(session._readItems(many(2), 0, { targetEpoch: session.targetEpoch, deadline: 1 }), {
             code: "LIVE_READ_BUDGET_EXCEEDED"
         });
@@ -337,13 +337,13 @@ async function close({ fake, session }) {
     for (const detection of [false, true]) {
         const f = await fixture();
         try {
-            f.session.rpcTimeoutMs = 30;
+            f.session.tcl.rpcTimeoutMs = 30;
             f.fake.timeoutNext = true;
             if (detection) {
                 await f.session._detectScatter();
                 assert.strictEqual(f.session.scatterReads, false);
                 assert.strictEqual(f.session.connectionFailed, false, "lost capability probe is non-fatal");
-                assert.strictEqual(f.session.socket, null, "ambiguous capability FIFO is discarded");
+                assert.strictEqual(f.session.tcl.socket, null, "ambiguous capability FIFO is discarded");
             } else {
                 await assert.rejects(f.session._readItems(many(2), 0), { code: "OPENOCD_RPC_TIMEOUT" });
                 assert.strictEqual(f.session.connectionFailed, true, "acquisition timeout retains fatal handling");

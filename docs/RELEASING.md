@@ -75,6 +75,14 @@ gh run watch
 - 预发布版本也会更新 README 中的当前版本号；正式版发布时恢复为稳定版本号。
 - 当前只通过 GitHub Release 分发 VSIX。VS Code Marketplace 不接受 `-beta.N` 这类版本号；如以后上架 Marketplace，需要改用 `vsce publish --pre-release` 与奇偶 minor 版本方案。
 
+## 兼容层退出
+
+为 v0.8+ 升级保留的兼容层登记在 [`scripts/compat-layers.js`](../scripts/compat-layers.js)，每项写明用途、代码位置和计划移除的版本 `removeIn`；永久保留的安全检查写明理由。
+
+- `test/compat-layers.test.js` 检查登记的位置仍然存在，删除兼容代码时必须同时删除登记项。
+- `npm run check:release` 中的 `release-consistency` 在 `package.json` 版本达到 `removeIn`（含该版本的 alpha/beta/rc）时失败。发布该版本前，先删除登记列出的代码、测试和文档，再删除登记项。
+- 新增兼容路径时同步登记，并写明移除版本。
+
 ## 发布说明
 
 工作流成功发布后，用 `gh release view <上一版标签>` 阅读上一版说明，将新版本的自动生成说明替换为同样简洁的双语摘要：先写中文编号章节 `新增` / `优化` / `修复`，再写英文 `Added` / `Improved` / `Fixed`，每项一行。将完整文本保存到 UTF-8 文件 `release-notes.md`，再执行：

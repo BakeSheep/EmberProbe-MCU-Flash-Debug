@@ -103,24 +103,26 @@ const connection = { probe: "stlink", target: "stm32f4x", probeSerial: "1234", p
             const managed = { id: "managed", configuration: { cwd: root, executable: "app.elf" } };
             Object.assign(provider, {
                 _externalDebug: { message: async () => {}, matches: (session) => session.id === "external" },
-                _managedDebugGroup: null,
-                _managedDebugToken: "token",
-                _matchesManagedDebugSession: (session) => ["managed", "external"].includes(session.id),
-                _managedDebugServer: { options: connection },
                 _firmwareRecord: {
                     recordDebugLaunch: async (...args) => {
                         calls.push(args);
                     }
                 },
-                _debugBridge: { handleMessage() {} },
-                _markDebugStartupReady() {}
+                _debugBridge: { handleMessage() {} }
+            });
+            Object.assign(provider.debugLaunch, {
+                managedGroup: null,
+                managedToken: "token",
+                matchesManagedSession: (session) => ["managed", "external"].includes(session.id),
+                managedServer: { options: connection },
+                markStartupReady() {}
             });
             const body = { image: "executable", firmware: "programmed", ...stamp() };
             const event = { type: "event", event: "emberprobe.firmwareLoaded", body };
-            provider.handleDebugAdapterMessage(managed, event);
-            provider.handleDebugAdapterMessage({ id: "foreign", configuration: managed.configuration }, event);
-            provider.handleDebugAdapterMessage({ id: "external", configuration: managed.configuration }, event);
-            provider.handleDebugAdapterMessage(managed, { type: "event", event: "output", body });
+            provider.debugLaunch.handleAdapterMessage(managed, event);
+            provider.debugLaunch.handleAdapterMessage({ id: "foreign", configuration: managed.configuration }, event);
+            provider.debugLaunch.handleAdapterMessage({ id: "external", configuration: managed.configuration }, event);
+            provider.debugLaunch.handleAdapterMessage(managed, { type: "event", event: "output", body });
             await Promise.resolve();
             assert.deepStrictEqual(calls, [[elf, body, connection]]);
         });

@@ -2,10 +2,12 @@
 
 const assert = require("assert");
 const { render } = require("./helpers/render-webview");
+const { FakeClock } = require("./helpers/fake-clock");
 const { getModernWebviewContent } = require("../src/modernView");
 const { encodeValue, decodeValue } = require("../src/elfSymbols");
 
-const view = render(getModernWebviewContent({}, "en"));
+const clock = new FakeClock();
+const view = render(getModernWebviewContent({}, "en"), {}, { clock });
 (async () => {
     try {
         view.send({ type: "liveStatus", running: true, canRead: true, canWrite: true });
@@ -178,7 +180,9 @@ const view = render(getModernWebviewContent({}, "en"));
             assert.strictEqual(writes().at(-1).value, 30);
             slider.value = "40";
             slider.dispatchEvent(new view.window.Event("input"));
-            await new Promise((resolve) => setTimeout(resolve, 400));
+            await clock.advance(299);
+            assert.strictEqual(writes().length, before + 1, "a held slider waits for the value to settle");
+            await clock.advance(1);
             assert.strictEqual(writes().length, before + 2, "a held slider writes once it settles");
             assert.strictEqual(writes().at(-1).value, 40);
         }

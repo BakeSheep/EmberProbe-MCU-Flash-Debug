@@ -11,7 +11,7 @@ function chartHistoryHost(page, scope = "panel") {
     let handled = 0;
 
     function configure() {
-        const items = w.watch.filter((item) => !item.isComposite);
+        const items = w.eval("state").watch.filter((item) => !item.isComposite);
         const next = JSON.stringify(items.map((item) => [item.name, item.type, item.address]));
         if (next === signature) return;
         store.configure(scope, items);
@@ -63,8 +63,8 @@ function chartHistoryHost(page, scope = "panel") {
             Object.defineProperty(canvas, "clientHeight", { value: 400, configurable: true });
         }
         for (let i = 0; i < 4; i++) {
-            w.remoteHistory.lastRequest = -Infinity;
-            w.dirty = true;
+            w.eval("state").remoteHistory.lastRequest = -Infinity;
+            w.eval("state").dirty = true;
             w.chartState.fastDirty = true;
             w.draw(now);
             const before = handled;

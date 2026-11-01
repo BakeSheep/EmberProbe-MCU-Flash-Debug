@@ -22,7 +22,7 @@ provider._elfService = {
 };
 for (const listType of ["availableVariables", "variablesList"]) {
     const messages = [];
-    provider._sendElfSnapshot((message) => messages.push(message), listType);
+    provider._elfView.sendSnapshot((message) => messages.push(message), listType);
     assert.strictEqual(
         messages.at(-1).type,
         listType === "availableVariables" ? "availableTypesDone" : "variableTypesDone",
@@ -105,6 +105,27 @@ try {
     });
     sidebar.send({ type: "compositeLayoutResult", name: "alias", version: "typedef", layout });
     assert.ok(sidebar.messages.some((message) => message.type === "saveSidebarWatch"));
+    // Adding a composite whose expanded row already asked for its layout waits for that same reply.
+    sidebar.send({ type: "availableVariablesReset", version: "pending" });
+    sidebar.send({
+        type: "availableVariablesChunk",
+        version: "pending",
+        symbols: [{ name: "late", address: 0x20000100, size: 12, isComposite: true, typeName: "struct S" }]
+    });
+    sidebar.send({ type: "availableTypesDone", version: "pending" });
+    const lateRequests = () =>
+        sidebar.messages.filter((message) => message.type === "resolveCompositeLayout" && message.name === "late");
+    sidebar.document.querySelector("#availableVars .av-arrow").click();
+    assert.strictEqual(lateRequests().length, 1);
+    sidebar.document.querySelector("#availableVars .av-watch").click();
+    assert.strictEqual(lateRequests().length, 1, "the add reuses the pending layout request");
+    sidebar.send({ type: "compositeLayoutResult", name: "late", version: "pending", layout });
+    assert.ok(
+        sidebar.messages
+            .findLast((message) => message.type === "saveSidebarWatch")
+            .items.some((item) => item.name === "late"),
+        "the layout reply completes the add"
+    );
     sidebar.send({ type: "availableVariablesReset", version: "boolean" });
     sidebar.send({
         type: "availableVariablesChunk",
@@ -302,7 +323,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             assert.equal(imported.address, 0x2000000c);
             assert.equal(imported.type, "f32");
             doc.getElementById("import").click();
-            page.window.impExpanded[symbol.name] = false;
+            page.window.eval("state").importExpanded[symbol.name] = false;
             page.send({
                 type: "variablesList",
                 symbols: [
@@ -342,7 +363,11 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             });
             assert.equal(doc.querySelector(".imp-leaf-name").textContent, ".telemetry[2]");
             assert.ok(doc.querySelector(".imp-children.open"), "runtime shape changes update an active member search");
-            assert.equal(page.window.impExpanded[symbol.name], false, "runtime search does not persist auto-expansion");
+            assert.equal(
+                page.window.eval("state").importExpanded[symbol.name],
+                false,
+                "runtime search does not persist auto-expansion"
+            );
             page.assertHealthy();
         } finally {
             page.close();
@@ -414,11 +439,15 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             kind: "struct",
             members: Array.from({ length: 1200 }, (_, i) => ({ name: "field" + i, watchType: "u32" }))
         };
-        assert.equal(lazy.window.collectLeaves(manyLeaves, "large", 0).length, 1000, "bound member-search traversal");
+        assert.equal(
+            lazy.window.eval("valueTree").collectLeaves(manyLeaves, "large", 0).length,
+            1000,
+            "bound member-search traversal"
+        );
         const cyclic = { kind: "struct", members: [] };
         cyclic.members.push({ name: "self", compositeLayout: cyclic }, { name: "value", watchType: "u32" });
         assert.ok(
-            lazy.window.collectLeaves(cyclic, "cycle", 0).length <= MAX_COMPOSITE_DEPTH + 1,
+            lazy.window.eval("valueTree").collectLeaves(cyclic, "cycle", 0).length <= MAX_COMPOSITE_DEPTH + 1,
             "bound recursion in malformed layouts"
         );
         lazy.assertHealthy();
@@ -434,14 +463,14 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             const scalar = (name) => ({ name, address: 0x20000000, size: 4, type: "u32", watchType: "u32" });
             const entry = { ready: true, watchKey: "graph", latestSamples: new Map(), post: (m) => graph.send(m) };
             p._scalarWatchList = () => [];
-            p._samplingStatus = () => ({});
+            p._sampling.status = () => ({});
             p.readElfSymbols = () => ({ symbols: [scalar("old"), scalar("new")], warnings: [] });
             graph.document.getElementById("import").click();
             graph.send({ type: "variablesList", symbols: [scalar("old")] });
             graph.document.querySelector("#impList input").click();
             p._syncGraphTarget(entry);
             assert.deepStrictEqual(
-                Array.from(graph.window.allSymbols, (s) => s.name),
+                Array.from(graph.window.eval("state").allSymbols, (s) => s.name),
                 ["old", "new"]
             );
             assert.ok(graph.document.getElementById("impList").textContent.includes("new"));

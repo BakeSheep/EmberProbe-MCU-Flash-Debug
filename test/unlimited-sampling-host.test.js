@@ -19,12 +19,15 @@ function createProvider() {
             update: async (key, value) => state.set(key, value)
         }
     };
-    provider._liveIntervalMs = 33;
-    provider._unlimitedSamplingRequested = false;
+    provider._sampling.intervalMs = 33;
+    provider._sampling._unlimitedRequested = false;
     provider._debugBridge = { hasSession: false };
-    provider._consumerTypes = () => ({ graphs: new Map([["graph", new Map([["tick", "u32"]])]]), sidebar: new Map() });
-    provider._activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
-    provider._liveSession = { setSamplingPlan: (plan) => plans.push(plan) };
+    provider._sampling.consumerTypes = () => ({
+        graphs: new Map([["graph", new Map([["tick", "u32"]])]]),
+        sidebar: new Map()
+    });
+    provider._sampling.activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
+    provider._sampling.session = { setSamplingPlan: (plan) => plans.push(plan) };
     provider._livePanels = new Map([[1, { post: (message) => panelMessages.push(message) }]]);
     return { provider, state, plans, panelMessages };
 }
@@ -33,12 +36,12 @@ function createProvider() {
     const { provider, state, plans, panelMessages } = createProvider();
 
     // Invalid requests keep the persisted choice untouched.
-    await assert.rejects(provider._setUnlimitedSampling("yes"), { code: "INVALID_PARAMS" });
+    await assert.rejects(provider._sampling.setUnlimited("yes"), { code: "INVALID_PARAMS" });
     assert.strictEqual(state.size, 0);
     assert.strictEqual(plans.length, 0);
 
     // The slider notch needs no setting: the choice persists per workspace and re-applies the plan immediately.
-    assert.strictEqual(await provider._setUnlimitedSampling(true), true);
+    assert.strictEqual(await provider._sampling.setUnlimited(true), true);
     assert.strictEqual(state.get("liveWatch.unlimitedSampling"), true);
     assert.strictEqual(plans.at(-1).unlimited, true);
     assert.strictEqual(plans.at(-1).graphIntervalMs, 33, "the 200 Hz-capped interval is kept for fallback paths");
@@ -52,23 +55,23 @@ function createProvider() {
     // Debug sessions keep their own read plan; toggling must not push a standalone plan into them.
     const before = plans.length;
     provider._debugBridge.hasSession = true;
-    await provider._setUnlimitedSampling(false);
+    await provider._sampling.setUnlimited(false);
     assert.strictEqual(plans.length, before);
     assert.deepStrictEqual(panelMessages.at(-1), { type: "liveUnlimited", enabled: false });
     provider._debugBridge.hasSession = false;
     let finishSave;
     const updateState = provider._context.workspaceState.update;
     provider._context.workspaceState.update = () => new Promise((resolve) => (finishSave = resolve));
-    const savingUnlimited = provider._setUnlimitedSampling(true);
+    const savingUnlimited = provider._sampling.setUnlimited(true);
     assert.strictEqual(plans.at(-1).unlimited, true, "apply the plan before workspace persistence finishes");
     finishSave();
     await savingUnlimited;
     provider._context.workspaceState.update = updateState;
-    await provider._setUnlimitedSampling(false);
+    await provider._sampling.setUnlimited(false);
 
     // Status exposes the worker statistics, with safe defaults for sessions without them.
     provider._samplingCoordinator = { status: () => ({}), backpressured: false };
-    provider._liveSession.stats = () => ({
+    provider._sampling.session.stats = () => ({
         effectiveIntervalMs: 0,
         actualHz: 812.5,
         bytesPerSecond: 65000,
@@ -78,14 +81,14 @@ function createProvider() {
         limitedBy: "host",
         hostHoldMs: 240
     });
-    let status = provider._samplingStatus();
+    let status = provider._sampling.status();
     assert.strictEqual(status.effectiveIntervalMs, 0);
     assert.strictEqual(status.unlimitedActive, true);
     assert.strictEqual(status.limitedBy, "host");
     assert.strictEqual(status.hostHoldMs, 240);
     assert.strictEqual(status.bytesPerSecond, 65000);
-    provider._liveSession.stats = () => ({ effectiveIntervalMs: 33, actualHz: 30 });
-    status = provider._samplingStatus();
+    provider._sampling.session.stats = () => ({ effectiveIntervalMs: 33, actualHz: 30 });
+    status = provider._sampling.status();
     assert.strictEqual(status.unlimited, false);
     assert.strictEqual(status.unlimitedActive, false);
     assert.strictEqual(status.unlimitedSuppressedReason, null);
@@ -114,7 +117,7 @@ function createProvider() {
     const properties = pkg.contributes.configuration.properties;
     assert.strictEqual(properties["emberprobe.sampleFrequencyHz"].maximum, 200);
     assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"], undefined);
-    await assert.rejects(provider._controlAgentSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
+    await assert.rejects(provider._agentOps.controlSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
 
     const graph = render(getLiveWatchContent({ panelId: 3 }, "en"));
     try {

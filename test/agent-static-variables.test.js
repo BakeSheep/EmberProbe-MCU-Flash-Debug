@@ -54,7 +54,7 @@ for (const names of [
         };
         const provider = Object.create(loadProvider().prototype);
         provider._elfService = service;
-        provider._withAgentProbe = (handler) =>
+        provider._agentOps.withProbe = (handler) =>
             handler({
                 source: "test-probe",
                 temporary: false,
@@ -69,7 +69,7 @@ for (const names of [
                     }
                 }
             });
-        const read = (variables) => provider._readAgentVariables({ variables });
+        const read = (variables) => provider._agentOps.readVariables({ variables });
 
         // Display names resolve to the same symbol in layout prefetch and planning.
         const named = await read(["ep7", "ep7.port", "app::object.id", "s_anon.y"]);
@@ -116,7 +116,7 @@ for (const names of [
                 ["nope", "VARIABLE_NOT_FOUND"]
             ]
         );
-        const sampled = await provider._sampleAgentVariables({
+        const sampled = await provider._agentOps.sampleVariables({
             variables: ["counter", "nope"],
             count: 2,
             intervalMs: 5
@@ -156,7 +156,7 @@ for (const names of [
             }
         ]);
         // Without a collector (watch/write paths) the layout error still aborts the request.
-        await assert.rejects(provider._prepareRequestedLayouts(["app::object"]), { code: "DWARF_BUDGET_EXCEEDED" });
+        await assert.rejects(provider._elfView.prepareLayouts(["app::object"]), { code: "DWARF_BUDGET_EXCEEDED" });
         service.layout = layout;
         object.compositeLayout = savedLayout;
 

@@ -120,15 +120,15 @@ async function main() {
     provider._svdManager = { peekBound: async () => null };
     let snapshot = await provider._configurationSnapshot();
     assert(!("selectedProbe" in snapshot) && !("successfulConnection" in snapshot));
-    await provider
-        ._probeSelectionStore()
+    await provider._connectedProbes
+        .selection()
         .set({ probe: "jlink.cfg", probeSerial: "5678", deviceId: "b", source: "user" });
     snapshot = await provider._configurationSnapshot();
     assert.strictEqual(snapshot.selectedProbe.deviceId, "b");
     assert.deepStrictEqual(snapshot.successfulConnection, { version: 2, probe: "jlink.cfg", probeSerial: "5678" });
     const replaced = workspaceState();
     provider._context = { workspaceState: replaced };
-    assert.strictEqual(provider._probeSelectionStore().get(), null, "a new workspace state gets its own store");
+    assert.strictEqual(provider._connectedProbes.selection().get(), null, "a new workspace state gets its own store");
 
     console.log("Probe selection store, legacy mirror and Bridge snapshot tests passed");
 }

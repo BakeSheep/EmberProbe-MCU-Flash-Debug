@@ -19,30 +19,30 @@ const { AgentService } = require("../src/services/agentService");
     const bridge = new AgentService({ handlers: routes });
     const expected = {
         "config.get": "_configurationSnapshot",
-        "config.set": "_setAgentConfiguration",
+        "config.set": "_agentOps.setConfiguration",
         "cubemx.detect": "_cubemxConfiguration.detect",
         "cubemx.inspect": "_cubemxService.inspect",
         "cubemx.prepare": "_cubemxService.prepare",
         "cubemx.candidate": "_cubemxService.generateCandidate",
-        "cubemx.start": "_startAgentCubeMxOperation",
+        "cubemx.start": "_agentOps.startCubeMxOperation",
         "cubemx.status": "_cubemxService.status",
-        "cubemx.execute": "_executeAgentCubeMx",
+        "cubemx.execute": "_agentOps.executeCubeMx",
         "cubemx.permission": "_cubemxService.permission",
         "cubemx.cancel": "_cubemxService.cancel",
         "flash.authorize": "_agentFlashService.authorize",
         "flash.execute": "_agentFlashService.execute",
         "flash.verify": "_agentFlashService.execute",
         "flash.permission": "_agentFlashService.permission",
-        "watch.add": "_addAgentWatch",
-        "variables.exportCsv": "_exportAgentCsv",
-        "variables.read": "_readAgentVariables",
-        "variables.sample": "_sampleAgentVariables",
-        "sampling.status": "_controlAgentSampling",
-        "sampling.start": "_controlAgentSampling",
-        "sampling.stop": "_controlAgentSampling",
-        "variables.write": "_writeAgentVariables",
-        "variables.write.permission": "_agentWritePermission",
-        "fault.read": "_readAgentFault",
+        "watch.add": "_agentOps.addWatch",
+        "variables.exportCsv": "_agentOps.exportCsv",
+        "variables.read": "_agentOps.readVariables",
+        "variables.sample": "_agentOps.sampleVariables",
+        "sampling.status": "_agentOps.controlSampling",
+        "sampling.start": "_agentOps.controlSampling",
+        "sampling.stop": "_agentOps.controlSampling",
+        "variables.write": "_writes.writeAgentVariables",
+        "variables.write.permission": "_writes.agentPermission",
+        "fault.read": "_agentOps.readFault",
         "elf.analyze": "_analyzeElf",
         "peripherals.list": "_svdPeripheralService.list",
         "peripherals.read": "_svdPeripheralService.read",
@@ -64,14 +64,17 @@ const { AgentService } = require("../src/services/agentService");
         if (method === "flash.execute") assert.strictEqual(calls.at(-1).args.length, 1);
         if (method === "config.set") assert.deepStrictEqual(calls.at(-1).args[0], { elf: "test.elf" });
         if (method.startsWith("sampling.")) assert.strictEqual(calls.at(-1).args[0], method.split(".")[1]);
-        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_assertWriteSessionCurrent");
+        if (method === "peripherals.write") assert.strictEqual(calls[0].method, "_writes.assertSessionCurrent");
         await bridge.call(method);
         if (method !== "config.set") await routes[method](null);
     }
     assert.deepStrictEqual(await bridge.call("probe.list"), { devices: ["probe"] });
     // The probe the workspace would use is marked; a failed lookup still returns the listing.
     const inventory = { available: true, devices: [{ id: String.raw`USB\A` }, { id: String.raw`USB\B` }] };
-    const marked = createAgentRoutes({ _selectedProbeDeviceId: async () => String.raw`usb\b` }, async () => inventory);
+    const marked = createAgentRoutes(
+        { _connectedProbes: { selectedDeviceId: async () => String.raw`usb\b` } },
+        async () => inventory
+    );
     assert.deepStrictEqual(await marked["probe.list"]({}), {
         available: true,
         devices: [{ id: String.raw`USB\A` }, { id: String.raw`USB\B`, selected: true }]
@@ -79,8 +82,10 @@ const { AgentService } = require("../src/services/agentService");
     assert.strictEqual(inventory.devices[1].selected, undefined, "the inventory itself is not modified");
     const unmarked = createAgentRoutes(
         {
-            _selectedProbeDeviceId: async () => {
-                throw new Error("scan failed");
+            _connectedProbes: {
+                selectedDeviceId: async () => {
+                    throw new Error("scan failed");
+                }
             }
         },
         async () => inventory
@@ -89,7 +94,7 @@ const { AgentService } = require("../src/services/agentService");
     await routes["chip.read"]();
     assert.deepStrictEqual(calls.at(-1).args, [true]);
     await bridge.call("cubemx.check");
-    assert.strictEqual(calls.at(-1).method, "_showAgentCubeMxProgress");
+    assert.strictEqual(calls.at(-1).method, "_agentOps.showCubeMxProgress");
     operation = null;
     await routes["cubemx.check"]();
     assert.strictEqual(calls.at(-1).method, "_cubemxService.check");
@@ -99,8 +104,10 @@ const { AgentService } = require("../src/services/agentService");
     );
     const failure = new Error("stale session");
     const guarded = createAgentRoutes({
-        _assertWriteSessionCurrent() {
-            throw failure;
+        _writes: {
+            assertSessionCurrent() {
+                throw failure;
+            }
         }
     });
     assert.throws(

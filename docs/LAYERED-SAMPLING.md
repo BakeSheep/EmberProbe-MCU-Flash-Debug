@@ -78,7 +78,7 @@ Runtime writes keep execution running when every item is exactly four bytes at a
 
 ## 软件验证
 
-专项测试：`layered-sampling.test.js`、`chart-history-worker.test.js`、`chart-history-capacity.test.js`、`chart-history-recording.test.js`、`chart-remote-history.test.js`、`composite-history.test.js`，另保留此前清空及绘图预算回归。
+专项测试：`layered-sampling.test.js`、`chart-history-store.test.js`（Worker 与容量）、`chart-host.test.js`（记录）、`chart-webview.test.js`（远程历史）、`composite-history.test.js`，另保留此前清空及绘图预算回归。
 
 复现基准（无硬件）：
 

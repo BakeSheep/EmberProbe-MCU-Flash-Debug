@@ -15,6 +15,7 @@ const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { loadProvider } = require("./helpers/load-provider");
 const { buildElf32 } = require("./helpers/elf-fixture");
+const { writePlan } = require("../src/services/agentPlans");
 
 const parsed = {
     dies: new Map([
@@ -132,7 +133,7 @@ const parsed = {
     const provider = Object.create(Provider.prototype);
     provider.readElfSymbols = () => ({ elf: { path: "enum-fixture.elf" }, symbols: [symbols[0], packetSymbol] });
     for (const name of ["state", "packet.state"])
-        assert.throws(() => provider._agentWritePlan([{ name, value: 3 }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name, value: 3 }], () => provider.readElfSymbols()), {
             code: "WRITE_TYPE_UNKNOWN"
         });
     const history = service.decodeHistorySamples([{ name: "packet", bytes: [255, 7] }], 1, [
@@ -212,15 +213,15 @@ const parsed = {
                 "rerender preserves enum names"
             );
             const unsafe = { ...negative, enumText: "<img src=x onerror=alert(1)> (-1)" };
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: sampleMessage, samples: [unsafe] });
             assert.strictEqual(ui.document.querySelector(selector).textContent, unsafe.enumText);
             assert.strictEqual(ui.document.querySelector(selector + " img"), null);
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: sampleMessage, samples: [{ ...negative, value: 7, enumText: null }] });
             assert.strictEqual(ui.document.querySelector(selector).textContent, "7");
             ui.send({ type: watchMessage, items: [packetSymbol] });
-            ui.window.eval("lastValueRefresh = 0");
+            ui.window.eval("valueRefresh.reset()");
             ui.send({ type: "liveCompositeSample", samples: [{ name: "packet", tree: packet }] });
             const memberSelector = watchMessage === "watchList" ? ".member-value" : ".sb-mval";
             assert.strictEqual(ui.document.querySelector(memberSelector).textContent, negative.enumText);

@@ -7,28 +7,8 @@ const os = require("os");
 const path = require("path");
 const { FaultService } = require("../src/services/faultService");
 const { resolveVariableRequests } = require("../src/elfSymbols");
+const { buildElf32 } = require("./helpers/elf-fixture");
 const { loadProvider } = require("./helpers/load-provider");
-
-// Minimal valid ELF32 (an empty header and one empty section header) for _analyzeElf's parseElfSections.
-function minimalElf() {
-    const buf = Buffer.alloc(52 + 40);
-    buf[0] = 0x7f;
-    buf[1] = 0x45;
-    buf[2] = 0x4c;
-    buf[3] = 0x46;
-    buf[4] = 1;
-    buf[5] = 1;
-    buf[6] = 1;
-    buf.writeUInt16LE(2, 16);
-    buf.writeUInt16LE(0x28, 18);
-    buf.writeUInt32LE(1, 20);
-    buf.writeUInt32LE(52, 32); // e_shoff
-    buf.writeUInt16LE(52, 40); // e_ehsize
-    buf.writeUInt16LE(40, 46); // e_shentsize
-    buf.writeUInt16LE(1, 48); // e_shnum
-    buf.writeUInt16LE(0, 50); // e_shstrndx
-    return buf;
-}
 
 // faultService: pcSymbol uses the display name and pcSymbolRaw keeps the original
 (async () => {
@@ -79,7 +59,7 @@ function minimalElf() {
 
     // _analyzeElf: topSymbols carry displayName and keep name
     const tmp = path.join(fs.realpathSync(os.tmpdir()), `emberprobe-cpp-display-${process.pid}.elf`);
-    fs.writeFileSync(tmp, minimalElf());
+    fs.writeFileSync(tmp, buildElf32());
     try {
         const Provider = loadProvider({
             debug: {},
@@ -89,7 +69,7 @@ function minimalElf() {
         provider._elfService = {
             load: async () => ({
                 elf: { path: tmp, sha256: "x", size: 92, mtimeMs: 1 },
-                memory: require("../src/elfSymbols").parseElfSections(minimalElf()),
+                memory: require("../src/elfSymbols").parseElfSections(buildElf32()),
                 functions: [{ name: "_ZN2ns4funcEv", displayName: "ns::func", address: 0x08000100, size: 16 }],
                 symbols: [{ name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", address: 0x20000020, size: 4 }],
                 warnings: []
@@ -106,7 +86,7 @@ function minimalElf() {
         const updates = [];
         provider._webviewView = { webview: { postMessage: (message) => updates.push(message) } };
         provider._livePanels = new Map();
-        provider._onElfChange("types", { elf: { sha256: "x" } }, [
+        provider._elfView.onElfChange("types", { elf: { sha256: "x" } }, [
             { name: "_ZN2ns5nsVarE", displayName: "ns::nsVar", watchType: "i32", isComposite: false }
         ]);
         assert.strictEqual(
@@ -122,7 +102,7 @@ function minimalElf() {
             throw new Error("DWARF root layout cannot fit its expansion budget");
         };
         const selected = { symbols: [{ ...symbols[0], isComposite: true }], warnings: [] };
-        await provider._hydrateSelectedLayouts(selected);
+        await provider._elfView.hydrateSelectedLayouts(selected);
         assert.deepStrictEqual(selected.warnings, ["ns::nsVar: DWARF root layout cannot fit its expansion budget"]);
         provider.readElfSymbols = () => ({ symbols });
         assert.strictEqual(provider._variableDisplayName({ name: "_ZN2ns5nsVarE.member" }), "ns::nsVar.member");

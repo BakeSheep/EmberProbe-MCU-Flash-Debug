@@ -12,6 +12,7 @@ const { loadProvider } = require("./helpers/load-provider");
 const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
+const { readPlan, decodeSample } = require("../src/services/agentPlans");
 
 function symbol(name, address, size, layout, graph) {
     return { name, address, size, isComposite: true, compositeLayout: layout, runtimeLayout: graph };
@@ -56,7 +57,7 @@ function segments(name) {
         );
         const provider = Object.create(loadProvider().prototype);
         provider.readElfSymbols = () => ({ symbols: [packet] });
-        provider._prepareRequestedLayouts = async () => {};
+        provider._elfView.prepareLayouts = async () => {};
         provider._scalarWatchList = () => [];
         provider._focusedLivePanel = () => null;
         let saved;
@@ -124,20 +125,22 @@ function segments(name) {
         ]) {
             const name = "packet.samples" + suffix;
             assert.strictEqual(runtime.requiresRuntimePath(packet, segments(name)), false);
-            const plan = provider._agentVariablePlan({ variables: [name] });
+            const plan = readPlan({ variables: [name] }, () => provider.readElfSymbols());
             assert.strictEqual(plan.compositePlan[0].runtimeLayout, undefined, "static slices keep their static plan");
-            const decoded = provider._decodeAgentSample([], [{ name: packet.name, bytes }], plan.compositePlan);
+            const decoded = decodeSample([], [{ name: packet.name, bytes }], plan.compositePlan);
             assert.deepStrictEqual(
                 decoded.values[name].tree.elements.map((node) => node.value),
                 values
             );
-            const result = await provider._addAgentWatch({ variables: [name] });
+            const result = await provider._agentOps.addWatch({ variables: [name] });
             assert.strictEqual(result.sidebar.added.length, values.length);
             assert.strictEqual(normalizeWatchList(saved, [packet]).length, values.length);
         }
         assert.strictEqual(runtime.requiresRuntimePath(packet, segments("packet.marker[0:2]")), true);
         for (const name of ["packet.marker[0:2]", "packet.samples[0:9]", "packet.samples[9]"])
-            assert.throws(() => provider._agentVariablePlan({ variables: [name] }), { code: "INVALID_VARIABLE_PATH" });
+            assert.throws(() => readPlan({ variables: [name] }, () => provider.readElfSymbols()), {
+                code: "INVALID_VARIABLE_PATH"
+            });
 
         // Wrap real ARM libstdc++ storage in normal classes, inheritance and C arrays.
         const vector = parsed.layouts.get("values");
@@ -287,7 +290,7 @@ function segments(name) {
                 .filter((leaf) => /_M_/.test(leaf.path))) {
                 assert.strictEqual(runtime.requiresRuntimePath(item, segments(leaf.path)), true);
                 assert.deepStrictEqual(normalizeWatchList([{ name: leaf.path }], [item]), []);
-                assert.throws(() => provider._agentVariablePlan({ variables: [leaf.path] }), {
+                assert.throws(() => readPlan({ variables: [leaf.path] }, () => provider.readElfSymbols()), {
                     code: "INVALID_VARIABLE_PATH"
                 });
             }

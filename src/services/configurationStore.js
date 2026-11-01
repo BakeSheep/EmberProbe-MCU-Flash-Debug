@@ -24,15 +24,13 @@ const ALLOWED_KEYS = new Set([
     "adapterSpeedKhz",
     "sampleIntervalMs",
     "sampleFrequencyHz",
-    "tclPort",
-    "maxSamples"
+    "tclPort"
 ]);
 
 const NUMBER_RANGES = Object.freeze({
     sampleIntervalMs: [5, 10000],
     sampleFrequencyHz: [0.1, 200],
-    tclPort: [1, 65535],
-    maxSamples: [100, 360001]
+    tclPort: [1, 65535]
 });
 
 // Configuration keys the Agent Bridge may not change: openocdPath could point probe calls at any executable (token ->
@@ -79,8 +77,7 @@ class ConfigurationStore {
             iocPath: this.context.workspaceState.get("mcu.iocPath") || "",
             sampleIntervalMs: intervalMsFromHz(configuredFrequencyHz(cfg)),
             sampleFrequencyHz: configuredFrequencyHz(cfg),
-            tclPort: cfg.get("tclPort", 6666),
-            maxSamples: cfg.get("maxSamples", 2000)
+            tclPort: cfg.get("tclPort", 6666)
         };
     }
 

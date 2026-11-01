@@ -1,11 +1,9 @@
 "use strict";
 const assert = require("assert");
-const { ManagedOpenOcdSession, compileReadBatches, MAX_BATCH_GROUPS, MAX_BATCH_BYTES } = require("../src/liveWatch");
+const { ManagedOpenOcdSession } = require("../src/liveWatch");
+const { compileReadBatches, MAX_BATCH_GROUPS, MAX_BATCH_BYTES } = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
-
-async function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const { wait } = require("./helpers/wait");
 
 (async () => {
     // -------------------------------------------------------------
@@ -70,7 +68,7 @@ async function wait(ms) {
     // 2. Fast calibration and adaptive backoff after an explicit rate change
     // -------------------------------------------------------------
     {
-        const session = new ManagedOpenOcdSession(null, { intervalMs: 5, mode: "standalone" }, {});
+        const session = new ManagedOpenOcdSession({ intervalMs: 5, mode: "standalone" }, {});
         assert.strictEqual(session.targetIntervalMs, 5);
         assert.strictEqual(session.effectiveIntervalMs, 100, "Must warm up at 100 ms");
 
@@ -84,7 +82,7 @@ async function wait(ms) {
         session.setIntervalMs(5);
         assert.strictEqual(session.effectiveIntervalMs, 5, "Repeating the target must not restart warm-up");
 
-        const slowSession = new ManagedOpenOcdSession(null, { intervalMs: 100 }, {});
+        const slowSession = new ManagedOpenOcdSession({ intervalMs: 100 }, {});
         slowSession._recentDurations = [20, 20, 20, 20];
         slowSession.setIntervalMs(5);
         assert.strictEqual(slowSession.targetIntervalMs, 5);
@@ -94,21 +92,21 @@ async function wait(ms) {
         for (let i = 0; i < 32; i++) {
             session._recordCycle(4.5);
         }
-        session._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
+        session._lastAdaptiveEvalAt = session.clock.monotonicMs() - 1500;
         session._evaluateAdaptiveSchedule();
         assert.ok(session.effectiveIntervalMs > 5, "Must back off when mean duration > 85%");
         assert.strictEqual(session.effectiveIntervalMs, 10);
         assert.strictEqual(session._consecutiveSuccesses, 0, "Success counter must reset on backoff");
 
         // In debug mode, threshold is 40%
-        const debugSession = new ManagedOpenOcdSession(null, { intervalMs: 10, mode: "debug" }, {});
+        const debugSession = new ManagedOpenOcdSession({ intervalMs: 10, mode: "debug" }, {});
         debugSession.effectiveIntervalMs = 10;
         debugSession._warmingUp = false;
         // 40% of 10 is 4.0 ms. Durations of 4.5 ms should trigger backoff.
         for (let i = 0; i < 32; i++) {
             debugSession._recordCycle(4.5);
         }
-        debugSession._lastAdaptiveEvalAt = Number(process.hrtime.bigint() / 1000000n) - 1500;
+        debugSession._lastAdaptiveEvalAt = debugSession.clock.monotonicMs() - 1500;
         debugSession._evaluateAdaptiveSchedule();
         assert.strictEqual(debugSession.effectiveIntervalMs, 15, "Debug mode must back off at 40% threshold");
     }
@@ -125,7 +123,6 @@ async function wait(ms) {
 
         const samplesReceived = [];
         const session = new ManagedOpenOcdSession(
-            null,
             { intervalMs: 5, mode: "standalone" },
             {
                 onSample(samples, t) {
@@ -133,8 +130,7 @@ async function wait(ms) {
                 }
             }
         );
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
 
         session.setWatch([
             { name: "v1", address: 0x20000000, size: 4, type: "u32" },
@@ -142,6 +138,7 @@ async function wait(ms) {
         ]);
 
         session.setSamplingEnabled(true);
+        // The rate and P95 statistics need a real-time window of cycles against the 10 ms simulated latency.
         await wait(250);
 
         // Verify serial constraint
@@ -170,9 +167,8 @@ async function wait(ms) {
         const expected = Array.from({ length: 2048 }, (_, index) => index & 0xff);
         fake.seed(0x20002000, expected);
         fake.seed(0x20003000, [7, 8, 9, 10]);
-        const session = new ManagedOpenOcdSession(null, { mode: "debug" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        const session = new ManagedOpenOcdSession({ mode: "debug" }, {});
+        session.tcl.attach(await fake.connect());
         try {
             const samples = await session.readOnce([
                 { name: "big", address: 0x20002000, size: 2048 },
@@ -198,9 +194,8 @@ async function wait(ms) {
         fake.seed(0x20000020, [50, 60, 70, 80]);
         fake.rejectBatchCommand = true; // OpenOCD without 'join' command support
 
-        const session = new ManagedOpenOcdSession(null, { intervalMs: 20, mode: "standalone" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        const session = new ManagedOpenOcdSession({ intervalMs: 20, mode: "standalone" }, {});
+        session.tcl.attach(await fake.connect());
 
         const samples = await session.readOnce([
             { name: "v1", address: 0x20000000, size: 4 },
@@ -223,9 +218,8 @@ async function wait(ms) {
         fake.seed(0x20000000, [1, 2, 3, 4]);
         fake.seed(0x20000020, [5, 6, 7, 8]);
         fake.transientFailures = 1;
-        const session = new ManagedOpenOcdSession(null, {}, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        const session = new ManagedOpenOcdSession({}, {});
+        session.tcl.attach(await fake.connect());
         const plan = [
             { name: "a", address: 0x20000000, size: 4 },
             { name: "b", address: 0x20000020, size: 4 }
@@ -257,9 +251,8 @@ async function wait(ms) {
         fake.seed(0x20000000, [0x11, 0x22, 0x33, 0x44]);
         fake.seed(0x20000020, [0x55, 0x66, 0x77, 0x88]);
 
-        const session = new ManagedOpenOcdSession(null, { intervalMs: 20, mode: "debug" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        const session = new ManagedOpenOcdSession({ intervalMs: 20, mode: "debug" }, {});
+        session.tcl.attach(await fake.connect());
 
         const initialCmdCount = fake.commands.length;
         const samples = await session.readOnce([
@@ -288,7 +281,7 @@ async function wait(ms) {
     // 6. Pause reason and gap markers
     // -------------------------------------------------------------
     {
-        const session = new ManagedOpenOcdSession(null, { intervalMs: 10, mode: "standalone" }, {});
+        const session = new ManagedOpenOcdSession({ intervalMs: 10, mode: "standalone" }, {});
         session.setSamplingEnabled(false);
         assert.strictEqual(session.stats().pauseReason, "paused");
 

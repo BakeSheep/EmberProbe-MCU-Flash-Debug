@@ -50,7 +50,7 @@ async function run() {
     if (env.RUNTIME_BOARD_PROBE_SERIAL) await config.update("probeSerial", env.RUNTIME_BOARD_PROBE_SERIAL, target);
     if (env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ)
         await config.update("adapterSpeedKhz", Number(env.RUNTIME_BOARD_ADAPTER_SPEED_KHZ), target);
-    await provider._refreshElfBindings();
+    await provider._elfView.refreshBindings();
 
     const label = env.RUNTIME_BOARD_LABEL || "board";
     const report = { label, extension: extension.extensionPath, elf: env.RUNTIME_BOARD_ELF, phases: {}, output: "" };
@@ -87,13 +87,13 @@ async function run() {
     };
     let sampleBatches = 0,
         failedSamples = 0;
-    const handleSamples = provider._handleRawSamples;
-    provider._handleRawSamples = function (samples, ...rest) {
+    const handleSamples = provider._sampling.handleRawSamples;
+    provider._sampling.handleRawSamples = function (samples, ...rest) {
         sampleBatches++;
         failedSamples += (samples || []).filter((item) => !item.bytes && !item.runtimeTree).length;
         return handleSamples.call(this, samples, ...rest);
     };
-    const status = () => provider._samplingStatus();
+    const status = () => provider._sampling.status();
     const writable = () => {
         const current = status();
         return current.mode === "debug-running-sampling" && current.canWrite === true;
@@ -104,7 +104,7 @@ async function run() {
         const requested = (value = Math.round(value * 7 + 3) % 100000) / 4;
         const entry = { trigger, value: requested, stoppedBefore: stopped };
         try {
-            const result = await provider._writeUiVariable(WRITE_TARGET, requested);
+            const result = await provider._writes.writeUiVariable(WRITE_TARGET, requested);
             entry.ok = true;
             entry.source = result.source;
             entry.verified = result.results?.[0]?.verified;
@@ -128,10 +128,10 @@ async function run() {
         });
     const resultsDir = env.RUNTIME_BOARD_RESULTS || path.join(extension.extensionPath, "test-results");
     try {
-        await provider._prepareRequestedLayouts([...LOAD, TOGGLED, WRITE_TARGET].map((name) => ({ name })));
+        await provider._elfView.prepareLayouts([...LOAD, TOGGLED, WRITE_TARGET].map((name) => ({ name })));
         await provider._saveWatchList(WATCH_KEY, identities([...LOAD, TOGGLED]));
         await provider._saveWatchList(WRITE_KEY, identities([WRITE_TARGET]), { syncSidebar: false });
-        report.readPlan = provider._activeReadPlan().map((item) => ({ name: item.name, size: item.size }));
+        report.readPlan = provider._sampling.activeReadPlan().map((item) => ({ name: item.name, size: item.size }));
         assert(
             await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
                 type: "emberprobe",
@@ -146,7 +146,7 @@ async function run() {
         if (!thread) thread = (await session.customRequest("threads", {})).threads[0].id;
         await session.customRequest("continue", { threadId: thread });
         await waitFor(() => !stopped, 5000, "continue");
-        await provider.startLiveWatch(provider._context.workspaceState.get(WATCH_KEY), 100, "sidebar");
+        await provider._sampling.start(provider._context.workspaceState.get(WATCH_KEY), 100, "sidebar");
         await waitFor(writable, 20000, "runtime sampling with writes enabled");
         report.statusAtStart = status();
         // A run without real sampling load cannot reproduce the race; fail instead of reporting a pass.
@@ -156,7 +156,7 @@ async function run() {
         report.sampling = {
             batchesPerSecond: (sampleBatches - counted) / 2,
             failedSamples,
-            stats: provider._managedDebugServer?.stats?.() || null
+            stats: provider.debugLaunch.managedServer?.stats?.() || null
         };
 
         // Phase A: sampling reconfiguration while a running write is queued or in flight.
@@ -167,11 +167,11 @@ async function run() {
                 watchHasToggled = !watchHasToggled;
                 await provider._saveWatchList(WATCH_KEY, identities(watchHasToggled ? [...LOAD, TOGGLED] : LOAD));
             },
-            rate: async () => provider._setLiveInterval(reconfigure.length % 2 ? 50 : 100),
+            rate: async () => provider._sampling.setIntervalMs(reconfigure.length % 2 ? 50 : 100),
             backpressure: async () => {
-                provider._setSamplingArchiveBackpressure(true);
+                provider._sampling.setArchiveBackpressure(true);
                 await sleep(20);
-                provider._setSamplingArchiveBackpressure(false);
+                provider._sampling.setArchiveBackpressure(false);
             }
         };
         const delays = [0, 10, 30, 60, 100, 150];
@@ -247,7 +247,7 @@ async function run() {
     } finally {
         report.output = output.join("").slice(-20000);
         report.events = events.slice(-300);
-        provider._handleRawSamples = handleSamples;
+        provider._sampling.handleRawSamples = handleSamples;
         provider._postConsumerStatuses = postStatuses;
         provider._postLive = postLive;
         fs.mkdirSync(resultsDir, { recursive: true });

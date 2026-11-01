@@ -1,10 +1,7 @@
 "use strict";
 
 const assert = require("assert");
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
+const { loadModule } = require("./helpers/load-module");
 const { EventEmitter } = require("events");
 const { PassThrough } = require("stream");
 const {
@@ -80,13 +77,10 @@ function command() {
 }
 
 function loadRunner(output, exitCode) {
-    const filename = path.resolve(__dirname, "../src/openocdRunner.js");
-    const localRequire = createRequire(filename);
-    const mod = { exports: {} };
     const spawned = [];
     const overrides = {
         "./openocdScripts": {
-            ...localRequire("./openocdScripts"),
+            ...require("../src/openocdScripts"),
             resolveOpenOcdLaunch: () => ({
                 executable: "fake",
                 probePath: "/interface/stlink.cfg",
@@ -116,9 +110,7 @@ function loadRunner(output, exitCode) {
             }
         }
     };
-    vm.runInThisContext("(function(require,module,exports){" + fs.readFileSync(filename, "utf8") + "\n})", {
-        filename
-    })((name) => overrides[name] || localRequire(name), mod, mod.exports);
+    const runner = loadModule("src/openocdRunner.js", overrides);
     const written = [];
     const vscode = {
         EventEmitter: class {
@@ -128,7 +120,7 @@ function loadRunner(output, exitCode) {
         },
         window: { createTerminal: () => ({ show() {}, dispose() {} }) }
     };
-    return { run: mod.exports.runOpenOcd, vscode, spawned, written };
+    return { run: runner.runOpenOcd, vscode, spawned, written };
 }
 
 const options = { executable: "fake", elf: "/fw.elf", probe: "stlink.cfg", target: "stm32h7x.cfg" };
