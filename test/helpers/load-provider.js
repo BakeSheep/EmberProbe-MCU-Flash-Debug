@@ -2,29 +2,11 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const vm = require("vm");
-const { createRequire } = require("module");
-const { pathToFileURL } = require("url");
+const { loadModule } = require("./load-module");
 // Load the complete CommonJS module with only the VS Code host dependency replaced.
-// No source extraction or regex assertions: tests execute production methods. The source is compiled unchanged under
-// its file URL, as Node compiles modules, so coverage maps back to src/mainViewProvider.js.
+// No source extraction or regex assertions: tests execute production methods.
 function loadProvider(vscode = {}, overrides = {}) {
-    const filename = path.resolve(__dirname, "../../src/mainViewProvider.js");
-    const localRequire = createRequire(filename);
-    const exports = {};
-    const run = vm.compileFunction(
-        fs.readFileSync(filename, "utf8"),
-        ["require", "module", "exports", "__dirname", "__filename"],
-        { filename: pathToFileURL(filename).href }
-    );
-    run(
-        (name) => (name === "vscode" ? vscode : Object.hasOwn(overrides, name) ? overrides[name] : localRequire(name)),
-        { exports },
-        exports,
-        path.dirname(filename),
-        filename
-    );
-    return exports.MainViewProvider;
+    return loadModule("src/mainViewProvider.js", { ...overrides, vscode }).MainViewProvider;
 }
 
 function memento() {

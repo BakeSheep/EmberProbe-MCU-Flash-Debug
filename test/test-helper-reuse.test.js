@@ -40,4 +40,15 @@ scenario("tests reuse the shared builders instead of redefining them", () => {
     assert.deepStrictEqual(copies, [], "local copies of shared test builders");
 });
 
+// Running a production module with some of its requires replaced is test/helpers/load-module.js. flash-skills keeps its
+// own loader because it also replaces `process` and reaches the script's unexported main().
+scenario("tests load modules with replaced requires through the shared loader", () => {
+    const loader = /function\s*\(\s*require\s*,\s*module\s*,\s*exports\s*\)|vm\.compileFunction\(/;
+    const copies = fs
+        .readdirSync(__dirname)
+        .filter((name) => name.endsWith(".test.js"))
+        .filter((name) => loader.test(fs.readFileSync(path.join(__dirname, name), "utf8")));
+    assert.deepStrictEqual(copies, [], "use loadModule from test/helpers/load-module.js");
+});
+
 console.log("Test helper reuse tests passed");
