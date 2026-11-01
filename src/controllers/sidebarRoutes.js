@@ -251,10 +251,10 @@ const SIDEBAR_ROUTES = {
     liveToggle: async ({ host }, message) => {
         try {
             if (host._agentReadRunning) host.stopAgentReadIfRunning();
-            else if (host._samplingIntent) host.stopLiveWatch({ variablesOnly: true });
+            else if (host._sampling.intent) host._sampling.stop({ variablesOnly: true });
             else {
                 const items = host._context.workspaceState.get(CACHE_KEYS.sidebarWatchList) || [];
-                await host.startLiveWatch(items, message.intervalMs, "sidebar");
+                await host._sampling.start(items, message.intervalMs, "sidebar");
             }
         } catch (error) {
             host._postConsumerStatuses({ key: error.i18nKey, params: error.i18nParams, message: error.message }, true);

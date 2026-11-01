@@ -272,9 +272,9 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
             _latestSidebarSamples: new Map(),
             _livePanels: new Map(),
             _syncSidebarTarget() {},
-            _syncGraphTarget() {},
-            _pruneSampleMap() {}
+            _syncGraphTarget() {}
         });
+        Object.assign(provider._sampling, { pruneSampleMap() {} });
         Object.assign(provider._sampling, { refreshSamplingPlan: async () => {} });
         await provider._saveWatchList("mcu.sidebarWatchList", watches);
         const persisted = saved.get("mcu.sidebarWatchList");

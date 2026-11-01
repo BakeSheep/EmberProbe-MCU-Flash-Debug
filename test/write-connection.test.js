@@ -194,11 +194,9 @@ const { writePlan } = require("../src/services/agentPlans");
     };
     Object.assign(runtimeProvider, {
         _samplingCoordinator: new SamplingCoordinator(),
-        _samplingIntent: true,
         _debugBridge: debugBridge,
         _managedDebugServer: runtime,
         _livePanels: new Map(),
-        _unlimitedSamplingEnabled: () => false,
         _elfService: { invalidate() {} },
         readElfSymbols: () => runtimeElf,
         _prepareRequestedLayouts: async () => {},
@@ -207,6 +205,7 @@ const { writePlan } = require("../src/services/agentPlans");
         _t: (key) => key,
         _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
     });
+    Object.assign(runtimeProvider._sampling, { intent: true, unlimitedEnabled: () => false });
     const uiWord = await runtimeProvider._writeUiVariable("word", 42);
     assert.strictEqual(uiWord.source, "debug-running-openocd");
     assert.strictEqual(uiWord.halted, false);
@@ -315,7 +314,7 @@ const { writePlan } = require("../src/services/agentPlans");
         [{ intentEnabled: true, pauseReason: "archive_backpressure" }, "sb.writeArchiveBusy"],
         [{ intentEnabled: true }, "sb.writeUnavailable"]
     ]) {
-        blockedProvider._samplingStatus = () => ({ canWrite: false, ...status });
+        blockedProvider._sampling.status = () => ({ canWrite: false, ...status });
         await assert.rejects(blockedProvider._writeUiVariable("word", 42), { i18nKey: key, message: key });
     }
     assert.strictEqual(writeCalls.length, blockedWriteCount, "reporting a blocked reason never performs a write");

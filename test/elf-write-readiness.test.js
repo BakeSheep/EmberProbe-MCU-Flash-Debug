@@ -288,16 +288,18 @@ const { writePlan } = require("../src/services/agentPlans");
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
-                _liveConsumers: new Set(),
-                _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
                 _resolveTclPort: async () => 1234,
                 _resolveOpenOcdPath: async () => "fake",
                 _postConsumerStatuses: (status) => statuses.push(status),
                 _postLive() {},
-                _postAgentSampling() {},
-                _handleRawSamples: () => {
+                _postAgentSampling() {}
+            });
+            Object.assign(p._sampling, {
+                consumers: new Set(),
+                setIntervalMs() {},
+                handleRawSamples: () => {
                     throw Error("Late sample accepted");
                 }
             });

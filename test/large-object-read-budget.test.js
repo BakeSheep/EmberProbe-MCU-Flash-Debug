@@ -323,9 +323,9 @@ function pausedBridge(ram, onRead = () => {}) {
                 elf: { sha256: "elf" },
                 memory: { sections: [{ name: ".bss", addr: BASE, size: 0x20000, flags: 3 }] }
             }),
-            _handleRawSamples: (samples) => raw.push(...samples),
             _postLive: (message) => posts.push(message)
         });
+        Object.assign(host._sampling, { handleRawSamples: (samples) => raw.push(...samples) });
         Object.assign(host._sampling, {
             activeReadPlan: () => plan,
             applySamplingPlan: (server, items) => applied.push(items)

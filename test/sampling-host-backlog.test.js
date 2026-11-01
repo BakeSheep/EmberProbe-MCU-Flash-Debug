@@ -306,7 +306,7 @@ async function testProviderWiring() {
         ["b", { watchKey: "b" }],
         ["c", { watchKey: "c", historySignature: "y", _historyRestoreTask: {} }]
     ]);
-    gap._handleSampleGap();
+    gap._sampling.handleSampleGap();
     assert.deepStrictEqual(calls, [
         ["flush", "a"],
         ["markGap", "scope:a"]
@@ -317,15 +317,17 @@ async function testProviderWiring() {
         const rows = [];
         Object.assign(p, {
             _samplingCoordinator: new SamplingCoordinator(),
-            _samplingIntent: true,
-            _liveSession: session,
             _managedDebugServer: null,
             _debugBridge: { setIntent() {} },
             _liveWatchService: {},
             _samplingArchive: {},
-            _handleRawSamples: (samples) => rows.push(samples),
-            _postConsumerStatuses() {},
-            _samplingStatus: () => ({})
+            _postConsumerStatuses() {}
+        });
+        Object.assign(p._sampling, {
+            intent: true,
+            session: session,
+            handleRawSamples: (samples) => rows.push(samples),
+            status: () => ({})
         });
         Object.assign(p._sampling, { activeReadPlan: () => [{ name: "v" }] });
         return { p, rows };
@@ -345,15 +347,15 @@ async function testProviderWiring() {
         }
     };
     const worker = make(live);
-    worker.p._setSamplingArchiveBackpressure(true);
-    worker.p._setSamplingArchiveBackpressure(false);
+    worker.p._sampling.setArchiveBackpressure(true);
+    worker.p._sampling.setArchiveBackpressure(false);
     assert.deepStrictEqual(live.enables, [], "archive backpressure leaves Worker sampling running");
     assert.deepStrictEqual(live.holds, [true, false]);
     assert.deepStrictEqual(live.reasons, ["archive_backpressure", null]);
     assert.deepStrictEqual(worker.rows, [], "held Worker samples need no empty gap row");
     const dap = make(null);
-    dap.p._setSamplingArchiveBackpressure(true);
-    dap.p._setSamplingArchiveBackpressure(false);
+    dap.p._sampling.setArchiveBackpressure(true);
+    dap.p._sampling.setArchiveBackpressure(false);
     assert.strictEqual(dap.rows.length, 1, "host-driven sampling still marks its paused interval");
     assert.strictEqual(dap.rows[0][0].bytes, null);
 }

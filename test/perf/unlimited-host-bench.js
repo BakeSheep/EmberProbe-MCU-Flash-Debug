@@ -3,9 +3,9 @@
 // Opt-in audit, not a test-suite entry point. Estimates how many sampling batches per second the
 // extension host can consume in unlimited mode before worker flow control ("limitedBy: host") engages.
 // node test/perf/unlimited-host-bench.js [--seconds 2]
-// Measures the per-batch main-thread work of _handleRawSamples for one waveform panel: consumer and
-// history decoding, archive row encoding, and the structured clone used by worker messages. The chart
-// history store runs in its own Worker and is reported separately.
+// Measures the per-batch main-thread work of the sampling controller's handleRawSamples for one waveform
+// panel: consumer and history decoding, archive row encoding, and the structured clone used by worker
+// messages. The chart history store runs in its own Worker and is reported separately.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

@@ -220,14 +220,14 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
         }
     };
     p._latestSidebarSamples = new Map();
-    p._postWebviewBatch = (_entry, samples) => messages.push(samples);
-    p._postSidebarBatch = (samples) => sidebar.push(samples);
+    p._sampling._postWebviewBatch = (_entry, samples) => messages.push(samples);
+    p._sampling._postSidebarBatch = (samples) => sidebar.push(samples);
     const raw = ["g", "s"].map((name) => ({ name, bytes: Buffer.alloc(4), t: 100 }));
-    p._handleRawSamples(raw, 120, { graphNames: [], sidebarNames: ["g", "s"] });
+    p._sampling.handleRawSamples(raw, 120, { graphNames: [], sidebarNames: ["g", "s"] });
     assert.strictEqual(histories.length, 0);
     assert.strictEqual(archives[0][0].length, 0);
     assert.strictEqual(sidebar[0][0].t, 100, "cached acquisition timestamps survive delivery");
-    p._handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
+    p._sampling.handleRawSamples(raw, 200, { graphNames: ["g"], sidebarNames: [] });
     assert.strictEqual(histories.length, 0, "history ticks wait for the short host batch");
     await p._flushPendingChartHistorySamples();
     assert.strictEqual(histories.length, 1);
@@ -238,13 +238,13 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     assert.strictEqual(messages[0].length, 1);
     const entry = p._livePanels.get(1);
     entry.historyClearedAt = 100;
-    p._handleRawSamples(raw, 300, { graphNames: ["g"], sidebarNames: [] });
+    p._sampling.handleRawSamples(raw, 300, { graphNames: ["g"], sidebarNames: [] });
     assert.strictEqual(
         histories.length,
         1,
         "late delivery acquired before clear cannot enter the new archive generation"
     );
-    p._handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
+    p._sampling.handleRawSamples([{ ...raw[0], t: 101 }], 300, { graphNames: ["g"], sidebarNames: [] });
     await p._flushPendingChartHistorySamples();
     assert.strictEqual(histories.length, 2, "new acquisitions resume in the cleared panel");
     console.log("Layered consumer scheduling, timestamp and archive isolation tests passed");

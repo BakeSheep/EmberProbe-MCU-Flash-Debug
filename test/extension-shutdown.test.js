@@ -40,8 +40,10 @@ function shutdownFixture() {
             order.push("agent-read-stopped");
             return null;
         },
-        _stopManagedDebugServer: async () => order.push("debug-server-stopped"),
-        stopLiveWatch: () => {
+        _stopManagedDebugServer: async () => order.push("debug-server-stopped")
+    });
+    Object.assign(p._sampling, {
+        stop: () => {
             order.push("live-stopped");
             return null;
         }

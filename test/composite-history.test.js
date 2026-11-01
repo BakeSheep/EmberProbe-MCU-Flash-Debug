@@ -39,15 +39,15 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
     p._latestSidebarSamples = new Map();
     p._chartHistory = { request: async (method, args) => store[method](...args), fail: assert.fail };
     p._samplingArchive = { append: (samples) => archive.push(samples) };
-    p._postWebviewBatch = (_entry, samples) => messages.push(samples);
-    p._postSidebarBatch = () => {};
+    p._sampling._postWebviewBatch = (_entry, samples) => messages.push(samples);
+    p._sampling._postSidebarBatch = () => {};
     p._configureChartHistory(entry, 1000);
     for (let i = 0; i < 100; i++) {
         const bytes = Buffer.alloc(12);
         bytes.writeFloatLE(i, 0);
         bytes.writeFloatLE(-i, 4);
         bytes.writeUInt32LE(1, 8);
-        p._handleRawSamples(
+        p._sampling.handleRawSamples(
             [
                 { name: parent.name, bytes, t: 1000 + i * 5 },
                 { name: leaves[0].name, bytes: bytes.subarray(0, 4), t: 1000 + i * 5 }
@@ -110,9 +110,9 @@ const { getLiveWatchContent } = require("../src/liveWatchView");
         assert.strictEqual(store.scopes.get("p").series.get(leaves[1].name).count, 100);
         entry.historyClearedAt = 2000;
         store.clear("p");
-        p._handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 1495 }], 2100);
+        p._sampling.handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 1495 }], 2100);
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 0));
-        p._handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 2100 }], 2100);
+        p._sampling.handleRawSamples([{ name: parent.name, bytes: Buffer.alloc(12), t: 2100 }], 2100);
         await p._flushPendingChartHistorySamples();
         assert.ok([...store.scopes.get("p").series.values()].every((series) => series.count === 1));
         watches = [];

@@ -394,7 +394,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
         workspaceState: { get: (key) => workspace.get(key) || "", update: async (k, v) => workspace.set(k, v) }
     };
     provider._debugBridge = { hasAnySession: false };
-    provider._liveSession = { active: true };
+    provider._sampling.session = { active: true };
     provider._assertProbeDriverIdle = () => {};
     provider._cubemxConfiguration = { detectIoc: async () => "/w/app/app.ioc" };
     provider._refreshElfBindings = async () => refreshed++;
@@ -407,7 +407,7 @@ const noProbe = async () => ({ probe: "", candidates: [], notes: [] });
     assert(!workspace.has("mcu.debugger") && !workspace.has("mcu.mcuCore"), "busy sessions keep connection settings");
     assert.strictEqual(detectOptions.ioc, "");
     await assert.rejects(provider.runAutoDetect(true), { code: "PROBE_CONFIGURATION_BUSY" });
-    provider._liveSession = null;
+    provider._sampling.session = null;
     await provider.runAutoDetect(true);
     assert.strictEqual(detectOptions.ioc, "/w/app/app.ioc", "the selected .ioc decides the target");
     assert.deepStrictEqual(picks.at(-1), ["stm32f0x.cfg", "stm32f4x.cfg"]);

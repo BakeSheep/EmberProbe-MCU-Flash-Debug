@@ -36,14 +36,14 @@ const { scenario } = require("./helpers/scenario");
             p._latestSidebarSamples = new Map();
             p._liveWatchService = service;
             p._samplingArchive = archive;
-            p._samplingStatus = () => ({});
-            p._handleRawSamples([{ name: "value", bytes: [0, 0, 128, 63] }], 1000);
+            p._sampling.status = () => ({});
+            p._sampling.handleRawSamples([{ name: "value", bytes: [0, 0, 128, 63] }], 1000);
             // Chart panels receive values in 50 ms batches.
             await new Promise((resolve) => setTimeout(resolve, 60));
             assert.equal(posted[0].type, "chartValues");
             assert.equal(posted[0].samples[0].value, 1);
             chartType = "u32";
-            p._handleRawSamples([{ name: "value", bytes: [0, 0, 128, 63] }], 2000);
+            p._sampling.handleRawSamples([{ name: "value", bytes: [0, 0, 128, 63] }], 2000);
             assert.deepStrictEqual(archive.status("graph").variables, ["value [f32]", "value [u32]"]);
             assert.deepStrictEqual(archive.status("missing").variables, []);
             const outputPath = path.join(root, "graph.csv");

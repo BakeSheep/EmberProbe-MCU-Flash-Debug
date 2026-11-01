@@ -102,11 +102,11 @@ async function testHistoryBatches(p, entry, panel, history, requests, values) {
     await p._flushPendingChartHistorySamples();
 
     requests.length = 0;
-    p._liveConsumers = new Set();
+    p._sampling.consumers = new Set();
     p._debugBridge = { setIntent() {} };
     p._postConsumerStatuses = () => {};
     p._queueChartHistoryAppend(entry, [{ name: "shared", value: 13, t: 75 }], 75);
-    p.stopLiveWatch();
+    p._sampling.stop();
     await p._flushPendingChartHistorySamples();
     assert.deepStrictEqual(requests, ["append"], "stop flushes a batch without waiting for its timer");
     assert.strictEqual(entry._historyBatchTimer, null);
@@ -136,7 +136,7 @@ async function testHistoryFailures(Provider) {
     const messages = [];
     let stopped = 0;
     p._livePanels = new Map([[1, entry]]);
-    p.stopLiveWatch = () => stopped++;
+    p._sampling.stop = () => stopped++;
     p._postLive = (message) => messages.push(message);
     p._t = (key) => key;
     p._warnChartHistoryLimited = function () {
@@ -192,7 +192,6 @@ async function testShutdownFence(Provider) {
         disposed = false;
     Object.assign(p, {
         _livePanels: new Map([[1, entry]]),
-        _liveConsumers: new Set(),
         _debugBridge: { setIntent() {} },
         _elfService: { invalidate() {} },
         _cubemxService: { cancel() {} },
@@ -218,6 +217,7 @@ async function testShutdownFence(Provider) {
             }
         }
     });
+    Object.assign(p._sampling, { consumers: new Set() });
     p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
     const shuttingDown = p.shutdown();
     await writing;
@@ -475,7 +475,7 @@ async function testShutdownFence(Provider) {
         fail: assert.fail
     };
     p._syncGraphTarget = P.prototype._syncGraphTarget;
-    p._samplingStatus = () => ({ running: false });
+    p._sampling.status = () => ({ running: false });
     p.readElfSymbols = () => ({ symbols: [] });
     p._configureChartHistory(entry);
     history.append(entry.watchKey, [{ name: "shared", value: 7, t: 2000 }], 2000);
@@ -550,11 +550,11 @@ async function testShutdownFence(Provider) {
     assert.deepStrictEqual(panels[1].messages.at(-1), { type: "sidebarImportResult", added: 0, sourceCount: 2 });
     p._chartHistory = {};
     let statusCalls = 0;
-    p._samplingStatus = () => {
+    p._sampling.status = () => {
         statusCalls++;
         return { actualHz: 30.3, bytesPerSecond: 12345 };
     };
-    p._postWebviewBatch(
+    p._sampling._postWebviewBatch(
         entry,
         [{ name: "shared", value: 1, t: 2000 }],
         [{ name: "sensor", tree: { kind: "struct", members: [] }, t: 2000 }],

@@ -66,9 +66,9 @@ const swatch = (view, name) =>
     Object.assign(host, {
         _elfService: { workerPath: "elfWorker.js", cache: { dwarfReady: false } },
         _watchLists: { read: () => items, invalidate() {} },
-        _configureChartHistory() {},
-        _samplingStatus: () => ({ running: false })
+        _configureChartHistory() {}
     });
+    Object.assign(host._sampling, { status: () => ({ running: false }) });
     const entry = { ready: true, watchKey: "mcu.watchList", latestSamples: new Map(), post: (m) => posted.push(m) };
     host._syncGraphTarget(entry, true);
     assert.ok(!posted.some((message) => message.type === "watchList"), "no unresolved list reaches the chart");

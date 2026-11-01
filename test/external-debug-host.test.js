@@ -119,7 +119,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     });
     host.handleDebugAdapterMessage(session, { type: "event", event: "stopped", body: { threadId: 7 } });
     assert(host._debugBridge.paused);
-    await host.startLiveWatch([], undefined, "sidebar");
+    await host._sampling.start([], undefined, "sidebar");
     assert(host._debugBridge.intentEnabled, "paused sampling uses DAP without requiring a probe configuration");
     values.set("mcu.elfPath", path.join(__dirname, "wrong.elf"));
     assert.throws(() => host._assertGroupedReadElf(), { code: "DEBUG_ELF_SESSION_MISMATCH" });
@@ -136,8 +136,8 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
         "old write confirmation cannot cross stop generations"
     );
     let restored = 0;
-    host.startLiveWatch = () => restored++;
-    host._samplingIntent = true;
+    host._sampling.start = () => restored++;
+    host._sampling.intent = true;
     await host.restoreSamplingAfterDebug();
     assert.strictEqual(restored, 0);
     await host._externalDebug.message(session, {
@@ -149,7 +149,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     await host.handleDebugSessionTerminate(session);
     assert(!host._externalDebug.active);
     assert(host._externalDebug.held);
-    assert.strictEqual(host._samplingIntent, false);
+    assert.strictEqual(host._sampling.intent, false);
     config["experimental.externalGdb.enabled"] = false;
     await host.externalDebugSettingsChanged();
     assert(!host._externalDebug.held);

@@ -463,7 +463,7 @@ console.log("ELF progressive live-watch import and lazy member rendering tests p
             const scalar = (name) => ({ name, address: 0x20000000, size: 4, type: "u32", watchType: "u32" });
             const entry = { ready: true, watchKey: "graph", latestSamples: new Map(), post: (m) => graph.send(m) };
             p._scalarWatchList = () => [];
-            p._samplingStatus = () => ({});
+            p._sampling.status = () => ({});
             p.readElfSymbols = () => ({ symbols: [scalar("old"), scalar("new")], warnings: [] });
             graph.document.getElementById("import").click();
             graph.send({ type: "variablesList", symbols: [scalar("old")] });

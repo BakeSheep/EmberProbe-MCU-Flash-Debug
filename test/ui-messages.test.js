@@ -270,7 +270,7 @@ async function incompleteActions() {
                 }
                 assert.strictEqual(coordinator.anyActive(), false, `${action} releases its probe lease`);
                 assert(!f.provider._debugCommandPending, `${action} cannot leave a pending debug startup`);
-                assert(!f.provider._liveStartPromise, `${action} cannot leave a pending sampling startup`);
+                assert(!f.provider._sampling._startPromise, `${action} cannot leave a pending sampling startup`);
                 const reply = f.messages.findLast((message) => ["liveStatus", "commandError"].includes(message.type));
                 assert(reply, `${action} must acknowledge missing configuration`);
                 for (const message of f.messages) if (message.type === "notice") sidebar.send(message);

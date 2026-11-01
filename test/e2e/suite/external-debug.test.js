@@ -76,7 +76,7 @@ async function run() {
         assert(provider._externalDebug.marker.cleanupConfirmed);
         await cfg.update(keys[0], false, vscode.ConfigurationTarget.WorkspaceFolder);
         await wait(() => !provider._externalDebug.held);
-        assert.strictEqual(provider._liveSession, null);
+        assert.strictEqual(provider._sampling.session, null);
         console.log(
             "✓ external F5 attach resolves native settings, disables restart and retains ownership until disabled"
         );

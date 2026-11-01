@@ -55,16 +55,18 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         _latestSidebarSamples: new Map(),
         _chartHistory: { request: async (method, args) => store[method](...args), fail: assert.fail },
         _samplingArchive: archive,
+        _t: (key) => t("en", key)
+    });
+    Object.assign(p._sampling, {
         _postWebviewBatch() {},
         _postSidebarBatch() {},
-        _t: (key) => t("en", key),
-        stopLiveWatch: () => assert.fail("memory history must never stop sampling")
+        stop: () => assert.fail("memory history must never stop sampling")
     });
     try {
         p._configureChartHistory(entry, 1000);
         for (let tick = 0; tick < 4; tick++) {
             const time = 1000 + tick * 20; // 50 Hz; disk archive remains independently authoritative.
-            p._handleRawSamples(
+            p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: time, bytes: Buffer.alloc(10000, tick) })),
                 time
             );
@@ -81,7 +83,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         const size = estimateHistoryBytes(["p", decoded, 1100]);
         assert.ok(size > 1024 * 1024 && size < MAX_BACKLOG_BYTES);
         p._chartHistory.queuedBytes = MAX_BACKLOG_BYTES - size + 1;
-        p._handleRawSamples(
+        p._sampling.handleRawSamples(
             parents.map((parent) => ({ name: parent.name, t: 1100, bytes: Buffer.alloc(10000, 4) })),
             1100
         );
@@ -95,7 +97,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         assert.ok(records.every((record) => Object.keys(record.v).length === 20000));
         assert.strictEqual(records.at(-1).v[leaves.at(-1).name + " [u8]"], "4");
         p._chartHistory.failed = new Error("worker unavailable");
-        p._handleRawSamples(
+        p._sampling.handleRawSamples(
             parents.map((parent) => ({ name: parent.name, t: 1120, bytes: Buffer.alloc(10000, 5) })),
             1120
         );
@@ -149,7 +151,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             await sourceEntered;
             const recovery = p._chartHistoryRecovery;
             assert.strictEqual(p._recoverChartHistory(), recovery, "concurrent failures share one recovery");
-            p._handleRawSamples(
+            p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: 1140, bytes: Buffer.alloc(10000, 6) })),
                 1140
             );
@@ -162,7 +164,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             assert.strictEqual(errors.length, 0, "successful recovery reports no worker error");
             const status = await recovering.request("status", ["p"]);
             assert.ok(status.bounds.max >= 1140);
-            p._handleRawSamples(
+            p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: 1160, bytes: Buffer.alloc(10000, 7) })),
                 1160
             );
@@ -184,7 +186,7 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
             await p._chartHistoryRecovery;
             assert.strictEqual(restarts, 3, "no restart storm after exhaustion");
             assert.strictEqual(errors.length, 1);
-            p._handleRawSamples(
+            p._sampling.handleRawSamples(
                 parents.map((parent) => ({ name: parent.name, t: 1180, bytes: Buffer.alloc(10000, 8) })),
                 1180
             );
@@ -256,16 +258,16 @@ const parents = Array.from({ length: 2 }, (_, i) => ({
         _chartHistory: { request: async () => ({}) },
         _renderWebview() {},
         _postProbeOperationStatus() {},
-        _startLiveWatch: async () => {},
         _t: (key) => t("en", key)
     });
+    Object.assign(resetProvider._sampling, { _start: async () => {} });
     Object.assign(resetProvider._sampling, { invalidateConsumerTypes() {} });
     resetProvider.openLiveWatchPanel();
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();
     assert.strictEqual(limited.length, 1);
     assert.strictEqual(resetWarnings.length, 0, "the limit is a waveform notice, not a notification");
-    await resetProvider.startLiveWatch([], 10);
+    await resetProvider._sampling.start([], 10);
     resetProvider._warnChartHistoryLimited();
     resetProvider._warnChartHistoryLimited();
     assert.strictEqual(limited.length, 2, "starting another run resets the warning");

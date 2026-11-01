@@ -88,11 +88,10 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         _samplingCoordinator: coordinator,
         _debugBridge: bridge,
         _managedDebugServer: server,
-        _samplingIntent: true,
         _livePanels: new Map([["chart", { post: (message) => messages.push(message) }]]),
-        _webviewView: { webview: { postMessage: (message) => messages.push(message) } },
-        _unlimitedSamplingEnabled: () => false
+        _webviewView: { webview: { postMessage: (message) => messages.push(message) } }
     });
+    Object.assign(provider._sampling, { intent: true, unlimitedEnabled: () => false });
     provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true });
     assert(
         messages.every((message) => message.type === "liveStatus" && message.canWrite && message.haltWrite === false)
@@ -105,16 +104,16 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
     provider._postConsumerStatuses({ mode: "debug-running-sampling", canWrite: true, haltWrite: true });
     assert.deepStrictEqual(access(messages.at(-1)), [false, false]);
     coordinator.setBackpressure(false);
-    provider._liveConnectionClosing = true;
-    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
-    provider._liveConnectionClosing = false;
+    provider._sampling.closing = true;
+    assert.deepStrictEqual(access(provider._sampling.status()), [false, false]);
+    provider._sampling.closing = false;
     server.options = { settingsIdentity: {} };
     provider._probeConnectionService = {
         assertCurrent() {
             throw Error("Connection settings changed");
         }
     };
-    assert.deepStrictEqual(access(provider._samplingStatus()), [false, false]);
+    assert.deepStrictEqual(access(provider._sampling.status()), [false, false]);
     delete server.options;
 
     // Scoped so these debug fixtures do not clash with the sampling fixtures above.
@@ -216,7 +215,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         p._samplingCoordinator = new SamplingCoordinator();
         p._debugBridge = new DebugSessionBridge();
         p._debugLifecycle = lifecycle;
-        p._samplingIntent = true;
+        p._sampling.intent = true;
         p._agentSamplingStatus = null;
         p._managedDebugToken = "token";
         p._managedDebugSessionId = "";
@@ -257,7 +256,7 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
             assert.deepStrictEqual([liveStatus.canWrite, liveStatus.haltWrite], [true, false]);
             p._livePanels = new Map();
             p._postConsumerStatuses = () => {};
-            p._setSamplingArchiveBackpressure(true);
+            p._sampling.setArchiveBackpressure(true);
             await p._sampling.refreshSamplingPlan();
             // Runtime sampling runs in the Worker: it keeps acquiring and only holds delivery.
             assert.strictEqual(server.samplingEnabled, true);
@@ -287,10 +286,10 @@ const { ProbeCoordinator } = require("../src/probeCoordinator");
         q._debugBridge = { setWorkspace: () => {} };
         q._commandContext = () => ({});
         q._probeCoordinator = new ProbeCoordinator();
-        q._liveSession = {};
+        q._sampling.session = {};
         q._postConsumerStatuses = () => {};
         q.stopAgentReadIfRunning = () => Promise.resolve().then(() => events.push("agent-stopped"));
-        q.stopLiveWatch = () => Promise.resolve().then(() => events.push("live-stopped"));
+        q._sampling.stop = () => Promise.resolve().then(() => events.push("live-stopped"));
         await q.prepareProbeForDebug();
         assert.deepStrictEqual(events, ["agent-stopped", "live-stopped"]);
 

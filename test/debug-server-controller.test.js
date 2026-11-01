@@ -323,7 +323,7 @@ function fixture(options = {}, overrides = {}) {
         { mode: "debug-paused-ready", canWrite: true, haltWrite: true },
         { mode: "debug-running-waiting", canWrite: false, haltWrite: false }
     ]) {
-        retryHost._samplingStatus = () => status;
+        retryHost._sampling.status = () => status;
         retryHost._managedDebugServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
         assert.deepStrictEqual(
             callbackStatuses.at(-1),

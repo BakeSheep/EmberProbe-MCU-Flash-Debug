@@ -24,12 +24,7 @@ const openocdChecker = require("./openocdChecker");
 const liveWatch = require("./liveWatch");
 const { isNonHaltingWordWrite, runtimeWriteDisabledError, withWriteAccessStatus } = require("./writeAccess");
 const liveWatchView = require("./liveWatchView");
-const {
-    configuredFrequencyHz,
-    frequencyHzFromInterval,
-    intervalMsFromHz,
-    normalizeFrequencyHz
-} = require("./samplingFrequency");
+const { configuredFrequencyHz, intervalMsFromHz } = require("./samplingFrequency");
 const elfSymbols = require("./elfSymbols");
 const dwarf = require("./dwarf");
 const chipInfo = require("./chipInfo");
@@ -81,7 +76,6 @@ const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeServ
 const {
     LiveWatchService,
     buildChartHistoryItems,
-    collectRuntimeHistoryLeaves,
     selectFocusedPanel,
     selectPausedDebugReadSession,
     writableRamSectionRanges,
@@ -93,7 +87,6 @@ const { PointerSymbolizer } = require("./services/pointerSymbolizer");
 const { WatchListStore } = require("./services/watchListStore");
 const { LivePanelRegistry } = require("./services/livePanelRegistry");
 const { SamplingCoordinator } = require("./services/samplingCoordinator");
-const { HostLoopDelay } = require("./services/hostLoopDelay");
 const { DebugSessionBridge, MIN_DAP_INTERVAL_MS } = require("./services/debugSessionBridge");
 const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
@@ -113,10 +106,6 @@ const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("./services/debugLi
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const { CACHE_KEYS } = require("./cacheKeys");
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
-// Waveform sampling without a rate cap (the slider's "Max rate" notch), remembered per workspace.
-const UNLIMITED_SAMPLING_STATE_KEY = "liveWatch.unlimitedSampling";
-// Waveform runtime objects read only the parts their view opened (default) or everything parsed.
-const POINTER_EXPANDED_ONLY_STATE_KEY = "liveWatch.pointerExpandedOnly";
 // Opened runtime paths per chart watch list, so a restarted chart samples the same parts.
 const RUNTIME_EXPANSIONS_STATE_KEY = "liveWatch.runtimeExpansions";
 const AGENT_ACCESS_STATE_KEY = "emberprobe.agentAccess";
@@ -126,11 +115,6 @@ const CURVE_VISIBILITY_STATE_KEY = "liveWatch.curveVisibility";
 const MAX_CURVE_VISIBILITY_ENTRIES = 4096;
 // Backoff before each chart-history worker restart attempt (at most three per run/clear).
 const CHART_HISTORY_RECOVERY_DELAYS_MS = Object.freeze([250, 1000, 3000]);
-// A pending webview batch keeps one sample per name (latest wins), so one message never carries an
-// older and a newer state of the same variable.
-function latestByName(pending, next) {
-    return [...new Map([...(pending || []), ...(next || [])].map((sample) => [sample.name, sample])).values()];
-}
 function cleanWindowsPath(rawPath) {
     return validation.cleanWindowsPath(rawPath);
 }
@@ -180,11 +164,19 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
     });
 }
 
-const { LiveWatchController } = require("./services/liveWatchController");
+const {
+    LiveWatchController,
+    POINTER_EXPANDED_ONLY_STATE_KEY,
+    UNLIMITED_SAMPLING_STATE_KEY
+} = require("./services/liveWatchController");
+// The sampling controller uses this module's vscode and LiveWatchSession, which tests replace through loadProvider.
+function createSamplingController(host, settings = {}) {
+    return new LiveWatchController(host, { vscode, LiveWatchSession: liveWatch.LiveWatchSession, ...settings });
+}
 class MainViewProvider {
     // Created on first use, so the provider's construction order does not matter.
     get _sampling() {
-        return (this._samplingController ??= new LiveWatchController(this));
+        return (this._samplingController ??= createSamplingController(this));
     }
     constructor(context) {
         this.commandHandlers = {};
@@ -208,7 +200,6 @@ class MainViewProvider {
             settings: (folder) => vscode.workspace.getConfiguration("emberprobe", vscode.Uri.file(folder))
         });
         void this._externalDebug.releaseIfDisabled().catch(console.error);
-        this._liveSession = null;
         this._managedDebugServer = null;
         this._managedDebugGroup = null;
         this._managedDebugToken = "";
@@ -230,7 +221,6 @@ class MainViewProvider {
             new PointerSymbolizer(null, { requestLayout: (name) => this._elfService?.layout(name) })
         );
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
-        this._samplingIntent = false;
         this._samplingCoordinator = new SamplingCoordinator();
         this._debugCommandPending = false;
         this._debugLifecycle = new DebugLifecycle();
@@ -240,13 +230,13 @@ class MainViewProvider {
         this._debugSessionReleases = new Map();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
-        this._liveFrequencyHz = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
-        this._liveIntervalMs = intervalMsFromHz(this._liveFrequencyHz);
-        this._unlimitedSamplingRequested = context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true;
-        this._pointerExpandedOnly = context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false;
+        this._samplingController = createSamplingController(this, {
+            frequencyHz: configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe")),
+            unlimited: context.workspaceState.get(UNLIMITED_SAMPLING_STATE_KEY) === true,
+            pointerExpandedOnly: context.workspaceState.get(POINTER_EXPANDED_ONLY_STATE_KEY) !== false
+        });
         /** @type {{ t: number, bytes: number }[]} Recent archive sizes for the remaining-time estimate. */
         this._archiveRateSamples = [];
-        this._liveConsumers = new Set();
         this._watchLists = new WatchListStore({
             state: context.workspaceState,
             serialize: (items) => this._watchIdentities(items),
@@ -283,8 +273,8 @@ class MainViewProvider {
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._sampling.activeReadPlan(),
             getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
-            getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._liveIntervalMs),
-            onSamples: (samples, t) => this._handleRawSamples(samples, t),
+            getIntervalMs: () => Math.max(MIN_DAP_INTERVAL_MS, this._sampling.intervalMs),
+            onSamples: (samples, t) => this._sampling.handleRawSamples(samples, t),
             onStatus: (status) => {
                 this._syncDebugSampleContext();
                 this._postProbeOperationStatus();
@@ -319,7 +309,7 @@ class MainViewProvider {
                     bytes,
                     limited: this._samplingArchive.limitReached || !!this._samplingArchive.failed
                 }),
-            onBackpressure: (paused) => this._setSamplingArchiveBackpressure(paused),
+            onBackpressure: (paused) => this._sampling.setArchiveBackpressure(paused),
             onError: (error) => {
                 this._chartHistory?.archiveProgress(
                     {
@@ -329,7 +319,7 @@ class MainViewProvider {
                     },
                     true
                 );
-                this.stopLiveWatch();
+                this._sampling.stop();
                 this._postLive({ type: "liveError", ...toUiError(error) });
             }
         });
@@ -499,9 +489,7 @@ class MainViewProvider {
                     notice.error ? { level: "error", titleKey: "notice.svdFailed", error: notice.error } : notice
                 ),
             onStatus: (status) => {
-                // A changed SVD binding renames peripheral pointer targets on the next plan refresh.
-                this._pointerPeripheralsRequested = false;
-                if (this._samplingIntent) this._refreshPointerPeripherals();
+                this._sampling.peripheralsChanged();
                 this._webviewView?.webview.postMessage({ type: "svdStatus", ...status });
             }
         });
@@ -574,12 +562,6 @@ class MainViewProvider {
     }
     get _downloadRunning() {
         return this._probeCoordinator?.isActive("download") ?? false;
-    }
-    get _liveWatchRunning() {
-        return this._probeCoordinator?.isActive("liveWatch") ?? false;
-    }
-    get _liveStarting() {
-        return this._probeCoordinator?.isActive("liveStart") ?? false;
     }
     get _chipInfoRunning() {
         return this._probeCoordinator?.isActive("chipInfo") ?? false;
@@ -1020,12 +1002,12 @@ class MainViewProvider {
                 return warn("msg.debugBusyForDownload");
             if (this._agentReadRunning) return warn("msg.agentReadBusy");
             if (this._chipInfoRunning) return warn("msg.chipBusyForDownload");
-            if (this._liveStarting) return warn("msg.liveBusyForDownload");
+            if (this._sampling.starting) return warn("msg.liveBusyForDownload");
             this._notices.clear("flash", "download-busy");
             this._notices.clear("flash", "download-refresh");
             // Keep the live lease until process exit, then synchronously reserve download.
-            const resumeSampling = !!this._samplingIntent && !!(this._liveWatchRunning || this._liveSession);
-            const liveStopped = this._liveWatchRunning || this._liveSession ? this.stopLiveWatch() : null;
+            const resumeSampling = !!this._sampling.intent && !!(this._sampling.running || this._sampling.session);
+            const liveStopped = this._sampling.running || this._sampling.session ? this._sampling.stop() : null;
             if (liveStopped) await liveStopped;
             const downloadLease = this._probeCoordinator.acquire("download");
             this._downloadLease = downloadLease;
@@ -1111,7 +1093,7 @@ class MainViewProvider {
                 }
                 if (resumeSampling && refreshed) {
                     try {
-                        await this.startLiveWatch(undefined, this._liveIntervalMs, "refresh");
+                        await this._sampling.start(undefined, this._sampling.intervalMs, "refresh");
                     } catch (error) {
                         this._notices.notify("flash", "download-refresh", {
                             level: "warning",
@@ -1155,7 +1137,10 @@ class MainViewProvider {
         }
         if (
             keys.some((key) => Object.hasOwn(values, key)) &&
-            (this._liveSession || this._managedDebugServer || this._agentReadSession || this._debugBridge.hasAnySession)
+            (this._sampling.session ||
+                this._managedDebugServer ||
+                this._agentReadSession ||
+                this._debugBridge.hasAnySession)
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
                 code: "PROBE_CONFIGURATION_BUSY"
@@ -1171,25 +1156,22 @@ class MainViewProvider {
     connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
         this._probeConnectionService.markConfigurationChanged(
             samplingSpeedOnly
-                ? [this._liveSession, this._agentReadSession].filter(Boolean)
-                : [this._liveSession, this._managedDebugServer, this._agentReadSession, this._debugBridge.activeSession]
+                ? [this._sampling.session, this._agentReadSession].filter(Boolean)
+                : [
+                      this._sampling.session,
+                      this._managedDebugServer,
+                      this._agentReadSession,
+                      this._debugBridge.activeSession
+                  ]
         );
-        if (this._liveSession || this._managedDebugServer) this._postConsumerStatuses({});
+        if (this._sampling.session || this._managedDebugServer) this._postConsumerStatuses({});
         // Only a visible sidebar shows the list; a hidden one rescans when it is shown again.
         if (this._probeInventoryMonitor)
             this._refreshConnectedProbes().catch((error) =>
                 console.error("Probe inventory check failed:", error.message)
             );
-        if (samplingSpeedChanged && this._liveSession) {
-            const stopped = this.stopLiveWatch({ preserveIntent: true, discardPending: true });
-            const generation = this._liveStartGeneration;
-            void Promise.resolve(stopped)
-                .then(() => {
-                    if (generation === this._liveStartGeneration && this._samplingIntent)
-                        return this.startLiveWatch(undefined, this._liveIntervalMs, "refresh", false);
-                })
-                .catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
-        }
+        if (samplingSpeedChanged && this._sampling.session)
+            void this._sampling.restart().catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
     }
     _assertWriteSessionCurrent(session) {
         if (session === this._debugBridge && this._debugBridge.replBusy)
@@ -1221,7 +1203,8 @@ class MainViewProvider {
     }
     async _prepareWriteConnection() {
         this._assertGroupedReadElf();
-        if (this._liveWatchRunning && this._liveSession) return this._sessionWriteConnection(this._liveSession);
+        if (this._sampling.running && this._sampling.session)
+            return this._sessionWriteConnection(this._sampling.session);
         if (this._debugBridge.activeSession && this._debugBridge.agentStatus().state === "paused")
             return this._sessionWriteConnection(this._debugBridge);
         // A managed debug server remains the connection that will execute an
@@ -1610,22 +1593,22 @@ class MainViewProvider {
                     gdbPort,
                     ...(selection.numberOfProcessors ? { gdbPorts: allocated } : {}),
                     mode: "debug",
-                    intervalMs: this._liveIntervalMs
+                    intervalMs: this._sampling.intervalMs
                 },
                 {
                     onConnectionConfirmed: () => {
                         if (this._managedDebugServer === server)
                             void this._probeConnectionService.recordSuccess(server.options);
                     },
-                    onSample: (samples, t, consumers) => this._handleRawSamples(samples, t, consumers),
+                    onSample: (samples, t, consumers) => this._sampling.handleRawSamples(samples, t, consumers),
                     onSampleGap: () => {
-                        if (this._managedDebugServer === server) this._handleSampleGap();
+                        if (this._managedDebugServer === server) this._sampling.handleSampleGap();
                     },
                     onStatus: (status) => {
                         if (this._managedDebugServer !== server) return;
                         if (status?.key === "live.debugRuntimeSampling") {
                             // Recovery notifications can arrive after GDB paused or sampling was disabled.
-                            this._postConsumerStatuses(this._samplingStatus());
+                            this._postConsumerStatuses(this._sampling.status());
                         } else if (status?.key === "live.debugTclDegraded") {
                             this._postConsumerStatuses({
                                 mode: "debug-running-degraded",
@@ -1634,8 +1617,8 @@ class MainViewProvider {
                                 canRead: false,
                                 canWrite: false,
                                 snapshotReady: false,
-                                intentEnabled: this._samplingIntent,
-                                running: this._samplingIntent
+                                intentEnabled: this._sampling.intent,
+                                running: this._sampling.intent
                             });
                         }
                     },
@@ -2053,7 +2036,7 @@ class MainViewProvider {
                 this._debugBridge.paused ||
                 this._debugBridge.replBusy ||
                 this._debugBridge.stopEpoch !== epoch ||
-                !this._samplingIntent
+                !this._sampling.intent
             )
                 return;
             try {
@@ -2071,7 +2054,7 @@ class MainViewProvider {
                 }
                 const enabled = this._samplingCoordinator.setRuntimeEnabled(
                     server,
-                    this._samplingIntent,
+                    this._sampling.intent,
                     this._debugBridge
                 );
                 this._postConsumerStatuses({
@@ -2109,7 +2092,7 @@ class MainViewProvider {
             throw Object.assign(new Error("Wait for the GDB console command before inspecting memory"), {
                 code: "DEBUG_CONTROL_BUSY"
             });
-        if (this._liveConnectionClosing || this._liveExitUnconfirmed)
+        if (this._sampling.closing || this._sampling.exitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
@@ -2117,12 +2100,12 @@ class MainViewProvider {
         const total = options.total || 0;
         // If the UI is starting sampling, wait briefly for it to connect and then reuse the same Tcl session.
         const liveDeadline = Date.now() + 7000;
-        while (this._liveStarting && Date.now() < liveDeadline) {
+        while (this._sampling.starting && Date.now() < liveDeadline) {
             await new Promise((resolve) => setTimeout(resolve, 25));
         }
 
         let operationLease = null;
-        let session = this._liveWatchRunning ? this._liveSession : null;
+        let session = this._sampling.running ? this._sampling.session : null;
         let temporary = false;
         let source = "active-sampling";
         if (!session && options.allowPausedDebugRead) {
@@ -2332,7 +2315,7 @@ class MainViewProvider {
         const stopEpoch = runtimeWrite ? this._debugBridge.stopEpoch : null;
         if (runtimeWrite) {
             if (!items.every(isNonHaltingWordWrite)) throw runtimeWriteDisabledError();
-            const status = this._samplingStatus();
+            const status = this._sampling.status();
             if (status.mode !== "debug-running-sampling" || !status.canWrite)
                 throw Object.assign(new Error("Runtime writes require an active managed OpenOCD sampling session"), {
                     code: "RUNTIME_WRITE_DISABLED"
@@ -2518,17 +2501,17 @@ class MainViewProvider {
         throw declined();
     }
     async _writeUiVariable(name, value, options = {}) {
-        if (this._liveConnectionClosing || this._liveExitUnconfirmed)
+        if (this._sampling.closing || this._sampling.exitUnconfirmed)
             throw Object.assign(new Error("The previous probe connection has not closed"), {
                 code: "PROBE_EXIT_UNCONFIRMED"
             });
         await this._confirmUiWriteFirmware(options.requestedAt ?? Date.now());
-        const status = this._samplingStatus();
+        const status = this._sampling.status();
         const dapSession = status.canWrite && this._debugBridge.canWrite ? this._debugBridge : null;
         const runtimeSession =
             status.canWrite && status.mode === "debug-running-sampling" ? this._managedDebugServer : null;
         const session =
-            dapSession || runtimeSession || (status.canWrite && this._liveWatchRunning ? this._liveSession : null);
+            dapSession || runtimeSession || (status.canWrite && this._sampling.running ? this._sampling.session : null);
         if (!session) {
             const key = writeUnavailableKey(status) || "sb.writeUnavailable";
             throw Object.assign(new Error(this._t(key)), { i18nKey: key });
@@ -2582,7 +2565,7 @@ class MainViewProvider {
         };
         if (this._chipInfoRunning) busy("chip.reading", "CHIP_READ_RUNNING");
         if (this._downloadRunning) busy("chip.busyDownload", "PROBE_BUSY");
-        if (this._liveWatchRunning) busy("chip.busyLive", "PROBE_BUSY");
+        if (this._sampling.running) busy("chip.busyLive", "PROBE_BUSY");
         if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
         if (this._debugStarting || this._liveDebugSession()) busy("chip.busyDebug", "PROBE_BUSY");
         const elfLoad = this._elfService.load().catch(() => null);
@@ -2841,24 +2824,7 @@ class MainViewProvider {
             ...(stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {}),
             [watchKey]: normalized
         });
-        if (this._pointerExpandedOnly) await this._sampling.refreshSamplingPlan();
-    }
-    _pointerSamplingState() {
-        return { type: "pointerSampling", expandedOnly: this._pointerExpandedOnly === true };
-    }
-    async _setPointerExpandedOnly(enabled) {
-        if (typeof enabled !== "boolean")
-            throw Object.assign(new Error("Pointer sampling mode must be a boolean"), { code: "INVALID_PARAMS" });
-        if (enabled === this._pointerExpandedOnly) return;
-        this._pointerExpandedOnly = enabled;
-        await this._context.workspaceState.update(POINTER_EXPANDED_ONLY_STATE_KEY, enabled);
-        const state = this._pointerSamplingState();
-        for (const entry of this._livePanels.values()) entry.post(state);
-        await this._sampling.refreshSamplingPlan();
-    }
-    // Opened runtime paths of a chart's watch list while only expanded parts are sampled, else null.
-    _panelRuntimeExpansions(watchKey) {
-        return this._pointerExpandedOnly === true ? this._runtimeExpansions(watchKey) : null;
+        if (this._sampling.pointerExpandedOnly) await this._sampling.refreshSamplingPlan();
     }
     chartBackground() {
         if (!this._chartBackground) {
@@ -2931,7 +2897,7 @@ class MainViewProvider {
             panel.webview,
             liveWatchView.getLiveWatchContent(
                 {
-                    frequencyHz: this._liveFrequencyHz,
+                    frequencyHz: this._sampling.frequencyHz,
                     panelId,
                     watchKey
                 },
@@ -3018,8 +2984,12 @@ class MainViewProvider {
             : selected;
         const persisted = this._watchIdentities(normalized);
         await this._watchLists.save(key, persisted);
-        this._pruneSampleMap(this._latestSidebarSamples, [CACHE_KEYS.sidebarWatchList, CACHE_KEYS.sidebarWriteList]);
-        for (const entry of this._livePanels.values()) this._pruneSampleMap(entry.latestSamples, entry.watchKey);
+        this._sampling.pruneSampleMap(this._latestSidebarSamples, [
+            CACHE_KEYS.sidebarWatchList,
+            CACHE_KEYS.sidebarWriteList
+        ]);
+        for (const entry of this._livePanels.values())
+            this._sampling.pruneSampleMap(entry.latestSamples, entry.watchKey);
         await this._sampling.refreshSamplingPlan();
         // Selection/value changes do not change ELF metadata. Echoing a local sidebar edit
         // also replaces the active write input and interrupts wheel/slider gestures.
@@ -3305,7 +3275,7 @@ class MainViewProvider {
     }
     // Chart and sidebar keep separate selections; one probe connection samples the union of both enabled lists.
     _postLive(message) {
-        if (message.type === "liveStatus") message = withWriteAccessStatus({ ...this._samplingStatus(), ...message });
+        if (message.type === "liveStatus") message = withWriteAccessStatus({ ...this._sampling.status(), ...message });
         if (message.type === "liveError" && message.message && typeof message.message === "object")
             message = {
                 ...toUiError(message.message),
@@ -3317,7 +3287,7 @@ class MainViewProvider {
     }
     _postConsumerStatuses(payload, error = false) {
         const p = typeof payload === "string" ? { message: payload } : payload || {};
-        const status = this._samplingStatus();
+        const status = this._sampling.status();
         let message = { type: "liveStatus", ...status, ...p, error };
         message.canWrite = message.canWrite === true && status.canWrite;
         if (this._samplingCoordinator.backpressured) {
@@ -3486,7 +3456,7 @@ class MainViewProvider {
         this._configureChartHistory(entry);
         post({
             type: "liveStatus",
-            ...this._samplingStatus()
+            ...this._sampling.status()
         });
         if (entry.latestSamples.size) {
             const now = Date.now();
@@ -3516,7 +3486,7 @@ class MainViewProvider {
         }
         post({
             type: "liveStatus",
-            ...this._samplingStatus()
+            ...this._sampling.status()
         });
         if (this._latestSidebarSamples.size) {
             const now = Date.now();
@@ -3529,29 +3499,6 @@ class MainViewProvider {
             if (scalarSamples.length) post({ type: "liveSample", samples: scalarSamples });
             if (compositeSamples.length) post({ type: "liveCompositeSample", samples: compositeSamples });
         }
-    }
-    _unlimitedSamplingEnabled() {
-        return this._unlimitedSamplingRequested === true;
-    }
-    _unlimitedSamplingState() {
-        return { type: "liveUnlimited", enabled: this._unlimitedSamplingEnabled() };
-    }
-    async _setUnlimitedSampling(enabled) {
-        if (typeof enabled !== "boolean")
-            throw Object.assign(new Error("Unlimited sampling state must be a boolean"), { code: "INVALID_PARAMS" });
-        this._unlimitedSamplingRequested = enabled;
-        this._unlimitedSamplingChanged();
-        await this._context.workspaceState.update(UNLIMITED_SAMPLING_STATE_KEY, enabled);
-        return this._unlimitedSamplingEnabled();
-    }
-    _unlimitedSamplingChanged() {
-        // Only the standalone OpenOCD session honours the flag; debug sessions keep their adaptive budget.
-        if (this._liveSession && !this._debugBridge.hasSession) {
-            const active = this._sampling.activeReadPlan();
-            if (active.length) this._sampling.applySamplingPlan(this._liveSession, active);
-        }
-        const state = this._unlimitedSamplingState();
-        for (const entry of this._livePanels.values()) entry.post(state);
     }
     _resetChartHistoryWarnings() {
         this._chartHistoryLimitedWarned = false;
@@ -3842,47 +3789,10 @@ class MainViewProvider {
         this._chartHistoryRecovery = task;
         return task;
     }
-    _setLiveInterval(intervalMs, frequencyHz) {
-        const value = validation.clampInteger(intervalMs, intervalMsFromHz(this._liveFrequencyHz), 5, 10000);
-        this._liveFrequencyHz =
-            frequencyHz === undefined
-                ? value === this._liveIntervalMs
-                    ? this._liveFrequencyHz
-                    : frequencyHzFromInterval(value)
-                : normalizeFrequencyHz(frequencyHz);
-        this._liveIntervalMs = value;
-        if (this._liveSession) this._liveSession.setIntervalMs(value);
-        this._managedDebugServer?.setIntervalMs?.(value);
-        this._postLive({ type: "liveFrequency", frequencyHz: this._liveFrequencyHz, intervalMs: value });
-        return value;
-    }
-    async _saveLiveFrequency(frequencyHz) {
-        if (
-            typeof frequencyHz !== "number" ||
-            !Number.isFinite(frequencyHz) ||
-            frequencyHz < 0.1 ||
-            frequencyHz > 200 ||
-            Math.abs(frequencyHz * 10 - Math.round(frequencyHz * 10)) > 1e-8
-        )
-            throw Object.assign(new Error("Sampling frequency must be 0.1 to 200 Hz in 0.1 Hz steps"), {
-                code: "INVALID_SAMPLE_FREQUENCY"
-            });
-        const value = normalizeFrequencyHz(frequencyHz);
-        this._setLiveInterval(intervalMsFromHz(value), value);
-        this._savingFrequency = true;
-        try {
-            await vscode.workspace
-                .getConfiguration("emberprobe")
-                .update("sampleFrequencyHz", value, vscode.ConfigurationTarget.Workspace);
-        } finally {
-            this._savingFrequency = false;
-        }
-        return value;
-    }
     samplingFrequencyConfigurationChanged() {
         if (this._savingFrequency) return;
         const value = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
-        if (value !== this._liveFrequencyHz) this._setLiveInterval(intervalMsFromHz(value), value);
+        if (value !== this._sampling.frequencyHz) this._sampling.setIntervalMs(intervalMsFromHz(value), value);
     }
     // The archive lives only for this extension session, so the limit applies immediately instead of on reload.
     samplingArchiveConfigurationChanged() {
@@ -3944,243 +3854,6 @@ class MainViewProvider {
         };
     }
 
-    _postWebviewBatch(entry, scalarSamples, compositeSamples, t) {
-        if (!entry.ready) return;
-        entry._pendingScalars = latestByName(entry._pendingScalars, scalarSamples);
-        entry._pendingComposites = latestByName(entry._pendingComposites, compositeSamples);
-        if (!entry._batchTimer)
-            entry._batchTimer = setTimeout(() => {
-                entry._batchTimer = null;
-                const scalars = entry._pendingScalars,
-                    composites = entry._pendingComposites;
-                entry._pendingScalars = [];
-                entry._pendingComposites = [];
-                const status = this._samplingStatus();
-                if (scalars.length)
-                    entry.post({
-                        type: "chartValues",
-                        samples: scalars,
-                        t,
-                        actualHz: status.actualHz,
-                        bytesPerSecond: status.bytesPerSecond,
-                        unlimitedActive: status.unlimitedActive,
-                        limitedBy: status.limitedBy,
-                        archive: this._samplingArchiveBudget()
-                    });
-                if (composites.length)
-                    entry.post({
-                        type: "liveCompositeSample",
-                        samples: composites,
-                        t,
-                        actualHz: status.actualHz,
-                        bytesPerSecond: status.bytesPerSecond
-                    });
-            }, 50);
-    }
-
-    _postSidebarBatch(scalarSamples, compositeSamples, t) {
-        if (!this._webviewView?.webview) return;
-        if (this._chartHistory && Date.now() - (this._sidebarStatsTime || 0) >= 1000) {
-            this._sidebarStatsTime = Date.now();
-            const status = this._samplingStatus();
-            this._webviewView.webview.postMessage({
-                type: "liveStatus",
-                ...status,
-                frequencyHz: 20,
-                actualHz: status.consumers?.sidebarHz ?? status.actualHz
-            });
-        }
-        const interval = this._liveIntervalMs ?? 100;
-        if (interval >= 30 || !this._liveWatchRunning) {
-            if (scalarSamples?.length)
-                this._webviewView.webview.postMessage({ type: "liveSample", samples: scalarSamples, t });
-            if (compositeSamples?.length)
-                this._webviewView.webview.postMessage({
-                    type: "liveCompositeSample",
-                    samples: compositeSamples,
-                    t
-                });
-            return;
-        }
-        this._pendingSidebarScalars = (this._pendingSidebarScalars || []).concat(scalarSamples);
-        this._pendingSidebarComposites = latestByName(this._pendingSidebarComposites, compositeSamples);
-        if (!this._sidebarBatchTimer) {
-            this._sidebarBatchTimer = setTimeout(() => {
-                this._sidebarBatchTimer = null;
-                const scalars = this._pendingSidebarScalars;
-                const composites = this._pendingSidebarComposites;
-                this._pendingSidebarScalars = [];
-                this._pendingSidebarComposites = [];
-                if (scalars?.length)
-                    this._webviewView?.webview.postMessage({ type: "liveSample", samples: scalars, t: Date.now() });
-                if (composites?.length)
-                    this._webviewView?.webview.postMessage({
-                        type: "liveCompositeSample",
-                        samples: composites,
-                        t: Date.now()
-                    });
-            }, 25);
-        }
-    }
-
-    _flushPendingWebviewSamples() {
-        if (this._livePanels) {
-            for (const entry of this._livePanels.values()) {
-                if (entry._batchTimer) {
-                    clearTimeout(entry._batchTimer);
-                    entry._batchTimer = null;
-                }
-                if (entry._pendingScalars?.length) {
-                    const scalars = entry._pendingScalars;
-                    entry._pendingScalars = [];
-                    entry.post({
-                        type: "chartValues",
-                        samples: scalars,
-                        t: Date.now()
-                    });
-                }
-                if (entry._pendingComposites?.length) {
-                    const composites = entry._pendingComposites;
-                    entry._pendingComposites = [];
-                    entry.post({ type: "liveCompositeSample", samples: composites, t: Date.now() });
-                }
-            }
-        }
-        if (this._sidebarBatchTimer) {
-            clearTimeout(this._sidebarBatchTimer);
-            this._sidebarBatchTimer = null;
-        }
-        if (this._pendingSidebarScalars?.length) {
-            const scalars = this._pendingSidebarScalars;
-            this._pendingSidebarScalars = [];
-            this._webviewView?.webview.postMessage({ type: "liveSample", samples: scalars, t: Date.now() });
-        }
-        if (this._pendingSidebarComposites?.length) {
-            const composites = this._pendingSidebarComposites;
-            this._pendingSidebarComposites = [];
-            this._webviewView?.webview.postMessage({
-                type: "liveCompositeSample",
-                samples: composites,
-                t: Date.now()
-            });
-        }
-    }
-
-    _handleRawSamples(samples, t, consumers) {
-        // Every source (managed sampling, worker, paused DAP reads) passes the same hold, so a runtime
-        // object keeps its last consistent tree through transient misses (see runtimeSampleHold.js).
-        samples = (this._runtimeSampleHold ||= new RuntimeSampleHold()).apply(samples, t);
-        const types = this._sampling.cachedConsumerTypes();
-        const graphNames = consumers && new Set(consumers.graphNames);
-        const sidebarNames = consumers && new Set(consumers.sidebarNames);
-        const graphSamples = graphNames ? samples.filter((sample) => graphNames.has(sample.name)) : samples;
-        for (const entry of this._livePanels.values()) {
-            if (!entry.historySignature) this._configureChartHistory(entry, t);
-            const currentSamples =
-                entry.historyClearedAt === undefined
-                    ? graphSamples
-                    : graphSamples.filter((sample) => (sample.t ?? t) > entry.historyClearedAt);
-            const decoded = this._liveWatchService.decodeConsumerSamples(
-                currentSamples,
-                t,
-                types.graphs.get(entry.watchKey),
-                this._sampling.compositeMap(entry.watchKey),
-                entry.latestSamples
-            );
-            if (entry.ready && (decoded.scalarSamples.length || decoded.compositeSamples.length)) {
-                this._postWebviewBatch(entry, decoded.scalarSamples, decoded.compositeSamples, t);
-            }
-            // Scalars of runtime trees become silent channels as they appear, like static composite members.
-            const runtimeLeaves = decoded.compositeSamples.length
-                ? collectRuntimeHistoryLeaves(
-                      decoded.compositeSamples,
-                      this._scalarWatchList(entry.watchKey),
-                      this._panelRuntimeExpansions(entry.watchKey),
-                      (entry.runtimeHistoryLeaves ||= new Map())
-                  )
-                : { samples: [], added: false };
-            if (runtimeLeaves.added) this._configureChartHistory(entry, t);
-            // Keep every panel's decoding and type changes separate in exported history.
-            const recorded = entry.historyItems
-                ? this._liveWatchService.decodeHistorySamples(
-                      currentSamples,
-                      t,
-                      entry.historyItems,
-                      runtimeLeaves.samples.concat(decoded.scalarSamples)
-                  )
-                : decoded.scalarSamples;
-            const graphTypes = new Map(
-                entry.historyItems
-                    ? entry.historyItems.map((item) => [item.name, item.type])
-                    : types.graphs.get(entry.watchKey)
-            );
-            if (recorded.length && this._chartHistory) this._queueChartHistoryAppend(entry, recorded, t);
-            this._samplingArchive.append(
-                recorded.map((sample) => {
-                    const spec = graphTypes.get(sample.name);
-                    const type = typeof spec === "string" ? spec : spec.type;
-                    const historyIdentity = entry.historyIdentities?.get(sample.name);
-                    return {
-                        ...sample,
-                        name: `${sample.name} [${type}]`,
-                        ...(historyIdentity ? { historyIdentity } : {})
-                    };
-                }),
-                t,
-                this._debugSamplingScope(entry.watchKey)
-            );
-        }
-        const sidebar = this._liveWatchService.decodeConsumerSamples(
-            sidebarNames ? samples.filter((sample) => sidebarNames.has(sample.name)) : samples,
-            t,
-            types.sidebar,
-            this._sampling.compositeMap(CACHE_KEYS.sidebarWatchList),
-            this._latestSidebarSamples
-        );
-        if (sidebar.scalarSamples.length || sidebar.compositeSamples.length) {
-            this._postSidebarBatch(sidebar.scalarSamples, sidebar.compositeSamples, t);
-        }
-    }
-
-    // The sampling Worker dropped its oldest backlog while the host was busy. Break each waveform there
-    // instead of bridging the missing interval; pending points are sent first so the break stays ordered.
-    _handleSampleGap() {
-        if (!this._chartHistory || this._chartHistory.failed) return;
-        for (const entry of this._livePanels.values()) {
-            if (!entry.historySignature || entry._historyRestoreTask) continue;
-            this._flushChartHistoryAppend(entry);
-            const scope = this._debugSamplingScope(entry.watchKey);
-            this._chartHistory.request("markGap", [scope]).catch((error) => this._chartHistory.fail(error));
-        }
-    }
-
-    _setSamplingArchiveBackpressure(paused) {
-        this._samplingCoordinator.setBackpressure(paused);
-        const session = this._managedDebugServer || this._liveSession;
-        this._samplingCoordinator.setDeliveryHold(this._liveSession);
-        if (this._managedDebugServer)
-            this._samplingCoordinator.setRuntimeEnabled(
-                this._managedDebugServer,
-                this._samplingIntent,
-                this._debugBridge
-            );
-        session?.setPauseReason?.(paused ? "archive_backpressure" : null);
-        this._samplingCoordinator.setDebugIntent(this._debugBridge, this._samplingIntent);
-        // Only host-driven DAP sampling loses samples while paused; mark that hole with an empty row. Worker
-        // sessions deliver their held backlog afterwards, which an empty row stamped now would precede.
-        if (!paused && !session && this._liveWatchService && this._samplingArchive) {
-            const active = this._sampling.activeReadPlan ? this._sampling.activeReadPlan() : [];
-            if (active.length) {
-                const t = Date.now();
-                this._handleRawSamples(
-                    active.map((item) => ({ name: item.name, bytes: null, t })),
-                    t
-                );
-            }
-        }
-        this._postConsumerStatuses(this._samplingStatus());
-    }
-
     /** @param {{ intervalMs?: number }} params */
     async _controlAgentSampling(action, params = {}) {
         if (
@@ -4197,447 +3870,28 @@ class MainViewProvider {
         }
         if (action === "start") {
             // Use the same watch union, probe ownership and UI notifications as the sidebar.
-            await this.startLiveWatch(undefined, params.intervalMs ?? this._liveIntervalMs, "sidebar", false);
+            await this._sampling.start(undefined, params.intervalMs ?? this._sampling.intervalMs, "sidebar", false);
         } else if (action === "stop") {
             // Cancel Agent samples (temporary or on a borrowed connection) as well as persistent sampling;
             // leave debugging active.
             this._cancelSharedAgentSamples();
             const agentStopped = this.stopAgentReadIfRunning();
-            const liveStopped = this.stopLiveWatch({ variablesOnly: true });
+            const liveStopped = this._sampling.stop({ variablesOnly: true });
             await Promise.all([agentStopped, liveStopped]);
         }
         return {
-            ...this._samplingStatus(),
-            starting: this._liveStarting,
-            intervalMs: this._liveIntervalMs
+            ...this._sampling.status(),
+            starting: this._sampling.starting,
+            intervalMs: this._sampling.intervalMs
         };
     }
 
-    _samplingStatus() {
-        const status = this._samplingCoordinator.status({
-            intent: this._samplingIntent,
-            bridge: this._debugBridge,
-            standaloneRunning: this._liveWatchRunning,
-            managedServer: this._managedDebugServer,
-            agentStatus: this._agentSamplingStatus
-        });
-        if (this._liveConnectionClosing || this._liveExitUnconfirmed) {
-            Object.assign(status, {
-                running: false,
-                canRead: false,
-                canWrite: false,
-                snapshotReady: false,
-                mode: this._liveExitUnconfirmed ? "exit-unconfirmed" : "disconnecting",
-                connectionState: this._liveExitUnconfirmed ? "exit-unconfirmed" : "closing"
-            });
-        }
-        const session = this._managedDebugServer || this._liveSession;
-        if (session?.options?.settingsIdentity) {
-            try {
-                this._probeConnectionService.assertCurrent(session);
-                status.connection = this._managedDebugGroup
-                    ? this._debugBridge.activeSession
-                        ? this._sessionWriteConnection(this._debugBridge)
-                        : undefined
-                    : writeConnectionIdentity(session.options);
-            } catch (error) {
-                status.canWrite = false;
-                status.connectionStale = true;
-                status.diagnostic = serializeError(error);
-            }
-        }
-        const stats = typeof session?.stats === "function" ? session.stats() : null;
-        status.intervalMs = this._liveIntervalMs;
-        status.frequencyHz = this._liveFrequencyHz;
-        status.effectiveIntervalMs = stats?.effectiveIntervalMs ?? this._liveIntervalMs;
-        status.actualHz = stats?.actualHz ?? 0;
-        status.bytesPerSecond = stats?.bytesPerSecond ?? 0;
-        status.consumers = stats?.consumers;
-        status.sidebarTargetHz = 20;
-        status.p95DurationMs = stats?.p95DurationMs ?? 0;
-        status.missedDeadlines = stats?.missedDeadlines ?? 0;
-        status.unlimited = stats?.unlimited ?? this._unlimitedSamplingEnabled();
-        status.unlimitedActive = stats?.unlimitedActive === true;
-        // DAP-driven debug sessions have no worker statistics but still ignore unlimited sampling.
-        status.unlimitedSuppressedReason =
-            stats?.unlimitedSuppressedReason ??
-            (this._unlimitedSamplingEnabled() && this._debugBridge?.hasSession ? "debug" : null);
-        status.limitedBy = stats?.limitedBy ?? null;
-        status.hostHoldMs = stats?.hostHoldMs ?? 0;
-        status.backlogBatches = stats?.backlogBatches ?? 0;
-        status.backlogAgeMs = stats?.backlogAgeMs ?? 0;
-        status.droppedBatches = stats?.droppedBatches ?? 0;
-        // The event-loop monitor wakes the host periodically, so it runs only while sampling is requested.
-        if (status.running) status.hostLoopDelayMs = (this._hostLoopDelay ||= new HostLoopDelay()).maxMs();
-        else {
-            this._hostLoopDelay?.dispose();
-            this._hostLoopDelay = null;
-            status.hostLoopDelayMs = 0;
-        }
-        status.pauseReason =
-            stats?.pauseReason ?? (this._samplingCoordinator.backpressured ? "archive_backpressure" : null);
-        return withWriteAccessStatus(status);
-    }
-
-    // Pointer cells name peripheral registers from the bound SVD. Loading is read-only,
-    // shares the peripheral service cache and runs once per SVD binding.
-    _refreshPointerPeripherals() {
-        if (this._pointerPeripheralsRequested || !this._svdPeripheralService || !this._liveWatchService) return;
-        this._pointerPeripheralsRequested = true;
-        const generation = (this._pointerPeripheralGeneration = (this._pointerPeripheralGeneration || 0) + 1);
-        const apply = (model) => {
-            if (generation === this._pointerPeripheralGeneration) this._liveWatchService.setPeripheralModel(model);
-        };
-        Promise.resolve()
-            .then(() => this._svdPeripheralService.model())
-            .then(apply, () => apply(null));
-    }
-
-    _pruneSampleMap(map, keys) {
-        const names = new Set();
-        for (const key of Array.isArray(keys) ? keys : [keys]) {
-            for (const i of this._context.workspaceState.get(key) || []) if (i && i.name) names.add(i.name);
-        }
-        for (const n of map.keys()) if (!names.has(n)) map.delete(n);
-    }
     _postProbeOperationStatus() {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
             operations: this._probeCoordinator?.snapshot(),
             debugPending: !!this._debugCommandPending
         });
-    }
-    startLiveWatch(items, intervalMs, consumer = "graph", interactive = ["graph", "sidebar"].includes(consumer)) {
-        if (this._liveStopPromise || this._liveStartPromise)
-            return Promise.reject(Object.assign(new Error(this._t("live.starting")), { code: "PROBE_BUSY" }));
-        this._resetChartHistoryWarnings();
-        const generation = (this._liveStartGeneration = (this._liveStartGeneration || 0) + 1);
-        this._liveStartPromise = this._startLiveWatch(items, intervalMs, consumer, interactive, generation).finally(
-            () => {
-                this._liveStartPromise = null;
-                this._postProbeOperationStatus();
-            }
-        );
-        this._postProbeOperationStatus();
-        return this._liveStartPromise;
-    }
-    async _startLiveWatch(items, intervalMs, consumer, interactive, generation) {
-        if (this._externalDebug?.active && this._debugBridge.hasSession) {
-            this._samplingIntent = true;
-            this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
-            this._postConsumerStatuses(this._debugBridge.status());
-            return;
-        }
-        this._externalDebug?.assertPhysicalAvailable();
-        if (this._chartHistory) {
-            const maxBytes =
-                validation.clampInteger(
-                    vscode.workspace.getConfiguration("emberprobe").get("chartHistoryMaxMiB", 512),
-                    512,
-                    64,
-                    4096
-                ) *
-                1024 *
-                1024;
-            if (maxBytes !== this._chartHistory.options.maxBytes) {
-                this._chartHistory.options.maxBytes = maxBytes;
-                if (!this._chartHistory.failed) {
-                    try {
-                        const status = await this._chartHistory.request("setBudget", [maxBytes]);
-                        if (status?.limited) this._warnChartHistoryLimited();
-                    } catch (error) {
-                        if (["CHART_HISTORY_FULL", "CHART_HISTORY_BACKPRESSURE"].includes(error.code))
-                            this._warnChartHistoryLimited();
-                        else throw error;
-                    }
-                }
-            }
-        }
-        if (this._chartHistory?.failed) await this._recoverChartHistory();
-        if (this._downloadRunning)
-            throw Object.assign(new Error(this._t("live.downloadRunning")), { i18nKey: "live.downloadRunning" });
-        if (this._chipInfoRunning)
-            throw Object.assign(new Error(this._t("live.chipReading")), { i18nKey: "live.chipReading" });
-        if (this._agentReadRunning)
-            throw Object.assign(new Error(this._t("live.agentReading")), { i18nKey: "live.agentReading" });
-        if (this._liveStarting) throw Object.assign(new Error(this._t("live.starting")), { i18nKey: "live.starting" });
-        const debuggerCfg =
-            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-            (await this._probeConnectionService.resolveProbe());
-        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore)
-            throw Object.assign(new Error(this._t("live.needConfig")), { i18nKey: "live.needConfig" });
-        if (this._elfService?.workerPath && this._context.workspaceState.get(CACHE_KEYS.elfPath)) {
-            await this._elfService.ready();
-            await this._elfRebindPromise;
-        }
-        if (generation !== this._liveStartGeneration) return;
-        {
-            this._samplingIntent = true;
-            this._samplingCoordinator.setDebugIntent(this._debugBridge, true);
-        }
-        if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
-        const activeItems = this._sampling.activeReadPlan();
-        if (
-            this._debugBridge.hasSession ||
-            isSupportedDebugSession(this._liveDebugSession()) ||
-            this._debugStarting ||
-            this._debugCommandPending
-        ) {
-            const managedRunning =
-                !!this._managedDebugServer &&
-                !!this._managedDebugSessionId &&
-                this._debugBridge.hasSession &&
-                !this._debugBridge.paused;
-            if (managedRunning && activeItems.length) {
-                this._handleManagedTargetState({
-                    state: "continued",
-                    epoch: this._debugBridge.stopEpoch,
-                    session: this._debugBridge.activeSession
-                });
-            }
-            const status = managedRunning
-                ? {
-                      mode: "debug-running-connecting",
-                      key: "live.debugSharedConnecting",
-                      source: "openocd",
-                      canRead: false,
-                      canWrite: false,
-                      snapshotReady: false,
-                      intentEnabled: true,
-                      running: true
-                  }
-                : this._debugBridge.hasSession
-                  ? this._debugBridge.status(activeItems.length ? {} : { key: "live.needVar" })
-                  : {
-                        mode:
-                            this._debugStarting || this._debugCommandPending
-                                ? "debug-running-waiting"
-                                : "debug-session-conflict",
-                        key:
-                            this._debugStarting || this._debugCommandPending
-                                ? "live.debugWaiting"
-                                : "live.debugConflict",
-                        source: "dap",
-                        canRead: false,
-                        canWrite: false,
-                        snapshotReady: false
-                    };
-            this._postConsumerStatuses(status);
-            return;
-        }
-        if (!activeItems.length) {
-            this._postConsumerStatuses({ key: "live.needVar" });
-            return;
-        }
-        {
-            this._liveConsumers.add("graph");
-            this._liveConsumers.add("sidebar");
-        }
-        if (this._liveWatchRunning && this._liveSession) {
-            this._sampling.applySamplingPlan(this._liveSession, this._sampling.activeReadPlan());
-            if (intervalMs !== undefined) this._setLiveInterval(intervalMs);
-            this._postConsumerStatuses({ key: "sb.sampling" });
-            return;
-        }
-        const cfg = vscode.workspace.getConfiguration("emberprobe");
-        const configuredExecutable = cfg.get("openocdPath", "openocd");
-        if (generation !== this._liveStartGeneration) return;
-        const startingLease = this._probeCoordinator.acquire("liveStart");
-        this._liveStartLease = startingLease;
-        let session = null;
-        try {
-            const executable = await this._resolveOpenOcdPath(configuredExecutable);
-            if (startingLease.released || generation !== this._liveStartGeneration) return;
-            if (!executable) throw Object.assign(new Error(this._t("live.notReady")), { i18nKey: "live.notReady" });
-            const { cwd } = this._commandContext();
-            const connection = await this._probeConnectionService.prepare(
-                { executable, probe: debuggerCfg, target: mcuCore, sampling: true },
-                interactive
-            );
-            if (startingLease.released || generation !== this._liveStartGeneration) return;
-            const port = await this._resolveTclPort(cfg);
-            if (startingLease.released || generation !== this._liveStartGeneration) return;
-            this._liveExitUnconfirmed = false;
-            session = new liveWatch.LiveWatchSession(
-                vscode,
-                {
-                    executable,
-                    isolated: true,
-                    transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
-                    probe: debuggerCfg,
-                    target: mcuCore,
-                    ...connection,
-                    cwd,
-                    port,
-                    intervalMs: validation.clampInteger(
-                        intervalMs ?? this._liveIntervalMs,
-                        this._liveIntervalMs,
-                        5,
-                        10000
-                    )
-                },
-                {
-                    onConnectionConfirmed: () => {
-                        if (!startingLease.released && this._liveSession === session)
-                            void this._probeConnectionService.recordSuccess(session.options);
-                        else if (this._liveWatchRunning && this._liveSession === session)
-                            void this._probeConnectionService.recordSuccess(session.options);
-                    },
-                    onSample: (samples, t, consumers) => {
-                        if (
-                            this._liveSession === session &&
-                            !this._liveConnectionClosing &&
-                            !this._liveExitUnconfirmed &&
-                            !session.stopped &&
-                            !session.connectionFailed
-                        )
-                            this._handleRawSamples(samples, t, consumers);
-                    },
-                    onSampleGap: () => {
-                        if (this._liveSession === session && !this._liveConnectionClosing && !session.stopped)
-                            this._handleSampleGap();
-                    },
-                    onStatus: (msg) => {
-                        if (this._liveSession === session && !this._liveConnectionClosing && !this._liveExitUnconfirmed)
-                            this._postConsumerStatuses(msg);
-                    },
-                    onError: (msg) => {
-                        if (this._liveSession === session) this._postLive({ type: "liveError", ...toUiError(msg) });
-                    },
-                    onDisconnect: (err) => {
-                        if (this._liveSession !== session) return;
-                        const stopped = this.stopLiveWatch({ discardPending: true });
-                        const stoppedGeneration = this._liveStartGeneration;
-                        void Promise.resolve(stopped)
-                            .then(() => {
-                                if (this._liveSession || stoppedGeneration !== this._liveStartGeneration) return;
-                                this._postConsumerStatuses(
-                                    {
-                                        key: err?.i18nKey || "live.connectionClosed",
-                                        params: err?.i18nParams,
-                                        diagnostic: serializeError(err),
-                                        source: "none",
-                                        connectionState: "disconnected"
-                                    },
-                                    true
-                                );
-                            })
-                            .catch(() => {});
-                    }
-                }
-            );
-            this._liveSession = session;
-            if (generation !== this._liveStartGeneration) return;
-            this._sampling.applySamplingPlan(session, this._sampling.activeReadPlan());
-            this._liveSession = session;
-            await session.start();
-            if (this._liveSession !== session || startingLease.released || generation !== this._liveStartGeneration)
-                return;
-            this._samplingCoordinator.setDeliveryHold(session);
-            session.setSamplingEnabled(!!this._samplingIntent);
-            this._liveWatchLease = startingLease.transition("liveWatch");
-            this._setLiveInterval(intervalMs ?? this._liveIntervalMs);
-            this._postConsumerStatuses({ key: this._samplingIntent ? "sb.sampling" : "sb.stopped" });
-        } catch (error) {
-            if (session && this._liveSession === session) {
-                const closed = await session.stop().catch(() => false);
-                if (closed !== false) {
-                    this._liveSession = null;
-                    if (this._liveWatchRunning) this._liveWatchLease?.release();
-                }
-            }
-            this._liveConsumers.clear();
-            this._postConsumerStatuses(
-                {
-                    key: error.i18nKey,
-                    params: error.i18nParams,
-                    message: error.message,
-                    diagnostic: serializeError(error)
-                },
-                true
-            );
-            throw error;
-        } finally {
-            if (!session || this._liveSession !== session) startingLease.release();
-        }
-    }
-    stopLiveWatch(options = {}) {
-        this._liveStartGeneration = (this._liveStartGeneration || 0) + 1;
-        if (options.discardPending) {
-            for (const entry of this._livePanels?.values() || []) {
-                entry._pendingScalars = [];
-                entry._pendingComposites = [];
-            }
-            this._pendingSidebarScalars = [];
-            this._pendingSidebarComposites = [];
-        }
-        const historyFlushed = this._flushPendingChartHistorySamples();
-        this._flushPendingWebviewSamples();
-        const preserveIntent = !!options.preserveIntent;
-        this._liveConsumers.clear();
-        if (!preserveIntent) {
-            this._samplingIntent = false;
-            this._debugBridge.setIntent(false);
-            this._managedDebugServer?.setSamplingEnabled(false);
-        }
-        this._liveSession?.setSamplingEnabled?.(false);
-        this._liveConnectionClosing = !!(this._liveStartPromise || this._liveSession);
-        this._liveExitUnconfirmed = false;
-        this._postConsumerStatuses(
-            preserveIntent && this._debugBridge.hasSession
-                ? this._debugBridge.status()
-                : {
-                      key: this._liveConnectionClosing
-                          ? "live.disconnecting"
-                          : preserveIntent
-                            ? "live.restoring"
-                            : "sb.stopped"
-                  }
-        );
-        if (this._liveStopPromise) return this._liveStopPromise;
-        const pending = this._liveStartPromise;
-        if (!pending && !this._liveSession) {
-            this._liveStartLease?.release();
-            this._liveWatchLease?.release();
-            return null;
-        }
-        this._liveStopPromise = (async () => {
-            if (pending) await pending.catch(() => {});
-            const session = this._liveSession;
-            if (session && (await session.stop()) === false)
-                throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
-                    code: "PROBE_EXIT_UNCONFIRMED",
-                    i18nKey: "live.exitUnconfirmed"
-                });
-            await historyFlushed;
-            if (this._liveSession === session) this._liveSession = null;
-            this._liveStartLease?.release();
-            this._liveWatchLease?.release();
-            this._liveConnectionClosing = false;
-            this._postConsumerStatuses(
-                preserveIntent && this._debugBridge.hasSession
-                    ? this._debugBridge.status()
-                    : {
-                          key: preserveIntent ? "live.restoring" : "sb.stopped",
-                          source: "none",
-                          connectionState: "disconnected"
-                      }
-            );
-            return true;
-        })()
-            .catch((error) => {
-                this._liveExitUnconfirmed = true;
-                this._postConsumerStatuses({ key: "live.exitUnconfirmed", diagnostic: serializeError(error) }, true);
-                throw error;
-            })
-            .finally(() => {
-                this._liveConnectionClosing = false;
-                this._liveStopPromise = null;
-                this._postProbeOperationStatus();
-            });
-        this._liveStopPromise.catch((error) => this._postLive?.({ type: "liveError", ...toUiError(error) }));
-        return this._liveStopPromise;
     }
     async externalDebugSettingsChanged() {
         await this._externalDebug.releaseIfDisabled();
@@ -4696,8 +3950,7 @@ class MainViewProvider {
                 throw new Error("External GDB was disabled during startup");
             const stoppedAgent = this.stopAgentReadIfRunning();
             if (stoppedAgent) await stoppedAgent;
-            if (this._liveWatchRunning || this._liveSession || this._liveStartPromise || this._liveStopPromise)
-                await this.stopLiveWatch({ preserveIntent: true });
+            if (this._sampling.inUse) await this._sampling.stop({ preserveIntent: true });
             this._debugBridge.setWorkspace(folder);
             // Freeze settings read at entry. No probe detection or extra TCP readiness connection.
             const reservation = await this._externalDebug.reserve(folder.uri.fsPath, connection);
@@ -4737,8 +3990,8 @@ class MainViewProvider {
         }
         const agentStopped = this.stopAgentReadIfRunning();
         if (agentStopped) await agentStopped;
-        if (this._liveWatchRunning || this._liveSession || this._liveStartPromise || this._liveStopPromise) {
-            const stopped = this.stopLiveWatch({ preserveIntent: true });
+        if (this._sampling.inUse) {
+            const stopped = this._sampling.stop({ preserveIntent: true });
             if (stopped) await stopped;
             this._postConsumerStatuses({
                 mode: "debug-running-waiting",
@@ -4748,7 +4001,7 @@ class MainViewProvider {
                 canWrite: false,
                 snapshotReady: false
             });
-        } else if (this._samplingIntent) {
+        } else if (this._sampling.intent) {
             this._postConsumerStatuses({
                 mode: "debug-running-waiting",
                 key: "live.debugWaiting",
@@ -4782,7 +4035,7 @@ class MainViewProvider {
             this._managedDebugServer.invalidateTarget?.();
             this._managedDebugServer.setSamplingEnabled(false);
         }
-        this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._samplingIntent);
+        this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._sampling.intent);
     }
     handleDebugAdapterMessage(session, message) {
         void this._externalDebug?.message(session, message).catch(console.error);
@@ -4858,7 +4111,7 @@ class MainViewProvider {
             this._clearDebugStartupWatchdog({ kind: "terminated" });
             this._debugBridge.detach(session);
             await this._externalDebug.finish(session);
-            this._samplingIntent = false;
+            this._sampling.intent = false;
             this._debugBridge.setIntent(false);
             return false;
         }
@@ -4901,7 +4154,7 @@ class MainViewProvider {
             return;
         }
         if (this._managedDebugServer) await this._stopManagedDebugServer();
-        if (!this._samplingIntent) {
+        if (!this._sampling.intent) {
             this._postConsumerStatuses({ mode: "stopped", key: "sb.stopped", source: "none" });
             return;
         }
@@ -4913,9 +4166,9 @@ class MainViewProvider {
             canWrite: false
         });
         await new Promise((resolve) => setTimeout(resolve, 350));
-        if (!this._samplingIntent || this._debugBridge.hasAnySession) return;
+        if (!this._sampling.intent || this._debugBridge.hasAnySession) return;
         try {
-            await this.startLiveWatch(undefined, this._liveIntervalMs, "restore");
+            await this._sampling.start(undefined, this._sampling.intervalMs, "restore");
         } catch (error) {
             this._postConsumerStatuses({ mode: "restore-failed", ...toUiError(error), source: "none" }, true);
         }
@@ -4987,7 +4240,7 @@ class MainViewProvider {
                 }
             }
             await this._stopManagedDebugServer();
-            const stopped = this.stopLiveWatch();
+            const stopped = this._sampling.stop();
             if (stopped) await stopped;
             await this._flushPendingChartHistorySamples();
             await this._livePanelRegistry?.pending.catch(console.error);

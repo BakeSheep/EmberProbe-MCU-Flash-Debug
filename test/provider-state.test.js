@@ -49,21 +49,21 @@ function deferred() {
     p._debugBridge = { setIntent: () => {} };
     p._context = { workspaceState: { get: () => "configured" } };
     p._sampling.activeReadPlan = () => [{ name: "tick", address: 0x20000000, size: 4 }];
-    p._liveConsumers = new Set();
-    p._setLiveInterval = () => {};
+    p._sampling.consumers = new Set();
+    p._sampling.setIntervalMs = () => {};
     p._commandContext = () => ({});
     p._t = (key) => key;
     let samples = 0,
         statuses = 0;
-    p._handleRawSamples = () => samples++;
+    p._sampling.handleRawSamples = () => samples++;
     p._postConsumerStatuses = () => statuses++;
     p._postLive = () => statuses++;
     p._resolveTclPort = async () => 1234;
     const pathGate = deferred();
     p._resolveOpenOcdPath = () => pathGate.promise;
-    const cancelled = p.startLiveWatch();
+    const cancelled = p._sampling.start();
     assert.strictEqual(p._probeCoordinator.firstActive(), "liveStart");
-    const stopping = p.stopLiveWatch();
+    const stopping = p._sampling.stop();
     pathGate.resolve("fake-openocd");
     await cancelled;
     await stopping;
@@ -71,13 +71,13 @@ function deferred() {
     assert.strictEqual(p._probeCoordinator.anyActive(), false);
     p._resolveOpenOcdPath = async () => "fake-openocd";
     p._samplingCoordinator.setBackpressure(true);
-    await p.startLiveWatch();
+    await p._sampling.start();
     const first = sessions[0];
     assert.strictEqual(first.enabled, true, "archive backpressure does not stop Worker sampling");
     assert.strictEqual(first.deliveryHold, true, "it holds delivery until the archive drains");
     assert.strictEqual(p._probeCoordinator.firstActive(), "liveWatch");
-    await p.stopLiveWatch();
-    await p.startLiveWatch();
+    await p._sampling.stop();
+    await p._sampling.start();
     const count = statuses;
     first.events.onSample([], 1);
     first.events.onStatus({});
@@ -85,15 +85,15 @@ function deferred() {
     first.events.onDisconnect(Error("old"));
     assert.strictEqual(samples, 0);
     assert.strictEqual(statuses, count);
-    assert.strictEqual(p._liveSession, sessions[1]);
-    await p.stopLiveWatch();
+    assert.strictEqual(p._sampling.session, sessions[1]);
+    await p._sampling.stop();
     assert.strictEqual(p._probeCoordinator.anyActive(), false);
     // Every list update goes through invalidation, pruning, plan refresh and panel synchronization.
     const calls = [];
     p._watchLists = { save: async () => calls.push("save") };
     p._latestSidebarSamples = new Map();
     p._livePanels = new Map([["panel", { watchKey: "chart", latestSamples: new Map() }]]);
-    p._pruneSampleMap = () => calls.push("prune");
+    p._sampling.pruneSampleMap = () => calls.push("prune");
     p._sampling.refreshSamplingPlan = async () => calls.push("refresh");
     p._syncSidebarTarget = (_post, skipElf) => {
         assert.strictEqual(skipElf, true, "list edits must not resend the ELF snapshot");
@@ -149,16 +149,18 @@ function deferred() {
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
-                _liveConsumers: new Set(),
-                _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
                 _resolveTclPort: async () => 1234,
                 _resolveOpenOcdPath: async () => "fake",
                 _postConsumerStatuses: (status) => statuses.push(status),
                 _postLive() {},
-                _postAgentSampling() {},
-                _handleRawSamples: () => {
+                _postAgentSampling() {}
+            });
+            Object.assign(p._sampling, {
+                consumers: new Set(),
+                setIntervalMs() {},
+                handleRawSamples: () => {
                     throw Error("Late sample accepted");
                 }
             });
@@ -168,22 +170,22 @@ function deferred() {
         const { p, sessions, statuses } = providerFixture();
         const elf = deferred();
         p._elfService = { workerPath: "fake", ready: () => elf.promise };
-        const starting = p.startLiveWatch();
+        const starting = p._sampling.start();
         await tick();
-        const stopping = p.stopLiveWatch();
+        const stopping = p._sampling.stop();
         elf.resolve();
         await Promise.all([starting, stopping]);
-        assert.strictEqual(p._samplingIntent, false);
+        assert.strictEqual(p._sampling.intent, false);
         assert.strictEqual(sessions.length, 0);
         p._elfService = null;
-        await p.startLiveWatch();
+        await p._sampling.start();
         const exit = deferred();
         const live = sessions[0];
         let accepted = 0;
-        p._handleRawSamples = () => {
+        p._sampling.handleRawSamples = () => {
             accepted++;
         };
-        await p.startLiveWatch();
+        await p._sampling.start();
         live.events.onSample([], 1);
         assert.strictEqual(accepted, 1, "refreshing an active watch plan must keep receiving its samples");
         live.stop = () => exit.promise;
@@ -194,11 +196,11 @@ function deferred() {
         assert.strictEqual(accepted, 1, "disconnect must discard late samples from the same session");
         assert.strictEqual(p._probeCoordinator.firstActive(), "liveWatch");
         exit.resolve(false);
-        await assert.rejects(p._liveStopPromise, { code: "PROBE_EXIT_UNCONFIRMED" });
+        await assert.rejects(p._sampling.stopPromise, { code: "PROBE_EXIT_UNCONFIRMED" });
         assert.strictEqual(statuses.at(-1).key, "live.exitUnconfirmed");
-        assert.strictEqual(p._liveSession, live);
+        assert.strictEqual(p._sampling.session, live);
         live.stop = async () => true;
-        await p.stopLiveWatch();
+        await p._sampling.stop();
         assert.strictEqual(p._probeCoordinator.anyActive(), false);
     });
 

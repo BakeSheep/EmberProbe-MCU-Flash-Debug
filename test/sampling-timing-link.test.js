@@ -178,24 +178,26 @@ async function networkAndIdentity() {
         stopped = 0,
         restarted = 0;
     Object.assign(provider, {
-        _liveSession: { options: connection },
-        _samplingIntent: true,
-        _liveStartGeneration: 0,
         _probeConnectionService: {
             markConfigurationChanged: (sessions) => {
-                assert.deepStrictEqual(sessions, [provider._liveSession]);
+                assert.deepStrictEqual(sessions, [provider._sampling.session]);
                 marked++;
             }
         },
         _debugBridge: { activeSession: { id: "debug" } },
         _refreshConnectedProbes: async () => {},
-        _postConsumerStatuses: () => {},
-        stopLiveWatch: (options) => {
+        _postConsumerStatuses: () => {}
+    });
+    Object.assign(provider._sampling, {
+        session: { options: connection },
+        intent: true,
+        _startGeneration: 0,
+        stop: (options) => {
             assert(options.preserveIntent);
             stopped++;
-            provider._liveStartGeneration++;
+            provider._sampling._startGeneration++;
         },
-        startLiveWatch: async () => {
+        start: async () => {
             restarted++;
         }
     });

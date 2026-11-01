@@ -27,14 +27,14 @@ async function ready({ host, entry, post, watchKey }) {
     post({ type: "seriesStyles", styles: host._seriesStyleStore.styles });
     post(host._chartBackgroundState());
     host.chartBackground().ready(entry);
-    post(host._unlimitedSamplingState());
-    post(host._pointerSamplingState());
+    post(host._sampling.unlimitedState());
+    post(host._sampling.pointerState());
     post({ type: "chartHistoryReady", historyRevision: entry.historyRevision || 0 });
     post({ type: "curveVisibility", hidden: host._curveVisibility(watchKey) });
     host._syncGraphTarget(entry);
-    if (host._liveSession) {
+    if (host._sampling.session) {
         const active = host._sampling.activeReadPlan();
-        if (active.length) host._sampling.applySamplingPlan(host._liveSession, active);
+        if (active.length) host._sampling.applySamplingPlan(host._sampling.session, active);
     }
     if (host._chartHistory) {
         const scope = host._debugSamplingScope(watchKey);
@@ -204,9 +204,9 @@ const LIVE_PANEL_ROUTES = {
     saveCurveVisibility: ({ host, watchKey }, message) => host._saveCurveVisibility(watchKey, message.hidden),
     setPointerExpandedOnly: async ({ host, post }, message) => {
         try {
-            await host._setPointerExpandedOnly(message.enabled);
+            await host._sampling.setPointerExpandedOnly(message.enabled);
         } finally {
-            post(host._pointerSamplingState());
+            post(host._sampling.pointerState());
         }
     },
     setSeriesStyle: async ({ host }, message) => {
@@ -217,21 +217,21 @@ const LIVE_PANEL_ROUTES = {
     saveWatch: ({ host, watchKey }, message) => host._saveWatchList(watchKey, message.items || []),
     start: async ({ host, watchKey }, message) => {
         await host._saveWatchList(watchKey, message.items || []);
-        if (message.frequencyHz !== undefined) await host._saveLiveFrequency(message.frequencyHz);
-        await host.startLiveWatch(message.items || [], host._liveIntervalMs, "graph");
+        if (message.frequencyHz !== undefined) await host._sampling.saveFrequency(message.frequencyHz);
+        await host._sampling.start(message.items || [], host._sampling.intervalMs, "graph");
     },
     stop: ({ host }) => {
         if (host._agentReadRunning) host.stopAgentReadIfRunning();
-        else host.stopLiveWatch({ variablesOnly: true });
+        else host._sampling.stop({ variablesOnly: true });
     },
-    setInterval: ({ host }, message) => host._setLiveInterval(message.intervalMs),
-    setFrequency: ({ host }, message) => host._saveLiveFrequency(message.frequencyHz),
+    setInterval: ({ host }, message) => host._sampling.setIntervalMs(message.intervalMs),
+    setFrequency: ({ host }, message) => host._sampling.saveFrequency(message.frequencyHz),
     setUnlimitedSampling: async ({ host, post }, message) => {
         try {
-            await host._setUnlimitedSampling(message.enabled);
+            await host._sampling.setUnlimited(message.enabled);
         } finally {
             // Resynchronise the toggle even when the request was rejected.
-            post(host._unlimitedSamplingState());
+            post(host._sampling.unlimitedState());
         }
     },
     samplingArchiveInfo: ({ host, post, watchKey }, message) => {

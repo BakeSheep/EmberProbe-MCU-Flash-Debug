@@ -70,21 +70,19 @@ function fixture(saved) {
         _livePanelFocusOrder: 0,
         _webviewAssetRootUri: { fsPath: path.join(os.tmpdir(), "panel-identity-" + randomUUID()) },
         _lang: "zh",
-        _liveFrequencyHz: 10,
         _latestSidebarSamples: new Map(),
         _seriesStyleStore: { initialize: async () => {}, styles: {} },
         _renderWebview(webview, html) {
             webview.html = html;
         },
         _configureChartHistory() {},
-        _samplingStatus: () => ({ running: false }),
         readElfSymbols: () => ({ symbols: [] }),
-        _pruneSampleMap() {},
         _syncSidebarTarget() {},
         _chartBackgroundState: () => ({ type: "chartBackgroundIcon", icon: null }),
         chartBackground: () => ({ ready() {} }),
         _t: (key, params) => t("zh", key, params)
     });
+    Object.assign(host._sampling, { frequencyHz: 10, status: () => ({ running: false }), pruneSampleMap() {} });
     Object.assign(host._sampling, { invalidateConsumerTypes() {}, refreshSamplingPlan: async () => {} });
     host._watchLists = new WatchListStore({
         state,

@@ -50,9 +50,6 @@ function fixture() {
                 return { mode: "debug-running-waiting", canRead: false, source: "dap" };
             }
         },
-        _samplingIntent: false,
-        _liveIntervalMs: 100,
-        _liveConsumers: new Set(),
         _livePanels: new Map([["chart", { post: (message) => chart.push(message) }]]),
         _webviewView: { webview: { postMessage: (message) => sidebar.push(message) } },
         _resolveOpenOcdPath: async () => "fake-openocd",
@@ -66,6 +63,7 @@ function fixture() {
         _commandContext: () => ({}),
         _t: (key) => key
     });
+    Object.assign(provider._sampling, { intent: false, intervalMs: 100, consumers: new Set() });
     Object.assign(provider._sampling, { activeReadPlan: () => [{ name: "tick", address: 0x20000000, size: 4 }] });
     return { provider, sidebar, chart };
 }
@@ -93,7 +91,7 @@ function fixture() {
     for (const params of [null, [], "bad", { intervalMs: "100" }, { intervalMs: 0 }, { variables: [] }])
         await assert.rejects(p._controlAgentSampling("start", params), { code: "INVALID_PARAMS" });
     await assert.rejects(p._controlAgentSampling("stop", { intervalMs: 100 }), { code: "INVALID_PARAMS" });
-    assert.strictEqual(p._samplingIntent, false);
+    assert.strictEqual(p._sampling.intent, false);
 
     const started = await p._controlAgentSampling("start", { intervalMs: 250 });
     assert.strictEqual(p.lastInteractive, false, "Agent sampling must not prompt");
@@ -107,20 +105,20 @@ function fixture() {
         "sidebar target is independent of the waveform target"
     );
     assert.strictEqual(chart.at(-1).frequencyHz, 4);
-    const session = p._liveSession;
+    const session = p._sampling.session;
     await p._controlAgentSampling("start");
-    assert.strictEqual(p._liveSession, session, "repeated start reuses the connection");
+    assert.strictEqual(p._sampling.session, session, "repeated start reuses the connection");
     assert.strictEqual(session.intervalMs, 250);
-    p._setSamplingArchiveBackpressure(true);
+    p._sampling.setArchiveBackpressure(true);
     assert.strictEqual((await p._controlAgentSampling("status")).canRead, false);
-    p._setSamplingArchiveBackpressure(false);
+    p._sampling.setArchiveBackpressure(false);
 
     // A user stop is reflected in Agent queries; an Agent stop is reflected in both UIs.
-    await p.stopLiveWatch();
+    await p._sampling.stop();
     assert.strictEqual((await p._controlAgentSampling("status")).running, false);
-    await p.startLiveWatch(undefined, 300, "sidebar");
+    await p._sampling.start(undefined, 300, "sidebar");
     assert.strictEqual((await p._controlAgentSampling("status")).intervalMs, 300);
-    const userSession = p._liveSession;
+    const userSession = p._sampling.session;
     const stopped = await p._controlAgentSampling("stop");
     assert.strictEqual(userSession.stopped, true, "stop response waits for connection cleanup");
     assert.strictEqual(stopped.running, false);
@@ -133,12 +131,12 @@ function fixture() {
 
     const busy = p._probeCoordinator.acquire("download");
     await assert.rejects(p._controlAgentSampling("start"), { i18nKey: "live.downloadRunning" });
-    assert.strictEqual(p._samplingIntent, false);
+    assert.strictEqual(p._sampling.intent, false);
     busy.release();
     p._resolveOpenOcdPath = async () => null;
     await assert.rejects(p._controlAgentSampling("start"), { i18nKey: "live.notReady" });
     assert.strictEqual(sidebar.filter((message) => message.type === "liveStatus").at(-1).error, true);
-    assert.strictEqual(p._liveStarting, false);
+    assert.strictEqual(p._sampling.starting, false);
     await p._controlAgentSampling("stop");
 
     // Stop during async startup must prevent the late continuation from reopening sampling.
@@ -147,11 +145,11 @@ function fixture() {
     const pending = p._controlAgentSampling("start");
     assert.strictEqual((await p._controlAgentSampling("status")).starting, true);
     const cancelling = p._controlAgentSampling("stop");
-    assert.strictEqual(p._liveStarting, true, "startup keeps its reservation until cancellation settles");
+    assert.strictEqual(p._sampling.starting, true, "startup keeps its reservation until cancellation settles");
     resolveExecutable("fake-openocd");
     await cancelling;
     assert.strictEqual((await pending).running, false);
-    assert.strictEqual(p._liveWatchRunning, false);
+    assert.strictEqual(p._sampling.running, false);
 
     const { provider: q } = fixture();
     q._sampling.activeReadPlan = () => [];
@@ -224,16 +222,18 @@ function fixture() {
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
-                _liveConsumers: new Set(),
-                _setLiveInterval() {},
                 _commandContext: () => ({}),
                 _t: (key) => key,
                 _resolveTclPort: async () => 1234,
                 _resolveOpenOcdPath: async () => "fake",
                 _postConsumerStatuses: (status) => statuses.push(status),
                 _postLive() {},
-                _postAgentSampling() {},
-                _handleRawSamples: () => {
+                _postAgentSampling() {}
+            });
+            Object.assign(p._sampling, {
+                consumers: new Set(),
+                setIntervalMs() {},
+                handleRawSamples: () => {
                     throw Error("Late sample accepted");
                 }
             });
@@ -353,10 +353,12 @@ function fixture() {
                     source: "live-sampling",
                     temporary: false
                 }),
-            stopAgentReadIfRunning: () => (stops.push("agent"), null),
-            stopLiveWatch: async () => stops.push("live"),
-            _samplingStatus: () => ({ running: false }),
-            _liveIntervalMs: 100
+            stopAgentReadIfRunning: () => (stops.push("agent"), null)
+        });
+        Object.assign(host._sampling, {
+            stop: async () => stops.push("live"),
+            status: () => ({ running: false }),
+            intervalMs: 100
         });
         Object.assign(host._sampling, { runtimeReadRanges: () => [] });
         const sampling = host._sampleAgentVariables({ variables: [{ name: "tick" }], count: 1000, intervalMs: 60000 });

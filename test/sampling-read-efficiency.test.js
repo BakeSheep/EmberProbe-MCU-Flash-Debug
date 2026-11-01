@@ -270,7 +270,7 @@ function startupFixture(mode, branch) {
         graphs: new Map([["g", new Map([["a", "u32"]])]]),
         sidebar: new Map([["b", "u32"]])
     });
-    provider._liveIntervalMs = 10;
+    provider._sampling.intervalMs = 10;
     for (const mode of ["standalone", "debug"]) {
         const session = new ManagedOpenOcdSession(null, { mode }, {});
         provider._sampling.applySamplingPlan(session, pair);

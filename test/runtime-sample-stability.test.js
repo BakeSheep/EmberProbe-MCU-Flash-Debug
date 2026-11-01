@@ -156,7 +156,7 @@ const sample = (item, read) =>
     const posted = [];
     const entry = { ready: true, post: (message) => posted.push(message) };
     p._livePanels = new Map([[1, entry]]);
-    p._liveIntervalMs = 10;
+    p._sampling.intervalMs = 10;
     p._probeCoordinator = { isActive: (name) => name === "liveWatch" };
     p._chartHistory = null;
     const sidebarPosted = [];
@@ -165,10 +165,10 @@ const sample = (item, read) =>
         [1, "good"],
         [2, "error"]
     ]) {
-        p._postWebviewBatch(entry, [], [{ name: "h", tree: { value } }], t);
-        p._postSidebarBatch([], [{ name: "h", tree: { value } }], t);
+        p._sampling._postWebviewBatch(entry, [], [{ name: "h", tree: { value } }], t);
+        p._sampling._postSidebarBatch([], [{ name: "h", tree: { value } }], t);
     }
-    p._flushPendingWebviewSamples();
+    p._sampling._flushPendingWebviewSamples();
     for (const messages of [posted, sidebarPosted]) {
         const composites = messages.filter((message) => message.type === "liveCompositeSample");
         assert.strictEqual(composites.length, 1);
@@ -187,9 +187,9 @@ const sample = (item, read) =>
     p.readElfSymbols = () => {
         throw new Error("no ELF");
     };
-    p._pointerExpandedOnly = true;
+    p._sampling.pointerExpandedOnly = true;
     assert.deepStrictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, ["", ".focus"]);
-    p._pointerExpandedOnly = false;
+    p._sampling.pointerExpandedOnly = false;
     assert.strictEqual(p._sampling.activeReadPlan()[0].runtimeExpanded, undefined, "off reads the whole object");
 
     const view = render(getModernWebviewContent({}, "en"));

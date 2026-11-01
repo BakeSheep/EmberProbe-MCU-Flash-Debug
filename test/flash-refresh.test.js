@@ -31,14 +31,10 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
         _context: { workspaceState: { get: (key) => state.get(key) } },
         _probeCoordinator: new ProbeCoordinator(),
         _samplingCoordinator: new SamplingCoordinator(),
-        _samplingIntent: sampling,
-        _liveConsumers: new Set(["sidebar", "graph"]),
         _livePanels: new Map(),
         _latestSidebarSamples: new Map([["counter", { bytes: [1] }]]),
-        _liveIntervalMs: 50,
         _debugBridge: { hasSession: false, hasAnySession: false, setIntent() {} },
         _webviewView: { webview: { postMessage: (message) => messages.push(message) } },
-        _flushPendingWebviewSamples() {},
         _postConsumerStatuses() {},
         _postLive: (message) => messages.push(message),
         _resolveOpenOcdPath: async () => "fake-openocd",
@@ -76,14 +72,20 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
         _flashService: {
             download: async (_vscode, options) => {
                 assert.strictEqual(provider._downloadRunning, true);
-                assert.strictEqual(provider._liveSession, null);
+                assert.strictEqual(provider._sampling.session, null);
                 if (sampling) assert.ok(events.includes("stopped"), "probe exits before flashing starts");
                 events.push("flash");
                 await options.prepare();
                 if (failFlash) throw new Error("Flash failed");
             }
-        },
-        startLiveWatch: async (items, interval, consumer) => {
+        }
+    });
+    Object.assign(provider._sampling, {
+        intent: sampling,
+        consumers: new Set(["sidebar", "graph"]),
+        intervalMs: 50,
+        _flushPendingWebviewSamples() {},
+        start: async (items, interval, consumer) => {
             assert.strictEqual(provider._downloadRunning, false, "release the probe before resuming");
             assert.ok(events.includes("memory-ready"));
             assert.ok(events.includes("sidebar-refresh"));
@@ -92,21 +94,21 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
             assert.strictEqual(consumer, "refresh");
             events.push("resume");
             if (failResume) throw new Error("Reconnect failed");
-            provider._samplingIntent = true;
+            provider._sampling.intent = true;
         }
     });
     Object.assign(provider._sampling, { activeReadPlan: () => [symbol] });
     if (sampling) {
-        provider._liveWatchLease = provider._probeCoordinator.acquire("liveWatch");
-        provider._liveSession = {
+        provider._sampling._lease = provider._probeCoordinator.acquire("liveWatch");
+        provider._sampling.session = {
             stop: async () => {
                 events.push("stop");
                 await Promise.resolve();
-                assert.strictEqual(provider._liveWatchRunning, true, "retain sampling ownership while it exits");
+                assert.strictEqual(provider._sampling.running, true, "retain sampling ownership while it exits");
                 events.push("stopped");
             }
         };
-    } else provider._liveSession = null;
+    } else provider._sampling.session = null;
     provider.registerCommandHandlers();
     return { provider, events, warnings, messages, state };
 }
@@ -127,7 +129,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
         "sidebar-refresh",
         "resume"
     ]);
-    assert.strictEqual(active.provider._samplingIntent, true);
+    assert.strictEqual(active.provider._sampling.intent, true);
     assert.ok(active.messages.some((message) => message.type === "availableVariables"));
 
     const idle = fixture({ sampling: false });
@@ -137,7 +139,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
 
     const failed = fixture({ failFlash: true });
     await assert.rejects(failed.provider.commandHandlers["mcu-vscode.download"](), /Flash failed/);
-    assert.strictEqual(failed.provider._samplingIntent, false);
+    assert.strictEqual(failed.provider._sampling.intent, false);
     assert.strictEqual(failed.provider._downloadRunning, false);
     assert.ok(!failed.events.includes("resume"));
 
@@ -166,7 +168,7 @@ function fixture({ sampling = true, failFlash = false, failRefresh = false, fail
     }
 
     const busy = fixture({ sampling: false });
-    busy.provider._samplingIntent = true;
+    busy.provider._sampling.intent = true;
     const lease = busy.provider._probeCoordinator.acquire("download");
     await busy.provider._sampling.refreshSamplingPlan();
     assert.ok(!busy.events.includes("resume"), "ELF updates cannot start sampling during a flash");
