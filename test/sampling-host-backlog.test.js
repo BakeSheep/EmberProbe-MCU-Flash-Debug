@@ -317,12 +317,12 @@ async function testProviderWiring() {
         const rows = [];
         Object.assign(p, {
             _samplingCoordinator: new SamplingCoordinator(),
-            _managedDebugServer: null,
             _debugBridge: { setIntent() {} },
             _liveWatchService: {},
             _samplingArchive: {},
             _postConsumerStatuses() {}
         });
+        Object.assign(p.debugLaunch, { managedServer: null });
         Object.assign(p._sampling, {
             intent: true,
             session: session,

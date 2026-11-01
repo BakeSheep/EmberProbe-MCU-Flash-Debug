@@ -318,13 +318,13 @@ function pausedBridge(ram, onRead = () => {}) {
         const word = { name: "word", address: BASE + 0x10000, size: 4 };
         let plan = [big, word];
         Object.assign(host, {
-            _managedDebugServer: { capabilities: {} },
             readElfSymbols: () => ({
                 elf: { sha256: "elf" },
                 memory: { sections: [{ name: ".bss", addr: BASE, size: 0x20000, flags: 3 }] }
             }),
             _postLive: (message) => posts.push(message)
         });
+        Object.assign(host.debugLaunch, { managedServer: { capabilities: {} } });
         Object.assign(host._sampling, { handleRawSamples: (samples) => raw.push(...samples) });
         Object.assign(host._sampling, {
             activeReadPlan: () => plan,

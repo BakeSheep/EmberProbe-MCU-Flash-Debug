@@ -126,30 +126,32 @@ const keepAlive = setInterval(() => {}, 1000);
         Object.assign(host, {
             _context: { workspaceState: { get: (key) => values.get(key) } },
             _commandContext: () => ({ folder }),
-            _gdbWarmup: { warm: async (gdbPath) => warmed.push(gdbPath) },
-            _gdbWarmupTimer: null,
             _shutdownPromise: null
         });
+        Object.assign(host.debugLaunch, {
+            gdbWarmup: { warm: async (gdbPath) => warmed.push(gdbPath) },
+            gdbWarmupTimer: null
+        });
         const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
-        host.scheduleGdbWarmup();
+        host.debugLaunch.scheduleGdbWarmup();
         await settle();
         assert.deepStrictEqual(warmed, [GDB]);
         assert.deepStrictEqual(lookups, [folder]);
         vscode.workspace.isTrusted = false;
-        host.scheduleGdbWarmup(0);
+        host.debugLaunch.scheduleGdbWarmup(0);
         await settle();
         vscode.workspace.isTrusted = true;
         values.delete("mcu.elfPath");
-        host.scheduleGdbWarmup(0);
+        host.debugLaunch.scheduleGdbWarmup(0);
         await settle();
         assert.strictEqual(warmed.length, 1, "untrusted or unconfigured workspaces never start GDB");
         values.set("mcu.elfPath", "C:\\work\\build\\app.elf");
-        host.scheduleGdbWarmup(1000);
-        assert(host._gdbWarmupTimer);
-        host._gdbWarmup.dispose = () => {};
-        clearTimeout(host._gdbWarmupTimer);
-        host._gdbWarmupTimer = null;
-        host.scheduleGdbWarmup(0);
+        host.debugLaunch.scheduleGdbWarmup(1000);
+        assert(host.debugLaunch.gdbWarmupTimer);
+        host.debugLaunch.gdbWarmup.dispose = () => {};
+        clearTimeout(host.debugLaunch.gdbWarmupTimer);
+        host.debugLaunch.gdbWarmupTimer = null;
+        host.debugLaunch.scheduleGdbWarmup(0);
         host._shutdownPromise = Promise.resolve();
         await settle();
         assert.strictEqual(warmed.length, 1, "shutdown cancels a pending warm-up");

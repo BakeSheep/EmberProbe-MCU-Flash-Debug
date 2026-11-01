@@ -180,19 +180,21 @@ function bind(group, member) {
     let prepared = 0,
         restored = 0;
     Object.assign(host, {
-        _managedDebugGroup: hostState.group,
-        _managedDebugServer: hostState.controller,
-        _debugServerLease: hostState.lease,
         _probeConnectionService: { assertCurrent() {} },
-        _debugBridge: new DebugSessionBridge(),
-        _terminatedDebugSessionIds: new Set(),
-        prepareProbeForDebug: async () => prepared++,
-        restoreSamplingAfterDebug: async () => restored++
+        _debugBridge: new DebugSessionBridge()
+    });
+    Object.assign(host.debugLaunch, {
+        managedGroup: hostState.group,
+        managedServer: hostState.controller,
+        serverLease: hostState.lease,
+        terminatedSessionIds: new Set(),
+        prepareProbe: async () => prepared++,
+        restoreSampling: async () => restored++
     });
     const zero = reserve(hostState.group, 0);
     const s0 = bind(hostState.group, zero);
     host._debugBridge.attach(s0);
-    const resolved = await host._prepareGroupedDebugConfiguration({
+    const resolved = await host.debugLaunch.prepareGroupedConfiguration({
         folder,
         executable: "openocd",
         probe: options.probe,
@@ -208,14 +210,14 @@ function bind(group, member) {
     const s1 = { id: "host1", type: "emberprobe", workspaceFolder: folder, configuration: resolved };
     hostState.group.bind(s1);
     host._debugBridge.attach(s1);
-    await host.handleDebugSessionTerminate(s0);
+    await host.debugLaunch.handleSessionTerminate(s0);
     assert.strictEqual(restored, 0);
     assert.strictEqual(hostState.stops, 0);
-    await host.handleDebugSessionTerminate(s1);
+    await host.debugLaunch.handleSessionTerminate(s1);
     assert.strictEqual(hostState.stops, 1);
     assert.strictEqual(restored, 1);
-    assert.strictEqual(host._managedDebugGroup, null);
-    assert.strictEqual(host._managedDebugServer, null);
+    assert.strictEqual(host.debugLaunch.managedGroup, null);
+    assert.strictEqual(host.debugLaunch.managedServer, null);
     host._debugBridge.dispose();
     for (const mode of ["startup", "server-exit"]) {
         const cleanup = makeGroup();
@@ -226,20 +228,22 @@ function bind(group, member) {
             debug: {
                 stopDebugging: async (session) => {
                     stopping.push(session.id);
-                    await owner.handleDebugSessionTerminate(session);
+                    await owner.debugLaunch.handleSessionTerminate(session);
                     return true;
                 }
             }
         });
         owner = Object.create(LifecycleProvider.prototype);
         Object.assign(owner, {
-            _managedDebugGroup: cleanup.group,
-            _managedDebugServer: cleanup.controller,
-            _debugServerLease: cleanup.lease,
             _debugBridge: new DebugSessionBridge(),
-            _terminatedDebugSessionIds: new Set(),
-            _postLive() {},
-            restoreSamplingAfterDebug: async () => recovery++
+            _postLive() {}
+        });
+        Object.assign(owner.debugLaunch, {
+            managedGroup: cleanup.group,
+            managedServer: cleanup.controller,
+            serverLease: cleanup.lease,
+            terminatedSessionIds: new Set(),
+            restoreSampling: async () => recovery++
         });
         const one = reserve(cleanup.group, 0);
         const primary = bind(cleanup.group, one);
@@ -248,19 +252,19 @@ function bind(group, member) {
         const secondary = bind(cleanup.group, two);
         owner._debugBridge.attach(secondary);
         if (mode === "startup") {
-            await owner._failGroupedCore(two.token, "startup failed");
+            await owner.debugLaunch.failGroupedCore(two.token, "startup failed");
             assert.deepStrictEqual(stopping, [secondary.id]);
             assert.strictEqual(cleanup.stops, 0);
             assert.strictEqual(recovery, 0);
-            await owner.handleDebugSessionTerminate(primary);
+            await owner.debugLaunch.handleSessionTerminate(primary);
         } else {
             cleanup.controller.ready = false;
-            await owner._handleSharedServerExit(new Error("OpenOCD exited"));
+            await owner.debugLaunch.handleSharedServerExit(new Error("OpenOCD exited"));
             assert.deepStrictEqual(stopping.sort(), [primary.id, secondary.id].sort());
         }
         assert.strictEqual(cleanup.stops, 1);
         assert.strictEqual(recovery, 1);
-        assert.strictEqual(owner._managedDebugGroup, null);
+        assert.strictEqual(owner.debugLaunch.managedGroup, null);
         cleanup.coordinator.acquire("agentRead").release();
         owner._debugBridge.dispose();
     }
@@ -272,20 +276,22 @@ function bind(group, member) {
         debug: {
             stopDebugging: async (session) => {
                 if (session.id === "core1") throw new Error("adapter is not responding");
-                await wedgedOwner.handleDebugSessionTerminate(session);
+                await wedgedOwner.debugLaunch.handleSessionTerminate(session);
                 return true;
             }
         }
     });
     const wedgedOwner = Object.create(WedgedProvider.prototype);
     Object.assign(wedgedOwner, {
-        _managedDebugGroup: wedged.group,
-        _managedDebugServer: wedged.controller,
-        _debugServerLease: wedged.lease,
         _debugBridge: new DebugSessionBridge(),
-        _terminatedDebugSessionIds: new Set(),
-        _postLive() {},
-        restoreSamplingAfterDebug: async () => wedgedRecovery++
+        _postLive() {}
+    });
+    Object.assign(wedgedOwner.debugLaunch, {
+        managedGroup: wedged.group,
+        managedServer: wedged.controller,
+        serverLease: wedged.lease,
+        terminatedSessionIds: new Set(),
+        restoreSampling: async () => wedgedRecovery++
     });
     const wedgedPrimaryMember = reserve(wedged.group, 0);
     const wedgedPrimary = bind(wedged.group, wedgedPrimaryMember);
@@ -293,14 +299,17 @@ function bind(group, member) {
     const wedgedSecondary = bind(wedged.group, wedgedSecondaryMember);
     wedgedOwner._debugBridge.attach(wedgedPrimary);
     wedgedOwner._debugBridge.attach(wedgedSecondary);
-    await assert.rejects(wedgedOwner._failGroupedCore(wedgedSecondaryMember.token, "OpenOCD exited"), /not responding/);
+    await assert.rejects(
+        wedgedOwner.debugLaunch.failGroupedCore(wedgedSecondaryMember.token, "OpenOCD exited"),
+        /not responding/
+    );
     assert.strictEqual(wedged.group.members.size, 1, "a throwing stop must still release the member");
     assert.strictEqual(wedged.group.members.has(wedgedSecondaryMember.token), false);
     assert.strictEqual(wedged.stops, 0);
-    await wedgedOwner.handleDebugSessionTerminate(wedgedPrimary);
+    await wedgedOwner.debugLaunch.handleSessionTerminate(wedgedPrimary);
     assert.strictEqual(wedged.stops, 1);
     assert.strictEqual(wedgedRecovery, 1);
-    assert.strictEqual(wedgedOwner._managedDebugGroup, null);
+    assert.strictEqual(wedgedOwner.debugLaunch.managedGroup, null);
     wedged.coordinator.acquire("agentRead").release();
     wedgedOwner._debugBridge.dispose();
     const realTimers = { setTimeout, clearTimeout };
@@ -323,7 +332,7 @@ function bind(group, member) {
                 debug: {
                     stopDebugging: async (session) => {
                         if (mode === "resolved") {
-                            await owner.handleDebugSessionTerminate(session);
+                            await owner.debugLaunch.handleSessionTerminate(session);
                             return true;
                         }
                         if (mode === "rejected") throw new Error("adapter stop failed");
@@ -333,13 +342,15 @@ function bind(group, member) {
             });
             owner = Object.create(TimedProvider.prototype);
             Object.assign(owner, {
-                _managedDebugGroup: cleanup.group,
-                _managedDebugServer: cleanup.controller,
-                _debugServerLease: cleanup.lease,
                 _debugBridge: new DebugSessionBridge(),
-                _terminatedDebugSessionIds: new Set(),
-                _postLive() {},
-                restoreSamplingAfterDebug: async () => {}
+                _postLive() {}
+            });
+            Object.assign(owner.debugLaunch, {
+                managedGroup: cleanup.group,
+                managedServer: cleanup.controller,
+                serverLease: cleanup.lease,
+                terminatedSessionIds: new Set(),
+                restoreSampling: async () => {}
             });
             const primaryMember = reserve(cleanup.group, 0);
             const primarySession = bind(cleanup.group, primaryMember);
@@ -350,7 +361,7 @@ function bind(group, member) {
                 owner._debugBridge.attach(bind(cleanup.group, failedMember));
             }
             if (mode === "hang-unconfirmed") cleanup.failStop(true);
-            const failure = owner._failGroupedCore(failedMember.token, "Shared core failed");
+            const failure = owner.debugLaunch.failGroupedCore(failedMember.token, "Shared core failed");
             const completion =
                 mode === "resolved"
                     ? failure
@@ -378,11 +389,11 @@ function bind(group, member) {
             if (mode === "hang-joined") {
                 assert.strictEqual(cleanup.stops, 0, "another core keeps the physical server and lease");
                 assert.throws(() => cleanup.coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
-                await owner.handleDebugSessionTerminate(primarySession);
+                await owner.debugLaunch.handleSessionTerminate(primarySession);
             } else if (mode === "hang-unconfirmed") {
                 assert.strictEqual(cleanup.group.stopped, false);
-                assert.strictEqual(owner._managedDebugServer, cleanup.controller);
-                assert.strictEqual(owner._managedDebugGroup, cleanup.group);
+                assert.strictEqual(owner.debugLaunch.managedServer, cleanup.controller);
+                assert.strictEqual(owner.debugLaunch.managedGroup, cleanup.group);
                 assert.throws(() => cleanup.coordinator.acquire("agentRead"), { code: "PROBE_BUSY" });
                 cleanup.failStop(false);
                 await cleanup.group.stop();

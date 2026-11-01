@@ -284,7 +284,6 @@ const { writePlan } = require("../src/services/agentPlans");
             Object.assign(p, {
                 _probeCoordinator: new ProbeCoordinator(),
                 _samplingCoordinator: new SamplingCoordinator(),
-                _debugLifecycle: new DebugLifecycle(),
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
@@ -296,6 +295,7 @@ const { writePlan } = require("../src/services/agentPlans");
                 _postLive() {},
                 _postAgentSampling() {}
             });
+            Object.assign(p.debugLaunch, { lifecycle: new DebugLifecycle() });
             Object.assign(p._sampling, {
                 consumers: new Set(),
                 setIntervalMs() {},

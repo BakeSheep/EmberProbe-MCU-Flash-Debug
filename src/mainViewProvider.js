@@ -1,15 +1,6 @@
 "use strict";
-const {
-    isSupportedDebugSession,
-    resolveRtos,
-    normalizeDebugServerOptions,
-    startupTrace
-} = require("./services/debugConfiguration");
 const { OpenOcdDebugController, allocateDebugPorts } = require("./services/debugServerController");
-const { SharedDebugGroup } = require("./services/sharedDebugGroup");
-const { resolvePrettyPrinting, configuredPrettyPrintingMode } = require("./services/prettyPrinting");
-const { normalizeDebugImages } = require("./services/debugImages");
-const { ExternalDebugService, resolveExternalSettings } = require("./services/externalDebugService");
+const { ExternalDebugService } = require("./services/externalDebugService");
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainViewProvider = void 0;
 const vscode = require("vscode");
@@ -45,6 +36,7 @@ const { ProbeCoordinator, PROBE_OPERATIONS } = require("./probeCoordinator");
 const PROBE_OPERATIONS_IN_USE = PROBE_OPERATIONS.filter((name) => name !== "targetScan");
 const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
+const { runDownload } = require("./services/flashCommand");
 const { FirmwareRecord } = require("./services/firmwareRecord");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
@@ -59,6 +51,7 @@ const {
     UNLIMITED_SAMPLING_STATE_KEY
 } = require("./services/liveWatchController");
 const { ElfViewController } = require("./services/elfViewController");
+const { DebugLaunch } = require("./services/debugLaunch");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -75,7 +68,6 @@ const { ProbeInventoryService } = require("./services/probeInventoryService");
 const { waitForJlinkReady } = require("./services/jlinkProbeReady");
 const { listProbes } = require("../skills/_emberprobe/probe-inventory");
 const { assertWriteIdentity, probeFamily } = require("../skills/_emberprobe/probe-connection");
-const { flashSpeedKhz } = require("../skills/_emberprobe/openocd-flash");
 const { serializeError, toUiError } = require("./services/errorEnvelope");
 const { describeTargetIdentity, describeTargetCore, sameTarget, targetMatchesModel } = require("./chip/targetIdentity");
 const { NoticeService, COMMAND_FAILURE_TITLES } = require("./services/noticeService");
@@ -84,8 +76,7 @@ const {
     buildChartHistoryItems,
     selectFocusedPanel,
     selectPausedDebugReadSession,
-    writableRamSectionRanges,
-    debugReadPlanKey
+    writableRamSectionRanges
 } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
 const { RuntimeSampleHold } = require("./services/runtimeSampleHold");
@@ -98,17 +89,14 @@ const { SvdManager } = require("./services/svdManager");
 const { SvdPeripheralService } = require("./services/svdPeripheralService");
 const { PeripheralViewService } = require("./services/peripheralViewService");
 const { RtosViewService } = require("./services/rtosViewService");
-const { addPeripheralViewerSvd } = require("./services/peripheralViewerIntegration");
 const { DebugControlService } = require("./services/debugControlService");
 const { SamplingArchive, cleanupStaleSamplingArchives } = require("./services/samplingArchive");
 const { ChartHistoryService, estimateHistoryBytes, MAX_BACKLOG_BYTES } = require("./services/chartHistoryService");
 const { ensureDebugTools, findWarmupDebugTools } = require("./services/debugToolPreflight");
-const { GdbWarmup } = require("./services/gdbWarmup");
 const { externalizeWebviewHtml, pruneWebviewAssets } = require("./webviewAssets");
 const fs = require("fs");
 const crypto = require("crypto");
 const i18n = require("./i18n");
-const { DebugLifecycle, DEBUG_STARTUP_TIMEOUT_MS } = require("./services/debugLifecycle");
 const { DEBUGGER_LIST, MCU_CORE_LIST } = require("./services/targetCatalog");
 const { CACHE_KEYS } = require("./cacheKeys");
 const JLINK_DRIVER_WARNING_IGNORED_KEY = "mcu.jlinkDriverWarningIgnored";
@@ -174,6 +162,18 @@ function targetChangedWriteError(state, { writtenItems, totalItems, results }) {
 function createSamplingController(host, settings = {}) {
     return new LiveWatchController(host, { vscode, LiveWatchSession: liveWatch.LiveWatchSession, ...settings });
 }
+// The debug launch controller uses this module's vscode, debug tool lookup, OpenOCD scripts and debug server
+// controller, which tests replace through loadProvider.
+function createDebugLaunch(host) {
+    return new DebugLaunch(host, {
+        vscode,
+        ensureDebugTools,
+        findWarmupDebugTools,
+        openocdScripts,
+        OpenOcdDebugController,
+        allocateDebugPorts
+    });
+}
 class MainViewProvider {
     // Controllers are created on first use, so the provider's construction order does not matter.
     get _sampling() {
@@ -182,11 +182,17 @@ class MainViewProvider {
     get _elfView() {
         return (this._elfViewController ??= new ElfViewController(this));
     }
+    get debugLaunch() {
+        return (this._debugLaunchController ??= createDebugLaunch(this));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
         // Created by the `_notices` getter.
         this._noticeService = null;
+        // Created by the `_elfView` and `debugLaunch` getters.
+        this._elfViewController = null;
+        this._debugLaunchController = null;
         // The connected probe list's automatic chip read (_identifyConnectedTargets).
         this._probeTargetsReading = false;
         this._probeTargetsReadFor = "";
@@ -204,11 +210,6 @@ class MainViewProvider {
             settings: (folder) => vscode.workspace.getConfiguration("emberprobe", vscode.Uri.file(folder))
         });
         void this._externalDebug.releaseIfDisabled().catch(console.error);
-        this._managedDebugServer = null;
-        this._managedDebugGroup = null;
-        this._managedDebugToken = "";
-        this._managedDebugSessionId = "";
-        this._runtimeResumeTimer = null;
         this._runtimeSampleHold = new RuntimeSampleHold();
         this._livePanels = new Map();
         this._livePanelRegistry = null;
@@ -226,12 +227,6 @@ class MainViewProvider {
         );
         this._latestSidebarSamples = this._liveWatchService.latestSidebarSamples;
         this._samplingCoordinator = new SamplingCoordinator();
-        this._debugCommandPending = false;
-        this._debugLifecycle = new DebugLifecycle();
-        this._gdbWarmup = new GdbWarmup();
-        this._gdbWarmupTimer = null;
-        this._terminatedDebugSessionIds = new Set();
-        this._debugSessionReleases = new Map();
         this._debugReadPlanKey = "";
         this._shutdownPromise = null;
         this._samplingController = createSamplingController(this, {
@@ -290,7 +285,7 @@ class MainViewProvider {
                     type: "liveError",
                     ...toUiError(error)
                 }),
-            onTargetState: (event) => this._handleManagedTargetState(event),
+            onTargetState: (event) => this.debugLaunch.handleTargetState(event),
             beforePausedRead: () => this._quiesceManagedRuntimeRead()
         });
         this._rtosViewService = new RtosViewService(this._debugBridge);
@@ -477,7 +472,7 @@ class MainViewProvider {
             commandContext: () => this._commandContext(),
             onPost: (message) => this._webviewView?.webview.postMessage(message),
             onDiagnostics: (diag, info) => this._writeChipDiagnostics(diag, info),
-            isDebugActive: () => !!this._liveDebugSession()
+            isDebugActive: () => !!this.debugLaunch.liveSession()
         });
         this._svdManager = new SvdManager({
             workerPath: path.join(__dirname, "svdWorker.js"),
@@ -511,8 +506,8 @@ class MainViewProvider {
             vscode,
             debugBridge: this._debugBridge,
             workspaceProvider: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
-            startDebug: () => this.commandHandlers["mcu-vscode.debug"](undefined, undefined, false),
-            waitForRelease: (session) => this._debugSessionReleased(session)
+            startDebug: () => this.debugLaunch.start(undefined, undefined, false),
+            waitForRelease: (session) => this.debugLaunch.sessionReleased(session)
         });
         this._agentFlashService = new AgentFlashService({
             getConfig: () => this._configurationStore.snapshot(),
@@ -521,7 +516,7 @@ class MainViewProvider {
             prepare: (options, settings) => this._probeConnectionService.prepare(options, settings),
             recordSuccess: (connection) => this._probeConnectionService.recordSuccess(connection),
             recordFlashed: (entry) => this._firmwareRecord.record(entry),
-            isDebugActive: () => this._debugBridge.hasAnySession || !!this._liveDebugSession()
+            isDebugActive: () => this._debugBridge.hasAnySession || !!this.debugLaunch.liveSession()
         });
         // VS Code started the EmberProbe MCP server in this window (the user accepted the MCP trust prompt).
         this._mcpBridgeRequested = false;
@@ -572,9 +567,6 @@ class MainViewProvider {
     }
     get _agentReadRunning() {
         return this._probeCoordinator?.isActive("agentRead") ?? false;
-    }
-    get _debugStarting() {
-        return this._probeCoordinator?.isActive("debugStart") ?? false;
     }
     // Current UI language (Simplified Chinese/English), switched from the sidebar or live panel title button and
     // persisted in global state
@@ -692,7 +684,7 @@ class MainViewProvider {
                 if (!selected) return null;
                 const finalPath = cleanWindowsPath(selected.description);
                 await this._context.workspaceState.update(CACHE_KEYS.elfPath, finalPath);
-                this.scheduleGdbWarmup(0);
+                this.debugLaunch.scheduleGdbWarmup(0);
                 await this._elfView.refreshBindings();
                 await this.updateView();
                 return true;
@@ -752,362 +744,12 @@ class MainViewProvider {
             return true;
         };
         this.commandHandlers["mcu-vscode.attachDebug"] = (resource) =>
-            this.commandHandlers["mcu-vscode.debug"](resource, undefined, true, { attach: true });
+            this.debugLaunch.start(resource, undefined, true, { attach: true });
         this.commandHandlers["mcu-vscode.downloadOfficialSvd"] = () => this._svdManager.downloadOfficial();
         this.commandHandlers["mcu-vscode.selectExistingSvd"] = () => this._svdManager.selectExisting();
         this.commandHandlers["mcu-vscode.switchWorkspaceSvd"] = () => this._svdManager.switchBinding();
-        // Start debugging. startOptions.attach keeps a managed OpenOCD but sends an attach request that only halts,
-        // without reset or download, to preserve the current state.
-        this.commandHandlers["mcu-vscode.debug"] = async (
-            resource,
-            configuration,
-            interactive = true,
-            startOptions
-        ) => {
-            let probePrepared = false;
-            let startAccepted = false;
-            let ownsPending = false;
-            const cmd = startOptions?.attach ? "mcu-vscode.attachDebug" : "mcu-vscode.debug";
-            const warn = (key) => {
-                this._notices.notify("flash", cmd, { level: "warning", key });
-                return false;
-            };
-            try {
-                if (configuration?.servertype === "external")
-                    throw new Error("Use an explicit F5 external attach configuration");
-                this._externalDebug?.assertPhysicalAvailable();
-                if (this._agentReadRunning) return warn("msg.agentReadBusy");
-                if (this._debugCommandPending || this._debugStarting) return warn("msg.debugBusy");
-                this._debugCommandPending = true;
-                this._postProbeOperationStatus();
-                ownsPending = true;
-                this._debugStartupCmd = cmd;
-                this._debugStartupErrorReported = false;
-                this._debugStartupFailureCleanedUp = false;
-                const startup = configuration?.performanceTrace ? startupTrace() : null;
-                const serverOptions = normalizeDebugServerOptions(configuration || {});
-                let elfPath = configuration?.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath);
-                const debuggerCfg =
-                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-                    (await this._probeConnectionService.resolveProbe());
-                const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-                if (!elfPath || !debuggerCfg || !mcuCore) return warn("msg.configIncomplete");
-                // Parsed before taking the probe lease, so an invalid value fails without any startup cleanup. Parsed
-                // once, because the OpenOCD arguments and the adapter launch config must see the same value.
-                const rtos = resolveRtos(
-                    configuration,
-                    vscode.workspace.getConfiguration("emberprobe").get("rtos", "")
-                );
-                elfPath = cleanWindowsPath(elfPath);
-                const { folder: workspaceFolder } = this._commandContext(resource);
-                if (!workspaceFolder) return warn("msg.openWorkspaceForDebug");
-                let cortexTools = await ensureDebugTools(
-                    vscode,
-                    workspaceFolder,
-                    this._context.workspaceState,
-                    (key) => this._t(key),
-                    undefined,
-                    configuration || {}
-                );
-                // The user dismissed the toolchain prompt: a cancellation, not a failure.
-                if (!cortexTools) return null;
-                startup?.phase("tools");
-                // Finish a cold start before holding the probe. Background preparation normally already
-                // completed; overlap any remainder with OpenOCD/SVD resolution, never a second cold GDB.
-                const warming = this._gdbWarmup?.warm(cortexTools.gdbPath);
-                const ownDebug = vscode.workspace.getConfiguration("emberprobe", workspaceFolder.uri);
-                const images = normalizeDebugImages(
-                    configuration || {},
-                    configuration?.cwd || workspaceFolder.uri.fsPath
-                );
-                const pretty = resolvePrettyPrinting(
-                    configuration || {},
-                    {
-                        enablePrettyPrinting: ownDebug.get("enablePrettyPrinting", true),
-                        prettyPrinterPath: ownDebug.get("prettyPrinterPath", ""),
-                        prettyPrintingMode: configuredPrettyPrintingMode(ownDebug),
-                        prettyPrinterFiles: ownDebug.get("prettyPrinterFiles", [])
-                    },
-                    configuration?.cwd || workspaceFolder.uri.fsPath
-                );
-                // Use the same OpenOCD path as programming, so debugging works when OpenOCD is not on PATH
-                const configuredOpenOcdPath =
-                    serverOptions.serverpath ||
-                    vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd");
-                const [resolvedSvdPath, openocdPath] = await Promise.all([
-                    this._svdManager.currentPath(workspaceFolder),
-                    this._resolveOpenOcdPath(configuredOpenOcdPath)
-                ]);
-                if (!openocdPath) return false;
-                startup?.phase("openocd");
-                await warming;
-                startup?.phase("warmup");
-                if (this._shutdownPromise || vscode.workspace.isTrusted === false) return false;
-                const svdPath = cleanWindowsPath(resolvedSvdPath);
-                openocdScripts.resolveOpenOcdLaunch(openocdPath, debuggerCfg, mcuCore);
-                if (serverOptions.serverGroup) {
-                    const grouped = await this._prepareGroupedDebugConfiguration({
-                        folder: workspaceFolder,
-                        executable: openocdPath,
-                        probe: debuggerCfg,
-                        target: mcuCore,
-                        cfg: vscode.workspace.getConfiguration("emberprobe"),
-                        interactive,
-                        rtos,
-                        serverOptions,
-                        debugConfig: {
-                            ...configuration,
-                            ...serverOptions,
-                            ...cortexTools,
-                            ...pretty,
-                            ...images,
-                            type: "emberprobe",
-                            executable: elfPath,
-                            cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
-                            runToEntryPoint: configuration?.runToEntryPoint ?? "main",
-                            ...(svdPath ? { svdFile: svdPath } : {}),
-                            rtos
-                        }
-                    });
-                    startAccepted = true;
-                    return addPeripheralViewerSvd(grouped, svdPath);
-                }
-                await this.prepareProbeForDebug(workspaceFolder);
-                startup?.phase("prepare");
-                probePrepared = true;
-                this._debugStartLease = this._probeCoordinator.acquire("debugStart");
-                const managed = await this._startManagedDebugServer(
-                    openocdPath,
-                    debuggerCfg,
-                    mcuCore,
-                    vscode.workspace.getConfiguration("emberprobe"),
-                    interactive,
-                    rtos,
-                    {
-                        ...serverOptions,
-                        request: configuration?.request || (startOptions?.attach ? "attach" : "launch")
-                    },
-                    startup?.phase
-                );
-                this._debugServerLease = this._debugStartLease.transition("debugServer");
-                this._managedDebugToken = crypto.randomUUID();
-                const debugConfig = addPeripheralViewerSvd(
-                    {
-                        ...configuration,
-                        ...serverOptions,
-                        type: "emberprobe",
-                        name: configuration?.name || this._t("msg.debugConfigName"),
-                        request: configuration?.request || (startOptions?.attach ? "attach" : "launch"),
-                        cwd: configuration?.cwd || workspaceFolder.uri.fsPath,
-                        executable: elfPath,
-                        gdbTarget: managed.gdbTarget,
-                        runToEntryPoint: configuration?.runToEntryPoint ?? "main",
-                        __emberprobeManagedToken: this._managedDebugToken
-                    },
-                    svdPath
-                );
-                if (svdPath) debugConfig.svdFile = svdPath;
-                // The adapter uses this to decide whether it runs RTOS-aware; an explicit empty value must override an
-                // old value in launch.json.
-                if (rtos) debugConfig.rtos = rtos;
-                else delete debugConfig.rtos;
-                Object.assign(debugConfig, cortexTools);
-                Object.assign(debugConfig, pretty);
-                Object.assign(debugConfig, images);
-                // A changed image downloads at the sidebar's programming clock (see docs/FLASH-PERFORMANCE.md).
-                if (debugConfig.request === "launch" && this._managedDebugServer?.options)
-                    debugConfig.__emberprobeDownloadSpeedKhz = flashSpeedKhz(this._managedDebugServer.options);
-                if (startup)
-                    debugConfig.__emberprobeStartupTrace = startup.finish(
-                        this._gdbWarmup?.snapshot?.(cortexTools.gdbPath)
-                    );
-                const startupGate = this._armDebugStartupWatchdog();
-                if (configuration) {
-                    startAccepted = true;
-                    return debugConfig;
-                }
-                const startRequest = Promise.resolve(
-                    vscode.debug.startDebugging(workspaceFolder, debugConfig, { suppressDebugView: true })
-                ).then(
-                    (started) => ({ kind: "result", started }),
-                    (error) => ({ kind: "error", error })
-                );
-                const outcome = await Promise.race([startRequest, startupGate]);
-                if (outcome.kind === "error") throw outcome.error;
-                if (outcome.kind === "timeout" || outcome.kind === "terminated" || outcome.kind === "failed") {
-                    await this._handleDebugStartupFailure(
-                        this._debugLifecycle.session,
-                        this._t("msg.debugStartFailed")
-                    );
-                    return false;
-                }
-                const started = outcome.kind === "ready" ? true : outcome.started;
-                startAccepted = started === true;
-                if (!started) {
-                    await this._handleDebugStartupFailure(
-                        this._debugLifecycle.session,
-                        this._t("msg.debugStartFailed")
-                    );
-                    return false;
-                }
-                // VS Code may accept the request before GDB has attached. Keep the sidebar pending
-                // until both initialized and launch have arrived, terminates, or the bounded watchdog fires.
-                if (outcome.kind === "result") {
-                    const initialized = await startupGate;
-                    if (initialized.kind !== "ready") {
-                        await this._handleDebugStartupFailure(
-                            this._debugLifecycle.session,
-                            this._t("msg.debugStartFailed")
-                        );
-                        return false;
-                    }
-                }
-                return true;
-            } catch (err) {
-                this._clearDebugStartupWatchdog();
-                console.error("Debug start failed:", err.stack || err.message);
-                this._notices.notify("flash", cmd, {
-                    level: "error",
-                    titleKey: COMMAND_FAILURE_TITLES[cmd],
-                    error: err
-                });
-                if (probePrepared) {
-                    await this._stopManagedDebugServer();
-                    await this.restoreSamplingAfterDebug();
-                }
-                throw err; // Reported above; callers outside the sidebar still see the failure.
-            } finally {
-                if (ownsPending) {
-                    if (this._debugStarting && !this._managedDebugServer) this._debugStartLease?.release();
-                    if (!startAccepted) this._clearDebugStartupWatchdog();
-                    this._debugCommandPending = false;
-                    this._postProbeOperationStatus();
-                }
-            }
-        };
-        // Program firmware
-        this.commandHandlers["mcu-vscode.download"] = async (resource) => {
-            const cmd = "mcu-vscode.download";
-            const notify = (notice) => this._notices.notify("flash", cmd, notice);
-            const warn = (key, params) => {
-                notify({ level: "warning", key, params });
-                return false;
-            };
-            // A second click while flashing must not replace the running download's progress.
-            if (this._downloadRunning) {
-                this._notices.notify("flash", "download-busy", { level: "warning", key: "msg.downloadBusy" });
-                return false;
-            }
-            if (
-                this._debugStarting ||
-                this._debugBridge.hasAnySession ||
-                isSupportedDebugSession(this._liveDebugSession())
-            )
-                return warn("msg.debugBusyForDownload");
-            if (this._agentReadRunning) return warn("msg.agentReadBusy");
-            if (this._chipInfoRunning) return warn("msg.chipBusyForDownload");
-            if (this._sampling.starting) return warn("msg.liveBusyForDownload");
-            this._notices.clear("flash", "download-busy");
-            this._notices.clear("flash", "download-refresh");
-            // Keep the live lease until process exit, then synchronously reserve download.
-            const resumeSampling = !!this._sampling.intent && !!(this._sampling.running || this._sampling.session);
-            const liveStopped = this._sampling.running || this._sampling.session ? this._sampling.stop() : null;
-            if (liveStopped) await liveStopped;
-            const downloadLease = this._probeCoordinator.acquire("download");
-            this._downloadLease = downloadLease;
-            let downloaded = false;
-            // OpenOCD progress lines, kept for the failure's diagnostic panel.
-            const progressLog = [];
-            try {
-                const configuredExecutable = vscode.workspace
-                    .getConfiguration("emberprobe")
-                    .get("openocdPath", "openocd");
-                const executable = await this._resolveOpenOcdPath(configuredExecutable);
-                if (!executable) return warn("notice.openocdRequired");
-                let elfPath = this._context.workspaceState.get(CACHE_KEYS.elfPath);
-                const debuggerCfg =
-                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-                    (await this._probeConnectionService.resolveProbe());
-                const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-                if (!elfPath || !debuggerCfg || !mcuCore) return warn("msg.configIncomplete");
-                const cleanElfPath = cleanWindowsPath(elfPath);
-                const { cwd } = this._commandContext(resource);
-                let connection;
-                await this._flashService.download(
-                    vscode,
-                    {
-                        executable,
-                        elf: cleanElfPath,
-                        transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
-                        probe: debuggerCfg,
-                        target: mcuCore,
-                        prepare: async () => {
-                            connection = await this._probeConnectionService.prepare(
-                                { executable, probe: debuggerCfg, target: mcuCore },
-                                true
-                            );
-                            return connection;
-                        },
-                        onDownloaded: (image) =>
-                            this._firmwareRecord.record({
-                                ...image,
-                                connection: { ...connection, probe: debuggerCfg, target: mcuCore }
-                            }),
-                        cwd
-                    },
-                    (event) => {
-                        const text = event.key ? this._t(event.key, event.params) : event.message || "";
-                        if (text) progressLog.push(text);
-                        if (progressLog.length > 12) progressLog.shift();
-                        // Errors along the way end in the failure notice; the box shows the current step.
-                        if (event.level !== "error" && text)
-                            notify({ level: "info", busy: true, key: event.key, params: event.params, message: text });
-                    }
-                );
-                if (connection && !this._downloadLease?.released)
-                    await this._probeConnectionService.recordSuccess(connection);
-                downloaded = true;
-                notify({ level: "success", key: "msg.downloadSuccess" });
-                return true;
-            } catch (err) {
-                console.error("Programming failed:", err.message);
-                notify({
-                    level: "error",
-                    titleKey: COMMAND_FAILURE_TITLES[cmd],
-                    error: err,
-                    detail: progressLog.join("\n")
-                });
-                throw err; // Reported above; callers outside the sidebar still see the failure.
-            } finally {
-                let refreshed = false;
-                try {
-                    if (downloaded) {
-                        await this._elfView.refreshBindings();
-                        refreshed = true;
-                    }
-                } catch (error) {
-                    this._postLive({ type: "liveError", ...toUiError(error) });
-                    this._notices.notify("flash", "download-refresh", {
-                        level: "warning",
-                        key: "msg.downloadRefreshFailed",
-                        params: { error: error.message }
-                    });
-                } finally {
-                    downloadLease.release();
-                }
-                if (resumeSampling && refreshed) {
-                    try {
-                        await this._sampling.start(undefined, this._sampling.intervalMs, "refresh");
-                    } catch (error) {
-                        this._notices.notify("flash", "download-refresh", {
-                            level: "warning",
-                            key: "msg.downloadSamplingFailed",
-                            params: { error: error.message }
-                        });
-                    }
-                }
-            }
-        };
+        this.commandHandlers["mcu-vscode.debug"] = (...args) => this.debugLaunch.start(...args);
+        this.commandHandlers["mcu-vscode.download"] = (resource) => runDownload(this, vscode, resource);
     }
     async _configurationSnapshot() {
         const snapshot = this._configurationStore.snapshot();
@@ -1142,7 +784,7 @@ class MainViewProvider {
         if (
             keys.some((key) => Object.hasOwn(values, key)) &&
             (this._sampling.session ||
-                this._managedDebugServer ||
+                this.debugLaunch.managedServer ||
                 this._agentReadSession ||
                 this._debugBridge.hasAnySession)
         )
@@ -1163,12 +805,12 @@ class MainViewProvider {
                 ? [this._sampling.session, this._agentReadSession].filter(Boolean)
                 : [
                       this._sampling.session,
-                      this._managedDebugServer,
+                      this.debugLaunch.managedServer,
                       this._agentReadSession,
                       this._debugBridge.activeSession
                   ]
         );
-        if (this._sampling.session || this._managedDebugServer) this._postConsumerStatuses({});
+        if (this._sampling.session || this.debugLaunch.managedServer) this._postConsumerStatuses({});
         // Only a visible sidebar shows the list; a hidden one rescans when it is shown again.
         if (this._probeInventoryMonitor)
             this._refreshConnectedProbes().catch((error) =>
@@ -1183,7 +825,7 @@ class MainViewProvider {
                 code: "DEBUG_CONTROL_BUSY"
             });
         const physical =
-            session === this._debugBridge ? this._managedDebugServer || this._debugBridge.activeSession : session;
+            session === this._debugBridge ? this.debugLaunch.managedServer || this._debugBridge.activeSession : session;
         if (!physical) throw Object.assign(new Error("No active write session"), { code: "PROBE_SESSION_MISSING" });
         this._probeConnectionService.assertCurrent(physical);
         assertWriteIdentity(physical.options);
@@ -1191,13 +833,17 @@ class MainViewProvider {
     _sessionWriteConnection(session) {
         this._assertWriteSessionCurrent(session);
         if (session === this._debugBridge) {
-            if (this._managedDebugServer?.options && !this._managedDebugGroup && !this._externalDebug?.active)
-                return writeConnectionIdentity(this._managedDebugServer.options);
+            if (
+                this.debugLaunch.managedServer?.options &&
+                !this.debugLaunch.managedGroup &&
+                !this._externalDebug?.active
+            )
+                return writeConnectionIdentity(this.debugLaunch.managedServer.options);
             const active = this._debugBridge.activeSession;
             if (!active) this._debugBridge.assertUniqueSession();
             return writeConnectionIdentity({
                 kind: "dap",
-                selectionIdentity: this._managedDebugServer?.options?.selectionIdentity,
+                selectionIdentity: this.debugLaunch.managedServer?.options?.selectionIdentity,
                 sessionId: active.id,
                 workspace: active.workspaceFolder?.uri?.fsPath || "",
                 ...(active.configuration?.servertype === "external" ? { stopEpoch: this._debugBridge.stopEpoch } : {})
@@ -1215,7 +861,7 @@ class MainViewProvider {
         // Agent write even while the DAP bridge is between stop events and reports
         // canWrite=false. Bind the confirmation to that server instead of preparing
         // a second standalone OpenOCD identity, which would be rejected at execution.
-        if (this._managedDebugServer) return this._sessionWriteConnection(this._debugBridge);
+        if (this.debugLaunch.managedServer) return this._sessionWriteConnection(this._debugBridge);
         if (this._debugBridge.canWrite) return this._sessionWriteConnection(this._debugBridge);
         const config = this._configurationStore.snapshot();
         const executable = await this._resolveOpenOcdPath(config.openocdPath);
@@ -1558,301 +1204,6 @@ class MainViewProvider {
             });
         return port;
     }
-    async _startManagedDebugServer(
-        executable,
-        probe,
-        target,
-        cfg,
-        interactive = true,
-        rtos = "",
-        serverOptions = {},
-        phase = undefined
-    ) {
-        const selection = normalizeDebugServerOptions(serverOptions);
-        const connection = await this._probeConnectionService.prepare({ executable, probe, target }, interactive);
-        phase?.("preflight");
-        // Launch downloads firmware through GDB; attach can still inspect an unverified USB attachment.
-        if (serverOptions.request !== "attach") assertWriteIdentity(connection);
-        let lastError = null;
-        const inspect = typeof cfg.inspect === "function" ? cfg.inspect("tclPort") : null;
-        const fixedTcl = !!(inspect && (inspect.workspaceValue !== undefined || inspect.globalValue !== undefined));
-        for (let attempt = 0; attempt < (fixedTcl ? 1 : 3); attempt++) {
-            const fixedPort = fixedTcl ? await this._resolveTclPort(cfg) : null;
-            const coreCount = selection.numberOfProcessors || 1;
-            const allocated = await allocateDebugPorts(coreCount + (fixedTcl ? 0 : 1), fixedTcl ? [fixedPort] : []);
-            const tclPort = fixedTcl ? fixedPort : allocated.shift();
-            const gdbPort = allocated[selection.targetProcessor || 0];
-            const server = new OpenOcdDebugController(
-                vscode,
-                {
-                    ...selection,
-                    executable,
-                    isolated: true,
-                    probe,
-                    transport: cfg.get("transport", "auto"),
-                    rtos,
-                    target,
-                    ...connection,
-                    port: tclPort,
-                    gdbPort,
-                    ...(selection.numberOfProcessors ? { gdbPorts: allocated } : {}),
-                    mode: "debug",
-                    intervalMs: this._sampling.intervalMs
-                },
-                {
-                    onConnectionConfirmed: () => {
-                        if (this._managedDebugServer === server)
-                            void this._probeConnectionService.recordSuccess(server.options);
-                    },
-                    onSample: (samples, t, consumers) => this._sampling.handleRawSamples(samples, t, consumers),
-                    onSampleGap: () => {
-                        if (this._managedDebugServer === server) this._sampling.handleSampleGap();
-                    },
-                    onStatus: (status) => {
-                        if (this._managedDebugServer !== server) return;
-                        if (status?.key === "live.debugRuntimeSampling") {
-                            // Recovery notifications can arrive after GDB paused or sampling was disabled.
-                            this._postConsumerStatuses(this._sampling.status());
-                        } else if (status?.key === "live.debugTclDegraded") {
-                            this._postConsumerStatuses({
-                                mode: "debug-running-degraded",
-                                key: status.key,
-                                source: "openocd",
-                                canRead: false,
-                                canWrite: false,
-                                snapshotReady: false,
-                                intentEnabled: this._sampling.intent,
-                                running: this._sampling.intent
-                            });
-                        }
-                    },
-                    onError: (message) =>
-                        this._postLive({
-                            type: "liveError",
-                            ...toUiError(message)
-                        }),
-                    onDegraded: (error) =>
-                        this._postConsumerStatuses(
-                            {
-                                mode: "debug-running-degraded",
-                                key: error?.i18nKey || "live.debugTclDegraded",
-                                params: error?.i18nParams,
-                                source: "openocd",
-                                canRead: false,
-                                canWrite: false,
-                                snapshotReady: false,
-                                message: error?.message,
-                                diagnostic: serializeError(error)
-                            },
-                            true
-                        ),
-                    onDisconnect: (error) => {
-                        if (this._managedDebugGroup && this._managedDebugServer === server)
-                            void this._handleSharedServerExit(error).catch((failure) =>
-                                this._postLive({ type: "liveError", ...toUiError(failure) })
-                            );
-                        if (this._debugLifecycle.pending) this._reportDebugStartupFailure(error.message);
-                        this._postConsumerStatuses(
-                            {
-                                mode: "debug-server-exited",
-                                key: error?.i18nKey || "live.serviceExited",
-                                params: error?.i18nParams,
-                                source: "none",
-                                canRead: false,
-                                canWrite: false,
-                                snapshotReady: false,
-                                message: error?.message,
-                                diagnostic: serializeError(error)
-                            },
-                            true
-                        );
-                    }
-                }
-            );
-            this._managedDebugServer = server;
-            try {
-                const info = await server.start();
-                phase?.("server");
-                return info;
-            } catch (error) {
-                lastError = error;
-                await server.stop();
-                if (this._managedDebugServer === server) this._managedDebugServer = null;
-                if (fixedTcl || !/address already in use|couldn't bind|bind failed|in use/i.test(error.message || ""))
-                    break;
-            }
-        }
-        throw lastError || new Error("Unable to start managed OpenOCD");
-    }
-    async _stopManagedDebugServer() {
-        if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
-        this._runtimeResumeTimer = null;
-        const server = this._managedDebugServer;
-        const lease = this._debugServerLease || this._debugStartLease;
-        const group = this._managedDebugGroup;
-        if (group) {
-            await group.stop();
-            this._managedDebugGroup = null;
-        }
-        if (server && !group) {
-            server.setSamplingEnabled?.(false);
-            // Keep the process and lease reachable if exit cannot be confirmed.
-            await server.stop?.();
-        }
-        if (this._managedDebugServer === server) {
-            this._managedDebugServer = null;
-            this._debugServerLease = null;
-            this._managedDebugToken = "";
-            this._managedDebugSessionId = "";
-            this._sampling.resetRuntimeNotices();
-        }
-        if (!group) lease?.release();
-    }
-    _armDebugStartupWatchdog() {
-        return this._debugLifecycle.arm(DEBUG_STARTUP_TIMEOUT_MS, () => this._recoverDebugStartupTimeout());
-    }
-    _matchesManagedDebugSession(session) {
-        if (this._externalDebug?.matches(session)) return true;
-        if (this._managedDebugGroup) return !!this._managedDebugGroup.match(session);
-        return !!(
-            session &&
-            this._managedDebugToken &&
-            session.configuration?.__emberprobeManagedToken === this._managedDebugToken
-        );
-    }
-    async _prepareGroupedDebugConfiguration({
-        folder,
-        executable,
-        probe,
-        target,
-        cfg,
-        interactive,
-        rtos,
-        serverOptions,
-        debugConfig
-    }) {
-        const workspace = folder.uri.toString();
-        let group = this._managedDebugGroup;
-        const created = !group;
-        if (!group) {
-            await this.prepareProbeForDebug(folder);
-            this._debugStartLease = this._probeCoordinator.acquire("debugStart");
-            try {
-                const connection = await this._startManagedDebugServer(
-                    executable,
-                    probe,
-                    target,
-                    cfg,
-                    interactive,
-                    rtos,
-                    { ...serverOptions, request: debugConfig.request || "launch" }
-                );
-                this._debugServerLease = this._debugStartLease.transition("debugServer");
-                group = new SharedDebugGroup({
-                    id: serverOptions.serverGroup,
-                    workspace,
-                    controller: this._managedDebugServer,
-                    lease: this._debugServerLease,
-                    connection,
-                    onFailure: (token, message) =>
-                        this._failGroupedCore(token, message).catch((error) =>
-                            this._postLive({
-                                type: "liveError",
-                                ...toUiError(error)
-                            })
-                        )
-                });
-                this._managedDebugGroup = group;
-            } catch (error) {
-                await this._stopManagedDebugServer();
-                await this.restoreSamplingAfterDebug();
-                throw error;
-            }
-        }
-        try {
-            if (debugConfig.request !== "attach") assertWriteIdentity(group.controller.options);
-            this._probeConnectionService.assertCurrent(group.controller);
-            const member = group.reserve(
-                workspace,
-                {
-                    ...group.controller.options,
-                    ...serverOptions,
-                    executable,
-                    probe,
-                    target,
-                    transport: cfg.get("transport", "auto"),
-                    rtos,
-                    targetName: serverOptions.targetName
-                },
-                debugConfig.request
-            );
-            return {
-                ...debugConfig,
-                ...serverOptions,
-                gdbTarget: member.connection,
-                targetName: member.target,
-                __emberprobeManagedToken: member.token
-            };
-        } catch (error) {
-            if (created) {
-                await this._stopManagedDebugServer();
-                await this.restoreSamplingAfterDebug();
-            }
-            throw error;
-        }
-    }
-    async _failGroupedCore(token, message) {
-        const group = this._managedDebugGroup;
-        const member = group?.members.get(token);
-        if (!member || member.failing) return;
-        member.failing = true;
-        member.lifecycle.clear({ kind: "failed", message });
-        this._postLive({ type: "liveError", message });
-        try {
-            if (member.session) {
-                let stopTimer;
-                try {
-                    await Promise.race([
-                        vscode.debug.stopDebugging(member.session),
-                        new Promise((resolve) => {
-                            stopTimer = setTimeout(resolve, 2000);
-                        })
-                    ]);
-                } finally {
-                    clearTimeout(stopTimer);
-                }
-                await this._debugBridge.waitForState(
-                    () => this._terminatedDebugSessionIds.has(member.session.id),
-                    2000
-                );
-            }
-        } finally {
-            // A wedged adapter can hang stopDebugging or time out the terminate wait, and
-            // member.failing already blocks any retry. Dropping the member regardless is what
-            // frees the group's probe lease; skipping it wedges the probe until window reload.
-            await group.release(token);
-        }
-        await this._closeStoppedDebugGroup(group);
-    }
-    // A failing core and its session's terminate event can both observe the group stop; they share one teardown
-    // so OpenOCD is stopped and sampling restored exactly once, and both resolve only after it finishes.
-    _closeStoppedDebugGroup(group) {
-        if (this._debugGroupClosing?.group === group) return this._debugGroupClosing.promise;
-        if (!group.stopped || this._managedDebugGroup !== group) return Promise.resolve();
-        const promise = (async () => {
-            await this._stopManagedDebugServer();
-            await this.restoreSamplingAfterDebug();
-        })().finally(() => {
-            if (this._debugGroupClosing?.promise === promise) this._debugGroupClosing = null;
-        });
-        this._debugGroupClosing = { group, promise };
-        return promise;
-    }
-    async _handleSharedServerExit(error) {
-        const group = this._managedDebugGroup;
-        if (!group) return;
-        await Promise.all([...group.members.keys()].map((token) => this._failGroupedCore(token, error.message)));
-    }
     _selectDebugSession(selector) {
         if (this._debugControlService?.controlInFlight)
             throw Object.assign(new Error("Wait for the current debug control action before selecting a session"), {
@@ -1863,13 +1214,13 @@ class MainViewProvider {
         return status;
     }
     _debugSamplingScope(watchKey = "") {
-        return this._managedDebugGroup
-            ? JSON.stringify([watchKey, this._managedDebugGroup.id, this._debugBridge.activeSession?.id || ""])
+        return this.debugLaunch.managedGroup
+            ? JSON.stringify([watchKey, this.debugLaunch.managedGroup.id, this._debugBridge.activeSession?.id || ""])
             : watchKey;
     }
     _syncDebugSampleContext() {
-        if (!this._managedDebugGroup && !this._debugSampleGroup) return;
-        const group = this._managedDebugGroup?.id || "";
+        if (!this.debugLaunch.managedGroup && !this._debugSampleGroup) return;
+        const group = this.debugLaunch.managedGroup?.id || "";
         const sessionId = this._debugBridge.activeSession?.id || "";
         if (group === this._debugSampleGroup && sessionId === this._debugSampleSessionId) return;
         this._debugSampleGroup = group;
@@ -1894,103 +1245,8 @@ class MainViewProvider {
             this._configureChartHistory(entry);
         }
     }
-    _clearDebugStartupWatchdog(outcome) {
-        this._debugLifecycle.clear(outcome);
-    }
-    _markDebugStartupReady(session) {
-        this._debugLifecycle?.markInitialized(session, this._matchesManagedDebugSession(session));
-    }
-    _findManagedDebugSession(session) {
-        const managedId = this._managedDebugSessionId;
-        const candidates = [
-            session,
-            this._debugLifecycle?.session,
-            managedId ? this._debugBridge?.allSessions?.get(managedId) : null
-        ];
-        return (
-            candidates.find(
-                (candidate) =>
-                    typeof candidate?.id === "string" &&
-                    isSupportedDebugSession(candidate) &&
-                    this._matchesManagedDebugSession(candidate) &&
-                    (!managedId || candidate.id === managedId)
-            ) || null
-        );
-    }
-    async _handleDebugStartupFailure(session, message) {
-        if (this._externalDebug?.active) {
-            this._reportDebugStartupFailure(message);
-            const externalSession = this._findManagedDebugSession(session);
-            if (externalSession) {
-                await Promise.race([
-                    Promise.resolve(vscode.debug.stopDebugging(externalSession)).catch(() => {}),
-                    new Promise((resolve) => setTimeout(resolve, 2000))
-                ]);
-                this._debugBridge.detach(externalSession);
-            }
-            this._clearDebugStartupWatchdog({ kind: "failed" });
-            await this._externalDebug.finish(externalSession);
-            return;
-        }
-        if (this._debugStartupFailureCleanedUp) return;
-        this._debugStartupFailureCleanedUp = true;
-        const targetSession = this._findManagedDebugSession(session);
-        this._reportDebugStartupFailure(message);
-        try {
-            if (targetSession) {
-                if (targetSession.id) this._terminatedDebugSessionIds?.add(targetSession.id);
-                try {
-                    await Promise.race([
-                        Promise.resolve(vscode.debug?.stopDebugging?.(targetSession)).catch(() => false),
-                        new Promise((resolve) => setTimeout(() => resolve(false), 2000))
-                    ]);
-                } catch {
-                    /* The adapter may already have exited. */
-                }
-                this._debugBridge?.detach(targetSession);
-                this._debugReadPlanKey = "";
-                this._runtimeSampleHold?.reset();
-            }
-            if (typeof this._stopManagedDebugServer === "function") await this._stopManagedDebugServer();
-            if (typeof this.restoreSamplingAfterDebug === "function") await this.restoreSamplingAfterDebug();
-        } finally {
-            if (!this._managedDebugServer) {
-                if (this._debugStarting) this._debugStartLease?.release();
-                this._debugServerLease?.release();
-            }
-            this._debugCommandPending = false;
-            this._postProbeOperationStatus();
-        }
-    }
-    _reportDebugStartupFailure(message) {
-        if (this._debugStartupErrorReported) return;
-        this._debugStartupErrorReported = true;
-        const cmd = this._debugStartupCmd || "mcu-vscode.debug";
-        this._notices.notify("flash", cmd, {
-            level: "error",
-            titleKey: COMMAND_FAILURE_TITLES[cmd],
-            message: message || this._t("msg.debugStartFailed")
-        });
-        this._clearDebugStartupWatchdog({ kind: "failed" });
-    }
-    async _recoverDebugStartupTimeout() {
-        const session = this._findManagedDebugSession();
-        const timeoutMs = this._debugLifecycle?.timeoutMs || DEBUG_STARTUP_TIMEOUT_MS;
-        this._postConsumerStatuses(
-            {
-                mode: "debug-start-failed",
-                key: "live.debugStartTimeout",
-                source: "none",
-                canRead: false,
-                canWrite: false
-            },
-            true
-        );
-        const timeoutMessage = this._t("msg.debugStartTimeout", { seconds: timeoutMs / 1000 });
-        await this._handleDebugStartupFailure(session, timeoutMessage);
-    }
     _assertGroupedReadElf() {
-        if (!this._managedDebugGroup && this._debugBridge.activeSession?.configuration?.servertype !== "external")
+        if (!this.debugLaunch.managedGroup && this._debugBridge.activeSession?.configuration?.servertype !== "external")
             return;
         const session = this._debugBridge.assertUniqueSession();
         const selectedElf = this._context.workspaceState.get(CACHE_KEYS.elfPath);
@@ -2010,7 +1266,7 @@ class MainViewProvider {
     }
     async _quiesceManagedRuntimeRead() {
         this._assertGroupedReadElf();
-        const server = this._managedDebugServer;
+        const server = this.debugLaunch.managedServer;
         if (!server || server.capabilities?.runtimeRead === false) return;
         server.setSamplingEnabled(false);
         const idle = await server.waitForIdle(2000);
@@ -2020,76 +1276,6 @@ class MainViewProvider {
                 retryable: true
             });
         }
-    }
-    _handleManagedTargetState(event) {
-        if (!event?.session || !this._managedDebugSessionId || event.session.id !== this._managedDebugSessionId) return;
-        if (this._runtimeResumeTimer) clearTimeout(this._runtimeResumeTimer);
-        this._runtimeResumeTimer = null;
-        const server = this._managedDebugServer;
-        if (!server || server.capabilities?.runtimeRead === false) return;
-        server.invalidateTarget?.();
-        server.setSamplingEnabled(false);
-        if (event.state !== "continued") return;
-        if (event.transition && !["continue", "repl"].includes(event.transition)) return;
-        const epoch = event.epoch;
-        this._runtimeResumeTimer = setTimeout(() => {
-            this._runtimeResumeTimer = null;
-            if (
-                !this._managedDebugServer ||
-                this._managedDebugServer !== server ||
-                this._debugBridge.paused ||
-                this._debugBridge.replBusy ||
-                this._debugBridge.stopEpoch !== epoch ||
-                !this._sampling.intent
-            )
-                return;
-            try {
-                const allowed = this._sampling.configureManagedRuntimeWatch();
-                if (!allowed.length) {
-                    this._postConsumerStatuses({
-                        mode: "debug-running-waiting",
-                        key: "live.needVar",
-                        source: "openocd",
-                        canRead: false,
-                        canWrite: false,
-                        snapshotReady: false
-                    });
-                    return;
-                }
-                const enabled = this._samplingCoordinator.setRuntimeEnabled(
-                    server,
-                    this._sampling.intent,
-                    this._debugBridge
-                );
-                this._postConsumerStatuses({
-                    mode: enabled ? "debug-running-sampling" : "debug-running-degraded",
-                    key: enabled ? "live.debugRuntimeSampling" : "live.debugTclDegraded",
-                    source: "openocd",
-                    canRead: enabled,
-                    canWrite: enabled,
-                    snapshotReady: enabled,
-                    intentEnabled: true,
-                    running: true
-                });
-            } catch (error) {
-                server.setSamplingEnabled(false);
-                this._postConsumerStatuses(
-                    {
-                        mode: "debug-running-degraded",
-                        key:
-                            error.code === "LIVE_READ_BUDGET_EXCEEDED"
-                                ? "live.runtimeBudgetExceeded"
-                                : "live.runtimeAddressRejected",
-                        source: "openocd",
-                        canRead: false,
-                        canWrite: false,
-                        snapshotReady: false,
-                        message: error.message
-                    },
-                    true
-                );
-            }
-        }, 150);
     }
     async _withAgentProbe(handler, options = {}) {
         if (this._debugBridge.replBusy)
@@ -2118,11 +1304,11 @@ class MainViewProvider {
                 this._assertGroupedReadElf();
                 source = "debug-session";
             } else if (
-                this._managedDebugServer &&
-                this._managedDebugSessionId &&
+                this.debugLaunch.managedServer &&
+                this.debugLaunch.managedSessionId &&
                 this._debugBridge.agentStatus().state === "running"
             ) {
-                const managed = this._managedDebugServer;
+                const managed = this.debugLaunch.managedServer;
                 if (managed.capabilities?.runtimeRead === false)
                     throw Object.assign(new Error("Pause the selected core before reading multicore memory"), {
                         code: "DEBUG_RUNTIME_READ_UNSUPPORTED"
@@ -2152,11 +1338,17 @@ class MainViewProvider {
                 throw Object.assign(new Error("Another Agent variable read is in progress"), {
                     code: "AGENT_READ_BUSY"
                 });
-            if (this._downloadRunning || this._chipInfoRunning || this._debugStarting || this._liveDebugSession()) {
+            if (
+                this._downloadRunning ||
+                this._chipInfoRunning ||
+                this.debugLaunch.starting ||
+                this.debugLaunch.liveSession()
+            ) {
                 throw Object.assign(new Error("The debug probe is busy with another operation"), {
                     code: "PROBE_BUSY",
                     details: {
-                        activeOperation: this._debugStarting || this._liveDebugSession() ? "debug" : "probe",
+                        activeOperation:
+                            this.debugLaunch.starting || this.debugLaunch.liveSession() ? "debug" : "probe",
                         debugState: this._debugBridge.agentStatus().state
                     }
                 });
@@ -2314,7 +1506,7 @@ class MainViewProvider {
                 details: { expected: plan.connection, actual: connection }
             });
         const { elfResult, items } = plan;
-        const runtimeWrite = session === this._managedDebugServer;
+        const runtimeWrite = session === this.debugLaunch.managedServer;
         const debugSession = runtimeWrite ? this._debugBridge.activeSession : null;
         const stopEpoch = runtimeWrite ? this._debugBridge.stopEpoch : null;
         if (runtimeWrite) {
@@ -2345,7 +1537,7 @@ class MainViewProvider {
         }
         const targetChanged =
             runtimeWrite &&
-            (session !== this._managedDebugServer ||
+            (session !== this.debugLaunch.managedServer ||
                 debugSession !== this._debugBridge.activeSession ||
                 stopEpoch !== this._debugBridge.stopEpoch ||
                 this._debugBridge.agentStatus().state !== "running");
@@ -2441,8 +1633,8 @@ class MainViewProvider {
             const result = await this._executeWritePlan(this._debugBridge, "debug-dap", plan);
             return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
-        if (this._managedDebugServer && this._debugBridge.agentStatus().state === "running") {
-            const result = await this._executeWritePlan(this._managedDebugServer, "debug-running-openocd", plan);
+        if (this.debugLaunch.managedServer && this._debugBridge.agentStatus().state === "running") {
+            const result = await this._executeWritePlan(this.debugLaunch.managedServer, "debug-running-openocd", plan);
             return { ...result, ...consistency, permission: await this._writePermissionGrant(authorization, plan) };
         }
         const result = await this._withAgentProbe(
@@ -2513,7 +1705,7 @@ class MainViewProvider {
         const status = this._sampling.status();
         const dapSession = status.canWrite && this._debugBridge.canWrite ? this._debugBridge : null;
         const runtimeSession =
-            status.canWrite && status.mode === "debug-running-sampling" ? this._managedDebugServer : null;
+            status.canWrite && status.mode === "debug-running-sampling" ? this.debugLaunch.managedServer : null;
         const session =
             dapSession || runtimeSession || (status.canWrite && this._sampling.running ? this._sampling.session : null);
         if (!session) {
@@ -2571,7 +1763,7 @@ class MainViewProvider {
         if (this._downloadRunning) busy("chip.busyDownload", "PROBE_BUSY");
         if (this._sampling.running) busy("chip.busyLive", "PROBE_BUSY");
         if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
-        if (this._debugStarting || this._liveDebugSession()) busy("chip.busyDebug", "PROBE_BUSY");
+        if (this.debugLaunch.starting || this.debugLaunch.liveSession()) busy("chip.busyDebug", "PROBE_BUSY");
         const elfLoad = this._elfService.load().catch(() => null);
         const debuggerCfg =
             this._context.workspaceState.get(CACHE_KEYS.debugger) ||
@@ -3466,7 +2658,7 @@ class MainViewProvider {
         return task;
     }
     samplingFrequencyConfigurationChanged() {
-        if (this._savingFrequency) return;
+        if (this._sampling.savingFrequency) return;
         const value = configuredFrequencyHz(vscode.workspace.getConfiguration("emberprobe"));
         if (value !== this._sampling.frequencyHz) this._sampling.setIntervalMs(intervalMsFromHz(value), value);
     }
@@ -3566,319 +2758,19 @@ class MainViewProvider {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
             operations: this._probeCoordinator?.snapshot(),
-            debugPending: !!this._debugCommandPending
+            debugPending: !!this.debugLaunch.commandPending
         });
-    }
-    async externalDebugSettingsChanged() {
-        await this._externalDebug.releaseIfDisabled();
-    }
-    async prepareExternalDebug(folder, config) {
-        if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
-        const connection = resolveExternalSettings(vscode.workspace.getConfiguration("emberprobe", folder.uri));
-        if (
-            this._debugCommandPending ||
-            this._debugStarting ||
-            this._managedDebugServer ||
-            this._debugBridge.hasAnySession
-        )
-            throw Object.assign(new Error("Stop the active debug session before external attach"), {
-                code: "PROBE_BUSY"
-            });
-        if (this._probeDriverSwitching)
-            throw Object.assign(new Error("Wait for the driver operation before external attach"), {
-                code: "PROBE_DRIVER_BUSY"
-            });
-        this._debugCommandPending = true;
-        this._postProbeOperationStatus();
-        let reserved = false;
-        try {
-            const { validateDebugConfiguration } = require("./services/debugConfiguration");
-            const validated = validateDebugConfiguration(
-                {
-                    ...config,
-                    executable: config.executable || this._context.workspaceState.get(CACHE_KEYS.elfPath)
-                },
-                folder
-            );
-            if (!validated.executable) throw new Error("A valid ELF executable is required");
-            const tools = await ensureDebugTools(
-                vscode,
-                folder,
-                this._context.workspaceState,
-                (key) => this._t(key),
-                undefined,
-                validated
-            );
-            if (!tools) return undefined;
-            const own = vscode.workspace.getConfiguration("emberprobe", folder.uri);
-            const pretty = resolvePrettyPrinting(
-                validated,
-                {
-                    enablePrettyPrinting: own.get("enablePrettyPrinting", true),
-                    prettyPrintingMode: configuredPrettyPrintingMode(own),
-                    prettyPrinterFiles: own.get("prettyPrinterFiles", [])
-                },
-                validated.cwd || folder.uri.fsPath
-            );
-            const svd = await this._svdManager.currentPath(folder);
-            const rtos = resolveRtos(validated, own.get("rtos", ""));
-            if (!own.get("experimental.externalGdb.enabled", false))
-                throw new Error("External GDB was disabled during startup");
-            const stoppedAgent = this.stopAgentReadIfRunning();
-            if (stoppedAgent) await stoppedAgent;
-            if (this._sampling.inUse) await this._sampling.stop({ preserveIntent: true });
-            this._debugBridge.setWorkspace(folder);
-            // Freeze settings read at entry. No probe detection or extra TCP readiness connection.
-            const reservation = await this._externalDebug.reserve(folder.uri.fsPath, connection);
-            reserved = true;
-            const result = {
-                ...validated,
-                ...tools,
-                ...pretty,
-                cwd: validated.cwd || folder.uri.fsPath,
-                gdbTarget: reservation.gdbTarget,
-                __emberprobeExternalMode: reservation.mode,
-                __emberprobeManagedToken: reservation.token,
-                rtos,
-                ...(svd ? { svdFile: svd } : {})
-            };
-            this._armDebugStartupWatchdog();
-            return result;
-        } catch (error) {
-            if (reserved) await this._externalDebug.finish();
-            throw error;
-        } finally {
-            this._debugCommandPending = false;
-            this._postProbeOperationStatus();
-        }
-    }
-    async prepareProbeForDebug(folder) {
-        this._assertProbeDriverIdle();
-        this._debugBridge.setWorkspace(folder || this._commandContext().folder);
-        // A session that ended with an unconfirmed OpenOCD exit leaves its server reachable; retry
-        // the stop here so that one slow exit does not block every later debug start.
-        if (this._managedDebugServer?.state === "stop-failed" && !this._managedDebugGroup)
-            await this._stopManagedDebugServer();
-        if (this._managedDebugServer) {
-            throw Object.assign(new Error("The debug probe is owned by an EmberProbe managed debug session"), {
-                code: "PROBE_BUSY"
-            });
-        }
-        const agentStopped = this.stopAgentReadIfRunning();
-        if (agentStopped) await agentStopped;
-        if (this._sampling.inUse) {
-            const stopped = this._sampling.stop({ preserveIntent: true });
-            if (stopped) await stopped;
-            this._postConsumerStatuses({
-                mode: "debug-running-waiting",
-                key: "live.debugWaiting",
-                source: "dap",
-                canRead: false,
-                canWrite: false,
-                snapshotReady: false
-            });
-        } else if (this._sampling.intent) {
-            this._postConsumerStatuses({
-                mode: "debug-running-waiting",
-                key: "live.debugWaiting",
-                source: "dap",
-                snapshotReady: false
-            });
-        }
-    }
-    handleDebugSessionStart(session) {
-        if (!session || !isSupportedDebugSession(session)) return;
-        if (this._terminatedDebugSessionIds.has(session.id)) return;
-        this._externalDebug?.bind(session);
-        const grouped = this._managedDebugGroup?.bind(session);
-        if (this._debugLifecycle.pending && this._matchesManagedDebugSession(session))
-            this._debugLifecycle.session = session;
-        this._debugReadPlanKey = debugReadPlanKey(this._sampling.activeReadPlan());
-        // In multi-root workspaces the session belongs to VS Code's actual debug folder, not the folder of the cached
-        // ELF.
-        this._debugBridge.setWorkspace(session.workspaceFolder || this._commandContext().folder);
-        if (
-            session.configuration?.__emberprobeManagedToken &&
-            session.configuration.__emberprobeManagedToken === this._managedDebugToken &&
-            this._managedDebugServer
-        ) {
-            this._managedDebugSessionId = session.id;
-            this._managedDebugServer.invalidateTarget?.();
-            this._managedDebugServer.setSamplingEnabled(false);
-        }
-        this._debugBridge.attach(session);
-        if (grouped) {
-            this._managedDebugServer.invalidateTarget?.();
-            this._managedDebugServer.setSamplingEnabled(false);
-        }
-        this._samplingCoordinator?.setDebugIntent(this._debugBridge, this._sampling.intent);
-    }
-    handleDebugAdapterMessage(session, message) {
-        void this._externalDebug?.message(session, message).catch(console.error);
-        if (
-            message?.type === "event" &&
-            message.event === "emberprobe.firmwareLoaded" &&
-            !this._externalDebug?.matches(session) &&
-            this._matchesManagedDebugSession(session)
-        ) {
-            const { cwd, executable } = session.configuration || {};
-            void this._firmwareRecord
-                ?.recordDebugLaunch(
-                    executable && path.resolve(cwd || "", executable),
-                    message.body,
-                    this._managedDebugServer?.options
-                )
-                .catch((error) => console.error("Unable to record debug firmware:", error));
-        }
-        if (this._managedDebugGroup?.match(session)) {
-            this._managedDebugGroup.message(session, message);
-            this._debugBridge.handleMessage(session, message);
-            return;
-        }
-        const matches = this._matchesManagedDebugSession(session);
-        if (message?.type === "response" && ["launch", "attach"].includes(message.command) && matches) {
-            if (!message.success) {
-                const errorMsg = message.message || message.body?.error?.format;
-                if (session.configuration?.servertype === "external")
-                    this._clearDebugStartupWatchdog({ kind: "failed" });
-                else this._reportDebugStartupFailure(errorMsg);
-            } else {
-                this._debugLifecycle?.markLaunchResponse(session, matches, true);
-                if (
-                    !this._terminatedDebugSessionIds.has(session.id) &&
-                    session.configuration?.servertype !== "external"
-                ) {
-                    void this._probeConnectionService.recordSuccess(this._managedDebugServer?.options);
-                }
-            }
-        }
-        if (message?.type === "event" && message.event === "initialized") this._markDebugStartupReady(session);
-        this._debugBridge.handleMessage(session, message);
-    }
-    handleDebugAdapterRequest(session, message) {
-        void this._externalDebug?.request(session, message).catch(console.error);
-        this._debugBridge.handleRequest(session, message);
-    }
-    // VS Code clears activeDebugSession only after the terminate event, so a session already torn down here
-    // must not keep reporting the probe as busy.
-    _liveDebugSession() {
-        const session = vscode.debug.activeDebugSession;
-        return session && !this._terminatedDebugSessionIds?.has(session.id) ? session : null;
-    }
-    // Detaching a session settles the Agent's debug.stop wait before OpenOCD has exited; this resolves once the
-    // session's probe lease is released, or rejects when the server exit cannot be confirmed.
-    _debugSessionReleased(session) {
-        return this._debugSessionReleases?.get(session?.id);
-    }
-    async handleDebugSessionTerminate(session) {
-        if (!session || !isSupportedDebugSession(session)) return;
-        if (this._terminatedDebugSessionIds.has(session.id)) return;
-        this._terminatedDebugSessionIds.add(session.id);
-        const released = this._releaseTerminatedDebugSession(session);
-        // A failed release stays recorded so a concurrent debug.stop still reports it.
-        this._debugSessionReleases?.set(session.id, released);
-        const restore = await released;
-        this._debugSessionReleases?.delete(session.id);
-        if (restore) await this.restoreSamplingAfterDebug();
-    }
-    // Returns whether sampling should be restored after the probe has been released.
-    async _releaseTerminatedDebugSession(session) {
-        if (this._externalDebug?.matches(session)) {
-            this._clearDebugStartupWatchdog({ kind: "terminated" });
-            this._debugBridge.detach(session);
-            await this._externalDebug.finish(session);
-            this._sampling.intent = false;
-            this._debugBridge.setIntent(false);
-            return false;
-        }
-        const group = this._managedDebugGroup;
-        const member = group?.match(session);
-        if (member) {
-            this._debugBridge.detach(session);
-            await group.release(member.token);
-            await this._closeStoppedDebugGroup(group);
-            return false;
-        }
-        if (
-            this._debugLifecycle.pending &&
-            (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session))
-        ) {
-            this._clearDebugStartupWatchdog({ kind: "terminated" });
-        }
-        const managed = !!this._managedDebugSessionId && session.id === this._managedDebugSessionId;
-        this._debugBridge.detach(session);
-        if (this._debugBridge.hasSession) return false;
-        this._debugReadPlanKey = "";
-        this._runtimeSampleHold?.reset();
-        if (managed) await this._stopManagedDebugServer();
-        return true;
-    }
-    handleDebugAdapterExit(session) {
-        if (!session || !isSupportedDebugSession(session)) return;
-        const managedStartup =
-            this._debugLifecycle.pending &&
-            (this._debugLifecycle.session?.id === session.id || this._matchesManagedDebugSession(session));
-        if (!managedStartup && !this._debugBridge.hasAnySession && !this._managedDebugGroup?.match(session)) return;
-        return this.handleDebugSessionTerminate(session);
-    }
-    async restoreSamplingAfterDebug() {
-        if (this._shutdownPromise) return;
-        if (this._externalDebug?.held) return;
-        if (this._managedDebugGroup?.members.size) return;
-        if (this._debugBridge.hasAnySession) {
-            this._postConsumerStatuses(this._debugBridge.status());
-            return;
-        }
-        if (this._managedDebugServer) await this._stopManagedDebugServer();
-        if (!this._sampling.intent) {
-            this._postConsumerStatuses({ mode: "stopped", key: "sb.stopped", source: "none" });
-            return;
-        }
-        this._postConsumerStatuses({
-            mode: "restoring",
-            key: "live.restoring",
-            source: "openocd",
-            canRead: false,
-            canWrite: false
-        });
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        if (!this._sampling.intent || this._debugBridge.hasAnySession) return;
-        try {
-            await this._sampling.start(undefined, this._sampling.intervalMs, "restore");
-        } catch (error) {
-            this._postConsumerStatuses({ mode: "restore-failed", ...toUiError(error), source: "none" }, true);
-        }
     }
     disposeDebugBridge() {
         this._svdPeripheralService?.dispose();
         this._svdManager?.library?.dispose();
         this._debugBridge.dispose();
     }
-    // Background GDB start for a workspace that has already chosen firmware; see services/gdbWarmup.js.
-    scheduleGdbWarmup(delayMs = 0) {
-        if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
-        this._gdbWarmupTimer = setTimeout(async () => {
-            this._gdbWarmupTimer = null;
-            // Workspace settings choose the executable, so an untrusted workspace never runs it.
-            if (this._shutdownPromise || !vscode.workspace.isTrusted) return;
-            if (!this._context.workspaceState.get(CACHE_KEYS.elfPath)) return;
-            const { folder } = this._commandContext();
-            if (!folder) return;
-            try {
-                const tools = await findWarmupDebugTools(vscode, folder, this._context.workspaceState);
-                if (tools && !this._shutdownPromise && vscode.workspace.isTrusted)
-                    void this._gdbWarmup.warm(tools.gdbPath);
-            } catch (error) {
-                console.error("GDB warm-up skipped:", error);
-            }
-        }, delayMs);
-        this._gdbWarmupTimer.unref?.();
-    }
     shutdown() {
         this._chartBackground?.cancel();
-        if (this._gdbWarmupTimer) clearTimeout(this._gdbWarmupTimer);
-        this._gdbWarmupTimer = null;
-        this._gdbWarmup?.dispose();
+        if (this.debugLaunch.gdbWarmupTimer) clearTimeout(this.debugLaunch.gdbWarmupTimer);
+        this.debugLaunch.gdbWarmupTimer = null;
+        this.debugLaunch.gdbWarmup?.dispose();
         this._stopProbeInventoryMonitor();
         this._memoryAnalysisController?.dispose();
         this._cubemxService.cancel();
@@ -3894,15 +2786,16 @@ class MainViewProvider {
             const agentStopped = this.stopAgentReadIfRunning();
             // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
             if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
-            this._clearDebugStartupWatchdog();
-            if (this._managedDebugGroup) {
-                for (const token of [...this._managedDebugGroup.members.keys()])
-                    await this._failGroupedCore(token, "Extension is shutting down");
+            this.debugLaunch.clearStartupWatchdog();
+            if (this.debugLaunch.managedGroup) {
+                for (const token of [...this.debugLaunch.managedGroup.members.keys()])
+                    await this.debugLaunch.failGroupedCore(token, "Extension is shutting down");
             }
             const managedSession = this._debugBridge.activeSession;
             if (
                 managedSession &&
-                (managedSession.id === this._managedDebugSessionId || this._externalDebug?.matches(managedSession))
+                (managedSession.id === this.debugLaunch.managedSessionId ||
+                    this._externalDebug?.matches(managedSession))
             ) {
                 try {
                     await vscode.debug.stopDebugging(managedSession);
@@ -3915,14 +2808,14 @@ class MainViewProvider {
                     /* bounded shutdown */
                 }
             }
-            await this._stopManagedDebugServer();
+            await this.debugLaunch.stopManagedServer();
             const stopped = this._sampling.stop();
             if (stopped) await stopped;
             await this._flushPendingChartHistorySamples();
             await this._livePanelRegistry?.pending.catch(console.error);
             await this._samplingArchive.dispose();
             await this._chartHistory?.dispose();
-            this._hostLoopDelay?.dispose();
+            this._sampling.dispose();
             this.disposeDebugBridge();
             await this._agentService.dispose().catch(() => {});
         })();

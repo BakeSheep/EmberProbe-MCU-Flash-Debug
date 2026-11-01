@@ -45,9 +45,9 @@ function activate(context) {
         vscode.workspace.onDidChangeConfiguration(event => {
             if (["gdbPath", "armToolchainPath", "armToolchainPrefix", "objdumpPath"].some(
                 key => event.affectsConfiguration("emberprobe." + key)
-            )) provider.scheduleGdbWarmup();
+            )) provider.debugLaunch.scheduleGdbWarmup();
             if (event.affectsConfiguration("emberprobe.chartBackgroundIcon.enabled")) provider.chartBackground().broadcast();
-            if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.externalDebugSettingsChanged().catch(console.error);
+            if (event.affectsConfiguration("emberprobe.experimental.externalGdb")) provider.debugLaunch.externalSettingsChanged().catch(console.error);
             const connectionChanged = ["openocdPath", "transport", "probeSerial", "adapterSpeedKhz"].some(key => event.affectsConfiguration("emberprobe." + key));
             const samplingSpeedChanged = event.affectsConfiguration("emberprobe.samplingAdapterSpeedKhz");
             if (connectionChanged || samplingSpeedChanged) provider.connectionConfigurationChanged(samplingSpeedChanged, !connectionChanged);
@@ -66,7 +66,7 @@ function activate(context) {
             provider.mcpConfigurationChanged();
         }),
         vscode.workspace.onDidGrantWorkspaceTrust(() => {
-            provider.scheduleGdbWarmup();
+            provider.debugLaunch.scheduleGdbWarmup();
             provider.refreshSkillStatus(true).catch(console.error);
             provider.mcpConfigurationChanged();
         }),
@@ -79,10 +79,10 @@ function activate(context) {
             async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
                 if (!vscode.workspace.isTrusted) throw new Error("Debugging requires a trusted workspace");
                 let resolved = config;
-                if (!provider._matchesManagedDebugSession({ configuration: config })) {
+                if (!provider.debugLaunch.matchesManagedSession({ configuration: config })) {
                     const validated = validateDebugConfiguration(config, folder);
                     resolved = validated.servertype === "external"
-                        ? await provider.prepareExternalDebug(folder, validated)
+                        ? await provider.debugLaunch.prepareExternal(folder, validated)
                         : await provider.commandHandlers["mcu-vscode.debug"](folder.uri, validated);
                 }
                 // The adapter reports its errors in the language chosen in the sidebar.
@@ -92,20 +92,20 @@ function activate(context) {
         }),
         vscode.debug.registerDebugAdapterTrackerFactory("emberprobe", {
             createDebugAdapterTracker(session) {
-                provider.handleDebugSessionStart(session);
+                provider.debugLaunch.handleSessionStart(session);
                 return {
                     onWillReceiveMessage: message => {
                         replFocus.handleRequest(session, message);
-                        provider.handleDebugAdapterRequest(session, message);
+                        provider.debugLaunch.handleAdapterRequest(session, message);
                     },
                     onDidSendMessage: message => {
                         replFocus.handleMessage(session, message);
-                        provider.handleDebugAdapterMessage(session, message);
+                        provider.debugLaunch.handleAdapterMessage(session, message);
                     },
                     onError: error => console.error("Debug adapter error:", error),
                     onExit: () => {
                         replFocus.sessionEnded(session);
-                        return provider.handleDebugAdapterExit(session)?.catch(error => {
+                        return provider.debugLaunch.handleAdapterExit(session)?.catch(error => {
                             console.error("Unable to clean up after debug adapter exit:", error);
                         });
                     }
@@ -117,8 +117,8 @@ function activate(context) {
         vscode.window.onDidChangeTextEditorSelection(event => {
             replFocus.editorActivity(userSelection.includes(event.kind) ? "user" : "reveal");
         }),
-        vscode.debug.onDidStartDebugSession(session => provider.handleDebugSessionStart(session)),
-        vscode.debug.onDidTerminateDebugSession(session => provider.handleDebugSessionTerminate(session).catch(error => {
+        vscode.debug.onDidStartDebugSession(session => provider.debugLaunch.handleSessionStart(session)),
+        vscode.debug.onDidTerminateDebugSession(session => provider.debugLaunch.handleSessionTerminate(session).catch(error => {
             console.error("Unable to restore EmberProbe sampling after debugging:", error);
         }))
     ];
@@ -130,7 +130,7 @@ function activate(context) {
     );
 
     provider.refreshOpenOcdStatus(false);
-    provider.scheduleGdbWarmup();
+    provider.debugLaunch.scheduleGdbWarmup();
     provider._cubemxConfiguration.detect().catch(console.error);
     provider.refreshSkillStatus(true).catch(console.error);
     // Hosts with the MCP API register a server definition provider; older hosts skip it quietly, and external clients

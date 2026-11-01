@@ -39,6 +39,11 @@ function latestByName(pending, next) {
 // and how samples reach the views. host is the MainViewProvider; vscode and LiveWatchSession come from it so tests
 // can replace them.
 class LiveWatchController {
+    /**
+     * @param {any} host
+     * @param {{ vscode?: any, LiveWatchSession?: any, frequencyHz?: number, unlimited?: boolean,
+     *     pointerExpandedOnly?: boolean }} [settings]
+     */
     constructor(
         host,
         {
@@ -59,6 +64,9 @@ class LiveWatchController {
         this.session = null;
         this.intent = false;
         this.consumers = new Set();
+        // Set while this controller writes the frequency setting, so the configuration event does not apply it again.
+        this.savingFrequency = false;
+        this._hostLoopDelay = null;
         this._runtimeDeniedKey = "";
         this._runtimeOverBudgetKey = "";
         this._runtimeRamCache = null;
@@ -98,7 +106,7 @@ class LiveWatchController {
         return { ...result, allowed, overBudget };
     }
     configureManagedRuntimeWatch() {
-        const server = this.host._managedDebugServer;
+        const server = this.host.debugLaunch.managedServer;
         if (!server || server.capabilities?.runtimeRead === false) return [];
         const plan = this.runtimeRamPlan(this.activeReadPlan());
         const itemKey = (items) => items.map((item) => `${item.name}:${item.address}:${item.size}`).join("|");
@@ -292,15 +300,15 @@ class LiveWatchController {
             const planKey = debugReadPlanKey(active);
             this.host._samplingCoordinator.setDebugIntent(this.host._debugBridge, this.intent);
             if (
-                this.host._managedDebugServer &&
-                this.host._managedDebugServer.capabilities?.runtimeRead !== false &&
-                this.host._managedDebugSessionId &&
+                this.host.debugLaunch.managedServer &&
+                this.host.debugLaunch.managedServer.capabilities?.runtimeRead !== false &&
+                this.host.debugLaunch.managedSessionId &&
                 !this.host._debugBridge.paused
             ) {
                 try {
                     const allowed = this.configureManagedRuntimeWatch();
                     const enabled = this.host._samplingCoordinator.setRuntimeEnabled(
-                        this.host._managedDebugServer,
+                        this.host.debugLaunch.managedServer,
                         this.intent && allowed.length > 0,
                         this.host._debugBridge
                     );
@@ -323,7 +331,7 @@ class LiveWatchController {
                         running: this.intent
                     });
                 } catch (error) {
-                    this.host._managedDebugServer.setSamplingEnabled(false);
+                    this.host.debugLaunch.managedServer.setSamplingEnabled(false);
                     this.host._postConsumerStatuses(
                         {
                             mode: "debug-running-degraded",
@@ -364,8 +372,8 @@ class LiveWatchController {
             this.intent &&
             active.length &&
             !this.host._downloadRunning &&
-            !this.host._debugStarting &&
-            !this.host._debugCommandPending
+            !this.host.debugLaunch.starting &&
+            !this.host.debugLaunch.commandPending
         )
             await this.start(undefined, this.intervalMs, "refresh");
         else if (this.intent && !active.length) this.host._postConsumerStatuses({ key: "live.needVar" });
@@ -430,7 +438,7 @@ class LiveWatchController {
                 : normalizeFrequencyHz(frequencyHz);
         this.intervalMs = value;
         if (this.session) this.session.setIntervalMs(value);
-        this.host._managedDebugServer?.setIntervalMs?.(value);
+        this.host.debugLaunch.managedServer?.setIntervalMs?.(value);
         this.host._postLive({ type: "liveFrequency", frequencyHz: this.frequencyHz, intervalMs: value });
         return value;
     }
@@ -447,13 +455,13 @@ class LiveWatchController {
             });
         const value = normalizeFrequencyHz(frequencyHz);
         this.setIntervalMs(intervalMsFromHz(value), value);
-        this.host._savingFrequency = true;
+        this.savingFrequency = true;
         try {
             await this._vscode.workspace
                 .getConfiguration("emberprobe")
                 .update("sampleFrequencyHz", value, this._vscode.ConfigurationTarget.Workspace);
         } finally {
-            this.host._savingFrequency = false;
+            this.savingFrequency = false;
         }
         return value;
     }
@@ -668,11 +676,11 @@ class LiveWatchController {
     }
     setArchiveBackpressure(paused) {
         this.host._samplingCoordinator.setBackpressure(paused);
-        const session = this.host._managedDebugServer || this.session;
+        const session = this.host.debugLaunch.managedServer || this.session;
         this.host._samplingCoordinator.setDeliveryHold(this.session);
-        if (this.host._managedDebugServer)
+        if (this.host.debugLaunch.managedServer)
             this.host._samplingCoordinator.setRuntimeEnabled(
-                this.host._managedDebugServer,
+                this.host.debugLaunch.managedServer,
                 this.intent,
                 this.host._debugBridge
             );
@@ -697,7 +705,7 @@ class LiveWatchController {
             intent: this.intent,
             bridge: this.host._debugBridge,
             standaloneRunning: this.running,
-            managedServer: this.host._managedDebugServer,
+            managedServer: this.host.debugLaunch.managedServer,
             agentStatus: this.host._agentSamplingStatus
         });
         if (this.closing || this.exitUnconfirmed) {
@@ -710,11 +718,11 @@ class LiveWatchController {
                 connectionState: this.exitUnconfirmed ? "exit-unconfirmed" : "closing"
             });
         }
-        const session = this.host._managedDebugServer || this.session;
+        const session = this.host.debugLaunch.managedServer || this.session;
         if (session?.options?.settingsIdentity) {
             try {
                 this.host._probeConnectionService.assertCurrent(session);
-                status.connection = this.host._managedDebugGroup
+                status.connection = this.host.debugLaunch.managedGroup
                     ? this.host._debugBridge.activeSession
                         ? this.host._sessionWriteConnection(this.host._debugBridge)
                         : undefined
@@ -747,15 +755,19 @@ class LiveWatchController {
         status.backlogAgeMs = stats?.backlogAgeMs ?? 0;
         status.droppedBatches = stats?.droppedBatches ?? 0;
         // The event-loop monitor wakes the host periodically, so it runs only while sampling is requested.
-        if (status.running) status.hostLoopDelayMs = (this.host._hostLoopDelay ||= new HostLoopDelay()).maxMs();
+        if (status.running) status.hostLoopDelayMs = (this._hostLoopDelay ||= new HostLoopDelay()).maxMs();
         else {
-            this.host._hostLoopDelay?.dispose();
-            this.host._hostLoopDelay = null;
+            this.dispose();
             status.hostLoopDelayMs = 0;
         }
         status.pauseReason =
             stats?.pauseReason ?? (this.host._samplingCoordinator.backpressured ? "archive_backpressure" : null);
         return withWriteAccessStatus(status);
+    }
+    // Stops the event-loop monitor; status() starts it again while sampling runs.
+    dispose() {
+        this._hostLoopDelay?.dispose();
+        this._hostLoopDelay = null;
     }
     // Pointer cells name peripheral registers from the bound SVD. Loading is read-only,
     // shares the peripheral service cache and runs once per SVD binding.
@@ -864,17 +876,17 @@ class LiveWatchController {
         const activeItems = this.activeReadPlan();
         if (
             this.host._debugBridge.hasSession ||
-            isSupportedDebugSession(this.host._liveDebugSession()) ||
-            this.host._debugStarting ||
-            this.host._debugCommandPending
+            isSupportedDebugSession(this.host.debugLaunch.liveSession()) ||
+            this.host.debugLaunch.starting ||
+            this.host.debugLaunch.commandPending
         ) {
             const managedRunning =
-                !!this.host._managedDebugServer &&
-                !!this.host._managedDebugSessionId &&
+                !!this.host.debugLaunch.managedServer &&
+                !!this.host.debugLaunch.managedSessionId &&
                 this.host._debugBridge.hasSession &&
                 !this.host._debugBridge.paused;
             if (managedRunning && activeItems.length) {
-                this.host._handleManagedTargetState({
+                this.host.debugLaunch.handleTargetState({
                     state: "continued",
                     epoch: this.host._debugBridge.stopEpoch,
                     session: this.host._debugBridge.activeSession
@@ -895,11 +907,11 @@ class LiveWatchController {
                   ? this.host._debugBridge.status(activeItems.length ? {} : { key: "live.needVar" })
                   : {
                         mode:
-                            this.host._debugStarting || this.host._debugCommandPending
+                            this.host.debugLaunch.starting || this.host.debugLaunch.commandPending
                                 ? "debug-running-waiting"
                                 : "debug-session-conflict",
                         key:
-                            this.host._debugStarting || this.host._debugCommandPending
+                            this.host.debugLaunch.starting || this.host.debugLaunch.commandPending
                                 ? "live.debugWaiting"
                                 : "live.debugConflict",
                         source: "dap",
@@ -1057,7 +1069,7 @@ class LiveWatchController {
         if (!preserveIntent) {
             this.intent = false;
             this.host._debugBridge.setIntent(false);
-            this.host._managedDebugServer?.setSamplingEnabled(false);
+            this.host.debugLaunch.managedServer?.setSamplingEnabled(false);
         }
         this.session?.setSamplingEnabled?.(false);
         this.closing = !!(this._startPromise || this.session);

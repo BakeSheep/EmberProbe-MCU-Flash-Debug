@@ -247,10 +247,8 @@ async function incompleteActions() {
                         return "cmsis-dap.cfg";
                     }
                 },
-                _liveDebugSession: () => null,
                 _postProbeOperationStatus() {},
                 _resetChartHistoryWarnings() {},
-                _clearDebugStartupWatchdog() {},
                 _resolveOpenOcdPath: async () => "openocd",
                 _postConsumerStatuses: (status, error) =>
                     f.messages.push({
@@ -260,6 +258,7 @@ async function incompleteActions() {
                         error
                     })
             });
+            Object.assign(f.provider.debugLaunch, { liveSession: () => null, clearStartupWatchdog() {} });
             f.provider._context.workspaceState.get = () => undefined;
             try {
                 if (action === "liveToggle") await f.dispatch({ type: action });
@@ -269,7 +268,7 @@ async function incompleteActions() {
                     await f.dispatch(sidebar.messages.at(-1));
                 }
                 assert.strictEqual(coordinator.anyActive(), false, `${action} releases its probe lease`);
-                assert(!f.provider._debugCommandPending, `${action} cannot leave a pending debug startup`);
+                assert(!f.provider.debugLaunch.commandPending, `${action} cannot leave a pending debug startup`);
                 assert(!f.provider._sampling._startPromise, `${action} cannot leave a pending sampling startup`);
                 const reply = f.messages.findLast((message) => ["liveStatus", "commandError"].includes(message.type));
                 assert(reply, `${action} must acknowledge missing configuration`);

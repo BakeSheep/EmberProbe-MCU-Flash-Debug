@@ -156,7 +156,7 @@ async function run() {
         report.sampling = {
             batchesPerSecond: (sampleBatches - counted) / 2,
             failedSamples,
-            stats: provider._managedDebugServer?.stats?.() || null
+            stats: provider.debugLaunch.managedServer?.stats?.() || null
         };
 
         // Phase A: sampling reconfiguration while a running write is queued or in flight.

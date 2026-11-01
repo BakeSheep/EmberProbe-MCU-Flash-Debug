@@ -167,7 +167,7 @@ function fixture() {
 
     // Shared debugging stays alive while Agent disables acquisition and clears restart intent.
     q._debugBridge.hasSession = true;
-    q._managedDebugServer = {
+    q.debugLaunch.managedServer = {
         samplingEnabled: true,
         setSamplingEnabled(value) {
             this.samplingEnabled = value;
@@ -178,7 +178,7 @@ function fixture() {
     await q._controlAgentSampling("stop");
     assert.strictEqual(q._debugBridge.hasSession, true);
     assert.strictEqual(q._debugBridge.intentEnabled, false);
-    assert.strictEqual(q._managedDebugServer.samplingEnabled, false);
+    assert.strictEqual(q.debugLaunch.managedServer.samplingEnabled, false);
     assert.strictEqual((await q._controlAgentSampling("status")).running, false);
 
     await scenario("Cancel Agent reads during connection preparation and port resolution", async () => {
@@ -218,7 +218,6 @@ function fixture() {
             Object.assign(p, {
                 _probeCoordinator: new ProbeCoordinator(),
                 _samplingCoordinator: new SamplingCoordinator(),
-                _debugLifecycle: new DebugLifecycle(),
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
@@ -230,6 +229,7 @@ function fixture() {
                 _postLive() {},
                 _postAgentSampling() {}
             });
+            Object.assign(p.debugLaunch, { lifecycle: new DebugLifecycle() });
             Object.assign(p._sampling, {
                 consumers: new Set(),
                 setIntervalMs() {},

@@ -195,10 +195,8 @@ async function testShutdownFence(Provider) {
         _debugBridge: { setIntent() {} },
         _elfService: { invalidate() {} },
         _cubemxService: { cancel() {} },
-        _clearDebugStartupWatchdog() {},
         _postConsumerStatuses() {},
         disposeDebugBridge() {},
-        _stopManagedDebugServer: async () => {},
         stopAgentReadIfRunning: () => null,
         _agentService: { close() {}, stop: async () => {}, dispose: async () => {} },
         _samplingArchive: {
@@ -217,6 +215,7 @@ async function testShutdownFence(Provider) {
             }
         }
     });
+    Object.assign(p.debugLaunch, { clearStartupWatchdog() {}, stopManagedServer: async () => {} });
     Object.assign(p._sampling, { consumers: new Set() });
     p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);
     const shuttingDown = p.shutdown();

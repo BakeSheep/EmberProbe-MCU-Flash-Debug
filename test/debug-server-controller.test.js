@@ -220,16 +220,16 @@ function fixture(options = {}, overrides = {}) {
     const Provider = loadProvider();
     const host = Object.create(Provider.prototype);
     host._probeCoordinator = new ProbeCoordinator();
-    host._debugServerLease = host._probeCoordinator.acquire("debugServer");
-    host._managedDebugServer = stubborn.controller;
-    host._managedDebugToken = "retained";
-    await assert.rejects(host._stopManagedDebugServer(), { code: "DEBUG_SERVER_STOP_FAILED" });
-    assert.strictEqual(host._managedDebugServer, stubborn.controller);
-    assert.strictEqual(host._managedDebugToken, "retained");
+    host.debugLaunch.serverLease = host._probeCoordinator.acquire("debugServer");
+    host.debugLaunch.managedServer = stubborn.controller;
+    host.debugLaunch.managedToken = "retained";
+    await assert.rejects(host.debugLaunch.stopManagedServer(), { code: "DEBUG_SERVER_STOP_FAILED" });
+    assert.strictEqual(host.debugLaunch.managedServer, stubborn.controller);
+    assert.strictEqual(host.debugLaunch.managedToken, "retained");
     assert.throws(() => host._probeCoordinator.acquire("download"), { code: "PROBE_BUSY" });
     confirmExit = true;
-    await host._stopManagedDebugServer();
-    assert.strictEqual(host._managedDebugServer, null);
+    await host.debugLaunch.stopManagedServer();
+    assert.strictEqual(host.debugLaunch.managedServer, null);
     assert.strictEqual(host._probeCoordinator.anyActive(), false);
 
     // Exercise the production host startup/cleanup, including a bind retry. The
@@ -270,8 +270,8 @@ function fixture(options = {}, overrides = {}) {
     );
     const retryHost = Object.create(retryHostClass.prototype);
     retryHost._probeCoordinator = new ProbeCoordinator();
-    retryHost._debugStartLease = retryHost._probeCoordinator.acquire("debugStart");
-    retryHost._debugLifecycle = { pending: false };
+    retryHost.debugLaunch.startLease = retryHost._probeCoordinator.acquire("debugStart");
+    retryHost.debugLaunch.lifecycle = { pending: false };
     let prepared = 0,
         recorded = 0;
     retryHost._probeConnectionService = {
@@ -288,12 +288,15 @@ function fixture(options = {}, overrides = {}) {
     retryHost._probeConnectionService.prepare = async () => ({
         selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" }
     });
-    await assert.rejects(retryHost._startManagedDebugServer("fake", "stlink.cfg", "stm32f1x.cfg", configuration), {
-        code: "PROBE_IDENTITY_UNVERIFIED"
-    });
+    await assert.rejects(
+        retryHost.debugLaunch.startManagedServer("fake", "stlink.cfg", "stm32f1x.cfg", configuration),
+        {
+            code: "PROBE_IDENTITY_UNVERIFIED"
+        }
+    );
     assert.strictEqual(allocations.length, 0, "Launch must verify an anonymous attachment before starting its server");
     retryHost._probeConnectionService.prepare = originalPrepare;
-    const managed = await retryHost._startManagedDebugServer(
+    const managed = await retryHost.debugLaunch.startManagedServer(
         "fake",
         "cmsis-dap.cfg",
         "stm32h7x.cfg",
@@ -324,42 +327,46 @@ function fixture(options = {}, overrides = {}) {
         { mode: "debug-running-waiting", canWrite: false, haltWrite: false }
     ]) {
         retryHost._sampling.status = () => status;
-        retryHost._managedDebugServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
+        retryHost.debugLaunch.managedServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
         assert.deepStrictEqual(
             callbackStatuses.at(-1),
             status,
             "late runtime recovery retains the current write state"
         );
     }
-    retryHost._managedDebugServer.handlers.onStatus({ key: "live.debugTclDegraded" });
+    retryHost.debugLaunch.managedServer.handlers.onStatus({ key: "live.debugTclDegraded" });
     assert.strictEqual(callbackStatuses.at(-1).canWrite, false);
-    const currentServer = retryHost._managedDebugServer;
+    const currentServer = retryHost.debugLaunch.managedServer;
     const statusCount = callbackStatuses.length;
-    retryHost._managedDebugServer = null;
+    retryHost.debugLaunch.managedServer = null;
     currentServer.handlers.onStatus({ key: "live.debugRuntimeSampling" });
     assert.strictEqual(callbackStatuses.length, statusCount, "stale controllers cannot enable runtime writes");
-    retryHost._managedDebugServer = currentServer;
+    retryHost.debugLaunch.managedServer = currentServer;
     assert.strictEqual(stopped.length, 1, "The failed server is stopped before retrying");
     assert.strictEqual(retryHost._probeCoordinator.isActive("debugStart"), true);
     assert.deepStrictEqual(retryHost._sampling.configureManagedRuntimeWatch(), []);
-    retryHost._managedDebugSessionId = "core1";
-    retryHost._handleManagedTargetState({ session: { id: "core1" }, state: "continued", epoch: 1 });
-    assert.strictEqual(retryHost._runtimeResumeTimer, null, "Unsupported runtime reads never schedule Tcl sampling");
+    retryHost.debugLaunch.managedSessionId = "core1";
+    retryHost.debugLaunch.handleTargetState({ session: { id: "core1" }, state: "continued", epoch: 1 });
+    assert.strictEqual(
+        retryHost.debugLaunch.runtimeResumeTimer,
+        null,
+        "Unsupported runtime reads never schedule Tcl sampling"
+    );
     const stateHost = Object.create(retryHostClass.prototype);
     const targetCalls = [];
-    stateHost._managedDebugSessionId = "core0";
-    stateHost._managedDebugServer = {
+    stateHost.debugLaunch.managedSessionId = "core0";
+    stateHost.debugLaunch.managedServer = {
         capabilities: { runtimeRead: true },
         invalidateTarget: () => targetCalls.push("invalidate"),
         setSamplingEnabled: (enabled) => targetCalls.push(`sampling:${enabled}`)
     };
-    stateHost._handleManagedTargetState({ session: { id: "core0" }, state: "stopped", epoch: 2 });
+    stateHost.debugLaunch.handleTargetState({ session: { id: "core0" }, state: "stopped", epoch: 2 });
     assert.deepStrictEqual(
         targetCalls,
         ["invalidate", "sampling:false"],
         "target stops cancel queued runtime transactions, unlike sampling pauses"
     );
-    await retryHost._stopManagedDebugServer();
+    await retryHost.debugLaunch.stopManagedServer();
     assert.strictEqual(stopped.length, 2);
     assert.strictEqual(retryHost._probeCoordinator.anyActive(), false);
 

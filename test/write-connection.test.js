@@ -35,21 +35,21 @@ const { writePlan } = require("../src/services/agentPlans");
     };
     await provider._executeWritePlan(session, "test", plan);
     assert.strictEqual(writes, 1);
-    provider._managedDebugServer = session;
+    provider.debugLaunch.managedServer = session;
     assert.deepStrictEqual(provider._sessionWriteConnection(provider._debugBridge), plan.connection);
     assert.deepStrictEqual(
         await provider._prepareWriteConnection(),
         plan.connection,
         "Agent write confirmation must bind to the managed debug server while DAP is between stop events"
     );
-    provider._managedDebugServer = null;
+    provider.debugLaunch.managedServer = null;
     const unverified = { options: { selectionIdentity: { kind: "usb", anonymous: true, attachmentId: "" } } };
     assert.throws(() => provider._assertWriteSessionCurrent(unverified), { code: "PROBE_IDENTITY_UNVERIFIED" });
-    provider._managedDebugServer = unverified;
+    provider.debugLaunch.managedServer = unverified;
     assert.throws(() => provider._assertWriteSessionCurrent(provider._debugBridge), {
         code: "PROBE_IDENTITY_UNVERIFIED"
     });
-    provider._managedDebugServer = null;
+    provider.debugLaunch.managedServer = null;
     await assert.rejects(
         provider._executeWritePlan(session, "test", {
             ...plan,
@@ -195,7 +195,6 @@ const { writePlan } = require("../src/services/agentPlans");
     Object.assign(runtimeProvider, {
         _samplingCoordinator: new SamplingCoordinator(),
         _debugBridge: debugBridge,
-        _managedDebugServer: runtime,
         _livePanels: new Map(),
         _elfService: { invalidate() {} },
         readElfSymbols: () => runtimeElf,
@@ -204,6 +203,7 @@ const { writePlan } = require("../src/services/agentPlans");
         _t: (key) => key,
         _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
     });
+    Object.assign(runtimeProvider.debugLaunch, { managedServer: runtime });
     Object.assign(runtimeProvider._elfView, { prepareLayouts: async () => {} });
     Object.assign(runtimeProvider._sampling, { intent: true, unlimitedEnabled: () => false });
     const uiWord = await runtimeProvider._writeUiVariable("word", 42);
@@ -255,7 +255,7 @@ const { writePlan } = require("../src/services/agentPlans");
             const result = await normalWrite(items);
             if (change === "epoch") debugBridge.stopEpoch++;
             else if (change === "selected-session") debugBridge.activeSession = { ...active, id: "other" };
-            else runtimeProvider._managedDebugServer = null;
+            else runtimeProvider.debugLaunch.managedServer = null;
             return result;
         };
         await assert.rejects(
@@ -268,7 +268,7 @@ const { writePlan } = require("../src/services/agentPlans");
                 error.details.results.length === runtimePlan.items.length
         );
         debugBridge.activeSession = active;
-        runtimeProvider._managedDebugServer = runtime;
+        runtimeProvider.debugLaunch.managedServer = runtime;
     }
     for (const writtenItems of [0, 1]) {
         runtime.writeAndVerify = async () => {

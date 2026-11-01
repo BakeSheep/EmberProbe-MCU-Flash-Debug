@@ -47,8 +47,8 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
         settings: () => settings
     });
     host._debugBridge = new DebugSessionBridge();
-    host._debugLifecycle = new DebugLifecycle();
-    host._terminatedDebugSessionIds = new Set();
+    host.debugLaunch.lifecycle = new DebugLifecycle();
+    host.debugLaunch.terminatedSessionIds = new Set();
     host._svdManager = { currentPath: async () => "" };
     host._samplingCoordinator = { setDebugIntent: (bridge, intent) => bridge.setIntent(intent) };
     host._postConsumerStatuses = () => {};
@@ -64,49 +64,53 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     host.commandHandlers = {};
     host.registerCommandHandlers();
     await assert.rejects(host.commandHandlers["mcu-vscode.debug"](folder.uri, { servertype: "external" }), /F5/);
-    for (const name of ["_resolveOpenOcdPath", "_startManagedDebugServer", "_assertProbeDriverIdle"])
-        host[name] = () => {
+    for (const [owner, name] of [
+        [host, "_resolveOpenOcdPath"],
+        [host.debugLaunch, "startManagedServer"],
+        [host, "_assertProbeDriverIdle"]
+    ])
+        owner[name] = () => {
             throw new Error(`external must not call ${name}`);
         };
 
     const launch = { type: "emberprobe", request: "attach", servertype: "external", executable: __filename };
-    await assert.rejects(host.prepareExternalDebug(folder, { ...launch, gdbTarget: "host:1" }));
+    await assert.rejects(host.debugLaunch.prepareExternal(folder, { ...launch, gdbTarget: "host:1" }));
     assert(!host._externalDebug.held);
     vscode.workspace.isTrusted = false;
-    await assert.rejects(host.prepareExternalDebug(folder, launch), /trusted/);
+    await assert.rejects(host.debugLaunch.prepareExternal(folder, launch), /trusted/);
     vscode.workspace.isTrusted = true;
     config["experimental.externalGdb.enabled"] = false;
-    await assert.rejects(host.prepareExternalDebug(folder, launch), /Enable/);
+    await assert.rejects(host.debugLaunch.prepareExternal(folder, launch), /Enable/);
     config["experimental.externalGdb.enabled"] = true;
     tools = false;
-    assert.strictEqual(await host.prepareExternalDebug(folder, launch), undefined);
+    assert.strictEqual(await host.debugLaunch.prepareExternal(folder, launch), undefined);
     assert(!host._externalDebug.held);
     tools = true;
     duringTools = () => {
         config["experimental.externalGdb.enabled"] = false;
     };
-    await assert.rejects(host.prepareExternalDebug(folder, launch), /disabled during startup/);
+    await assert.rejects(host.debugLaunch.prepareExternal(folder, launch), /disabled during startup/);
     assert(!host._externalDebug.held);
     duringTools = () => {
         config["experimental.externalGdb.target"] = "changed:4444";
     };
     config["experimental.externalGdb.enabled"] = true;
-    const prepared = await host.prepareExternalDebug(other, launch);
+    const prepared = await host.debugLaunch.prepareExternal(other, launch);
     assert.strictEqual(actualFolder, other.uri, "settings resolve against the actual debug folder");
     assert.strictEqual(prepared.gdbTarget, "localhost:3333", "connection settings are frozen at startup");
     assert.strictEqual(prepared.servertype, "external");
     assert.strictEqual(prepared.rtos, "");
-    assert.strictEqual(host._managedDebugServer, undefined);
+    assert.strictEqual(host.debugLaunch.managedServer, null);
     assert.strictEqual(host._probeCoordinator.firstActive(), "externalDebug");
-    await assert.rejects(host.prepareExternalDebug(folder, launch));
+    await assert.rejects(host.debugLaunch.prepareExternal(folder, launch));
 
     const session = { id: "external", type: "emberprobe", workspaceFolder: other, configuration: prepared };
-    host.handleDebugSessionStart(session);
-    assert(host._matchesManagedDebugSession(session));
-    host.handleDebugAdapterMessage(session, { type: "response", command: "attach", success: true });
-    host.handleDebugAdapterMessage(session, { type: "event", event: "initialized" });
-    assert(!host._debugLifecycle.pending);
-    host.handleDebugAdapterMessage(session, {
+    host.debugLaunch.handleSessionStart(session);
+    assert(host.debugLaunch.matchesManagedSession(session));
+    host.debugLaunch.handleAdapterMessage(session, { type: "response", command: "attach", success: true });
+    host.debugLaunch.handleAdapterMessage(session, { type: "event", event: "initialized" });
+    assert(!host.debugLaunch.lifecycle.pending);
+    host.debugLaunch.handleAdapterMessage(session, {
         type: "event",
         event: "capabilities",
         body: {
@@ -117,7 +121,7 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
             }
         }
     });
-    host.handleDebugAdapterMessage(session, { type: "event", event: "stopped", body: { threadId: 7 } });
+    host.debugLaunch.handleAdapterMessage(session, { type: "event", event: "stopped", body: { threadId: 7 } });
     assert(host._debugBridge.paused);
     await host._sampling.start([], undefined, "sidebar");
     assert(host._debugBridge.intentEnabled, "paused sampling uses DAP without requiring a probe configuration");
@@ -138,24 +142,24 @@ const { fingerprintWritePlan } = require("../src/writeAuthorization");
     let restored = 0;
     host._sampling.start = () => restored++;
     host._sampling.intent = true;
-    await host.restoreSamplingAfterDebug();
+    await host.debugLaunch.restoreSampling();
     assert.strictEqual(restored, 0);
     await host._externalDebug.message(session, {
         type: "event",
         event: "emberprobe.externalGdbProcess",
         body: { exited: true }
     });
-    await host.handleDebugSessionTerminate(session);
-    await host.handleDebugSessionTerminate(session);
+    await host.debugLaunch.handleSessionTerminate(session);
+    await host.debugLaunch.handleSessionTerminate(session);
     assert(!host._externalDebug.active);
     assert(host._externalDebug.held);
     assert.strictEqual(host._sampling.intent, false);
     config["experimental.externalGdb.enabled"] = false;
-    await host.externalDebugSettingsChanged();
+    await host.debugLaunch.externalSettingsChanged();
     assert(!host._externalDebug.held);
     assert.strictEqual(restored, 0, "disabling the setting never auto-starts sampling");
     host._debugBridge.dispose();
-    host._debugLifecycle.clear();
+    host.debugLaunch.lifecycle.clear();
     console.log("External GDB native settings, host routing, DAP identity and sampling protection tests passed");
 })().catch((error) => {
     console.error(error);

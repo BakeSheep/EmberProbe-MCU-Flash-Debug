@@ -32,15 +32,17 @@ function shutdownFixture() {
         _cubemxService: { cancel() {} },
         _samplingArchive: { dispose: async () => {} },
         _chartHistory: null,
-        _clearDebugStartupWatchdog() {},
         _stopJlinkDriverMonitor() {},
         _flushPendingChartHistorySamples: async () => {},
         disposeDebugBridge: () => order.push("debug-bridge-disposed"),
         stopAgentReadIfRunning: () => {
             order.push("agent-read-stopped");
             return null;
-        },
-        _stopManagedDebugServer: async () => order.push("debug-server-stopped")
+        }
+    });
+    Object.assign(p.debugLaunch, {
+        clearStartupWatchdog() {},
+        stopManagedServer: async () => order.push("debug-server-stopped")
     });
     Object.assign(p._sampling, {
         stop: () => {

@@ -44,7 +44,7 @@ function deferred() {
     p._probeCoordinator = new ProbeCoordinator();
     p._probeConnectionService = { prepare: async () => ({}) };
     p._samplingCoordinator = new SamplingCoordinator();
-    p._debugLifecycle = new DebugLifecycle();
+    p.debugLaunch.lifecycle = new DebugLifecycle();
     p._chipInfoService = { running: false };
     p._debugBridge = { setIntent: () => {} };
     p._context = { workspaceState: { get: () => "configured" } };
@@ -145,7 +145,6 @@ function deferred() {
             Object.assign(p, {
                 _probeCoordinator: new ProbeCoordinator(),
                 _samplingCoordinator: new SamplingCoordinator(),
-                _debugLifecycle: new DebugLifecycle(),
                 _probeConnectionService: { prepare: async () => ({}) },
                 _debugBridge: { setIntent() {}, agentStatus: () => ({ state: "inactive" }) },
                 _context: { workspaceState: { get: () => "configured" } },
@@ -157,6 +156,7 @@ function deferred() {
                 _postLive() {},
                 _postAgentSampling() {}
             });
+            Object.assign(p.debugLaunch, { lifecycle: new DebugLifecycle() });
             Object.assign(p._sampling, {
                 consumers: new Set(),
                 setIntervalMs() {},
