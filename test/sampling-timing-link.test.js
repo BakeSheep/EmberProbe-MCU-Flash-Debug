@@ -29,7 +29,7 @@ function timedSession() {
     let now = 1700000000000.125;
     const session = new ManagedOpenOcdSession({ clock: { sampleNow: () => now } }, {});
     const fake = new FakeOpenOcdServer();
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         now += 1.25;
         return fake._execute(command).response;
     };
@@ -39,7 +39,7 @@ function timedSession() {
 async function timestamps() {
     const { session, time } = timedSession();
     const entries = [item("large", 0, 1536), item("later", 4096)];
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session._scheduleNext = () => {};
     session.setWatch(entries);
     const ticks = [];
@@ -142,22 +142,21 @@ async function networkAndIdentity() {
     ]) {
         let now = Date.now();
         const session = new ManagedOpenOcdSession({ backendKind: kind, clock: { now: () => now } }, {});
-        assert.strictEqual(session.rpcTimeoutMs, timeout);
+        assert.strictEqual(session.tcl.rpcTimeoutMs, timeout);
         const socket = new EventEmitter();
         socket.setNoDelay = () => {};
         socket.destroy = () => {
             socket.destroyed = true;
         };
         socket.write = () => {};
-        session.socket = socket;
-        session._setupSocket();
-        const pending = session._sendCommand("test");
+        session.tcl.attach(socket);
+        const pending = session.tcl.send("test");
         now += 2500;
         socket.emit("data", Buffer.from("ok\x1a"));
         if (kind === "tcp") assert.strictEqual(await pending, "ok");
         else await assert.rejects(pending, { code: "OPENOCD_RPC_TIMEOUT" });
         if (kind === "tcp") {
-            const overdue = session._sendCommand("test");
+            const overdue = session.tcl.send("test");
             now += 5001;
             socket.emit("data", Buffer.from("late\x1a"));
             await assert.rejects(overdue, { code: "OPENOCD_RPC_TIMEOUT" });

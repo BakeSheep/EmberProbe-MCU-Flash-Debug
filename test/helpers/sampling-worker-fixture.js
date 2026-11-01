@@ -9,8 +9,7 @@ run(parentPort, { intervalMs: 20 }, (options, handlers) => {
     session.start = async () => {
         await server.start();
         server.seed(0x20000000, [1, 2, 3, 4]);
-        session.socket = await server.connect();
-        session._setupSocket();
+        session.tcl.attach(await server.connect());
         session.setSamplingEnabled(true);
     };
     const stop = session.stop.bind(session);

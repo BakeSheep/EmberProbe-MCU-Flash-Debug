@@ -35,10 +35,10 @@ function readerFixture() {
     );
     fixture.session = session;
     // Exercise actual batch commands and parsing entirely in memory, without opening sockets or timers.
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session._scheduleNext = () => {};
     session._recordCycle = () => {};
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         const result = fixture.fake._execute(command);
         if (!result.ok) throw new Error(result.response);
         return result.response;

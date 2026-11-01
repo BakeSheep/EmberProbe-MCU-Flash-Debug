@@ -142,7 +142,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
             graphIntervalMs: 10000
         });
         changing._recentDurations = [1, 1, 1, 1];
-        changing.socket = { destroyed: false };
+        changing.tcl.socket = { destroyed: false };
         const scheduled = [],
             delivered = [];
         changing._scheduleNext = (delay) => scheduled.push(delay);
@@ -168,7 +168,7 @@ const item = (name, size = 4) => ({ name, address: 0x20000000, size });
     session.setIntervalMs(10000);
     assert.strictEqual(session.targetIntervalMs, 50);
     session._recentDurations = [1, 1, 1, 1];
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session.stopped = false;
     session.samplingEnabled = true;
     session._readItems = async (items, time) => ({

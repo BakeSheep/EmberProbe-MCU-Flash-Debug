@@ -220,8 +220,8 @@ async function main(argv = process.argv.slice(2)) {
     let rpcs = 0;
     let cycleRpcs = 0;
     let validCycle = false;
-    const send = session._sendCommand.bind(session);
-    session._sendCommand = (command) => {
+    const send = session.tcl.send.bind(session.tcl);
+    session.tcl.send = (command) => {
         rpcs++;
         return send(command);
     };
@@ -263,7 +263,7 @@ async function main(argv = process.argv.slice(2)) {
         });
         const elapsedMs = performance.now() - started;
         session.setSamplingEnabled(false);
-        await session._acquireExclusive(Date.now() + (session.rpcTimeoutMs || 2000) + 1000);
+        await session._acquireExclusive(Date.now() + (session.tcl.rpcTimeoutMs || 2000) + 1000);
         const stats = session.stats();
         session._releaseExclusive();
         if (failure) throw failure;

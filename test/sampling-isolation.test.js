@@ -149,7 +149,7 @@ function testRuntimeAccounting() {
     }
     await assert.rejects(session.readOnce(plan), /stopped/);
     const local = new ManagedOpenOcdSession({}, {});
-    local.socket = { destroyed: false };
+    local.tcl.socket = { destroyed: false };
     local.setSamplingEnabled(true);
     const timer = local.timer,
         epoch = local.sampleEpoch;
@@ -157,7 +157,7 @@ function testRuntimeAccounting() {
     assert.equal(local.timer, timer, "repeated enable must not restart the sampling clock");
     assert.equal(local.sampleEpoch, epoch, "repeated enable must not cancel an in-flight cycle");
     local.setSamplingEnabled(false);
-    local.socket = null;
+    local.tcl.socket = null;
     await local.stop();
 })().catch((error) => {
     console.error(error);

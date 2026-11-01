@@ -1,8 +1,20 @@
 "use strict";
+const { performance } = require("perf_hooks");
 
 const WINDOWS_TIMER_GRID_MS = 15.6;
 const WINDOWS_ACTIVE_WAIT_MS = 12;
 const HIGH_RESOLUTION_LEAD_MS = 1.5;
+
+// Wall time (deadlines, error throttling, cycle timestamps), monotonic milliseconds (cycle durations, adaptive
+// interval, rate windows), sub-millisecond sample stamps, and the timers behind every wait. An OpenOCD session's
+// `options.clock` replaces any member, so tests drive time without patching globals.
+const SYSTEM_CLOCK = Object.freeze({
+    now: () => Date.now(),
+    monotonicMs: () => Number(process.hrtime.bigint()) / 1e6,
+    sampleNow: () => performance.timeOrigin + performance.now(),
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    cancel: (timer) => clearTimeout(timer)
+});
 
 // When Windows cannot provide a fine timer, wake one coarse tick early and
 // yield with setImmediate for the short remainder. This runs only in the
@@ -59,4 +71,4 @@ function scheduleSamplingTick(delayMs, callback, options = {}) {
     };
 }
 
-module.exports = { scheduleSamplingTick };
+module.exports = { SYSTEM_CLOCK, scheduleSamplingTick };

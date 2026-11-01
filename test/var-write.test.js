@@ -117,7 +117,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     const okSession = new ManagedOpenOcdSession({}, {});
     const sent = [];
     okSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
-    okSession._sendCheckedCommand = async (cmd) => {
+    okSession.tcl.sendChecked = async (cmd) => {
         sent.push(cmd);
         return "";
     };
@@ -132,7 +132,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     const fallbackSession = new ManagedOpenOcdSession({}, {});
     const fallbackSent = [];
     fallbackSession._readMemoryBytes = async () => [0, 0, 0, 0];
-    fallbackSession._sendCheckedCommand = async (cmd) => {
+    fallbackSession.tcl.sendChecked = async (cmd) => {
         fallbackSent.push(cmd);
         if (cmd.startsWith("ocd_")) throw new Error('invalid command name "ocd_write_memory"');
         return "";
@@ -144,7 +144,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     const failSession = new ManagedOpenOcdSession({}, {});
     failSession._readMemoryBytes = async () => [0, 0, 0, 0];
-    failSession._sendCheckedCommand = async () => {
+    failSession.tcl.sendChecked = async () => {
         throw new Error("address out of bounds");
     };
     await assert.rejects(() => failSession._writeMemoryBytes(0x20000000, [1]), /Memory write failed/);
@@ -154,7 +154,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     alignedSession._readMemoryBytes = async () => {
         throw new Error("aligned word writes must not pre-read");
     };
-    alignedSession._sendCheckedCommand = async (cmd) => {
+    alignedSession.tcl.sendChecked = async (cmd) => {
         alignedSent.push(cmd);
         return "";
     };
@@ -164,7 +164,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     const highAddressSession = new ManagedOpenOcdSession({}, {});
     const highAddressSent = [];
     highAddressSession._readMemoryBytes = async () => [0x11, 0x22, 0x33, 0x44];
-    highAddressSession._sendCheckedCommand = async (cmd) => {
+    highAddressSession.tcl.sendChecked = async (cmd) => {
         highAddressSent.push(cmd);
         return "";
     };
@@ -182,7 +182,7 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
     const memorySent = [];
     memorySession._readMemoryBytes = async (address, count) =>
         ram.slice(address - 0x20000000, address - 0x20000000 + count);
-    memorySession._sendCheckedCommand = async (cmd) => {
+    memorySession.tcl.sendChecked = async (cmd) => {
         memorySent.push(cmd);
         const [, address, width, data] = cmd.match(/^\S+ (0x[0-9a-f]+) (\d+) \{(.*)\}$/);
         let offset = Number(address) - 0x20000000;
@@ -204,13 +204,13 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     // Concurrent transactions must finish verification and resume before the next writer enters.
     const concurrent = new ManagedOpenOcdSession({}, {});
-    concurrent.socket = { destroyed: false };
+    concurrent.tcl.socket = { destroyed: false };
     const operations = [];
     let releaseWrite;
     const writeGate = new Promise((resolve) => {
         releaseWrite = resolve;
     });
-    concurrent._sendCheckedCommand = async (command) => {
+    concurrent.tcl.sendChecked = async (command) => {
         operations.push(command);
         return command.includes("curstate") ? "running" : "";
     };
@@ -251,13 +251,13 @@ const writeSkill = require("../skills/mcu-variables/scripts/write");
 
     await scenario("Aligned transactions retain exclusive ownership without run control", async () => {
         const session = new ManagedOpenOcdSession({}, {});
-        session.socket = { destroyed: false };
+        session.tcl.socket = { destroyed: false };
         const operations = [];
         let release;
         const gate = new Promise((resolve) => {
             release = resolve;
         });
-        session._sendCheckedCommand = async () => assert.fail("word writes must not query or change target state");
+        session.tcl.sendChecked = async () => assert.fail("word writes must not query or change target state");
         session._readItems = async () => {
             operations.push("read");
             return { samples: [] };

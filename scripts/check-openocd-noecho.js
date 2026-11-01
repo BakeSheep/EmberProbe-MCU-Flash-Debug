@@ -6,7 +6,9 @@ const net = require("net");
 const { spawn } = require("child_process");
 const { randomBytes } = require("crypto");
 const tar = require("tar");
-const { ManagedOpenOcdSession, findFreePort } = require("../src/liveWatch");
+const { findFreePort } = require("../src/liveWatch");
+const { TclTransport } = require("../src/tclTransport");
+const { SYSTEM_CLOCK } = require("../src/samplingClock");
 const manifest = JSON.parse(
     fs.readFileSync(path.resolve(__dirname, "../resources/openocd-targets-manifest.json"), "utf8")
 );
@@ -61,10 +63,17 @@ async function main({ scatter = false } = {}) {
             await new Promise((resolve) => setTimeout(resolve, 10));
         }
     };
-    const session = new ManagedOpenOcdSession({}, {});
+    // A failed connection rejects the pending commands, so the assertion that awaited one reports it.
+    const tcl = new TclTransport({
+        clock: SYSTEM_CLOCK,
+        mode: "standalone",
+        rpcTimeoutMs: 2000,
+        isClosed: () => false,
+        onFailure: (error) => tcl.rejectAll(error)
+    });
     try {
         await waitFor(() => (stdout + stderr).includes(`Listening on port ${port} for tcl connections`));
-        session.socket = await new Promise((resolve, reject) => {
+        const connection = await new Promise((resolve, reject) => {
             const socket = net.connect({ host: "127.0.0.1", port });
             socket.once("error", reject);
             socket.once("connect", () => {
@@ -72,44 +81,42 @@ async function main({ scatter = false } = {}) {
                 resolve(socket);
             });
         });
-        session._setupSocket();
+        tcl.attach(connection);
         const nonce = randomBytes(12).toString("hex");
         const marker = `EP_NOECHO_${nonce}`;
         const sync = `EP_SYNC_${nonce}`;
-        assert.strictEqual(await session._sendCommand(`return -code exit ${marker}`), marker);
-        assert.strictEqual(await session._sendCommand(`set _ep_sync ${sync}`), sync);
+        assert.strictEqual(await tcl.send(`return -code exit ${marker}`), marker);
+        assert.strictEqual(await tcl.send(`set _ep_sync ${sync}`), sync);
         await waitFor(() => stderr.includes(sync));
         assert.ok(!stderr.includes(marker), "JIM_EXIT reply must not echo on stderr");
         assert.ok(!stdout.includes(marker), "JIM_EXIT reply must not echo on stdout");
-        assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42", "connection remains usable");
-        session.noEchoResponses = true;
-        assert.strictEqual(await session._sendCheckedCommand("expr {6 * 7}"), "42");
+        assert.strictEqual(await tcl.send("expr {6 * 7}"), "42", "connection remains usable");
+        tcl.noEchoResponses = true;
+        assert.strictEqual(await tcl.sendChecked("expr {6 * 7}"), "42");
         if (scatter) {
             // Dummy JTAG only; creating an unexamined Cortex-M never opens a hardware probe.
-            await session._sendCommand("jtag newtap ep cpu -irlen 4 -expected-id 0x4ba00477");
-            await session._sendCommand("dap create ep.dap -chain-position ep.cpu");
-            await session._sendCommand("target create ep.cpu cortex_m -dap ep.dap -defer-examine");
+            await tcl.send("jtag newtap ep cpu -irlen 4 -expected-id 0x4ba00477");
+            await tcl.send("dap create ep.dap -chain-position ep.cpu");
+            await tcl.send("target create ep.cpu cortex_m -dap ep.dap -defer-examine");
             // The dummy adapter cannot examine a physical DAP. Initialization still
             // registers execution commands; its expected transport error is caught.
-            await session._sendCommand("catch {init} _ep_init");
-            const unsupported = await session._sendCommand(
-                "catch {emberprobe_read_scatter version} _ep_scatter; set _ep_scatter"
-            );
+            await tcl.send("catch {init} _ep_init");
+            const unsupported = await tcl.send("catch {emberprobe_read_scatter version} _ep_scatter; set _ep_scatter");
             assert.ok(unsupported.includes("EMBERPROBE_SCATTER_UNSUPPORTED"), unsupported);
-            const targetUnsupported = await session._sendCommand(
+            const targetUnsupported = await tcl.send(
                 "catch {ep.cpu emberprobe_read_scatter version} _ep_scatter; set _ep_scatter"
             );
             assert.ok(targetUnsupported.includes("EMBERPROBE_SCATTER_UNSUPPORTED"), targetUnsupported);
-            assert.strictEqual(await session._sendCommand("expr {6 * 7}"), "42");
+            assert.strictEqual(await tcl.send("expr {6 * 7}"), "42");
         }
-        await assert.rejects(session._sendCheckedCommand("error {expected Tcl rejection}"), {
+        await assert.rejects(tcl.sendChecked("error {expected Tcl rejection}"), {
             code: "OPENOCD_TCL_ERROR"
         });
         console.log(
             `Bundled ${archive.platform} OpenOCD: no-echo reply, log silence, normal echo and connection reuse passed`
         );
     } finally {
-        session.socket?.destroy();
+        tcl.socket?.destroy();
         child.kill();
         await closed;
         fs.rmSync(directory, { recursive: true, force: true });

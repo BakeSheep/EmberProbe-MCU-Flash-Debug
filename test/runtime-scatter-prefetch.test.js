@@ -37,9 +37,8 @@ async function fixture(scatterVersion = "1") {
     await fake.start();
     const session = new ManagedOpenOcdSession({ mode: "standalone" }, {});
     session._scheduleNext = () => {};
-    session.socket = await fake.connect();
-    session._setupSocket();
-    session.noEchoResponses = true;
+    session.tcl.attach(await fake.connect());
+    session.tcl.noEchoResponses = true;
     await session._detectScatter();
     return { fake, session };
 }

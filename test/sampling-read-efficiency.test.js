@@ -114,13 +114,13 @@ function startupFixture(mode, branch) {
             const { session, child } = fixture;
             await session.start();
             assert.strictEqual(
-                session.noEchoResponses,
+                session.tcl.noEchoResponses,
                 branch === "verified" || (branch === "no-sync" && mode === "standalone"),
                 `${mode}/${branch}`
             );
             assert.strictEqual(session.stopped, false, "detection must never fail startup");
             assert.strictEqual(session._openOcdLogTail.length, 0, "capability markers stay out of diagnostics");
-            assert.strictEqual(session.queue.length, 0);
+            assert.strictEqual(session.tcl.queue.length, 0);
             if (["mismatch", "sync-mismatch", "closed", "error", "timeout"].includes(branch)) {
                 assert.strictEqual(fixture.sockets.length, 2, "discard the ambiguous response stream");
             }
@@ -142,11 +142,11 @@ function startupFixture(mode, branch) {
         await new Promise((resolve) => setImmediate(resolve));
         assert.strictEqual(fixture.scheduled.length, 0, "sampling waits for detection");
         let checked;
-        fixture.session._sendCommand = async (command) => {
+        fixture.session.tcl.send = async (command) => {
             checked = command;
             return "EP_OK:42";
         };
-        const command = fixture.session._sendCheckedCommand("expr 42");
+        const command = fixture.session.tcl.sendChecked("expr 42");
         await fixture.session._sampleTick();
         assert.strictEqual(checked, undefined, "checked commands also wait for detection");
         fixture.release();
@@ -158,24 +158,21 @@ function startupFixture(mode, branch) {
 
         const session = new ManagedOpenOcdSession({ mode }, {});
         for (const noEcho of [false, true]) {
-            session.noEchoResponses = noEcho;
+            session.tcl.noEchoResponses = noEcho;
             let wrapped;
-            session._sendSilentDebugCommand = async () => "file";
-            session._sendCommand = async (command) => {
+            session.tcl._sendSilent = async () => "file";
+            session.tcl.send = async (command) => {
                 wrapped = command;
                 return "EP_OK:42";
             };
-            assert.strictEqual(
-                await session._sendCheckedCommand("expr 42"),
-                mode === "debug" && !noEcho ? "file" : "42"
-            );
+            assert.strictEqual(await session.tcl.sendChecked("expr 42"), mode === "debug" && !noEcho ? "file" : "42");
             if (wrapped) {
                 assert.ok(wrapped.includes("catch {expr 42} _ep_msg"));
                 assert.strictEqual(wrapped.endsWith("return -code exit $_ep_out"), noEcho);
-                session._sendCommand = async () => "EP_ERR:bad command";
-                await assert.rejects(session._sendCheckedCommand("bad"), { code: "OPENOCD_TCL_ERROR" });
-                session._sendCommand = async () => "bad protocol";
-                await assert.rejects(session._sendCheckedCommand("bad"), { code: "OPENOCD_TCL_PROTOCOL_ERROR" });
+                session.tcl.send = async () => "EP_ERR:bad command";
+                await assert.rejects(session.tcl.sendChecked("bad"), { code: "OPENOCD_TCL_ERROR" });
+                session.tcl.send = async () => "bad protocol";
+                await assert.rejects(session.tcl.sendChecked("bad"), { code: "OPENOCD_TCL_PROTOCOL_ERROR" });
             }
         }
     }
@@ -220,7 +217,7 @@ function startupFixture(mode, branch) {
             ranges[0].start,
             Array.from({ length: 40 }, (_, index) => index)
         );
-        session._sendCheckedCommand = async (command) => fake._execute(command).response;
+        session.tcl.sendChecked = async (command) => fake._execute(command).response;
         await session._readItems(session.watch, 0);
         assert.strictEqual(session._memoryReadBytes, 40, "throughput counts actual gap bytes");
         assert.strictEqual(fake.commands.length, 1, "small gaps use one read_memory call");

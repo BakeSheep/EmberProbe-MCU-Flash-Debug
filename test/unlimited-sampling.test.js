@@ -121,7 +121,7 @@ function testPlanAndClock() {
         assert.deepStrictEqual(calls.at(-2).slice(0, 2), ["timeout", 0], "normal timing stays opt-in");
         const local = new ManagedOpenOcdSession({}, {});
         local.setSamplingPlan(plan());
-        local.socket = { destroyed: false };
+        local.tcl.socket = { destroyed: false };
         local._scheduleNext(0);
         assert.strictEqual(calls.at(-1)[0], "immediate", "session opts into setImmediate");
         local.setSamplingEnabled(false);
@@ -150,8 +150,7 @@ async function testSessionAndFairness() {
         fake.seed(graph.address, [1, 2, 3, 4]);
         fake.seed(sidebar.address, [5, 6, 7, 8]);
         fake.readLatencyMs = 1;
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
         session.setSamplingPlan(plan());
         assertStats(session.stats(), true, true);
         assert.strictEqual(session.stats().limitedBy, "probe");
@@ -176,7 +175,7 @@ async function testSessionAndFairness() {
         const order = [];
         const readItems = session._readItems.bind(session);
         const writeBytes = session._writeMemoryBytes.bind(session);
-        const checked = session._sendCheckedCommand.bind(session);
+        const checked = session.tcl.sendChecked.bind(session.tcl);
         session._readItems = async (...args) => {
             if (args[0][0]?.name === "once") order.push("read");
             if (args[0][0]?.name === "verify") order.push("verify-read");
@@ -186,7 +185,7 @@ async function testSessionAndFairness() {
             order.push("write:" + bytes[0]);
             return writeBytes(address, bytes);
         };
-        session._sendCheckedCommand = async (command) => {
+        session.tcl.sendChecked = async (command) => {
             if (command === "[target current] curstate")
                 assert.fail("aligned verification must not query target state");
             return checked(command);
@@ -258,7 +257,7 @@ async function testSessionAndFairness() {
 async function testArbiterFailures() {
     const session = new ManagedOpenOcdSession({}, {});
     session.samplingEnabled = false;
-    session.socket = {
+    session.tcl.socket = {
         destroyed: false,
         write: (_data, callback) => callback?.(),
         destroy() {
@@ -308,7 +307,7 @@ async function testArbiterFailures() {
     await assert.rejects(session.writeAndVerify([{ ...graph, bytes: [1, 2, 3, 4] }]), /write exception/);
     assert.strictEqual(session.busy, false);
     const commands = [];
-    session._sendCheckedCommand = async (command) => {
+    session.tcl.sendChecked = async (command) => {
         commands.push(command);
         return "running";
     };
@@ -362,7 +361,7 @@ async function testWorkerHold(byteLimit = false) {
         {},
         (options, handlers) => {
             session = new ManagedOpenOcdSession(options, handlers);
-            session.socket = {
+            session.tcl.socket = {
                 destroyed: false,
                 write: (_data, callback) => callback?.(),
                 destroy() {
@@ -449,7 +448,7 @@ async function testDeferredForegroundTick() {
             }
         }
     );
-    session.socket = {
+    session.tcl.socket = {
         destroyed: false,
         write: (_data, callback) => callback?.(),
         destroy() {
@@ -460,7 +459,7 @@ async function testDeferredForegroundTick() {
         samples: items.map((item) => ({ name: item.name, bytes: [1] })),
         ok: items.length
     });
-    session._sendCheckedCommand = async () => "running";
+    session.tcl.sendChecked = async () => "running";
     session._writeMemoryBytes = async () => {
         enteredWrite = true;
         await writeGate;
@@ -505,7 +504,7 @@ async function testDeferredLifecycle() {
             }
         );
         session.samplingEnabled = false;
-        session.socket = {
+        session.tcl.socket = {
             destroyed: false,
             write: (_data, callback) => callback?.(),
             destroy() {
@@ -566,7 +565,7 @@ async function testDeferredLifecycle() {
     session.samplingEnabled = false;
     session.setSamplingPlan(plan());
     session.samplingEnabled = true;
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     assert(session._tryAcquireExclusive());
     const first = session._acquireExclusive(Date.now() + 1000);
     const second = session._acquireExclusive(Date.now() + 1000);
@@ -582,7 +581,7 @@ async function testDeferredLifecycle() {
     session.setSamplingEnabled(false);
     session._releaseExclusive();
     assert.strictEqual(session.timer, null);
-    session.socket = null;
+    session.tcl.socket = null;
     await session.stop();
 }
 
@@ -590,7 +589,7 @@ async function testWaitersSurvivePlans() {
     for (const unlimited of [true, false]) {
         const session = new ManagedOpenOcdSession({}, {});
         session.samplingEnabled = false;
-        session.socket = {
+        session.tcl.socket = {
             destroyed: false,
             write: (_data, callback) => callback?.(),
             destroy() {
@@ -602,7 +601,7 @@ async function testWaitersSurvivePlans() {
             samples: items.map((item) => ({ name: item.name, bytes: [value] })),
             ok: items.length
         });
-        session._sendCheckedCommand = async () => "running";
+        session.tcl.sendChecked = async () => "running";
         session._writeMemoryBytes = async (_address, bytes) => {
             value = bytes[0];
         };

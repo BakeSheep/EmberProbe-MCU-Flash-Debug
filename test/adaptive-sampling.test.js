@@ -133,8 +133,7 @@ async function wait(ms) {
                 }
             }
         );
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
 
         session.setWatch([
             { name: "v1", address: 0x20000000, size: 4, type: "u32" },
@@ -171,8 +170,7 @@ async function wait(ms) {
         fake.seed(0x20002000, expected);
         fake.seed(0x20003000, [7, 8, 9, 10]);
         const session = new ManagedOpenOcdSession({ mode: "debug" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
         try {
             const samples = await session.readOnce([
                 { name: "big", address: 0x20002000, size: 2048 },
@@ -199,8 +197,7 @@ async function wait(ms) {
         fake.rejectBatchCommand = true; // OpenOCD without 'join' command support
 
         const session = new ManagedOpenOcdSession({ intervalMs: 20, mode: "standalone" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
 
         const samples = await session.readOnce([
             { name: "v1", address: 0x20000000, size: 4 },
@@ -224,8 +221,7 @@ async function wait(ms) {
         fake.seed(0x20000020, [5, 6, 7, 8]);
         fake.transientFailures = 1;
         const session = new ManagedOpenOcdSession({}, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
         const plan = [
             { name: "a", address: 0x20000000, size: 4 },
             { name: "b", address: 0x20000020, size: 4 }
@@ -258,8 +254,7 @@ async function wait(ms) {
         fake.seed(0x20000020, [0x55, 0x66, 0x77, 0x88]);
 
         const session = new ManagedOpenOcdSession({ intervalMs: 20, mode: "debug" }, {});
-        session.socket = await fake.connect();
-        session._setupSocket();
+        session.tcl.attach(await fake.connect());
 
         const initialCmdCount = fake.commands.length;
         const samples = await session.readOnce([

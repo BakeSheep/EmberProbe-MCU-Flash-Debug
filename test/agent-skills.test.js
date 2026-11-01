@@ -197,7 +197,7 @@ const execFileAsync = promisify(execFile);
     );
 
     const session = new ManagedOpenOcdSession({}, {});
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session._readMemoryBytes = async (address, count) =>
         address === 0x20000000 ? [0x2a, 0, 0, 0].slice(0, count) : null;
     const once = await session.readOnce([{ name: "Tick", address: 0x20000000, size: 4 }]);

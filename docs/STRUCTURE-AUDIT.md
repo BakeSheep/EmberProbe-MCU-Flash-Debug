@@ -48,6 +48,7 @@
 - [ ] P2 ManagedOpenOcdSession
     - [x] 读取计划：每周期预算检查、按地址编译读取批次、8/16/32 位传输形状移到 `src/liveWatchReadPlan.js`，Provider 侧的采样控制器、`samplingSession` 和测试直接引用它。顺带删除只写不读的 `vscode`、`_compiledBatches`、`_variableDeadline` 字段，`ManagedOpenOcdSession` 和 `OpenOcdDebugController` 不再接收 `vscode` 参数，删除 `LiveWatchSession` 别名和没有外部使用者的导出。`liveWatch.js` 2155 → 1941 行。
     - [x] 时钟注入：会话的墙上时间、单调毫秒、样本时间戳和所有定时器改走 `options.clock`（`now`、`monotonicMs`、`sampleNow`、`schedule`、`cancel`，缺省为系统时钟），取代原来的 `now`/`sampleNow` 选项。8 个测试不再替换全局 `Date.now` 或 `process.hrtime.bigint`；`unlimited-sampling` 推进时钟，不再真实等待 1 秒。
+    - [x] Tcl 传输：`src/tclTransport.js`（`TclTransport`，会话经 `this.tcl` 持有）承担 socket 挂接、`0x1a` 分帧的 FIFO、单命令超时、1 MiB 失控流保护、no-echo 探测、debug 模式的私有响应文件、拒绝队列、启动期间的命令暂挂和能力探测（失败只丢弃连接、不上报）。连接失败经 `onFailure` 交给会话的 `_abortConnection`，断开和降级的编排仍在会话里。测试用 `session.tcl.attach(socket)` 取代 `session.socket = …; session._setupSocket()`。`scripts/check-openocd-noecho.js` 直接驱动 `TclTransport`，已对打包的 OpenOCD（dummy 适配器）重新跑过。系统时钟移到 `samplingClock.js` 供两者共用。`liveWatch.js` 1941 → 1647 行。
 - [ ] P2 测试结构
 
 ## P1：MainViewProvider 是上帝对象

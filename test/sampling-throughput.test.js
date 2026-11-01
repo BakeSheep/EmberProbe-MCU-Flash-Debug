@@ -28,7 +28,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
     assert.strictEqual(meter.rate(6000), 0);
 
     const session = new ManagedOpenOcdSession({ intervalMs: 10 }, {});
-    session.socket = { destroyed: false };
+    session.tcl.socket = { destroyed: false };
     session.setWatch([
         { name: "a", address: 0x20000000, size: 4 },
         { name: "alias", address: 0x20000000, size: 4 },
@@ -37,7 +37,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
     let clockMs = 0;
     let commands = 0;
     let response = "1 2";
-    session._sendCheckedCommand = async () => {
+    session.tcl.sendChecked = async () => {
         commands++;
         clockMs += 10;
         return response;
@@ -81,7 +81,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
         assert.strictEqual(session.stats().bytesPerSecond, 0, "stop resets measurement");
         session.samplingEnabled = true;
         response = "1 2";
-        session._sendCheckedCommand = async () => {
+        session.tcl.sendChecked = async () => {
             session.invalidateTarget();
             clockMs += 1000;
             return response;
@@ -89,7 +89,7 @@ const { compileReadBatches } = require("../src/liveWatchReadPlan");
         await session._sampleTick();
         assert.strictEqual(session.stats().bytesPerSecond, 0, "stale target reads cannot repopulate statistics");
     } finally {
-        session.socket = null;
+        session.tcl.socket = null;
     }
     console.log("Sampling throughput tests passed");
 })().catch((error) => {

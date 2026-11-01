@@ -4,20 +4,16 @@ const { buildOpenOcdConfigArgs, buildOpenOcdRtosArgs, buildOpenOcdTargetArgs } =
 // allows word writes without halting. An independent implementation inspired by MCUViewer (GPLv3) concepts, using none
 // of its code.
 const net = require("net");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
 const { isDeepStrictEqual } = require("util");
 const { spawn } = require("child_process");
 const { createLineDecoder } = require("../skills/_emberprobe/tool-output");
-const { randomBytes } = require("crypto");
-const { performance } = require("perf_hooks");
 const { normalizeAdapterSpeed } = require("../skills/_emberprobe/probe-connection");
-const { isSafeCfg, quoteTclWord, diagnoseOpenOcdFailure } = require("./openocdRunner");
+const { isSafeCfg, diagnoseOpenOcdFailure } = require("./openocdRunner");
 const { resolveOpenOcdLaunch } = require("./openocdScripts");
 const { clampInteger } = require("./validation");
-const { scheduleSamplingTick } = require("./samplingClock");
+const { SYSTEM_CLOCK, scheduleSamplingTick } = require("./samplingClock");
 const { SamplingThroughput } = require("./samplingThroughput");
+const { TclTransport } = require("./tclTransport");
 const { windowsTimerResolution } = require("./windowsTimerResolution");
 const { connectionDetails } = require("../skills/_emberprobe/openocd-diagnostics");
 const { RuntimeObjectReader, RUNTIME_CYCLE_BYTES, RUNTIME_CYCLE_READS } = require("./services/runtimeObjectReader");
@@ -36,7 +32,6 @@ const {
     compileReadBatches
 } = require("./liveWatchReadPlan");
 
-const SUB = "\x1a"; // Tcl-RPC command/response delimiter 0x1A
 const MAX_DEBUG_CYCLE_MS = 1000;
 const MAX_SCATTER_SEGMENTS = 64;
 const MAX_SCATTER_BYTES = 4096;
@@ -56,17 +51,6 @@ function findFreePort() {
         });
     });
 }
-
-// Wall time (deadlines, error throttling, cycle timestamps), monotonic milliseconds (cycle durations, adaptive
-// interval, rate windows), sub-millisecond sample stamps, and the timers behind every wait. `options.clock` replaces
-// any member, so tests drive time without patching globals.
-const SYSTEM_CLOCK = Object.freeze({
-    now: () => Date.now(),
-    monotonicMs: () => Number(process.hrtime.bigint()) / 1e6,
-    sampleNow: () => performance.timeOrigin + performance.now(),
-    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
-    cancel: (timer) => clearTimeout(timer)
-});
 
 // Resolves true on the first "exit" or "close": once the process has exited its USB handle is
 // released, while "close" also waits for stdio, which Windows can hold open past the stop budget.
@@ -136,7 +120,6 @@ class ManagedOpenOcdSession {
         this.clock = { ...SYSTEM_CLOCK, ...this.options.clock };
         this.handlers = handlers || {};
         this.child = null;
-        this.socket = null;
         this.connectingSocket = null;
         this.timer = null;
         this.busy = false;
@@ -148,8 +131,6 @@ class ManagedOpenOcdSession {
         this._hostHoldSpans = [];
         this._hostWindowStartedAt = this.clock.monotonicMs();
         this.stopped = false;
-        this.pending = ""; // socket response buffer
-        this.queue = []; // commands awaiting a response (serial, one in flight)
         this.watch = []; // [{name,address,size,type}]
         this.readCmd = "ocd_read_memory"; // preferred read command, falling back to read_memory
         this.altTried = false;
@@ -165,7 +146,6 @@ class ManagedOpenOcdSession {
         this._pollFailureSince = null;
         this._pollFailureCount = 0;
         this._pollFailureLocked = false;
-        this.rpcTimeoutMs = this.options.backendKind === "tcp" ? 5000 : 2000;
         this.connectionFailed = false;
         this.connectionError = null;
         // reject captured while start() runs, so connection failures are reported on one channel
@@ -174,6 +154,13 @@ class ManagedOpenOcdSession {
         this._openOcdRawTail = "";
         this._stopPromise = null;
         this.mode = this.options.mode === "debug" ? "debug" : "standalone";
+        this.tcl = new TclTransport({
+            clock: this.clock,
+            mode: this.mode,
+            rpcTimeoutMs: this.options.backendKind === "tcp" ? 5000 : 2000,
+            isClosed: () => this.connectionFailed || this.stopped,
+            onFailure: (error) => this._abortConnection(error)
+        });
         this.samplingEnabled = this.mode === "standalone";
         this._samplingRequested = this.samplingEnabled;
         this.sampleEpoch = 0;
@@ -182,13 +169,8 @@ class ManagedOpenOcdSession {
         this._reconnectPromise = null;
         this._startCompleted = false;
         this._tclListening = false;
-        this._silentResponseDir = "";
-        this._silentResponseFile = "";
-        this.noEchoResponses = false;
         this.scatterReads = false;
         this._scatterFailures = 0;
-        this._detectingScatter = false;
-        this._initializing = false;
         this.ramSectionRanges = [];
         this.targetIntervalMs = clampInteger(this.options.intervalMs, 100, 5, 10000);
         this.effectiveIntervalMs = Math.max(100, this.targetIntervalMs);
@@ -358,8 +340,8 @@ class ManagedOpenOcdSession {
 
     _scheduleNext(delayMs) {
         this._clearSamplingTimer();
-        if (this._initializing) return;
-        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;
+        if (this.tcl.held) return;
+        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
         if (this.unlimitedActive) {
             delayMs = 0;
             this._releaseTimerResolution();
@@ -392,14 +374,7 @@ class ManagedOpenOcdSession {
             this.watch.filter((entry) => entry.runtimeLayout).reduce((sum, item) => sum + item.size, 0)
         );
         this._warmUp();
-        if (
-            this.samplingEnabled &&
-            !this.stopped &&
-            this.socket &&
-            !this.socket.destroyed &&
-            !this.timer &&
-            (!this.busy || deferred)
-        ) {
+        if (this.samplingEnabled && !this.stopped && this.tcl.connected && !this.timer && (!this.busy || deferred)) {
             this._scheduleNext(0);
         }
     }
@@ -447,7 +422,7 @@ class ManagedOpenOcdSession {
         this._setClockInterval(ratePlan.requestedIntervalMs === Infinity ? 50 : ratePlan.requestedIntervalMs);
         this._warmUp();
         this._clearSamplingTimer();
-        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) this._scheduleNext(0);
+        if (this.samplingEnabled && !this.stopped && this.tcl.connected) this._scheduleNext(0);
     }
 
     _setClockInterval(ms, force = false) {
@@ -468,7 +443,7 @@ class ManagedOpenOcdSession {
         this._recentCycleTimestamps = [];
         this._samplingThroughput.reset();
         this._clearSamplingTimer();
-        if (this.samplingEnabled && !this.stopped && this.socket && !this.socket.destroyed) {
+        if (this.samplingEnabled && !this.stopped && this.tcl.connected) {
             this._scheduleNext(0);
         }
     }
@@ -483,7 +458,7 @@ class ManagedOpenOcdSession {
 
     setSamplingEnabled(enabled) {
         if (enabled && this._pollFailureLocked) return false;
-        const nextEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
+        const nextEnabled = !!enabled && !this.stopped && this.tcl.connected;
         if (
             enabled &&
             this._samplingRequested &&
@@ -495,7 +470,7 @@ class ManagedOpenOcdSession {
         this._samplingRequested = !!enabled;
         this._samplingThroughput.reset();
         this.sampleEpoch++;
-        this.samplingEnabled = !!enabled && !this.stopped && !!this.socket && !this.socket.destroyed;
+        this.samplingEnabled = !!enabled && !this.stopped && this.tcl.connected;
         this._clearSamplingTimer();
         if (this.samplingEnabled) {
             this._pauseReason = null;
@@ -567,7 +542,7 @@ class ManagedOpenOcdSession {
             actualHz,
             bytesPerSecond: this.samplingEnabled ? this._samplingThroughput.rate(this.clock.monotonicMs()) : 0,
             consumers,
-            noEchoResponses: this.noEchoResponses,
+            noEchoResponses: this.tcl.noEchoResponses,
             scatterReads: this.scatterReads,
             p95DurationMs: Number(p95.toFixed(2)),
             missedDeadlines: this._missedDeadlines,
@@ -773,7 +748,7 @@ class ManagedOpenOcdSession {
             for (const line of text.split(/\r?\n/)) {
                 const clean = line.trim();
                 if (!clean) continue;
-                if (clean.startsWith("EP_OK:") || this._observeNoEchoLog(clean)) continue;
+                if (clean.startsWith("EP_OK:") || this.tcl.observeLog(clean)) continue;
                 if (targetCheck.line(clean)) {
                     // A Worker forwards the observation to the extension host, which records it after success.
                     if (targetCheck.observed && !targetCheck.mismatched)
@@ -830,14 +805,7 @@ class ManagedOpenOcdSession {
             this.child = null;
             this._clearSamplingTimer();
             this._releaseTimerResolution();
-            if (this.socket && !this.socket.destroyed) {
-                try {
-                    this.socket.destroy();
-                } catch (e) {
-                    /* ignore */
-                }
-            }
-            this.socket = null;
+            this.tcl.close();
             this.stopped = true;
             if (!expected) {
                 const diagnostic = diagnoseOpenOcdFailure(this._openOcdLogTail, {
@@ -853,7 +821,7 @@ class ManagedOpenOcdSession {
                     });
                 this.connectionFailed = true;
                 this.connectionError = error;
-                this._rejectQueue(error);
+                this.tcl.rejectAll(error);
                 if (this._startReject) {
                     const reject = this._startReject;
                     this._startReject = null;
@@ -865,12 +833,8 @@ class ManagedOpenOcdSession {
 
         // If the child process exits while start() runs, _abortConnection rejects this promise through _startReject and
         // the caller reports it once, so onDisconnect and start() do not both notify.
-        let ready;
         try {
-            this._initializing = true;
-            this._tclReady = new Promise((resolve) => {
-                ready = resolve;
-            });
+            this.tcl.hold();
             await new Promise((resolve, reject) => {
                 this._startReject = reject;
                 if (this.stopped) {
@@ -889,27 +853,17 @@ class ManagedOpenOcdSession {
                             reject(this.connectionError || new Error("OpenOCD exited during connection startup"));
                             return;
                         }
-                        this.socket = sock;
-                        let reusable = false;
-                        try {
-                            reusable = await this._detectNoEcho(sock);
-                        } catch {
-                            this.noEchoResponses = false;
-                        }
-                        if (!reusable) {
-                            // A partial reply cannot be reused in the untagged FIFO protocol.
+                        if (!(await this.tcl.detectNoEcho(sock))) {
                             sock.destroy();
-                            this.socket = await this._connectWithRetry(port, 1000);
+                            sock = await this._connectWithRetry(port, 1000);
                         }
                         if (this.stopped) throw this.connectionError || new Error("Stopped");
-                        this._setupSocket();
-                        this._initializing = false;
-                        ready();
+                        this.tcl.attach(sock);
+                        this.tcl.release();
                         await this._detectScatter();
-                        if (!this.socket && !this.stopped) {
+                        if (!this.tcl.socket && !this.stopped) {
                             // No-echo support belongs to the OpenOCD binary, so it survives this reconnect.
-                            this.socket = await this._connectWithRetry(port, 1000);
-                            this._setupSocket();
+                            this.tcl.attach(await this._connectWithRetry(port, 1000));
                         }
                         if (this.stopped) throw this.connectionError || new Error("Stopped");
                         this._status({ key: "lw.connected" });
@@ -924,14 +878,13 @@ class ManagedOpenOcdSession {
                     .catch(reject);
             });
         } finally {
-            this._initializing = false;
-            ready?.();
+            this.tcl.release();
             this._startReject = null;
         }
         this._startCompleted = true;
         let targetNames;
         if (this.options.serverGroup) {
-            targetNames = String(await this._sendCheckedCommand("target names"))
+            targetNames = String(await this.tcl.sendChecked("target names"))
                 .trim()
                 .split(/\s+/);
             if (
@@ -1018,114 +971,6 @@ class ManagedOpenOcdSession {
         });
     }
 
-    _observeNoEchoLog(line) {
-        const detection = this._noEchoDetection;
-        if (detection) {
-            if (!detection.synced && line.includes(detection.marker)) detection.echoed = true;
-            if (line.includes(detection.sync)) {
-                detection.synced = true;
-                detection.check();
-            }
-        }
-        return /EP_(?:NOECHO|SYNC)_[a-f0-9]+/.test(line);
-    }
-
-    _detectNoEcho(socket) {
-        this.noEchoResponses = false;
-        const nonce = randomBytes(12).toString("hex");
-        return new Promise((resolve) => {
-            let pending = "",
-                replies = 0,
-                settled = false;
-            const detection = {
-                marker: `EP_NOECHO_${nonce}`,
-                sync: `EP_SYNC_${nonce}`,
-                echoed: false,
-                synced: false,
-                check: () => {}
-            };
-            this._noEchoDetection = detection;
-            const finish = (usable) => {
-                if (settled) return;
-                settled = true;
-                this.clock.cancel(timer);
-                socket.removeListener("data", onData);
-                socket.removeListener("error", onClosed);
-                socket.removeListener("close", onClosed);
-                this._noEchoDetection = null;
-                this.noEchoResponses = usable && !detection.echoed && (detection.synced || this.mode !== "debug");
-                resolve(usable);
-            };
-            detection.check = () => {
-                if (replies === 2 && !pending && detection.synced) finish(true);
-            };
-            const onClosed = () => finish(false);
-            const onData = (chunk) => {
-                pending += chunk.toString("latin1");
-                let boundary;
-                while ((boundary = pending.indexOf(SUB)) >= 0) {
-                    const reply = pending.slice(0, boundary);
-                    pending = pending.slice(boundary + 1);
-                    if (reply !== (replies === 0 ? detection.marker : detection.sync)) return finish(false);
-                    replies++;
-                    if (replies === 1) {
-                        try {
-                            socket.write(`set _ep_sync ${detection.sync}${SUB}`);
-                        } catch {
-                            return finish(false);
-                        }
-                    } else detection.check();
-                }
-                if (pending.length > 4096) finish(false);
-            };
-            const timer = this.clock.schedule(() => finish(replies === 2 && !pending && !socket.destroyed), 500);
-            socket.on("data", onData);
-            socket.on("error", onClosed);
-            socket.on("close", onClosed);
-            try {
-                socket.write(`return -code exit ${detection.marker}${SUB}`);
-            } catch {
-                finish(false);
-            }
-        });
-    }
-
-    _setupSocket() {
-        const socket = this.socket;
-        socket.setNoDelay(true);
-        socket.on("data", (chunk) => {
-            if (socket !== this.socket || this.connectionFailed || this.stopped) return;
-            this.pending += chunk.toString("latin1");
-            let idx;
-            while ((idx = this.pending.indexOf(SUB)) >= 0) {
-                const resp = this.pending.slice(0, idx);
-                this.pending = this.pending.slice(idx + 1);
-                const q = this.queue.shift();
-                if (q) q.resolve(resp);
-                if (socket !== this.socket || this.connectionFailed || this.stopped) return;
-            }
-            // Runaway stream guard: more than 1 MiB without a delimiter means the response stream is broken, so drop it
-            // and reset the connection instead of growing forever
-            if (this.pending.length > 1048576) {
-                this.pending = "";
-                this._handleRpcFailure(new Error("Invalid OpenOCD response stream: framing delimiter missing"));
-            }
-        });
-        socket.on("error", (e) => {
-            if (socket === this.socket) this._handleRpcFailure(e);
-        });
-        socket.on("close", () => {
-            if (socket === this.socket && !this.stopped) this._handleRpcFailure(new Error("Tcl connection closed"));
-        });
-    }
-
-    _rejectQueue(error) {
-        while (this.queue.length) {
-            const q = this.queue.shift();
-            q.reject(error);
-        }
-    }
-
     _reconnectDebugTcl() {
         if (this._reconnectPromise || this.mode !== "debug" || this.stopped) return this._reconnectPromise;
         const delays = [250, 500, 1000];
@@ -1144,13 +989,11 @@ class ManagedOpenOcdSession {
                         }
                         return false;
                     }
-                    this.socket = socket;
-                    this.pending = "";
                     this.connectionFailed = false;
                     this.connectionError = null;
-                    this._setupSocket();
+                    this.tcl.attach(socket);
                     await this._detectScatter();
-                    if (!this.socket) continue;
+                    if (!this.tcl.socket) continue;
                     this.setSamplingEnabled(this._samplingRequested);
                     this._status({ key: "live.debugRuntimeSampling" });
                     return true;
@@ -1189,15 +1032,8 @@ class ManagedOpenOcdSession {
             this.samplingEnabled = false;
             this._clearSamplingTimer();
             this._releaseTimerResolution();
-            this._rejectQueue(err);
-            if (this.socket && !this.socket.destroyed) {
-                try {
-                    this.socket.destroy();
-                } catch (e) {
-                    /* ignore */
-                }
-            }
-            this.socket = null;
+            this.tcl.rejectAll(err);
+            this.tcl.close();
             if (this.connectingSocket && !this.connectingSocket.destroyed) {
                 try {
                     this.connectingSocket.destroy();
@@ -1216,15 +1052,8 @@ class ManagedOpenOcdSession {
         this._samplingRequested = false;
         this._clearSamplingTimer();
         this._releaseTimerResolution();
-        this._rejectQueue(err);
-        if (this.socket && !this.socket.destroyed) {
-            try {
-                this.socket.destroy();
-            } catch (e) {
-                /* ignore */
-            }
-        }
-        this.socket = null;
+        this.tcl.rejectAll(err);
+        this.tcl.close();
         if (this.connectingSocket && !this.connectingSocket.destroyed) {
             try {
                 this.connectingSocket.destroy();
@@ -1253,132 +1082,16 @@ class ManagedOpenOcdSession {
         }
     }
 
-    // Sends one Tcl command serially and waits for the response (with a timeout)
-    _handleRpcFailure(error) {
-        if (!this._detectingScatter) return this._abortConnection(error);
-        // Capability probing is optional. Discard an ambiguous FIFO before reconnecting;
-        // acquisition timeouts still go through the normal fatal connection path.
-        const socket = this.socket;
-        this.socket = null;
-        this.pending = "";
-        this._rejectQueue(error);
-        socket?.destroy();
-    }
-
-    _sendCommand(cmd) {
-        if (this._initializing) return this._tclReady.then(() => this._sendCommand(cmd));
-        return new Promise((resolve, reject) => {
-            if (!this.socket || this.socket.destroyed) return reject(new Error("Socket is not connected"));
-            const entry = {};
-            const deadline = this.clock.now() + this.rpcTimeoutMs;
-            const timer = this.clock.schedule(() => {
-                if (this.queue.includes(entry))
-                    this._handleRpcFailure(
-                        Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
-                            code: "OPENOCD_RPC_TIMEOUT"
-                        })
-                    );
-            }, this.rpcTimeoutMs);
-            entry.resolve = (v) => {
-                this.clock.cancel(timer);
-                // A wake-up or busy event loop may dispatch data before the overdue timeout callback.
-                if (this.clock.now() >= deadline) {
-                    const error = Object.assign(new Error("OpenOCD response timed out; sampling connection reset"), {
-                        code: "OPENOCD_RPC_TIMEOUT"
-                    });
-                    reject(error);
-                    this._handleRpcFailure(error);
-                    return;
-                }
-                resolve(v);
-            };
-            entry.reject = (e) => {
-                this.clock.cancel(timer);
-                reject(e);
-            };
-            this.queue.push(entry);
-            try {
-                this.socket.write(cmd + SUB);
-            } catch (e) {
-                this._handleRpcFailure(e);
-            }
-        });
-    }
-
     async _detectScatter() {
         this.scatterReads = false;
         this._scatterFailures = 0;
-        this._detectingScatter = true;
-        const timeout = this.rpcTimeoutMs;
-        this.rpcTimeoutMs = Math.min(timeout, 500);
         try {
-            this.scatterReads = (await this._sendCheckedCommand("emberprobe_read_scatter version")) === "1";
+            this.scatterReads = (await this.tcl.probe("emberprobe_read_scatter version", 500)) === "1";
         } catch (error) {
             // Unsupported commands, malformed results and a bounded lost probe disable it. The patched
             // command also refuses before the target is examined, so ask once more after a good cycle.
             this._scatterRecheck = String(error?.message || "").startsWith("EMBERPROBE_SCATTER_UNSUPPORTED");
-        } finally {
-            this.rpcTimeoutMs = timeout;
-            this._detectingScatter = false;
         }
-    }
-
-    async _sendCheckedCommand(cmd) {
-        if (this._initializing) await this._tclReady;
-        if (this.mode === "debug" && !this.noEchoResponses) return this._sendSilentDebugCommand(cmd);
-        const result = this.noEchoResponses ? "return -code exit $_ep_out" : "set _ep_out";
-        const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; if {$_ep_rc} {set _ep_out "EP_ERR:\${_ep_msg}"} else {set _ep_out "EP_OK:\${_ep_msg}"}; ${result}`;
-        const response = String((await this._sendCommand(wrapped)) || "").replace(/\x1a/g, "");
-        if (response.startsWith("EP_OK:")) return response.slice(6);
-        if (response.startsWith("EP_ERR:")) {
-            throw Object.assign(new Error(response.slice(7).trim() || `OpenOCD command failed：${cmd}`), {
-                code: "OPENOCD_TCL_ERROR"
-            });
-        }
-        throw Object.assign(new Error(`Unrecognized OpenOCD Tcl response：${response.slice(0, 200)}`), {
-            code: "OPENOCD_TCL_PROTOCOL_ERROR"
-        });
-    }
-
-    async _ensureSilentResponseFile() {
-        if (this._silentResponseFile) return this._silentResponseFile;
-        this._silentResponseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "emberprobe-openocd-"));
-        this._silentResponseFile = path.join(this._silentResponseDir, "response");
-        return this._silentResponseFile;
-    }
-
-    // OpenOCD broadcasts non-empty Tcl RPC results to GDB, flooding the debug console with EP_OK:<value>. In debug mode
-    // machine responses go to a private temporary file the extension creates, and the Tcl RPC itself returns an empty
-    // string.
-    async _sendSilentDebugCommand(cmd) {
-        const responseFile = await this._ensureSilentResponseFile();
-        const wrapped = `set _ep_rc [catch {${cmd}} _ep_msg]; set _ep_file [open ${quoteTclWord(responseFile)} w]; puts -nonewline $_ep_file "\${_ep_rc}\\n"; puts -nonewline $_ep_file $_ep_msg; close $_ep_file; set _ep_msg ""`;
-        const rpcResponse = String((await this._sendCommand(wrapped)) || "").replace(/\x1a/g, "");
-        if (rpcResponse) {
-            throw Object.assign(new Error(`Unexpected OpenOCD Tcl response：${rpcResponse.slice(0, 200)}`), {
-                code: "OPENOCD_TCL_PROTOCOL_ERROR"
-            });
-        }
-        let payload;
-        try {
-            payload = await fs.promises.readFile(responseFile, "utf8");
-        } catch (error) {
-            throw Object.assign(new Error(`Cannot read OpenOCD Tcl response：${error.message}`), {
-                code: "OPENOCD_TCL_PROTOCOL_ERROR",
-                cause: error
-            });
-        }
-        const separator = payload.indexOf("\n");
-        if (separator < 0 || (payload[0] !== "0" && payload[0] !== "1")) {
-            throw Object.assign(new Error("Unrecognized OpenOCD silent Tcl response"), {
-                code: "OPENOCD_TCL_PROTOCOL_ERROR"
-            });
-        }
-        const response = payload.slice(separator + 1);
-        if (payload[0] === "0") return response;
-        throw Object.assign(new Error(response.trim() || `OpenOCD command failed：${cmd}`), {
-            code: "OPENOCD_TCL_ERROR"
-        });
     }
 
     // Chooses 32/16/8-bit transfers by address and length, then unpacks everything into little-endian bytes.
@@ -1388,7 +1101,7 @@ class ManagedOpenOcdSession {
         const build = (cmd) => `${cmd} ${hex} ${shape.widthBits} ${shape.count}`;
         let resp;
         try {
-            resp = await this._sendCheckedCommand(build(this.readCmd));
+            resp = await this.tcl.sendChecked(build(this.readCmd));
         } catch (error) {
             if (
                 !this.altTried &&
@@ -1398,7 +1111,7 @@ class ManagedOpenOcdSession {
             ) {
                 this.altTried = true;
                 this.readCmd = this.readCmd === "ocd_read_memory" ? "read_memory" : "ocd_read_memory";
-                resp = await this._sendCheckedCommand(build(this.readCmd));
+                resp = await this.tcl.sendChecked(build(this.readCmd));
             } else throw error;
         }
         const values = parseMemoryElements(resp, shape.widthBits);
@@ -1443,7 +1156,7 @@ class ManagedOpenOcdSession {
         const cmd = `join [list ${calls.join(" ")}] "\\n"`;
         let resp;
         try {
-            resp = await this._sendCheckedCommand(cmd);
+            resp = await this.tcl.sendChecked(cmd);
         } catch (error) {
             if (
                 !this.altTried &&
@@ -1458,7 +1171,7 @@ class ManagedOpenOcdSession {
                     return `[${this.readCmd} ${hex} ${g.shape.widthBits} ${g.shape.count}]`;
                 });
                 const retryCmd = `join [list ${retryCalls.join(" ")}] "\\n"`;
-                resp = await this._sendCheckedCommand(retryCmd);
+                resp = await this.tcl.sendChecked(retryCmd);
             } else {
                 throw error;
             }
@@ -1534,7 +1247,7 @@ class ManagedOpenOcdSession {
             const args = segments.map(
                 (unit) => `{0x${unit.start.toString(16)} ${unit.shape.widthBits} ${unit.shape.count}}`
             );
-            const response = await this._sendCheckedCommand(`emberprobe_read_scatter ${args.join(" ")}`);
+            const response = await this.tcl.sendChecked(`emberprobe_read_scatter ${args.join(" ")}`);
             this._assertReadGuard(guard);
             const lines = String(response).split("\n");
             if (
@@ -1775,14 +1488,12 @@ class ManagedOpenOcdSession {
     async readOnce(items, timeoutMs = 2500) {
         if (!Array.isArray(items) || !items.length) return [];
         if (this.mode === "debug") validateManagedReadPlan(items);
-        if (this.stopped || !this.socket || this.socket.destroyed)
-            throw new Error("OpenOCD Tcl service is not connected");
+        if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
         const requestEpoch = this.targetEpoch;
         const deadline = this.clock.now() + timeoutMs;
         await this._acquireExclusive(deadline);
         try {
-            if (this.stopped || !this.socket || this.socket.destroyed)
-                throw new Error("OpenOCD Tcl service is not connected");
+            if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
             const guard =
                 this.mode === "debug"
                     ? {
@@ -1839,13 +1550,13 @@ class ManagedOpenOcdSession {
             .join(" ");
         const build = (cmd) => `${cmd} ${hex} ${width * 8} {${data}}`;
         try {
-            await this._sendCheckedCommand(build(this.writeCmd));
+            await this.tcl.sendChecked(build(this.writeCmd));
         } catch (error) {
             if (!this.writeAltTried && /invalid command name|unknown command/i.test(error.message)) {
                 this.writeAltTried = true;
                 this.writeCmd = this.writeCmd === "ocd_write_memory" ? "write_memory" : "ocd_write_memory";
                 try {
-                    await this._sendCheckedCommand(build(this.writeCmd));
+                    await this.tcl.sendChecked(build(this.writeCmd));
                 } catch (fallbackError) {
                     throw Object.assign(new Error("Memory write failed: " + fallbackError.message), {
                         cause: fallbackError
@@ -1877,8 +1588,7 @@ class ManagedOpenOcdSession {
         if (!Array.isArray(items) || !items.length) return { before: [], after: [], halted: false };
         const nonHalting = items.every(isNonHaltingWordWrite);
         if (this.mode === "debug") validateManagedWritePlan(items);
-        if (this.stopped || !this.socket || this.socket.destroyed)
-            throw new Error("OpenOCD Tcl service is not connected");
+        if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
         const requestEpoch = this.targetEpoch;
         const deadline = this.clock.now() + timeoutMs;
         await this._acquireExclusive(deadline);
@@ -1888,12 +1598,11 @@ class ManagedOpenOcdSession {
         let writtenItems = 0;
         try {
             // Ownership is reserved synchronously by the arbiter before connection checks.
-            if (this.stopped || !this.socket || this.socket.destroyed)
-                throw new Error("OpenOCD Tcl service is not connected");
+            if (this.stopped || !this.tcl.connected) throw new Error("OpenOCD Tcl service is not connected");
             if (!nonHalting) {
-                const state = (await this._sendCheckedCommand("[target current] curstate")).trim();
+                const state = (await this.tcl.sendChecked("[target current] curstate")).trim();
                 if (state !== "halted") {
-                    await this._sendCheckedCommand("halt");
+                    await this.tcl.sendChecked("halt");
                     haltedByUs = true;
                 }
             }
@@ -1929,7 +1638,7 @@ class ManagedOpenOcdSession {
         try {
             if (haltedByUs) {
                 try {
-                    await this._sendCheckedCommand("resume");
+                    await this.tcl.sendChecked("resume");
                 } catch (resumeError) {
                     if (!primaryError) primaryError = resumeError;
                 }
@@ -1942,8 +1651,8 @@ class ManagedOpenOcdSession {
     }
 
     async _sampleTick(fromScheduler = false) {
-        if (this._initializing || this._detectingScatter) return;
-        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.socket || this.socket.destroyed) return;
+        if (this.tcl.held || this.tcl.probing) return;
+        if (!this.samplingEnabled || this.stopped || this._hostHold || !this.tcl.connected) return;
         if (!this.watch.length) return;
         if (!this._tryAcquireExclusive()) {
             // A read/write transaction owns the Tcl connection. Dropping the tick here would
@@ -1980,7 +1689,7 @@ class ManagedOpenOcdSession {
                 if (this._scatterRecheck) {
                     this._scatterRecheck = false;
                     try {
-                        this.scatterReads = (await this._sendCheckedCommand("emberprobe_read_scatter version")) === "1";
+                        this.scatterReads = (await this.tcl.sendChecked("emberprobe_read_scatter version")) === "1";
                     } catch {
                         // Still unsupported (for example an HLA target): keep the batch path.
                     }
@@ -2024,7 +1733,7 @@ class ManagedOpenOcdSession {
     stop(timeoutMs = 1200) {
         if (this._stopPromise) return this._stopPromise;
         const child = this.child;
-        const socket = this.socket;
+        const socket = this.tcl.socket;
         const childExited = child ? this.waitForExit(timeoutMs) : Promise.resolve(true);
         this.stopped = true;
         this._pauseReason = "stopped";
@@ -2038,7 +1747,7 @@ class ManagedOpenOcdSession {
         this._resetHostHold();
         const stoppedError = new Error("采样Stopped");
         this._rejectExclusiveWaiters(stoppedError);
-        this._rejectQueue(stoppedError);
+        this.tcl.rejectAll(stoppedError);
         if (this.connectingSocket && !this.connectingSocket.destroyed) {
             try {
                 this.connectingSocket.destroy();
@@ -2047,22 +1756,7 @@ class ManagedOpenOcdSession {
             }
         }
         this.connectingSocket = null;
-        const sendShutdown = new Promise((resolve) => {
-            if (!socket || socket.destroyed) return resolve(false);
-            let settled = false;
-            const finish = (sent) => {
-                if (settled) return;
-                settled = true;
-                this.clock.cancel(timer);
-                resolve(sent);
-            };
-            const timer = this.clock.schedule(() => finish(false), 150);
-            try {
-                socket.write("shutdown" + SUB, () => finish(true));
-            } catch (e) {
-                finish(false);
-            }
-        });
+        const sendShutdown = this.tcl.shutdown();
         this._stopPromise = (async () => {
             const childRunning = () => !!child && child.exitCode == null && child.signalCode == null;
             const sent = await sendShutdown;
@@ -2091,25 +1785,9 @@ class ManagedOpenOcdSession {
                 }
                 closed = await forcedExit;
             }
-            if (socket && !socket.destroyed) {
-                try {
-                    socket.destroy();
-                } catch (e) {
-                    /* ignore */
-                }
-            }
-            if (this.socket === socket) this.socket = null;
+            this.tcl.close(socket);
             if (this.child === child && (closed || child?.exitCode !== null)) this.child = null;
-            const responseDir = this._silentResponseDir;
-            this._silentResponseDir = "";
-            this._silentResponseFile = "";
-            if (responseDir) {
-                try {
-                    await fs.promises.rm(responseDir, { recursive: true, force: true });
-                } catch {
-                    /* ignore */
-                }
-            }
+            await this.tcl.removeResponseFile();
             if (!closed) this._stopPromise = null;
             return closed;
         })();

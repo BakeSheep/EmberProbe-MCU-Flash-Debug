@@ -14,7 +14,7 @@ const session = new ManagedOpenOcdSession(
         }
     }
 );
-session.queue.push(
+session.tcl.queue.push(
     {
         reject: () => {
             rejected++;
@@ -29,7 +29,7 @@ session.queue.push(
 session._abortConnection(new Error("timeout"));
 session._abortConnection(new Error("duplicate"));
 assert.strictEqual(session.stopped, true);
-assert.strictEqual(session.queue.length, 0);
+assert.strictEqual(session.tcl.queue.length, 0);
 assert.strictEqual(rejected, 2);
 assert.strictEqual(disconnects, 1);
 

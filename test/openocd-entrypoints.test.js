@@ -141,7 +141,7 @@ function load(file, overrides) {
     for (const names of ["stm32h7x.cpu0 stm32h7x.cpu1", "stm32h7x.cpu0", "bad;shutdown stm32h7x.cpu1"]) {
         const grouped = new live.ManagedOpenOcdSession({ ...multi.options, serverGroup: "dual" }, {});
         grouped._waitForTclListening = async () => {};
-        grouped._detectNoEcho = async () => true;
+        grouped.tcl.detectNoEcho = async () => true;
         grouped._connectWithRetry = async () => {
             const socket = new EventEmitter();
             socket.destroy = () => {
@@ -151,7 +151,7 @@ function load(file, overrides) {
             socket.setNoDelay = () => {};
             return socket;
         };
-        grouped._sendCheckedCommand = async (command) => {
+        grouped.tcl.sendChecked = async (command) => {
             assert.strictEqual(command, "target names");
             return names;
         };
