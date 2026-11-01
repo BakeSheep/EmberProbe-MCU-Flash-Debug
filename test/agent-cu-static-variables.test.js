@@ -24,6 +24,7 @@ const {
     directRequests
 } = require("../skills/mcu-variables/scripts/read");
 const fixture = require("./fixtures/cu-static-variables.json");
+const { writePlan } = require("../src/services/agentPlans");
 
 const buffer = zlib.inflateSync(Buffer.from(fixture.elf, "base64"));
 
@@ -284,13 +285,12 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
             ]
         );
         assert(candidates.every((candidate) => /^0x[0-9A-F]+$/.test(candidate.address)));
-        assert.throws(() => provider._agentWritePlan([{ name: "s_counter", value: 1 }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name: "s_counter", value: 1 }], () => provider.readElfSymbols()), {
             code: "VARIABLE_AMBIGUOUS"
         });
-        assert.throws(
-            () => provider._agentWritePlan([{ name: "g_localConfig.mode", value: 1 }], { refreshSymbols: false }),
-            { code: "VARIABLE_AMBIGUOUS" }
-        );
+        assert.throws(() => writePlan([{ name: "g_localConfig.mode", value: 1 }], () => provider.readElfSymbols()), {
+            code: "VARIABLE_AMBIGUOUS"
+        });
         await assert.rejects(provider._addAgentWatch({ variables: ["g_localConfig"] }), { code: "VARIABLE_AMBIGUOUS" });
         assert.strictEqual(stored.size, 0, "nothing is saved for an ambiguous watch request");
 
@@ -341,24 +341,19 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         );
 
         // Writes and watch.add take the selected CU's identity and address.
-        const plan = provider._agentWritePlan([{ name: "'other.c'::g_localConfig.gain", value: 9 }], {
-            refreshSymbols: false
-        });
+        const plan = writePlan([{ name: "'other.c'::g_localConfig.gain", value: 9 }], () => provider.readElfSymbols());
         assert.deepStrictEqual(
             plan.items.map((item) => [item.name, item.address, item.type]),
             [["other.c::g_localConfig.gain", symbol("other.c::g_localConfig").address + 4, "u32"]]
         );
-        const scalarPlan = provider._agentWritePlan([{ name: "b/main.c::s_counter", value: 5 }], {
-            refreshSymbols: false
-        });
+        const scalarPlan = writePlan([{ name: "b/main.c::s_counter", value: 5 }], () => provider.readElfSymbols());
         assert.deepStrictEqual(
             scalarPlan.items.map((item) => [item.name, item.address]),
             [["b/main.c::s_counter", symbol("b/main.c::s_counter").address]]
         );
-        assert.throws(
-            () => provider._agentWritePlan([{ name: "b/main.c::s_counter.x", value: 5 }], { refreshSymbols: false }),
-            { code: "INVALID_VARIABLE_PATH" }
-        );
+        assert.throws(() => writePlan([{ name: "b/main.c::s_counter.x", value: 5 }], () => provider.readElfSymbols()), {
+            code: "INVALID_VARIABLE_PATH"
+        });
         const added = await provider._addAgentWatch({
             variables: ["'other.c'::g_localConfig.mode", "src/a/main.c::s_counter"],
             destination: "sidebar"

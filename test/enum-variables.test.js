@@ -15,6 +15,7 @@ const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { loadProvider } = require("./helpers/load-provider");
 const { buildElf32 } = require("./helpers/elf-fixture");
+const { writePlan } = require("../src/services/agentPlans");
 
 const parsed = {
     dies: new Map([
@@ -132,7 +133,7 @@ const parsed = {
     const provider = Object.create(Provider.prototype);
     provider.readElfSymbols = () => ({ elf: { path: "enum-fixture.elf" }, symbols: [symbols[0], packetSymbol] });
     for (const name of ["state", "packet.state"])
-        assert.throws(() => provider._agentWritePlan([{ name, value: 3 }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name, value: 3 }], () => provider.readElfSymbols()), {
             code: "WRITE_TYPE_UNKNOWN"
         });
     const history = service.decodeHistorySamples([{ name: "packet", bytes: [255, 7] }], 1, [

@@ -6,6 +6,7 @@ const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
 const { ElfService } = require("../src/services/elfService");
 const elfSymbols = require("../src/elfSymbols");
+const { writePlan } = require("../src/services/agentPlans");
 
 (async () => {
     const Provider = loadProvider();
@@ -16,14 +17,15 @@ const elfSymbols = require("../src/elfSymbols");
             throw Object.assign(new Error("DWARF type information is unavailable"), { code: "DWARF_PARSE_FAILED" });
         }
     };
-    provider._agentWritePlan = () => {
+    // Planning starts by reading the ELF symbols.
+    provider.readElfSymbols = () => {
         planned = true;
+        throw new Error("planned");
     };
     await assert.rejects(provider._writeAgentVariables({ values: [{ name: "value", value: 1 }] }), {
         code: "DWARF_PARSE_FAILED"
     });
     assert.strictEqual(planned, false, "writes must stop before planning when DWARF is unavailable");
-    delete provider._agentWritePlan;
     provider.readElfSymbols = () => ({
         elf: { path: "missing" },
         symbols: [
@@ -42,16 +44,16 @@ const elfSymbols = require("../src/elfSymbols");
         ]
     });
     for (const name of ["flag", "group.enabled"])
-        assert.throws(() => provider._agentWritePlan([{ name, value: 2 }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name, value: 2 }], () => provider.readElfSymbols()), {
             code: "INVALID_WRITE_VALUE"
         });
     // Booleans still encode for boolean targets; the missing RAM sections reject the address afterwards.
     for (const value of [1, true, false])
-        assert.throws(() => provider._agentWritePlan([{ name: "flag", value }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name: "flag", value }], () => provider.readElfSymbols()), {
             code: "WRITE_NOT_ALLOWED"
         });
     for (const value of [null, ""])
-        assert.throws(() => provider._agentWritePlan([{ name: "flag", value }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name: "flag", value }], () => provider.readElfSymbols()), {
             code: "INVALID_WRITE_VALUE"
         });
     const CachedProvider = loadProvider(
@@ -96,24 +98,24 @@ const elfSymbols = require("../src/elfSymbols");
     cached._elfService = service;
     cached.readElfSymbols = () => service.read();
     for (const name of ["value0", "value1"]) {
-        const plan = cached._agentWritePlan([{ name, value: 42 }], { refreshSymbols: false });
+        const plan = writePlan([{ name, value: 42 }], () => cached.readElfSymbols());
         assert.strictEqual(plan.elfResult, result, "the plan retains the same identity-checked ELF result");
         assert.strictEqual(plan.items[0].value, 42);
         assert.strictEqual(plan.items[0].address, result.symbols.find((symbol) => symbol.name === name).address);
     }
     for (const name of ["value2", "value3", "value4"])
-        assert.throws(() => cached._agentWritePlan([{ name, value: 42 }], { refreshSymbols: false }), {
+        assert.throws(() => writePlan([{ name, value: 42 }], () => cached.readElfSymbols()), {
             code: "WRITE_NOT_ALLOWED"
         });
     const memory = result.memory;
     delete result.memory;
-    assert.throws(() => cached._agentWritePlan([{ name: "value0", value: 42 }], { refreshSymbols: false }), {
+    assert.throws(() => writePlan([{ name: "value0", value: 42 }], () => cached.readElfSymbols()), {
         code: "WRITE_NOT_ALLOWED"
     });
     result.memory = memory;
     stat = { ...stat, mtimeMs: 11 };
     service.load = async () => {};
-    assert.throws(() => cached._agentWritePlan([{ name: "value0", value: 42 }], { refreshSymbols: false }), {
+    assert.throws(() => writePlan([{ name: "value0", value: 42 }], () => cached.readElfSymbols()), {
         code: "ELF_CHANGED"
     });
 
@@ -161,7 +163,7 @@ const elfSymbols = require("../src/elfSymbols");
             }
         ]
     });
-    const hardenedPlan = (values) => hardened._agentWritePlan(values, { refreshSymbols: false });
+    const hardenedPlan = (values) => writePlan(values, () => hardened.readElfSymbols());
     assert.strictEqual(hardenedPlan([{ name: "motor.rpm", value: 1.5 }]).items[0].address, 0x20000010);
     assert.throws(
         () => hardenedPlan([{ name: "SPEED", value: 1 }]),
@@ -245,7 +247,10 @@ const elfSymbols = require("../src/elfSymbols");
                 }
             ]
         });
-        assert.throws(() => provider._agentWritePlan([{ name: "sensor.x", value: 1 }]), /Bitfield writes/);
+        assert.throws(
+            () => writePlan([{ name: "sensor.x", value: 1 }], () => provider.readElfSymbols()),
+            /Bitfield writes/
+        );
     });
 
     await scenario("Reject unconfirmed or changed-image writes after chat confirmation", async () => {
@@ -303,9 +308,10 @@ const elfSymbols = require("../src/elfSymbols");
         let identity = "before",
             attemptedWrites = 0;
         variable._prepareRequestedLayouts = async () => {};
-        variable._agentWritePlan = () => ({
-            elfResult: { elf: { path: "firmware.elf", sha256: identity } },
-            items: [{ name: "x", address: 0x20000000, size: 4, type: "u32", value: 1, bytes: [1, 0, 0, 0] }]
+        variable.readElfSymbols = () => ({
+            elf: { path: "firmware.elf", sha256: identity },
+            symbols: [{ name: "x", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],
+            memory: { sections: [{ addr: 0x20000000, size: 0x1000, flags: 3 }] }
         });
         variable._prepareWriteConnection = async () => ({
             kind: "dap",
@@ -320,10 +326,11 @@ const elfSymbols = require("../src/elfSymbols");
         variable._executeWritePlan = async () => {
             attemptedWrites++;
         };
-        const request = await variable._writeAgentVariables({ values: [] });
+        const values = [{ name: "x", value: 1 }];
+        const request = await variable._writeAgentVariables({ values });
         assert(request.confirmationRequired);
         identity = "after";
-        await assert.rejects(variable._writeAgentVariables({ values: [], confirmationId: request.confirmationId }), {
+        await assert.rejects(variable._writeAgentVariables({ values, confirmationId: request.confirmationId }), {
             code: "ELF_CHANGED_DURING_WRITE_CONFIRMATION"
         });
         assert.strictEqual(attemptedWrites, 0);
@@ -355,7 +362,7 @@ const elfSymbols = require("../src/elfSymbols");
             ]
         };
         const dataLayout = buildCompositeLayouts(parsed).get("data");
-        // _agentWritePlan blocks writes to const variables and const composite members
+        // writePlan blocks writes to const variables and const composite members
         const Provider = loadProvider();
         const provider = Object.create(Provider.prototype);
         provider.readElfSymbols = () => ({
@@ -380,13 +387,13 @@ const elfSymbols = require("../src/elfSymbols");
         });
 
         assert.throws(
-            () => provider._agentWritePlan([{ name: "constScalar", value: 1 }], { refreshSymbols: false }),
+            () => writePlan([{ name: "constScalar", value: 1 }], () => provider.readElfSymbols()),
             (err) => err.code === "WRITE_NOT_ALLOWED" && /const \/ read-only/.test(err.message),
             "const scalar must reject write plan"
         );
 
         assert.throws(
-            () => provider._agentWritePlan([{ name: "data.ro", value: 1 }], { refreshSymbols: false }),
+            () => writePlan([{ name: "data.ro", value: 1 }], () => provider.readElfSymbols()),
             (err) => err.code === "WRITE_NOT_ALLOWED" && /const \/ read-only/.test(err.message),
             "const composite member must reject write plan"
         );
@@ -421,7 +428,7 @@ const elfSymbols = require("../src/elfSymbols");
                 const Provider = loadProvider();
                 const provider = Object.create(Provider.prototype);
                 provider.readElfSymbols = () => result;
-                const write = (name) => provider._agentWritePlan([{ name, value: 1 }], { refreshSymbols: false });
+                const write = (name) => writePlan([{ name, value: 1 }], () => provider.readElfSymbols());
                 assert.throws(() => write("plain.shared"), { code: "INVALID_VARIABLE_PATH" });
                 assert.strictEqual(write("Plain::shared").items[0].address, byName.get("_ZN5Plain6sharedE").address);
                 assert.strictEqual(

@@ -12,6 +12,7 @@ const { WatchListStore } = require("../src/services/watchListStore");
 const { loadProvider } = require("./helpers/load-provider");
 const { buildElf32 } = require("./helpers/elf-fixture");
 const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expansion-fixture");
+const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlans");
 (async () => {
     const f = fixture();
     const branchPath = "axes[0].a.b";
@@ -114,11 +115,11 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
     assert.deepStrictEqual(added.sidebar.added, [gain]);
     assert.strictEqual(addedStatic[0].address, leaf.address);
     assert.strictEqual(addedStatic[0].staticRuntimeStorage, true);
-    const rawPlan = rawProvider._agentVariablePlan({ variables: [gain] });
+    const rawPlan = readPlan({ variables: [gain] }, () => rawProvider.readElfSymbols());
     assert.strictEqual(rawPlan.plan.length, 1);
     assert.strictEqual(rawPlan.plan[0].address, leaf.address);
     assert.strictEqual(rawPlan.plan[0].size, 4, "Bridge reads only the validated leaf bytes");
-    const rawSample = rawProvider._decodeAgentSample(
+    const rawSample = decodeSample(
         rawPlan.plan,
         [{ name: gain, bytes: bytes.subarray(52, 56) }],
         rawPlan.compositePlan
@@ -214,7 +215,7 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
         f.service.cache.memory = elf.parseElfSections(image);
         const provider = Object.create(loadProvider().prototype);
         Object.assign(provider, { _elfService: f.service, readElfSymbols: () => f.service.cache });
-        const write = (value) => provider._agentWritePlan([{ name: gain, value }], { refreshSymbols: false });
+        const write = (value) => writePlan([{ name: gain, value }], () => provider.readElfSymbols());
         const valid = write(2);
         valid.connection = { kind: "dap", sessionId: "test-session", stopEpoch: 1 };
         assert.strictEqual(valid.items[0].address, leaf.address);
@@ -232,10 +233,9 @@ const { fixture, handle, scalar, runtimeGraph } = require("./helpers/layout-expa
             code: "WRITE_CONFIRMATION_INVALID"
         });
         assert.notStrictEqual(fingerprintWritePlan(valid), fingerprintWritePlan(write(3)));
-        assert.throws(
-            () => provider._agentWritePlan([{ name: "axes[1].a.b.gain", value: 2 }], { refreshSymbols: false }),
-            { code: "INVALID_VARIABLE_PATH" }
-        );
+        assert.throws(() => writePlan([{ name: "axes[1].a.b.gain", value: 2 }], () => provider.readElfSymbols()), {
+            code: "INVALID_VARIABLE_PATH"
+        });
         f.sublayout.isConst = true;
         assert.throws(() => write(2), { code: "WRITE_NOT_ALLOWED" });
         delete f.sublayout.isConst;

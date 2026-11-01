@@ -27,9 +27,10 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             get: (key) => state.get(key),
             update: async (key, value) => state.set(key, value)
         }),
-        _agentWritePlan: (values) => ({
-            elfResult: { elf: { path: "firmware.elf", sha256: "firmware" } },
-            items: values.map(({ name, value }) => ({ name, value, address: 0x20000000, type: "u32", bytes: [value] }))
+        readElfSymbols: () => ({
+            elf: { path: "firmware.elf", sha256: "firmware" },
+            symbols: [{ name: "word", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],
+            memory: { sections: [{ addr: 0x20000000, size: 0x1000, flags: 3 }] }
         }),
         _withAgentProbe: (handler) => handler({ session: {}, source: "test" }),
         _executeWritePlan: async () => {

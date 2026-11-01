@@ -11,6 +11,7 @@ const elf = require("../src/elfSymbols");
 const { createLayoutExpansion } = require("../src/dwarf/layoutExpansion");
 const { EXPANSION_TYPE_REF, createCompositeLayoutResolver } = require("../src/dwarf/types");
 const { createWorkerElfService } = require("./helpers/elf-service");
+const { writePlan } = require("../src/services/agentPlans");
 
 function deepElf(count = 50) {
     const info = [0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 4, 1];
@@ -98,13 +99,13 @@ function limitedMember(layout) {
         const truncatedPath = "root.deep" + ".next".repeat(32);
         assert.deepStrictEqual(elf.expandCompositeLeaves(sym, layout, elf.parseMemberPath(truncatedPath)), []);
         for (const name of [truncatedPath, truncatedPath + ".next"]) {
-            assert.throws(() => provider._agentWritePlan([{ name, value: 1 }], { refreshSymbols: false }), {
+            assert.throws(() => writePlan([{ name, value: 1 }], () => provider.readElfSymbols()), {
                 code: "INVALID_VARIABLE_PATH"
             });
             await assert.rejects(provider._addAgentWatch({ variables: [name] }), { code: "INVALID_VARIABLE_PATH" });
         }
         assert.strictEqual(
-            provider._agentWritePlan([{ name: "root.good", value: 1 }], { refreshSymbols: false }).items.length,
+            writePlan([{ name: "root.good", value: 1 }], () => provider.readElfSymbols()).items.length,
             1,
             "a shallow sibling retains its normal typed write authorization path"
         );

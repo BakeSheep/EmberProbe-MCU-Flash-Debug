@@ -32,6 +32,7 @@ assert.deepStrictEqual(memberPathSegments("counter"), { base: "counter", segment
 assert.strictEqual(memberPathSegments("motor.bad-name"), null);
 
 const fixture = require("./fixtures/pointer-classes/elf.json");
+const { writePlan } = require("../src/services/agentPlans");
 (async () => {
     for (const version of [4, 5]) {
         const buffer = zlib.inflateSync(Buffer.from(fixture[`dwarf${version}`], "base64"));
@@ -213,7 +214,7 @@ const fixture = require("./fixtures/pointer-classes/elf.json");
             provider.readElfSymbols = () => result;
             for (const name of ["motor.@base0.parent.value.x", "motor.@base0.parent->x", "counterPtr.value"])
                 assert.throws(
-                    () => provider._agentWritePlan([{ name, value: 1 }], { refreshSymbols: false }),
+                    () => writePlan([{ name, value: 1 }], () => provider.readElfSymbols()),
                     (error) => !!error.code,
                     name + " must not be writable"
                 );
@@ -221,11 +222,11 @@ const fixture = require("./fixtures/pointer-classes/elf.json");
             assert.ok(motor.runtimeLayout || motor.compositeLayout?.runtimeLayout);
             const motorLeaves = elf.expandCompositeLeaves(motor, motor.compositeLayout, null);
             for (const name of ["motor.speed", "motor.@base0.x"]) {
-                const [item] = provider._agentWritePlan([{ name, value: 1 }], { refreshSymbols: false }).items;
+                const [item] = writePlan([{ name, value: 1 }], () => provider.readElfSymbols()).items;
                 assert.strictEqual(item.address, motorLeaves.find((leaf) => leaf.path === name).address, name);
             }
             assert.throws(
-                () => provider._agentWritePlan([{ name: "motor.@base0.parent", value: 0 }], { refreshSymbols: false }),
+                () => writePlan([{ name: "motor.@base0.parent", value: 0 }], () => provider.readElfSymbols()),
                 { code: "WRITE_NOT_ALLOWED" },
                 "pointer storage stays read-only"
             );

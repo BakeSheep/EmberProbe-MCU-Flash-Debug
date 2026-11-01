@@ -6,6 +6,7 @@ const { SamplingCoordinator } = require("../src/services/samplingCoordinator");
 const { connectionIdentity } = require("../skills/_emberprobe/probe-connection");
 const { WriteAuthorization, writeConnectionIdentity } = require("../src/writeAuthorization");
 const { FirmwareRecord } = require("../src/services/firmwareRecord");
+const { writePlan } = require("../src/services/agentPlans");
 
 (async () => {
     const Provider = loadProvider();
@@ -212,7 +213,7 @@ const { FirmwareRecord } = require("../src/services/firmwareRecord");
     assert.strictEqual(writeCalls.length, 1);
     await assert.rejects(runtimeProvider._writeUiVariable("byte", 42), { code: "RUNTIME_WRITE_DISABLED" });
     assert.strictEqual(writeCalls.length, 1, "halting UI requests are refused before touching hardware");
-    const runtimePlan = runtimeProvider._agentWritePlan([{ name: "word", value: 43 }], { refreshSymbols: false });
+    const runtimePlan = writePlan([{ name: "word", value: 43 }], () => runtimeProvider.readElfSymbols());
     runtimePlan.connection = verifyConnection;
     runtimeProvider._samplingCoordinator.setBackpressure(true);
     await assert.rejects(runtimeProvider._executeWritePlan(runtime, "test", runtimePlan), {

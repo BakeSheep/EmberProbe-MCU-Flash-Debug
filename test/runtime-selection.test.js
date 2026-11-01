@@ -12,6 +12,7 @@ const { render } = require("./helpers/render-webview");
 const { getModernWebviewContent } = require("../src/modernView");
 const { getLiveWatchContent } = require("../src/liveWatchView");
 const { loadProvider } = require("./helpers/load-provider");
+const { readPlan, writePlan } = require("../src/services/agentPlans");
 
 function openVariables(view, sidebar, symbols, version = "selection") {
     const prefix = sidebar ? "availableVariables" : "variablesList";
@@ -50,19 +51,15 @@ function openVariables(view, sidebar, symbols, version = "selection") {
             for (const leaf of elf.expandCompositeLeaves(symbol, symbol.compositeLayout, null)) {
                 if (runtime.runtimeWatchEntry(leaf.path, symbol, elf.parseMemberPath(leaf.path).segments)) continue;
                 assert.deepStrictEqual(normalizeWatchList([{ name: leaf.path }], result.symbols), []);
-                assert.throws(() => provider._agentVariablePlan({ variables: [leaf.path] }), {
+                assert.throws(() => readPlan({ variables: [leaf.path] }, () => provider.readElfSymbols()), {
                     code: "INVALID_VARIABLE_PATH"
                 });
                 await assert.rejects(provider._addAgentWatch({ variables: [leaf.path] }), {
                     code: "INVALID_VARIABLE_PATH"
                 });
-                assert.throws(
-                    () =>
-                        provider._agentWritePlan([{ name: leaf.path, value: 1 }], {
-                            refreshSymbols: false
-                        }),
-                    { code: "WRITE_NOT_ALLOWED" }
-                );
+                assert.throws(() => writePlan([{ name: leaf.path, value: 1 }], () => provider.readElfSymbols()), {
+                    code: "WRITE_NOT_ALLOWED"
+                });
             }
         }
         const unique = symbols.find((symbol) => symbol.displayName === "unique");
@@ -200,13 +197,9 @@ function openVariables(view, sidebar, symbols, version = "selection") {
         assert.strictEqual(normalizeWatchList([{ name: "plain.count" }], [plain])[0].type, "u32");
         const nestedOnly = { ...unique, runtimeLayout: undefined };
         provider.readElfSymbols = () => ({ ...result, symbols: [nestedOnly] });
-        assert.throws(
-            () =>
-                provider._agentWritePlan([{ name: unique.name + ".value", value: 1 }], {
-                    refreshSymbols: false
-                }),
-            { code: "WRITE_NOT_ALLOWED" }
-        );
+        assert.throws(() => writePlan([{ name: unique.name + ".value", value: 1 }], () => provider.readElfSymbols()), {
+            code: "WRITE_NOT_ALLOWED"
+        });
     }
     assert.strictEqual(runtime.runtimeSelection({}), null);
     console.log("Semantic STL selection, lazy recipes, dynamic imports and host boundary tests passed / DWARF 4 and 5");

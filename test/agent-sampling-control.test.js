@@ -341,9 +341,11 @@ function fixture() {
         const stops = [];
         Object.assign(host, {
             _prepareRequestedLayouts: async () => {},
-            _agentVariablePlan: () => ({ elfResult: { elf: {} }, plan: [], compositePlan: [], variableErrors: [] }),
+            readElfSymbols: () => ({
+                elf: {},
+                symbols: [{ name: "tick", address: 0x20000000, size: 4, watchType: "u32" }]
+            }),
             _runtimeReadRanges: () => [],
-            _decodeAgentSample: () => ({ timestamp: reads }),
             _firmwareConsistency: () => ({}),
             // A live-sampling (or debug server) connection is reused, not a temporary probe session.
             _withAgentProbe: (handler) =>

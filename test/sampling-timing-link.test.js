@@ -18,6 +18,7 @@ const { LiveWatchService } = require("../src/services/liveWatchService");
 const elf = require("../src/elfSymbols");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const { loadProvider } = require("./helpers/load-provider");
+const { decodeSample } = require("../src/services/agentPlans");
 
 const base = 0x20000000;
 const ranges = [{ start: base, end: base + 65536 }];
@@ -63,11 +64,7 @@ async function timestamps() {
         new Map([["later", "u32"]])
     );
     assert.strictEqual(decoded.scalarSamples[0].t, fractional.t);
-    const provider = Object.create(loadProvider().prototype);
-    assert.strictEqual(
-        provider._decodeAgentSample([{ ...item("later", 4096), type: "u32" }], [fractional]).timestamp,
-        fractional.t
-    );
+    assert.strictEqual(decodeSample([{ ...item("later", 4096), type: "u32" }], [fractional]).timestamp, fractional.t);
 }
 
 async function widening() {
