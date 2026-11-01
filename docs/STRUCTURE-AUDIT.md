@@ -13,7 +13,36 @@
     - 修复 `cubemxLog` 每行复制 1 MiB 日志尾部的二次复杂度（这是产品代码问题，CubeMX 输出长时会占用扩展宿主 CPU）。
     - 耗时：全量 `npm test` 从 57.3 s 降到 53.4 s（4 进程）；`cubemx-generation-safety` 从 8.4 s 降到 1.0 s，`pointer-targets` 从 7.8 s 降到 2.2 s。
 
-## 执行进度（分支 `refactor/structure-accumulation`）
+## 结果（分支 `refactor/structure-accumulation`，2026-11-01）
+
+| 指标                              | 审计时                                                 | 现在                                                                                        |
+| --------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `MainViewProvider`（ESLint 计数） | 6718 行，最长方法 430 行                               | 1343 行，没有超过 300 行的方法                                                              |
+| 波形页 / 侧栏 renderer            | 4483 / 3118 行                                         | 2902 / 1756 行                                                                              |
+| 两页同名平行实现                  | 37 组                                                  | 6 组（页面接线）                                                                            |
+| `liveWatch.js`                    | 2155 行                                                | 1420 行                                                                                     |
+| ESLint 单独上限项                 | 文件 5 项，函数 3 项                                   | 文件 3 项（两个 renderer、`runtime.js`），函数 2 项（`dwarf/parser`、`dwarf/runtimeTypes`） |
+| 测试文件                          | 240 个，65.5k 行                                       | 224 个，64.8k 行                                                                            |
+| 全量测试（4 进程，同一台机器）    | `npm test` 53.4 s                                      | `npm run check` 43 s                                                                        |
+| 全局行覆盖率                      | 87.8%（两个 renderer、`viewport.js`、Provider 不计入） | 91.87%（都已计入）                                                                          |
+| 兼容层                            | 没有登记                                               | 登记 5 项：4 项在 1.0.0 移除，`writeAuthorization` 的 fail-closed 检查永久保留              |
+
+**仍未达到默认上限的部分**（上限只降不升，后续拆分时同步下调）：
+
+- 波形页 renderer 2902 行。
+- `runtime.js` 1543 行。这次没有动它，两页的共享代码放进了新的 `valueTree.js` 和 `symbolPicker.js`。
+- `dwarf/parser` 中最长函数 769 行，`dwarf/runtimeTypes` 368 行。
+
+**验证范围**：只做了软件验证（`check`、`quality`、`bundle`、Extension Host e2e，以及内置 OpenOCD dummy 适配器上的 no-echo 和 scatter 检查）。P2 ManagedOpenOcdSession 改动了采样与写入的硬件路径，没有跑 HIL；发布前应按 `test/hil/README.md` 在实板上验证。
+
+**后续维护**：这份文档不在 `scripts/docs-cleanup.js` 的 `MAIN_DOCS` 里，发版时会被清理。长期规则写在：
+
+- `AGENTS.md`：模块边界、测试约定、尺寸上限、兼容层登记。
+- `eslint.config.js`：尺寸棘轮，webview 按 classic script lint。
+- `scripts/compat-layers.js`：兼容层登记表，由 `compat-layers.test.js` 和 `release-consistency` 守护。
+- `test-helper-reuse.test.js`、`i18n-keys.test.js`：拦截测试辅助函数副本和死 i18n 键。
+
+## 执行进度
 
 - [x] P3 护栏
     - `eslint.config.js` 加了尺寸棘轮：单文件上限 1500 行，非 webview 单函数上限 300 行。超限文件按现值单独设上限，只降不升。
