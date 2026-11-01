@@ -1,3 +1,4 @@
+"use strict";
 var api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     CFG = window.__CFG__;
 const { fmtNum, isComposite } = EmberProbeValueTree;
@@ -1162,15 +1163,6 @@ function updateValues() {
         if (isComposite(it)) valueTree.updateComposite(it.name);
     });
 }
-function defW(ty) {
-    return ty === "u8" || ty === "i8"
-        ? 1
-        : ty === "u16" || ty === "i16"
-          ? 2
-          : ty === "u64" || ty === "i64" || ty === "f64"
-            ? 8
-            : 4;
-}
 function togglePointee(entry) {
     if (state.watch.some((item) => item.name === entry.name)) {
         removeVar(entry.name);
@@ -1237,7 +1229,7 @@ function addLeafWatch(path, address, watchType, node) {
     state.watch.push({
         name: path,
         address: Number(address) >>> 0,
-        size: defW(watchType),
+        size: EmberProbeRuntime.typeByteLength(watchType),
         type: watchType,
         ...(node?.isPointer ? { isPointer: true, typeName: node.typeName, pointerTarget: node.pointerTarget } : {}),
         ...(node?.displayPath ? { displayName: node.displayPath } : {}),

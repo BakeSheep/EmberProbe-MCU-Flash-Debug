@@ -19,39 +19,44 @@ function loadWebviewAsset(area, name) {
     return content;
 }
 
+const SHARED_PRELUDE = [
+    "notice.js",
+    "elfDiagnostics.js",
+    "runtime.js",
+    "valueTree.js",
+    "symbolPicker.js",
+    "messages.js",
+    "cardReorder.js"
+];
+const PAGE_PRELUDE = {
+    sidebar: ["chipView.js", "memoryView.js", "peripherals.js", "rtos.js", "writeList.js"],
+    liveWatch: [
+        "seriesStyles.js",
+        "analysisState.js",
+        "chartInspection.js",
+        "chartControls.js",
+        "chartTransport.js",
+        "backgroundIcon.js",
+        "backgroundIconController.js",
+        "chart.js",
+        "samplingRateMotion.js",
+        "panelLayout.js",
+        "exportDialog.js",
+        "variableEntry.js"
+    ]
+};
+
+// The modules a page's renderer.js runs after, in load order, as [area, name] pairs.
+function rendererPrelude(area) {
+    if (!Object.hasOwn(PAGE_PRELUDE, area)) throw new Error(`Unknown webview page: ${area}`);
+    return [...SHARED_PRELUDE.map((name) => ["", name]), ...PAGE_PRELUDE[area].map((name) => [area, name])];
+}
+
 function loadRendererPrelude(area) {
     return (
-        [
-            loadWebviewAsset("", "notice.js"),
-            loadWebviewAsset("", "elfDiagnostics.js"),
-            loadWebviewAsset("", "runtime.js"),
-            loadWebviewAsset("", "valueTree.js"),
-            loadWebviewAsset("", "symbolPicker.js"),
-            loadWebviewAsset("", "messages.js"),
-            loadWebviewAsset("", "cardReorder.js"),
-            ...(area === "sidebar"
-                ? [
-                      loadWebviewAsset("sidebar", "chipView.js"),
-                      loadWebviewAsset("sidebar", "memoryView.js"),
-                      loadWebviewAsset("sidebar", "peripherals.js"),
-                      loadWebviewAsset("sidebar", "rtos.js"),
-                      loadWebviewAsset("sidebar", "writeList.js")
-                  ]
-                : [
-                      "seriesStyles.js",
-                      "analysisState.js",
-                      "chartInspection.js",
-                      "chartControls.js",
-                      "chartTransport.js",
-                      "backgroundIcon.js",
-                      "backgroundIconController.js",
-                      "chart.js",
-                      "samplingRateMotion.js",
-                      "panelLayout.js",
-                      "exportDialog.js",
-                      "variableEntry.js"
-                  ].map((name) => loadWebviewAsset("liveWatch", name)))
-        ].join("\n") + "\n"
+        rendererPrelude(area)
+            .map(([dir, name]) => loadWebviewAsset(dir, name))
+            .join("\n") + "\n"
     );
 }
-module.exports = { loadWebviewAsset, loadRendererPrelude };
+module.exports = { WEBVIEW_ROOT, loadWebviewAsset, rendererPrelude };

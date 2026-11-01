@@ -1,3 +1,4 @@
+"use strict";
 const api = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null,
     dot = document.getElementById("statusDot"),
     text = document.getElementById("statusText"),
@@ -593,9 +594,6 @@ function setStat(cls, key, params, txt) {
     if (flashStatus) flashStatus.dataset.state = cls || "busy";
     lastStatus = { cls: cls, key: key || "", params: params || null, text: s };
 }
-function applyStatus() {
-    if (lastStatus) setStat(lastStatus.cls, lastStatus.key, lastStatus.params, lastStatus.text);
-}
 function applyI18n() {
     var i, els;
     els = document.querySelectorAll("[data-i18n]");
@@ -631,7 +629,7 @@ function rerenderDynamic() {
     memoryView?.render();
     if (chipHasData && lastChipInfo) renderChip(lastChipInfo);
     for (const area of Object.values(notices)) area.relocalize();
-    applyStatus();
+    if (lastStatus) setStat(lastStatus.cls, lastStatus.key, lastStatus.params, lastStatus.text);
 }
 function setLang(l, notify) {
     LANG = l === "en" ? "en" : "zh";
