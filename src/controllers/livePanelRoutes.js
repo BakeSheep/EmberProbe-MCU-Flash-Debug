@@ -221,7 +221,7 @@ const LIVE_PANEL_ROUTES = {
         await host._sampling.start(message.items || [], host._sampling.intervalMs, "graph");
     },
     stop: ({ host }) => {
-        if (host._agentReadRunning) host.stopAgentReadIfRunning();
+        if (host._agentOps.readRunning) host._agentOps.stopReadIfRunning();
         else host._sampling.stop({ variablesOnly: true });
     },
     setInterval: ({ host }, message) => host._sampling.setIntervalMs(message.intervalMs),

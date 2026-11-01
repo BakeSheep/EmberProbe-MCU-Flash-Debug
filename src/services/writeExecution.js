@@ -308,9 +308,12 @@ class WriteExecution {
             const result = await this.execute(this.host.debugLaunch.managedServer, "debug-running-openocd", plan);
             return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
         }
-        const result = await this.host._withAgentProbe(({ session, source }) => this.execute(session, source, plan), {
-            allowPausedDebugRead: true
-        });
+        const result = await this.host._agentOps.withProbe(
+            ({ session, source }) => this.execute(session, source, plan),
+            {
+                allowPausedDebugRead: true
+            }
+        );
         return { ...result, ...consistency, permission: await this.permissionGrant(authorization, plan) };
     }
     firmwareConsistency(elfResult) {

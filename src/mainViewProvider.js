@@ -34,15 +34,14 @@ const { FlashAuthorization } = require("./flashAuthorization");
 const { ProbeCoordinator, PROBE_OPERATIONS } = require("./probeCoordinator");
 // Operations that hold the workspace's probe; the refresh's own chip reads do not.
 const PROBE_OPERATIONS_IN_USE = PROBE_OPERATIONS.filter((name) => name !== "targetScan");
-const { ConfigurationStore, assertAgentSettable } = require("./services/configurationStore");
+const { ConfigurationStore } = require("./services/configurationStore");
 const { FlashService } = require("./services/flashService");
 const { runDownload } = require("./services/flashCommand");
 const { FirmwareRecord } = require("./services/firmwareRecord");
 const { AgentFlashService } = require("./services/agentFlashService");
 const { FaultService } = require("./services/faultService");
-const { AgentService } = require("./services/agentService");
+const { AgentService, agentAccessDecision } = require("./services/agentService");
 const { createAgentRoutes } = require("./services/agentRoutes");
-const agentPlans = require("./services/agentPlans");
 const { createSidebarHandler } = require("./controllers/sidebarRoutes");
 const { createLivePanelHandler } = require("./controllers/livePanelRoutes");
 const {
@@ -53,6 +52,7 @@ const {
 const { ElfViewController } = require("./services/elfViewController");
 const { DebugLaunch } = require("./services/debugLaunch");
 const { WriteExecution } = require("./services/writeExecution");
+const { AgentOperations } = require("./services/agentOperations");
 const { ElfService } = require("./services/elfService");
 const { MemoryAnalysisController } = require("./services/memoryAnalysisController");
 const { OpenOcdStatusService } = require("./services/openocdStatusService");
@@ -76,7 +76,6 @@ const {
     LiveWatchService,
     buildChartHistoryItems,
     selectFocusedPanel,
-    selectPausedDebugReadSession,
     writableRamSectionRanges
 } = require("./services/liveWatchService");
 const { normalizeRuntimeExpansions } = require("./services/runtimeExpansion");
@@ -161,15 +160,22 @@ class MainViewProvider {
     get _writes() {
         return (this._writeExecution ??= new WriteExecution(this, { vscode }));
     }
+    get _agentOps() {
+        return (this._agentOperations ??= new AgentOperations(this, {
+            vscode,
+            LiveWatchSession: liveWatch.LiveWatchSession
+        }));
+    }
     constructor(context) {
         this.commandHandlers = {};
         this._context = context;
         // Created by the `_notices` getter.
         this._noticeService = null;
-        // Created by the `_elfView`, `debugLaunch` and `_writes` getters.
+        // Created by the `_elfView`, `debugLaunch`, `_writes` and `_agentOps` getters.
         this._elfViewController = null;
         this._debugLaunchController = null;
         this._writeExecution = null;
+        this._agentOperations = null;
         // The connected probe list's automatic chip read (_identifyConnectedTargets).
         this._probeTargetsReading = false;
         this._probeTargetsReadFor = "";
@@ -238,11 +244,7 @@ class MainViewProvider {
             onChanged: () => this._sampling.invalidateConsumerTypes(),
             onError: (error) => console.error("Watch list unavailable:", error.message)
         });
-        this._agentReadSession = null;
-        this._agentReadCancelled = false;
         // Running variables.sample loops, so cancellation can stop them during an interval wait.
-        this._agentSampleRuns = new Set();
-        this._agentSamplingStatus = null;
         this._debugBridge = new DebugSessionBridge({
             getReadPlan: () => this._sampling.activeReadPlan(),
             getRamSectionRanges: () => writableRamSectionRanges(this.readElfSymbols().memory?.sections),
@@ -539,9 +541,6 @@ class MainViewProvider {
     get _chipInfoRunning() {
         return this._probeCoordinator?.isActive("chipInfo") ?? false;
     }
-    get _agentReadRunning() {
-        return this._probeCoordinator?.isActive("agentRead") ?? false;
-    }
     // Current UI language (Simplified Chinese/English), switched from the sidebar or live panel title button and
     // persisted in global state
     _t(key, params) {
@@ -759,7 +758,7 @@ class MainViewProvider {
             keys.some((key) => Object.hasOwn(values, key)) &&
             (this._sampling.session ||
                 this.debugLaunch.managedServer ||
-                this._agentReadSession ||
+                this._agentOps.readSession ||
                 this._debugBridge.hasAnySession)
         )
             throw Object.assign(new Error("Stop the active probe session before changing connection settings"), {
@@ -776,11 +775,11 @@ class MainViewProvider {
     connectionConfigurationChanged(samplingSpeedChanged = false, samplingSpeedOnly = false) {
         this._probeConnectionService.markConfigurationChanged(
             samplingSpeedOnly
-                ? [this._sampling.session, this._agentReadSession].filter(Boolean)
+                ? [this._sampling.session, this._agentOps.readSession].filter(Boolean)
                 : [
                       this._sampling.session,
                       this.debugLaunch.managedServer,
-                      this._agentReadSession,
+                      this._agentOps.readSession,
                       this._debugBridge.activeSession
                   ]
         );
@@ -793,318 +792,8 @@ class MainViewProvider {
         if (samplingSpeedChanged && this._sampling.session)
             void this._sampling.restart().catch((error) => this._postLive({ type: "liveError", ...toUiError(error) }));
     }
-    _executeAgentCubeMx(params) {
-        return vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                title: this._t("cubemx.generating"),
-                cancellable: true
-            },
-            async (progress, token) => {
-                const controller = new AbortController();
-                const subscription = token.onCancellationRequested(() => controller.abort());
-                progress.report({ message: this._t("cubemx.generating") });
-                try {
-                    return await this._cubemxService.execute(params || {}, controller.signal, (stage) =>
-                        progress.report({ message: this._t("cubemx." + stage) })
-                    );
-                } finally {
-                    subscription.dispose();
-                }
-            }
-        );
-    }
-    async _setAgentConfiguration(values) {
-        // openocdPath could point probe calls at any executable, so the Agent Bridge may not change it; the user
-        // changes it in settings or the sidebar
-        assertAgentSettable(values);
-        const updated = await this._configurationStore.update(values);
-        if (Object.hasOwn(values || {}, "svd")) {
-            const folder = this._svdManager.workspaceForElf();
-            if (folder) {
-                if (updated.svd)
-                    await this._svdManager.importAndBind(updated.svd, folder, this._svdManager.identityFor(folder), {
-                        source: "agent-workspace",
-                        originalPath: updated.svd
-                    });
-                else await this._svdManager.library.bind(folder.uri, "");
-            }
-        }
-        return this._configurationSnapshot();
-    }
     _focusedLivePanel() {
         return selectFocusedPanel(this._livePanels);
-    }
-    async _exportAgentCsv(params) {
-        const requestedPanelId = params.panelId === undefined ? null : Number(params.panelId);
-        const entry = requestedPanelId === null ? this._focusedLivePanel() : this._livePanels.get(requestedPanelId);
-        if (!entry || !entry.ready) {
-            throw Object.assign(new Error("Open a Live Watch chart panel before exporting its history"), {
-                code: "LIVE_PANEL_NOT_OPEN"
-            });
-        }
-        const names = Array.isArray(params.variables)
-            ? Array.from(new Set(params.variables.map((value) => String(value || "").trim()).filter(Boolean)))
-            : [];
-        const from = params.from === undefined ? undefined : Number(params.from);
-        const to = params.to === undefined ? Date.now() : Number(params.to);
-        if (
-            (from !== undefined && !Number.isFinite(from)) ||
-            !Number.isFinite(to) ||
-            (from !== undefined && from > to)
-        ) {
-            throw Object.assign(new Error("CSV export time range is invalid"), { code: "INVALID_CSV_RANGE" });
-        }
-        const scope = this._debugSamplingScope(entry.watchKey);
-        const available = this._samplingArchive.status(scope).variables;
-        if (!available.length) {
-            throw Object.assign(new Error("The selected chart has no sampled series"), { code: "CSV_EXPORT_EMPTY" });
-        }
-        const selected = names.length
-            ? names.flatMap((name) =>
-                  available.filter((recorded) => recorded === name || recorded.startsWith(`${name} [`))
-              )
-            : available;
-        const missing = names.filter(
-            (name) => !available.some((recorded) => recorded === name || recorded.startsWith(`${name} [`))
-        );
-        if (missing.length) {
-            throw Object.assign(new Error(`Chart series not found: ${missing.join(", ")}`), {
-                code: "CSV_SERIES_NOT_FOUND",
-                details: { missing }
-            });
-        }
-        const result = await this._samplingArchive.readCsv({
-            scope,
-            names: [...new Set(selected)],
-            fromMs: from,
-            toMs: to
-        });
-        return {
-            panelId: entry.panelId,
-            names: [...new Set(selected)],
-            from: result.firstValueTimestampMs,
-            to: result.lastValueTimestampMs,
-            seriesCount: result.seriesCount,
-            rowCount: result.rows,
-            // The archive stops recording once it hits its size cap while the chart keeps drawing, so
-            // an Agent must be told the CSV covers less than the session it asked about.
-            historyTruncated: result.limitReached === true,
-            csv: result.csv
-        };
-    }
-    async _addAgentWatch(params) {
-        const names = Array.isArray(params.variables) ? params.variables.map(String) : [];
-        if (!names.length) throw Object.assign(new Error("No variables supplied"), { code: "NO_VARIABLES" });
-        const destination = params.destination || "sidebar";
-        if (!["sidebar", "chart", "both"].includes(destination))
-            throw Object.assign(new Error("destination must be sidebar, chart, or both"), {
-                code: "INVALID_DESTINATION"
-            });
-        await this._elfView.prepareLayouts(names);
-        const resolveSymbol = elfSymbols.createSymbolResolver(this.readElfSymbols().symbols);
-        const resolved = [];
-        const resolvedNames = new Set();
-        // Requested base name -> raw ELF name, for requests that matched a display name.
-        const aliases = {};
-        const appendResolved = (item) => {
-            if (!resolvedNames.has(item.name)) {
-                resolvedNames.add(item.name);
-                resolved.push(item);
-            }
-        };
-        for (const rawName of names) {
-            // Supports path syntax: sensor.x, buf[0], buf[1:5]
-            const parsed = elfSymbols.parseMemberPath(rawName);
-            const baseName = parsed ? parsed.base : rawName;
-            // A bare name defined in several compilation units throws VARIABLE_AMBIGUOUS; the first match is never
-            // added to the watch list.
-            const symbol = resolveSymbol(baseName, rawName);
-            if (symbol.name !== baseName) aliases[baseName] = symbol.name;
-            // Watch lists persist raw ELF identities; normalizeWatchList does not resolve
-            // display names, so a requested `ep7` must be stored as `_ZL3ep7`.
-            const rawPath = parsed ? symbol.name + rawName.trim().slice(baseName.length) : symbol.name;
-            const expanded = elfSymbols.expandedStaticLeaves(symbol, parsed);
-            if (expanded.length) {
-                for (const leaf of expanded) appendResolved({ ...leaf, name: leaf.path });
-                continue;
-            }
-            const runtime = require("./services/runtimeWatch").runtimeWatchEntry(
-                rawPath,
-                symbol,
-                parsed?.segments || []
-            );
-            if (runtime) {
-                appendResolved(runtime);
-                continue;
-            }
-            if (require("./webview/runtime").requiresRuntimePath(symbol, parsed?.segments || []))
-                throw Object.assign(new Error(`Invalid runtime member path: ${rawName}`), {
-                    code: "INVALID_VARIABLE_PATH"
-                });
-            if (symbol.isComposite) {
-                if (!symbol.compositeLayout)
-                    throw Object.assign(new Error(`Composite variable has no DWARF layout: ${rawName}`), {
-                        code: "UNSUPPORTED_VARIABLE"
-                    });
-                if (parsed && parsed.segments.length) {
-                    const leaves = elfSymbols.expandCompositeLeaves(symbol, symbol.compositeLayout, parsed);
-                    if (!leaves.length)
-                        throw Object.assign(new Error(`Invalid composite member path: ${rawName}`), {
-                            code: "INVALID_VARIABLE_PATH"
-                        });
-                    for (const leaf of leaves) {
-                        appendResolved({
-                            name: leaf.path,
-                            address: leaf.address,
-                            size: leaf.size,
-                            type: leaf.type,
-                            ...(Number.isInteger(leaf.bitSize)
-                                ? { bitSize: leaf.bitSize, bitOffset: leaf.bitOffset }
-                                : {})
-                        });
-                    }
-                } else {
-                    appendResolved({
-                        name: symbol.name,
-                        address: symbol.address,
-                        size: symbol.size,
-                        type: "",
-                        isComposite: true,
-                        compositeLayout: symbol.compositeLayout
-                    });
-                }
-            } else {
-                if (!symbol.watchType)
-                    throw Object.assign(new Error(`Variable is not a supported scalar: ${rawName}`), {
-                        code: "UNSUPPORTED_VARIABLE"
-                    });
-                appendResolved({
-                    name: symbol.name,
-                    address: symbol.address,
-                    size: symbol.size,
-                    type: params.types?.[baseName] || symbol.watchType
-                });
-            }
-        }
-        // `added` and `alreadyPresent` report the stored raw identities; `resolvedNames`
-        // maps each display-name request back to the raw name it was saved under.
-        const results = Object.keys(aliases).length ? { resolvedNames: aliases } : {};
-        const addTo = async (key, target) => {
-            const current = this._scalarWatchList(key);
-            const existing = new Set(current.map((item) => item.name));
-            const added = resolved.filter((item) => !existing.has(item.name));
-            await this._saveWatchList(key, current.concat(added));
-            results[target] = {
-                added: added.map((item) => item.name),
-                alreadyPresent: resolved.filter((item) => existing.has(item.name)).map((item) => item.name)
-            };
-        };
-        const focusedPanel = this._focusedLivePanel();
-        const chartKey = focusedPanel?.watchKey || CACHE_KEYS.watchList;
-        if (destination === "sidebar" || destination === "both") await addTo(CACHE_KEYS.sidebarWatchList, "sidebar");
-        if (destination === "chart" || destination === "both") await addTo(chartKey, "chart");
-        return results;
-    }
-    // Plans each item separately: a resolution or layout failure of one variable goes to variableErrors without
-    // affecting the rest of the batch. If all fail, the first error is thrown (keeping the error code of a
-    // single-variable request), with details.variableErrors when several failed.
-    _postAgentSampling(running, key, params) {
-        this._agentSamplingStatus = running ? { running, key, params, agentOwned: true } : null;
-        this._postLive({ type: "liveStatus", running, key, params, agentOwned: running });
-    }
-    // Each wait owns its timer: reads sharing a live or debug connection run concurrently, and a
-    // shared timer let one wait clear another's, leaving that sample loop pending forever.
-    // `run` is the sample loop's entry in _agentSampleRuns; cancelling the run ends its wait early.
-    _waitAgentInterval(intervalMs, run = null) {
-        return new Promise((resolve) => {
-            let timer = null;
-            const finish = () => {
-                clearTimeout(timer);
-                if (run?.wake === finish) run.wake = null;
-                resolve(undefined);
-            };
-            if (run) run.wake = finish;
-            timer = setTimeout(finish, intervalMs);
-        });
-    }
-    _wakeAgentReadDelays() {
-        for (const run of [...(this._agentSampleRuns || [])]) if (run.temporary) run.wake?.();
-    }
-    // sampling.stop must also end samples on a connection the Agent read borrows (live sampling or a
-    // running/paused debug server), not only its own temporary probe session.
-    _cancelSharedAgentSamples() {
-        for (const run of [...(this._agentSampleRuns || [])]) {
-            if (run.temporary) continue;
-            run.cancelled = true;
-            run.wake?.();
-        }
-    }
-    async _runAgentSamples(params, count, intervalMs, syncStatus) {
-        const layoutErrors = new Map();
-        await this._elfView.prepareLayouts(params.variables, { layoutErrors });
-        const { elfResult, plan, compositePlan, variableErrors } = agentPlans.readPlan(
-            params,
-            () => this.readElfSymbols(),
-            layoutErrors
-        );
-        // Merges the actual reads of scalar and composite variables: each composite is read once by base address
-        // (deduplicated by name) and navigated per path while decoding, so one struct is not read repeatedly.
-        const readItems = [];
-        const seenRead = new Set();
-        for (const item of plan) {
-            if (!seenRead.has(item.name)) {
-                seenRead.add(item.name);
-                readItems.push({ name: item.name, address: item.address, size: item.size });
-            }
-        }
-        for (const comp of compositePlan) {
-            if (!seenRead.has(comp.name)) {
-                seenRead.add(comp.name);
-                readItems.push(
-                    comp.runtimeLayout ? { ...comp } : { name: comp.name, address: comp.address, size: comp.size }
-                );
-            }
-        }
-
-        return this._withAgentProbe(
-            async ({ session, source, temporary }) => {
-                if (temporary && syncStatus)
-                    this._postAgentSampling(true, "live.agentSampling", { current: 0, total: count });
-                const result = [];
-                const effectiveIntervalMs = intervalMs;
-                const run = { temporary, cancelled: false, wake: null };
-                (this._agentSampleRuns ??= new Set()).add(run);
-                try {
-                    for (let index = 0; index < count; index++) {
-                        if ((temporary && !this._agentReadRunning) || run.cancelled)
-                            throw Object.assign(new Error("Agent sampling was cancelled by the user"), {
-                                code: "AGENT_READ_CANCELLED"
-                            });
-                        result.push(
-                            agentPlans.decodeSample(
-                                plan,
-                                await session.readOnce(this._sampling.runtimeReadRanges(readItems, elfResult)),
-                                compositePlan
-                            )
-                        );
-                        if (temporary && syncStatus)
-                            this._postAgentSampling(true, "live.agentSampling", { current: index + 1, total: count });
-                        if (index + 1 < count) await this._waitAgentInterval(effectiveIntervalMs, run);
-                    }
-                } finally {
-                    this._agentSampleRuns.delete(run);
-                }
-                return {
-                    source,
-                    elf: elfResult.elf,
-                    ...this._writes.firmwareConsistency(elfResult),
-                    samples: result,
-                    ...(variableErrors.length ? { partial: true, variableErrors } : {})
-                };
-            },
-            { syncStatus, total: count, allowPausedDebugRead: true }
-        );
     }
     // Acquires an agent probe session: reuses the active sampling connection or creates a temporary session;
     // handler({session, source, temporary}) performs the reads/writes, and a temporary session is always released in
@@ -1164,266 +853,6 @@ class MainViewProvider {
             this._configureChartHistory(entry);
         }
     }
-    async _withAgentProbe(handler, options = {}) {
-        if (this._debugBridge.replBusy)
-            throw Object.assign(new Error("Wait for the GDB console command before inspecting memory"), {
-                code: "DEBUG_CONTROL_BUSY"
-            });
-        if (this._sampling.closing || this._sampling.exitUnconfirmed)
-            throw Object.assign(new Error("The previous probe connection has not closed"), {
-                code: "PROBE_EXIT_UNCONFIRMED"
-            });
-        const syncStatus = !!options.syncStatus;
-        const total = options.total || 0;
-        // If the UI is starting sampling, wait briefly for it to connect and then reuse the same Tcl session.
-        const liveDeadline = Date.now() + 7000;
-        while (this._sampling.starting && Date.now() < liveDeadline) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-
-        let operationLease = null;
-        let session = this._sampling.running ? this._sampling.session : null;
-        let temporary = false;
-        let source = "active-sampling";
-        if (!session && options.allowPausedDebugRead) {
-            session = selectPausedDebugReadSession(this._debugBridge);
-            if (session) {
-                this._writes.assertGroupedReadElf();
-                source = "debug-session";
-            } else if (
-                this.debugLaunch.managedServer &&
-                this.debugLaunch.managedSessionId &&
-                this._debugBridge.agentStatus().state === "running"
-            ) {
-                const managed = this.debugLaunch.managedServer;
-                if (managed.capabilities?.runtimeRead === false)
-                    throw Object.assign(new Error("Pause the selected core before reading multicore memory"), {
-                        code: "DEBUG_RUNTIME_READ_UNSUPPORTED"
-                    });
-                session = {
-                    readOnce: async (items) => {
-                        const plan = this._sampling.runtimeRamPlan(items, true);
-                        const epoch = this._debugBridge.stopEpoch;
-                        const samples = await managed.readOnce(plan.allowed);
-                        if (
-                            this._debugBridge.stopEpoch !== epoch ||
-                            this._debugBridge.agentStatus().state !== "running"
-                        ) {
-                            throw Object.assign(new Error("Debug target state changed during the runtime read"), {
-                                code: "DEBUG_STATE_CHANGED",
-                                retryable: true
-                            });
-                        }
-                        return samples;
-                    }
-                };
-                source = "debug-running-openocd";
-            }
-        }
-        if (!session) {
-            if (this._agentReadRunning)
-                throw Object.assign(new Error("Another Agent variable read is in progress"), {
-                    code: "AGENT_READ_BUSY"
-                });
-            if (
-                this._downloadRunning ||
-                this._chipInfoRunning ||
-                this.debugLaunch.starting ||
-                this.debugLaunch.liveSession()
-            ) {
-                throw Object.assign(new Error("The debug probe is busy with another operation"), {
-                    code: "PROBE_BUSY",
-                    details: {
-                        activeOperation:
-                            this.debugLaunch.starting || this.debugLaunch.liveSession() ? "debug" : "probe",
-                        debugState: this._debugBridge.agentStatus().state
-                    }
-                });
-            }
-            operationLease = this._probeCoordinator.acquire("agentRead");
-            this._agentReadLease = operationLease;
-            this._agentReadCancelled = false;
-            let prepared;
-            const preparation = new Promise((resolve) => {
-                prepared = resolve;
-            });
-            this._agentReadPreparationPromise = preparation;
-            const assertActive = () => {
-                if (operationLease.released || this._agentReadCancelled || this._agentReadLease !== operationLease)
-                    throw Object.assign(new Error("Agent variable read was cancelled"), {
-                        code: "AGENT_READ_CANCELLED"
-                    });
-            };
-            try {
-                const debuggerCfg =
-                    this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-                    (await this._probeConnectionService.resolveProbe());
-                const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-                assertActive();
-                if (!debuggerCfg || !mcuCore) {
-                    throw Object.assign(new Error(this._t("live.needConfig")), {
-                        code: "CONFIG_INCOMPLETE",
-                        i18nKey: "live.needConfig"
-                    });
-                }
-                const cfg = vscode.workspace.getConfiguration("emberprobe");
-                const executable = await this._resolveOpenOcdPath(cfg.get("openocdPath", "openocd"));
-                assertActive();
-                if (!executable) {
-                    throw Object.assign(new Error(this._t("live.notReady")), {
-                        code: "OPENOCD_NOT_READY",
-                        i18nKey: "live.notReady"
-                    });
-                }
-                if (operationLease.released || this._agentReadCancelled)
-                    throw Object.assign(new Error("Agent variable read was cancelled"), {
-                        code: "AGENT_READ_CANCELLED"
-                    });
-                const { cwd } = this._commandContext();
-                const connection = await this._probeConnectionService.prepare({
-                    executable,
-                    probe: debuggerCfg,
-                    target: mcuCore,
-                    sampling: true
-                });
-                assertActive();
-                const port = await this._resolveTclPort(cfg);
-                assertActive();
-                session = new liveWatch.LiveWatchSession(
-                    vscode,
-                    {
-                        executable,
-                        isolated: true,
-                        transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
-                        probe: debuggerCfg,
-                        target: mcuCore,
-                        ...connection,
-                        cwd,
-                        port,
-                        intervalMs: 10000
-                    },
-                    {
-                        onConnectionConfirmed: () => {
-                            if (!operationLease.released && this._agentReadSession === session)
-                                void this._probeConnectionService.recordSuccess(session.options);
-                        }
-                    }
-                );
-                if (operationLease.released)
-                    throw Object.assign(new Error("Agent variable read was cancelled"), {
-                        code: "AGENT_READ_CANCELLED"
-                    });
-                this._agentReadSession = session;
-                temporary = true;
-                source = "temporary-probe";
-            } catch (error) {
-                operationLease?.release();
-                throw error;
-            } finally {
-                prepared();
-                if (this._agentReadPreparationPromise === preparation) this._agentReadPreparationPromise = null;
-            }
-        }
-
-        let completed = false;
-        try {
-            if (temporary) {
-                if (syncStatus) this._postAgentSampling(true, "live.agentStarting", { total });
-                if (this._agentReadCancelled || operationLease.released || this._agentReadSession !== session)
-                    throw Object.assign(new Error("Agent variable read was cancelled"), {
-                        code: "AGENT_READ_CANCELLED"
-                    });
-                await session.start();
-                if (operationLease.released || this._agentReadCancelled || this._agentReadSession !== session)
-                    throw Object.assign(new Error("Agent variable read was cancelled"), {
-                        code: "AGENT_READ_CANCELLED"
-                    });
-            }
-            const result = await handler({ session, source, temporary });
-            completed = true;
-            return result;
-        } finally {
-            if (temporary) {
-                await this._confirmAgentExit(session);
-                if (this._agentReadSession === session) this._agentReadSession = null;
-                operationLease?.release();
-                if (this._agentReadLease === operationLease) this._wakeAgentReadDelays();
-                if (syncStatus && this._agentReadLease === operationLease) {
-                    const key = this._agentReadCancelled
-                        ? "live.agentStopped"
-                        : completed
-                          ? "live.agentDone"
-                          : "live.agentFailed";
-                    this._postAgentSampling(false, key, { total });
-                }
-                if (this._agentReadLease === operationLease) this._agentReadCancelled = false;
-            }
-        }
-    }
-    async _confirmAgentExit(session) {
-        if ((await session.stop()) === false)
-            throw Object.assign(new Error("OpenOCD exit has not been confirmed"), { code: "PROBE_EXIT_UNCONFIRMED" });
-    }
-    async _readAgentVariables(params) {
-        const result = await this._runAgentSamples(params, 1, 0, false);
-        return {
-            source: result.source,
-            elf: result.elf,
-            firmwareConsistency: result.firmwareConsistency,
-            ...(result.warnings ? { warnings: result.warnings } : {}),
-            ...result.samples[0],
-            ...(result.variableErrors ? { partial: true, variableErrors: result.variableErrors } : {})
-        };
-    }
-    async _sampleAgentVariables(params) {
-        const count = validation.clampInteger(params.count, 10, 2, 1000);
-        const intervalMs = validation.clampInteger(params.intervalMs, 200, 5, 60000);
-        return this._runAgentSamples(params, count, intervalMs, true);
-    }
-    // Reads and decodes the Cortex-M fault registers; shares the _chipInfoRunning lock with chip.read (only one
-    // one-shot OpenOCD process at a time)
-    async _readAgentFault() {
-        const busy = (key, code) => {
-            throw Object.assign(new Error(this._t(key)), { i18nKey: key, code });
-        };
-        if (this._chipInfoRunning) busy("chip.reading", "CHIP_READ_RUNNING");
-        if (this._downloadRunning) busy("chip.busyDownload", "PROBE_BUSY");
-        if (this._sampling.running) busy("chip.busyLive", "PROBE_BUSY");
-        if (this._agentReadRunning) busy("chip.busyAgent", "PROBE_BUSY");
-        if (this.debugLaunch.starting || this.debugLaunch.liveSession()) busy("chip.busyDebug", "PROBE_BUSY");
-        const elfLoad = this._elfService.load().catch(() => null);
-        const debuggerCfg =
-            this._context.workspaceState.get(CACHE_KEYS.debugger) ||
-            (await this._probeConnectionService.resolveProbe());
-        const mcuCore = this._context.workspaceState.get(CACHE_KEYS.mcuCore);
-        if (!debuggerCfg || !mcuCore) busy("chip.needConfig", "CONFIG_INCOMPLETE");
-        this._chipInfoLease = this._probeCoordinator.acquire("chipInfo");
-        try {
-            const executable = await this._resolveOpenOcdPath(
-                vscode.workspace.getConfiguration("emberprobe").get("openocdPath", "openocd")
-            );
-            if (!executable) busy("chip.notReady", "OPENOCD_NOT_READY");
-            const { cwd } = this._commandContext();
-            await elfLoad;
-            return await this._faultService.read(
-                {
-                    executable,
-                    transport: vscode.workspace.getConfiguration("emberprobe").get("transport", "auto"),
-                    probe: debuggerCfg,
-                    target: mcuCore,
-                    ...(await this._probeConnectionService.prepare({
-                        executable,
-                        probe: debuggerCfg,
-                        target: mcuCore
-                    })),
-                    cwd
-                },
-                () => this.readElfSymbols().functions || []
-            );
-        } finally {
-            this._chipInfoLease?.release();
-        }
-    }
     // Agent and sidebar share one memory analysis backend.
     _getMemoryAnalysisController() {
         if (!this._memoryAnalysisController) {
@@ -1440,9 +869,6 @@ class MainViewProvider {
     async _analyzeElf(params = {}) {
         return this._getMemoryAnalysisController().service.analyze(params);
     }
-    async _handleAgentCall(method, params) {
-        return this._agentService.call(method, params);
-    }
     async stopAgentBridge() {
         return this._agentService.stop();
     }
@@ -1452,23 +878,17 @@ class MainViewProvider {
         return value === "enabled" || value === "disabled" ? value : undefined;
     }
     _agentAccessDecision(status) {
-        if (!vscode.workspace.isTrusted) return { enabled: false, state: "untrusted" };
-        const access = this._agentAccess();
-        if (access === "disabled") return { enabled: false, state: "disabled" };
-        if (access === "enabled") return { enabled: true, reason: "access" };
-        // Compatibility: with workspace skills installed and no explicit setting, access counts as enabled.
-        if (hasWorkspaceSkills(status)) return { enabled: true, reason: "skills" };
-        if (this._mcpBridgeRequested) return { enabled: true, reason: "mcp" };
-        return { enabled: false, state: "disabled" };
+        return agentAccessDecision({
+            trusted: !!vscode.workspace.isTrusted,
+            access: this._agentAccess(),
+            skills: hasWorkspaceSkills(status),
+            mcpRequested: !!this._mcpBridgeRequested
+        });
     }
     async _syncAgentBridge(status = this._skillStatusService.lastStatus) {
         const decision = this._agentAccessDecision(status);
         try {
-            if (!decision.enabled) {
-                this._agentService.accessState = decision.state;
-                return await this.stopAgentBridge();
-            }
-            return await this._agentService.start({ legacyPointer: hasWorkspaceSkills(status) });
+            return await this._agentService.sync(decision, { legacyPointer: hasWorkspaceSkills(status) });
         } finally {
             this._postAgentAccess(status, decision);
             this._mcpRegistration?.syncCursor();
@@ -1570,35 +990,6 @@ class MainViewProvider {
     // approval, which expires when the content changes again.
     async _warnIfSkillsModified(meta) {
         await this._skillStatusService.checkForCall(meta);
-    }
-    // Background generation has no withProgress window of its own (the Bridge call returns an operationId immediately),
-    // so a cancellable notification is attached to the running operation, reusing the existing progress and cancel
-    // handling
-    _startAgentCubeMxOperation(params) {
-        return this._cubemxService.start(params).then((started) => {
-            if (started?.operationId) this._showAgentCubeMxProgress(started.operationId);
-            return started;
-        });
-    }
-    _showAgentCubeMxProgress(operationId) {
-        const execution = this._cubemxService.activeExecutions.get(operationId);
-        if (!execution) return;
-        vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                title: this._t("cubemx.generating"),
-                cancellable: true
-            },
-            async (progress, token) => {
-                progress.report({ message: this._t("cubemx.generating") });
-                const subscription = token.onCancellationRequested(() => this._cubemxService.cancel({ operationId }));
-                try {
-                    await execution;
-                } finally {
-                    subscription.dispose();
-                }
-            }
-        );
     }
     // Agent Skills workspace install switch
     async manageAgentSkills() {
@@ -2348,39 +1739,6 @@ class MainViewProvider {
             remainingSeconds: archive.limitReached ? 0 : bytesPerSecond > 0 ? free / bytesPerSecond : null
         };
     }
-
-    /** @param {{ intervalMs?: number }} params */
-    async _controlAgentSampling(action, params = {}) {
-        if (
-            !params ||
-            typeof params !== "object" ||
-            Array.isArray(params) ||
-            Object.keys(params).some((key) => action !== "start" || key !== "intervalMs") ||
-            (params.intervalMs !== undefined &&
-                (!Number.isInteger(params.intervalMs) || params.intervalMs < 5 || params.intervalMs > 10000))
-        ) {
-            throw Object.assign(new Error("Sampling accepts only an integer intervalMs from 5 to 10000 on start"), {
-                code: "INVALID_PARAMS"
-            });
-        }
-        if (action === "start") {
-            // Use the same watch union, probe ownership and UI notifications as the sidebar.
-            await this._sampling.start(undefined, params.intervalMs ?? this._sampling.intervalMs, "sidebar", false);
-        } else if (action === "stop") {
-            // Cancel Agent samples (temporary or on a borrowed connection) as well as persistent sampling;
-            // leave debugging active.
-            this._cancelSharedAgentSamples();
-            const agentStopped = this.stopAgentReadIfRunning();
-            const liveStopped = this._sampling.stop({ variablesOnly: true });
-            await Promise.all([agentStopped, liveStopped]);
-        }
-        return {
-            ...this._sampling.status(),
-            starting: this._sampling.starting,
-            intervalMs: this._sampling.intervalMs
-        };
-    }
-
     _postProbeOperationStatus() {
         this._webviewView?.webview.postMessage({
             type: "probeOperationStatus",
@@ -2409,8 +1767,8 @@ class MainViewProvider {
             this._probeCoordinator?.close();
             this._agentService?.close();
             await this._agentService?.stop().catch(() => {});
-            this._cancelSharedAgentSamples();
-            const agentStopped = this.stopAgentReadIfRunning();
+            this._agentOps._cancelSharedSamples();
+            const agentStopped = this._agentOps.stopReadIfRunning();
             // An unconfirmed OpenOCD exit is logged; the rest of the cleanup must still run.
             if (agentStopped) await agentStopped.catch((error) => console.error("Agent read cleanup failed:", error));
             this.debugLaunch.clearStartupWatchdog();
@@ -2447,23 +1805,6 @@ class MainViewProvider {
             await this._agentService.dispose().catch(() => {});
         })();
         return this._shutdownPromise;
-    }
-    stopAgentReadIfRunning() {
-        if (!this._agentReadRunning && !this._agentReadSession) return null;
-        this._agentReadCancelled = true;
-        this._wakeAgentReadDelays();
-        this._postAgentSampling(false, "live.agentStopped");
-        const session = this._agentReadSession;
-        const lease = this._agentReadLease;
-        if (!session) return this._agentReadPreparationPromise || null;
-        return Promise.resolve(session.stop()).then((closed) => {
-            if (closed === false)
-                throw Object.assign(new Error("OpenOCD exit has not been confirmed"), {
-                    code: "PROBE_EXIT_UNCONFIRMED"
-                });
-            if (this._agentReadSession === session) this._agentReadSession = null;
-            lease?.release();
-        });
     }
     // Pushes chip info state and the optional result to the sidebar
     _postChipInfo(status, info) {

@@ -58,7 +58,7 @@ const { scenario } = require("./helpers/scenario");
             assert.match(fs.readFileSync(outputPath, "utf8"), /time,value \[i32\]\r\n.*?,1065353216\r\n$/);
             p._livePanels.set(1, { ...entry, panelId: 1, focusOrder: 1 });
             for (let i = 0; i < 2201; i++) archive.append([{ name: "value [u32]", value: i }], 3000 + i * 5, "graph");
-            const agentCsv = await p._exportAgentCsv({ panelId: 1, variables: ["value"], from: 1000, to: 20000 });
+            const agentCsv = await p._agentOps.exportCsv({ panelId: 1, variables: ["value"], from: 1000, to: 20000 });
             assert.equal(
                 agentCsv.rowCount,
                 2203,
@@ -70,10 +70,10 @@ const { scenario } = require("./helpers/scenario");
             assert.equal(agentCsv.historyTruncated, false, "an archive below its size cap must not claim truncation");
             assert.match(agentCsv.csv, /1970-01-01T00:00:01.000Z,1,/);
             assert.match(agentCsv.csv, /1970-01-01T00:00:14.000Z,,2200/);
-            await assert.rejects(p._exportAgentCsv({ panelId: 1, variables: ["missing"] }), {
+            await assert.rejects(p._agentOps.exportCsv({ panelId: 1, variables: ["missing"] }), {
                 code: "CSV_SERIES_NOT_FOUND"
             });
-            await assert.rejects(p._exportAgentCsv({ panelId: 1, variables: ["value"], from: 25000, to: 26000 }), {
+            await assert.rejects(p._agentOps.exportCsv({ panelId: 1, variables: ["value"], from: 25000, to: 26000 }), {
                 code: "CSV_EXPORT_EMPTY"
             });
         } finally {

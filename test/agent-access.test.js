@@ -6,6 +6,7 @@ const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
 const { loadProvider } = require("./helpers/load-provider");
+const { AgentService } = require("../src/services/agentService");
 
 const vscode = { workspace: { isTrusted: true, workspaceFolders: [] }, window: {} };
 const P = loadProvider(vscode);
@@ -30,13 +31,14 @@ function createProvider(status) {
             scopeHasContent: (scope) => !!scope && scope.state !== "notInstalled",
             manage: async () => provider._skillStatusService.lastStatus
         },
-        _agentService: {
+        // The real sync decides between start and stop; only the Bridge lifecycle is stubbed.
+        _agentService: Object.assign(Object.create(AgentService.prototype), {
             accessState: "",
             start: async (options) => events.starts.push(options),
             stop: async () => {
                 events.stops++;
             }
-        },
+        }),
         _webviewView: { webview: { postMessage: (message) => events.posts.push(message) } }
     });
     return { provider, state, events };

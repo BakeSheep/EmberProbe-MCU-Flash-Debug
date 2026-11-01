@@ -706,7 +706,7 @@ class LiveWatchController {
             bridge: this.host._debugBridge,
             standaloneRunning: this.running,
             managedServer: this.host.debugLaunch.managedServer,
-            agentStatus: this.host._agentSamplingStatus
+            agentStatus: this.host._agentOps._samplingStatus
         });
         if (this.closing || this.exitUnconfirmed) {
             Object.assign(status, {
@@ -854,7 +854,7 @@ class LiveWatchController {
             throw Object.assign(new Error(this.host._t("live.downloadRunning")), { i18nKey: "live.downloadRunning" });
         if (this.host._chipInfoRunning)
             throw Object.assign(new Error(this.host._t("live.chipReading")), { i18nKey: "live.chipReading" });
-        if (this.host._agentReadRunning)
+        if (this.host._agentOps.readRunning)
             throw Object.assign(new Error(this.host._t("live.agentReading")), { i18nKey: "live.agentReading" });
         if (this.starting) throw Object.assign(new Error(this.host._t("live.starting")), { i18nKey: "live.starting" });
         const debuggerCfg =

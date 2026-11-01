@@ -111,7 +111,7 @@ const { readPlan, writePlan, decodeSample } = require("../src/services/agentPlan
     rawProvider._saveWatchList = async (_key, items) => {
         addedStatic = normalizeWatchList(items, [f.symbol]);
     };
-    const added = await rawProvider._addAgentWatch({ variables: [gain] });
+    const added = await rawProvider._agentOps.addWatch({ variables: [gain] });
     assert.deepStrictEqual(added.sidebar.added, [gain]);
     assert.strictEqual(addedStatic[0].address, leaf.address);
     assert.strictEqual(addedStatic[0].staticRuntimeStorage, true);

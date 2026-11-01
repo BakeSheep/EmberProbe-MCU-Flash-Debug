@@ -132,7 +132,7 @@ function segments(name) {
                 decoded.values[name].tree.elements.map((node) => node.value),
                 values
             );
-            const result = await provider._addAgentWatch({ variables: [name] });
+            const result = await provider._agentOps.addWatch({ variables: [name] });
             assert.strictEqual(result.sidebar.added.length, values.length);
             assert.strictEqual(normalizeWatchList(saved, [packet]).length, values.length);
         }

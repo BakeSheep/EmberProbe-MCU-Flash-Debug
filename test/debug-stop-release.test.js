@@ -112,7 +112,7 @@ function track(promise) {
         p._context = { workspaceState: { get: () => undefined } };
         p._probeConnectionService = { resolveProbe: async () => null };
         await assert.rejects(
-            p._withAgentProbe(async () => "read"),
+            p._agentOps.withProbe(async () => "read"),
             (error) => error.code === "CONFIG_INCOMPLETE"
         );
         assert.strictEqual(coordinator.anyActive(), false, "the Agent read lease was released");
@@ -146,7 +146,7 @@ function track(promise) {
         async () => {
             const { p, coordinator, server, service, vscodeDebug, finishStop } = setup();
             p._assertProbeDriverIdle = () => {};
-            p.stopAgentReadIfRunning = () => null;
+            p._agentOps.stopReadIfRunning = () => null;
             const stopping = service.control({ action: "stop" });
             await ticks();
             const terminating = vscodeDebug.terminating;

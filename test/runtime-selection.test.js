@@ -54,7 +54,7 @@ function openVariables(view, sidebar, symbols, version = "selection") {
                 assert.throws(() => readPlan({ variables: [leaf.path] }, () => provider.readElfSymbols()), {
                     code: "INVALID_VARIABLE_PATH"
                 });
-                await assert.rejects(provider._addAgentWatch({ variables: [leaf.path] }), {
+                await assert.rejects(provider._agentOps.addWatch({ variables: [leaf.path] }), {
                     code: "INVALID_VARIABLE_PATH"
                 });
                 assert.throws(() => writePlan([{ name: leaf.path, value: 1 }], () => provider.readElfSymbols()), {

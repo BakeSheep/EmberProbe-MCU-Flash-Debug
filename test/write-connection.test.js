@@ -198,8 +198,10 @@ const { writePlan } = require("../src/services/agentPlans");
         _livePanels: new Map(),
         _elfService: { invalidate() {} },
         readElfSymbols: () => runtimeElf,
-        _t: (key) => key,
-        _withAgentProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
+        _t: (key) => key
+    });
+    Object.assign(runtimeProvider._agentOps, {
+        withProbe: () => assert.fail("running writes must reuse the managed OpenOCD session")
     });
     Object.assign(runtimeProvider._writes, {
         sessionConnection: () => verifyConnection,

@@ -248,7 +248,7 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
                 normalizeWatchList(items, result.symbols).map(({ name, type }) => ({ name, type }))
             );
         };
-        provider._withAgentProbe = (handler) =>
+        provider._agentOps.withProbe = (handler) =>
             handler({
                 source: "test-probe",
                 temporary: false,
@@ -263,7 +263,7 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
                     }
                 }
             });
-        const read = (variables) => provider._readAgentVariables({ variables });
+        const read = (variables) => provider._agentOps.readVariables({ variables });
         const isAmbiguous = (names) => (error) =>
             error.code === "VARIABLE_AMBIGUOUS" &&
             error.details.candidates.map((candidate) => candidate.name).join() === names.join();
@@ -291,7 +291,9 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         assert.throws(() => writePlan([{ name: "g_localConfig.mode", value: 1 }], () => provider.readElfSymbols()), {
             code: "VARIABLE_AMBIGUOUS"
         });
-        await assert.rejects(provider._addAgentWatch({ variables: ["g_localConfig"] }), { code: "VARIABLE_AMBIGUOUS" });
+        await assert.rejects(provider._agentOps.addWatch({ variables: ["g_localConfig"] }), {
+            code: "VARIABLE_AMBIGUOUS"
+        });
         assert.strictEqual(stored.size, 0, "nothing is saved for an ambiguous watch request");
 
         // Qualified names select exactly one CU, quoted or not, by file name or path suffix.
@@ -354,7 +356,7 @@ const elfOnly = elf.parseElfSymbols(buffer).symbols;
         assert.throws(() => writePlan([{ name: "b/main.c::s_counter.x", value: 5 }], () => provider.readElfSymbols()), {
             code: "INVALID_VARIABLE_PATH"
         });
-        const added = await provider._addAgentWatch({
+        const added = await provider._agentOps.addWatch({
             variables: ["'other.c'::g_localConfig.mode", "src/a/main.c::s_counter"],
             destination: "sidebar"
         });

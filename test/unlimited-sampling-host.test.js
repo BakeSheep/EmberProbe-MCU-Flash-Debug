@@ -117,7 +117,7 @@ function createProvider() {
     const properties = pkg.contributes.configuration.properties;
     assert.strictEqual(properties["emberprobe.sampleFrequencyHz"].maximum, 200);
     assert.strictEqual(properties["emberprobe.experimental.unlimitedSampling.enabled"], undefined);
-    await assert.rejects(provider._controlAgentSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
+    await assert.rejects(provider._agentOps.controlSampling("start", { intervalMs: 1 }), { code: "INVALID_PARAMS" });
 
     const graph = render(getLiveWatchContent({ panelId: 3 }, "en"));
     try {

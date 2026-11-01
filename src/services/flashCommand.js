@@ -26,7 +26,7 @@ async function runDownload(host, vscode, resource) {
         isSupportedDebugSession(host.debugLaunch.liveSession())
     )
         return warn("msg.debugBusyForDownload");
-    if (host._agentReadRunning) return warn("msg.agentReadBusy");
+    if (host._agentOps.readRunning) return warn("msg.agentReadBusy");
     if (host._chipInfoRunning) return warn("msg.chipBusyForDownload");
     if (host._sampling.starting) return warn("msg.liveBusyForDownload");
     host._notices.clear("flash", "download-busy");

@@ -102,7 +102,7 @@ function limitedMember(layout) {
             assert.throws(() => writePlan([{ name, value: 1 }], () => provider.readElfSymbols()), {
                 code: "INVALID_VARIABLE_PATH"
             });
-            await assert.rejects(provider._addAgentWatch({ variables: [name] }), { code: "INVALID_VARIABLE_PATH" });
+            await assert.rejects(provider._agentOps.addWatch({ variables: [name] }), { code: "INVALID_VARIABLE_PATH" });
         }
         assert.strictEqual(
             writePlan([{ name: "root.good", value: 1 }], () => provider.readElfSymbols()).items.length,

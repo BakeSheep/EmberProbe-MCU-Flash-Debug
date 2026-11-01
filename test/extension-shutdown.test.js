@@ -34,8 +34,10 @@ function shutdownFixture() {
         _chartHistory: null,
         _stopJlinkDriverMonitor() {},
         _flushPendingChartHistorySamples: async () => {},
-        disposeDebugBridge: () => order.push("debug-bridge-disposed"),
-        stopAgentReadIfRunning: () => {
+        disposeDebugBridge: () => order.push("debug-bridge-disposed")
+    });
+    Object.assign(p._agentOps, {
+        stopReadIfRunning: () => {
             order.push("agent-read-stopped");
             return null;
         }
@@ -75,7 +77,7 @@ function shutdownFixture() {
         const errors = [];
         const originalError = console.error;
         console.error = (...args) => errors.push(args);
-        p.stopAgentReadIfRunning = () => {
+        p._agentOps.stopReadIfRunning = () => {
             order.push("agent-read-stopped");
             return Promise.reject(Object.assign(new Error("unconfirmed"), { code: "PROBE_EXIT_UNCONFIRMED" }));
         };

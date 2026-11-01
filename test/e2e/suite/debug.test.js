@@ -103,7 +103,7 @@ async function run() {
         assert(started);
         await wait(() => session && stopped > 0);
         await wait(() => provider._debugBridge.paused);
-        const inspect = (params) => provider._handleAgentCall("debug.inspect", params);
+        const inspect = (params) => provider._agentService.call("debug.inspect", params);
         const agentThreads = await inspect({ action: "threads" });
         const agentStack = await inspect({ action: "stack", threadId: agentThreads.threads[0].id });
         const agentScopes = await inspect({ action: "scopes", frame: agentStack.stackFrames[0].frame });

@@ -63,7 +63,7 @@ function provider(symbols) {
 (async () => {
     {
         const { host, stored } = provider(staticSymbols);
-        const result = await host._addAgentWatch({
+        const result = await host._agentOps.addWatch({
             variables: ["ep7", "s_anon", "app::object", "counter", "plain", "ep7.port"],
             types: { counter: "i32" },
             destination: "both"
@@ -95,7 +95,7 @@ function provider(symbols) {
         );
 
         // Display-name and raw-name requests share one identity.
-        const again = await host._addAgentWatch({ variables: ["_ZL3ep7", "app::object"], destination: "sidebar" });
+        const again = await host._agentOps.addWatch({ variables: ["_ZL3ep7", "app::object"], destination: "sidebar" });
         assert.deepStrictEqual(again, {
             resolvedNames: { "app::object": "_ZN3app6objectE" },
             sidebar: { added: [], alreadyPresent: ["_ZL3ep7", "_ZN3app6objectE"] }
@@ -116,7 +116,7 @@ function provider(symbols) {
         const text = result.symbols.find((symbol) => symbol.displayName === "text");
         assert.ok(text && text.name !== "text" && text.runtimeLayout, `DWARF ${version}: mangled std::string`);
         const { host, stored } = provider(result.symbols);
-        const added = await host._addAgentWatch({ variables: ["text"], destination: "sidebar" });
+        const added = await host._agentOps.addWatch({ variables: ["text"], destination: "sidebar" });
         assert.deepStrictEqual(added.sidebar.added, [text.name], `DWARF ${version}`);
         assert.deepStrictEqual(added.resolvedNames, { text: text.name });
         const saved = normalizeWatchList([...stored.values()][0], result.symbols);

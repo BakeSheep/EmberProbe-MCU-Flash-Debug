@@ -239,7 +239,7 @@ const SIDEBAR_ROUTES = {
         }),
     liveToggle: async ({ host }, message) => {
         try {
-            if (host._agentReadRunning) host.stopAgentReadIfRunning();
+            if (host._agentOps.readRunning) host._agentOps.stopReadIfRunning();
             else if (host._sampling.intent) host._sampling.stop({ variablesOnly: true });
             else {
                 const items = host._context.workspaceState.get(CACHE_KEYS.sidebarWatchList) || [];

@@ -19,30 +19,30 @@ const { AgentService } = require("../src/services/agentService");
     const bridge = new AgentService({ handlers: routes });
     const expected = {
         "config.get": "_configurationSnapshot",
-        "config.set": "_setAgentConfiguration",
+        "config.set": "_agentOps.setConfiguration",
         "cubemx.detect": "_cubemxConfiguration.detect",
         "cubemx.inspect": "_cubemxService.inspect",
         "cubemx.prepare": "_cubemxService.prepare",
         "cubemx.candidate": "_cubemxService.generateCandidate",
-        "cubemx.start": "_startAgentCubeMxOperation",
+        "cubemx.start": "_agentOps.startCubeMxOperation",
         "cubemx.status": "_cubemxService.status",
-        "cubemx.execute": "_executeAgentCubeMx",
+        "cubemx.execute": "_agentOps.executeCubeMx",
         "cubemx.permission": "_cubemxService.permission",
         "cubemx.cancel": "_cubemxService.cancel",
         "flash.authorize": "_agentFlashService.authorize",
         "flash.execute": "_agentFlashService.execute",
         "flash.verify": "_agentFlashService.execute",
         "flash.permission": "_agentFlashService.permission",
-        "watch.add": "_addAgentWatch",
-        "variables.exportCsv": "_exportAgentCsv",
-        "variables.read": "_readAgentVariables",
-        "variables.sample": "_sampleAgentVariables",
-        "sampling.status": "_controlAgentSampling",
-        "sampling.start": "_controlAgentSampling",
-        "sampling.stop": "_controlAgentSampling",
+        "watch.add": "_agentOps.addWatch",
+        "variables.exportCsv": "_agentOps.exportCsv",
+        "variables.read": "_agentOps.readVariables",
+        "variables.sample": "_agentOps.sampleVariables",
+        "sampling.status": "_agentOps.controlSampling",
+        "sampling.start": "_agentOps.controlSampling",
+        "sampling.stop": "_agentOps.controlSampling",
         "variables.write": "_writes.writeAgentVariables",
         "variables.write.permission": "_writes.agentPermission",
-        "fault.read": "_readAgentFault",
+        "fault.read": "_agentOps.readFault",
         "elf.analyze": "_analyzeElf",
         "peripherals.list": "_svdPeripheralService.list",
         "peripherals.read": "_svdPeripheralService.read",
@@ -89,7 +89,7 @@ const { AgentService } = require("../src/services/agentService");
     await routes["chip.read"]();
     assert.deepStrictEqual(calls.at(-1).args, [true]);
     await bridge.call("cubemx.check");
-    assert.strictEqual(calls.at(-1).method, "_showAgentCubeMxProgress");
+    assert.strictEqual(calls.at(-1).method, "_agentOps.showCubeMxProgress");
     operation = null;
     await routes["cubemx.check"]();
     assert.strictEqual(calls.at(-1).method, "_cubemxService.check");

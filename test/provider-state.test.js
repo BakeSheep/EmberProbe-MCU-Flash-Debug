@@ -153,9 +153,9 @@ function deferred() {
                 _resolveTclPort: async () => 1234,
                 _resolveOpenOcdPath: async () => "fake",
                 _postConsumerStatuses: (status) => statuses.push(status),
-                _postLive() {},
-                _postAgentSampling() {}
+                _postLive() {}
             });
+            Object.assign(p._agentOps, { _postSampling() {} });
             Object.assign(p.debugLaunch, { lifecycle: new DebugLifecycle() });
             Object.assign(p._sampling, {
                 consumers: new Set(),

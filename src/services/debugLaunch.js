@@ -67,7 +67,7 @@ class DebugLaunch {
             if (configuration?.servertype === "external")
                 throw new Error("Use an explicit F5 external attach configuration");
             this.host._externalDebug?.assertPhysicalAvailable();
-            if (this.host._agentReadRunning) return warn("msg.agentReadBusy");
+            if (this.host._agentOps.readRunning) return warn("msg.agentReadBusy");
             if (this.commandPending || this.starting) return warn("msg.debugBusy");
             this.commandPending = true;
             this.host._postProbeOperationStatus();
@@ -766,7 +766,7 @@ class DebugLaunch {
             const rtos = resolveRtos(validated, own.get("rtos", ""));
             if (!own.get("experimental.externalGdb.enabled", false))
                 throw new Error("External GDB was disabled during startup");
-            const stoppedAgent = this.host.stopAgentReadIfRunning();
+            const stoppedAgent = this.host._agentOps.stopReadIfRunning();
             if (stoppedAgent) await stoppedAgent;
             if (this.host._sampling.inUse) await this.host._sampling.stop({ preserveIntent: true });
             this.host._debugBridge.setWorkspace(folder);
@@ -805,7 +805,7 @@ class DebugLaunch {
                 code: "PROBE_BUSY"
             });
         }
-        const agentStopped = this.host.stopAgentReadIfRunning();
+        const agentStopped = this.host._agentOps.stopReadIfRunning();
         if (agentStopped) await agentStopped;
         if (this.host._sampling.inUse) {
             const stopped = this.host._sampling.stop({ preserveIntent: true });

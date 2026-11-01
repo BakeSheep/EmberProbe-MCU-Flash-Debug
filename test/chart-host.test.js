@@ -197,7 +197,6 @@ async function testShutdownFence(Provider) {
         _cubemxService: { cancel() {} },
         _postConsumerStatuses() {},
         disposeDebugBridge() {},
-        stopAgentReadIfRunning: () => null,
         _agentService: { close() {}, stop: async () => {}, dispose: async () => {} },
         _samplingArchive: {
             dispose: async () => assert.ok(appended, "archive disposal follows the history acknowledgement")
@@ -215,6 +214,7 @@ async function testShutdownFence(Provider) {
             }
         }
     });
+    Object.assign(p._agentOps, { stopReadIfRunning: () => null });
     Object.assign(p.debugLaunch, { clearStartupWatchdog() {}, stopManagedServer: async () => {} });
     Object.assign(p._sampling, { consumers: new Set() });
     p._queueChartHistoryAppend(entry, [{ name: "shared", value: 1, t: 1 }], 1);

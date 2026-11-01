@@ -29,9 +29,9 @@ const { FlashAuthorization } = require("../src/flashAuthorization");
             elf: { path: "firmware.elf", sha256: "firmware" },
             symbols: [{ name: "word", address: 0x20000000, size: 4, watchType: "u32", hasDwarfWriteType: true }],
             memory: { sections: [{ addr: 0x20000000, size: 0x1000, flags: 3 }] }
-        }),
-        _withAgentProbe: (handler) => handler({ session: {}, source: "test" })
+        })
     });
+    Object.assign(provider._agentOps, { withProbe: (handler) => handler({ session: {}, source: "test" }) });
     Object.assign(provider._writes, {
         prepareConnection: async () => connection,
         execute: async () => {
