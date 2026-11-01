@@ -11,7 +11,8 @@ const { scenario } = require("./helpers/scenario");
 const RESERVED = {
     "elf-fixture.js": Object.keys(require("./helpers/elf-fixture")),
     "memory-fixture.js": ["buildMemoryElf"],
-    "dwarf-tree.js": ["cstr", "u32", "uleb", "leb"]
+    "dwarf-tree.js": ["cstr", "u32", "uleb", "leb"],
+    "wait.js": ["wait", "waitFor"]
 };
 
 scenario("reserved names are still exported by their helpers", () => {

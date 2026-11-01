@@ -3,10 +3,7 @@ const assert = require("assert");
 const { ManagedOpenOcdSession } = require("../src/liveWatch");
 const { compileReadBatches, MAX_BATCH_GROUPS, MAX_BATCH_BYTES } = require("../src/liveWatchReadPlan");
 const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
-
-async function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const { wait } = require("./helpers/wait");
 
 (async () => {
     // -------------------------------------------------------------
@@ -141,6 +138,7 @@ async function wait(ms) {
         ]);
 
         session.setSamplingEnabled(true);
+        // The rate and P95 statistics need a real-time window of cycles against the 10 ms simulated latency.
         await wait(250);
 
         // Verify serial constraint

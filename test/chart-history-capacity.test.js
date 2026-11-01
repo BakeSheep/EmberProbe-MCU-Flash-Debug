@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { waitFor } = require("./helpers/wait");
 const {
     ChartHistoryStore,
     BLOCK_POINTS,
@@ -18,14 +19,6 @@ const itemsFor = (count) =>
     Array.from({ length: count }, (_, i) => ({ name: "buf[" + i + "]", type: "u8", address: 0x20000000 + i }));
 const samplesFor = (items, t) => items.map(({ name }, i) => ({ name, t, value: (i + t) & 255 }));
 const points = (store, scope, name, snapshotId) => [...store.points(store._source(scope, snapshotId).series.get(name))];
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(predicate, message, timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        assert(Date.now() < deadline, message);
-        await wait(5);
-    }
-}
 
 for (const count of [7800, 20000]) {
     const items = itemsFor(count);
@@ -224,7 +217,8 @@ for (const count of [7800, 20000]) {
         // Updates are debounced in the worker; a fixed sleep let a late pre-eviction update leak past the reset.
         await waitFor(
             () => updates.some((message) => message.scope === "old"),
-            "the first append publishes its status update"
+            "the first append publishes its status update",
+            5000
         );
         updates.length = 0;
         await worker.request("configure", ["new", [item]]);
@@ -233,7 +227,8 @@ for (const count of [7800, 20000]) {
             () =>
                 updates.some((message) => message.scope === "old") &&
                 updates.some((message) => message.scope === "new"),
-            "both panels publish a status update after the shared-budget eviction"
+            "both panels publish a status update after the shared-budget eviction",
+            5000
         );
         const old = updates.find((message) => message.scope === "old");
         assert.ok(old, "the evicted panel receives a status update without its own append");

@@ -3,6 +3,7 @@
 const { scenario } = require("./helpers/scenario");
 
 const assert = require("assert");
+const { waitFor } = require("./helpers/wait");
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
@@ -550,13 +551,6 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
                         remember: !!params.remember
                     })
                 );
-            async function until(condition, timeoutMs = 2000) {
-                const startedAt = Date.now();
-                while (!condition()) {
-                    if (Date.now() - startedAt > timeoutMs) throw new Error("condition not met in time");
-                    await new Promise((resolve) => setTimeout(resolve, 10));
-                }
-            }
             const sampleIoc = [
                 "Mcu.Name=STM32F407VGTx",
                 "Mcu.CPN=STM32F407VGT6",
@@ -991,7 +985,7 @@ const rejects = (fn, code) => assert.rejects(fn, (error) => error.code === code)
                         confirmationId: prepRace.confirmationId,
                         requestId: "req_race_a"
                     });
-                    await until(() => raceService.jobs.has(project2));
+                    await waitFor(() => raceService.jobs.has(project2));
                     await assert.rejects(
                         raceService.start({
                             content: candidateIocRace,

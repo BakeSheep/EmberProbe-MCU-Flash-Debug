@@ -54,6 +54,13 @@
     - 偏差：计划的完成标准是 `liveWatch.js` 少于 1200 行，实际 1420 行。剩下的主要是读取执行（批量与 scatter 读取、运行时对象读取、读取批次缓存，约 370 行）。它和采样节拍共用每周期的读取保护、目标代际、RAM 段、scatter 能力状态和连接确认，拆出去只能通过回指会话的引用访问这些状态，等于把耦合搬个位置，所以留在会话里。
 - [ ] P2 测试结构
     - [x] 模块加载器：测试里手写的 4 份“替换部分 `require` 后执行生产模块”的加载器（含 `loadProvider`）统一为 `test/helpers/load-module.js` 的 `loadModule`，按文件 URL 编译，覆盖率能映射回源文件。`test-helper-reuse` 新增按内容检查的场景，防止再出现副本（`flash-skills` 的加载器还要替换 `process` 并取出未导出的 `main`，保留）。
+    - [x] 剩余真实等待：
+        - `render-webview` 的 `clock` 选项同时接管页面的 `Date.now`。`write-stepping` 用 `FakeClock` 推进滑块的 300 ms 稳定计时，并补上“稳定前不写”的断言。
+        - `MemoryAnalysisController` 接受 `clock`（schedule/cancel），`memory-sidebar` 推进链接脚本变更的合并计时，断言一串变更只触发一次刷新。
+        - `unlimited-sampling` 的宿主暂停改为推进会话的单调时钟，`hostHoldMs` 由范围断言改为精确等于 300。
+        - `sampling-isolation` 的固定等待改为等条件成立。600 ms 的宿主阻塞保留：它就是被测对象，而且 Worker 启动后的前约 300 ms 采样偏慢，缩短后计数会贴近断言下限。
+        - 测试里 3 份 `wait`/`waitFor` 副本统一为 `test/helpers/wait.js`，并加入 `test-helper-reuse` 的保留名。`adaptive-sampling` 的 250 ms 保留，速率和 P95 统计需要真实时间窗口。
+        - 合计：这几个文件约 7.9 s → 4.9 s（单独运行）。
 
 ## P1：MainViewProvider 是上帝对象
 

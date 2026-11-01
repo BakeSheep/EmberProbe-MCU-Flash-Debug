@@ -1,5 +1,6 @@
 "use strict";
 const assert = require("assert");
+const { wait, waitFor } = require("./helpers/wait");
 const path = require("path");
 const { EventEmitter } = require("events");
 const { MultiRatePlan } = require("../src/services/multiRatePlan");
@@ -12,14 +13,6 @@ const { FakeOpenOcdServer } = require("./helpers/fake-openocd-server");
 const graph = { name: "graph", address: 0x20000000, size: 4 };
 const sidebar = { name: "sidebar", address: 0x20000010, size: 4 };
 const plan = (unlimited = true) => ({ graphItems: [graph], sidebarItems: [sidebar], graphIntervalMs: 5, unlimited });
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(predicate, message, timeoutMs = 2000) {
-    const deadline = Date.now() + timeoutMs;
-    while (!predicate()) {
-        assert(Date.now() < deadline, message);
-        await wait(2);
-    }
-}
 function assertStats(stats, requested, active, reason = null) {
     assert.strictEqual(stats.unlimited, requested);
     assert.strictEqual(stats.unlimitedActive, active);
@@ -354,13 +347,14 @@ async function testWorkerHold(byteLimit = false) {
     port.postMessage = (message) => messages.push(message);
     let session,
         acquired = 0,
-        clock = 0;
+        clock = 0,
+        monotonic = 1000;
     const payload = [{ name: "graph", bytes: byteLimit ? Buffer.alloc(1024 * 1024) : [1, 2, 3, 4] }];
     run(
         port,
         {},
         (options, handlers) => {
-            session = new ManagedOpenOcdSession(options, handlers);
+            session = new ManagedOpenOcdSession({ ...options, clock: { monotonicMs: () => monotonic } }, handlers);
             session.tcl.socket = {
                 destroyed: false,
                 write: (_data, callback) => callback?.(),
@@ -395,12 +389,14 @@ async function testWorkerHold(byteLimit = false) {
         assert.strictEqual(session.sampleEpoch, epoch, "repeated enable preserves a held loop");
         assert.strictEqual(session._hostHold, true);
         const heldCount = acquired;
-        await wait(300);
+        // Unlimited ticks run on setImmediate, so a leaking hold would spin many times within 20 ms.
+        monotonic += 300;
+        await wait(20);
         assert.strictEqual(acquired, heldCount, "host hold prevents new variable ticks");
         const heldStats = (await operation(2, "stats", [])).result;
         assertStats(heldStats, true, true);
         assert.strictEqual(heldStats.limitedBy, "host");
-        assert(heldStats.hostHoldMs >= 250 && heldStats.hostHoldMs <= 1000);
+        assert.strictEqual(heldStats.hostHoldMs, 300);
         assert(
             !messages.some((message) => message.event === "onError"),
             "soft hold never reaches the hard error limit"
